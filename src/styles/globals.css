@@ -1,0 +1,659 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "./fonts.css";
+@import "./code-highlight.css";
+
+@source "../../node_modules/streamdown/dist/index.js";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Inter Variable', sans-serif;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.148 0.004 228.8);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.148 0.004 228.8);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.148 0.004 228.8);
+    --primary: oklch(0.218 0.008 223.9);
+    --primary-foreground: oklch(0.987 0.002 197.1);
+    --secondary: oklch(0.963 0.002 197.1);
+    --secondary-foreground: oklch(0.218 0.008 223.9);
+    --muted: oklch(0.963 0.002 197.1);
+    --muted-foreground: oklch(0.56 0.021 213.5);
+    --accent: oklch(0.963 0.002 197.1);
+    --accent-foreground: oklch(0.218 0.008 223.9);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.925 0.005 214.3);
+    --input: oklch(0.925 0.005 214.3);
+    --ring: oklch(0.723 0.014 214.4);
+    --chart-1: oklch(0.872 0.007 219.6);
+    --chart-2: oklch(0.56 0.021 213.5);
+    --chart-3: oklch(0.45 0.017 213.2);
+    --chart-4: oklch(0.378 0.015 216);
+    --chart-5: oklch(0.275 0.011 216.9);
+    --radius: 0.625rem;
+    --sidebar: oklch(0.987 0.002 197.1);
+    --sidebar-foreground: oklch(0.148 0.004 228.8);
+    --sidebar-primary: oklch(0.218 0.008 223.9);
+    --sidebar-primary-foreground: oklch(0.987 0.002 197.1);
+    --sidebar-accent: oklch(0.963 0.002 197.1);
+    --sidebar-accent-foreground: oklch(0.218 0.008 223.9);
+    --sidebar-border: oklch(0.925 0.005 214.3);
+    --sidebar-ring: oklch(0.723 0.014 214.4);
+}
+
+.dark {
+    --background: #090a11;
+    --foreground: #edf0f7;
+    --card: #11131c;
+    --card-foreground: #edf0f7;
+    --popover: #121522;
+    --popover-foreground: #edf0f7;
+    --primary: #a78bfa;
+    --primary-foreground: #090a11;
+    --secondary: #1b1f2f;
+    --secondary-foreground: #edf0f7;
+    --muted: #181b29;
+    --muted-foreground: #8d93a5;
+    --accent: #23283a;
+    --accent-foreground: #f4f6fb;
+    --destructive: #fb7185;
+    --border: rgba(255, 255, 255, 0.095);
+    --input: rgba(255, 255, 255, 0.14);
+    --ring: #8b5cf6;
+    --chart-1: #a78bfa;
+    --chart-2: #22d3ee;
+    --chart-3: #34d399;
+    --chart-4: #fbbf24;
+    --chart-5: #fb7185;
+    --sidebar: #0d0f18;
+    --sidebar-foreground: #edf0f7;
+    --sidebar-primary: #a78bfa;
+    --sidebar-primary-foreground: #090a11;
+    --sidebar-accent: #1b1f2f;
+    --sidebar-accent-foreground: #edf0f7;
+    --sidebar-border: rgba(167, 139, 250, 0.16);
+    --sidebar-ring: #8b5cf6;
+}
+
+:root {
+  --clack-bg-root: #090a11;
+  --clack-bg-shell: #070910;
+  --clack-bg-workspace: #0b0e16;
+  --clack-bg-rail: #070910;
+  --clack-surface-1: #0f131d;
+  --clack-surface-2: #151a27;
+  --clack-surface-3: #1d2433;
+  --clack-surface-raised: #171d2a;
+  --clack-border-subtle: rgba(159, 177, 210, 0.12);
+  --clack-border-strong: rgba(151, 170, 208, 0.26);
+  --clack-border-accent: rgba(111, 179, 255, 0.42);
+  --clack-text-1: #f3f7ff;
+  --clack-text-2: #b5c0d4;
+  --clack-text-3: #76839b;
+  --clack-text-inverse: #05070d;
+  --clack-accent: #7db7ff;
+  --clack-accent-2: #9d7cff;
+  --clack-accent-soft: rgba(125, 183, 255, 0.13);
+  --clack-accent-strong: #b9d8ff;
+  --clack-success: #42d39b;
+  --clack-warning: #f6b85d;
+  --clack-danger: #ff6d7e;
+  --clack-focus: rgba(125, 183, 255, 0.54);
+  --clack-radius-button: 6px;
+  --clack-radius-panel: 8px;
+  --clack-radius-card: 7px;
+  --clack-space-1: 4px;
+  --clack-space-2: 8px;
+  --clack-space-3: 12px;
+  --clack-space-4: 16px;
+  --clack-shadow-low: 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 28px rgba(0, 0, 0, 0.18);
+  --clack-shadow-high: 0 18px 48px rgba(0, 0, 0, 0.34), 0 0 0 1px var(--clack-border-subtle);
+  --clack-glow-accent: 0 0 0 1px var(--clack-border-accent), 0 0 22px rgba(125, 183, 255, 0.12);
+}
+
+.dark {
+  --background: var(--clack-bg-root);
+  --foreground: var(--clack-text-1);
+  --card: var(--clack-surface-1);
+  --card-foreground: var(--clack-text-1);
+  --popover: var(--clack-surface-raised);
+  --popover-foreground: var(--clack-text-1);
+  --primary: var(--clack-accent);
+  --primary-foreground: var(--clack-text-inverse);
+  --secondary: var(--clack-surface-2);
+  --secondary-foreground: var(--clack-text-1);
+  --muted: var(--clack-surface-2);
+  --muted-foreground: var(--clack-text-3);
+  --accent: var(--clack-surface-3);
+  --accent-foreground: var(--clack-text-1);
+  --destructive: var(--clack-danger);
+  --border: var(--clack-border-subtle);
+  --input: rgba(159, 177, 210, 0.16);
+  --ring: var(--clack-accent);
+  --sidebar: var(--clack-bg-rail);
+  --sidebar-foreground: var(--clack-text-2);
+  --sidebar-primary: var(--clack-accent);
+  --sidebar-primary-foreground: var(--clack-text-inverse);
+  --sidebar-accent: var(--clack-surface-2);
+  --sidebar-accent-foreground: var(--clack-text-1);
+  --sidebar-border: var(--clack-border-subtle);
+  --sidebar-ring: var(--clack-accent);
+}
+
+@layer components {
+  .clack-shell {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 70%),
+      var(--clack-bg-shell);
+    border-color: var(--clack-border-subtle);
+    color: var(--clack-text-2);
+  }
+
+  .clack-workspace {
+    background:
+      linear-gradient(180deg, rgba(125, 183, 255, 0.035), transparent 32%),
+      var(--clack-bg-workspace);
+  }
+
+  .clack-panel {
+    background: color-mix(in srgb, var(--clack-surface-1) 92%, transparent);
+    border-color: var(--clack-border-subtle);
+    box-shadow: var(--clack-shadow-low);
+  }
+
+  .clack-card {
+    background: color-mix(in srgb, var(--clack-surface-1) 88%, transparent);
+    border: 1px solid var(--clack-border-subtle);
+    border-radius: var(--clack-radius-card);
+  }
+
+  .clack-card-strong {
+    background: var(--clack-surface-2);
+    border: 1px solid var(--clack-border-strong);
+    border-radius: var(--clack-radius-card);
+    box-shadow: var(--clack-shadow-low);
+  }
+
+  .clack-section-label {
+    color: var(--clack-text-3);
+    font-size: 10.5px;
+    font-weight: 650;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+  }
+
+  .clack-toolbar-button {
+    border-radius: var(--clack-radius-button);
+    color: var(--clack-text-3);
+    transition:
+      background-color var(--dur-fast) var(--ease-soft),
+      color var(--dur-fast) var(--ease-soft),
+      border-color var(--dur-fast) var(--ease-soft);
+  }
+
+  .clack-toolbar-button:hover {
+    background: rgba(159, 177, 210, 0.09);
+    color: var(--clack-text-1);
+  }
+
+  .clack-toolbar-button:focus-visible {
+    outline: 1px solid var(--clack-focus);
+    outline-offset: 1px;
+  }
+
+  .clack-pill {
+    border: 1px solid var(--clack-border-subtle);
+    border-radius: 999px;
+    background: rgba(159, 177, 210, 0.075);
+    color: var(--clack-text-2);
+  }
+
+  .clack-tab {
+    border: 1px solid transparent;
+    border-radius: var(--clack-radius-button);
+    color: var(--clack-text-3);
+  }
+
+  .clack-tab:hover {
+    border-color: var(--clack-border-subtle);
+    background: rgba(159, 177, 210, 0.06);
+    color: var(--clack-text-2);
+  }
+
+  .clack-tab[data-active="true"] {
+    border-color: var(--clack-border-accent);
+    background: var(--clack-accent-soft);
+    color: var(--clack-text-1);
+    box-shadow: inset 0 -1px 0 rgba(125, 183, 255, 0.32);
+  }
+
+  .clack-rail {
+    background: var(--clack-bg-rail);
+    border-color: var(--clack-border-subtle);
+  }
+
+  .clack-rail-button {
+    border-radius: var(--clack-radius-button);
+    color: var(--clack-text-3);
+  }
+
+  .clack-rail-button:hover {
+    background: rgba(159, 177, 210, 0.08);
+    color: var(--clack-text-2);
+  }
+
+  .clack-rail-button[data-active="true"] {
+    background: var(--clack-accent-soft);
+    color: var(--clack-text-1);
+    box-shadow: inset 0 0 0 1px var(--clack-border-accent);
+  }
+
+  .clack-settings-card {
+    border: 1px solid var(--clack-border-subtle);
+    border-radius: var(--clack-radius-panel);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 44%),
+      color-mix(in srgb, var(--clack-surface-1) 92%, transparent);
+  }
+
+  .clack-ai-block {
+    border: 1px solid var(--clack-border-subtle);
+    border-radius: var(--clack-radius-panel);
+    background:
+      linear-gradient(180deg, rgba(125, 183, 255, 0.04), transparent 54%),
+      rgba(15, 19, 29, 0.88);
+  }
+
+  .clack-terminal-dock {
+    background:
+      linear-gradient(180deg, rgba(125, 183, 255, 0.035), transparent 40%),
+      var(--clack-bg-shell);
+    border-color: var(--clack-border-strong);
+    box-shadow: 0 -14px 38px rgba(0, 0, 0, 0.28);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    margin: 0;
+    overflow: hidden;
+    }
+  html, body, #root {
+    height: 100%;
+    }
+  html {
+    @apply font-sans;
+    }
+}
+
+:root {
+  --terminal-background: var(--background);
+  --terminal-foreground: var(--foreground);
+  --terminal-cursor: var(--foreground);
+  --terminal-cursor-accent: var(--background);
+  --terminal-selection: var(--accent);
+  --terminal-ansi-black: #18181b;
+  --terminal-ansi-red: #ef4444;
+  --terminal-ansi-green: #22c55e;
+  --terminal-ansi-yellow: #eab308;
+  --terminal-ansi-blue: #3b82f6;
+  --terminal-ansi-magenta: #a855f7;
+  --terminal-ansi-cyan: #06b6d4;
+  --terminal-ansi-white: #e4e4e7;
+  --terminal-ansi-bright-black: #52525b;
+  --terminal-ansi-bright-red: #f87171;
+  --terminal-ansi-bright-green: #4ade80;
+  --terminal-ansi-bright-yellow: #facc15;
+  --terminal-ansi-bright-blue: #60a5fa;
+  --terminal-ansi-bright-magenta: #c084fc;
+  --terminal-ansi-bright-cyan: #22d3ee;
+  --terminal-ansi-bright-white: #fafafa;
+}
+
+:root {
+  --app-zoom: 1;
+}
+
+html[data-chrome="borderless"] .terax-bg-surface,
+html[data-chrome="borderless"] .clack-bg-surface {
+  border-radius: 12px;
+}
+.zoom-content {
+  zoom: var(--app-zoom);
+}
+.zoom-exempt {
+  zoom: calc(1 / var(--app-zoom));
+}
+
+/* Custom window chrome for Linux and Windows. The OS gives us a transparent
+ * borderless window, and we paint the rounded corners, border, and shadow. */
+html[data-chrome="borderless"],
+html[data-chrome="borderless"] body {
+  background: transparent !important;
+}
+html[data-chrome="borderless"] #root,
+html[data-chrome="borderless"] #settings-root {
+  height: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--background);
+}
+
+/*
+ * xterm.js overrides. Kept outside @layer so they win against the addon's
+ * own stylesheet (which is not in any layer and would otherwise override).
+ *
+ * Newer xterm renders scrollbars as real <div class="scrollbar vertical|horizontal">
+ * children rather than relying on native overflow scrollbars. Both code paths exist
+ * across versions, so we hide both.
+ */
+.xterm .scrollbar,
+.xterm .scrollbar.vertical,
+.xterm .scrollbar.horizontal {
+  display: none !important;
+  visibility: hidden !important;
+  width: 0 !important;
+  height: 0 !important;
+  pointer-events: none !important;
+}
+.xterm .xterm-viewport,
+.xterm-viewport {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+.xterm .xterm-viewport::-webkit-scrollbar,
+.xterm-viewport::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+.xterm,
+.xterm-screen,
+.xterm:focus,
+.xterm.focus {
+  outline: none !important;
+}
+
+.cm-editor,
+.cm-scroller {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+.cm-editor::-webkit-scrollbar,
+.cm-scroller::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+input,
+textarea,
+[contenteditable="true"],
+.cm-editor,
+.select-text,
+.select-text * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.cm-color-swatch {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-right: 0.35em;
+  border-radius: 3px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  vertical-align: middle;
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+}
+.cm-color-swatch-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+
+.no-scrollbar {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+.no-scrollbar::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+.no-scrollbar-deep,
+.no-scrollbar-deep * {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+.no-scrollbar-deep::-webkit-scrollbar,
+.no-scrollbar-deep *::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+/* Kill native scrollbars everywhere by default. Linux and Windows ship chunky
+ * Chromium bars that break the chrome, and macOS WKWebView flashes its overlay
+ * scrollbar briefly during layout transitions (AI panel open, pane split,
+ * window resize) which looks like a glitch. Visible scroll affordances are
+ * provided per-region via shadcn <ScrollArea>. */
+html,
+html *,
+html *::before,
+html *::after {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+html *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* Motion tokens. Reduced-motion zeroes the durations as a global snap. */
+:root {
+  --dur-fast: 160ms;
+  --dur-base: 240ms;
+  --dur-slow: 320ms;
+  --ease-premium: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-soft: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes terax-collapsible-down {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+}
+
+@keyframes terax-collapsible-up {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
+
+.terax-collapsible-content,
+.clack-collapsible-content {
+  overflow: hidden;
+}
+.terax-collapsible-content[data-state="open"],
+.clack-collapsible-content[data-state="open"] {
+  animation: terax-collapsible-down var(--dur-base) var(--ease-soft);
+}
+.terax-collapsible-content[data-state="closed"],
+.clack-collapsible-content[data-state="closed"] {
+  animation: terax-collapsible-up var(--dur-base) var(--ease-soft);
+}
+
+/* Height auto to 0 reveal without JS measuring: animate the grid track from 0fr
+ * to 1fr. The inner child must be the sole grid row with min-height:0. Used by
+ * the docked AI input bar and the composer voice-status row. */
+.terax-reveal,
+.clack-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition:
+    grid-template-rows var(--dur-base) var(--ease-premium),
+    opacity var(--dur-base) var(--ease-premium);
+  opacity: 0;
+}
+.terax-reveal[data-state="open"],
+.clack-reveal[data-state="open"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.terax-reveal > *,
+.clack-reveal > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@keyframes terax-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(-40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.terax-panel-in,
+.clack-panel-in {
+  animation: terax-panel-in var(--dur-slow) var(--ease-premium);
+}
+
+@keyframes terax-tab-in {
+  from {
+    opacity: 0;
+    transform: scale(0.86);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.terax-tab-in,
+.clack-tab-in {
+  animation: terax-tab-in var(--dur-base) var(--ease-premium);
+}
+
+/* Text shimmer loop. Replaces motion background-position animation. Driven by
+ * --shimmer-duration / --shimmer-spread set inline per instance. */
+@keyframes terax-shimmer {
+  from {
+    background-position: 100% center;
+  }
+  to {
+    background-position: 0% center;
+  }
+}
+.terax-shimmer,
+.clack-shimmer {
+  background-repeat: no-repeat, padding-box;
+  background-size:
+    250% 100%,
+    auto;
+  background-image:
+    linear-gradient(
+      90deg,
+      transparent calc(50% - var(--shimmer-spread)),
+      var(--color-background),
+      transparent calc(50% + var(--shimmer-spread))
+    ),
+    linear-gradient(
+      var(--color-muted-foreground),
+      var(--color-muted-foreground)
+    );
+  animation: terax-shimmer var(--shimmer-duration, 2s) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0.01ms;
+    --dur-base: 0.01ms;
+    --dur-slow: 0.01ms;
+  }
+  .terax-reveal,
+  .clack-reveal {
+    transition: none;
+  }
+  .terax-shimmer,
+  .clack-shimmer {
+    animation: none;
+    background-position: 0% center;
+  }
+}
