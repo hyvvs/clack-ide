@@ -186,7 +186,11 @@
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
+<<<<<<< HEAD
    Copyright [yyyy] [name of copyright owner]
+=======
+   Copyright 2026 Crynta
+>>>>>>> 26045d2 (Initial commit for clack-ide c:)
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
