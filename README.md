@@ -1,5 +1,5 @@
 <div align="center">
-<img src="docs/assets/logo.png" width="144" height="144" alt="Clack" />
+<img src="docs/clack-icon.png" width="144" height="144" alt="Clack" />
 <h1>Clack</h1>
 
 <p><strong>Local-first IDE, terminal, and agent workspace.</strong></p>
