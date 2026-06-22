@@ -15,6 +15,11 @@ type Props = {
   onCwd: (leafId: number, cwd: string) => void;
   onExit: (leafId: number, code: number) => void;
   onFocusLeaf: (tabId: number, leafId: number) => void;
+  canSplit: boolean;
+  onSplit: (tabId: number, leafId: number, dir: "row" | "col") => void;
+  onClosePane: (tabId: number, leafId: number) => void;
+  onCloseTab: (tabId: number) => void;
+  onSearch: (tabId: number, leafId: number) => void;
 };
 
 type Bundle = {
@@ -32,6 +37,11 @@ export function TerminalStack({
   onCwd,
   onExit,
   onFocusLeaf,
+  canSplit,
+  onSplit,
+  onClosePane,
+  onCloseTab,
+  onSearch,
 }: Props) {
   const terminals = useMemo(() => selectLiveTerminals(tabs), [tabs]);
 
@@ -80,6 +90,11 @@ export function TerminalStack({
     <div className="relative h-full w-full">
       {terminals.map((t) => {
         const tabVisible = t.id === activeId;
+        const paneCount = leafIds(t.paneTree).length;
+        const canCloseTab = tabs.some(
+          (candidate) =>
+            candidate.id !== t.id && candidate.spaceId === t.spaceId,
+        );
         return (
           <div
             key={t.id}
@@ -95,7 +110,14 @@ export function TerminalStack({
               tabVisible={tabVisible}
               activeLeafId={t.activeLeafId}
               blocks={t.blocks ?? false}
+              paneCount={paneCount}
+              canSplit={tabVisible && canSplit}
+              canCloseTab={canCloseTab}
               onFocusLeaf={(leafId) => onFocusLeaf(t.id, leafId)}
+              onSplit={(leafId, dir) => onSplit(t.id, leafId, dir)}
+              onClosePane={(leafId) => onClosePane(t.id, leafId)}
+              onCloseTab={() => onCloseTab(t.id)}
+              onSearch={(leafId) => onSearch(t.id, leafId)}
               getBundle={getBundle}
             />
           </div>

@@ -22,10 +22,7 @@ import {
 } from "@/modules/ai";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { native } from "@/modules/ai/lib/native";
-import {
-  CommandPalette,
-  createCommandItems,
-} from "@/modules/command-palette";
+import { CommandPalette, createCommandItems } from "@/modules/command-palette";
 import {
   NewEditorDialog,
   useEditorFileSync,
@@ -163,6 +160,7 @@ export default function App() {
     setLeafCwd,
     focusPane,
     focusNextPaneInTab,
+    splitPane,
     splitActivePane,
     closeActivePane,
     closePaneByLeaf,
@@ -348,7 +346,9 @@ export default function App() {
 
   useEffect(() => {
     if (terminalDockCollapsed || activeTerminalId === null) return;
-    const activeTerminal = terminalTabs.find((tab) => tab.id === activeTerminalId);
+    const activeTerminal = terminalTabs.find(
+      (tab) => tab.id === activeTerminalId,
+    );
     if (activeTerminal?.cold) setActiveId(activeTerminalId);
   }, [terminalDockCollapsed, activeTerminalId, terminalTabs, setActiveId]);
 
@@ -710,6 +710,31 @@ export default function App() {
     [activeTerminalId, setActiveId, splitActivePane, setTerminalDockCollapsed],
   );
 
+  const splitTerminalPane = useCallback(
+    (tabId: number, leafId: number, dir: "row" | "col") => {
+      setActiveId(tabId);
+      setLastTerminalTabId(tabId);
+      splitPane(tabId, leafId, dir);
+      setTerminalDockCollapsed(false);
+    },
+    [setActiveId, splitPane, setTerminalDockCollapsed],
+  );
+
+  const closeTerminalPane = useCallback(
+    (tabId: number, leafId: number) => {
+      const tab = tabsRef.current.find(
+        (candidate) => candidate.id === tabId && candidate.kind === "terminal",
+      );
+      if (tab?.kind !== "terminal") return;
+      if (leafIds(tab.paneTree).length > 1) {
+        closePaneByLeaf(leafId);
+      } else {
+        void handleClose(tabId);
+      }
+    },
+    [closePaneByLeaf, handleClose],
+  );
+
   const handleCloseTabOrPane = useCallback(() => {
     const t = tabsRef.current.find((x) => x.id === activeId);
     if (t?.kind === "terminal" && leafIds(t.paneTree).length > 1) {
@@ -735,7 +760,8 @@ export default function App() {
       "tab.prev": () => cycleTab(-1),
       "tab.selectByIndex": (e) => {
         const idx = parseInt(e.key, 10) - 1;
-        const scoped = activeTab?.kind === "terminal" ? terminalTabs : workspaceTabs;
+        const scoped =
+          activeTab?.kind === "terminal" ? terminalTabs : workspaceTabs;
         const t = scoped[idx];
         if (t) setActiveId(t.id);
       },
@@ -747,6 +773,22 @@ export default function App() {
       "pane.focusNext": () => focusNextPaneInTab(activeId, 1),
       "pane.focusPrev": () => focusNextPaneInTab(activeId, -1),
       "pane.source": toggleSourceControl,
+      "terminal.selectAll": () => {
+        if (activeLeafId !== null) {
+          terminalRefs.current.get(activeLeafId)?.selectAll();
+        }
+      },
+      "terminal.copy": () => {
+        if (activeLeafId !== null) {
+          void terminalRefs.current.get(activeLeafId)?.copySelection();
+        }
+      },
+      "terminal.paste": () => {
+        if (activeLeafId !== null) {
+          void terminalRefs.current.get(activeLeafId)?.pasteClipboard();
+        }
+      },
+      "terminal.search": () => searchInlineRef.current?.focus(),
       "terminal.clear": () => {
         clearFocusedTerminal();
       },
@@ -780,6 +822,7 @@ export default function App() {
       setActiveId,
       splitActivePaneInActiveTab,
       focusNextPaneInTab,
+      activeLeafId,
       toggleSourceControl,
       togglePanelAndFocus,
       askFromSelection,
@@ -796,6 +839,26 @@ export default function App() {
 
   const shortcutsDisabled = useCallback(
     (id: ShortcutId, e: KeyboardEvent) => {
+      const target = (e.target as HTMLElement | null) ?? document.activeElement;
+      const inTerminal = !!(target as HTMLElement | null)?.closest?.(
+        ".clack-terminal-pane",
+      );
+      if (id === "explorer.search" && inTerminal) return true;
+      if (
+        id === "terminal.selectAll" ||
+        id === "terminal.copy" ||
+        id === "terminal.paste" ||
+        id === "terminal.search"
+      ) {
+        return !inTerminal;
+      }
+      if (
+        (id === "pane.focusNext" || id === "pane.focusPrev") &&
+        e.altKey &&
+        e.shiftKey
+      ) {
+        return !inTerminal;
+      }
       if (id === "editor.undo" || id === "editor.redo") {
         return activeTab?.kind !== "editor";
       }
@@ -838,7 +901,7 @@ export default function App() {
       }
       return false;
     },
-    [activeTab],
+    [activeTab, captureActiveSelection],
   );
 
   useGlobalShortcuts(shortcutHandlers, { isDisabled: shortcutsDisabled });
@@ -903,6 +966,14 @@ export default function App() {
       focusPane(tabId, leafId);
     },
     [setActiveId, focusPane, setTerminalDockCollapsed],
+  );
+
+  const searchTerminalPane = useCallback(
+    (tabId: number, leafId: number) => {
+      handleFocusLeaf(tabId, leafId);
+      requestAnimationFrame(() => searchInlineRef.current?.focus());
+    },
+    [handleFocusLeaf],
   );
 
   const onActivateAgent = useCallback(
@@ -1032,8 +1103,9 @@ export default function App() {
 
   const handleNewTabInSpace = useCallback(
     (spaceId: string) => {
-      const root = useSpaces.getState().spaces.find((s) => s.id === spaceId)
-        ?.root;
+      const root = useSpaces
+        .getState()
+        .spaces.find((s) => s.id === spaceId)?.root;
       newTabInSpace(spaceId, root ?? undefined);
     },
     [newTabInSpace],
@@ -1233,7 +1305,10 @@ export default function App() {
                 }}
               >
                 <div className="flex h-full min-h-0 flex-col border-r border-violet-400/15 bg-zinc-950/90">
-                  <div key={sidebarView} className="min-h-0 flex-1 clack-panel-in">
+                  <div
+                    key={sidebarView}
+                    className="min-h-0 flex-1 clack-panel-in"
+                  >
                     {sidebarView === "explorer" ? (
                       <FileExplorer
                         ref={explorerRef}
@@ -1283,9 +1358,14 @@ export default function App() {
                       onOpenCommitFile={openCommitFileDiffTab}
                       onGitHistorySearchHandle={setGitHistoryHandle}
                       onSetMarkdownView={setMarkdownView}
+                      onAskAiSelection={askFromSelection}
+                      onRevealInExplorer={toggleExplorerFocus}
+                      onAttachFileToAgent={handleAttachFileToAgent}
                       onNewEditor={() => setNewEditorOpen(true)}
                       onNewPreview={() => openPreviewTab("")}
-                      onOpenCommandPalette={() => openCommandPalette("commands")}
+                      onOpenCommandPalette={() =>
+                        openCommandPalette("commands")
+                      }
                     />
                   </div>
 
@@ -1312,6 +1392,9 @@ export default function App() {
                       onCwd={handleTerminalCwd}
                       onExit={handleLeafExit}
                       onFocusLeaf={handleFocusLeaf}
+                      onSplitPane={splitTerminalPane}
+                      onClosePane={closeTerminalPane}
+                      onSearchPane={searchTerminalPane}
                     />
                   )}
                 </div>

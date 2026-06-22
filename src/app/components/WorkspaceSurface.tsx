@@ -32,6 +32,9 @@ type Props = {
   onOpenCommitFile: GitHistoryStackProps["onOpenCommitFile"];
   onGitHistorySearchHandle: GitHistoryStackProps["onSearchHandle"];
   onSetMarkdownView: EditorStackProps["onSetMarkdownView"];
+  onAskAiSelection: EditorStackProps["onAskAiSelection"];
+  onRevealInExplorer: EditorStackProps["onRevealInExplorer"];
+  onAttachFileToAgent: EditorStackProps["onAttachFileToAgent"];
   onNewEditor: () => void;
   onNewPreview: () => void;
   onOpenCommandPalette: () => void;
@@ -56,6 +59,9 @@ export function WorkspaceSurface({
   onOpenCommitFile,
   onGitHistorySearchHandle,
   onSetMarkdownView,
+  onAskAiSelection,
+  onRevealInExplorer,
+  onAttachFileToAgent,
   onNewEditor,
   onNewPreview,
   onOpenCommandPalette,
@@ -84,6 +90,9 @@ export function WorkspaceSurface({
           onDirtyChange={onEditorDirtyChange}
           onCloseTab={onEditorCloseTab}
           onSetMarkdownView={onSetMarkdownView}
+          onAskAiSelection={onAskAiSelection}
+          onRevealInExplorer={onRevealInExplorer}
+          onAttachFileToAgent={onAttachFileToAgent}
         />
       </div>
       <div
@@ -165,11 +174,7 @@ export function WorkspaceSurface({
               </h1>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-2">
-              <Button
-                size="sm"
-                className="h-8 gap-1.5"
-                onClick={onNewEditor}
-              >
+              <Button size="sm" className="h-8 gap-1.5" onClick={onNewEditor}>
                 <HugeiconsIcon
                   icon={FileEditIcon}
                   size={13}
@@ -183,11 +188,7 @@ export function WorkspaceSurface({
                 className="h-8 gap-1.5"
                 onClick={onNewPreview}
               >
-                <HugeiconsIcon
-                  icon={Globe02Icon}
-                  size={13}
-                  strokeWidth={1.8}
-                />
+                <HugeiconsIcon icon={Globe02Icon} size={13} strokeWidth={1.8} />
                 Preview
               </Button>
               <Button
@@ -196,11 +197,7 @@ export function WorkspaceSurface({
                 className="h-8 gap-1.5"
                 onClick={onOpenCommandPalette}
               >
-                <HugeiconsIcon
-                  icon={CommandIcon}
-                  size={13}
-                  strokeWidth={1.8}
-                />
+                <HugeiconsIcon icon={CommandIcon} size={13} strokeWidth={1.8} />
                 Commands
               </Button>
             </div>

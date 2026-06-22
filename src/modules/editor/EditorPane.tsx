@@ -1,3 +1,12 @@
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuShortcut,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import { fmtShortcut, MOD_KEY } from "@/lib/platform";
 import { getKey } from "@/modules/ai/lib/keyring";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
@@ -12,6 +21,18 @@ import {
 import { type Extension, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { vim } from "@replit/codemirror-vim";
+import {
+  AiMagicIcon,
+  Cancel01Icon,
+  ClipboardPasteIcon,
+  Copy01Icon,
+  FileAttachmentIcon,
+  FolderTreeIcon,
+  SaveIcon,
+  Scissor01Icon,
+  TextSelectionIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import {
   forwardRef,
@@ -20,6 +41,7 @@ import {
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { inlineCompletion } from "./lib/autocomplete/inlineExtension";
@@ -57,6 +79,9 @@ type Props = {
   onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
   onClose?: () => void;
+  onAskAiSelection?: () => void;
+  onRevealInExplorer?: () => void;
+  onAttachFileToAgent?: (path: string) => void;
 };
 
 function formatBytes(n: number): string {
@@ -66,7 +91,18 @@ function formatBytes(n: number): string {
 }
 
 export const EditorPane = forwardRef<EditorPaneHandle, Props>(
-  function EditorPane({ path, onDirtyChange, onSaved, onClose }, ref) {
+  function EditorPane(
+    {
+      path,
+      onDirtyChange,
+      onSaved,
+      onClose,
+      onAskAiSelection,
+      onRevealInExplorer,
+      onAttachFileToAgent,
+    },
+    ref,
+  ) {
     const { doc, onChange, save, reload } = useDocument({
       path,
       onDirtyChange,
@@ -78,6 +114,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     const vimMode = usePreferencesStore((s) => s.vimMode);
     const languageRef = useRef<string | null>(null);
     const apiKeyRef = useRef<string | null>(null);
+    const [hasSelection, setHasSelection] = useState(false);
 
     useEffect(() => {
       let cancelled = false;
@@ -246,6 +283,46 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
       };
     }, [path, doc.status]);
 
+    const copySelection = async (cut: boolean) => {
+      const view = cmRef.current?.view;
+      if (!view) return;
+      const { from, to } = view.state.selection.main;
+      if (from === to) return;
+      const text = view.state.sliceDoc(from, to);
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        return;
+      }
+      if (cut) {
+        view.dispatch({
+          changes: { from, to, insert: "" },
+          selection: { anchor: from },
+        });
+      }
+      view.focus();
+    };
+
+    const pasteClipboard = async () => {
+      const view = cmRef.current?.view;
+      if (!view) return;
+      try {
+        const text = await navigator.clipboard.readText();
+        if (!text) return;
+        view.dispatch(view.state.replaceSelection(text));
+        view.focus();
+      } catch {
+        return;
+      }
+    };
+
+    const selectAll = () => {
+      const view = cmRef.current?.view;
+      if (!view) return;
+      view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+      view.focus();
+    };
+
     useImperativeHandle(
       ref,
       () => ({
@@ -318,7 +395,15 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     }
     if (doc.status === "binary" || doc.status === "toolarge") {
       const ext = path.split(".").pop()?.toLowerCase() ?? "";
-      const isImage = ["png", "jpg", "jpeg", "gif", "webp", "svg", "ico"].includes(ext);
+      const isImage = [
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "webp",
+        "svg",
+        "ico",
+      ].includes(ext);
       const isVideo = ["mp4", "webm", "ogg", "mov"].includes(ext);
       const isAudio = ["mp3", "wav", "flac", "aac", "m4a"].includes(ext);
       const isPdf = ext === "pdf";
@@ -334,10 +419,11 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
                 decoding="async"
                 className="max-w-full max-h-full object-contain rounded-md border border-border shadow-sm"
                 style={{
-                  backgroundImage: 'conic-gradient(#e5e7eb 0.25turn, #f3f4f6 0.25turn 0.5turn, #e5e7eb 0.5turn 0.75turn, #f3f4f6 0.75turn)',
-                  backgroundSize: '20px 20px',
+                  backgroundImage:
+                    "conic-gradient(#e5e7eb 0.25turn, #f3f4f6 0.25turn 0.5turn, #e5e7eb 0.5turn 0.75turn, #f3f4f6 0.75turn)",
+                  backgroundSize: "20px 20px",
                 }}
-                alt={path.split('/').pop()}
+                alt={path.split("/").pop()}
               />
             )}
             {isVideo && (
@@ -362,7 +448,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
               <iframe
                 src={assetUrl}
                 className="w-full h-full border-none"
-                title={path.split('/').pop()}
+                title={path.split("/").pop()}
               />
             )}
           </div>
@@ -382,28 +468,155 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     }
 
     return (
-      <div className="flex h-full min-h-0 flex-col zoom-exempt">
-        <CodeMirror
-          ref={cmRef}
-          value={doc.content}
-          onChange={onChange}
-          theme={themeExt}
-          extensions={extensions}
-          height="100%"
-          className="flex-1 min-h-0 overflow-hidden"
-          basicSetup={{
-            lineNumbers: true,
-            highlightActiveLineGutter: true,
-            foldGutter: true,
-            bracketMatching: true,
-            closeBrackets: true,
-            autocompletion: true,
-            highlightActiveLine: true,
-            highlightSelectionMatches: true,
-            searchKeymap: true,
-          }}
-        />
-      </div>
+      <ContextMenu
+        onOpenChange={(open) => {
+          if (!open) return;
+          const selection = cmRef.current?.view?.state.selection.main;
+          setHasSelection(
+            Boolean(selection && selection.from !== selection.to),
+          );
+        }}
+      >
+        <ContextMenuTrigger asChild>
+          <div
+            className="flex h-full min-h-0 flex-col zoom-exempt"
+            onContextMenuCapture={(event) => {
+              const target = event.target as HTMLElement;
+              if (target.closest("input, textarea")) event.stopPropagation();
+            }}
+          >
+            <CodeMirror
+              ref={cmRef}
+              value={doc.content}
+              onChange={onChange}
+              theme={themeExt}
+              extensions={extensions}
+              height="100%"
+              className="flex-1 min-h-0 overflow-hidden"
+              basicSetup={{
+                lineNumbers: true,
+                highlightActiveLineGutter: true,
+                foldGutter: true,
+                bracketMatching: true,
+                closeBrackets: true,
+                autocompletion: true,
+                highlightActiveLine: true,
+                highlightSelectionMatches: true,
+                searchKeymap: true,
+              }}
+            />
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent
+          className="min-w-56"
+          onCloseAutoFocus={(event) => event.preventDefault()}
+        >
+          <ContextMenuItem
+            disabled={!hasSelection}
+            onSelect={() => void copySelection(true)}
+          >
+            <HugeiconsIcon icon={Scissor01Icon} size={14} strokeWidth={1.75} />
+            <span className="flex-1">Cut</span>
+            <ContextMenuShortcut>
+              {fmtShortcut(MOD_KEY, "X")}
+            </ContextMenuShortcut>
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={!hasSelection}
+            onSelect={() => void copySelection(false)}
+          >
+            <HugeiconsIcon icon={Copy01Icon} size={14} strokeWidth={1.75} />
+            <span className="flex-1">Copy</span>
+            <ContextMenuShortcut>
+              {fmtShortcut(MOD_KEY, "C")}
+            </ContextMenuShortcut>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => void pasteClipboard()}>
+            <HugeiconsIcon
+              icon={ClipboardPasteIcon}
+              size={14}
+              strokeWidth={1.75}
+            />
+            <span className="flex-1">Paste</span>
+            <ContextMenuShortcut>
+              {fmtShortcut(MOD_KEY, "V")}
+            </ContextMenuShortcut>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={selectAll}>
+            <HugeiconsIcon
+              icon={TextSelectionIcon}
+              size={14}
+              strokeWidth={1.75}
+            />
+            <span className="flex-1">Select All</span>
+            <ContextMenuShortcut>
+              {fmtShortcut(MOD_KEY, "A")}
+            </ContextMenuShortcut>
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            onSelect={() => {
+              void saveRef
+                .current()
+                .then(() => onSavedRef.current?.())
+                .catch((error) => console.error("[clack] save failed", error));
+            }}
+          >
+            <HugeiconsIcon icon={SaveIcon} size={14} strokeWidth={1.75} />
+            <span className="flex-1">Save File</span>
+            <ContextMenuShortcut>
+              {fmtShortcut(MOD_KEY, "S")}
+            </ContextMenuShortcut>
+          </ContextMenuItem>
+          <ContextMenuItem
+            onSelect={() => {
+              void navigator.clipboard.writeText(path).catch(() => {});
+            }}
+          >
+            <HugeiconsIcon icon={Copy01Icon} size={14} strokeWidth={1.75} />
+            <span>Copy Path</span>
+          </ContextMenuItem>
+          {onAskAiSelection && hasSelection ? (
+            <ContextMenuItem onSelect={onAskAiSelection}>
+              <HugeiconsIcon icon={AiMagicIcon} size={14} strokeWidth={1.75} />
+              <span>Ask AI about Selection</span>
+            </ContextMenuItem>
+          ) : null}
+          {onRevealInExplorer ? (
+            <ContextMenuItem onSelect={onRevealInExplorer}>
+              <HugeiconsIcon
+                icon={FolderTreeIcon}
+                size={14}
+                strokeWidth={1.75}
+              />
+              <span>Reveal in Explorer</span>
+            </ContextMenuItem>
+          ) : null}
+          {onAttachFileToAgent ? (
+            <ContextMenuItem onSelect={() => onAttachFileToAgent(path)}>
+              <HugeiconsIcon
+                icon={FileAttachmentIcon}
+                size={14}
+                strokeWidth={1.75}
+              />
+              <span>Attach File to Agent</span>
+            </ContextMenuItem>
+          ) : null}
+          {onClose ? (
+            <>
+              <ContextMenuSeparator />
+              <ContextMenuItem onSelect={onClose}>
+                <HugeiconsIcon
+                  icon={Cancel01Icon}
+                  size={14}
+                  strokeWidth={1.75}
+                />
+                <span>Close Tab</span>
+              </ContextMenuItem>
+            </>
+          ) : null}
+        </ContextMenuContent>
+      </ContextMenu>
     );
   },
 );

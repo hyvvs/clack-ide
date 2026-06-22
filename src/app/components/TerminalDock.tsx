@@ -58,6 +58,9 @@ type Props = {
   onCwd: (leafId: number, cwd: string) => void;
   onExit: (leafId: number, code: number) => void;
   onFocusLeaf: (tabId: number, leafId: number) => void;
+  onSplitPane: (tabId: number, leafId: number, dir: "row" | "col") => void;
+  onClosePane: (tabId: number, leafId: number) => void;
+  onSearchPane: (tabId: number, leafId: number) => void;
 };
 
 export function TerminalDock({
@@ -82,6 +85,9 @@ export function TerminalDock({
   onCwd,
   onExit,
   onFocusLeaf,
+  onSplitPane,
+  onClosePane,
+  onSearchPane,
 }: Props) {
   const [editingId, setEditingId] = useState<number | null>(null);
   const dockRef = useRef<HTMLElement | null>(null);
@@ -131,7 +137,9 @@ export function TerminalDock({
           <span className="font-semibold uppercase tracking-[0.14em]">
             Terminal
           </span>
-          <span className="min-w-0 truncate text-[var(--clack-text-3)]">{activeLabel}</span>
+          <span className="min-w-0 truncate text-[var(--clack-text-3)]">
+            {activeLabel}
+          </span>
           <span className="clack-pill ml-auto px-1.5 py-px font-mono text-[10px]">
             {tabs.length}
           </span>
@@ -183,9 +191,7 @@ export function TerminalDock({
               strokeWidth={1.8}
             />
           </span>
-          <span className="clack-section-label">
-            Terminal
-          </span>
+          <span className="clack-section-label">Terminal</span>
           <span className="clack-pill px-1.5 py-px font-mono text-[10px]">
             {tabs.length}
           </span>
@@ -194,6 +200,10 @@ export function TerminalDock({
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {tabs.map((tab) => {
             const active = tab.id === activeId;
+            const canClose = stackTabs.some(
+              (candidate) =>
+                candidate.id !== tab.id && candidate.spaceId === tab.spaceId,
+            );
             if (editingId === tab.id) {
               return (
                 <div
@@ -228,7 +238,7 @@ export function TerminalDock({
                   aria-pressed={active}
                   onClick={() => onSelect(tab.id)}
                   onAuxClick={(event) => {
-                    if (event.button === 1 && tabs.length > 1) {
+                    if (event.button === 1 && canClose) {
                       event.preventDefault();
                       onClose(tab.id);
                     }
@@ -238,7 +248,7 @@ export function TerminalDock({
                   <TabIcon tab={tab} />
                   <span className="min-w-0 truncate">{labelFor(tab)}</span>
                 </button>
-                {tabs.length > 1 ? (
+                {canClose ? (
                   <button
                     type="button"
                     aria-label="Close terminal"
@@ -273,7 +283,7 @@ export function TerminalDock({
                     />
                     <span className="flex-1">Rename</span>
                   </ContextMenuItem>
-                  {tabs.length > 1 ? (
+                  {canClose ? (
                     <>
                       <ContextMenuSeparator />
                       <ContextMenuItem onSelect={() => onClose(tab.id)}>
@@ -328,6 +338,11 @@ export function TerminalDock({
             onCwd={onCwd}
             onExit={onExit}
             onFocusLeaf={onFocusLeaf}
+            canSplit={canSplit}
+            onSplit={onSplitPane}
+            onClosePane={onClosePane}
+            onCloseTab={onClose}
+            onSearch={onSearchPane}
           />
         ) : (
           <div className="grid h-full place-items-center text-xs text-[var(--clack-text-3)]">

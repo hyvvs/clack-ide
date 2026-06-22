@@ -11,6 +11,9 @@ type Props = {
   registerHandle: (id: number, handle: EditorPaneHandle | null) => void;
   onCloseTab: (id: number) => void;
   onSetMarkdownView: (id: number, mode: "rendered" | "raw") => void;
+  onAskAiSelection: () => void;
+  onRevealInExplorer: () => void;
+  onAttachFileToAgent: (path: string) => void;
 };
 
 export function EditorStack({
@@ -20,6 +23,9 @@ export function EditorStack({
   registerHandle,
   onCloseTab,
   onSetMarkdownView,
+  onAskAiSelection,
+  onRevealInExplorer,
+  onAttachFileToAgent,
 }: Props) {
   const editors = tabs.filter(
     (t): t is EditorTab => t.kind === "editor" && !t.cold,
@@ -115,6 +121,9 @@ export function EditorStack({
                 path={t.path}
                 onDirtyChange={getDirtyCallback(t.id)}
                 onClose={getCloseCallback(t.id)}
+                onAskAiSelection={onAskAiSelection}
+                onRevealInExplorer={onRevealInExplorer}
+                onAttachFileToAgent={onAttachFileToAgent}
               />
             </div>
           </div>

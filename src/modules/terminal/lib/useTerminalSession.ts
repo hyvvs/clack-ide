@@ -933,6 +933,47 @@ export function useTerminalSession({
     return sel.length > 0 ? sel : null;
   }, [leafId]);
 
+  const selectAll = useCallback((): boolean => {
+    const slot = getSlotForLeaf(leafId);
+    if (!slot) return false;
+    slot.term.selectAll();
+    return true;
+  }, [leafId]);
+
+  const copySelection = useCallback(async (): Promise<boolean> => {
+    const slot = getSlotForLeaf(leafId);
+    const selection = slot?.term.getSelection() ?? "";
+    if (!selection) return false;
+    try {
+      await navigator.clipboard.writeText(selection);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [leafId]);
+
+  const pasteClipboard = useCallback(async (): Promise<boolean> => {
+    const slot = getSlotForLeaf(leafId);
+    if (!slot) return false;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) return false;
+      slot.term.paste(text);
+      slot.term.focus();
+      return true;
+    } catch {
+      return false;
+    }
+  }, [leafId]);
+
+  const clearScrollback = useCallback((): boolean => {
+    const slot = getSlotForLeaf(leafId);
+    if (!slot) return false;
+    slot.term.clear();
+    slot.term.focus();
+    return true;
+  }, [leafId]);
+
   const applyTheme = useCallback(() => {
     applyPoolTheme();
   }, []);
@@ -997,6 +1038,10 @@ export function useTerminalSession({
       focus,
       getBuffer,
       getSelection,
+      selectAll,
+      copySelection,
+      pasteClipboard,
+      clearScrollback,
       applyTheme,
       blockMode,
       selectBlockAt,
@@ -1012,6 +1057,10 @@ export function useTerminalSession({
       focus,
       getBuffer,
       getSelection,
+      selectAll,
+      copySelection,
+      pasteClipboard,
+      clearScrollback,
       applyTheme,
       blockMode,
       selectBlockAt,

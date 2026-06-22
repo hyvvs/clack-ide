@@ -4,6 +4,8 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import type { SearchAddon } from "@xterm/addon-search";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment } from "react";
 import { useTerminalDropStore } from "./lib/dropStore";
 import { leafIds, type PaneNode } from "./lib/panes";
@@ -21,14 +23,34 @@ type Props = {
   tabVisible: boolean;
   activeLeafId: number;
   blocks: boolean;
+  paneCount: number;
+  canSplit: boolean;
+  canCloseTab: boolean;
   onFocusLeaf: (leafId: number) => void;
+  onSplit: (leafId: number, dir: "row" | "col") => void;
+  onClosePane: (leafId: number) => void;
+  onCloseTab: () => void;
+  onSearch: (leafId: number) => void;
   getBundle: (leafId: number) => LeafBundle;
 };
 
 export function PaneTreeView(props: Props) {
   const { node } = props;
   if (node.kind === "leaf") {
-    const { tabVisible, activeLeafId, blocks, onFocusLeaf, getBundle } = props;
+    const {
+      tabVisible,
+      activeLeafId,
+      blocks,
+      paneCount,
+      canSplit,
+      canCloseTab,
+      onFocusLeaf,
+      onSplit,
+      onClosePane,
+      onCloseTab,
+      onSearch,
+      getBundle,
+    } = props;
     const focused = node.id === activeLeafId;
     const b = getBundle(node.id);
     return (
@@ -41,8 +63,11 @@ export function PaneTreeView(props: Props) {
         onFocus={() => {
           if (!focused) onFocusLeaf(node.id);
         }}
+        onContextMenuCapture={() => {
+          if (!focused) onFocusLeaf(node.id);
+        }}
         data-pane-leaf={node.id}
-        className="relative h-full w-full"
+        className="group/pane relative h-full min-h-0 w-full overflow-hidden"
       >
         <TerminalPane
           leafId={node.id}
@@ -54,7 +79,38 @@ export function PaneTreeView(props: Props) {
           onSearchReady={b.onSearchReady}
           onCwd={b.onCwd}
           onExit={b.onExit}
+          paneCount={paneCount}
+          canSplit={canSplit}
+          canCloseTab={canCloseTab}
+          onSplit={onSplit}
+          onClosePane={onClosePane}
+          onCloseTab={onCloseTab}
+          onSearch={onSearch}
         />
+        {paneCount > 1 || canCloseTab ? (
+          <button
+            type="button"
+            aria-label={
+              paneCount > 1 ? "Close terminal pane" : "Close terminal tab"
+            }
+            title={paneCount > 1 ? "Close pane" : "Close terminal tab"}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              onClosePane(node.id);
+            }}
+            className={`absolute right-2 top-2 z-20 inline-flex size-6 items-center justify-center rounded-[var(--clack-radius-button)] border border-[color:var(--clack-border-subtle)] bg-[color-mix(in_srgb,var(--clack-surface-raised)_92%,transparent)] text-[var(--clack-text-3)] shadow-sm outline-none transition-[opacity,color,background-color] hover:bg-[var(--clack-accent-soft)] hover:text-[var(--clack-text-1)] focus-visible:ring-1 focus-visible:ring-[var(--clack-focus)] ${
+              focused
+                ? "opacity-70 hover:opacity-100"
+                : "opacity-0 group-hover/pane:opacity-70 focus:opacity-100"
+            }`}
+          >
+            <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={2} />
+          </button>
+        ) : null}
         <DropOverlay leafId={node.id} />
       </div>
     );

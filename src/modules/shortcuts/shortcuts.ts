@@ -24,6 +24,10 @@ export type ShortcutId =
   | "pane.focusNext"
   | "pane.focusPrev"
   | "pane.source"
+  | "terminal.selectAll"
+  | "terminal.copy"
+  | "terminal.paste"
+  | "terminal.search"
   | "terminal.clear"
   | "terminal.toggleInput"
   | "blocks.prev"
@@ -141,14 +145,20 @@ export const SHORTCUTS: Shortcut[] = [
     id: "pane.focusNext",
     label: "Focus next pane",
     group: "Panes",
-    defaultBindings: [{ [MOD_PROP]: true, key: "]" }],
+    defaultBindings: [
+      { [MOD_PROP]: true, key: "]" },
+      { alt: true, shift: true, key: "ArrowRight" },
+    ],
   },
   {
     id: "pane.focusPrev",
     label: "Focus previous pane",
     group: "Panes",
-    defaultBindings: [{ [MOD_PROP]: true, key: "[" }],
-  },  
+    defaultBindings: [
+      { [MOD_PROP]: true, key: "[" },
+      { alt: true, shift: true, key: "ArrowLeft" },
+    ],
+  },
   {
     id: "pane.source",
     label: "Toggle source panel",
@@ -156,13 +166,41 @@ export const SHORTCUTS: Shortcut[] = [
     defaultBindings: [{ [MOD_PROP]: true, key: "g" }],
   },
   {
+    id: "terminal.selectAll",
+    label: "Select terminal buffer",
+    group: "Terminal",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "a" }],
+  },
+  {
+    id: "terminal.copy",
+    label: "Copy terminal selection",
+    group: "Terminal",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "c" }],
+  },
+  {
+    id: "terminal.paste",
+    label: "Paste into terminal",
+    group: "Terminal",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "v" }],
+  },
+  {
+    id: "terminal.search",
+    label: "Find in terminal buffer",
+    group: "Terminal",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "f" }],
+  },
+  {
     id: "terminal.clear",
     label: "Clear terminal",
     group: "Terminal",
-    // macOS Terminal's ⌘K (clear scrollback, keep the prompt). Default only on
-    // macOS — on other platforms Ctrl+K is readline's kill-line, so we leave it
-    // unbound and let users assign their own in settings.
-    defaultBindings: IS_MAC ? [{ meta: true, key: "k" }] : [],
+    // Keep plain Cmd+K on macOS. The Shift variant is safe on every platform
+    // because plain Ctrl+K remains available to readline and terminal apps.
+    defaultBindings: IS_MAC
+      ? [
+          { meta: true, key: "k" },
+          { meta: true, shift: true, key: "k" },
+        ]
+      : [{ ctrl: true, shift: true, key: "k" }],
   },
   {
     id: "terminal.toggleInput",
@@ -330,7 +368,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
 export function matchBinding(
   e: KeyboardEvent,
   binding: KeyBinding,
-  id?: ShortcutId
+  id?: ShortcutId,
 ): boolean {
   const eventKey = e.key.toLowerCase();
   const bindingKey = binding.key.toLowerCase();

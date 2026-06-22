@@ -20,6 +20,7 @@ import {
   Cancel01Icon,
   Clock01Icon,
   ComputerTerminal02Icon,
+  Copy01Icon,
   GitBranchIcon,
   GitCompareIcon,
   Globe02Icon,
@@ -279,7 +280,9 @@ export function TabBar({
                 </TabsTrigger>
               );
 
-              if (t.kind !== "terminal") return trigger;
+              const filePath =
+                t.kind === "editor" || t.kind === "markdown" ? t.path : null;
+              if (t.kind !== "terminal" && filePath === null) return trigger;
 
               return (
                 <ContextMenu key={t.id}>
@@ -288,14 +291,32 @@ export function TabBar({
                     className="min-w-36"
                     onCloseAutoFocus={(e) => e.preventDefault()}
                   >
-                    <ContextMenuItem onSelect={() => setEditingId(t.id)}>
-                      <HugeiconsIcon
-                        icon={PencilEdit02Icon}
-                        size={14}
-                        strokeWidth={1.75}
-                      />
-                      <span className="flex-1">Rename</span>
-                    </ContextMenuItem>
+                    {t.kind === "terminal" ? (
+                      <ContextMenuItem onSelect={() => setEditingId(t.id)}>
+                        <HugeiconsIcon
+                          icon={PencilEdit02Icon}
+                          size={14}
+                          strokeWidth={1.75}
+                        />
+                        <span className="flex-1">Rename</span>
+                      </ContextMenuItem>
+                    ) : null}
+                    {filePath !== null ? (
+                      <ContextMenuItem
+                        onSelect={() =>
+                          void navigator.clipboard
+                            .writeText(filePath)
+                            .catch(() => {})
+                        }
+                      >
+                        <HugeiconsIcon
+                          icon={Copy01Icon}
+                          size={14}
+                          strokeWidth={1.75}
+                        />
+                        <span>Copy Path</span>
+                      </ContextMenuItem>
+                    ) : null}
                     {tabs.length > 1 && (
                       <>
                         <ContextMenuSeparator />

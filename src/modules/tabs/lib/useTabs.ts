@@ -5,10 +5,9 @@ import {
   leafIds,
   nextLeafId,
   type PaneNode,
-  removeLeaf,
+  removeLeafAndFocus,
   type SplitDir,
   setLeafCwd as setLeafCwdInTree,
-  siblingLeafOf,
   splitLeaf,
 } from "@/modules/terminal/lib/panes";
 import { disposeSession } from "@/modules/terminal/lib/useTerminalSession";
@@ -909,6 +908,44 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     );
   }, []);
 
+  const splitPane = useCallback(
+    (tabId: number, targetLeafId: number, dir: SplitDir): number | null => {
+      let newLeafId: number | null = null;
+      setTabs((curr) =>
+        curr.map((t) => {
+          if (
+            t.id !== tabId ||
+            t.kind !== "terminal" ||
+            t.blocks ||
+            !hasLeaf(t.paneTree, targetLeafId)
+          ) {
+            return t;
+          }
+          if (leafIds(t.paneTree).length >= MAX_PANES_PER_TAB) return t;
+          const splitId = nextIdRef.current++;
+          const leafId = nextIdRef.current++;
+          newLeafId = leafId;
+          const cwd = findLeafCwd(t.paneTree, targetLeafId) ?? t.cwd;
+          return {
+            ...t,
+            paneTree: splitLeaf(
+              t.paneTree,
+              targetLeafId,
+              splitId,
+              leafId,
+              dir,
+              cwd,
+            ),
+            activeLeafId: leafId,
+            ...(cwd !== undefined && { cwd }),
+          };
+        }),
+      );
+      return newLeafId;
+    },
+    [],
+  );
+
   /** Split the active leaf of `tabId` along `dir`. Returns the new leaf id. */
   const splitActivePane = useCallback(
     (tabId: number, dir: SplitDir): number | null => {
@@ -943,8 +980,9 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         (t) => t.kind === "terminal" && hasLeaf(t.paneTree, leafId),
       );
       if (tab?.kind !== "terminal") return curr;
-      const newTree = removeLeaf(tab.paneTree, leafId);
-      if (newTree === null) {
+      const result = removeLeafAndFocus(tab.paneTree, leafId, tab.activeLeafId);
+      if (!result.removed) return curr;
+      if (result.tree === null) {
         const fallback = nextActiveInSpace(curr, tab.id);
         if (fallback === null) return curr;
         const next = curr.filter((x) => x.id !== tab.id);
@@ -952,16 +990,14 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         didRemove = true;
         return next;
       }
-      const remaining = leafIds(newTree);
-      let newActive = tab.activeLeafId;
-      if (tab.activeLeafId === leafId) {
-        const sib = siblingLeafOf(tab.paneTree, leafId);
-        newActive = sib && remaining.includes(sib) ? sib : remaining[0];
-      }
       didRemove = true;
       return curr.map((x) =>
         x.id === tab.id
-          ? { ...x, paneTree: newTree, activeLeafId: newActive }
+          ? {
+              ...x,
+              paneTree: result.tree as PaneNode,
+              activeLeafId: result.activeLeafId as number,
+            }
           : x,
       );
     });
@@ -975,8 +1011,9 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       const t = curr.find((x) => x.id === tabId);
       if (t?.kind !== "terminal") return curr;
       const target = t.activeLeafId;
-      const newTree = removeLeaf(t.paneTree, target);
-      if (newTree === null) {
+      const result = removeLeafAndFocus(t.paneTree, target, t.activeLeafId);
+      if (!result.removed) return curr;
+      if (result.tree === null) {
         const fallback = nextActiveInSpace(curr, tabId);
         if (fallback === null) return curr;
         const next = curr.filter((x) => x.id !== tabId);
@@ -985,13 +1022,14 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         removedLeaf = target;
         return next;
       }
-      const remaining = leafIds(newTree);
-      const sib = siblingLeafOf(t.paneTree, target);
-      const newActive = sib && remaining.includes(sib) ? sib : remaining[0];
       removedLeaf = target;
       return curr.map((x) =>
         x.id === tabId
-          ? { ...x, paneTree: newTree, activeLeafId: newActive }
+          ? {
+              ...x,
+              paneTree: result.tree as PaneNode,
+              activeLeafId: result.activeLeafId as number,
+            }
           : x,
       );
     });
@@ -1056,6 +1094,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     setLeafCwd,
     focusPane,
     focusNextPaneInTab,
+    splitPane,
     splitActivePane,
     closeActivePane,
     closePaneByLeaf,

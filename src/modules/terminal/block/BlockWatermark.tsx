@@ -35,27 +35,29 @@ export function BlockWatermark({ leafId, subscribe }: Props) {
     <div
       aria-hidden
       className={cn(
-        "pointer-events-none absolute inset-0 z-[5] flex select-none flex-col items-center justify-center gap-8",
+        "clack-block-watermark pointer-events-none absolute inset-0 z-[5] select-none overflow-auto p-3",
         "transition-[opacity,transform] duration-500 ease-out",
         state === "visible"
           ? "translate-y-0 opacity-100"
           : "translate-y-2 opacity-0",
       )}
     >
-      <img
-        src="/logo.png"
-        alt=""
-        draggable={false}
-        className="size-24 rounded-3xl shadow-lg shadow-black/25"
-      />
-      <div className="grid grid-cols-[auto_auto] items-center gap-x-12 gap-y-3 text-[13px]">
-        <Hint label="Browse your command history" keys="↑" />
-        <Hint label="Autocomplete paths and commands" keys="Tab" />
-        <Hint
-          label="Switch between Shell and AI"
-          shortcut="terminal.toggleInput"
+      <div className="clack-block-watermark-content">
+        <img
+          src="/logo.png"
+          alt=""
+          draggable={false}
+          className="clack-block-watermark-logo rounded-2xl shadow-lg shadow-black/25"
         />
-        <Hint label="Open the AI assistant" shortcut="ai.toggle" />
+        <div className="clack-block-watermark-hints">
+          <Hint label="Browse your command history" keys="↑" />
+          <Hint label="Autocomplete paths and commands" keys="Tab" />
+          <Hint
+            label="Switch between Shell and AI"
+            shortcut="terminal.toggleInput"
+          />
+          <Hint label="Open the AI assistant" shortcut="ai.toggle" />
+        </div>
       </div>
     </div>
   );
@@ -67,7 +69,7 @@ function Hint(props: {
   shortcut?: Parameters<typeof useShortcutLabel>[0];
 }) {
   return (
-    <>
+    <div className="clack-block-watermark-hint">
       <span className="justify-self-start text-muted-foreground/60">
         {props.label}
       </span>
@@ -78,7 +80,7 @@ function Hint(props: {
           <Key>{props.keys}</Key>
         )}
       </span>
-    </>
+    </div>
   );
 }
 
