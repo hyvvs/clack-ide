@@ -134,6 +134,45 @@ function basename(path: string): string {
   return parts.length ? parts[parts.length - 1] : path;
 }
 
+function normalizedPathKey(path: string): string {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  return /^[A-Za-z]:/.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+export function terminalHasCwd(tab: TerminalTab, cwd: string): boolean {
+  return terminalLeafIdForCwd(tab, cwd) !== null;
+}
+
+export function terminalLeafIdForCwd(
+  tab: TerminalTab,
+  cwd: string,
+): number | null {
+  const target = normalizedPathKey(cwd);
+  if (tab.cwd && normalizedPathKey(tab.cwd) === target) return tab.activeLeafId;
+  for (const leafId of leafIds(tab.paneTree)) {
+    const leafCwd = findLeafCwd(tab.paneTree, leafId);
+    if (leafCwd && normalizedPathKey(leafCwd) === target) return leafId;
+  }
+  return null;
+}
+
+export function terminalCanAdoptCwd(tab: TerminalTab): boolean {
+  return (
+    leafIds(tab.paneTree).length === 1 &&
+    !tab.cwd &&
+    !findLeafCwd(tab.paneTree, tab.activeLeafId)
+  );
+}
+
+export function terminalWithCwd(tab: TerminalTab, cwd: string): TerminalTab {
+  return {
+    ...tab,
+    title: tab.title === "shell" ? basename(cwd) : tab.title,
+    cwd,
+    paneTree: setLeafCwdInTree(tab.paneTree, tab.activeLeafId, cwd),
+  };
+}
+
 function titleFromUrl(url: string): string {
   try {
     const u = new URL(url);
@@ -304,6 +343,99 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       return next;
     });
     for (const lid of toDispose) disposeSession(lid);
+  }, []);
+
+  const removeWorkspaceTabsForSpace = useCallback((spaceId: string) => {
+    setTabs((curr) => {
+      const removed = curr.filter(
+        (t) => t.spaceId === spaceId && t.kind !== "terminal",
+      );
+      if (removed.length === 0) return curr;
+      const next = curr.filter(
+        (t) => t.spaceId !== spaceId || t.kind === "terminal",
+      );
+      if (!next.some((t) => t.spaceId === spaceId)) {
+        const tabId = nextIdRef.current++;
+        const leafId = nextIdRef.current++;
+        next.push({
+          id: tabId,
+          kind: "terminal",
+          spaceId,
+          title: "shell",
+          paneTree: { kind: "leaf", id: leafId },
+          activeLeafId: leafId,
+        });
+      }
+      const activeRemoved = removed.some((t) => t.id === activeIdRef.current);
+      if (activeRemoved) {
+        const fallback =
+          next.find((t) => t.spaceId === spaceId && t.kind === "terminal") ??
+          next[0];
+        setActiveId(fallback.id);
+      }
+      return next;
+    });
+  }, []);
+
+  const ensureTerminalInSpace = useCallback((spaceId: string, cwd: string) => {
+    let targetId: number | null = null;
+    setTabs((curr) => {
+      const existing = curr.find(
+        (t): t is TerminalTab =>
+          t.spaceId === spaceId &&
+          t.kind === "terminal" &&
+          terminalHasCwd(t, cwd),
+      );
+      if (existing) {
+        const leafId = terminalLeafIdForCwd(existing, cwd);
+        targetId = existing.id;
+        setActiveId(existing.id);
+        if (leafId !== null && leafId !== existing.activeLeafId) {
+          return curr.map((t) =>
+            t.id === existing.id
+              ? ({
+                  ...existing,
+                  activeLeafId: leafId,
+                  cwd,
+                } satisfies TerminalTab)
+              : t,
+          );
+        }
+        return curr;
+      }
+
+      const reusable = curr.find(
+        (t): t is TerminalTab =>
+          t.spaceId === spaceId &&
+          t.kind === "terminal" &&
+          terminalCanAdoptCwd(t),
+      );
+      if (reusable) {
+        targetId = reusable.id;
+        setActiveId(reusable.id);
+        return curr.map((t) =>
+          t.id === reusable.id ? terminalWithCwd(reusable, cwd) : t,
+        );
+      }
+
+      const tabId = nextIdRef.current++;
+      const leafId = nextIdRef.current++;
+      targetId = tabId;
+      setActiveId(tabId);
+      return [
+        ...curr,
+        {
+          id: tabId,
+          kind: "terminal",
+          spaceId,
+          title: basename(cwd),
+          cwd,
+          paneTree: { kind: "leaf", id: leafId, cwd },
+          activeLeafId: leafId,
+        },
+      ];
+    });
+    return targetId;
   }, []);
 
   const newTab = useCallback((cwd?: string) => {
@@ -1071,6 +1203,8 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     reorderTab,
     newTabInSpace,
     removeTabsForSpace,
+    removeWorkspaceTabsForSpace,
+    ensureTerminalInSpace,
     markBooted,
     setActiveSpaceForNewTabs,
     newTab,

@@ -6,6 +6,7 @@ export type SpaceMeta = {
   id: string;
   name: string;
   root: string | null;
+  explorerPath?: string | null;
   env: WorkspaceEnv;
   /** Opt-in accent, index into SPACE_COLORS. Undefined = theme primary. */
   color?: number;

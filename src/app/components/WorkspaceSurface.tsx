@@ -9,6 +9,7 @@ import type { Tab } from "@/modules/tabs";
 import {
   CommandIcon,
   FileEditIcon,
+  Folder01Icon,
   Globe02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -33,8 +34,11 @@ type Props = {
   onGitHistorySearchHandle: GitHistoryStackProps["onSearchHandle"];
   onSetMarkdownView: EditorStackProps["onSetMarkdownView"];
   onAskAiSelection: EditorStackProps["onAskAiSelection"];
+  onAskAiMarkdownSelection: (selection: string) => void;
   onRevealInExplorer: EditorStackProps["onRevealInExplorer"];
   onAttachFileToAgent: EditorStackProps["onAttachFileToAgent"];
+  workspaceRoot: string | null;
+  onOpenFolder: () => void;
   onNewEditor: () => void;
   onNewPreview: () => void;
   onOpenCommandPalette: () => void;
@@ -60,8 +64,11 @@ export function WorkspaceSurface({
   onGitHistorySearchHandle,
   onSetMarkdownView,
   onAskAiSelection,
+  onAskAiMarkdownSelection,
   onRevealInExplorer,
   onAttachFileToAgent,
+  workspaceRoot,
+  onOpenFolder,
   onNewEditor,
   onNewPreview,
   onOpenCommandPalette,
@@ -120,6 +127,9 @@ export function WorkspaceSurface({
           tabs={tabs}
           activeId={activeId}
           onSetMarkdownView={onSetMarkdownView}
+          onAskAiSelection={onAskAiMarkdownSelection}
+          onRevealInExplorer={onRevealInExplorer}
+          onAttachFileToAgent={onAttachFileToAgent}
         />
       </div>
       <div
@@ -170,18 +180,28 @@ export function WorkspaceSurface({
             />
             <div className="space-y-1">
               <h1 className="text-sm font-semibold tracking-wide text-foreground">
-                Clack workspace
+                {workspaceRoot ? "Clack workspace" : "No workspace open"}
               </h1>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-2">
-              <Button size="sm" className="h-8 gap-1.5" onClick={onNewEditor}>
+              <Button size="sm" className="h-8 gap-1.5" onClick={onOpenFolder}>
                 <HugeiconsIcon
-                  icon={FileEditIcon}
+                  icon={Folder01Icon}
                   size={13}
                   strokeWidth={1.8}
                 />
-                New file
+                Open Folder...
               </Button>
+              {workspaceRoot ? (
+                <Button size="sm" className="h-8 gap-1.5" onClick={onNewEditor}>
+                  <HugeiconsIcon
+                    icon={FileEditIcon}
+                    size={13}
+                    strokeWidth={1.8}
+                  />
+                  New file
+                </Button>
+              ) : null}
               <Button
                 size="sm"
                 variant="secondary"

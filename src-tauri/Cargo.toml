@@ -21,6 +21,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 portable-pty = "0.9"
@@ -34,6 +35,7 @@ globset = "0.4"
 nucleo-matcher = "0.3"
 shared_child = "1"
 tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
 tauri-plugin-os = "2"
 tauri-plugin-store = "2"
 tauri-plugin-process = "2"

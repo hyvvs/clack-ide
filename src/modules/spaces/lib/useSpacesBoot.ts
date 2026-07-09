@@ -30,6 +30,14 @@ function uniqueCwds(tabs: Tab[]): string[] {
   return [...set];
 }
 
+export function fallbackTerminalCwd(
+  spaceRoot: string | null | undefined,
+  launchCwd: string | null,
+  home: string | null,
+): string | null {
+  return spaceRoot ?? launchCwd ?? home ?? null;
+}
+
 export function useSpacesBoot({
   ready,
   launchCwd,
@@ -55,6 +63,7 @@ export function useSpacesBoot({
             id: DEFAULT_SPACE_ID,
             name: "Default",
             root,
+            explorerPath: root,
             env: { kind: "local" },
             createdAt: Date.now(),
             updatedAt: Date.now(),
@@ -81,7 +90,14 @@ export function useSpacesBoot({
 
         // Active space must never be empty, else its tab list shows nothing.
         if (!restored.some((t) => t.spaceId === active)) {
-          restored.push(freshTerminalTab(active, launchCwd ?? home, allocId));
+          const activeSpaceRoot = spaces.find((s) => s.id === active)?.root;
+          restored.push(
+            freshTerminalTab(
+              active,
+              fallbackTerminalCwd(activeSpaceRoot, launchCwd, home),
+              allocId,
+            ),
+          );
         }
 
         await Promise.allSettled(

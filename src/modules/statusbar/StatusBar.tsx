@@ -18,8 +18,13 @@ import type { WorkspaceEnv } from "@/modules/workspace";
 type Props = {
   cwd: string | null;
   filePath?: string | null;
+  directoryTitle?: string;
+  directoryLabel?: string;
   home: string | null;
   onCd: (path: string) => void;
+  workspaceRoot?: string | null;
+  onOpenWorkspace?: (path: string) => void;
+  onReturnToWorkspaceRoot?: () => void;
   onWorkspaceChange: (env: WorkspaceEnv) => void;
   onOpenMini: () => void;
   /** Only rendered when the AI panel is open and a key is loaded. */
@@ -31,8 +36,13 @@ type Props = {
 export function StatusBar({
   cwd,
   filePath,
+  directoryTitle,
+  directoryLabel,
   home,
   onCd,
+  workspaceRoot,
+  onOpenWorkspace,
+  onReturnToWorkspaceRoot,
   onWorkspaceChange,
   onOpenMini,
   hasComposer,
@@ -46,7 +56,27 @@ export function StatusBar({
     <footer className="clack-shell flex h-8 shrink-0 items-center justify-between gap-3 border-t px-3 text-[11px]">
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <WorkspaceEnvSelector onSelect={onWorkspaceChange} />
-        <CwdBreadcrumb cwd={cwd} filePath={filePath} home={home} onCd={onCd} />
+        {directoryLabel ? (
+          <span className="clack-pill shrink-0 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {directoryLabel}
+          </span>
+        ) : null}
+        <div
+          title={
+            directoryTitle ??
+            (filePath ? "Active file location" : "Terminal current directory")
+          }
+        >
+          <CwdBreadcrumb
+            cwd={cwd}
+            filePath={filePath}
+            home={home}
+            onCd={onCd}
+            workspaceRoot={workspaceRoot}
+            onOpenWorkspace={onOpenWorkspace}
+            onReturnToWorkspaceRoot={onReturnToWorkspaceRoot}
+          />
+        </div>
         <span className="clack-pill flex shrink-0 items-center gap-1 px-1.5 py-0.5 text-[10.5px] font-medium">
           <HugeiconsIcon icon={TerminalIcon} size={11} strokeWidth={1.8} />
           {terminalCount}
@@ -59,7 +89,10 @@ export function StatusBar({
                 <span>Private: hidden from AI</span>
               </span>
             </TooltipTrigger>
-            <TooltipContent side="top" className="max-w-64 text-[11px] leading-relaxed">
+            <TooltipContent
+              side="top"
+              className="max-w-64 text-[11px] leading-relaxed"
+            >
               AI can't see this terminal's output. Use it for secrets, SSH, or
               anything you don't want sent to the model.
             </TooltipContent>

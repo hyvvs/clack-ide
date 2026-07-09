@@ -18,6 +18,7 @@ import {
 import { openPty, type PtySession } from "./pty-bridge";
 import "../block/block.css";
 import { ensureAgentActivityListener, isAgentActivePty } from "./agentActivity";
+import { copyTerminalSelection, pasteTerminalClipboard } from "./clipboard";
 import {
   acquireSlot,
   applyBackgroundActive,
@@ -942,28 +943,20 @@ export function useTerminalSession({
 
   const copySelection = useCallback(async (): Promise<boolean> => {
     const slot = getSlotForLeaf(leafId);
-    const selection = slot?.term.getSelection() ?? "";
-    if (!selection) return false;
-    try {
-      await navigator.clipboard.writeText(selection);
-      return true;
-    } catch {
-      return false;
-    }
+    if (!slot) return false;
+    return copyTerminalSelection(() => slot.term.getSelection());
   }, [leafId]);
 
   const pasteClipboard = useCallback(async (): Promise<boolean> => {
     const slot = getSlotForLeaf(leafId);
     if (!slot) return false;
-    try {
-      const text = await navigator.clipboard.readText();
-      if (!text) return false;
-      slot.term.paste(text);
+    const pasted = await pasteTerminalClipboard((text) =>
+      slot.term.paste(text),
+    );
+    if (pasted) {
       slot.term.focus();
-      return true;
-    } catch {
-      return false;
     }
+    return pasted;
   }, [leafId]);
 
   const clearScrollback = useCallback((): boolean => {

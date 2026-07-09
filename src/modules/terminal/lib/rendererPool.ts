@@ -9,6 +9,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import { shouldCursorBlink } from "./cursorBlink";
+import { copyTerminalSelection, pasteTerminalClipboard } from "./clipboard";
 import {
   terminalDeleteSequence,
   terminalLineNavigationSequence,
@@ -275,20 +276,14 @@ function createSlot(): Slot {
     }
     if (isTerminalCopy(event)) {
       if (event.type === "keydown" && slot.term.hasSelection()) {
-        const sel = slot.term.getSelection();
-        if (sel) void navigator.clipboard.writeText(sel).catch(() => {});
+        void copyTerminalSelection(() => slot.term.getSelection());
       }
       event.preventDefault();
       return false;
     }
     if (isTerminalPaste(event)) {
       if (event.type === "keydown") {
-        void navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) slot.term.paste(text);
-          })
-          .catch(() => {});
+        void pasteTerminalClipboard((text) => slot.term.paste(text));
       }
       event.preventDefault();
       return false;

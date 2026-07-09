@@ -22,10 +22,21 @@ export function useSpacePersistence({
   enabled,
 }: Params) {
   const last = useRef<Map<string, LastWrite>>(new Map());
+  const activeIndexBySpace = useRef<Map<string, number>>(new Map());
   const seeded = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latest = useRef<Snapshot>({ tabs, activeId, activeSpaceId });
   latest.current = { tabs, activeId, activeSpaceId };
+
+  if (enabled) {
+    const activeGroup = tabs
+      .filter((t) => t.spaceId === activeSpaceId)
+      .filter(isSerializableTab);
+    const activeIndex = activeGroup.findIndex((t) => t.id === activeId);
+    if (activeIndex >= 0) {
+      activeIndexBySpace.current.set(activeSpaceId, activeIndex);
+    }
+  }
 
   // Seed each space's last-known active index from disk so the first flush
   // preserves it for spaces the user never opens (empty json forces one write
@@ -50,12 +61,16 @@ export function useSpacePersistence({
     for (const [spaceId, group] of groups) {
       const serialized = serializeTabs(group);
       const prev = last.current.get(spaceId);
-      let activeTabIndex = prev?.activeTabIndex ?? 0;
+      let activeTabIndex =
+        activeIndexBySpace.current.get(spaceId) ?? prev?.activeTabIndex ?? 0;
       if (spaceId === snap.activeSpaceId) {
         const idx = group
           .filter(isSerializableTab)
           .findIndex((t) => t.id === snap.activeId);
-        if (idx >= 0) activeTabIndex = idx;
+        if (idx >= 0) {
+          activeTabIndex = idx;
+          activeIndexBySpace.current.set(spaceId, idx);
+        }
       }
       const json = JSON.stringify(serialized);
       if (

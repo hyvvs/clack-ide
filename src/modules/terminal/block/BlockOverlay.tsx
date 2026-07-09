@@ -5,6 +5,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { writeClipboardText } from "@/lib/clipboard";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import {
   ArrowDown01Icon,
@@ -80,10 +81,9 @@ function relPath(p: string): string {
 }
 
 function copy(text: string, message: string) {
-  void navigator.clipboard
-    .writeText(text)
-    .then(() => toast.success(message))
-    .catch(() => {});
+  void writeClipboardText(text).then((copied) => {
+    if (copied) toast.success(message);
+  });
 }
 
 function signature(v: VisibleBlocks): string {

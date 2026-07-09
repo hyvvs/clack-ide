@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import {
+  currentWorkspaceEnv,
+  type WorkspaceEnv,
+} from "@/modules/workspace/env";
 
 export type ReadResult =
   | { kind: "text"; content: string; size: number }
@@ -37,6 +40,12 @@ export type GrepResponse = {
 
 export type GlobHit = { path: string; rel: string };
 export type GlobResponse = { hits: GlobHit[]; truncated: boolean };
+
+export type FileStat = {
+  size: number;
+  mtime: number;
+  kind: "file" | "dir" | "symlink";
+};
 
 export type GitRepoInfo = {
   repoRoot: string;
@@ -147,6 +156,11 @@ export const native = {
       path,
       workspace: currentWorkspaceEnv(),
     }),
+  stat: (path: string, workspace?: WorkspaceEnv) =>
+    invoke<FileStat>("fs_stat", {
+      path,
+      workspace: workspace ?? currentWorkspaceEnv(),
+    }),
   createFile: (path: string) =>
     invoke<void>("fs_create_file", { path, workspace: currentWorkspaceEnv() }),
   createDir: (path: string) =>
@@ -181,11 +195,7 @@ export const native = {
       maxResults: params.maxResults ?? null,
       workspace: currentWorkspaceEnv(),
     }),
-  runCommand: (
-    command: string,
-    cwd?: string | null,
-    timeoutSecs?: number,
-  ) =>
+  runCommand: (command: string, cwd?: string | null, timeoutSecs?: number) =>
     invoke<CommandOutput>("shell_run_command", {
       command,
       cwd: cwd ?? null,
@@ -320,7 +330,10 @@ export const native = {
       repoRoot,
       workspace: currentWorkspaceEnv(),
     }),
-  gitLog: (repoRoot: string, options?: { limit?: number; beforeSha?: string }) =>
+  gitLog: (
+    repoRoot: string,
+    options?: { limit?: number; beforeSha?: string },
+  ) =>
     invoke<GitLogEntry[]>("git_log", {
       repoRoot,
       limit: options?.limit ?? null,

@@ -25,10 +25,16 @@ import {
 import { useShortcutLabel } from "@/modules/shortcuts";
 import { labelFor, type Tab, TabIcon } from "@/modules/tabs";
 import {
+  workspaceName,
+  workspacePathsEqual,
+  type RecentWorkspace,
+} from "@/modules/workspace";
+import {
   ArrowDown01Icon,
   ArrowRight01Icon,
   Cancel01Icon,
   Delete02Icon,
+  Folder01Icon,
   PencilEdit02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
@@ -44,6 +50,17 @@ type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   tabs: Tab[];
+  workspaceRoot: string | null;
+  workspaceLocation?: string | null;
+  recentWorkspaces: RecentWorkspace[];
+  recentWorkspaceMissing: Record<string, boolean>;
+  onOpenFolder: () => void;
+  onCloseWorkspace: () => void;
+  onCopyWorkspacePath: () => void;
+  onRevealWorkspaceRoot: () => void;
+  onReturnToWorkspaceRoot: () => void;
+  onOpenRecentWorkspace: (path: string) => void;
+  onRemoveRecentWorkspace: (path: string) => void;
   onNewSpace: () => void;
   onDeleteSpace: (id: string) => void;
   onNewTabInSpace: (spaceId: string) => void;
@@ -83,6 +100,17 @@ export function SpaceSwitcher({
   open,
   onOpenChange,
   tabs,
+  workspaceRoot,
+  workspaceLocation,
+  recentWorkspaces,
+  recentWorkspaceMissing,
+  onOpenFolder,
+  onCloseWorkspace,
+  onCopyWorkspacePath,
+  onRevealWorkspaceRoot,
+  onReturnToWorkspaceRoot,
+  onOpenRecentWorkspace,
+  onRemoveRecentWorkspace,
   onNewSpace,
   onDeleteSpace,
   onNewTabInSpace,
@@ -111,6 +139,11 @@ export function SpaceSwitcher({
   );
 
   const current = spaces.find((s) => s.id === activeId);
+  const workspaceLabel = workspaceName(workspaceRoot);
+  const browsingAwayFromRoot =
+    !!workspaceRoot &&
+    !!workspaceLocation &&
+    !workspacePathsEqual(workspaceRoot, workspaceLocation);
 
   const tabsBySpace = useMemo(() => {
     const m = new Map<string, Tab[]>();
@@ -185,11 +218,13 @@ export function SpaceSwitcher({
       <PopoverTrigger asChild>
         <button
           type="button"
-          title={shortcut ? `Spaces · ${shortcut}` : "Spaces"}
+          title={
+            workspaceRoot ?? (shortcut ? `Spaces ${shortcut}` : "Workspace")
+          }
           className="flex h-7 shrink-0 items-center gap-2 rounded-md px-2 text-muted-foreground/90 outline-none transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground"
         >
           <span className="max-w-36 truncate text-xs font-medium">
-            {current.name}
+            {workspaceLabel}
           </span>
           <HugeiconsIcon
             icon={ArrowRight01Icon}
@@ -200,7 +235,103 @@ export function SpaceSwitcher({
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" sideOffset={6} className="w-[20rem] p-1.5">
-        <div className="flex items-center justify-between px-1.5 pb-1.5 pt-0.5">
+        <div className="px-1.5 pb-1.5 pt-0.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-foreground">
+              Workspace
+            </span>
+          </div>
+          <div
+            className="mt-1 truncate text-[11px] text-muted-foreground"
+            title={workspaceRoot ?? undefined}
+          >
+            {workspaceRoot ?? "No workspace open"}
+          </div>
+        </div>
+        <div className="space-y-0.5 border-b border-border/60 pb-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              onOpenChange(false);
+              onOpenFolder();
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+          >
+            <HugeiconsIcon icon={Folder01Icon} size={14} strokeWidth={1.75} />
+            <span className="flex-1">Open Folder...</span>
+          </button>
+          <button
+            type="button"
+            disabled={!workspaceRoot}
+            onClick={() => {
+              onOpenChange(false);
+              onRevealWorkspaceRoot();
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground disabled:cursor-default disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          >
+            <HugeiconsIcon icon={Folder01Icon} size={14} strokeWidth={1.75} />
+            <span className="flex-1">Reveal Workspace Root</span>
+          </button>
+          <button
+            type="button"
+            disabled={!workspaceRoot}
+            onClick={() => {
+              onOpenChange(false);
+              onCopyWorkspacePath();
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground disabled:cursor-default disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          >
+            <HugeiconsIcon icon={Folder01Icon} size={14} strokeWidth={1.75} />
+            <span className="flex-1">Copy Workspace Path</span>
+          </button>
+          {browsingAwayFromRoot ? (
+            <button
+              type="button"
+              onClick={() => {
+                onOpenChange(false);
+                onReturnToWorkspaceRoot();
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+            >
+              <HugeiconsIcon icon={Folder01Icon} size={14} strokeWidth={1.75} />
+              <span className="flex-1">Return to Workspace Root</span>
+            </button>
+          ) : null}
+          {recentWorkspaces.length > 0 ? (
+            <div className="pt-1">
+              <div className="px-2 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                Recent Workspaces
+              </div>
+              <div className="max-h-44 overflow-y-auto">
+                {recentWorkspaces.map((workspace) => (
+                  <RecentWorkspaceRow
+                    key={workspace.path}
+                    workspace={workspace}
+                    missing={recentWorkspaceMissing[workspace.path] === true}
+                    onOpen={() => {
+                      onOpenChange(false);
+                      onOpenRecentWorkspace(workspace.path);
+                    }}
+                    onRemove={() => onRemoveRecentWorkspace(workspace.path)}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            disabled={!workspaceRoot}
+            onClick={() => {
+              onOpenChange(false);
+              onCloseWorkspace();
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground disabled:cursor-default disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          >
+            <HugeiconsIcon icon={Cancel01Icon} size={14} strokeWidth={1.75} />
+            <span className="flex-1">Close Workspace</span>
+          </button>
+        </div>
+        <div className="flex items-center justify-between px-1.5 py-1.5">
           <span className="text-xs font-semibold text-foreground">Spaces</span>
           {shortcut && (
             <Kbd className="h-5 bg-muted/70 text-[10px]">{shortcut}</Kbd>
@@ -294,6 +425,50 @@ type SpaceRowProps = {
   onJumpTab: (id: number) => void;
   onCloseTab: (id: number) => void;
 };
+
+function RecentWorkspaceRow({
+  workspace,
+  missing,
+  onOpen,
+  onRemove,
+}: {
+  workspace: RecentWorkspace;
+  missing: boolean;
+  onOpen: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="group/recent flex items-center gap-1 rounded-md px-1 py-0.5">
+      <button
+        type="button"
+        disabled={missing}
+        onClick={onOpen}
+        title={workspace.path}
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground disabled:cursor-default disabled:opacity-55 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+      >
+        <HugeiconsIcon
+          icon={Folder01Icon}
+          size={13}
+          strokeWidth={1.75}
+          className="shrink-0"
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-medium text-foreground">
+            {workspace.name}
+          </span>
+          <span className="block truncate text-[10px] text-muted-foreground/65">
+            {missing ? "Missing folder" : workspace.path}
+          </span>
+        </span>
+      </button>
+      <RowAction
+        icon={Delete02Icon}
+        label="Remove recent workspace"
+        onClick={onRemove}
+      />
+    </div>
+  );
+}
 
 function SpaceRow({
   space,

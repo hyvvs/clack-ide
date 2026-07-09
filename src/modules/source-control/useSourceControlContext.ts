@@ -15,11 +15,7 @@ function dirname(path: string | null): string | null {
 type Params = {
   activeTab: Tab | undefined;
   tabs: Tab[];
-  activeTerminalLeafCwd: string | null;
   explorerRoot: string | null;
-  launchCwd: string | null;
-  launchCwdResolved: boolean;
-  home: string | null;
   sidebarView: SidebarViewId;
   cycleSidebarView: (view: SidebarViewId) => void;
   openCommitHistoryTab: (args: {
@@ -27,6 +23,18 @@ type Params = {
     branch: string | null;
   }) => void;
 };
+
+export function resolveSourceControlContextPath(
+  activeTab: Tab | undefined,
+  explorerRoot: string | null,
+): string | null {
+  if (activeTab?.kind === "editor") return dirname(activeTab.path);
+  if (activeTab?.kind === "markdown") return dirname(activeTab.path);
+  if (activeTab?.kind === "git-diff") return activeTab.repoRoot;
+  if (activeTab?.kind === "git-commit-file") return activeTab.repoRoot;
+  if (activeTab?.kind === "git-history") return activeTab.repoRoot;
+  return explorerRoot;
+}
 
 /**
  * Resolves the source-control context path off the active tab and feeds the
@@ -36,28 +44,15 @@ type Params = {
 export function useSourceControlContext({
   activeTab,
   tabs,
-  activeTerminalLeafCwd,
   explorerRoot,
-  launchCwd,
-  launchCwdResolved,
-  home,
   sidebarView,
   cycleSidebarView,
   openCommitHistoryTab,
 }: Params) {
-  const workspaceFallbackPath = launchCwdResolved
-    ? (launchCwd ?? home ?? null)
-    : null;
-  const sourceControlContextPath = (() => {
-    if (activeTab?.kind === "terminal") {
-      return activeTerminalLeafCwd ?? explorerRoot ?? workspaceFallbackPath;
-    }
-    if (activeTab?.kind === "editor") return dirname(activeTab.path);
-    if (activeTab?.kind === "git-diff") return activeTab.repoRoot;
-    if (activeTab?.kind === "git-commit-file") return activeTab.repoRoot;
-    if (activeTab?.kind === "git-history") return activeTab.repoRoot;
-    return explorerRoot ?? workspaceFallbackPath;
-  })();
+  const sourceControlContextPath = resolveSourceControlContextPath(
+    activeTab,
+    explorerRoot,
+  );
   const hasOpenGitTab = useMemo(
     () =>
       tabs.some(
@@ -69,10 +64,7 @@ export function useSourceControlContext({
     [tabs],
   );
   const sourceControlActive = hasOpenGitTab || sidebarView === "source-control";
-  // Ambient path tracks the explorer root so the rail badge and explorer git
-  // decorations reflect the repo you are actually looking at. cd-within-repo
-  // churn is absorbed by the status TTL + reusable-root path in useSourceControl.
-  const badgeContextPath = explorerRoot ?? workspaceFallbackPath;
+  const badgeContextPath = explorerRoot;
   const sourceControlPath = sourceControlActive
     ? sourceControlContextPath
     : badgeContextPath;

@@ -34,8 +34,6 @@ type Params = {
   activeWorkspaceId: number | null;
   tabs: Tab[];
   explorerRoot: string | null;
-  launchCwd: string | null;
-  home: string | null;
   openPreviewTab: (url: string) => void;
   newAgentTab: (
     cwd: string | undefined,
@@ -60,8 +58,7 @@ export function useAiLiveBridge(params: Params) {
 
   useEffect(() => {
     const findCwd = () => {
-      const { activeId, activeTerminalId, tabs, explorerRoot, launchCwd, home } =
-        ref.current;
+      const { activeId, activeTerminalId, tabs, explorerRoot } = ref.current;
       const active = tabs.find((x) => x.id === (activeTerminalId ?? activeId));
       if (active?.kind === "terminal") {
         return (
@@ -76,7 +73,7 @@ export function useAiLiveBridge(params: Params) {
         const cwd = findLeafCwd(t.paneTree, t.activeLeafId) ?? t.cwd;
         if (cwd) return cwd;
       }
-      return explorerRoot ?? launchCwd ?? home ?? null;
+      return explorerRoot;
     };
 
     setLive({
@@ -105,13 +102,12 @@ export function useAiLiveBridge(params: Params) {
         return true;
       },
       getWorkspaceRoot: () => {
-        const { explorerRoot, launchCwd, home } = ref.current;
-        return explorerRoot ?? launchCwd ?? home ?? null;
+        return ref.current.explorerRoot;
       },
       getActiveFile: () => {
         const { activeId, activeWorkspaceId, tabs } = ref.current;
         const t = tabs.find((x) => x.id === (activeWorkspaceId ?? activeId));
-        return t?.kind === "editor" ? t.path : null;
+        return t?.kind === "editor" || t?.kind === "markdown" ? t.path : null;
       },
       openPreview: (url: string) => {
         ref.current.openPreviewTab(url);

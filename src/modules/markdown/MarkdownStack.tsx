@@ -6,9 +6,19 @@ type Props = {
   tabs: Tab[];
   activeId: number;
   onSetMarkdownView: (id: number, mode: "rendered" | "raw") => void;
+  onAskAiSelection: (selection: string) => void;
+  onRevealInExplorer: () => void;
+  onAttachFileToAgent: (path: string) => void;
 };
 
-export function MarkdownStack({ tabs, activeId, onSetMarkdownView }: Props) {
+export function MarkdownStack({
+  tabs,
+  activeId,
+  onSetMarkdownView,
+  onAskAiSelection,
+  onRevealInExplorer,
+  onAttachFileToAgent,
+}: Props) {
   const markdowns = tabs.filter(
     (t): t is MarkdownTab => t.kind === "markdown" && !t.cold,
   );
@@ -30,6 +40,9 @@ export function MarkdownStack({ tabs, activeId, onSetMarkdownView }: Props) {
               path={t.path}
               visible={visible}
               onSetView={(mode) => onSetMarkdownView(t.id, mode)}
+              onAskAiSelection={onAskAiSelection}
+              onRevealInExplorer={onRevealInExplorer}
+              onAttachFileToAgent={onAttachFileToAgent}
             />
           </div>
         );

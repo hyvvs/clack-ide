@@ -40,6 +40,7 @@ import { useExplorerDnd } from "./lib/useExplorerDnd";
 import { useExplorerFileDrop } from "./lib/useExplorerFileDrop";
 import { useFileTree } from "./lib/useFileTree";
 import { useGitStatus } from "./lib/useGitStatus";
+import { getExplorerWorkspaceContext } from "./lib/workspaceContext";
 import type { GitStatusCode } from "./lib/gitStatusUtils";
 import { useGlobalShortcuts } from "@/modules/shortcuts";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -53,7 +54,12 @@ export type FileExplorerHandle = {
 
 type Props = {
   rootPath: string | null;
+  workspaceRoot?: string | null;
   activeFilePath?: string | null;
+  onOpenFolder?: () => void;
+  onOpenWorkspacePath?: (path: string) => void;
+  onReturnToWorkspaceRoot?: () => void;
+  onCloseWorkspace?: () => void;
   onOpenFile: (path: string, pin?: boolean) => void;
   onPathRenamed?: (from: string, to: string) => void;
   onPathDeleted?: (path: string) => void;
@@ -85,7 +91,13 @@ type Row =
       gitStatusCode: GitStatusCode | null;
     }
   | { kind: "pending"; key: string; depth: number; pendingKind: "file" | "dir" }
-  | { kind: "status"; key: string; depth: number; tone: "muted" | "error"; message: string };
+  | {
+      kind: "status";
+      key: string;
+      depth: number;
+      tone: "muted" | "error";
+      message: string;
+    };
 
 const ROW_HEIGHT = 24;
 const OVERSCAN = 8;
@@ -184,7 +196,12 @@ export const FileExplorer = memo(
   forwardRef<FileExplorerHandle, Props>(function FileExplorer(
     {
       rootPath,
+      workspaceRoot,
       activeFilePath,
+      onOpenFolder,
+      onOpenWorkspacePath,
+      onReturnToWorkspaceRoot,
+      onCloseWorkspace,
       onOpenFile,
       onPathRenamed,
       onPathDeleted,
@@ -209,7 +226,11 @@ export const FileExplorer = memo(
     const scrollRef = useRef<HTMLDivElement>(null);
 
     const { rows, entryIndexByPath } = useMemo(() => {
-      if (!rootPath) return { rows: [] as Row[], entryIndexByPath: new Map<string, number>() };
+      if (!rootPath)
+        return {
+          rows: [] as Row[],
+          entryIndexByPath: new Map<string, number>(),
+        };
       return buildRows(rootPath, tree, lookupGitStatus);
       // `tree` is intentionally omitted: its identity changes every render, but
       // the listed fields are the only inputs buildRows actually reads.
@@ -245,6 +266,25 @@ export const FileExplorer = memo(
     // re-anchors to the new cursor (floating-ui won't reposition on an anchor
     // change alone, only on scroll/resize).
     const [menuNonce, setMenuNonce] = useState(0);
+    const workspaceContext = useMemo(
+      () =>
+        getExplorerWorkspaceContext({
+          rootPath,
+          workspaceRoot,
+          targetIsDir: menuTarget?.isDir === true,
+          canOpenWorkspace: Boolean(onOpenWorkspacePath),
+          canOpenFolder: Boolean(onOpenFolder),
+          canCloseWorkspace: Boolean(onCloseWorkspace),
+        }),
+      [
+        rootPath,
+        workspaceRoot,
+        menuTarget?.isDir,
+        onOpenWorkspacePath,
+        onOpenFolder,
+        onCloseWorkspace,
+      ],
+    );
 
     const entryPaths = useMemo<string[]>(() => {
       const out: string[] = [];
@@ -273,7 +313,8 @@ export const FileExplorer = memo(
     });
 
     const dropTargetDir = dnd.dropTargetDir ?? fileDrop.externalTargetDir;
-    const rootIsDropTarget = dropTargetDir != null && dropTargetDir === rootPath;
+    const rootIsDropTarget =
+      dropTargetDir != null && dropTargetDir === rootPath;
     useEffect(() => {
       if (!dropTargetDir || dropTargetDir === rootPath) return;
       if (tree.expanded.has(dropTargetDir)) return;
@@ -306,7 +347,10 @@ export const FileExplorer = memo(
 
     const lastSyncedActivePathRef = useRef<string | null>(null);
     useEffect(() => {
-      if (!activeFilePath || activeFilePath === lastSyncedActivePathRef.current) {
+      if (
+        !activeFilePath ||
+        activeFilePath === lastSyncedActivePathRef.current
+      ) {
         return;
       }
       if (!entryIndexByPath.has(activeFilePath)) return;
@@ -361,8 +405,14 @@ export const FileExplorer = memo(
             className="text-[var(--clack-text-3)]"
           />
           <div className="text-xs font-medium text-[var(--clack-text-2)]">
-            No current directory
+            No workspace open
           </div>
+          {onOpenFolder ? (
+            <Button size="sm" className="h-8 gap-1.5" onClick={onOpenFolder}>
+              <HugeiconsIcon icon={Folder01Icon} size={13} strokeWidth={1.8} />
+              Open Folder...
+            </Button>
+          ) : null}
         </div>
       );
     }
@@ -478,7 +528,11 @@ export const FileExplorer = memo(
           );
         case "status":
           return (
-            <StatusRow depth={row.depth} message={row.message} tone={row.tone} />
+            <StatusRow
+              depth={row.depth}
+              message={row.message}
+              tone={row.tone}
+            />
           );
       }
     };
@@ -544,6 +598,32 @@ export const FileExplorer = memo(
             <HugeiconsIcon icon={Refresh01Icon} size={12} strokeWidth={2} />
           </Button>
         </div>
+
+        {workspaceContext.browsingOutsideWorkspace ? (
+          <div className="flex shrink-0 items-center gap-1 border-b border-[var(--clack-border-subtle)] bg-[var(--clack-surface-raised)] px-2 py-1 text-[10.5px] text-[var(--clack-text-3)]">
+            <span className="min-w-0 flex-1 truncate">
+              Browsing outside workspace
+            </span>
+            {workspaceContext.canOpenRootAsWorkspace && rootPath ? (
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-[var(--clack-text-2)] hover:bg-[var(--clack-accent-soft)] hover:text-[var(--clack-text-1)]"
+                onClick={() => onOpenWorkspacePath?.(rootPath)}
+              >
+                Open as Workspace
+              </button>
+            ) : null}
+            {workspaceContext.canReturnToWorkspaceRoot ? (
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-[var(--clack-text-2)] hover:bg-[var(--clack-accent-soft)] hover:text-[var(--clack-text-1)]"
+                onClick={() => onReturnToWorkspaceRoot?.()}
+              >
+                Return
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
         <ExplorerSearch
           ref={searchRef}
@@ -666,6 +746,17 @@ export const FileExplorer = memo(
             >
               {menuTarget ? (
                 <>
+                  {workspaceContext.canOpenTargetAsWorkspace && (
+                    <>
+                      <ContextMenuItem
+                        className={COMPACT_ITEM}
+                        onSelect={() => onOpenWorkspacePath?.(menuTarget.path)}
+                      >
+                        Open as Workspace
+                      </ContextMenuItem>
+                      <ContextMenuSeparator />
+                    </>
+                  )}
                   {!menuTarget.isDir && (
                     <ContextMenuItem
                       className={COMPACT_ITEM}
@@ -725,7 +816,9 @@ export const FileExplorer = memo(
                   <ContextMenuItem
                     className={COMPACT_ITEM}
                     onSelect={() =>
-                      void copyToClipboard(relativePath(rootPath, menuTarget.path))
+                      void copyToClipboard(
+                        relativePath(rootPath, menuTarget.path),
+                      )
                     }
                   >
                     Copy Relative Path
@@ -752,6 +845,44 @@ export const FileExplorer = memo(
                 </>
               ) : (
                 <>
+                  {workspaceContext.canOpenFolder && (
+                    <ContextMenuItem
+                      className={COMPACT_ITEM}
+                      onSelect={() => onOpenFolder?.()}
+                    >
+                      Open Folder...
+                    </ContextMenuItem>
+                  )}
+                  {workspaceContext.canOpenRootAsWorkspace && rootPath ? (
+                    <ContextMenuItem
+                      className={COMPACT_ITEM}
+                      onSelect={() => onOpenWorkspacePath?.(rootPath)}
+                    >
+                      Open as Workspace
+                    </ContextMenuItem>
+                  ) : null}
+                  {workspaceContext.canReturnToWorkspaceRoot ? (
+                    <ContextMenuItem
+                      className={COMPACT_ITEM}
+                      onSelect={() => onReturnToWorkspaceRoot?.()}
+                    >
+                      Return to Workspace Root
+                    </ContextMenuItem>
+                  ) : null}
+                  {workspaceContext.canCloseWorkspace ? (
+                    <ContextMenuItem
+                      className={COMPACT_ITEM}
+                      onSelect={() => onCloseWorkspace?.()}
+                    >
+                      Close Workspace
+                    </ContextMenuItem>
+                  ) : null}
+                  {workspaceContext.canOpenFolder ||
+                  workspaceContext.canOpenRootAsWorkspace ||
+                  workspaceContext.canReturnToWorkspaceRoot ||
+                  workspaceContext.canCloseWorkspace ? (
+                    <ContextMenuSeparator />
+                  ) : null}
                   {onRevealInTerminal && (
                     <ContextMenuItem
                       className={COMPACT_ITEM}

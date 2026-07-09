@@ -29,6 +29,10 @@ import {
   type EditorPaneHandle,
 } from "@/modules/editor";
 import { FileExplorer, type FileExplorerHandle } from "@/modules/explorer";
+import {
+  copyToClipboard,
+  revealInFinder,
+} from "@/modules/explorer/lib/contextActions";
 import type { GitHistorySearchHandle } from "@/modules/git-history";
 import {
   Header,
@@ -88,7 +92,21 @@ import {
 } from "@/modules/spaces";
 import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
 import { ThemeProvider, useThemeFileEditing } from "@/modules/theme";
-import { useWorkspaceEnvStore } from "@/modules/workspace";
+import {
+  loadRecentWorkspaces,
+  LOCAL_WORKSPACE,
+  findWorkspaceByRoot,
+  normalizeWorkspacePath,
+  pickWorkspaceFolder,
+  recordRecentWorkspace,
+  removeRecentWorkspace,
+  workspacePathContains,
+  workspacePathsEqual,
+  useWorkspaceEnvStore,
+  workspaceName,
+  type RecentWorkspace,
+  type WorkspaceEnv,
+} from "@/modules/workspace";
 import type { SearchAddon } from "@xterm/addon-search";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CloseDialogs } from "./components/CloseDialogs";
@@ -139,6 +157,8 @@ export default function App() {
     reorderTab,
     newTabInSpace,
     removeTabsForSpace,
+    removeWorkspaceTabsForSpace,
+    ensureTerminalInSpace,
     markBooted,
     setActiveSpaceForNewTabs,
     newTab,
@@ -218,7 +238,15 @@ export default function App() {
     });
 
   const activeSpaceId = useSpaces((s) => s.activeId);
+  const spaces = useSpaces((s) => s.spaces);
   const spacesHydrated = useSpaces((s) => s.hydrated);
+  const activeSpace = useMemo(
+    () => spaces.find((space) => space.id === activeSpaceId) ?? null,
+    [spaces, activeSpaceId],
+  );
+  const activeWorkspaceRoot = activeSpace?.root ?? null;
+  const activeExplorerLocation =
+    activeSpace?.explorerPath ?? activeWorkspaceRoot;
 
   useSpacesBoot({
     ready: launchCwdResolved,
@@ -396,9 +424,20 @@ export default function App() {
 
   const { explorerRoot, inheritedCwdForNewTab } = useWorkspaceCwd(
     activeTerminalTab ?? activeTab,
-    tabs,
+    activeWorkspaceRoot,
     launchCwd ?? home,
   );
+  const explorerLocation = explorerRoot
+    ? (activeExplorerLocation ?? explorerRoot)
+    : null;
+  const explorerBrowsingOutsideWorkspace =
+    !!explorerRoot &&
+    !!explorerLocation &&
+    !workspacePathContains(explorerRoot, explorerLocation);
+  const explorerLocationDiffersFromRoot =
+    !!explorerRoot &&
+    !!explorerLocation &&
+    !workspacePathsEqual(explorerRoot, explorerLocation);
 
   useWindowTitle(activeTab, explorerRoot);
 
@@ -553,6 +592,21 @@ export default function App() {
     activeTab,
   ]);
 
+  const askFromMarkdownSelection = useCallback(
+    (selection: string) => {
+      if (!hasComposer) {
+        void openSettingsWindow("models");
+        return;
+      }
+      if (!selection.trim()) {
+        focusInput(null);
+        return;
+      }
+      attachSelection(selection, "editor");
+    },
+    [hasComposer, focusInput, attachSelection],
+  );
+
   const { askPopup, setAskPopup, onAskFromSelection } = useSelectionAskAi({
     captureActiveSelection,
     askFromSelection,
@@ -608,10 +662,9 @@ export default function App() {
   const handleOpenFile = useCallback(
     (path: string, pin?: boolean) => {
       // Markdown opens in its rendered view by default; a per-tab toggle flips
-      // it to the raw editor. Other files default to preview (pin=false);
-      // explicit actions like context-menu "Open" pass pin=true to persist.
+      // it to the raw editor. Other files open as persistent tabs by default.
       if (isMarkdownPath(path)) newMarkdownTab(path);
-      else openFileTab(path, pin ?? false);
+      else openFileTab(path, pin ?? true);
     },
     [openFileTab, newMarkdownTab],
   );
@@ -647,23 +700,6 @@ export default function App() {
         null)
       : null;
 
-  const activeFilePath = (() => {
-    if (activeWorkspaceTab?.kind === "editor") return activeWorkspaceTab.path;
-    if (activeWorkspaceTab?.kind === "git-diff") {
-      if (/^([A-Za-z]:|\/|\\)/.test(activeWorkspaceTab.path)) {
-        return activeWorkspaceTab.path;
-      }
-      const root = activeWorkspaceTab.repoRoot.replace(/[\\/]+$/, "");
-      const rel = activeWorkspaceTab.path.replace(/^[\\/]+/, "");
-      return `${root}/${rel}`;
-    }
-    if (activeWorkspaceTab?.kind === "git-commit-file") {
-      const root = activeWorkspaceTab.repoRoot.replace(/[\\/]+$/, "");
-      const rel = activeWorkspaceTab.path.replace(/^[\\/]+/, "");
-      return `${root}/${rel}`;
-    }
-    return null;
-  })();
   const explorerActiveFilePath =
     activeWorkspaceTab?.kind === "editor" ||
     activeWorkspaceTab?.kind === "markdown"
@@ -671,13 +707,9 @@ export default function App() {
       : null;
   const { sourceControl, toggleSourceControl, openGitGraphFromContext } =
     useSourceControlContext({
-      activeTab,
+      activeTab: activeWorkspaceTab,
       tabs,
-      activeTerminalLeafCwd,
       explorerRoot,
-      launchCwd,
-      launchCwdResolved,
-      home,
       sidebarView,
       cycleSidebarView,
       openCommitHistoryTab,
@@ -1051,23 +1083,219 @@ export default function App() {
   ]);
 
   const activeCwd = activeTerminalLeafCwd;
+  const statusBarCwd = explorerLocation ?? activeCwd;
+  const statusBarDirectoryLabel = explorerLocation
+    ? explorerLocationDiffersFromRoot
+      ? "Explorer"
+      : "Workspace"
+    : "Terminal";
+  const statusBarDirectoryTitle = explorerLocation
+    ? explorerBrowsingOutsideWorkspace
+      ? "Browsing outside workspace"
+      : explorerLocationDiffersFromRoot
+        ? "Explorer location"
+        : "Workspace root"
+    : "Terminal current directory";
+
+  const [recentWorkspaces, setRecentWorkspaces] = useState<RecentWorkspace[]>(
+    [],
+  );
+  const [recentWorkspaceMissing, setRecentWorkspaceMissing] = useState<
+    Record<string, boolean>
+  >({});
+
+  useEffect(() => {
+    let alive = true;
+    void loadRecentWorkspaces().then((items) => {
+      if (alive) setRecentWorkspaces(items);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void Promise.all(
+      recentWorkspaces.map(async (item) => {
+        try {
+          const stat = await native.stat(item.path, LOCAL_WORKSPACE);
+          return [item.path, stat.kind !== "dir"] as const;
+        } catch {
+          return [item.path, true] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!alive) return;
+      setRecentWorkspaceMissing(Object.fromEntries(entries));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [recentWorkspaces]);
+
+  const clearWorkspaceTabsForRootChange = useCallback((): boolean => {
+    if (!activeSpaceId) return false;
+    const dirty = tabsRef.current.some(
+      (t) => t.spaceId === activeSpaceId && t.kind === "editor" && t.dirty,
+    );
+    if (dirty) {
+      window.alert(
+        "Save or close unsaved editor tabs before switching workspace.",
+      );
+      return false;
+    }
+    removeWorkspaceTabsForSpace(activeSpaceId);
+    setLastWorkspaceTabId(null);
+    return true;
+  }, [activeSpaceId, removeWorkspaceTabsForSpace]);
+
+  const openWorkspaceRoot = useCallback(
+    async (path: string) => {
+      setWorkspaceEnv(LOCAL_WORKSPACE);
+      let root: string;
+      try {
+        root = normalizeWorkspacePath(await native.workspaceAuthorize(path));
+      } catch (e) {
+        window.alert(String(e));
+        return;
+      }
+
+      const { spaces, create, setActive, setRoot } = useSpaces.getState();
+      const existing = findWorkspaceByRoot(spaces, root, activeSpaceId);
+      let targetSpaceId = existing?.id ?? activeSpaceId;
+
+      if (existing) {
+        setActive(existing.id);
+      } else if (targetSpaceId && !activeWorkspaceRoot) {
+        setRoot(targetSpaceId, root, {
+          name: workspaceName(root),
+          env: LOCAL_WORKSPACE,
+        });
+      } else {
+        const meta = create({
+          name: workspaceName(root),
+          root,
+          env: LOCAL_WORKSPACE,
+        });
+        targetSpaceId = meta.id;
+        setActive(meta.id);
+      }
+
+      if (!targetSpaceId) return;
+      setActiveSpaceForNewTabs(targetSpaceId);
+      const terminalId = ensureTerminalInSpace(targetSpaceId, root);
+      if (terminalId !== null) setLastTerminalTabId(terminalId);
+      setTerminalDockCollapsed(false);
+      setRecentWorkspaces(await recordRecentWorkspace(root));
+    },
+    [
+      activeSpaceId,
+      activeWorkspaceRoot,
+      setWorkspaceEnv,
+      ensureTerminalInSpace,
+      setActiveSpaceForNewTabs,
+      setTerminalDockCollapsed,
+    ],
+  );
+
+  const handleOpenFolder = useCallback(async () => {
+    const selected = await pickWorkspaceFolder();
+    if (selected) await openWorkspaceRoot(selected);
+  }, [openWorkspaceRoot]);
+
+  const handleOpenRecentWorkspace = useCallback(
+    async (path: string) => {
+      if (recentWorkspaceMissing[path]) return;
+      await openWorkspaceRoot(path);
+    },
+    [openWorkspaceRoot, recentWorkspaceMissing],
+  );
+
+  const handleRemoveRecentWorkspace = useCallback(async (path: string) => {
+    setRecentWorkspaces(await removeRecentWorkspace(path));
+  }, []);
+
+  const handleCloseWorkspaceRoot = useCallback(() => {
+    if (!activeSpaceId || !activeWorkspaceRoot) return;
+    if (!clearWorkspaceTabsForRootChange()) return;
+    useSpaces.getState().setRoot(activeSpaceId, null, {
+      name: "No workspace",
+      env: workspaceEnv,
+    });
+  }, [
+    activeSpaceId,
+    activeWorkspaceRoot,
+    clearWorkspaceTabsForRootChange,
+    workspaceEnv,
+  ]);
+
+  const browseExplorerLocation = useCallback(
+    async (path: string) => {
+      if (!explorerRoot || !activeSpaceId) {
+        sendCd(path);
+        return;
+      }
+      try {
+        const canonical = await native.workspaceAuthorize(path);
+        useSpaces
+          .getState()
+          .setExplorerPath(activeSpaceId, normalizeWorkspacePath(canonical));
+      } catch (e) {
+        window.alert(String(e));
+      }
+    },
+    [activeSpaceId, explorerRoot, sendCd],
+  );
+
+  const handleReturnToWorkspaceRoot = useCallback(() => {
+    if (!activeSpaceId || !explorerRoot) return;
+    useSpaces.getState().setExplorerPath(activeSpaceId, explorerRoot);
+  }, [activeSpaceId, explorerRoot]);
+
+  const handleStatusBarCd = useCallback(
+    (path: string) => {
+      void browseExplorerLocation(path);
+    },
+    [browseExplorerLocation],
+  );
+
+  const handleWorkspaceEnvChange = useCallback(
+    async (env: WorkspaceEnv) => {
+      const nextHome = await switchWorkspace(env);
+      if (!nextHome || !activeSpaceId) return;
+      const root = normalizeWorkspacePath(nextHome);
+      useSpaces.getState().setRoot(activeSpaceId, root, {
+        name: workspaceName(root),
+        env,
+      });
+      const terminalId = ensureTerminalInSpace(activeSpaceId, root);
+      if (terminalId !== null) setLastTerminalTabId(terminalId);
+      setTerminalDockCollapsed(false);
+    },
+    [
+      activeSpaceId,
+      switchWorkspace,
+      ensureTerminalInSpace,
+      setTerminalDockCollapsed,
+    ],
+  );
 
   const handleNewSpace = useCallback(() => {
     const { spaces, create, setActive } = useSpaces.getState();
     const meta = create({
       name: `Space ${spaces.length + 1}`,
-      root: activeCwd ?? home ?? null,
+      root: explorerRoot,
       env: workspaceEnv,
     });
     setActiveSpaceForNewTabs(meta.id);
-    const tabId = newTab(activeCwd ?? undefined);
+    const tabId = newTab(explorerRoot ?? undefined);
     setLastTerminalTabId(tabId);
     setTerminalDockCollapsed(false);
     setActive(meta.id);
     return meta.id;
   }, [
-    activeCwd,
-    home,
+    explorerRoot,
     workspaceEnv,
     newTab,
     setActiveSpaceForNewTabs,
@@ -1127,6 +1355,21 @@ export default function App() {
       open={switcherOpen}
       onOpenChange={setSwitcherOpen}
       tabs={tabs}
+      workspaceRoot={explorerRoot}
+      workspaceLocation={explorerLocation}
+      recentWorkspaces={recentWorkspaces}
+      recentWorkspaceMissing={recentWorkspaceMissing}
+      onOpenFolder={() => void handleOpenFolder()}
+      onCloseWorkspace={handleCloseWorkspaceRoot}
+      onCopyWorkspacePath={() => {
+        if (explorerRoot) void copyToClipboard(explorerRoot);
+      }}
+      onRevealWorkspaceRoot={() => {
+        if (explorerRoot) void revealInFinder(explorerRoot);
+      }}
+      onReturnToWorkspaceRoot={handleReturnToWorkspaceRoot}
+      onOpenRecentWorkspace={(path) => void handleOpenRecentWorkspace(path)}
+      onRemoveRecentWorkspace={(path) => void handleRemoveRecentWorkspace(path)}
       onNewSpace={() => void handleNewSpace()}
       onDeleteSpace={handleDeleteSpace}
       onNewTabInSpace={handleNewTabInSpace}
@@ -1146,7 +1389,12 @@ export default function App() {
             activeId,
             searchTarget,
             explorerRoot,
-            home,
+            recentWorkspaces,
+            recentWorkspaceMissing,
+            openFolder: () => void handleOpenFolder(),
+            switchWorkspace: () => setSwitcherOpen(true),
+            closeWorkspace: handleCloseWorkspaceRoot,
+            openRecentWorkspace: (path) => void handleOpenRecentWorkspace(path),
             openNewTab,
             openNewBlock: openNewBlockTab,
             openNewPrivate: openNewPrivateTab,
@@ -1178,7 +1426,11 @@ export default function App() {
       activeId,
       searchTarget,
       explorerRoot,
-      home,
+      recentWorkspaces,
+      recentWorkspaceMissing,
+      handleOpenFolder,
+      handleCloseWorkspaceRoot,
+      handleOpenRecentWorkspace,
       openNewTab,
       openNewBlockTab,
       openNewPrivateTab,
@@ -1251,8 +1503,6 @@ export default function App() {
     activeWorkspaceId,
     tabs,
     explorerRoot,
-    launchCwd,
-    home,
     openPreviewTab,
     newAgentTab,
     terminalRefs,
@@ -1312,11 +1562,18 @@ export default function App() {
                     {sidebarView === "explorer" ? (
                       <FileExplorer
                         ref={explorerRef}
-                        rootPath={explorerRoot}
+                        rootPath={explorerLocation}
+                        workspaceRoot={explorerRoot}
                         gitStatus={
                           explorerGitDecorations ? sourceControl.status : null
                         }
                         activeFilePath={explorerActiveFilePath}
+                        onOpenFolder={() => void handleOpenFolder()}
+                        onOpenWorkspacePath={(path) =>
+                          void openWorkspaceRoot(path)
+                        }
+                        onReturnToWorkspaceRoot={handleReturnToWorkspaceRoot}
+                        onCloseWorkspace={handleCloseWorkspaceRoot}
                         onOpenFile={handleOpenFile}
                         onPathRenamed={handlePathRenamed}
                         onPathDeleted={handlePathDeleted}
@@ -1359,8 +1616,11 @@ export default function App() {
                       onGitHistorySearchHandle={setGitHistoryHandle}
                       onSetMarkdownView={setMarkdownView}
                       onAskAiSelection={askFromSelection}
+                      onAskAiMarkdownSelection={askFromMarkdownSelection}
                       onRevealInExplorer={toggleExplorerFocus}
                       onAttachFileToAgent={handleAttachFileToAgent}
+                      workspaceRoot={explorerRoot}
+                      onOpenFolder={() => void handleOpenFolder()}
                       onNewEditor={() => setNewEditorOpen(true)}
                       onNewPreview={() => openPreviewTab("")}
                       onOpenCommandPalette={() =>
@@ -1416,11 +1676,15 @@ export default function App() {
 
           {!zenMode && (
             <StatusBar
-              cwd={activeCwd}
-              filePath={activeFilePath}
+              cwd={statusBarCwd}
+              directoryLabel={statusBarDirectoryLabel}
+              directoryTitle={statusBarDirectoryTitle}
               home={home}
-              onCd={sendCd}
-              onWorkspaceChange={switchWorkspace}
+              onCd={handleStatusBarCd}
+              workspaceRoot={explorerRoot}
+              onOpenWorkspace={(path) => void openWorkspaceRoot(path)}
+              onReturnToWorkspaceRoot={handleReturnToWorkspaceRoot}
+              onWorkspaceChange={(env) => void handleWorkspaceEnvChange(env)}
               onOpenMini={openMini}
               hasComposer={hasComposer}
               terminalCount={terminalTabs.length}
@@ -1474,7 +1738,7 @@ export default function App() {
           <NewEditorDialog
             open={newEditorOpen}
             onOpenChange={setNewEditorOpen}
-            rootPath={explorerRoot ?? home}
+            rootPath={explorerRoot}
             onCreated={(path) => openFileTab(path)}
           />
 

@@ -6,6 +6,7 @@ import {
   DashboardSquare01Icon,
   FileEditIcon,
   FileSearchIcon,
+  Folder01Icon,
   Globe02Icon,
   IncognitoIcon,
   KeyboardIcon,
@@ -23,6 +24,7 @@ import type { PaletteItem } from "./types";
 
 export const COMMAND_GROUPS = [
   "General",
+  "Workspace",
   "Spaces",
   "Tabs",
   "Panes",
@@ -37,7 +39,12 @@ export type CommandPaletteActionContext = {
   activeId: number;
   searchTarget: SearchTarget;
   explorerRoot: string | null;
-  home: string | null;
+  recentWorkspaces: { path: string; name: string }[];
+  recentWorkspaceMissing: Record<string, boolean>;
+  openFolder: () => void;
+  switchWorkspace: () => void;
+  closeWorkspace: () => void;
+  openRecentWorkspace: (path: string) => void;
   openNewTab: () => void;
   openNewBlock: () => void;
   openNewPrivate: () => void;
@@ -74,7 +81,7 @@ export function createCommandItems(
     ? leafIds(activeTerminalTab.paneTree).length
     : 0;
   const onlyOneTab = ctx.tabs.length < 2;
-  const noWorkspaceRoot = !ctx.explorerRoot && !ctx.home;
+  const noWorkspaceRoot = !ctx.explorerRoot;
   const splitDisabled = !activeTerminalTab
     ? "No terminal tab"
     : activePaneCount >= MAX_PANES_PER_TAB
@@ -110,10 +117,53 @@ export function createCommandItems(
       run: ctx.openKeyboardShortcuts,
     },
     {
+      id: "workspace.openFolder",
+      title: "Open Folder...",
+      group: "Workspace",
+      keywords: ["workspace", "project", "folder", "open"],
+      icon: Folder01Icon,
+      run: ctx.openFolder,
+    },
+    {
+      id: "workspace.switch",
+      title: "Switch Workspace...",
+      group: "Workspace",
+      keywords: ["workspace", "project", "recent", "switch"],
+      icon: Folder01Icon,
+      run: ctx.switchWorkspace,
+    },
+    {
+      id: "workspace.close",
+      title: "Close Workspace",
+      group: "Workspace",
+      keywords: ["workspace", "project", "folder", "close"],
+      icon: Cancel01Icon,
+      disabledReason: ctx.explorerRoot ? undefined : "No workspace open",
+      run: ctx.closeWorkspace,
+    },
+    ...ctx.recentWorkspaces.map((workspace) => ({
+      id: `workspace.recent.${workspace.path}`,
+      title: `Open Recent: ${workspace.name}`,
+      group: "Workspace" as const,
+      keywords: ["workspace", "recent", "project", workspace.path],
+      icon: Folder01Icon,
+      disabledReason: ctx.recentWorkspaceMissing[workspace.path]
+        ? "Missing folder"
+        : undefined,
+      run: () => ctx.openRecentWorkspace(workspace.path),
+    })),
+    {
       id: "spaces.overview",
       title: "Spaces: Overview",
       group: "Spaces",
-      keywords: ["spaces", "sessions", "overview", "organize", "manage", "move"],
+      keywords: [
+        "spaces",
+        "sessions",
+        "overview",
+        "organize",
+        "manage",
+        "move",
+      ],
       icon: DashboardSquare01Icon,
       run: ctx.openSpacesOverview,
     },
@@ -131,8 +181,7 @@ export function createCommandItems(
       group: "Spaces" as const,
       keywords: ["space", "switch", "session", sp.name],
       icon: DashboardSquare01Icon,
-      disabledReason:
-        sp.id === ctx.activeSpaceId ? "Current space" : undefined,
+      disabledReason: sp.id === ctx.activeSpaceId ? "Current space" : undefined,
       run: () => ctx.switchSpace(sp.id),
     })),
     {

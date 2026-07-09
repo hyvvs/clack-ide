@@ -12,6 +12,7 @@ type CreateInput = {
   id?: string;
   name: string;
   root: string | null;
+  explorerPath?: string | null;
   env?: WorkspaceEnv;
 };
 
@@ -30,6 +31,12 @@ type State = {
   create: (input: CreateInput) => SpaceMeta;
   rename: (id: string, name: string) => void;
   setColor: (id: string, color: number | undefined) => void;
+  setRoot: (
+    id: string,
+    root: string | null,
+    options?: { name?: string; env?: WorkspaceEnv },
+  ) => void;
+  setExplorerPath: (id: string, path: string | null) => void;
   reorder: (orderedIds: string[]) => void;
   remove: (id: string) => string | null;
   setActive: (id: string) => void;
@@ -51,6 +58,7 @@ export const useSpaces = create<State>((set, get) => ({
       id: input.id ?? newSpaceId(),
       name: input.name,
       root: input.root,
+      explorerPath: input.explorerPath ?? input.root,
       env: input.env ?? LOCAL_WORKSPACE,
       createdAt: now,
       updatedAt: now,
@@ -72,6 +80,31 @@ export const useSpaces = create<State>((set, get) => ({
   setColor: (id, color) => {
     const spaces = get().spaces.map((s) =>
       s.id === id ? { ...s, color, updatedAt: Date.now() } : s,
+    );
+    set({ spaces });
+    void saveSpacesList(spaces);
+  },
+
+  setRoot: (id, root, options) => {
+    const spaces = get().spaces.map((s) =>
+      s.id === id
+        ? {
+            ...s,
+            root,
+            explorerPath: root,
+            ...(options?.name !== undefined && { name: options.name }),
+            ...(options?.env !== undefined && { env: options.env }),
+            updatedAt: Date.now(),
+          }
+        : s,
+    );
+    set({ spaces });
+    void saveSpacesList(spaces);
+  },
+
+  setExplorerPath: (id, path) => {
+    const spaces = get().spaces.map((s) =>
+      s.id === id ? { ...s, explorerPath: path, updatedAt: Date.now() } : s,
     );
     set({ spaces });
     void saveSpacesList(spaces);

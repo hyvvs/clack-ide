@@ -1,6 +1,6 @@
 pub mod modules;
 
-use modules::{acp, agent, fs, git, history, net, pty, secrets, shell, workspace};
+use modules::{acp, agent, clipboard, fs, git, history, net, pty, secrets, shell, workspace};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
@@ -127,6 +127,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(
@@ -226,6 +227,8 @@ pub fn run() {
             workspace::wsl_home,
             workspace::workspace_authorize,
             workspace::workspace_current_dir,
+            clipboard::clipboard_write_text,
+            clipboard::clipboard_read_text,
             get_launch_dir,
             open_settings_window,
             acp::acp_detect_providers,
