@@ -3,10 +3,10 @@ import {
   usePreferencesStore,
 } from "@/modules/settings/preferences";
 import { BG_OPACITY_RENDER_FACTOR } from "@/modules/settings/store";
+import { CLACK_Z_INDEX } from "@/lib/layers";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-const OVERLAY_Z = 2147483646;
 const RESIZE_IDLE_MS = 280;
 const FADE_IN_MS = 200;
 
@@ -86,7 +86,7 @@ function BackgroundImage({ fastImageId }: { fastImageId: string | null }) {
       style={{
         position: "fixed",
         inset: 0,
-        zIndex: OVERLAY_Z,
+        zIndex: CLACK_Z_INDEX.backgroundEffects,
         pointerEvents: "none",
         backgroundImage: suspendAnimated ? "none" : `url(${url})`,
         backgroundSize: "cover",

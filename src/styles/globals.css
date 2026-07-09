@@ -147,6 +147,10 @@
   --clack-radius-button: 6px;
   --clack-radius-panel: 8px;
   --clack-radius-card: 7px;
+  --clack-z-background-effects: 10;
+  --clack-z-file-content: 20;
+  --clack-z-mini-window: 40;
+  --clack-z-floating-ui: 50;
   --clack-space-1: 4px;
   --clack-space-2: 8px;
   --clack-space-3: 12px;
@@ -204,6 +208,36 @@
     background: color-mix(in srgb, var(--clack-surface-1) 92%, transparent);
     border-color: var(--clack-border-subtle);
     box-shadow: var(--clack-shadow-low);
+  }
+
+  .clack-file-content-surface {
+    position: relative;
+    z-index: var(--clack-z-file-content);
+    background: #0b1020;
+    background-clip: padding-box;
+    isolation: isolate;
+    opacity: 1;
+    mix-blend-mode: normal;
+    filter: none;
+    backdrop-filter: none;
+  }
+
+  .clack-image-transparency-canvas {
+    position: relative;
+    background-color: #0f172a;
+    background-image: conic-gradient(
+      #cbd5e1 0.25turn,
+      #f8fafc 0.25turn 0.5turn,
+      #cbd5e1 0.5turn 0.75turn,
+      #f8fafc 0.75turn
+    );
+    background-size: 20px 20px;
+    background-clip: padding-box;
+    isolation: isolate;
+    opacity: 1;
+    mix-blend-mode: normal;
+    filter: none;
+    backdrop-filter: none;
   }
 
   .clack-card {

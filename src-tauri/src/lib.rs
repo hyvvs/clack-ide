@@ -1,6 +1,8 @@
 pub mod modules;
 
-use modules::{acp, agent, clipboard, fs, git, history, net, pty, secrets, shell, workspace};
+use modules::{
+    acp, agent, clipboard, fs, git, history, net, opener, pty, secrets, shell, workspace,
+};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
@@ -229,6 +231,8 @@ pub fn run() {
             workspace::workspace_current_dir,
             clipboard::clipboard_write_text,
             clipboard::clipboard_read_text,
+            opener::open_path_externally_checked,
+            opener::reveal_path_in_system_file_explorer_checked,
             get_launch_dir,
             open_settings_window,
             acp::acp_detect_providers,

@@ -1,7 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { setShowHidden } from "@/modules/settings/store";
+import {
+  duplicateCreateMessage,
+  existingNameConflict,
+  isDotfileName,
+  validateCreateName,
+} from "./createTarget";
+import {
+  basename,
+  compactMoveSources,
+  invalidDropReason,
+} from "./dragPayload";
 import { listenFsChanged, watchAdd, watchRemove } from "./watch";
 
 export type DirEntry = {
@@ -23,6 +36,7 @@ type TreeState = Record<string, ChildrenState>;
 export type PendingCreate = {
   parentPath: string;
   kind: "file" | "dir";
+  error?: string;
 };
 
 export function joinPath(parent: string, name: string): string {
@@ -76,7 +90,19 @@ function sameDirListing(a: DirEntry[], b: DirEntry[]): boolean {
   return true;
 }
 
+function failedItemsMessage(action: string, failed: string[]): string {
+  const names = failed.map(basename);
+  const shown = names.slice(0, 3).join(", ");
+  const rest = names.length > 3 ? ` and ${names.length - 3} more` : "";
+  return `${action} failed for ${shown}${rest}.`;
+}
+
 type Options = {
+  onPathCreated?: (
+    path: string,
+    kind: "file" | "dir",
+    status: "created" | "existing",
+  ) => void;
   onPathRenamed?: (from: string, to: string) => void;
   onPathDeleted?: (path: string) => void;
 };
@@ -321,27 +347,85 @@ export function useFileTree(rootPath: string | null, options?: Options) {
 
   const cancelCreate = useCallback(() => setPendingCreate(null), []);
 
+  const clearCreateError = useCallback(() => {
+    setPendingCreate((current) =>
+      current?.error ? { ...current, error: undefined } : current,
+    );
+  }, []);
+
   const commitCreate = useCallback(
     async (name: string) => {
       if (!pendingCreate) return;
-      const trimmed = name.trim();
-      if (!trimmed) {
-        setPendingCreate(null);
-        return;
+      const validation = validateCreateName(name);
+      if (!validation.ok) {
+        setPendingCreate((current) =>
+          current ? { ...current, error: validation.message } : current,
+        );
+        toast.error(validation.message);
+        return false;
       }
+      const trimmed = validation.name;
       const path = joinPath(pendingCreate.parentPath, trimmed);
+      const parentNode = nodesRef.current[pendingCreate.parentPath];
+      const existing =
+        parentNode?.status === "loaded"
+          ? existingNameConflict(parentNode.entries, trimmed)
+          : null;
+      if (existing) {
+        const existingPath = joinPath(pendingCreate.parentPath, existing.name);
+        const message = duplicateCreateMessage(
+          trimmed,
+          pendingCreate.parentPath,
+        );
+        setPendingCreate((current) =>
+          current ? { ...current, error: message } : current,
+        );
+        toast.error(message);
+        options?.onPathCreated?.(
+          existingPath,
+          existing.kind === "dir" ? "dir" : "file",
+          "existing",
+        );
+        return false;
+      }
+
       const cmd =
         pendingCreate.kind === "dir" ? "fs_create_dir" : "fs_create_file";
       try {
         await invoke(cmd, { path, workspace: currentWorkspaceEnv() });
+        if (isDotfileName(trimmed) && !showHiddenRef.current) {
+          showHiddenRef.current = true;
+          await setShowHidden(true);
+          toast.success(`Created ${trimmed} and enabled hidden files.`);
+        }
         await fetchChildren(pendingCreate.parentPath);
-      } catch (e) {
-        console.error(`${cmd} failed:`, e);
-      } finally {
         setPendingCreate(null);
+        options?.onPathCreated?.(path, pendingCreate.kind, "created");
+        if (pendingCreate.kind === "dir") expand(path);
+        return true;
+      } catch (e) {
+        const error = String(e);
+        const alreadyExists = error.toLowerCase().includes("already exists");
+        const message = alreadyExists
+          ? duplicateCreateMessage(trimmed, pendingCreate.parentPath)
+          : `Create failed: ${error}`;
+        console.error(`${cmd} failed:`, e);
+        setPendingCreate((current) =>
+          current ? { ...current, error: message } : current,
+        );
+        toast.error(message);
+        if (alreadyExists) {
+          if (isDotfileName(trimmed) && !showHiddenRef.current) {
+            showHiddenRef.current = true;
+            await setShowHidden(true);
+          }
+          await fetchChildren(pendingCreate.parentPath);
+          options?.onPathCreated?.(path, pendingCreate.kind, "existing");
+        }
+        return false;
       }
     },
-    [pendingCreate, fetchChildren],
+    [pendingCreate, fetchChildren, options, expand],
   );
 
   const beginRename = useCallback((path: string) => {
@@ -392,6 +476,34 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     [fetchChildren, options],
   );
 
+  const deletePaths = useCallback(
+    async (paths: string[]) => {
+      const uniquePaths = [...new Set(paths)];
+      if (uniquePaths.length === 0) return;
+      const failed: string[] = [];
+      const parents = new Set<string>();
+      for (const path of uniquePaths) {
+        if (rootPath && path === rootPath) {
+          failed.push(path);
+          continue;
+        }
+        try {
+          await invoke("fs_delete", { path, workspace: currentWorkspaceEnv() });
+          options?.onPathDeleted?.(path);
+          parents.add(dirname(path));
+        } catch (e) {
+          console.error("fs_delete failed:", e);
+          failed.push(path);
+        }
+      }
+      await Promise.all([...parents].map((parent) => fetchChildren(parent)));
+      if (failed.length > 0) {
+        toast.error(failedItemsMessage("Delete", failed));
+      }
+    },
+    [fetchChildren, options, rootPath],
+  );
+
   const movePath = useCallback(
     async (from: string, toDir: string) => {
       const name = from.slice(from.lastIndexOf("/") + 1);
@@ -420,6 +532,54 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     [fetchChildren, options],
   );
 
+  const movePaths = useCallback(
+    async (from: string[], toDir: string) => {
+      const sources = compactMoveSources(from);
+      const invalid = invalidDropReason(sources, toDir);
+      if (invalid) {
+        toast.error(invalid);
+        return;
+      }
+
+      const target = nodesRef.current[toDir];
+      const targetNames =
+        target?.status === "loaded"
+          ? new Set(target.entries.map((entry) => entry.name.toLowerCase()))
+          : null;
+      const failed: string[] = [];
+      const parents = new Set<string>([toDir]);
+
+      for (const source of sources) {
+        const name = basename(source);
+        const to = joinPath(toDir, name);
+        if (targetNames?.has(name.toLowerCase())) {
+          failed.push(source);
+          toast.error(`Move blocked: "${name}" already exists in target folder.`);
+          continue;
+        }
+        try {
+          await invoke("fs_rename", {
+            from: source,
+            to,
+            workspace: currentWorkspaceEnv(),
+          });
+          options?.onPathRenamed?.(source, to);
+          parents.add(dirname(source));
+          targetNames?.add(name.toLowerCase());
+        } catch (e) {
+          console.error("fs_rename (move) failed:", e);
+          failed.push(source);
+        }
+      }
+
+      await Promise.all([...parents].map((parent) => fetchChildren(parent)));
+      if (failed.length > 0) {
+        toast.error(failedItemsMessage("Move", failed));
+      }
+    },
+    [fetchChildren, options],
+  );
+
   return {
     nodes,
     expanded,
@@ -430,12 +590,15 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     refresh,
     beginCreate,
     cancelCreate,
+    clearCreateError,
     commitCreate,
     beginRename,
     cancelRename,
     commitRename,
     deletePath,
+    deletePaths,
     movePath,
+    movePaths,
     joinPath,
   };
 }

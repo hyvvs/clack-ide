@@ -1,24 +1,31 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  dragLabelForSources,
+  dragSourcesFor,
+  invalidDropReason,
+  parentDir,
+} from "./dragPayload";
 
 type Options = {
   rootPath: string;
   isDir: (path: string) => boolean | undefined;
-  onMove: (from: string, toDir: string) => void;
+  selectedPaths: string[];
+  onMove: (from: string[], toDir: string) => void;
 };
 
 const THRESHOLD = 5;
-
-function parentDir(path: string): string {
-  const i = path.lastIndexOf("/");
-  return i > 0 ? path.slice(0, i) : path;
-}
 
 // Pointer-based, delegated on the container (no per-row handlers); sidesteps
 // native HTML5 DnD which Tauri intercepts when dragDropEnabled is on. The ghost
 // follows the cursor via direct DOM writes, so dragging re-renders only when the
 // drop target changes, not on every move.
-export function useExplorerDnd({ rootPath, isDir, onMove }: Options) {
+export function useExplorerDnd({
+  rootPath,
+  isDir,
+  selectedPaths,
+  onMove,
+}: Options) {
   const [dragLabel, setDragLabel] = useState<string | null>(null);
   const [dropTargetDir, setDropTargetDir] = useState<string | null>(null);
 
@@ -27,8 +34,8 @@ export function useExplorerDnd({ rootPath, isDir, onMove }: Options) {
   const dropTargetRef = useRef<string | null>(null);
   const suppressClickRef = useRef(false);
   const cleanupRef = useRef<(() => void) | null>(null);
-  const optsRef = useRef({ rootPath, isDir, onMove });
-  optsRef.current = { rootPath, isDir, onMove };
+  const optsRef = useRef({ rootPath, isDir, selectedPaths, onMove });
+  optsRef.current = { rootPath, isDir, selectedPaths, onMove };
 
   const placeGhost = (x: number, y: number) => {
     lastPosRef.current = { x, y };
@@ -49,7 +56,7 @@ export function useExplorerDnd({ rootPath, isDir, onMove }: Options) {
     const el = (e.target as HTMLElement).closest<HTMLElement>("[data-fs-path]");
     const source = el?.getAttribute("data-fs-path");
     if (!source) return;
-    const name = source.slice(source.lastIndexOf("/") + 1);
+    const sources = dragSourcesFor(source, optsRef.current.selectedPaths);
     const sx = e.clientX;
     const sy = e.clientY;
     let active = false;
@@ -59,7 +66,7 @@ export function useExplorerDnd({ rootPath, isDir, onMove }: Options) {
         if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < THRESHOLD) return;
         active = true;
         lastPosRef.current = { x: ev.clientX, y: ev.clientY };
-        setDragLabel(name);
+        setDragLabel(dragLabelForSources(sources));
       }
       placeGhost(ev.clientX, ev.clientY);
       const { rootPath, isDir } = optsRef.current;
@@ -68,10 +75,7 @@ export function useExplorerDnd({ rootPath, isDir, onMove }: Options) {
         ?.closest<HTMLElement>("[data-fs-path]");
       const p = hit?.getAttribute("data-fs-path");
       const t = p ? (isDir(p) ? p : parentDir(p)) : rootPath;
-      const valid =
-        t !== source && !t.startsWith(`${source}/`) && parentDir(source) !== t
-          ? t
-          : null;
+      const valid = invalidDropReason(sources, t) ? null : t;
       if (dropTargetRef.current !== valid) {
         dropTargetRef.current = valid;
         setDropTargetDir(valid);
@@ -87,7 +91,7 @@ export function useExplorerDnd({ rootPath, isDir, onMove }: Options) {
       detach();
       if (!active) return;
       if (commit && dropTargetRef.current)
-        optsRef.current.onMove(source, dropTargetRef.current);
+        optsRef.current.onMove(sources, dropTargetRef.current);
       suppressClickRef.current = true;
       setTimeout(() => {
         suppressClickRef.current = false;

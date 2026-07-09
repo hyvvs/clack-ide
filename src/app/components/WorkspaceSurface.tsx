@@ -100,6 +100,7 @@ export function WorkspaceSurface({
           onAskAiSelection={onAskAiSelection}
           onRevealInExplorer={onRevealInExplorer}
           onAttachFileToAgent={onAttachFileToAgent}
+          workspaceRoot={workspaceRoot}
         />
       </div>
       <div
@@ -130,6 +131,7 @@ export function WorkspaceSurface({
           onAskAiSelection={onAskAiMarkdownSelection}
           onRevealInExplorer={onRevealInExplorer}
           onAttachFileToAgent={onAttachFileToAgent}
+          workspaceRoot={workspaceRoot}
         />
       </div>
       <div

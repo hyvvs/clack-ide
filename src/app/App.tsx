@@ -109,6 +109,7 @@ import {
 } from "@/modules/workspace";
 import type { SearchAddon } from "@xterm/addon-search";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { CloseDialogs } from "./components/CloseDialogs";
 import { TerminalDock } from "./components/TerminalDock";
 import {
@@ -389,6 +390,7 @@ export default function App() {
     cycleSidebarView,
     persistSidebarWidth,
     toggleExplorerFocus,
+    showExplorer,
   } = useSidebarPanel(explorerRef);
 
   const [newEditorOpen, setNewEditorOpen] = useState(false);
@@ -705,6 +707,38 @@ export default function App() {
     activeWorkspaceTab?.kind === "markdown"
       ? activeWorkspaceTab.path
       : null;
+
+  const revealWorkspacePathInExplorer = useCallback(
+    (path: string) => {
+      showExplorer();
+      let attempts = 0;
+      const reveal = () => {
+        const explorer = explorerRef.current;
+        if (!explorer) {
+          attempts += 1;
+          if (attempts <= 3) {
+            requestAnimationFrame(reveal);
+          } else {
+            toast.error("File explorer is not ready.");
+          }
+          return;
+        }
+        const result = explorer.revealPath(path);
+        if (!result.ok) toast.error(result.message);
+      };
+      requestAnimationFrame(reveal);
+    },
+    [showExplorer],
+  );
+
+  const revealActiveWorkspacePathInExplorer = useCallback(() => {
+    if (!explorerActiveFilePath) {
+      toast.error("No active file to reveal.");
+      return;
+    }
+    revealWorkspacePathInExplorer(explorerActiveFilePath);
+  }, [explorerActiveFilePath, revealWorkspacePathInExplorer]);
+
   const { sourceControl, toggleSourceControl, openGitGraphFromContext } =
     useSourceControlContext({
       activeTab: activeWorkspaceTab,
@@ -1617,7 +1651,7 @@ export default function App() {
                       onSetMarkdownView={setMarkdownView}
                       onAskAiSelection={askFromSelection}
                       onAskAiMarkdownSelection={askFromMarkdownSelection}
-                      onRevealInExplorer={toggleExplorerFocus}
+                      onRevealInExplorer={revealActiveWorkspacePathInExplorer}
                       onAttachFileToAgent={handleAttachFileToAgent}
                       workspaceRoot={explorerRoot}
                       onOpenFolder={() => void handleOpenFolder()}

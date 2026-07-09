@@ -20,15 +20,27 @@ import {
   TextSelectionIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useRef, useState } from "react";
-import { Streamdown } from "streamdown";
+import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import {
+  defaultUrlTransform,
+  defaultRehypePlugins,
+  Streamdown,
+  type Components,
+  type ExtraProps,
+  type StreamdownProps,
+  type UrlTransform,
+} from "streamdown";
 import {
   markdownContextActions,
   openableMarkdownLink,
   type MarkdownContext as MarkdownContextState,
 } from "./lib/contextActions";
+import {
+  isConvertedLocalAssetUrl,
+  resolveMarkdownImageRenderSrc,
+} from "./lib/imagePolicy";
 import { MarkdownViewToggle } from "./MarkdownViewToggle";
 
 type ReadResult =
@@ -50,13 +62,146 @@ type Props = {
   onAskAiSelection?: (selection: string) => void;
   onRevealInExplorer?: () => void;
   onAttachFileToAgent?: (path: string) => void;
+  workspaceRoot?: string | null;
 };
 
-const components = { code: MarkdownCode };
+const BLOCKED_IMAGE_PREFIX = "clack-blocked-image:";
 const EMPTY_CONTEXT: MarkdownContextState = {
   selectedText: "",
   linkUrl: null,
   imageUrl: null,
+};
+
+function blockedImageSrc(reason: string): string {
+  return `${BLOCKED_IMAGE_PREFIX}${encodeURIComponent(reason)}`;
+}
+
+function blockedReasonFromSrc(src: string | undefined): string | null {
+  if (!src?.startsWith(BLOCKED_IMAGE_PREFIX)) return null;
+  try {
+    return decodeURIComponent(src.slice(BLOCKED_IMAGE_PREFIX.length));
+  } catch {
+    return "blocked by policy";
+  }
+}
+
+type HastNode = {
+  type?: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+  value?: string;
+};
+
+type MarkdownImageResolverOptions = {
+  markdownPath: string;
+  workspaceRoot: string | null | undefined;
+};
+
+function stringProperty(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.map(String).join(" ");
+  return null;
+}
+
+function blockedImageNode(reason: string): HastNode {
+  return {
+    type: "element",
+    tagName: "span",
+    properties: { title: reason },
+    children: [{ type: "text", value: `Image blocked: ${reason}` }],
+  };
+}
+
+function rewriteMarkdownImages(
+  node: HastNode,
+  options: MarkdownImageResolverOptions,
+): void {
+  if (!Array.isArray(node.children)) return;
+
+  for (let i = 0; i < node.children.length; i += 1) {
+    const child = node.children[i];
+    if (child?.type === "element" && child.tagName === "img") {
+      const properties = child.properties ?? {};
+      const src = stringProperty(properties.src);
+      if (src && isConvertedLocalAssetUrl(src)) continue;
+      const resolved = resolveMarkdownImageRenderSrc(
+        {
+          src,
+          markdownPath: options.markdownPath,
+          workspaceRoot: options.workspaceRoot,
+        },
+        convertFileSrc,
+      );
+      if (resolved.kind === "render") {
+        child.properties = { ...properties, src: resolved.src };
+      } else {
+        node.children[i] = blockedImageNode(resolved.reason);
+      }
+      continue;
+    }
+    rewriteMarkdownImages(child, options);
+  }
+}
+
+function markdownImageResolverPlugin(
+  options: MarkdownImageResolverOptions = {
+    markdownPath: "",
+    workspaceRoot: null,
+  },
+) {
+  return (tree: HastNode) => rewriteMarkdownImages(tree, options);
+}
+
+function MarkdownImage({
+  node: _node,
+  src,
+  alt,
+  className,
+  onError,
+  ...props
+}: ComponentProps<"img"> & ExtraProps) {
+  const [failed, setFailed] = useState(false);
+  const blockedReason = blockedReasonFromSrc(src);
+  if (blockedReason || failed) {
+    const reason = blockedReason ?? "image failed to load";
+    return (
+      <span
+        className="inline-flex max-w-full items-center rounded border border-[var(--clack-border-subtle)] bg-[var(--clack-surface-raised)] px-2 py-1 text-[12px] text-[var(--clack-text-3)]"
+        title={reason}
+      >
+        Image blocked: {reason}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="clack-image-transparency-canvas my-2 inline-flex max-w-full overflow-hidden rounded border border-[var(--clack-border-subtle)] p-1 align-middle"
+    >
+      <img
+        {...props}
+        src={src}
+        alt={alt}
+        className={cn("max-w-full object-contain opacity-100", className)}
+        style={{ opacity: 1, mixBlendMode: "normal" }}
+        onError={(event) => {
+          setFailed(true);
+          onError?.(event);
+        }}
+      />
+    </span>
+  );
+}
+
+const MarkdownCodeComponent: Components["code"] = ({
+  node: _node,
+  ...props
+}) => <MarkdownCode {...props} />;
+
+const components: Components = {
+  code: MarkdownCodeComponent,
+  img: MarkdownImage,
 };
 
 function selectedTextWithin(root: HTMLElement | null): string {
@@ -84,6 +229,7 @@ export function MarkdownPreviewPane({
   onAskAiSelection,
   onRevealInExplorer,
   onAttachFileToAgent,
+  workspaceRoot,
 }: Props) {
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   const [menuContext, setMenuContext] =
@@ -121,6 +267,36 @@ export function MarkdownPreviewPane({
     canAttach: Boolean(onAttachFileToAgent),
   });
   const openableLink = openableMarkdownLink(menuContext.linkUrl);
+  const markdownUrlTransform = useMemo<UrlTransform>(
+    () => (url, key, node) => {
+      if (key === "src" && node.tagName === "img") {
+        if (isConvertedLocalAssetUrl(url)) return url;
+        const resolved = resolveMarkdownImageRenderSrc({
+          src: url,
+          markdownPath: path,
+          workspaceRoot,
+        }, convertFileSrc);
+        if (resolved.kind === "render") return resolved.src;
+        return blockedImageSrc(resolved.reason);
+      }
+      return defaultUrlTransform(url, key, node);
+    },
+    [path, workspaceRoot],
+  );
+  const markdownRehypePlugins = useMemo<
+    NonNullable<StreamdownProps["rehypePlugins"]>
+  >(
+    () => [
+      defaultRehypePlugins.raw,
+      [
+        markdownImageResolverPlugin,
+        { markdownPath: path, workspaceRoot },
+      ],
+      defaultRehypePlugins.sanitize,
+      defaultRehypePlugins.harden,
+    ],
+    [path, workspaceRoot],
+  );
 
   const selectAllRendered = () => {
     const root = renderedRootRef.current;
@@ -187,6 +363,8 @@ export function MarkdownPreviewPane({
                 <Streamdown
                   className="select-text [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
                   components={components}
+                  rehypePlugins={markdownRehypePlugins}
+                  urlTransform={markdownUrlTransform}
                 >
                   {status.content}
                 </Streamdown>

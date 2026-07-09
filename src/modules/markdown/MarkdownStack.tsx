@@ -9,6 +9,7 @@ type Props = {
   onAskAiSelection: (selection: string) => void;
   onRevealInExplorer: () => void;
   onAttachFileToAgent: (path: string) => void;
+  workspaceRoot: string | null;
 };
 
 export function MarkdownStack({
@@ -18,6 +19,7 @@ export function MarkdownStack({
   onAskAiSelection,
   onRevealInExplorer,
   onAttachFileToAgent,
+  workspaceRoot,
 }: Props) {
   const markdowns = tabs.filter(
     (t): t is MarkdownTab => t.kind === "markdown" && !t.cold,
@@ -43,6 +45,7 @@ export function MarkdownStack({
               onAskAiSelection={onAskAiSelection}
               onRevealInExplorer={onRevealInExplorer}
               onAttachFileToAgent={onAttachFileToAgent}
+              workspaceRoot={workspaceRoot}
             />
           </div>
         );

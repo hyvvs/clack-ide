@@ -6,6 +6,7 @@ import {
   ContextMenuShortcut,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { writeClipboardText } from "@/lib/clipboard";
 import { fmtShortcut, MOD_KEY } from "@/lib/platform";
 import { getKey } from "@/modules/ai/lib/keyring";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -26,7 +27,9 @@ import {
   Cancel01Icon,
   ClipboardPasteIcon,
   Copy01Icon,
+  ExternalLinkIcon,
   FileAttachmentIcon,
+  FileIcon,
   FolderTreeIcon,
   SaveIcon,
   Scissor01Icon,
@@ -34,6 +37,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   forwardRef,
   useCallback,
@@ -43,7 +47,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { inlineCompletion } from "./lib/autocomplete/inlineExtension";
 import {
   buildSharedExtensions,
@@ -53,7 +56,22 @@ import {
 import { resolveLanguage } from "./lib/languageResolver";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
 import { useDocument } from "./lib/useDocument";
+import {
+  IMAGE_VIEWER_CANVAS_CLASS,
+  IMAGE_VIEWER_CANVAS_STYLE,
+  IMAGE_VIEWER_IMAGE_STYLE,
+  IMAGE_VIEWER_PANEL_CLASS,
+  IMAGE_VIEWER_PANEL_STYLE,
+  imageViewerFileName,
+  imageViewerMenuActions,
+} from "./lib/imageViewer";
+import {
+  openImageExternally,
+  revealImageInSystemFileExplorer,
+  type ImageFileActionResult,
+} from "./lib/imageFileActions";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
+import { toast } from "sonner";
 
 initVimGlobals();
 
@@ -76,6 +94,7 @@ export type EditorPaneHandle = {
 
 type Props = {
   path: string;
+  workspaceRoot?: string | null;
   onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
   onClose?: () => void;
@@ -94,6 +113,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
   function EditorPane(
     {
       path,
+      workspaceRoot,
       onDirtyChange,
       onSaved,
       onClose,
@@ -115,6 +135,16 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     const languageRef = useRef<string | null>(null);
     const apiKeyRef = useRef<string | null>(null);
     const [hasSelection, setHasSelection] = useState(false);
+    const reportImageActionResult = useCallback(
+      (result: ImageFileActionResult) => {
+        if (result.ok) {
+          if (result.message) toast(result.message);
+          return;
+        }
+        toast.error(result.message);
+      },
+      [],
+    );
 
     useEffect(() => {
       let cancelled = false;
@@ -148,7 +178,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
       };
     }, []);
     // Stabilize save + onSaved via refs so the extensions array never changes
-    // identity — a new identity makes @uiw/react-codemirror reconfigure the
+    // identity, a new identity makes @uiw/react-codemirror reconfigure the
     // whole state, wiping the language compartment.
     const saveRef = useRef(save);
     saveRef.current = save;
@@ -410,21 +440,37 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
 
       if (isImage || isVideo || isAudio || isPdf) {
         const assetUrl = convertFileSrc(path);
-        return (
-          <div className="flex h-full min-h-0 flex-col items-center justify-center bg-background p-4 overflow-auto">
+        const fileName = imageViewerFileName(path);
+        const imageActions = imageViewerMenuActions({
+          canRevealInExplorer: Boolean(onRevealInExplorer),
+          canRevealInSystemFileExplorer: true,
+          canOpenExternally: true,
+          canAttachFileToAgent: Boolean(onAttachFileToAgent),
+          canCloseTab: Boolean(onClose),
+        });
+        const imagePreview = (
+          <div
+            className={
+              isImage
+                ? IMAGE_VIEWER_PANEL_CLASS
+                : "flex h-full min-h-0 flex-col items-center justify-center overflow-auto p-4"
+            }
+            style={isImage ? IMAGE_VIEWER_PANEL_STYLE : undefined}
+          >
             {isImage && (
-              <img
-                src={assetUrl}
-                loading="lazy"
-                decoding="async"
-                className="max-w-full max-h-full object-contain rounded-md border border-border shadow-sm"
-                style={{
-                  backgroundImage:
-                    "conic-gradient(#e5e7eb 0.25turn, #f3f4f6 0.25turn 0.5turn, #e5e7eb 0.5turn 0.75turn, #f3f4f6 0.75turn)",
-                  backgroundSize: "20px 20px",
-                }}
-                alt={path.split("/").pop()}
-              />
+              <div
+                className={IMAGE_VIEWER_CANVAS_CLASS}
+                style={IMAGE_VIEWER_CANVAS_STYLE}
+              >
+                <img
+                  src={assetUrl}
+                  loading="lazy"
+                  decoding="async"
+                  className="block max-h-full max-w-full object-contain"
+                  style={IMAGE_VIEWER_IMAGE_STYLE}
+                  alt={fileName}
+                />
+              </div>
             )}
             {isVideo && (
               // biome-ignore lint/a11y/useMediaCaption: local media preview opens arbitrary files with no caption track
@@ -448,10 +494,102 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
               <iframe
                 src={assetUrl}
                 className="w-full h-full border-none"
-                title={path.split("/").pop()}
+                title={fileName}
               />
             )}
           </div>
+        );
+        if (!isImage) return imagePreview;
+        return (
+          <ContextMenu>
+            <ContextMenuTrigger asChild>{imagePreview}</ContextMenuTrigger>
+            <ContextMenuContent
+              className="min-w-56"
+              onCloseAutoFocus={(event) => event.preventDefault()}
+            >
+              <ContextMenuItem
+                onSelect={() => void writeClipboardText(path)}
+              >
+                <HugeiconsIcon icon={Copy01Icon} size={14} strokeWidth={1.75} />
+                <span>Copy File Path</span>
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() => void writeClipboardText(fileName)}
+              >
+                <HugeiconsIcon icon={FileIcon} size={14} strokeWidth={1.75} />
+                <span>Copy File Name</span>
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              {imageActions.revealInExplorer && onRevealInExplorer ? (
+                <ContextMenuItem onSelect={onRevealInExplorer}>
+                  <HugeiconsIcon
+                    icon={FolderTreeIcon}
+                    size={14}
+                    strokeWidth={1.75}
+                  />
+                  <span>Reveal in Explorer</span>
+                </ContextMenuItem>
+              ) : null}
+              {imageActions.revealInSystemFileExplorer ? (
+                <ContextMenuItem
+                  onSelect={() => {
+                    void revealImageInSystemFileExplorer(path, {
+                      workspaceRoot,
+                    }).then(reportImageActionResult);
+                  }}
+                >
+                  <HugeiconsIcon
+                    icon={FolderTreeIcon}
+                    size={14}
+                    strokeWidth={1.75}
+                  />
+                  <span>Reveal in System File Explorer</span>
+                </ContextMenuItem>
+              ) : null}
+              {imageActions.openExternally ? (
+                <ContextMenuItem
+                  onSelect={() => {
+                    void openImageExternally(path, { workspaceRoot }).then(
+                      reportImageActionResult,
+                    );
+                  }}
+                >
+                  <HugeiconsIcon
+                    icon={ExternalLinkIcon}
+                    size={14}
+                    strokeWidth={1.75}
+                  />
+                  <span>Open Externally</span>
+                </ContextMenuItem>
+              ) : null}
+              {imageActions.attachFileToAgent && onAttachFileToAgent ? (
+                <>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem onSelect={() => onAttachFileToAgent(path)}>
+                    <HugeiconsIcon
+                      icon={FileAttachmentIcon}
+                      size={14}
+                      strokeWidth={1.75}
+                    />
+                    <span>Attach File to Agent</span>
+                  </ContextMenuItem>
+                </>
+              ) : null}
+              {imageActions.closeTab && onClose ? (
+                <>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem onSelect={onClose}>
+                    <HugeiconsIcon
+                      icon={Cancel01Icon}
+                      size={14}
+                      strokeWidth={1.75}
+                    />
+                    <span>Close Tab</span>
+                  </ContextMenuItem>
+                </>
+              ) : null}
+            </ContextMenuContent>
+          </ContextMenu>
         );
       }
 

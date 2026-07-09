@@ -14,6 +14,7 @@ type Props = {
   onAskAiSelection: () => void;
   onRevealInExplorer: () => void;
   onAttachFileToAgent: (path: string) => void;
+  workspaceRoot?: string | null;
 };
 
 export function EditorStack({
@@ -26,6 +27,7 @@ export function EditorStack({
   onAskAiSelection,
   onRevealInExplorer,
   onAttachFileToAgent,
+  workspaceRoot,
 }: Props) {
   const editors = tabs.filter(
     (t): t is EditorTab => t.kind === "editor" && !t.cold,
@@ -119,6 +121,7 @@ export function EditorStack({
               <EditorPane
                 ref={getRefCallback(t.id)}
                 path={t.path}
+                workspaceRoot={workspaceRoot}
                 onDirtyChange={getDirtyCallback(t.id)}
                 onClose={getCloseCallback(t.id)}
                 onAskAiSelection={onAskAiSelection}

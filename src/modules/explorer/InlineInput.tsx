@@ -3,8 +3,10 @@ import { useLayoutEffect, useRef, useState } from "react";
 type Props = {
   initial: string;
   placeholder?: string;
-  onCommit: (value: string) => void;
+  commitOnBlur?: boolean;
+  onCommit: (value: string) => void | boolean | Promise<void | boolean>;
   onCancel: () => void;
+  onValueChange?: (value: string) => void;
 };
 
 /**
@@ -15,8 +17,10 @@ type Props = {
 export function InlineInput({
   initial,
   placeholder,
+  commitOnBlur = true,
   onCommit,
   onCancel,
+  onValueChange,
 }: Props) {
   const [value, setValue] = useState(initial);
   const ref = useRef<HTMLInputElement>(null);
@@ -59,7 +63,18 @@ export function InlineInput({
   const commit = () => {
     if (committedRef.current) return;
     committedRef.current = true;
-    onCommit(value);
+    const result = onCommit(value);
+    if (result instanceof Promise) {
+      void result
+        .then((accepted) => {
+          if (accepted === false) committedRef.current = false;
+        })
+        .catch(() => {
+          committedRef.current = false;
+        });
+    } else if (result === false) {
+      committedRef.current = false;
+    }
   };
   const cancel = () => {
     if (committedRef.current) return;
@@ -72,7 +87,11 @@ export function InlineInput({
       ref={ref}
       value={value}
       placeholder={placeholder}
-      onChange={(e) => setValue(e.target.value)}
+      onChange={(e) => {
+        const next = e.target.value;
+        setValue(next);
+        onValueChange?.(next);
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -87,7 +106,8 @@ export function InlineInput({
           ref.current?.focus({ preventScroll: true });
           return;
         }
-        commit();
+        if (commitOnBlur) commit();
+        else cancel();
       }}
       className="flex-1 min-w-0 truncate rounded-sm border border-border bg-background px-1.5 py-0.5 text-xs text-foreground outline-none ring-0 focus:border-ring"
     />

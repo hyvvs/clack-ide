@@ -147,6 +147,17 @@ export function useSidebarPanel(
     explorer.focus();
   }, [explorerRef, persistSidebarView, sidebarView]);
 
+  const showExplorer = useCallback(() => {
+    const panel = sidebarRef.current;
+    const collapsed = panel ? panel.getSize().asPercentage <= 0 : false;
+    if (panel && collapsed) panel.resize(`${sidebarWidthRef.current}px`);
+    if (sidebarView !== "explorer") persistSidebarView("explorer");
+    const active = document.activeElement;
+    explorerReturnFocusRef.current =
+      active instanceof HTMLElement && active !== document.body ? active : null;
+    requestAnimationFrame(() => explorerRef.current?.focus());
+  }, [explorerRef, persistSidebarView, sidebarView]);
+
   return {
     sidebarRef,
     sidebarWidthRef,
@@ -156,5 +167,6 @@ export function useSidebarPanel(
     cycleSidebarView,
     persistSidebarWidth,
     toggleExplorerFocus,
+    showExplorer,
   };
 }
