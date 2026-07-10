@@ -61,10 +61,28 @@ The release channels are not yet configured. Install via:
 ```bash
 npm install
 
-npm run tauri dev
+npm run tauri -- dev
 
 npm run tauri -- build
 ```
+
+### Linux NVIDIA Wayland Dev Launch
+
+The normal development command remains:
+
+```bash
+npm run tauri -- dev
+```
+
+On Linux NVIDIA Wayland systems, if Tauri or WebKitGTK shows Wayland, GDK, or GBM launch failures, or if the app launches with severe lag, use:
+
+```bash
+npm run tauri:dev:linux:nvidia
+```
+
+This sets `__NV_DISABLE_EXPLICIT_SYNC=1` for the launched dev process only. It does not permanently change the system. This fixed launch failures and lag on CachyOS NVIDIA Wayland, and should be treated as a practical workaround for NVIDIA, Wayland, and WebKitGTK explicit-sync issues rather than universal Linux guidance.
+
+`WEBKIT_DISABLE_COMPOSITING_MODE=1` should be a last resort because it can be very laggy. `WEBKIT_DISABLE_DMABUF_RENDERER=1` may avoid some crashes, but it was still laggy in this setup.
 
 For a Windows installer:
 
