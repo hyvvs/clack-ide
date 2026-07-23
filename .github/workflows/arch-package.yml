@@ -214,6 +214,12 @@ jobs:
           set -euo pipefail
           package="$(find arch-artifact -maxdepth 1 -name 'clack-*-1-x86_64.pkg.tar.zst' -print -quit)"
           test -n "$package"
+
+          if grep -Eq '^[[:space:]]*NoExtract[[:space:]]*=.*usr/share/doc/' /etc/pacman.conf; then
+            echo "::notice::Removing the container's documentation NoExtract rule for package validation"
+            sed -i -E '\|^[[:space:]]*NoExtract[[:space:]]*=.*usr/share/doc/|d' /etc/pacman.conf
+          fi
+
           pacman -U --noconfirm "$package"
           pacman -Q clack
           pacman -Ql clack
@@ -226,14 +232,16 @@ jobs:
           print_parent_contents() {
             local path="$1"
             local parent
+            local listing_directory
             parent="$(dirname "$path")"
+            listing_directory="$parent"
             echo "::group::Contents of $parent"
-            if [[ -d "$parent" ]]; then
-              ls -la -- "$parent"
-            else
-              echo "Parent directory does not exist: $parent"
-              ls -la -- "$(dirname "$parent")"
-            fi
+            while [[ ! -d "$listing_directory" && "$listing_directory" != "/" ]]; do
+              echo "Directory does not exist: $listing_directory"
+              listing_directory="$(dirname "$listing_directory")"
+            done
+            echo "Nearest existing parent: $listing_directory"
+            ls -la -- "$listing_directory"
             echo "::endgroup::"
           }
 

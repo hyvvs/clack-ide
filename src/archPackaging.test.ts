@@ -214,7 +214,14 @@ describe("native Arch package", () => {
     expect(archWorkflow).not.toContain(
       "pacman -S --needed --noconfirm desktop-file-utils",
     );
+    expect(archWorkflow).toContain(
+      "NoExtract[[:space:]]*=.*usr/share/doc/",
+    );
+    expect(archWorkflow).toContain(
+      "Removing the container's documentation NoExtract rule",
+    );
     expect(archWorkflow).toContain("print_parent_contents()");
+    expect(archWorkflow).toContain("Nearest existing parent:");
     expect(archWorkflow).toContain("require_executable()");
     expect(archWorkflow).toContain("require_regular_file()");
     expect(archWorkflow).toContain("require_not_symlink()");
