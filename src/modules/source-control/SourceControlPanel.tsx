@@ -54,20 +54,22 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  type KeyboardEvent,
   memo,
+  type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent,
-  type ReactNode,
 } from "react";
+import { resizeCommitMessageEditor } from "./commitMessageSizing";
 import type { SourceControlSummary } from "./useSourceControl";
 import {
-  useSourceControlPanel,
   type CheckState,
   type SourceControlFileEntry,
+  useSourceControlPanel,
 } from "./useSourceControlPanel";
 
 type Props = {
@@ -151,11 +153,42 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   onOpenFile,
 }: Props) {
   const scm = useSourceControlPanel(open, sourceControl, onOpenDiff);
+  const panelRef = useRef<HTMLElement>(null);
+  const commitMessageRef = useRef<HTMLTextAreaElement>(null);
   const refreshAnimationRef = useRef<number | null>(null);
   const [refreshAnimating, setRefreshAnimating] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
+
+  const resizeCommitMessage = useCallback(() => {
+    const panel = panelRef.current;
+    const editor = commitMessageRef.current;
+    if (!panel || !editor) return;
+    resizeCommitMessageEditor(editor, panel.getBoundingClientRect().height);
+  }, []);
+
+  useLayoutEffect(() => {
+    resizeCommitMessage();
+  });
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+
+    const observer = new ResizeObserver(resizeCommitMessage);
+    observer.observe(panel);
+    window.addEventListener("resize", resizeCommitMessage);
+    window.visualViewport?.addEventListener("resize", resizeCommitMessage);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", resizeCommitMessage);
+      window.visualViewport?.removeEventListener(
+        "resize",
+        resizeCommitMessage,
+      );
+    };
+  }, [resizeCommitMessage]);
 
   useEffect(() => {
     return () => {
@@ -278,7 +311,9 @@ export const SourceControlPanel = memo(function SourceControlPanel({
 
   const rowKeyToIndex = useMemo(() => {
     const map = new Map<string, number>();
-    rows.forEach((row, index) => map.set(row.key, index));
+    rows.forEach((row, index) => {
+      map.set(row.key, index);
+    });
     return map;
   }, [rows]);
 
@@ -416,7 +451,10 @@ export const SourceControlPanel = memo(function SourceControlPanel({
 
   return (
     <TooltipProvider delayDuration={800} skipDelayDuration={300}>
-      <aside className="clack-panel flex h-full min-w-0 flex-col border-r backdrop-blur [contain:layout_style]">
+      <aside
+        ref={panelRef}
+        className="clack-panel flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-r backdrop-blur [contain:layout_style]"
+      >
         <header className="clack-shell flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5">
           <div className="flex min-w-0 items-center gap-1.5">
             <div className="clack-pill inline-flex min-w-0 items-center gap-1.5 px-2 py-1 text-[11.5px] font-semibold leading-none transition-colors">
@@ -579,13 +617,15 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                 )}
               >
                 <Textarea
+                  ref={commitMessageRef}
                   value={scm.commitMessage}
                   onChange={(event) => scm.setCommitMessage(event.target.value)}
                   onKeyDown={handleCommitShortcut}
                   placeholder="Commit message"
                   rows={3}
+                  wrap="soft"
                   className={cn(
-                    "min-h-[72px] resize-none border-transparent bg-transparent px-3 pb-7 pt-2.5 text-[12.5px] leading-snug text-[var(--clack-text-1)] shadow-none placeholder:text-[var(--clack-text-3)] focus:border-0 focus-visible:ring-0",
+                    "clack-commit-message-scroll min-h-[72px] max-w-full resize-none overflow-x-hidden border-transparent bg-transparent px-3 pb-7 pt-2.5 text-[12.5px] leading-snug text-[var(--clack-text-1)] shadow-none [field-sizing:fixed] [overflow-wrap:anywhere] placeholder:text-[var(--clack-text-3)] focus:border-0 focus-visible:ring-0",
                   )}
                 />
                 <div className="pointer-events-none absolute inset-x-3 bottom-1.5 flex items-center justify-between gap-2 p-1 text-[10px] tabular-nums text-[var(--clack-text-3)]">

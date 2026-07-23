@@ -317,7 +317,7 @@ const ContinueRow = memo(function ContinueRow({
   );
 });
 
-const RenderedMessage = memo(function RenderedMessage({
+export const RenderedMessage = memo(function RenderedMessage({
   message,
   onApproval,
   streaming,
@@ -335,6 +335,10 @@ const RenderedMessage = memo(function RenderedMessage({
       break;
     }
   }
+  const groups = useMemo(() => buildPartGroups(message.parts as AnyPart[]), [
+    message.parts,
+  ]);
+
   if (message.role === "user") {
     const rawText = message.parts
       .filter((p): p is { type: "text"; text: string } => p.type === "text")
@@ -362,10 +366,6 @@ const RenderedMessage = memo(function RenderedMessage({
       </Message>
     );
   }
-
-  const groups = useMemo(() => buildPartGroups(message.parts as AnyPart[]), [
-    message.parts,
-  ]);
 
   return (
     <Message from={message.role}>

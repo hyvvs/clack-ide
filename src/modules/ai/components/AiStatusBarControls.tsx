@@ -58,6 +58,7 @@ import {
 } from "../config";
 import { ACCEPTED_FILES, useComposer } from "../lib/composer";
 import { toggleFavoriteModel } from "../lib/modelPrefs";
+import { partitionProvidersByConfiguration } from "../lib/providerOrdering";
 import { useChatStore } from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 
@@ -237,16 +238,10 @@ function ModelDropdown() {
     );
   }, [customEndpoints]);
 
-  const sortedProviders = useMemo(() => {
-    const configured: (typeof PROVIDERS)[number][] = [];
-    const unconfigured: (typeof PROVIDERS)[number][] = [];
-    for (const p of PROVIDERS) {
-      if (p.id === "openai-compatible") continue;
-      (hasKeyFor(p.id) ? configured : unconfigured).push(p);
-    }
-    return { configured, unconfigured };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKeys]);
+  const sortedProviders = useMemo(
+    () => partitionProvidersByConfiguration(PROVIDERS, apiKeys),
+    [apiKeys],
+  );
 
   const allModels = useMemo(
     () => [...MODELS, ...epModelInfos],

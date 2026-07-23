@@ -25,6 +25,12 @@ type FileTrigger = {
   query: string;
 };
 
+function pickerItemIdentity(item: PickerItem): string {
+  return item.kind === "snippet"
+    ? `snippet:${item.snippet.id}`
+    : `command:${item.command.name}`;
+}
+
 function detectSnippetTrigger(
   value: string,
   caret: number,
@@ -80,7 +86,7 @@ export function AiComposerInput() {
   }, [fileTrigger]);
 
   useEffect(() => {
-    autoresize(c.textareaRef.current);
+    autoresize(c.textareaRef.current, c.value);
   }, [c.value, c.textareaRef]);
 
   const updateTrigger = () => {
@@ -133,11 +139,17 @@ export function AiComposerInput() {
     return out;
   }, [fileTrigger, fileQuery, workspaceFiles.files]);
 
-  const fileTriggerOpen = fileTrigger !== null;
-  const snippetTriggerOpen = trigger !== null;
+  const pickerResultsKey = fileTrigger
+    ? `files:${filteredFiles.join("\u0000")}`
+    : trigger
+      ? `snippets:${filteredItems.map(pickerItemIdentity).join("\u0000")}`
+      : "closed";
+  const previousPickerResultsKey = useRef(pickerResultsKey);
   useEffect(() => {
+    if (previousPickerResultsKey.current === pickerResultsKey) return;
+    previousPickerResultsKey.current = pickerResultsKey;
     setActiveIndex(0);
-  }, [snippetTriggerOpen, fileTriggerOpen, fileQuery]);
+  }, [pickerResultsKey]);
 
   const pickerOpen = trigger !== null || fileTrigger !== null;
 
@@ -305,8 +317,8 @@ export function AiComposerInput() {
   );
 }
 
-function autoresize(el: HTMLTextAreaElement | null) {
-  if (!el) return;
+function autoresize(el: HTMLTextAreaElement | null, expectedValue: string) {
+  if (!el || el.value !== expectedValue) return;
   el.style.height = "auto";
   el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
 }

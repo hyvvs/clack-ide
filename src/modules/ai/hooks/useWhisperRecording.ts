@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useChatStore } from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -48,6 +48,9 @@ export function useWhisperRecording({
   const recRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  const activeRef = useRef(false);
+  const mountedRef = useRef(false);
+  const onResultRef = useRef(onResult);
 
   const needsKey = providerNeedsKey(sttProvider);
   const providerKey = needsKey ? getApiKeyForStt(apiKeys, sttProvider) : null;
@@ -58,15 +61,22 @@ export function useWhisperRecording({
     !!navigator.mediaDevices?.getUserMedia &&
     typeof MediaRecorder !== "undefined";
 
-  const sttOptions: SttOptions = {
-    groqSttModel,
-    whispercppBaseURL,
-  };
+  const sttOptions: SttOptions = useMemo(
+    () => ({ groqSttModel, whispercppBaseURL }),
+    [groqSttModel, whispercppBaseURL],
+  );
 
-  const teardownStream = () => {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
+  const teardownStream = useCallback(() => {
+    const stream = streamRef.current;
+    stream?.getTracks().forEach((track) => {
+      track.stop();
+    });
     streamRef.current = null;
-  };
+  }, []);
+
+  useEffect(() => {
+    onResultRef.current = onResult;
+  }, [onResult]);
 
   const stop = useCallback(() => {
     const rec = recRef.current;
@@ -74,9 +84,17 @@ export function useWhisperRecording({
   }, []);
 
   const start = useCallback(async () => {
-    if (!supported || !hasKey || state !== "idle") return;
+    if (!supported || !hasKey || activeRef.current) return;
+    activeRef.current = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!mountedRef.current) {
+        stream.getTracks().forEach((track) => {
+          track.stop();
+        });
+        activeRef.current = false;
+        return;
+      }
       streamRef.current = stream;
       const mimeType = pickMime();
       const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
@@ -84,44 +102,93 @@ export function useWhisperRecording({
       rec.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
+      rec.onerror = () => {
+        if (recRef.current === rec) recRef.current = null;
+        rec.ondataavailable = null;
+        rec.onstop = null;
+        rec.onerror = null;
+        if (rec.state !== "inactive") rec.stop();
+        chunksRef.current = [];
+        activeRef.current = false;
+        teardownStream();
+        if (mountedRef.current) {
+          toast.error("Recording failed");
+          setState("idle");
+        }
+      };
       rec.onstop = async () => {
+        if (recRef.current === rec) recRef.current = null;
         const blob = new Blob(chunksRef.current, {
           type: rec.mimeType || "audio/webm",
         });
         chunksRef.current = [];
         teardownStream();
+        if (!mountedRef.current) {
+          activeRef.current = false;
+          return;
+        }
         if (blob.size === 0) {
+          activeRef.current = false;
           setState("idle");
           return;
         }
         setState("transcribing");
         try {
           const text = await transcribeAudio(blob, sttProvider, apiKeys, sttOptions);
-          if (text.trim()) onResult(text.trim());
+          if (mountedRef.current && text.trim()) {
+            onResultRef.current(text.trim());
+          }
         } catch (e) {
-          console.error("stt.transcribe", e);
-          toast.error(e instanceof Error ? e.message : "Transcription failed");
+          if (mountedRef.current) {
+            console.error("stt.transcribe", e);
+            toast.error(
+              e instanceof Error ? e.message : "Transcription failed",
+            );
+          }
         } finally {
-          setState("idle");
+          activeRef.current = false;
+          if (mountedRef.current) setState("idle");
         }
       };
       recRef.current = rec;
       rec.start();
       setState("recording");
     } catch (e) {
-      console.error("stt.getUserMedia", e);
-      toast.error("Microphone access failed");
+      activeRef.current = false;
+      const rec = recRef.current;
+      recRef.current = null;
+      if (rec) {
+        rec.ondataavailable = null;
+        rec.onstop = null;
+        rec.onerror = null;
+        if (rec.state !== "inactive") rec.stop();
+      }
+      if (mountedRef.current) {
+        console.error("stt.getUserMedia", e);
+        toast.error("Microphone access failed");
+        setState("idle");
+      }
       teardownStream();
-      setState("idle");
     }
-  }, [apiKeys, sttProvider, sttOptions, onResult, state, supported, hasKey]);
+  }, [apiKeys, sttProvider, sttOptions, supported, hasKey, teardownStream]);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
-      recRef.current?.stop();
+      mountedRef.current = false;
+      activeRef.current = false;
+      const rec = recRef.current;
+      recRef.current = null;
+      if (rec) {
+        rec.ondataavailable = null;
+        rec.onstop = null;
+        rec.onerror = null;
+        if (rec.state !== "inactive") rec.stop();
+      }
+      chunksRef.current = [];
       teardownStream();
     };
-  }, []);
+  }, [teardownStream]);
 
   return {
     state,

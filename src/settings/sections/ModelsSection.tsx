@@ -883,7 +883,7 @@ function LocalProviderCard({
                 value={contextDraft}
                 onChange={(e) => setContextDraft(e.target.value)}
                 onBlur={() => {
-                  const v = parseInt(contextDraft);
+                  const v = parseInt(contextDraft, 10);
                   if (Number.isFinite(v) && v >= 1000) void setContextLimit(v);
                   else setContextDraft(String(contextLimit ?? ""));
                 }}
@@ -1110,7 +1110,7 @@ function CustomEndpointCard({
                 value={contextDraft}
                 onChange={(e) => setContextDraft(e.target.value)}
                 onBlur={() => {
-                  const v = parseInt(contextDraft);
+                  const v = parseInt(contextDraft, 10);
                   if (Number.isFinite(v) && v >= 1000)
                     void onUpdate({ contextLimit: v });
                   else setContextDraft(String(endpoint.contextLimit ?? ""));

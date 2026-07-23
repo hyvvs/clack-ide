@@ -548,6 +548,30 @@ html *::-webkit-scrollbar {
   display: none;
 }
 
+.clack-commit-message-scroll {
+  scrollbar-width: thin !important;
+  scrollbar-color: color-mix(in srgb, var(--clack-accent) 42%, transparent)
+    transparent !important;
+}
+
+.clack-commit-message-scroll::-webkit-scrollbar {
+  display: block !important;
+  width: 8px !important;
+  height: 0 !important;
+}
+
+.clack-commit-message-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.clack-commit-message-scroll::-webkit-scrollbar-thumb {
+  min-height: 24px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--clack-accent) 42%, transparent);
+  background-clip: padding-box;
+}
+
 /* Motion tokens. Reduced-motion zeroes the durations as a global snap. */
 :root {
   --dur-fast: 160ms;

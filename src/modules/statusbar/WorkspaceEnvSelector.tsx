@@ -21,6 +21,10 @@ type Props = {
 export function WorkspaceEnvSelector({ onSelect }: Props) {
   if (!IS_WINDOWS) return null;
 
+  return <WindowsWorkspaceEnvSelector onSelect={onSelect} />;
+}
+
+function WindowsWorkspaceEnvSelector({ onSelect }: Props) {
   const env = useWorkspaceEnvStore((s) => s.env);
   const distros = useWorkspaceEnvStore((s) => s.distros);
   const loading = useWorkspaceEnvStore((s) => s.loading);

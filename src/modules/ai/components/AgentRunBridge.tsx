@@ -126,13 +126,20 @@ function Bridge({
 
   // ---- AI diff tab management ----------------------------------------------
   // We track which approvalIds have already opened a tab so re-renders don't
-  // open duplicates. Reset when the session changes.
-  const openedRef = useRef<Set<string>>(new Set());
-  const fileMutationFingerprintRef = useRef<string>("");
-  useEffect(() => {
-    openedRef.current = new Set();
-    fileMutationFingerprintRef.current = "";
-  }, [sessionId]);
+  // open duplicates. A new session gets independent tracking.
+  const fileMutationTrackingRef = useRef({
+    sessionId,
+    opened: new Set<string>(),
+    fingerprint: "",
+  });
+  if (fileMutationTrackingRef.current.sessionId !== sessionId) {
+    fileMutationTrackingRef.current = {
+      sessionId,
+      opened: new Set<string>(),
+      fingerprint: "",
+    };
+  }
+  const fileMutationTracking = fileMutationTrackingRef.current;
 
   // Cheap fingerprint of file-mutation tool parts only. The diff-tab effect
   // is the most expensive thing on the streaming path, so we skip it when
@@ -170,10 +177,10 @@ function Bridge({
         | { kind: "literal"; content: string }
         | { kind: "edits"; edits: EditOp[] };
     };
-    if (fileMutationFingerprint === fileMutationFingerprintRef.current) {
+    if (fileMutationFingerprint === fileMutationTracking.fingerprint) {
       return;
     }
-    fileMutationFingerprintRef.current = fileMutationFingerprint;
+    fileMutationTracking.fingerprint = fileMutationFingerprint;
 
     const pending: Pending[] = [];
     const toClose = new Set<string>();
@@ -186,7 +193,7 @@ function Bridge({
         const { state, approvalId, path, derive } = info;
         if (!approvalId) continue;
         if (state === "approval-requested") {
-          if (!openedRef.current.has(approvalId)) {
+          if (!fileMutationTracking.opened.has(approvalId)) {
             pending.push({ approvalId, path, derive });
           }
         } else if (
@@ -194,13 +201,15 @@ function Bridge({
           state === "output-available" ||
           state === "output-error"
         ) {
-          if (openedRef.current.has(approvalId)) toClose.add(approvalId);
+          if (fileMutationTracking.opened.has(approvalId)) {
+            toClose.add(approvalId);
+          }
         }
       }
     }
 
     for (const id of toClose) {
-      openedRef.current.delete(id);
+      fileMutationTracking.opened.delete(id);
       closeAiDiffTab(id);
     }
 
@@ -212,7 +221,7 @@ function Bridge({
       for (const p of pending) {
         if (cancelled) return;
         // Mark as opened up-front so a re-render mid-await doesn't double-open.
-        openedRef.current.add(p.approvalId);
+        fileMutationTracking.opened.add(p.approvalId);
         let abs: string;
         try {
           abs = resolvePath(p.path, cwd);
@@ -246,7 +255,13 @@ function Bridge({
     return () => {
       cancelled = true;
     };
-  }, [messages, fileMutationFingerprint, openAiDiffTab, closeAiDiffTab]);
+  }, [
+    messages,
+    fileMutationFingerprint,
+    fileMutationTracking,
+    openAiDiffTab,
+    closeAiDiffTab,
+  ]);
 
   return null;
 }
