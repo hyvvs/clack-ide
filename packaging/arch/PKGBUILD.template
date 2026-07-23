@@ -1,0 +1,52 @@
+pkgname=clack
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc='Local-first IDE, terminal, and agent workspace'
+arch=('x86_64')
+url='https://github.com/hyvvs/clack-ide'
+license=('Apache-2.0')
+depends=(
+  'cairo'
+  'gdk-pixbuf2'
+  'glib2'
+  'gtk3'
+  'hicolor-icon-theme'
+  'libappindicator-gtk3'
+  'librsvg'
+  'openssl'
+  'pango'
+  'webkit2gtk-4.1'
+  'xdg-utils'
+)
+options=('!debug')
+source=(
+  'clack-bin'
+  'clack-linux-launcher'
+  'clack.desktop'
+  'clack-32.png'
+  'clack-128.png'
+  'clack-256.png'
+  'ARCH_PACKAGE_README.txt'
+  'LICENSE'
+)
+sha256sums=(
+  '@CLACK_BIN_SHA256@'
+  '@CLACK_LAUNCHER_SHA256@'
+  '@DESKTOP_SHA256@'
+  '@ICON_32_SHA256@'
+  '@ICON_128_SHA256@'
+  '@ICON_256_SHA256@'
+  '@PACKAGE_README_SHA256@'
+  '@LICENSE_SHA256@'
+)
+
+package() {
+  install -Dm755 "$srcdir/clack-linux-launcher" "$pkgdir/usr/bin/clack"
+  install -Dm755 "$srcdir/clack-bin" "$pkgdir/usr/lib/clack/clack-bin"
+  install -Dm644 "$srcdir/clack.desktop" "$pkgdir/usr/share/applications/clack.desktop"
+  install -Dm644 "$srcdir/clack-32.png" "$pkgdir/usr/share/icons/hicolor/32x32/apps/clack.png"
+  install -Dm644 "$srcdir/clack-128.png" "$pkgdir/usr/share/icons/hicolor/128x128/apps/clack.png"
+  install -Dm644 "$srcdir/clack-256.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/clack.png"
+  install -Dm644 "$srcdir/ARCH_PACKAGE_README.txt" "$pkgdir/usr/share/doc/clack/ARCH_PACKAGE_README.txt"
+  install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/clack/LICENSE"
+}

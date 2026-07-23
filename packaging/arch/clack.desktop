@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Clack
+Comment=Local-first IDE, terminal, and agent workspace
+Exec=/usr/bin/clack
+Icon=clack
+Terminal=false
+Categories=Development;IDE;
+StartupNotify=true

@@ -84,6 +84,41 @@ This sets `__NV_DISABLE_EXPLICIT_SYNC=1` for the launched dev process only. It d
 
 `WEBKIT_DISABLE_COMPOSITING_MODE=1` should be a last resort because it can be very laggy. `WEBKIT_DISABLE_DMABUF_RENDERER=1` may avoid some crashes, but it was still laggy in this setup.
 
+### Native Arch and CachyOS Package
+
+The native Arch package keeps the normal installed command:
+
+```bash
+clack
+```
+
+It installs a small compiled launcher at `/usr/bin/clack` and the real Tauri binary at `/usr/lib/clack/clack-bin`. The launcher automatically sets `__NV_DISABLE_EXPLICIT_SYNC=1` only when it detects Linux, Wayland, and the proprietary NVIDIA driver. The setting is process-local, existing user values are preserved, and no shell command string is used.
+
+To opt out for one launch:
+
+```bash
+CLACK_DISABLE_NVIDIA_WAYLAND_WORKAROUND=1 clack
+```
+
+Build the native package on Arch or CachyOS with:
+
+```bash
+npm install
+npm run tauri -- build --no-bundle
+cargo build --manifest-path packaging/linux-launcher/Cargo.toml --release --locked
+node packaging/arch/prepare-package.mjs packaging/arch/.build
+cd packaging/arch/.build
+makepkg --cleanbuild --clean --force --noconfirm
+```
+
+The result is `clack-<version>-1-x86_64.pkg.tar.zst`. Install it with `sudo pacman -U ./clack-*.pkg.tar.zst`. See [packaging/arch/ARCH_PACKAGE_README.txt](packaging/arch/ARCH_PACKAGE_README.txt) for the installed layout and launcher detection rules.
+
+### Standard Linux Bundles
+
+Standard Tauri AppImage, deb, and rpm bundles do not automatically use the native Arch launcher. The conditional NVIDIA and Wayland workaround is guaranteed only in the native Arch package unless equivalent package-specific launchers are implemented.
+
+AppImage is experimental on the affected proprietary NVIDIA and Wayland setup and should not be described as compatible without manual testing. Setting `__NV_DISABLE_EXPLICIT_SYNC=1` during `tauri build` does not make it active when an artifact is launched later.
+
 For a Windows installer:
 
 ```bash

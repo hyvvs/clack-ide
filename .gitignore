@@ -18,6 +18,8 @@ node_modules
 dist
 dist-ssr
 stats.html
+packaging/arch/.build/
+packaging/linux-launcher/target/
 
 # Local env/config
 

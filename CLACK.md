@@ -8,6 +8,9 @@ Clack is a Tauri 2 + React 19 + Rust IDE/agent app forked from Terax.
 - Package manager: npm. Use `npm install`, `npm run check-types`, `npm run lint`, `npm test`, `npm run tauri -- dev`, and `npm run tauri -- build`.
 - Tauri build hooks must stay on `npm run dev` and `npm run build`.
 - On Linux NVIDIA Wayland, if normal Tauri dev launch has Wayland, GDK, or GBM failures or severe WebKitGTK lag, use `npm run tauri:dev:linux:nvidia`. It sets `__NV_DISABLE_EXPLICIT_SYNC=1` for that dev process only. `WEBKIT_DISABLE_COMPOSITING_MODE=1` is a last resort because it can be very laggy, and `WEBKIT_DISABLE_DMABUF_RENDERER=1` may still be laggy.
+- Native Arch packaging uses `/usr/bin/clack` as a compiled launcher for `/usr/lib/clack/clack-bin`. The launcher conditionally applies the NVIDIA Wayland workaround to the Clack process only, preserves existing values, and supports `CLACK_DISABLE_NVIDIA_WAYLAND_WORKAROUND=1`.
+- Standard AppImage, deb, and rpm bundles do not automatically use the native Arch launcher. Do not claim that the workaround is active in those artifacts without equivalent package-specific launchers and manual verification.
+- Keep the Linux launcher and Arch package isolated from Windows NSIS and macOS packaging. Do not add Linux graphics variables to Tauri configuration or desktop entries.
 - The central workspace is for editor, preview, markdown, AI diff, git diff, and git history tabs.
 - Terminals are real PTY-backed sessions rendered in the bottom dock, not center editor tabs.
 - Do not replace xterm.js, PTY streaming, shell cwd tracking, WSL behavior, terminal tabs, or terminal splits with mock UI.
@@ -25,6 +28,8 @@ Run the relevant subset before claiming done:
 - `npm run tauri -- dev`
 - `npm run tauri:dev:linux:nvidia` for NVIDIA Wayland dev launch issues on Linux
 - `npm run tauri -- build`
+- `cargo test --manifest-path packaging/linux-launcher/Cargo.toml --locked`
+- `cargo clippy --manifest-path packaging/linux-launcher/Cargo.toml --all-targets --locked -- -D warnings`
 - `cd src-tauri && cargo fmt --check`
 - `cd src-tauri && cargo clippy --all-targets --locked -- -D warnings`
 - `cd src-tauri && cargo test --locked`

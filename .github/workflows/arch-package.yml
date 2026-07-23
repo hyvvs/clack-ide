@@ -1,0 +1,248 @@
+name: Arch Package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arch-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-arch-package:
+    name: Build native Arch package
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 90
+    env:
+      BUILD_USER: builder
+      BUILD_HOME: /home/builder
+      CARGO_HOME: /home/builder/.cargo
+      RUSTUP_HOME: /home/builder/.rustup
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Arch build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm
+          pacman -S --needed --noconfirm \
+            desktop-file-utils \
+            file \
+            git \
+            gtk3 \
+            libappindicator-gtk3 \
+            librsvg \
+            namcap \
+            nodejs \
+            npm \
+            openssl \
+            pkgconf \
+            rustup \
+            webkit2gtk-4.1 \
+            xdg-utils
+
+      - name: Create unprivileged package builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          useradd --create-home --shell /bin/bash "$BUILD_USER"
+          chown -R "$BUILD_USER:$BUILD_USER" "$GITHUB_WORKSPACE"
+          install -d -o "$BUILD_USER" -g "$BUILD_USER" "$CARGO_HOME" "$RUSTUP_HOME"
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          runuser -u "$BUILD_USER" -- env \
+            HOME="$BUILD_HOME" \
+            CARGO_HOME="$CARGO_HOME" \
+            RUSTUP_HOME="$RUSTUP_HOME" \
+            PATH="$CARGO_HOME/bin:$PATH" \
+            rustup default stable
+          runuser -u "$BUILD_USER" -- env \
+            HOME="$BUILD_HOME" \
+            CARGO_HOME="$CARGO_HOME" \
+            RUSTUP_HOME="$RUSTUP_HOME" \
+            PATH="$CARGO_HOME/bin:$PATH" \
+            rustup component add clippy rustfmt
+
+      - name: Install npm dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" PATH="$CARGO_HOME/bin:$PATH" node --version
+          runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" PATH="$CARGO_HOME/bin:$PATH" npm --version
+          runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" PATH="$CARGO_HOME/bin:$PATH" npm ci
+
+      - name: Verify frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" PATH="$CARGO_HOME/bin:$PATH" npm run check-types
+          runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" PATH="$CARGO_HOME/bin:$PATH" npm run lint
+          runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" PATH="$CARGO_HOME/bin:$PATH" npm test
+          runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" PATH="$CARGO_HOME/bin:$PATH" npm run build
+
+      - name: Verify application Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          runuser -u "$BUILD_USER" -- env \
+            HOME="$BUILD_HOME" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" PATH="$CARGO_HOME/bin:$PATH" \
+            cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          runuser -u "$BUILD_USER" -- env \
+            HOME="$BUILD_HOME" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" PATH="$CARGO_HOME/bin:$PATH" \
+            cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+          runuser -u "$BUILD_USER" -- env \
+            HOME="$BUILD_HOME" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" PATH="$CARGO_HOME/bin:$PATH" \
+            cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: Verify Linux launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          runuser -u "$BUILD_USER" -- env \
+            HOME="$BUILD_HOME" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" PATH="$CARGO_HOME/bin:$PATH" \
+            cargo fmt --manifest-path packaging/linux-launcher/Cargo.toml --check
+          runuser -u "$BUILD_USER" -- env \
+            HOME="$BUILD_HOME" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" PATH="$CARGO_HOME/bin:$PATH" \
+            cargo clippy --manifest-path packaging/linux-launcher/Cargo.toml --all-targets --locked -- -D warnings
+          runuser -u "$BUILD_USER" -- env \
+            HOME="$BUILD_HOME" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" PATH="$CARGO_HOME/bin:$PATH" \
+            cargo test --manifest-path packaging/linux-launcher/Cargo.toml --locked
+
+      - name: Build Clack and launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          runuser -u "$BUILD_USER" -- env \
+            HOME="$BUILD_HOME" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" PATH="$CARGO_HOME/bin:$PATH" \
+            npm run tauri -- build --no-bundle
+          runuser -u "$BUILD_USER" -- env \
+            HOME="$BUILD_HOME" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" PATH="$CARGO_HOME/bin:$PATH" \
+            cargo build --manifest-path packaging/linux-launcher/Cargo.toml --release --locked
+          test -x src-tauri/target/release/clack
+          test -x packaging/linux-launcher/target/release/clack-linux-launcher
+
+      - name: Prepare package inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf packaging/arch/.build
+          runuser -u "$BUILD_USER" -- mkdir -p packaging/arch/.build
+          runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" \
+            node packaging/arch/prepare-package.mjs packaging/arch/.build
+          desktop-file-validate packaging/arch/.build/clack.desktop
+
+      - name: Build package with unprivileged makepkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" \
+            bash -lc 'cd "$GITHUB_WORKSPACE/packaging/arch/.build" && makepkg --cleanbuild --clean --force --noconfirm'
+          test -f "packaging/arch/.build/clack-$(node -p "require('./package.json').version")-1-x86_64.pkg.tar.zst"
+
+      - name: Inspect package metadata and contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="packaging/arch/.build/clack-$(node -p "require('./package.json').version")-1-x86_64.pkg.tar.zst"
+          pacman -Qip "$package"
+          pacman -Qlp "$package"
+          namcap packaging/arch/.build/PKGBUILD | tee packaging/arch/.build/namcap-pkgbuild.txt
+          namcap "$package" | tee packaging/arch/.build/namcap-package.txt
+          if grep -Eq '(^|[[:space:]])E:' packaging/arch/.build/namcap-pkgbuild.txt packaging/arch/.build/namcap-package.txt; then
+            echo "::error::namcap reported a package error."
+            exit 1
+          fi
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="packaging/arch/.build/clack-$(node -p "require('./package.json').version")-1-x86_64.pkg.tar.zst"
+          rm -rf arch-artifact
+          mkdir arch-artifact
+          cp "$package" arch-artifact/
+          cp packaging/arch/ARCH_PACKAGE_README.txt arch-artifact/
+          cd arch-artifact
+          sha256sum "$(basename "$package")" > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+
+      - name: Upload native Arch package
+        uses: actions/upload-artifact@v7
+        with:
+          name: clack-arch-package
+          path: arch-artifact/*
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-clean-install:
+    name: Verify clean Arch package install
+    needs: build-arch-package
+    runs-on: ubuntu-latest
+    container: archlinux:base
+    timeout-minutes: 35
+
+    steps:
+      - name: Download native Arch package
+        uses: actions/download-artifact@v7
+        with:
+          name: clack-arch-package
+          path: arch-artifact
+
+      - name: Verify artifact checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd arch-artifact
+          sha256sum --check SHA256SUMS.txt
+
+      - name: Update clean Arch environment
+        run: pacman -Syu --noconfirm
+
+      - name: Install package and resolved runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$(find arch-artifact -maxdepth 1 -name 'clack-*-1-x86_64.pkg.tar.zst' -print -quit)"
+          test -n "$package"
+          pacman -U --noconfirm "$package"
+          pacman -Q clack
+          pacman -Ql clack
+
+      - name: Validate installed files and dynamic libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          pacman -S --needed --noconfirm desktop-file-utils
+          test -x /usr/bin/clack
+          test ! -L /usr/bin/clack
+          test -x /usr/lib/clack/clack-bin
+          test -f /usr/share/applications/clack.desktop
+          test -f /usr/share/icons/hicolor/32x32/apps/clack.png
+          test -f /usr/share/icons/hicolor/128x128/apps/clack.png
+          test -f /usr/share/icons/hicolor/256x256/apps/clack.png
+          test -f /usr/share/doc/clack/ARCH_PACKAGE_README.txt
+          desktop-file-validate /usr/share/applications/clack.desktop
+          ldd /usr/bin/clack | tee /tmp/clack-launcher-ldd.txt
+          ldd /usr/lib/clack/clack-bin | tee /tmp/clack-application-ldd.txt
+          if grep -F "not found" /tmp/clack-launcher-ldd.txt /tmp/clack-application-ldd.txt; then
+            echo "::error::An installed Clack executable has a missing dynamic library."
+            exit 1
+          fi
+
+      - name: Verify clean uninstall
+        shell: bash
+        run: |
+          set -euo pipefail
+          pacman -Rns --noconfirm clack
+          test ! -e /usr/bin/clack
+          test ! -e /usr/lib/clack/clack-bin

@@ -1,0 +1,13 @@
+[package]
+name = "clack-linux-launcher"
+version = "0.8.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "clack_linux_launcher"
+path = "src/lib.rs"
+
+[[bin]]
+name = "clack-linux-launcher"
+path = "src/main.rs"
