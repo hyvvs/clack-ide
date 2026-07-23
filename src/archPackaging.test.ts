@@ -205,4 +205,23 @@ describe("native Arch package", () => {
       /publish[\s\S]*aur|create[-_]release|release-action|tauri-action/iu,
     );
   });
+
+  it("reports each clean-install assertion and queries validation tools deterministically", () => {
+    expect(archWorkflow).toContain("pacman -Ql clack");
+    expect(archWorkflow).toContain(
+      "if pacman -Qq desktop-file-utils >/dev/null 2>&1; then",
+    );
+    expect(archWorkflow).not.toContain(
+      "pacman -S --needed --noconfirm desktop-file-utils",
+    );
+    expect(archWorkflow).toContain("print_parent_contents()");
+    expect(archWorkflow).toContain("require_executable()");
+    expect(archWorkflow).toContain("require_regular_file()");
+    expect(archWorkflow).toContain("require_not_symlink()");
+    expect(archWorkflow).toContain("require_executable /usr/bin/clack");
+    expect(archWorkflow).toContain("require_not_symlink /usr/bin/clack");
+    expect(archWorkflow).not.toContain("test -x /usr/bin/clack");
+    expect(archWorkflow).not.toContain("test ! -L /usr/bin/clack");
+    expect(archWorkflow).not.toContain("|| true");
+  });
 });

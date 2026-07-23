@@ -222,22 +222,81 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pacman -S --needed --noconfirm desktop-file-utils
-          test -x /usr/bin/clack
-          test ! -L /usr/bin/clack
-          test -x /usr/lib/clack/clack-bin
-          test -f /usr/share/applications/clack.desktop
-          test -f /usr/share/icons/hicolor/32x32/apps/clack.png
-          test -f /usr/share/icons/hicolor/128x128/apps/clack.png
-          test -f /usr/share/icons/hicolor/256x256/apps/clack.png
-          test -f /usr/share/doc/clack/ARCH_PACKAGE_README.txt
+
+          print_parent_contents() {
+            local path="$1"
+            local parent
+            parent="$(dirname "$path")"
+            echo "::group::Contents of $parent"
+            if [[ -d "$parent" ]]; then
+              ls -la -- "$parent"
+            else
+              echo "Parent directory does not exist: $parent"
+              ls -la -- "$(dirname "$parent")"
+            fi
+            echo "::endgroup::"
+          }
+
+          require_executable() {
+            local path="$1"
+            if [[ -x "$path" ]]; then
+              echo "::notice::Installed executable found: $path"
+              return
+            fi
+            echo "::error::Expected installed executable is missing or not executable: $path"
+            print_parent_contents "$path"
+            return 1
+          }
+
+          require_regular_file() {
+            local path="$1"
+            if [[ -f "$path" ]]; then
+              echo "::notice::Installed file found: $path"
+              return
+            fi
+            echo "::error::Expected installed regular file is missing: $path"
+            print_parent_contents "$path"
+            return 1
+          }
+
+          require_not_symlink() {
+            local path="$1"
+            if [[ ! -L "$path" ]]; then
+              echo "::notice::Installed path is not a symlink: $path"
+              return
+            fi
+            echo "::error::Expected a real compiled launcher, but the installed path is a symlink: $path"
+            print_parent_contents "$path"
+            return 1
+          }
+
+          pacman -Ql clack
+
+          if pacman -Qq desktop-file-utils >/dev/null 2>&1; then
+            echo "::notice::desktop-file-utils is already installed"
+          else
+            pacman -S --noconfirm desktop-file-utils
+          fi
+
+          require_executable /usr/bin/clack
+          require_not_symlink /usr/bin/clack
+          require_executable /usr/lib/clack/clack-bin
+          require_regular_file /usr/share/applications/clack.desktop
+          require_regular_file /usr/share/icons/hicolor/32x32/apps/clack.png
+          require_regular_file /usr/share/icons/hicolor/128x128/apps/clack.png
+          require_regular_file /usr/share/icons/hicolor/256x256/apps/clack.png
+          require_regular_file /usr/share/doc/clack/ARCH_PACKAGE_README.txt
+
           desktop-file-validate /usr/share/applications/clack.desktop
+          echo "::notice::Desktop entry validation passed: /usr/share/applications/clack.desktop"
+
           ldd /usr/bin/clack | tee /tmp/clack-launcher-ldd.txt
           ldd /usr/lib/clack/clack-bin | tee /tmp/clack-application-ldd.txt
           if grep -F "not found" /tmp/clack-launcher-ldd.txt /tmp/clack-application-ldd.txt; then
             echo "::error::An installed Clack executable has a missing dynamic library."
             exit 1
           fi
+          echo "::notice::Dynamic library validation passed for both Clack executables"
 
       - name: Verify clean uninstall
         shell: bash
