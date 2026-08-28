@@ -16,6 +16,7 @@ Clack is a Tauri 2 + React 19 + Rust IDE/agent app forked from Terax.
 - Do not replace xterm.js, PTY streaming, shell cwd tracking, WSL behavior, terminal tabs, or terminal splits with mock UI.
 - Keep explorer, editor, source control, preview, AI chat, approvals, provider settings, and workspace switching functional.
 - No fake visible controls. Incomplete features should be hidden or wired to real behavior.
+- The authoritative implementation plan for multiple models per provider, conversation-owned agent/model/workspace identity, and inter-agent collaboration is `docs/AI_MULTI_AGENT_BUILD_PLAN.md`. Follow its phases in order, update its status ledger as work lands, and do not revive provider connection IDs or live model discovery unless the user explicitly changes the scope.
 
 ## Verification
 
