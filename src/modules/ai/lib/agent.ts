@@ -13,7 +13,6 @@ import {
   getModelContextLimit,
   isCompatModelId,
   LMSTUDIO_DEFAULT_BASE_URL,
-  MAX_AGENT_STEPS,
   MLX_DEFAULT_BASE_URL,
   modelKeepsReasoning,
   OLLAMA_DEFAULT_BASE_URL,
@@ -27,6 +26,12 @@ import { buildTools, type ToolContext } from "../tools/tools";
 import { compactModelMessagesDetailed } from "./compact";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
+import { AGENT_SOFT_STEP_LIMIT, type RunStepObservation } from "./runBudget";
+import {
+  AGENT_PROVIDER_MAX_RETRIES,
+  withProviderRetryTracking,
+  type ProviderRetryEvent,
+} from "./providerRetry";
 
 const localProxyFetch = createProxyFetch({ allowPrivateNetwork: true });
 
@@ -123,8 +128,9 @@ export async function buildLanguageModel(
       break;
     }
     case "deepseek": {
-      const { createOpenAICompatible } =
-        await import("@ai-sdk/openai-compatible");
+      const { createOpenAICompatible } = await import(
+        "@ai-sdk/openai-compatible"
+      );
       built = createOpenAICompatible({
         name: "deepseek",
         baseURL: "https://api.deepseek.com",
@@ -133,8 +139,9 @@ export async function buildLanguageModel(
       break;
     }
     case "mistral": {
-      const { createOpenAICompatible } =
-        await import("@ai-sdk/openai-compatible");
+      const { createOpenAICompatible } = await import(
+        "@ai-sdk/openai-compatible"
+      );
       built = createOpenAICompatible({
         name: "mistral",
         baseURL: "https://api.mistral.ai/v1",
@@ -148,8 +155,9 @@ export async function buildLanguageModel(
       break;
     }
     case "openrouter": {
-      const { createOpenAICompatible } =
-        await import("@ai-sdk/openai-compatible");
+      const { createOpenAICompatible } = await import(
+        "@ai-sdk/openai-compatible"
+      );
       built = createOpenAICompatible({
         name: "openrouter",
         baseURL: "https://openrouter.ai/api/v1",
@@ -167,8 +175,9 @@ export async function buildLanguageModel(
           "OpenAI-compatible provider has no base URL. Set it in Settings → Models.",
         );
       }
-      const { createOpenAICompatible } =
-        await import("@ai-sdk/openai-compatible");
+      const { createOpenAICompatible } = await import(
+        "@ai-sdk/openai-compatible"
+      );
       built = createOpenAICompatible({
         name: "openai-compatible",
         baseURL: compatURL,
@@ -178,8 +187,9 @@ export async function buildLanguageModel(
       break;
     }
     case "lmstudio": {
-      const { createOpenAICompatible } =
-        await import("@ai-sdk/openai-compatible");
+      const { createOpenAICompatible } = await import(
+        "@ai-sdk/openai-compatible"
+      );
       built = createOpenAICompatible({
         name: "lmstudio",
         baseURL: lmstudioURL,
@@ -188,8 +198,9 @@ export async function buildLanguageModel(
       break;
     }
     case "mlx": {
-      const { createOpenAICompatible } =
-        await import("@ai-sdk/openai-compatible");
+      const { createOpenAICompatible } = await import(
+        "@ai-sdk/openai-compatible"
+      );
       built = createOpenAICompatible({
         name: "mlx",
         baseURL: mlxURL,
@@ -198,8 +209,9 @@ export async function buildLanguageModel(
       break;
     }
     case "ollama": {
-      const { createOpenAICompatible } =
-        await import("@ai-sdk/openai-compatible");
+      const { createOpenAICompatible } = await import(
+        "@ai-sdk/openai-compatible"
+      );
       built = createOpenAICompatible({
         name: "ollama",
         baseURL: ollamaURL,
@@ -240,9 +252,7 @@ export function buildConfiguredLanguageModel(
     const ep = local.customEndpoints?.find((e) => e.id === eid);
     if (!ep) throw new Error(`Custom endpoint not found: ${eid}`);
     if (!ep.modelId.trim()) {
-      throw new Error(
-        `${ep.name}: no model id set. Open Settings → Models.`,
-      );
+      throw new Error(`${ep.name}: no model id set. Open Settings → Models.`);
     }
     return buildLanguageModel(
       "openai-compatible",
@@ -369,7 +379,14 @@ export type RunAgentOptions = {
   onStep?: (step: string | null) => void;
   onUsage?: (delta: AgentUsageDelta) => void;
   onCompact?: (info: { droppedCount: number }) => void;
-  onFinishMeta?: (info: { hitStepCap: boolean; finishReason: string }) => void;
+  onRunStep?: (observation: RunStepObservation) => void;
+  onProviderRetry?: (event: ProviderRetryEvent) => void;
+  onProviderRecovered?: () => void;
+  onFinishMeta?: (info: {
+    hitStepCap: boolean;
+    finishReason: string;
+    steps: number;
+  }) => void;
   lmstudioBaseURL?: string;
   lmstudioModelId?: string;
   mlxBaseURL?: string;
@@ -384,13 +401,14 @@ export type RunAgentOptions = {
   customEndpointKeys?: CustomEndpointKeys;
   planMode?: boolean;
   projectMemory?: string | null;
+  logicalContinuation?: boolean;
   uiMessages: UIMessage[];
   abortSignal?: AbortSignal;
 };
 
 export async function runAgentStream(opts: RunAgentOptions) {
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
-  const model = await buildConfiguredLanguageModel(modelId, opts.keys, {
+  const baseModel = await buildConfiguredLanguageModel(modelId, opts.keys, {
     lmstudioBaseURL: opts.lmstudioBaseURL,
     lmstudioModelId: opts.lmstudioModelId,
     mlxBaseURL: opts.mlxBaseURL,
@@ -406,6 +424,14 @@ export async function runAgentStream(opts: RunAgentOptions) {
   const endpoints = opts.customEndpoints ?? [];
   const info = resolveModel(modelId, endpoints);
   const provider = info.provider;
+  const model = withProviderRetryTracking(
+    baseModel,
+    {
+      onRetry: (event) => opts.onProviderRetry?.(event),
+      onRecovered: () => opts.onProviderRecovered?.(),
+    },
+    AGENT_PROVIDER_MAX_RETRIES,
+  );
 
   const stableSystem = buildStableSystem(
     modelId,
@@ -434,20 +460,34 @@ export async function runAgentStream(opts: RunAgentOptions) {
     opts.onCompact?.({ droppedCount: compact.droppedCount });
   }
 
-  const messages: ModelMessage[] = [{ role: "system", content: stableSystem }];
+  const continuationInstruction = opts.logicalContinuation
+    ? "\n\nThis generation continues the same logical run after an internal step batch. Continue from the existing plan and tool results without recapping or restarting the task."
+    : "";
+  const messages: ModelMessage[] = [
+    { role: "system", content: `${stableSystem}${continuationInstruction}` },
+  ];
   if (opts.planMode) {
     messages.push({ role: "system", content: PLAN_MODE_PROMPT });
   }
   messages.push(...compactedHistory);
 
   const finalMessages = applyCacheBreakpoints(messages, provider);
+  const openRouterErrorTransform =
+    provider === "openrouter"
+      ? (await import("@/modules/ai/lib/openRouterErrors"))
+          .preserveOpenRouterErrorMetadata
+      : undefined;
 
   let stepsSeen = 0;
   return streamText({
     model,
     messages: finalMessages,
     tools: buildTools(opts.toolContext),
-    stopWhen: stepCountIs(MAX_AGENT_STEPS),
+    includeRawChunks: provider === "openrouter",
+    experimental_transform: openRouterErrorTransform,
+    onError: provider === "openrouter" ? () => undefined : undefined,
+    maxRetries: AGENT_PROVIDER_MAX_RETRIES,
+    stopWhen: stepCountIs(AGENT_SOFT_STEP_LIMIT),
     abortSignal: opts.abortSignal,
     onStepFinish: (step) => {
       stepsSeen++;
@@ -476,17 +516,60 @@ export async function runAgentStream(opts: RunAgentOptions) {
           lastCachedTokens: stepCached,
         });
       }
+      const observation = runStepObservation(step);
+      if (observation) opts.onRunStep?.(observation);
     },
     onFinish: (result) => {
       opts.onStep?.(null);
       const finishReason =
         (result as { finishReason?: string } | undefined)?.finishReason ?? "";
       opts.onFinishMeta?.({
-        hitStepCap: stepsSeen >= MAX_AGENT_STEPS,
+        hitStepCap:
+          stepsSeen >= AGENT_SOFT_STEP_LIMIT && finishReason === "tool-calls",
         finishReason,
+        steps: stepsSeen,
       });
     },
   });
+}
+
+function runStepObservation(step: {
+  toolCalls?: Array<{
+    toolCallId?: string;
+    toolName: string;
+    input?: unknown;
+  }>;
+  toolResults?: unknown[];
+}): RunStepObservation | null {
+  const call = step.toolCalls?.[step.toolCalls.length - 1];
+  if (!call) return null;
+  const result = step.toolResults?.find(
+    (candidate) =>
+      (candidate as { toolCallId?: string } | undefined)?.toolCallId ===
+      call.toolCallId,
+  );
+  const output =
+    result && typeof result === "object" && "output" in result
+      ? (result as { output: unknown }).output
+      : result;
+  return {
+    toolName: call.toolName,
+    input: call.input,
+    output,
+    failed: isFailedToolOutput(result, output),
+  };
+}
+
+function isFailedToolOutput(result: unknown, output: unknown): boolean {
+  if (result && typeof result === "object") {
+    const record = result as Record<string, unknown>;
+    if (record.error != null || record.errorText != null) return true;
+  }
+  if (output && typeof output === "object") {
+    const record = output as Record<string, unknown>;
+    return record.error != null || record.ok === false;
+  }
+  return false;
 }
 
 export { EMPTY_USAGE };

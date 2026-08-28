@@ -15,7 +15,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
+import { CLACK_Z_INDEX } from "@/lib/layers";
 import { cn } from "@/lib/utils";
+import { ConfiguredBackgroundLayer } from "@/modules/theme/ConfiguredBackgroundLayer";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import {
   Add01Icon,
@@ -24,6 +26,8 @@ import {
   Cancel01Icon,
   Delete02Icon,
   FilterIcon,
+  Minimize01Icon,
+  StopCircleIcon,
   TerminalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -31,14 +35,15 @@ import type { PresenceState } from "@/lib/usePresence";
 import { useEffect, useMemo } from "react";
 import { estimateCost, getModel, getModelContextLimit, type ModelId } from "../config";
 import type { ResizeDir } from "../lib/miniWindowGeometry";
-import type { SessionMeta } from "../lib/sessions";
+import type { SessionMeta, SessionRunState } from "../lib/sessions";
 import { useMiniWindowGeometry } from "../lib/useMiniWindowGeometry";
 import { useAgentsStore } from "../store/agentsStore";
-import { useChatStore } from "../store/chatStore";
+import { cancelActiveRun, useChatStore } from "../store/chatStore";
 import { getOrCreateChat } from "../store/chatRuntime";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { usePlanStore } from "../store/planStore";
 import { AgentSwitcher } from "./AgentSwitcher";
+import { AgentPermissionControl } from "./AgentPermissionControl";
 import { AiChatView } from "./AiChat";
 import { PlanDiffReview } from "./PlanDiffReview";
 import { TodoStrip } from "./TodoStrip";
@@ -66,6 +71,7 @@ const SUGGESTIONS = [
 
 export function AiMiniWindow({ state }: { state: PresenceState }) {
   const closeMini = useChatStore((s) => s.closeMini);
+  const minimizeMini = useChatStore((s) => s.minimizeMini);
   const sessionId = useChatStore((s) => s.activeSessionId);
   const openPanel = useChatStore((s) => s.openPanel);
   const expandToPanel = () => {
@@ -93,37 +99,40 @@ export function AiMiniWindow({ state }: { state: PresenceState }) {
       ref={ref}
       data-state={state}
       data-ai-mini-window
+      aria-hidden={state !== "open"}
+      inert={state !== "open"}
+      style={{ zIndex: CLACK_Z_INDEX.miniWindow }}
       className={cn(
-        "no-scrollbar-deep fixed z-40 flex flex-col overflow-hidden",
-        "rounded-[var(--clack-radius-panel)] border border-[color:var(--clack-border-strong)] bg-[var(--clack-surface-raised)] text-[12px] text-[var(--clack-text-1)]",
-        "shadow-[var(--clack-shadow-high)]",
+        "clack-workspace clack-ai-scrollbars fixed isolate flex flex-col overflow-hidden",
+        "rounded-[var(--clack-radius-panel)] border border-[color:var(--clack-border-strong)] text-[12px] text-[var(--clack-text-1)] shadow-[var(--clack-shadow-high)]",
         "duration-200 ease-out",
         "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:slide-in-from-bottom-2",
         "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:slide-out-to-bottom-2",
       )}
     >
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-foreground/[0.03] to-transparent"
-      />
+      <ConfiguredBackgroundLayer placement="contained" />
       {RESIZE_DIRS.map((dir) => (
         <ResizeHandle key={dir} dir={dir} onPointerDown={startResize(dir)} />
       ))}
-      {sessionId ? (
-        <Body
-          sessionId={sessionId}
-          onClose={closeMini}
-          onExpand={expandToPanel}
-          onHeaderPointerDown={onHeaderPointerDown}
-        />
-      ) : (
-        <EmptyShell
-          onClose={closeMini}
-          onExpand={expandToPanel}
-          onHeaderPointerDown={onHeaderPointerDown}
-        />
-      )}
-      <PlanDiffReview />
+      <div className="relative z-[1] flex min-h-0 flex-1 flex-col overflow-hidden">
+        {sessionId ? (
+          <Body
+            sessionId={sessionId}
+            onClose={closeMini}
+            onMinimize={minimizeMini}
+            onExpand={expandToPanel}
+            onHeaderPointerDown={onHeaderPointerDown}
+          />
+        ) : (
+          <EmptyShell
+            onClose={closeMini}
+            onMinimize={minimizeMini}
+            onExpand={expandToPanel}
+            onHeaderPointerDown={onHeaderPointerDown}
+          />
+        )}
+        <PlanDiffReview />
+      </div>
     </div>
   );
 }
@@ -160,16 +169,22 @@ function ResizeHandle({
 function Body({
   sessionId,
   onClose,
+  onMinimize,
   onExpand,
   onHeaderPointerDown,
 }: {
   sessionId: string;
   onClose: () => void;
+  onMinimize: () => void;
   onExpand: () => void;
   onHeaderPointerDown: (e: React.PointerEvent) => void;
 }) {
   const focusInput = useChatStore((s) => s.focusInput);
   const step = useChatStore((s) => s.agentMeta.step);
+  const run = useChatStore(
+    (s) => s.sessions.find((session) => session.id === sessionId)?.run,
+  );
+  const runState = run?.state;
 
   const chat = useMemo(() => getOrCreateChat(sessionId), [sessionId]);
   const helpers = useChat<UIMessage>({ chat });
@@ -180,8 +195,16 @@ function Body({
     <>
       <Header
         step={step}
-        isBusy={isBusy}
+        isBusy={
+          isBusy ||
+          (runState === "running" &&
+            (run?.budget?.phase === "running" ||
+              run?.budget?.phase === "auto-continue-pending"))
+        }
+        runState={runState}
+        onStop={cancelActiveRun}
         onClose={onClose}
+        onMinimize={onMinimize}
         onExpand={onExpand}
         messages={helpers.messages}
         onHeaderPointerDown={onHeaderPointerDown}
@@ -200,7 +223,7 @@ function Body({
               error={helpers.error}
               clearError={helpers.clearError}
               addToolApprovalResponse={helpers.addToolApprovalResponse}
-              stop={helpers.stop}
+              stop={cancelActiveRun}
             />
           </div>
         )}
@@ -217,11 +240,13 @@ function PlanModeStrip() {
   const disable = usePlanStore((s) => s.disable);
   if (!active) return null;
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-[color:var(--clack-border-subtle)] bg-[var(--clack-surface-1)] px-3 py-1.5">
+    <div className="clack-panel flex shrink-0 items-center gap-2 border-b px-3 py-1.5">
       <span className="size-1.5 shrink-0 rounded-full bg-[var(--clack-warning)]" />
       <span className="text-[11px] font-medium text-[var(--clack-text-1)]">Plan mode</span>
       <span className="text-[11px] text-[var(--clack-text-3)]">
-        {queueLen > 0 ? `| ${queueLen} queued` : "| no edits queued"}
+        {queueLen > 0
+          ? `| ${queueLen} queued for review`
+          : "| waiting for a prompt"}
       </span>
       <span className="flex-1" />
       <button
@@ -237,10 +262,12 @@ function PlanModeStrip() {
 
 function EmptyShell({
   onClose,
+  onMinimize,
   onExpand,
   onHeaderPointerDown,
 }: {
   onClose: () => void;
+  onMinimize: () => void;
   onExpand: () => void;
   onHeaderPointerDown: (e: React.PointerEvent) => void;
 }) {
@@ -249,7 +276,10 @@ function EmptyShell({
       <Header
         step={null}
         isBusy={false}
+        runState={undefined}
+        onStop={cancelActiveRun}
         onClose={onClose}
+        onMinimize={onMinimize}
         onExpand={onExpand}
         onHeaderPointerDown={onHeaderPointerDown}
       />
@@ -263,19 +293,31 @@ function EmptyShell({
 function Header({
   step,
   isBusy,
+  runState,
+  onStop,
   onClose,
+  onMinimize,
   messages,
   onHeaderPointerDown,
 }: {
   step: string | null;
   isBusy: boolean;
+  runState: SessionRunState | undefined;
+  onStop: () => void | Promise<void>;
   onClose: () => void;
+  onMinimize: () => void;
   onExpand: () => void;
   messages?: UIMessage[];
   onHeaderPointerDown: (e: React.PointerEvent) => void;
 }) {
-  const customAgents = useAgentsStore((s) => s.customAgents);
-  void customAgents;
+  const activeAgentId = useAgentsStore((state) => state.activeId);
+  const runAgentId = useChatStore((state) => {
+    if (runState !== "running") return null;
+    return state.sessions.find(
+      (session) => session.id === state.activeSessionId,
+    )?.run?.agentId;
+  });
+  const displayedAgentId = runAgentId ?? activeAgentId;
 
   return (
     <div
@@ -283,7 +325,12 @@ function Header({
       className="clack-shell relative flex h-11 shrink-0 cursor-grab items-center justify-between gap-2 border-b px-3 active:cursor-grabbing"
     >
       <div className="flex min-w-0 items-center gap-1.5">
-        <AgentSwitcher isMiniWindow />
+        <AgentSwitcher
+          isMiniWindow
+          agentId={displayedAgentId}
+          disabled={runState === "running"}
+        />
+        <AgentPermissionControl agentId={displayedAgentId} compact />
         {messages !== undefined ? (
           <ContextIndicator messages={messages} />
         ) : null}
@@ -295,14 +342,39 @@ function Header({
             <span className="max-w-32 truncate">{step ?? "Thinking..."}</span>
           </span>
         ) : null}
+        {shouldShowHeaderStop(runState) ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => void invokeHeaderStop(onStop)}
+            className="h-6 gap-1 px-2 text-[10.5px]"
+            aria-label="Stop active AI run"
+            title="Stop active AI run"
+          >
+            <HugeiconsIcon icon={StopCircleIcon} size={11} strokeWidth={1.9} />
+            Stop
+          </Button>
+        ) : null}
         <SessionPicker />
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          onClick={onMinimize}
+          className="size-5"
+          aria-label="Minimize AI chat"
+          title="Minimize"
+        >
+          <HugeiconsIcon icon={Minimize01Icon} size={11} strokeWidth={1.75} />
+        </Button>
         <Button
           type="button"
           size="icon"
           variant="ghost"
           onClick={onClose}
           className="size-5"
-          aria-label="Close"
+          aria-label="Close AI chat"
           title="Close (Esc)"
         >
           <HugeiconsIcon icon={Cancel01Icon} size={11} strokeWidth={1.75} />
@@ -310,6 +382,18 @@ function Header({
       </div>
     </div>
   );
+}
+
+export function shouldShowHeaderStop(
+  runState: SessionRunState | undefined,
+): boolean {
+  return runState === "running";
+}
+
+export function invokeHeaderStop(
+  onStop: () => void | Promise<void>,
+): void | Promise<void> {
+  return onStop();
 }
 
 function estimateTokens(messages: UIMessage[]): number {

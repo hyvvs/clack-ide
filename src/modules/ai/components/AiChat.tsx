@@ -28,11 +28,16 @@ import {
   File01Icon,
   HashtagIcon,
   TerminalIcon,
+  StopCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { SLASH_COMMANDS, TERAX_CMD_RE } from "../lib/slashCommands";
 import { Spinner } from "@/components/ui/spinner";
-import { useChatStore } from "../store/chatStore";
-import { sendMessage } from "../store/chatRuntime";
+import {
+  useChatStore,
+  type ProviderRetryState,
+} from "../store/chatStore";
+import { continueActiveRun } from "../store/chatRuntime";
+import { describeRunBudgetStop, type RunBudgetState } from "../lib/runBudget";
 import type {
   ChatStatus,
   DynamicToolUIPart,
@@ -42,6 +47,13 @@ import type {
 } from "ai";
 import { memo, useCallback, useMemo } from "react";
 import { AiToolApproval } from "./AiToolApproval";
+import { AiErrorCard } from "./AiErrorCard";
+import {
+  normalizeAiError,
+  sanitizeAiErrorText,
+  shouldPresentAiError,
+} from "@/modules/ai/lib/errors";
+import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 
 function CommandSnippet({ name }: { name: string }) {
   const meta = SLASH_COMMANDS[name];
@@ -79,8 +91,7 @@ type ContextChip =
 
 const SELECTION_RE =
   /<selection\s+source="(terminal|editor)">\n?([\s\S]*?)\n?<\/selection>/g;
-const FILE_RE =
-  /<file\s+name="([^"]+)"[^>]*>\n?([\s\S]*?)\n?<\/file>/g;
+const FILE_RE = /<file\s+name="([^"]+)"[^>]*>\n?([\s\S]*?)\n?<\/file>/g;
 const SNIPPET_RE = /<snippet\s+name="([^"]+)">\n?[\s\S]*?\n?<\/snippet>/g;
 
 function countLines(s: string): number {
@@ -128,7 +139,9 @@ const ContextChips = memo(function ContextChips({
           className="inline-flex items-center gap-1 rounded-[var(--clack-radius-button)] border border-[color:var(--clack-border-subtle)] bg-[var(--clack-surface-2)] px-1.5 py-0.5 text-[10.5px] text-[var(--clack-text-3)]"
         >
           {chipIcon(c)}
-          <span className="font-medium text-[var(--clack-text-1)]">{chipLabel(c)}</span>
+          <span className="font-medium text-[var(--clack-text-1)]">
+            {chipLabel(c)}
+          </span>
           {"lines" in c && c.lines > 0 ? (
             <span className="opacity-70">| {c.lines}L</span>
           ) : null}
@@ -184,23 +197,46 @@ export function AiChatView({
   error,
   clearError,
   addToolApprovalResponse,
+  stop,
 }: Props) {
-  const isBusy = status === "submitted" || status === "streaming";
+  const chatIsBusy = status === "submitted" || status === "streaming";
   const lastMessage = messages[messages.length - 1];
-  const showSpinner = isBusy && lastMessage?.role === "user";
   const streamingMessageId =
     status === "streaming" && lastMessage?.role === "assistant"
       ? lastMessage.id
       : null;
   const step = useChatStore((s) => s.agentMeta.step);
-  const hitStepCap = useChatStore((s) => s.agentMeta.hitStepCap);
   const compactionNotice = useChatStore((s) => s.agentMeta.compactionNotice);
+  const storedError = useChatStore((s) => s.agentMeta.error);
+  const providerRetry = useChatStore((s) => s.agentMeta.providerRetry);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const run = useChatStore(
+    (s) => s.sessions.find((session) => session.id === activeSessionId)?.run,
+  );
+  const isBusy = run?.state === "running" && chatIsBusy;
+  const showSpinner = isBusy && lastMessage?.role === "user";
   const patchAgentMeta = useChatStore((s) => s.patchAgentMeta);
+  const hookError = useMemo(
+    () =>
+      error ? normalizeAiError(error, { disposition: "terminal" }) : null,
+    [error],
+  );
+  const normalizedError = storedError ?? hookError;
+  const visibleError = shouldPresentAiError(normalizedError, run?.state)
+    ? normalizedError
+    : null;
   const showContinue =
-    !isBusy && hitStepCap && lastMessage?.role === "assistant";
+    !isBusy &&
+    run?.budget?.phase === "soft-limit" &&
+    lastMessage?.role === "assistant";
+  const showHardLimit =
+    !isBusy &&
+    run?.budget?.phase === "hard-limit" &&
+    lastMessage?.role === "assistant";
 
   const onApproval = useCallback(
-    (id: string, approved: boolean) => addToolApprovalResponse({ id, approved }),
+    (id: string, approved: boolean) =>
+      addToolApprovalResponse({ id, approved }),
     [addToolApprovalResponse],
   );
 
@@ -238,36 +274,101 @@ export function AiChatView({
           <div className="flex items-center gap-2 text-xs text-[var(--clack-text-3)]">
             <Spinner />
             <span className="truncate">{step ?? "Thinking..."}</span>
-          </div>
-        )}
-        {showContinue && (
-          <ContinueRow
-            onContinue={() => {
-              patchAgentMeta({ hitStepCap: false });
-              void sendMessage(
-                "Continue from where you stopped. Don't recap. Just keep going.",
-              );
-            }}
-          />
-        )}
-        {error && (
-          <div className="rounded-[var(--clack-radius-panel)] border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            <div className="font-medium">Something went wrong.</div>
-            <div className="mt-0.5 leading-relaxed opacity-90">
-              {error.message}
-            </div>
             <button
               type="button"
-              onClick={clearError}
-              className="mt-1 underline opacity-80 hover:opacity-100"
+              onClick={() => void stop()}
+              className="ml-auto inline-flex items-center gap-1 rounded-[var(--clack-radius-button)] px-1.5 py-0.5 text-[10.5px] hover:bg-[var(--clack-accent-soft)] hover:text-[var(--clack-text-1)]"
+              aria-label="Stop active AI run"
             >
-              Dismiss
+              <HugeiconsIcon
+                icon={StopCircleIcon}
+                size={11}
+                strokeWidth={1.9}
+              />
+              Stop
             </button>
           </div>
         )}
+        {run?.state === "running" && providerRetry ? (
+          <ProviderRetryNotice retry={providerRetry} />
+        ) : null}
+        {run &&
+        run.state !== "running" &&
+        run.state !== "completed" &&
+        !(run.state === "failed" && visibleError) ? (
+          <RunTerminalStatus state={run.state} commandName={run.commandName} />
+        ) : null}
+        {showContinue && (
+          <ContinueRow onContinue={() => void continueActiveRun(false)} />
+        )}
+        {showHardLimit && run?.budget ? (
+          <HardLimitRow
+            budget={run.budget}
+            onContinue={() => void continueActiveRun(true)}
+          />
+        ) : null}
+        {visibleError ? (
+          <AiErrorCard
+            error={visibleError}
+            onOpenProviderSettings={() => void openSettingsWindow("models")}
+            onDismiss={() => {
+              clearError();
+              patchAgentMeta({ status: "idle", error: null });
+            }}
+          />
+        ) : null}
       </ConversationContent>
       <ConversationScrollButton />
     </Conversation>
+  );
+}
+
+export function ProviderRetryNotice({
+  retry,
+}: {
+  retry: ProviderRetryState;
+}) {
+  const provider = retry.error.provider ?? "AI provider";
+  const rateLimited = retry.error.kind === "rate_limit";
+  return (
+    <div className="clack-ai-block flex items-center gap-2 border-[color:var(--clack-warning)]/35 px-2.5 py-1.5 text-[11px]">
+      <Spinner className="size-3 shrink-0" />
+      <span className="min-w-0 flex-1 truncate text-[var(--clack-text-2)]">
+        {rateLimited
+          ? `Rate limited by ${provider}. Retrying...`
+          : `${provider} is temporarily unavailable. Retrying...`}
+      </span>
+      <span className="shrink-0 font-mono text-[10px] text-[var(--clack-text-3)]">
+        {retry.error.statusCode ? `HTTP ${retry.error.statusCode} | ` : ""}
+        retry {retry.retryNumber}/{retry.maxRetries}
+        {retry.error.retryAfter ? ` | ${retry.error.retryAfter}` : ""}
+      </span>
+    </div>
+  );
+}
+
+function RunTerminalStatus({
+  state,
+  commandName,
+}: {
+  state: "failed" | "cancelled" | "interrupted";
+  commandName?: string;
+}) {
+  const label =
+    state === "interrupted"
+      ? "Interrupted: this run ended when the previous Clack session closed."
+      : state === "cancelled"
+        ? "Cancelled"
+        : "Run failed";
+  return (
+    <div className="rounded-[var(--clack-radius-button)] border border-[color:var(--clack-border-subtle)] bg-[var(--clack-surface-2)] px-2.5 py-1.5 text-[11px] text-[var(--clack-text-3)]">
+      {commandName ? (
+        <span className="mr-1 font-mono text-[var(--clack-text-2)]">
+          #{commandName}
+        </span>
+      ) : null}
+      {label}
+    </div>
   );
 }
 
@@ -296,7 +397,7 @@ const CompactionNotice = memo(function CompactionNotice({
   );
 });
 
-const ContinueRow = memo(function ContinueRow({
+export const ContinueRow = memo(function ContinueRow({
   onContinue,
 }: {
   onContinue: () => void;
@@ -335,9 +436,10 @@ export const RenderedMessage = memo(function RenderedMessage({
       break;
     }
   }
-  const groups = useMemo(() => buildPartGroups(message.parts as AnyPart[]), [
-    message.parts,
-  ]);
+  const groups = useMemo(
+    () => buildPartGroups(message.parts as AnyPart[]),
+    [message.parts],
+  );
 
   if (message.role === "user") {
     const rawText = message.parts
@@ -382,7 +484,8 @@ export const RenderedMessage = memo(function RenderedMessage({
             const isReadSingle =
               partType(g.part) === "tool-read_file" &&
               ((g.part as { state?: string }).state ?? "") !==
-                "approval-requested";
+                "approval-requested" &&
+              !toolErrorText(g.part);
             if (isReadSingle) {
               return (
                 <PartAppear key={`${message.id}-${g.key}`}>
@@ -417,7 +520,7 @@ function partType(p: AnyPart): string {
 function isReadFilePart(p: AnyPart): boolean {
   if (partType(p) !== "tool-read_file") return false;
   const state = (p as { state?: string }).state ?? "";
-  return state !== "approval-requested";
+  return state !== "approval-requested" && !toolErrorText(p);
 }
 
 function partKey(p: AnyPart, idx: number): string {
@@ -512,7 +615,9 @@ const ReadGroup = memo(function ReadGroup({ parts }: { parts: AnyPart[] }) {
           strokeWidth={1.75}
           className="shrink-0 text-[var(--clack-accent)]"
         />
-        <span className="shrink-0 font-medium text-[var(--clack-text-1)]">Read</span>
+        <span className="shrink-0 font-medium text-[var(--clack-text-1)]">
+          Read
+        </span>
         <span className="shrink-0 text-[11px] text-[var(--clack-text-3)]">
           {count} file{count === 1 ? "" : "s"}
         </span>
@@ -579,7 +684,9 @@ const ReadRow = memo(function ReadRow({ part }: { part: AnyPart }) {
         strokeWidth={1.75}
         className="shrink-0 text-[var(--clack-accent)]"
       />
-      <span className="shrink-0 font-medium text-[var(--clack-text-1)]">Read</span>
+      <span className="shrink-0 font-medium text-[var(--clack-text-1)]">
+        Read
+      </span>
       <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--clack-text-3)]">
         {path ?? ""}
       </span>
@@ -641,6 +748,8 @@ const RenderedTool = memo(function RenderedTool({
     part.type === "dynamic-tool"
       ? part.toolName
       : part.type.replace(/^tool-/, "");
+  const errorText = toolErrorText(part);
+  const visualState = errorText ? "output-error" : part.state;
 
   if (part.state === "approval-requested") {
     return (
@@ -655,11 +764,54 @@ const RenderedTool = memo(function RenderedTool({
   return (
     <Tool
       toolName={toolName}
-      state={part.state}
+      state={visualState}
       input={part.input}
       output={"output" in part ? part.output : undefined}
-      errorText={"errorText" in part ? part.errorText : undefined}
-      defaultOpen={toolName === "list_directory"}
+      errorText={errorText}
+      defaultOpen={toolName === "list_directory" ? true : undefined}
     />
   );
 });
+
+export const HardLimitRow = memo(function HardLimitRow({
+  budget,
+  onContinue,
+}: {
+  budget: RunBudgetState;
+  onContinue: () => void;
+}) {
+  return (
+    <div className="clack-ai-block flex items-start gap-2 border-[color:var(--clack-warning)]/40 px-2.5 py-2 text-[11px]">
+      <div className="min-w-0 flex-1">
+        <div className="font-medium text-[var(--clack-warning)]">
+          Autonomous run limit reached
+        </div>
+        <div className="mt-0.5 text-[var(--clack-text-3)]">
+          {describeRunBudgetStop(budget)}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onContinue}
+        className="shrink-0 rounded-[var(--clack-radius-button)] border border-[color:var(--clack-warning)]/40 bg-[color:var(--clack-warning)]/10 px-2 py-0.5 font-medium text-[var(--clack-warning)] transition-colors hover:bg-[color:var(--clack-warning)]/15"
+      >
+        Continue anyway
+      </button>
+    </div>
+  );
+});
+
+function toolErrorText(part: unknown): string | undefined {
+  if (!part || typeof part !== "object") return undefined;
+  const candidate = part as { errorText?: unknown; output?: unknown };
+  if (typeof candidate.errorText === "string") {
+    return sanitizeAiErrorText(candidate.errorText, 1_200) || undefined;
+  }
+  if (!candidate.output || typeof candidate.output !== "object") {
+    return undefined;
+  }
+  const error = (candidate.output as Record<string, unknown>).error;
+  return typeof error === "string"
+    ? sanitizeAiErrorText(error, 1_200) || undefined
+    : undefined;
+}

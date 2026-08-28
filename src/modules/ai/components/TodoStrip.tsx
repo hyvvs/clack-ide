@@ -12,6 +12,7 @@ import { CheckmarkSquare02Icon, SquareIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect } from "react";
 import type { Todo } from "../lib/todos";
+import { useChatStore } from "../store/chatStore";
 import { useTodosStore } from "../store/todoStore";
 
 type Props = { sessionId: string | null };
@@ -23,18 +24,22 @@ export function TodoStrip({ sessionId }: Props) {
   const todos =
     useTodosStore((s) => (sessionId ? s.bySession[sessionId] : undefined)) ??
     EMPTY_TODOS;
+  const runState = useChatStore(
+    (state) =>
+      state.sessions.find((session) => session.id === sessionId)?.run?.state,
+  );
 
   useEffect(() => {
     if (sessionId) void hydrate(sessionId);
   }, [sessionId, hydrate]);
 
-  if (!sessionId || todos.length === 0) return null;
+  if (!sessionId || !shouldShowTodoStrip(runState, todos.length)) return null;
 
   const completed = todos.filter((t) => t.status === "completed").length;
   const pct = Math.round((completed / todos.length) * 100);
 
   return (
-    <div className="flex flex-col min-h-0 shrink-0 border-t-2 border-border/40 bg-muted/80 px-3 py-1.5 max-h-[35%] shadow-[0_-4px_12px_-8px_rgba(0,0,0,0.2)]">
+    <div className="clack-panel flex max-h-[35%] min-h-0 shrink-0 flex-col border-t px-3 py-1.5">
       <div className="my-1.5 flex items-center gap-2 shrink-0">
         <span className="text-[11px] font-medium text-foreground">Todos</span>
         <Progress value={pct} className="h-1 flex-1" />
@@ -53,8 +58,19 @@ export function TodoStrip({ sessionId }: Props) {
   );
 }
 
+export function shouldShowTodoStrip(
+  runState: string | undefined,
+  todoCount: number,
+): boolean {
+  return runState === "running" && todoCount > 0;
+}
+
 function TodoRow({ todo }: { todo: Todo }) {
   const isInProgress = todo.status === "in_progress";
+  const isTerminal =
+    todo.status === "cancelled" ||
+    todo.status === "interrupted" ||
+    todo.status === "failed";
   const row = (
     <li
       className={cn(
@@ -79,12 +95,17 @@ function TodoRow({ todo }: { todo: Todo }) {
           "min-w-0 flex-1",
           todo.status === "completed"
             ? "text-muted-foreground/60 line-through"
+            : isTerminal
+              ? "text-muted-foreground/60 line-through"
             : isInProgress
               ? "text-foreground"
               : "text-muted-foreground",
         )}
       >
         {todo.title}
+        {isTerminal ? (
+          <span className="ml-1 text-[9.5px] uppercase">{todo.status}</span>
+        ) : null}
       </span>
     </li>
   );

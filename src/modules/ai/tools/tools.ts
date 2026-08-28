@@ -6,6 +6,7 @@ import { buildShellTools } from "./shell";
 import { buildSubagentTools } from "./subagent";
 import { buildTerminalTools } from "./terminal";
 import { buildTodoTools } from "./todo";
+import { applyAgentPermissionPolicy } from "@/modules/ai/lib/permissions";
 
 export { resolvePath, type ToolContext } from "./context";
 
@@ -29,7 +30,7 @@ export { resolvePath, type ToolContext } from "./context";
  * outside that.
  */
 export function buildTools(ctx: import("./context").ToolContext) {
-  return {
+  return applyAgentPermissionPolicy({
     ...buildFsTools(ctx),
     ...buildEditTools(ctx),
     ...buildSearchTools(ctx),
@@ -38,7 +39,7 @@ export function buildTools(ctx: import("./context").ToolContext) {
     ...buildTerminalTools(ctx),
     ...buildTodoTools(ctx),
     ...buildManagedAgentTools(ctx),
-  } as const;
+  } as const, ctx);
 }
 
 export type ChatTools = ReturnType<typeof buildTools>;

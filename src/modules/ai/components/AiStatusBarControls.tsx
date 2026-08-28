@@ -7,6 +7,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { fmtShortcut, MOD_KEY } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
@@ -17,6 +22,7 @@ import {
   ArrowDown01Icon,
   ArrowUpIcon,
   BrainIcon,
+  Cancel01Icon,
   ChatGptIcon,
   ClaudeIcon,
   Clock01Icon,
@@ -61,6 +67,7 @@ import { toggleFavoriteModel } from "../lib/modelPrefs";
 import { partitionProvidersByConfiguration } from "../lib/providerOrdering";
 import { useChatStore } from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
 
 const PROVIDER_ICON = {
   openai: ChatGptIcon,
@@ -78,28 +85,40 @@ const PROVIDER_ICON = {
   ollama: ServerStack01Icon,
 } as const satisfies Record<ProviderId, typeof ChatGptIcon>;
 
-export function AiOpenButton({ onOpen }: { onOpen: () => void }) {
+export function AiOpenButton({
+  open,
+  onOpen,
+}: {
+  open: boolean;
+  onOpen: () => void;
+}) {
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className={cn(
-        "flex h-6 items-center gap-1.5 rounded-md border border-border/60 bg-card px-2 text-xs",
-        "text-muted-foreground transition-colors hover:border-border hover:bg-accent hover:text-foreground",
-        "animate-in slide-in-from-top-2 duration-200 ease-out",
-      )}
-      title="Open AI agent"
-    >
-      <span>Open AI agent</span>
-      <Kbd className="h-4 min-w-4 px-1">{fmtShortcut(MOD_KEY, "I")}</Kbd>
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          onClick={onOpen}
+          size="xs"
+          variant={open ? "secondary" : "outline"}
+          className="animate-in gap-1.5 slide-in-from-top-2 duration-200 ease-out"
+          aria-label={AI_CHAT_TOOLTIP}
+          aria-pressed={open}
+          data-state={open ? "open" : "closed"}
+        >
+          <HugeiconsIcon icon={Message01Icon} size={13} strokeWidth={1.75} />
+          <span>AI Chat</span>
+          <Kbd className="h-4 min-w-4 px-1">{fmtShortcut(MOD_KEY, "I")}</Kbd>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="top">{AI_CHAT_TOOLTIP}</TooltipContent>
+    </Tooltip>
   );
 }
 
 export function AiStatusBarControls() {
   const c = useComposer();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const openMini = useChatStore((s) => s.openMini);
+  const openExperience = useChatStore((s) => s.openExperience);
   const miniOpen = useChatStore((s) => s.mini.open);
   const closePanel = useChatStore((s) => s.closePanel);
 
@@ -160,23 +179,19 @@ export function AiStatusBarControls() {
       <span className="mx-1 h-8 w-px bg-border" aria-hidden />
       <Button
         onClick={closePanel}
-        title="Close AI panel"
-        size="xs"
+        title="Hide compact AI composer"
+        size="icon-xs"
         variant="ghost"
-        aria-label="Close AI panel"
-        className="text-[11px] text-foreground/85 px-1"
+        aria-label="Hide compact AI composer"
       >
-        <Kbd className="h-4 gap-px px-2 font-mono text-[11px]">
-          {fmtShortcut(MOD_KEY, "I")}
-        </Kbd>
+        <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
       </Button>
-      <IconBtn
-        title={miniOpen ? "Mini-window open" : "Open conversation"}
-        onClick={openMini}
-        disabled={miniOpen}
-      >
-        <HugeiconsIcon icon={Message01Icon} size={13} strokeWidth={1.75} />
-      </IconBtn>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <AiChatButton open={miniOpen} onOpen={openExperience} />
+        </TooltipTrigger>
+        <TooltipContent side="top">{AI_CHAT_TOOLTIP}</TooltipContent>
+      </Tooltip>
 
       {c.isBusy ? (
         <Button

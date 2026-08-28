@@ -22,8 +22,10 @@ export function defaultGeom(vp: Viewport): Geom {
 }
 
 export function clampGeom(g: Geom, vp: Viewport): Geom {
-  const w = clamp(g.w, MIN_W, Math.max(MIN_W, vp.vw));
-  const h = clamp(g.h, MIN_H, Math.max(MIN_H, vp.vh));
+  const maxW = Math.max(0, vp.vw);
+  const maxH = Math.max(0, vp.vh);
+  const w = clamp(g.w, Math.min(MIN_W, maxW), maxW);
+  const h = clamp(g.h, Math.min(MIN_H, maxH), maxH);
   return {
     w,
     h,
@@ -32,7 +34,12 @@ export function clampGeom(g: Geom, vp: Viewport): Geom {
   };
 }
 
-export function applyDrag(start: Geom, dx: number, dy: number, vp: Viewport): Geom {
+export function applyDrag(
+  start: Geom,
+  dx: number,
+  dy: number,
+  vp: Viewport,
+): Geom {
   return clampGeom({ ...start, x: start.x + dx, y: start.y + dy }, vp);
 }
 

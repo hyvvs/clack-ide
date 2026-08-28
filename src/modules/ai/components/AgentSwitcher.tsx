@@ -32,7 +32,15 @@ const ICONS: Record<AgentIconId, typeof CodeIcon> = {
   spark: SparklesIcon,
 };
 
-export function AgentSwitcher({ isMiniWindow }: { isMiniWindow?: boolean }) {
+export function AgentSwitcher({
+  isMiniWindow,
+  agentId,
+  disabled = false,
+}: {
+  isMiniWindow?: boolean;
+  agentId?: string;
+  disabled?: boolean;
+}) {
   // Subscribe to customAgents + activeId so the trigger updates live.
   const customAgents = useAgentsStore((s) => s.customAgents);
   const activeId = useAgentsStore((s) => s.activeId);
@@ -41,7 +49,8 @@ export function AgentSwitcher({ isMiniWindow }: { isMiniWindow?: boolean }) {
   const list = useAgentsStore.getState().all();
   void customAgents; // keeps the store subscription alive
 
-  const active = list.find((a) => a.id === activeId) ?? list[0];
+  const displayedAgentId = agentId ?? activeId;
+  const active = list.find((a) => a.id === displayedAgentId) ?? list[0];
   const builtIn = list.filter((a) => a.builtIn);
   const custom = list.filter((a) => !a.builtIn);
   const ActiveIcon = ICONS[active.icon] ?? SparklesIcon;
@@ -58,6 +67,7 @@ export function AgentSwitcher({ isMiniWindow }: { isMiniWindow?: boolean }) {
               : "text-xs mr-1",
           )}
           title={`Agent: ${active.name}`}
+          disabled={disabled}
         >
           <HugeiconsIcon icon={ActiveIcon} size={11} strokeWidth={1.75} />
           <span className="max-w-[7rem] truncate">{active.name}</span>
@@ -81,7 +91,7 @@ export function AgentSwitcher({ isMiniWindow }: { isMiniWindow?: boolean }) {
               onSelect={() => setActiveId(a.id)}
               className={cn(
                 "flex items-start gap-2 pr-2 text-[12px]",
-                a.id === activeId && "bg-accent/40",
+                a.id === displayedAgentId && "bg-accent/40",
               )}
             >
               <HugeiconsIcon
@@ -90,7 +100,7 @@ export function AgentSwitcher({ isMiniWindow }: { isMiniWindow?: boolean }) {
                 strokeWidth={1.75}
                 className={cn(
                   "mt-0.5",
-                  a.id === activeId
+                  a.id === displayedAgentId
                     ? "text-foreground"
                     : "text-muted-foreground",
                 )}
@@ -101,7 +111,7 @@ export function AgentSwitcher({ isMiniWindow }: { isMiniWindow?: boolean }) {
                   {a.description}
                 </span>
               </span>
-              {a.id === activeId ? (
+              {a.id === displayedAgentId ? (
                 <HugeiconsIcon
                   icon={Tick02Icon}
                   size={12}
@@ -126,7 +136,7 @@ export function AgentSwitcher({ isMiniWindow }: { isMiniWindow?: boolean }) {
                   onSelect={() => setActiveId(a.id)}
                   className={cn(
                     "flex items-start gap-2 text-[12px]",
-                    a.id === activeId && "bg-accent/40",
+                    a.id === displayedAgentId && "bg-accent/40",
                   )}
                 >
                   <HugeiconsIcon
@@ -143,7 +153,7 @@ export function AgentSwitcher({ isMiniWindow }: { isMiniWindow?: boolean }) {
                       </span>
                     ) : null}
                   </span>
-                  {a.id === activeId ? (
+                  {a.id === displayedAgentId ? (
                     <HugeiconsIcon
                       icon={Tick02Icon}
                       size={12}

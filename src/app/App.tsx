@@ -407,7 +407,6 @@ export default function App() {
   );
   const miniOpen = useChatStore((s) => s.mini.open);
   const miniPresence = usePresence(miniOpen, 200);
-  const openMini = useChatStore((s) => s.openMini);
   const focusInput = useChatStore((s) => s.focusInput);
   const openPanel = useChatStore((s) => s.openPanel);
   const panelOpen = useChatStore((s) => s.panelOpen);
@@ -541,18 +540,13 @@ export default function App() {
     return null;
   }, [tabs, activeId]);
 
-  const togglePanelAndFocus = useCallback(() => {
+  const openAiExperience = useCallback(() => {
     if (!hasComposer) {
       void openSettingsWindow("models");
       return;
     }
-    if (panelOpen) {
-      useChatStore.getState().closePanel();
-    } else {
-      openPanel();
-      focusInput(null);
-    }
-  }, [hasComposer, panelOpen, openPanel, focusInput]);
+    useChatStore.getState().openExperience();
+  }, [hasComposer]);
 
   const attachSelection = useChatStore((s) => s.attachSelection);
 
@@ -863,7 +857,7 @@ export default function App() {
       "blocks.prev": () => navigateFocusedBlocks(-1),
       "blocks.next": () => navigateFocusedBlocks(1),
       "search.focus": () => searchInlineRef.current?.focus(),
-      "ai.toggle": togglePanelAndFocus,
+      "ai.toggle": openAiExperience,
       "ai.askSelection": askFromSelection,
       "settings.open": () => void openSettingsWindow(),
       "sidebar.toggle": toggleSidebar,
@@ -890,7 +884,7 @@ export default function App() {
       focusNextPaneInTab,
       activeLeafId,
       toggleSourceControl,
-      togglePanelAndFocus,
+      openAiExperience,
       askFromSelection,
       toggleSidebar,
       toggleExplorerFocus,
@@ -1442,7 +1436,7 @@ export default function App() {
             focusSearch: () => searchInlineRef.current?.focus(),
             focusExplorerSearch: () => explorerRef.current?.focusSearch(),
             toggleSidebar,
-            toggleAi: togglePanelAndFocus,
+            toggleAi: openAiExperience,
             askAiSelection: askFromSelection,
             openSettings: () => void openSettingsWindow(),
             openThemes: () => void openSettingsWindow("themes"),
@@ -1474,7 +1468,7 @@ export default function App() {
       handleCloseTabOrPane,
       splitActivePaneInActiveTab,
       toggleSidebar,
-      togglePanelAndFocus,
+      openAiExperience,
       askFromSelection,
       activeSpaceId,
       handleNewSpace,
@@ -1719,7 +1713,7 @@ export default function App() {
               onOpenWorkspace={(path) => void openWorkspaceRoot(path)}
               onReturnToWorkspaceRoot={handleReturnToWorkspaceRoot}
               onWorkspaceChange={(env) => void handleWorkspaceEnvChange(env)}
-              onOpenMini={openMini}
+              onOpenAi={openAiExperience}
               hasComposer={hasComposer}
               terminalCount={terminalTabs.length}
               privateActive={

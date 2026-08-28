@@ -8,8 +8,10 @@ import {
   flushPersist,
   useChatStore,
   type AgentRunStatus,
+  type PendingToolApproval,
 } from "../store/chatStore";
 import { getOrCreateChat } from "../store/chatRuntime";
+import { useAgentsStore } from "../store/agentsStore";
 
 /**
  * Headless bridge that mirrors chat lifecycle into the store, so the status
@@ -17,8 +19,8 @@ import { getOrCreateChat } from "../store/chatRuntime";
  *
  * Side effects:
  *  - Patches `agentMeta` on every status / approvals change.
- *  - Auto-opens the mini-window when an approval is pending — the user has
- *    to act on it; hiding it would be hostile.
+ *  - Surfaces approval attention, restoring the window unless the user
+ *    deliberately minimized it.
  *  - For pending `write_file` calls, opens an AI diff tab in the editor area
  *    so the user can review the proposed change before approving.
  *  - Persists messages of the active session on every change.
@@ -54,19 +56,25 @@ type ToolPartLike = ToolUIPart & {
 
 type AnyPart = UIMessagePart<Record<string, never>, Record<string, never>>;
 
-function Bridge({
-  sessionId,
-  openAiDiffTab,
-  closeAiDiffTab,
-}: BridgeProps) {
+function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
   const chat = useMemo(() => getOrCreateChat(sessionId), [sessionId]);
   const { status, messages, addToolApprovalResponse } = useChat<UIMessage>({
     chat,
   });
   const patch = useChatStore((s) => s.patchAgentMeta);
-  const openMini = useChatStore((s) => s.openMini);
+  const showApprovalAttention = useChatStore((s) => s.showApprovalAttention);
   const persistMessages = useChatStore((s) => s.persistMessages);
   const setApprovalResponder = useChatStore((s) => s.setApprovalResponder);
+  const beginRun = useChatStore((s) => s.beginRun);
+  const finishRun = useChatStore((s) => s.finishRun);
+  const setPendingApprovals = useChatStore((s) => s.setPendingApprovals);
+  const budgetPhase = useChatStore(
+    (s) => s.sessions.find((item) => item.id === sessionId)?.run?.budget?.phase,
+  );
+  const runState = useChatStore(
+    (s) => s.sessions.find((item) => item.id === sessionId)?.run?.state,
+  );
+  const providerRetry = useChatStore((s) => s.agentMeta.providerRetry);
 
   // Expose the approval responder so the diff tab can resolve approvals.
   // We keep it in a ref-stable closure so identity is stable per render.
@@ -92,37 +100,112 @@ function Bridge({
     return () => flushPersist(sessionId);
   }, [sessionId]);
 
-  const approvalsPending = useMemo(() => {
-    let n = 0;
+  const pendingApprovals = useMemo(() => {
+    const pending: PendingToolApproval[] = [];
     for (const m of messages) {
       if (m.role !== "assistant") continue;
       for (const p of m.parts) {
-        if ((p as { state?: string }).state === "approval-requested") n++;
+        const part = p as {
+          type?: string;
+          state?: string;
+          input?: unknown;
+          approval?: { id?: string };
+        };
+        if (
+          part.state !== "approval-requested" ||
+          !part.approval?.id ||
+          !part.type?.startsWith("tool-")
+        ) {
+          continue;
+        }
+        pending.push({
+          id: part.approval.id,
+          sessionId,
+          toolName: part.type.slice("tool-".length),
+          input:
+            part.input && typeof part.input === "object"
+              ? (part.input as Record<string, unknown>)
+              : {},
+        });
       }
     }
-    return n;
-  }, [messages]);
+    return pending;
+  }, [messages, sessionId]);
+  const approvalsPending = pendingApprovals.length;
 
   useEffect(() => {
+    setPendingApprovals(sessionId, pendingApprovals);
+  }, [pendingApprovals, sessionId, setPendingApprovals]);
+
+  useEffect(() => {
+    const terminalState = runState;
+    const stoppedRun =
+      terminalState === "cancelled" || terminalState === "interrupted";
+    if (status === "error" && terminalState === "running") {
+      finishRun(sessionId, "failed");
+      return;
+    }
+    const budgetKeepsRunActive =
+      terminalState === "running" &&
+      (budgetPhase === "running" ||
+        budgetPhase === "auto-continue-pending" ||
+        budgetPhase === "soft-limit" ||
+        budgetPhase === "hard-limit");
     let runStatus: AgentRunStatus;
-    if (approvalsPending > 0) runStatus = "awaiting-approval";
+    if (terminalState === "failed") runStatus = "error";
+    else if (providerRetry && terminalState === "running")
+      runStatus = "retrying";
+    else if (approvalsPending > 0) runStatus = "awaiting-approval";
     else if (status === "submitted") runStatus = "thinking";
     else if (status === "streaming") runStatus = "streaming";
-    else if (status === "error") runStatus = "error";
+    else if (status === "error" && !stoppedRun) runStatus = "error";
+    else if (
+      budgetPhase === "running" ||
+      budgetPhase === "auto-continue-pending"
+    )
+      runStatus = "thinking";
     else runStatus = "idle";
     patch({
       status: runStatus,
       approvalsPending,
-      ...(runStatus === "idle" || runStatus === "error"
-        ? { step: null }
-        : {}),
+      ...(runStatus === "idle" || runStatus === "error" ? { step: null } : {}),
       ...(runStatus === "idle" ? { error: null } : {}),
     });
-  }, [status, approvalsPending, patch]);
+    const active =
+      approvalsPending > 0 ||
+      status === "submitted" ||
+      status === "streaming" ||
+      Boolean(providerRetry && terminalState === "running") ||
+      budgetKeepsRunActive;
+    if (active) {
+      const session = useChatStore
+        .getState()
+        .sessions.find((item) => item.id === sessionId);
+      if (!session?.run) {
+        beginRun(
+          sessionId,
+          session?.run?.agentId ?? useAgentsStore.getState().activeId,
+          session?.run?.commandName,
+        );
+      }
+    } else {
+      finishRun(sessionId, "completed");
+    }
+  }, [
+    status,
+    approvalsPending,
+    patch,
+    beginRun,
+    finishRun,
+    sessionId,
+    budgetPhase,
+    runState,
+    providerRetry,
+  ]);
 
   useEffect(() => {
-    if (approvalsPending > 0) openMini();
-  }, [approvalsPending, openMini]);
+    if (approvalsPending > 0) showApprovalAttention();
+  }, [approvalsPending, showApprovalAttention]);
 
   // ---- AI diff tab management ----------------------------------------------
   // We track which approvalIds have already opened a tab so re-renders don't
@@ -156,8 +239,7 @@ function Bridge({
           t === "tool-multi_edit"
         ) {
           const state = (p as { state?: string }).state ?? "";
-          const id =
-            (p as { approval?: { id?: string } }).approval?.id ?? "";
+          const id = (p as { approval?: { id?: string } }).approval?.id ?? "";
           fp += `${id}:${state}|`;
         }
       }

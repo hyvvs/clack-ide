@@ -6,15 +6,22 @@ import {
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
   OLLAMA_DEFAULT_BASE_URL,
+  PROVIDERS,
   migrateLegacyCompatEndpoint,
   OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
   WHISPERCPP_DEFAULT_BASE_URL,
   type AutocompleteProviderId,
   type CustomEndpoint,
   type ModelId,
+  type ProviderId,
   type SttProvider,
 } from "@/modules/ai/config";
 import type { KeyBinding, ShortcutId } from "@/modules/shortcuts/shortcuts";
+import type {
+  AgentPermissionProfile,
+  AgentPermissionProfiles,
+  PermissionCategory,
+} from "@/modules/ai/lib/permissions";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { LazyStore } from "@tauri-apps/plugin-store";
 
@@ -109,6 +116,13 @@ export const EDITOR_THEME_LABELS: Record<EditorThemeId, string> = {
   "xcode-light": "Xcode Light",
 };
 
+export type AgentWorkspacePermission = {
+  agentId: string;
+  workspaceKey: string;
+  category: PermissionCategory;
+  createdAt: number;
+};
+
 export type Preferences = {
   theme: ThemePref;
   themeId: string;
@@ -117,6 +131,8 @@ export type Preferences = {
   backgroundOpacity: number;
   backgroundBlur: number;
   defaultModelId: ModelId;
+  lastUsedProviderId: ProviderId | null;
+  lastUsedModelId: string | null;
   editorTheme: EditorThemePref;
   customInstructions: string;
   autostart: boolean;
@@ -152,6 +168,8 @@ export type Preferences = {
   lastWslDistro: string | null;
   zoomLevel: number;
   agentNotifications: boolean;
+  agentPermissionProfiles: AgentPermissionProfiles;
+  agentWorkspacePermissions: AgentWorkspacePermission[];
   shortcuts: Record<ShortcutId, KeyBinding[]>;
   editorAutoSave: boolean;
   editorAutoSaveDelay: number;
@@ -165,6 +183,8 @@ const KEY_BG_IMAGE_ID = "backgroundImageId";
 const KEY_BG_OPACITY = "backgroundOpacity";
 const KEY_BG_BLUR = "backgroundBlur";
 const KEY_DEFAULT_MODEL = "defaultModelId";
+const KEY_LAST_USED_PROVIDER = "lastUsedProviderId";
+const KEY_LAST_USED_MODEL = "lastUsedModelId";
 const KEY_EDITOR_THEME = "editorTheme";
 const KEY_CUSTOM_INSTRUCTIONS = "customInstructions";
 const KEY_AUTOSTART = "autostart";
@@ -201,6 +221,8 @@ const KEY_TERMINAL_SCROLLBACK = "terminalScrollback";
 const KEY_LAST_WSL_DISTRO = "lastWslDistro";
 const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_AGENT_NOTIFICATIONS = "agentNotifications";
+const KEY_AGENT_PERMISSION_PROFILES = "agentPermissionProfiles";
+const KEY_AGENT_WORKSPACE_PERMISSIONS = "agentWorkspacePermissions";
 const KEY_SHORTCUTS = "shortcuts";
 const KEY_EDITOR_AUTO_SAVE = "editorAutoSave";
 const KEY_EDITOR_AUTO_SAVE_DELAY = "editorAutoSaveDelay";
@@ -228,6 +250,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   backgroundOpacity: 0.5,
   backgroundBlur: 0,
   defaultModelId: DEFAULT_MODEL_ID,
+  lastUsedProviderId: null,
+  lastUsedModelId: null,
   editorTheme: EDITOR_THEME_AUTO,
   customInstructions: "",
   autostart: false,
@@ -263,10 +287,47 @@ export const DEFAULT_PREFERENCES: Preferences = {
   lastWslDistro: null,
   zoomLevel: 1.0,
   agentNotifications: true,
+  agentPermissionProfiles: {},
+  agentWorkspacePermissions: [],
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
   editorAutoSave: false,
   editorAutoSaveDelay: 1000,
 };
+
+export function normalizeAgentPermissionProfiles(
+  value: AgentPermissionProfiles | undefined,
+): AgentPermissionProfiles {
+  if (!value || typeof value !== "object") return {};
+  const modes = new Set([
+    "chat-only",
+    "ask",
+    "trusted-workspace",
+    "full-access",
+    "custom",
+  ]);
+  const categories = [
+    "write-files",
+    "create-files",
+    "run-commands",
+  ] as const;
+  const result: AgentPermissionProfiles = {};
+  for (const [agentId, raw] of Object.entries(value)) {
+    if (!agentId || !raw || typeof raw !== "object" || !modes.has(raw.mode)) {
+      continue;
+    }
+    const normalizedCategories: AgentPermissionProfile["categories"] = {};
+    for (const category of categories) {
+      if (typeof raw.categories?.[category] === "boolean") {
+        normalizedCategories[category] = raw.categories[category];
+      }
+    }
+    result[agentId] = {
+      mode: raw.mode,
+      categories: normalizedCategories,
+    };
+  }
+  return result;
+}
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
 
@@ -308,6 +369,13 @@ export async function loadPreferences(): Promise<Preferences> {
         ? stored
         : DEFAULT_PREFERENCES.defaultModelId;
     })(),
+    lastUsedProviderId: ((): ProviderId | null => {
+      const stored = get<string>(KEY_LAST_USED_PROVIDER);
+      return stored && PROVIDERS.some((provider) => provider.id === stored)
+        ? (stored as ProviderId)
+        : null;
+    })(),
+    lastUsedModelId: get<string>(KEY_LAST_USED_MODEL) ?? null,
     editorTheme: ((): EditorThemePref => {
       const stored = get<string>(KEY_EDITOR_THEME);
       if (stored === EDITOR_THEME_AUTO || isEditorThemeId(stored)) return stored;
@@ -375,7 +443,7 @@ export async function loadPreferences(): Promise<Preferences> {
     ).filter(isKnownModelId),
     recentModelIds: (
       get<string[]>(KEY_RECENT_MODELS) ?? DEFAULT_PREFERENCES.recentModelIds
-    ).filter(isKnownModelId),
+    ).filter((id): id is string => typeof id === "string"),
     vimMode: get<boolean>(KEY_VIM_MODE) ?? DEFAULT_PREFERENCES.vimMode,
     showHidden:
       get<boolean>(KEY_SHOW_HIDDEN) ??
@@ -410,6 +478,21 @@ export async function loadPreferences(): Promise<Preferences> {
     agentNotifications:
       get<boolean>(KEY_AGENT_NOTIFICATIONS) ??
       DEFAULT_PREFERENCES.agentNotifications,
+    agentPermissionProfiles: normalizeAgentPermissionProfiles(
+      get<AgentPermissionProfiles>(KEY_AGENT_PERMISSION_PROFILES),
+    ),
+    agentWorkspacePermissions: (
+      get<AgentWorkspacePermission[]>(KEY_AGENT_WORKSPACE_PERMISSIONS) ?? []
+    ).filter(
+      (rule) =>
+        typeof rule.agentId === "string" &&
+        rule.agentId.length > 0 &&
+        typeof rule.workspaceKey === "string" &&
+        ["write-files", "create-files", "run-commands"].includes(
+          rule.category,
+        ) &&
+        typeof rule.createdAt === "number",
+    ),
     shortcuts:
       get<Record<ShortcutId, KeyBinding[]>>(KEY_SHORTCUTS) ??
       DEFAULT_PREFERENCES.shortcuts,
@@ -464,6 +547,20 @@ export async function setBackgroundBlur(value: number): Promise<void> {
 
 export async function setDefaultModel(value: ModelId): Promise<void> {
   await writePref(KEY_DEFAULT_MODEL, value);
+}
+
+export async function setLastUsedAiSelection(
+  providerId: ProviderId,
+  modelId: string,
+): Promise<void> {
+  await store.set(KEY_LAST_USED_PROVIDER, providerId);
+  await store.set(KEY_LAST_USED_MODEL, modelId);
+  await store.save();
+  await emit(PREFS_CHANGED_EVENT, {
+    key: KEY_LAST_USED_PROVIDER,
+    value: providerId,
+  });
+  await emit(PREFS_CHANGED_EVENT, { key: KEY_LAST_USED_MODEL, value: modelId });
 }
 
 export async function setEditorTheme(value: EditorThemePref): Promise<void> {
@@ -567,6 +664,18 @@ export async function setRecentModelIds(value: string[]): Promise<void> {
   await writePref(KEY_RECENT_MODELS, value);
 }
 
+export async function setAgentWorkspacePermissions(
+  value: AgentWorkspacePermission[],
+): Promise<void> {
+  await writePref(KEY_AGENT_WORKSPACE_PERMISSIONS, value);
+}
+
+export async function setAgentPermissionProfiles(
+  value: AgentPermissionProfiles,
+): Promise<void> {
+  await writePref(KEY_AGENT_PERMISSION_PROFILES, value);
+}
+
 export async function setVimMode(value: boolean): Promise<void> {
   await writePref(KEY_VIM_MODE, value);
 }
@@ -667,6 +776,8 @@ export async function onPreferencesChange(
     [KEY_BG_OPACITY]: "backgroundOpacity",
     [KEY_BG_BLUR]: "backgroundBlur",
     [KEY_DEFAULT_MODEL]: "defaultModelId",
+    [KEY_LAST_USED_PROVIDER]: "lastUsedProviderId",
+    [KEY_LAST_USED_MODEL]: "lastUsedModelId",
     [KEY_EDITOR_THEME]: "editorTheme",
     [KEY_CUSTOM_INSTRUCTIONS]: "customInstructions",
     [KEY_AUTOSTART]: "autostart",
@@ -702,6 +813,8 @@ export async function onPreferencesChange(
     [KEY_LAST_WSL_DISTRO]: "lastWslDistro",
     [KEY_ZOOM_LEVEL]: "zoomLevel",
     [KEY_AGENT_NOTIFICATIONS]: "agentNotifications",
+    [KEY_AGENT_PERMISSION_PROFILES]: "agentPermissionProfiles",
+    [KEY_AGENT_WORKSPACE_PERMISSIONS]: "agentWorkspacePermissions",
     [KEY_SHORTCUTS]: "shortcuts",
     [KEY_EDITOR_AUTO_SAVE]: "editorAutoSave",
     [KEY_EDITOR_AUTO_SAVE_DELAY]: "editorAutoSaveDelay",

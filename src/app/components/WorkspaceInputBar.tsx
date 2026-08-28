@@ -3,6 +3,7 @@ import { AiInputBarConnect } from "@/modules/ai";
 import { Chip } from "@/modules/ai/components/Chip";
 import { ChipsRow } from "@/modules/ai/components/ChipsRow";
 import { useComposer } from "@/modules/ai/lib/composer";
+import { useChatStore } from "@/modules/ai/store/chatStore";
 import { useBlockController } from "@/modules/terminal/lib/blockController";
 import { focusLeafInput } from "@/modules/terminal/lib/useTerminalSession";
 import { useTheme } from "@/modules/theme";
@@ -52,6 +53,7 @@ export function WorkspaceInputBar({
   onConnect,
 }: Props) {
   const c = useComposer();
+  const focusSignal = useChatStore((s) => s.focusSignal);
   const { resolvedMode, themeId, customThemes } = useTheme();
   const themeKey = `${resolvedMode}:${themeId}:${customThemes.length}`;
   const { os, shell } = useSystemInfo();
@@ -102,6 +104,19 @@ export function WorkspaceInputBar({
     window.addEventListener(TOGGLE_BLOCK_INPUT_EVENT, onToggle);
     return () => window.removeEventListener(TOGGLE_BLOCK_INPUT_EVENT, onToggle);
   }, [showToggle]);
+
+  const handledFocusSignal = useRef(focusSignal);
+  useEffect(() => {
+    if (focusSignal === 0 || handledFocusSignal.current === focusSignal) return;
+    handledFocusSignal.current = focusSignal;
+    if (showToggle && modeRef.current !== "ai") setMode("ai");
+  }, [focusSignal, showToggle]);
+
+  useEffect(() => {
+    if (!open || effectiveMode !== "ai" || !renderAi) return;
+    const frame = requestAnimationFrame(() => c.textareaRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [open, effectiveMode, renderAi, c.textareaRef]);
 
   if (!mounted) return null;
 

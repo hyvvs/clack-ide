@@ -26,7 +26,7 @@ type Props = {
   onOpenWorkspace?: (path: string) => void;
   onReturnToWorkspaceRoot?: () => void;
   onWorkspaceChange: (env: WorkspaceEnv) => void;
-  onOpenMini: () => void;
+  onOpenAi: () => void;
   /** Only rendered when the AI panel is open and a key is loaded. */
   hasComposer: boolean;
   terminalCount: number;
@@ -44,13 +44,13 @@ export function StatusBar({
   onOpenWorkspace,
   onReturnToWorkspaceRoot,
   onWorkspaceChange,
-  onOpenMini,
+  onOpenAi,
   hasComposer,
   terminalCount,
   privateActive,
 }: Props) {
   const panelOpen = useChatStore((s) => s.panelOpen);
-  const openPanel = useChatStore((s) => s.openPanel);
+  const transcriptOpen = useChatStore((s) => s.mini.open);
 
   return (
     <footer className="clack-shell flex h-8 shrink-0 items-center justify-between gap-3 border-t px-3 text-[11px]">
@@ -100,11 +100,11 @@ export function StatusBar({
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
-        <AgentStatusPill onClick={onOpenMini} />
+        <AgentStatusPill onClick={onOpenAi} />
         {panelOpen && hasComposer ? (
           <AiStatusBarControls />
         ) : (
-          <AiOpenButton onOpen={openPanel} />
+          <AiOpenButton open={transcriptOpen} onOpen={onOpenAi} />
         )}
       </div>
     </footer>

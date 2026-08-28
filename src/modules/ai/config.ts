@@ -110,7 +110,8 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     label: "MLX",
     keyringAccount: "",
     keyPrefix: null,
-    consoleUrl: "https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md",
+    consoleUrl:
+      "https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md",
   },
   {
     id: "ollama",
@@ -539,7 +540,9 @@ export function getCompatModelInfo(
     provider: "openai-compatible",
     label: ep?.modelId || name,
     hint: name,
-    description: ep ? `${name} — ${ep.baseURL}` : "Custom OpenAI-compatible endpoint",
+    description: ep
+      ? `${name} — ${ep.baseURL}`
+      : "Custom OpenAI-compatible endpoint",
     capabilities: { intelligence: 3, speed: 3, cost: 3 },
   };
 }
@@ -574,7 +577,10 @@ const FREEFORM_PROVIDERS: ReadonlySet<ProviderId> = new Set([
 
 // Reasoning models reject tool-call turns whose reasoning was stripped; keep it.
 export function modelKeepsReasoning(m: ModelInfo): boolean {
-  return (m.tags?.includes("reasoning") ?? false) || FREEFORM_PROVIDERS.has(m.provider);
+  return (
+    (m.tags?.includes("reasoning") ?? false) ||
+    FREEFORM_PROVIDERS.has(m.provider)
+  );
 }
 
 export const DEFAULT_MODEL_ID: ModelId = "gpt-5.4-mini";
@@ -663,7 +669,11 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
 
 export function estimateCost(
   modelId: string | undefined,
-  usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number },
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+  },
 ): number | null {
   if (!modelId) return null;
   const p = MODEL_PRICING[modelId];
@@ -671,7 +681,9 @@ export function estimateCost(
   const fresh = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
   const cached = usage.cachedInputTokens;
   return (
-    (fresh * p.input + cached * (p.cacheRead ?? p.input) + usage.outputTokens * p.output) /
+    (fresh * p.input +
+      cached * (p.cacheRead ?? p.input) +
+      usage.outputTokens * p.output) /
     1_000_000
   );
 }
@@ -735,7 +747,6 @@ export const LMSTUDIO_DEFAULT_BASE_URL = "http://localhost:1234/v1";
 export const MLX_DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1";
 export const OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1";
 export const OPENAI_COMPATIBLE_DEFAULT_BASE_URL = "";
-export const MAX_AGENT_STEPS = 24;
 export const TERMINAL_BUFFER_LINES = 300;
 
 export const SYSTEM_PROMPT = `You are Clack, an AI agent embedded in a developer terminal emulator. You are a hands-on engineer, not a chat bot — your job is to *do* the work, not narrate it.
@@ -752,7 +763,7 @@ Every turn carries a short <env> block (prepended to the latest user message): w
 
 # Tools
 - Read: read_file, list_directory, grep, glob, get_terminal_output
-- Mutate (approval required): edit, multi_edit, write_file, create_directory, bash_run, bash_background
+- Mutate (approval policy controlled): edit, multi_edit, write_file, create_directory, bash_run, bash_background
 - Background process IO: bash_logs, bash_list, bash_kill
 - Plan / delegation: todo_write, run_subagent
 - Side-channel: suggest_command, open_preview

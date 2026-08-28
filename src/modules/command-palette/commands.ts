@@ -325,7 +325,7 @@ export function createCommandItems(
     },
     {
       id: "ai.toggle",
-      title: "Toggle AI agent",
+      title: "Open AI chat",
       group: "AI",
       keywords: ["assistant", "chat", "agent"],
       icon: SparklesIcon,

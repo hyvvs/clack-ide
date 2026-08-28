@@ -10,7 +10,7 @@ import {
 import { useWhisperRecording } from "../hooks/useWhisperRecording";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
-import { getChat, useChatStore } from "../store/chatStore";
+import { cancelActiveRun, useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 
@@ -74,7 +74,13 @@ type ProviderProps = {
 export function AiComposerProvider({ children }: ProviderProps) {
   const sessionId = useChatStore((s) => s.activeSessionId);
   const status = useChatStore((s) => s.agentMeta.status);
-  const isBusy = status === "thinking" || status === "streaming";
+  const runState = useChatStore(
+    (s) =>
+      s.sessions.find((session) => session.id === s.activeSessionId)?.run
+        ?.state,
+  );
+  const isBusy =
+    status === "thinking" || status === "streaming" || runState === "running";
 
   const [value, setValue] = useState("");
   const [files, setFiles] = useState<FileAttachment[]>([]);
@@ -303,13 +309,9 @@ export function AiComposerProvider({ children }: ProviderProps) {
     if (!sessionId) return;
     const store = useChatStore.getState();
     store.patchAgentMeta({ hitStepCap: false, compactionNotice: null });
-    if (!store.mini.open) store.openMini();
     void (async () => {
-      const { getOrCreateChat } = await import("../store/chatRuntime");
-      const chat = getOrCreateChat(sessionId);
-      void chat.sendMessage({ role: "user", parts } as Parameters<
-        typeof chat.sendMessage
-      >[0]);
+      const { sendMessageToSession } = await import("../store/chatRuntime");
+      await sendMessageToSession(sessionId, { role: "user", parts });
     })();
     setValue("");
     setFiles([]);
@@ -320,8 +322,7 @@ export function AiComposerProvider({ children }: ProviderProps) {
   };
 
   const stop = () => {
-    if (!sessionId) return;
-    void getChat(sessionId)?.stop();
+    void cancelActiveRun();
   };
 
   const canSend =

@@ -10,6 +10,7 @@ import {
 import { useAgentsStore } from "../store/agentsStore";
 import { useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
+import { resolveRestoredModel } from "../lib/providerRestore";
 
 /**
  * Startup wiring for the AI subsystem: loads provider keys (and keeps them in
@@ -45,6 +46,11 @@ export function useAiBootstrap(): {
     (s) => s.openaiCompatibleBaseURL,
   );
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
+  const openrouterModelId = usePreferencesStore((s) => s.openrouterModelId);
+  const lastUsedProviderId = usePreferencesStore(
+    (s) => s.lastUsedProviderId,
+  );
+  const lastUsedModelId = usePreferencesStore((s) => s.lastUsedModelId);
   const hasLocalModel =
     (lmstudioBaseURL.trim().length > 0 && lmstudioModelId.trim().length > 0) ||
     (mlxBaseURL.trim().length > 0 && mlxModelId.trim().length > 0) ||
@@ -82,17 +88,50 @@ export function useAiBootstrap(): {
     };
   }, [setApiKeys, setCustomEndpointKeys, prefsHydrated]);
 
-  // Hydrate the cross-window preference store and mirror the default model
-  // into chatStore so the dropdown reflects what the user picked in Settings.
+  // Hydrate preferences, then restore only a selection that is still usable.
   const initPrefs = usePreferencesStore((s) => s.init);
   const prefDefaultModel = usePreferencesStore((s) => s.defaultModelId);
   useEffect(() => {
     void initPrefs();
   }, [initPrefs]);
   useEffect(() => {
-    if (!prefsHydrated) return;
-    setSelectedModelId(prefDefaultModel);
-  }, [prefsHydrated, prefDefaultModel, setSelectedModelId]);
+    if (!prefsHydrated || !keysLoaded) return;
+    const restored = resolveRestoredModel({
+      apiKeys,
+      defaultModelId: prefDefaultModel,
+      lastUsedProviderId,
+      lastUsedModelId,
+      lmstudioBaseURL,
+      lmstudioModelId,
+      mlxBaseURL,
+      mlxModelId,
+      ollamaBaseURL,
+      ollamaModelId,
+      openaiCompatibleBaseURL,
+      openaiCompatibleModelId,
+      openrouterModelId,
+      customEndpoints,
+    });
+    if (restored) setSelectedModelId(restored, false);
+  }, [
+    apiKeys,
+    customEndpoints,
+    keysLoaded,
+    lastUsedModelId,
+    lastUsedProviderId,
+    lmstudioBaseURL,
+    lmstudioModelId,
+    mlxBaseURL,
+    mlxModelId,
+    ollamaBaseURL,
+    ollamaModelId,
+    openaiCompatibleBaseURL,
+    openaiCompatibleModelId,
+    openrouterModelId,
+    prefDefaultModel,
+    prefsHydrated,
+    setSelectedModelId,
+  ]);
 
   useEffect(() => {
     void hydrateSessions();

@@ -45,26 +45,30 @@ export type SlashCommandMeta = {
   name: string;
   invocation: string;
   label: string;
+  description: string;
   icon: typeof SparklesIcon;
 };
 
 export const SLASH_COMMANDS: Record<string, SlashCommandMeta> = {
   init: {
     name: "init",
-    invocation: "/init",
+    invocation: "#init",
     label: "Initialize workspace",
+    description: "Scan the workspace and propose a CLACK.md context file.",
     icon: SparklesIcon,
   },
   plan: {
     name: "plan",
-    invocation: "/plan",
+    invocation: "#plan",
     label: "Plan mode",
+    description: "Toggle plan mode, or plan a request with edits queued for review.",
     icon: CheckListIcon,
   },
   "claude-code": {
     name: "claude-code",
-    invocation: "/claude-code",
+    invocation: "#claude-code",
     label: "Delegate to Claude Code",
+    description: "Send a request to a managed Claude Code terminal agent.",
     icon: ClaudeIcon,
   },
 };
@@ -90,6 +94,14 @@ export function tryRunSlashCommand(input: string): SlashOutcome {
       if (tail === "off" || tail === "exit") {
         store.disable();
         return { kind: "handled", toast: "Plan mode off" };
+      }
+      if (tail) {
+        store.enable();
+        return {
+          kind: "send-prompt",
+          prompt: tail,
+          commandName: "plan",
+        };
       }
       store.toggle();
       const nowActive = usePlanStore.getState().active;

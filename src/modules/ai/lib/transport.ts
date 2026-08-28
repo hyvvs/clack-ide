@@ -4,6 +4,8 @@ import { runAgentStream, type AgentUsageDelta } from "./agent";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { native } from "./native";
 import type { ToolContext } from "../tools/tools";
+import type { RunStepObservation } from "./runBudget";
+import type { ProviderRetryEvent } from "./providerRetry";
 
 const PROJECT_MEMORY_MAX_BYTES = 32 * 1024;
 type MemoryCacheEntry = { content: string | null; mtime: number };
@@ -65,7 +67,16 @@ type Deps = {
   onStep?: (step: string | null) => void;
   onUsage?: (delta: AgentUsageDelta) => void;
   onCompact?: (info: { droppedCount: number }) => void;
-  onFinishMeta?: (info: { hitStepCap: boolean; finishReason: string }) => void;
+  onBatchStart?: () => { isLogicalContinuation: boolean };
+  onRunStep?: (observation: RunStepObservation) => void;
+  onFinishMeta?: (info: {
+    hitStepCap: boolean;
+    finishReason: string;
+    steps: number;
+  }) => void;
+  onError?: (error: unknown) => string;
+  onProviderRetry?: (event: ProviderRetryEvent) => void;
+  onProviderRecovered?: () => void;
   getPlanMode?: () => boolean;
 };
 
@@ -77,6 +88,7 @@ type SendOptions = {
 
 export function createContextAwareTransport(deps: Deps) {
   const run = async (options: SendOptions) => {
+    const batch = deps.onBatchStart?.() ?? { isLogicalContinuation: false };
     const live = deps.getLive();
     const projectMemory = await readProjectMemory(live.workspaceRoot);
     const envBlock = formatEnvBlock(live);
@@ -92,6 +104,9 @@ export function createContextAwareTransport(deps: Deps) {
       onStep: deps.onStep,
       onUsage: deps.onUsage,
       onCompact: deps.onCompact,
+      onRunStep: deps.onRunStep,
+      onProviderRetry: deps.onProviderRetry,
+      onProviderRecovered: deps.onProviderRecovered,
       onFinishMeta: deps.onFinishMeta,
       lmstudioBaseURL: deps.getLmstudioBaseURL?.(),
       lmstudioModelId: deps.getLmstudioModelId?.(),
@@ -107,11 +122,14 @@ export function createContextAwareTransport(deps: Deps) {
       customEndpointKeys: deps.getCustomEndpointKeys?.(),
       planMode: deps.getPlanMode?.(),
       projectMemory,
+      logicalContinuation: batch.isLogicalContinuation,
       uiMessages: messagesForRun,
       abortSignal: options.abortSignal,
     });
     return result.toUIMessageStream({
       originalMessages: options.messages,
+      onError: (error) =>
+        deps.onError?.(error) ?? "The AI run failed for an unexpected reason.",
     });
   };
 

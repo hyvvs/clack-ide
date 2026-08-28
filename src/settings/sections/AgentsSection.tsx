@@ -7,9 +7,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { AgentPermissionControl } from "@/modules/ai/components/AgentPermissionControl";
 import { AGENT_ICONS } from "@/modules/ai/components/AgentSwitcher";
+import {
+  DEFAULT_AGENT_PERMISSION_PROFILE,
+  PERMISSION_CATEGORIES,
+  PERMISSION_CATEGORY_LABELS,
+} from "@/modules/ai/lib/permissions";
 import {
   BUILTIN_AGENTS,
   type Agent,
@@ -26,7 +33,12 @@ import {
   useSnippetsStore,
 } from "@/modules/ai/store/snippetsStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { setCustomInstructions } from "@/modules/settings/store";
+import {
+  setAgentPermissionProfiles,
+  setAgentWorkspacePermissions,
+  setCustomInstructions,
+  type AgentWorkspacePermission,
+} from "@/modules/settings/store";
 import {
   Add01Icon,
   CheckmarkCircle02Icon,
@@ -60,6 +72,9 @@ export function AgentsSection() {
   const upsertSnippet = useSnippetsStore((s) => s.upsert);
   const removeSnippet = useSnippetsStore((s) => s.remove);
   const hydrateSnippets = useSnippetsStore((s) => s.hydrate);
+  const workspacePermissions = usePreferencesStore(
+    (s) => s.agentWorkspacePermissions,
+  );
 
   useEffect(() => {
     void hydrateAgents();
@@ -73,10 +88,15 @@ export function AgentsSection() {
     <div className="flex flex-col gap-7">
       <SectionHeader
         title="Agent Permissions"
-        description="Personas, custom instructions, and snippets that shape how the Clack agent works."
+        description="Tool access, personas, custom instructions, and reusable snippets."
       />
 
       <CustomInstructionsBlock value={customInstructions} />
+
+      <PermissionSettings
+        rules={workspacePermissions}
+        agents={[...BUILTIN_AGENTS, ...customAgents]}
+      />
 
       <section className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
@@ -220,6 +240,148 @@ export function AgentsSection() {
           setEditingSnippet(null);
         }}
       />
+    </div>
+  );
+}
+
+function PermissionSettings({
+  rules,
+  agents,
+}: {
+  rules: AgentWorkspacePermission[];
+  agents: Agent[];
+}) {
+  const profiles = usePreferencesStore((state) => state.agentPermissionProfiles);
+  const removeRule = (rule: AgentWorkspacePermission) => {
+    void setAgentWorkspacePermissions(
+      rules.filter(
+        (candidate) =>
+          candidate.agentId !== rule.agentId ||
+          candidate.workspaceKey !== rule.workspaceKey ||
+          candidate.category !== rule.category,
+      ),
+    );
+  };
+
+  return (
+    <section className="flex flex-col gap-2">
+      <div className="flex flex-col">
+        <Label>Tool permissions</Label>
+        <span className="text-[10.5px] text-muted-foreground">
+          Profiles belong to agents, not models. Chat grants expire with the
+          conversation and workspace grants stay scoped to one agent and
+          workspace.
+        </span>
+      </div>
+      <div className="divide-y divide-border/60 rounded-lg border border-border/60 bg-card/60">
+        {agents.map((agent) => {
+          const profile =
+            profiles[agent.id] ?? DEFAULT_AGENT_PERMISSION_PROFILE;
+          return (
+            <div key={agent.id} className="flex flex-col gap-2 px-3 py-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 flex-col">
+                  <span className="truncate text-[11.5px] font-medium">
+                    {agent.name}
+                  </span>
+                  <span className="truncate font-mono text-[9.5px] text-muted-foreground">
+                    {agent.id}
+                  </span>
+                </div>
+                <AgentPermissionControl agentId={agent.id} />
+              </div>
+              {profile.mode === "custom" ? (
+                <div className="grid gap-1.5 border-t border-border/50 pt-2 sm:grid-cols-3">
+                  {PERMISSION_CATEGORIES.map((category) => (
+                    <label
+                      key={category}
+                      className="flex items-center justify-between gap-2 text-[10.5px] text-muted-foreground"
+                    >
+                      <span>{PERMISSION_CATEGORY_LABELS[category]}</span>
+                      <Switch
+                        checked={profile.categories[category] === true}
+                        onCheckedChange={(checked) =>
+                          void setAgentPermissionProfiles({
+                            ...profiles,
+                            [agent.id]: {
+                              mode: "custom",
+                              categories: {
+                                ...profile.categories,
+                                [category]: checked,
+                              },
+                            },
+                          })
+                        }
+                        aria-label={`${agent.name}: ${PERMISSION_CATEGORY_LABELS[category]}`}
+                      />
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      <div className="divide-y divide-border/60 rounded-lg border border-border/60 bg-card/60">
+        <PermissionPolicyRow label="Read workspace files" policy="Allowed in Ask" />
+        <PermissionPolicyRow label="Search workspace" policy="Allowed in Ask" />
+        <PermissionPolicyRow label="Write, create, and run" policy="Ask by default" />
+        <PermissionPolicyRow label="Strict actions" policy="Ask unless Full Access" />
+        <PermissionPolicyRow label="Hard app and OS restrictions" policy="Always enforced" />
+      </div>
+      {rules.length > 0 ? (
+        <div className="flex flex-col gap-1">
+          <Label>Workspace grants</Label>
+          {rules.map((rule) => (
+            <div
+              key={`${rule.agentId}:${rule.workspaceKey}:${rule.category}`}
+              className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/60 px-3 py-2"
+            >
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="text-[11.5px] font-medium">
+                  {PERMISSION_CATEGORY_LABELS[rule.category]}
+                </span>
+                <span className="truncate text-[10px] text-muted-foreground">
+                  {agents.find((agent) => agent.id === rule.agentId)?.name ??
+                    rule.agentId}
+                </span>
+                <span className="truncate font-mono text-[10px] text-muted-foreground">
+                  {rule.workspaceKey}
+                </span>
+              </div>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="size-7 text-muted-foreground hover:text-destructive"
+                onClick={() => removeRule(rule)}
+                aria-label={`Remove ${PERMISSION_CATEGORY_LABELS[rule.category]} grant`}
+                title="Remove workspace grant"
+              >
+                <HugeiconsIcon
+                  icon={Delete02Icon}
+                  size={12}
+                  strokeWidth={1.75}
+                />
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function PermissionPolicyRow({
+  label,
+  policy,
+}: {
+  label: string;
+  policy: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 px-3 py-2 text-[11.5px]">
+      <span>{label}</span>
+      <span className="text-[10.5px] text-muted-foreground">{policy}</span>
     </div>
   );
 }

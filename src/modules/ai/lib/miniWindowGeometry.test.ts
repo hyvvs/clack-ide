@@ -22,10 +22,13 @@ describe("defaultGeom", () => {
     expect(g.y).toBeGreaterThanOrEqual(0);
   });
 
-  it("never goes below the minimum size on a tiny viewport", () => {
-    const g = defaultGeom({ vw: 320, vh: 200 });
-    expect(g.w).toBe(MIN_W);
-    expect(g.h).toBe(MIN_H);
+  it("fits inside a viewport smaller than the normal minimum", () => {
+    const tiny = { vw: 320, vh: 200 };
+    const g = defaultGeom(tiny);
+    expect(g.w).toBe(tiny.vw);
+    expect(g.h).toBe(tiny.vh);
+    expect(g.x).toBe(0);
+    expect(g.y).toBe(0);
   });
 });
 

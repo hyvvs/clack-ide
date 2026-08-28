@@ -1,6 +1,12 @@
 import { LazyStore } from "@tauri-apps/plugin-store";
 
-export type TodoStatus = "pending" | "in_progress" | "completed";
+export type TodoStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "cancelled"
+  | "interrupted"
+  | "failed";
 
 export type Todo = {
   id: string;
@@ -8,6 +14,12 @@ export type Todo = {
   description?: string;
   status: TodoStatus;
 };
+
+export type TodoTerminalState =
+  | "completed"
+  | "cancelled"
+  | "interrupted"
+  | "failed";
 
 const STORE_PATH = "terax-ai-todos.json";
 const todosKey = (sessionId: string) => `todos:${sessionId}`;
@@ -48,4 +60,14 @@ export function validateTodos(todos: Todo[]): string | null {
   if (inProgress > 1)
     return `only one todo may be in_progress at a time (got ${inProgress})`;
   return null;
+}
+
+export function terminalizeTodos(
+  todos: readonly Todo[],
+  status: TodoTerminalState,
+): Todo[] {
+  const unfinishedStatus = status === "completed" ? "cancelled" : status;
+  return todos.map((todo) =>
+    todo.status === "completed" ? todo : { ...todo, status: unfinishedStatus },
+  );
 }

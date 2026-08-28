@@ -1,11 +1,32 @@
 import type { UIMessage } from "@ai-sdk/react";
 import { LazyStore } from "@tauri-apps/plugin-store";
+import type { NormalizedAiError } from "@/modules/ai/lib/errors";
+import type { RunBudgetState } from "@/modules/ai/lib/runBudget";
 
 export type SessionMeta = {
   id: string;
   title: string;
   createdAt: number;
   updatedAt: number;
+  run?: SessionRun;
+};
+
+export type SessionRunState =
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export type SessionRun = {
+  state: SessionRunState;
+  agentId?: string;
+  modelId?: string;
+  commandName?: string;
+  startedAt: number;
+  budget?: RunBudgetState;
+  endedAt?: number;
+  error?: NormalizedAiError;
 };
 
 const STORE_PATH = "terax-ai-sessions.json";
@@ -32,6 +53,22 @@ export async function loadAll(): Promise<LoadedSessions> {
     else if (k === KEY_ACTIVE) activeId = v as string | null;
   }
   return { sessions: sessions ?? [], activeId: activeId ?? null };
+}
+
+export function recoverInterruptedSessions(
+  sessions: readonly SessionMeta[],
+  now = Date.now(),
+): { sessions: SessionMeta[]; interruptedIds: string[] } {
+  const interruptedIds: string[] = [];
+  const recovered = sessions.map((session) => {
+    if (session.run?.state !== "running") return session;
+    interruptedIds.push(session.id);
+    return {
+      ...session,
+      run: { ...session.run, state: "interrupted" as const, endedAt: now },
+    };
+  });
+  return { sessions: recovered, interruptedIds };
 }
 
 export async function loadMessages(id: string): Promise<UIMessage[] | null> {

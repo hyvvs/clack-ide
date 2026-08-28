@@ -43,7 +43,7 @@ export function SnippetPickerContent({
         <div className="max-h-64 overflow-y-auto py-1">
           {commands.length > 0 && (
             <>
-              <SectionHeader label="Pre-built snippets" />
+              <SectionHeader label="Commands" />
               <ul>
                 {commands.map((it) => {
                   cursor += 1;
@@ -69,12 +69,16 @@ export function SnippetPickerContent({
                           strokeWidth={1.75}
                           className="text-muted-foreground"
                         />
-                        <span className="flex min-w-0 flex-1 flex-col">
+                        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                           <span className="flex items-center gap-1.5">
                             <span className="font-mono text-muted-foreground">
                               #{c.name}
                             </span>
                             <span className="font-medium">{c.label}</span>
+                            <TypeBadge label={pickerTypeLabel("command")} />
+                          </span>
+                          <span className="line-clamp-1 text-[10.5px] text-muted-foreground">
+                            {c.description}
                           </span>
                         </span>
                       </button>
@@ -111,6 +115,7 @@ export function SnippetPickerContent({
                             #{s.handle}
                           </span>
                           <span className="font-medium">{s.name}</span>
+                          <TypeBadge label={pickerTypeLabel("snippet")} />
                         </span>
                         {s.description ? (
                           <span className="line-clamp-1 text-[10.5px] text-muted-foreground">
@@ -127,6 +132,20 @@ export function SnippetPickerContent({
         </div>
       )}
     </PopoverContent>
+  );
+}
+
+export function pickerTypeLabel(
+  kind: PickerItem["kind"],
+): "Command" | "Snippet" {
+  return kind === "command" ? "Command" : "Snippet";
+}
+
+function TypeBadge({ label }: { label: "Command" | "Snippet" }) {
+  return (
+    <span className="ml-auto shrink-0 rounded bg-muted/50 px-1 py-0.5 text-[8.5px] font-medium uppercase text-muted-foreground">
+      {label}
+    </span>
   );
 }
 

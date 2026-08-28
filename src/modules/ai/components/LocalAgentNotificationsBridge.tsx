@@ -11,16 +11,23 @@ type RunStatus =
   | "idle"
   | "thinking"
   | "streaming"
+  | "retrying"
   | "awaiting-approval"
   | "error";
 
 function isBusy(s: RunStatus): boolean {
-  return s === "thinking" || s === "streaming" || s === "awaiting-approval";
+  return (
+    s === "thinking" ||
+    s === "streaming" ||
+    s === "retrying" ||
+    s === "awaiting-approval"
+  );
 }
 
 function liveStatus(s: RunStatus): AgentStatus | null {
   if (s === "awaiting-approval") return "waiting";
-  if (s === "thinking" || s === "streaming") return "working";
+  if (s === "thinking" || s === "streaming" || s === "retrying")
+    return "working";
   return null;
 }
 
@@ -66,7 +73,7 @@ export function LocalAgentNotificationsBridge() {
     if (status === "awaiting-approval") {
       fire("attention", "Clack needs your approval", "Approve a tool to continue");
     } else if (status === "error") {
-      fire("error", "Clack run failed", error ?? undefined);
+      fire("error", "Clack run failed", error?.message);
     } else if (status === "idle" && isBusy(was)) {
       fire("finished", "Clack finished", "Your task is ready");
     }

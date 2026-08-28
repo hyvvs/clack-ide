@@ -1,6 +1,22 @@
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import {
+  canPersistPermission,
+  grantScopedPermission,
+  isStrictPermissionRequest,
+  permissionCategoryForTool,
+  type PermissionContext,
+} from "@/modules/ai/lib/permissions";
+import { useChatStore } from "@/modules/ai/store/chatStore";
+import { useAgentsStore } from "@/modules/ai/store/agentsStore";
+import {
+  ArrowDown01Icon,
   Cancel01Icon,
   Edit02Icon,
   FileEditIcon,
@@ -20,6 +36,13 @@ type Props = {
   onRespond: (approved: boolean) => void;
 };
 
+export function respondToApprovalChoice(
+  choice: "deny" | "once",
+  onRespond: (approved: boolean) => void,
+): void {
+  onRespond(choice === "once");
+}
+
 const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
   {
     write_file: { label: "Write file", icon: FilePlusIcon },
@@ -35,6 +58,35 @@ function AiToolApprovalImpl({ part, toolName, onRespond }: Props) {
   const label = meta?.label ?? toolName;
   const Icon = meta?.icon ?? ToolsIcon;
   const input = part.input as Record<string, unknown>;
+  const sessionId = useChatStore((s) => s.activeSessionId);
+  const live = useChatStore((s) => s.live);
+  const permissionContext: PermissionContext = {
+    getCwd: live.getCwd,
+    getWorkspaceRoot: live.getWorkspaceRoot,
+    getSessionId: () => sessionId,
+    getAgentId: () => {
+      const state = useChatStore.getState();
+      return (
+        state.sessions.find((session) => session.id === sessionId)?.run
+          ?.agentId ?? useAgentsStore.getState().activeId
+      );
+    },
+  };
+  const category = permissionCategoryForTool(toolName);
+  const strict = isStrictPermissionRequest(toolName, input);
+  const canPersist =
+    category !== null &&
+    canPersistPermission(toolName, input, permissionContext);
+
+  const allowScoped = async (scope: "chat" | "workspace") => {
+    const granted = await grantScopedPermission(
+      scope,
+      toolName,
+      input,
+      permissionContext,
+    );
+    if (granted) onRespond(true);
+  };
 
   return (
     <div className="clack-ai-block overflow-hidden shadow-sm">
@@ -50,7 +102,7 @@ function AiToolApprovalImpl({ part, toolName, onRespond }: Props) {
           {label}
         </span>
         <span className="ml-auto text-[10px] font-medium text-[var(--clack-warning)]">
-          needs approval
+          {strict ? "always asks" : "needs approval"}
         </span>
       </div>
 
@@ -62,7 +114,7 @@ function AiToolApprovalImpl({ part, toolName, onRespond }: Props) {
         <Button
           size="sm"
           variant="destructive"
-          onClick={() => onRespond(false)}
+          onClick={() => respondToApprovalChoice("deny", onRespond)}
           className="h-7 gap-1.5 text-[11px]"
         >
           <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={2} />
@@ -71,12 +123,41 @@ function AiToolApprovalImpl({ part, toolName, onRespond }: Props) {
         <Button
           size="sm"
           variant="default"
-          onClick={() => onRespond(true)}
+          onClick={() => respondToApprovalChoice("once", onRespond)}
           className="h-7 gap-1.5 text-[11px]"
         >
           <HugeiconsIcon icon={Tick02Icon} size={12} strokeWidth={2} />
-          Approve
+          Allow once
         </Button>
+        {canPersist ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1 px-2 text-[11px]"
+                aria-label="Choose permission scope"
+              >
+                Scope
+                <HugeiconsIcon
+                  icon={ArrowDown01Icon}
+                  size={10}
+                  strokeWidth={2}
+                />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => void allowScoped("chat")}>
+                Allow for this chat
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => void allowScoped("workspace")}
+              >
+                Allow for this workspace
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
       </div>
     </div>
   );
