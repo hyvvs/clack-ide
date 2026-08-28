@@ -1,5 +1,11 @@
 import { create } from "zustand";
 import { native } from "../lib/native";
+import {
+  hashText,
+  isMissingPathError,
+  validateReadSnapshot,
+} from "../lib/readSnapshot";
+import type { WorkspaceEnv } from "@/modules/workspace/env";
 
 export type QueuedEdit = {
   id: string;
@@ -14,6 +20,7 @@ export type QueuedEdit = {
   isNewFile: boolean;
   /** Human-readable description, used for create_directory. */
   description?: string;
+  workspaceEnvironment?: WorkspaceEnv;
 };
 
 type PlanState = {
@@ -51,9 +58,36 @@ export const usePlanStore = create<PlanState>((set, get) => ({
     for (const q of items) {
       try {
         if (q.kind === "create_directory") {
-          await native.createDir(q.path);
+          await native.createDir(q.path, q.workspaceEnvironment);
         } else {
-          await native.writeFile(q.path, q.proposedContent);
+          try {
+            const current = await native.readFile(
+              q.path,
+              q.workspaceEnvironment,
+            );
+            if (q.isNewFile) {
+              throw new Error(
+                "the planned new-file path now exists; review it before applying",
+              );
+            }
+            if (current.kind !== "text") {
+              throw new Error(
+                "the planned file is now binary or oversized; refusing to overwrite it",
+              );
+            }
+            const snapshot = validateReadSnapshot(current.content, {
+              size: q.originalContent.length,
+              hash: hashText(q.originalContent),
+            });
+            if (!snapshot.ok) throw new Error(snapshot.error);
+          } catch (error) {
+            if (!q.isNewFile || !isMissingPathError(error)) throw error;
+          }
+          await native.writeFile(
+            q.path,
+            q.proposedContent,
+            q.workspaceEnvironment,
+          );
         }
         results.push({ id: q.id, ok: true });
       } catch (e) {

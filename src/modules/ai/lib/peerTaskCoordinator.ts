@@ -1,5 +1,9 @@
 import type { UIMessage } from "@ai-sdk/react";
-import type { SessionMeta } from "./sessions";
+import {
+  workspaceEnvironmentFromId,
+  type SessionMeta,
+} from "./sessions";
+import { workspacePathsEqual } from "@/modules/workspace";
 import { normalizeAiError } from "./errors";
 import {
   PEER_TASK_MAX_HOPS,
@@ -9,8 +13,14 @@ import {
   peerTaskFingerprint,
   type PeerArtifactRef,
   type PeerTask,
+  type PeerTaskExecutionMode,
   type PeerTaskKind,
 } from "./peerTasks";
+import { native } from "./native";
+import {
+  acquireWorkspaceWriteLease,
+  releaseWorkspaceWriteLeasesForSession,
+} from "./workspaceWriteLease";
 import { cancelRun, getChat, useChatStore } from "../store/chatStore";
 import { sendMessageToSession } from "../store/chatRuntime";
 import { usePeerTaskStore } from "../store/peerTaskStore";
@@ -21,6 +31,7 @@ export type PeerTaskRequest = {
   kind: PeerTaskKind;
   prompt: string;
   artifactRefs?: PeerArtifactRef[];
+  executionMode?: PeerTaskExecutionMode;
   awaitCompletion?: boolean;
 };
 
@@ -47,7 +58,12 @@ export async function requestPeerTask(
     targetModelId: target.profile?.modelId ?? "",
     workspaceId: source.profile?.workspaceId ?? "",
     workspaceRoot: source.profile?.workspaceRoot ?? "",
+    workspaceEnvironment:
+      workspaceEnvironmentFromId(source.profile?.workspaceId) ?? {
+        kind: "local",
+      },
     kind: request.kind,
+    executionMode: request.executionMode ?? "read-only",
     prompt: request.prompt.trim(),
     artifactRefs: normalizeArtifactRefs(request.artifactRefs),
     parentTaskId: parent?.id ?? null,
@@ -109,14 +125,68 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
   }
   const claimed = usePeerTaskStore.getState().claim(taskId);
   if (!claimed) return;
+  let worktreeCreated = false;
+  let captureStarted = false;
   try {
+    let checkout:
+      | { checkoutId: string; checkoutRoot: string }
+      | undefined;
+    if (claimed.executionMode === "isolated-worktree") {
+      if (!claimed.workspaceId.startsWith("local:")) {
+        throw new Error(
+          "Isolated agent worktrees are available only for local workspaces. Use serialized shared-workspace edits for WSL.",
+        );
+      }
+      const repo = await native.gitResolveRepo(
+        claimed.workspaceRoot,
+        claimed.workspaceEnvironment,
+      );
+      if (!repo) {
+        throw new Error(
+          "This workspace is not a Git repository. Use serialized shared-workspace edits instead.",
+        );
+      }
+      if (!workspacePathsEqual(repo.repoRoot, claimed.workspaceRoot)) {
+        throw new Error(
+          "Isolated agent worktrees currently require the workspace root to match the Git repository root.",
+        );
+      }
+      const setupLeaseId = `worktree-setup:${claimed.id}`;
+      const setupLease = await acquireWorkspaceWriteLease({
+        workspaceId: claimed.workspaceId,
+        sessionId: setupLeaseId,
+        agentId: claimed.targetAgentId,
+      });
+      if (!setupLease.ok) throw new Error(setupLease.message);
+      const worktree = await (async () => {
+        try {
+          return await native.gitAgentWorktreeCreate(
+            repo.repoRoot,
+            claimed.id,
+          );
+        } finally {
+          releaseWorkspaceWriteLeasesForSession(setupLeaseId);
+        }
+      })();
+      worktreeCreated = true;
+      usePeerTaskStore.getState().setWorktree(claimed.id, worktree);
+      checkout = {
+        checkoutId: `${claimed.workspaceId}:worktree:${claimed.id}`,
+        checkoutRoot: worktree.checkoutRoot,
+      };
+    }
     await sendMessageToSession(
       claimed.targetSessionId,
       {
         role: "user",
         parts: [{ type: "text", text: peerTaskPrompt(claimed) }],
       },
-      { peerTaskId: claimed.id },
+      {
+        peerTaskId: claimed.id,
+        mutationMode: claimed.executionMode,
+        workspaceEnvironment: claimed.workspaceEnvironment,
+        ...checkout,
+      },
     );
     const currentTarget = useChatStore
       .getState()
@@ -124,6 +194,24 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
     const summary = latestVisibleAssistantText(
       getChat(claimed.targetSessionId)?.messages ?? [],
     );
+    if (claimed.executionMode === "isolated-worktree") {
+      const worktree = usePeerTaskStore
+        .getState()
+        .tasks.find((item) => item.id === claimed.id)?.worktree;
+      if (!worktree) throw new Error("The isolated worktree metadata is missing.");
+      captureStarted = true;
+      const changeSet = await native.gitAgentWorktreeCapture(
+        claimed.workspaceRoot,
+        claimed.id,
+        worktree.baseSha,
+      );
+      worktreeCreated = false;
+      usePeerTaskStore.getState().setChangeSet(claimed.id, {
+        baseSha: worktree.baseSha,
+        patch: changeSet.patch,
+        changedPaths: changeSet.changedPaths,
+      });
+    }
     usePeerTaskStore.getState().complete(claimed.id, {
       summary: summary || "The peer run completed without a text response.",
       targetSessionId: claimed.targetSessionId,
@@ -134,6 +222,14 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
       completedAt: Date.now(),
     });
   } catch (error) {
+    if (worktreeCreated && !captureStarted) {
+      try {
+        await native.gitAgentWorktreeRemove(claimed.workspaceRoot, claimed.id);
+      } catch {
+        // Preserve the original peer failure. The task retains worktree
+        // metadata when cleanup itself fails.
+      }
+    }
     const normalized = normalizeAiError(error, { disposition: "terminal" });
     usePeerTaskStore.getState().fail(claimed.id, {
       code: "peer_run_failed",
@@ -153,6 +249,65 @@ export async function cancelPeerTask(taskId: string): Promise<void> {
     .sessions.find((session) => session.id === task.targetSessionId)?.run;
   if (targetRun?.state === "running" && targetRun.peerTaskId === task.id) {
     await cancelRun(task.targetSessionId);
+  }
+  if (task.executionMode === "isolated-worktree" && task.worktree) {
+    try {
+      await native.gitAgentWorktreeRemove(task.workspaceRoot, task.id);
+      usePeerTaskStore.getState().clearWorktree(task.id);
+    } catch {
+      // Cancellation is durable even when native cleanup needs recovery.
+    }
+  }
+}
+
+export async function discardPeerTaskWorktree(
+  taskId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const task = usePeerTaskStore
+    .getState()
+    .tasks.find((item) => item.id === taskId);
+  if (!task?.worktree) {
+    return { ok: false, message: "No preserved worktree is available." };
+  }
+  try {
+    await native.gitAgentWorktreeRemove(task.workspaceRoot, task.id);
+    usePeerTaskStore.getState().clearWorktree(task.id);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: String(error) };
+  }
+}
+
+export async function applyPeerTaskChangeSet(
+  taskId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const task = usePeerTaskStore
+    .getState()
+    .tasks.find((item) => item.id === taskId);
+  if (!task?.changeSet || task.changeSet.appliedAt) {
+    return { ok: false, message: "No unapplied agent change set is available." };
+  }
+  const applyLeaseId = `patch-apply:${task.id}`;
+  const lease = await acquireWorkspaceWriteLease({
+    workspaceId: task.workspaceId,
+    sessionId: applyLeaseId,
+    agentId: task.sourceAgentId,
+  });
+  if (!lease.ok) return { ok: false, message: lease.message };
+  try {
+    await native.gitAgentPatchApply(
+      task.workspaceRoot,
+      task.changeSet.baseSha,
+      task.changeSet.patch,
+    );
+    usePeerTaskStore.getState().markChangeSetApplied(task.id);
+    return { ok: true };
+  } catch (error) {
+    const message = String(error);
+    usePeerTaskStore.getState().setChangeSetApplyError(task.id, message);
+    return { ok: false, message };
+  } finally {
+    releaseWorkspaceWriteLeasesForSession(applyLeaseId);
   }
 }
 
@@ -194,6 +349,17 @@ function validateRequest(request: PeerTaskRequest):
     !targetProfile.modelId
   ) {
     return { ok: false, code: "peer_identity_missing", message: "Both conversations need a valid agent and model." };
+  }
+  if (
+    request.executionMode === "isolated-worktree" &&
+    !sourceProfile.workspaceId.startsWith("local:")
+  ) {
+    return {
+      ok: false,
+      code: "peer_worktree_environment_unsupported",
+      message:
+        "Isolated agent worktrees are available only for local workspaces. Use serialized shared-workspace edits for WSL.",
+    };
   }
   const tasks = usePeerTaskStore.getState().tasks;
   const parentId = source.run?.peerTaskId ?? null;
@@ -250,6 +416,7 @@ function normalizeArtifactRefs(
 function peerTaskPrompt(task: PeerTask): string {
   return `<peer-task id="${task.id}">\n${JSON.stringify({
     kind: task.kind,
+    executionMode: task.executionMode,
     prompt: task.prompt,
     artifactRefs: task.artifactRefs,
     source: {

@@ -4,6 +4,7 @@ import {
   createConversationProfile,
   migrateSessionProfiles,
   validateConversationProfileForRun,
+  workspaceEnvironmentFromId,
   type SessionMeta,
 } from "./sessions";
 
@@ -47,6 +48,13 @@ describe("conversation session profiles", () => {
       workspaceEnvironment: "wsl:Arch",
     });
     expect(local.workspaceId).not.toBe(wsl.workspaceId);
+    expect(workspaceEnvironmentFromId(local.workspaceId)).toEqual({
+      kind: "local",
+    });
+    expect(workspaceEnvironmentFromId(wsl.workspaceId)).toEqual({
+      kind: "wsl",
+      distro: "Arch",
+    });
   });
 
   it("migrates legacy chats without guessing a workspace", () => {

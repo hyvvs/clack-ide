@@ -1,3 +1,4 @@
+pub mod agent_worktree;
 pub mod commands;
 pub mod errors;
 pub mod operations;

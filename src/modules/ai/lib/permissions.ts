@@ -8,6 +8,10 @@ import {
   workspaceScopeKey,
 } from "@/modules/workspace";
 import type { ToolContext } from "@/modules/ai/tools/context";
+import {
+  acquireWorkspaceWriteLease,
+  currentWorkspaceWriteLease,
+} from "./workspaceWriteLease";
 
 export type PermissionContext = Pick<
   ToolContext,
@@ -391,12 +395,105 @@ export function applyAgentPermissionPolicy<
             permissionSource: decision.source,
           };
         }
+        if (
+          ctx.getMutationMode?.() === "isolated-worktree" &&
+          !isToolRequestInsideWorkspace(
+            toolName,
+            (input ?? {}) as Record<string, unknown>,
+            ctx,
+          )
+        ) {
+          return {
+            error:
+              "This isolated peer run cannot target a path or working directory outside its worktree.",
+            code: "isolated_worktree_escape_blocked",
+          };
+        }
+        if (requiresWorkspaceWriteLease(toolName)) {
+          if (ctx.getMutationMode?.() === "read-only") {
+            return {
+              error:
+                "This peer task is read-only. Start a shared-write or isolated-worktree task to modify files or run commands.",
+              code: "peer_task_read_only",
+            };
+          }
+          const sessionId = ctx.getSessionId();
+          const workspaceRoot = ctx.getWorkspaceRoot();
+          const workspaceId =
+            ctx.getWorkspaceId?.() ??
+            (workspaceRoot ? workspacePermissionKey(workspaceRoot) : null);
+          if (sessionId && workspaceId) {
+            const agentId = ctx.getAgentId();
+            const currentLease = currentWorkspaceWriteLease(workspaceId);
+            if (currentLease && currentLease.ownerSessionId !== sessionId) {
+              ctx.onWorkspaceWriteWait?.({
+                sessionId: currentLease.ownerSessionId,
+                agentId: currentLease.ownerAgentId,
+              });
+            }
+            const signal =
+              options &&
+              typeof options === "object" &&
+              "abortSignal" in options &&
+              typeof AbortSignal !== "undefined" &&
+              (options as { abortSignal?: unknown }).abortSignal instanceof
+                AbortSignal
+                ? (options as { abortSignal: AbortSignal }).abortSignal
+                : undefined;
+            const acquired = await acquireWorkspaceWriteLease({
+              workspaceId,
+              sessionId,
+              agentId,
+              signal,
+            });
+            if (!acquired.ok) {
+              return {
+                error: acquired.message,
+                code: acquired.code,
+                workspaceId,
+              };
+            }
+            ctx.onWorkspaceWriteAcquired?.(acquired.waited);
+          }
+        }
         return originalExecute(input, options);
       };
     }
     (wrapped as Record<string, RuntimeTool>)[toolName] = next;
   }
   return wrapped;
+}
+
+function isToolRequestInsideWorkspace(
+  toolName: string,
+  input: Record<string, unknown>,
+  ctx: PermissionContext,
+): boolean {
+  const category = permissionCategoryForTool(toolName);
+  if (
+    category !== "write-files" &&
+    category !== "create-files" &&
+    category !== "run-commands"
+  ) {
+    return true;
+  }
+  const workspaceRoot = ctx.getWorkspaceRoot();
+  if (!workspaceRoot) return false;
+  if (category === "run-commands") {
+    const cwd = typeof input.cwd === "string" ? input.cwd : ctx.getCwd();
+    return !!cwd && isInsideWorkspace(cwd, workspaceRoot);
+  }
+  const path = resolvedInputPath(input, ctx);
+  return !!path && isInsideWorkspace(path, workspaceRoot);
+}
+
+export function requiresWorkspaceWriteLease(toolName: string): boolean {
+  const category = permissionCategoryForTool(toolName);
+  return (
+    category === "write-files" ||
+    category === "create-files" ||
+    category === "run-commands"
+  );
 }
 
 export async function grantScopedPermission(

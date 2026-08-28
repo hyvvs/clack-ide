@@ -54,6 +54,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { AGENT_HARD_STEP_LIMIT, AGENT_SOFT_STEP_LIMIT } from "../lib/runBudget";
 import { shouldShowHeaderStop } from "../components/AiMiniWindow";
 import { shouldShowTodoStrip } from "../components/TodoStrip";
+import { useWorkspaceEnvStore } from "@/modules/workspace/env";
 
 const SESSION_ID = "compact-session";
 const ORIGINAL_API_KEYS = useChatStore.getState().apiKeys;
@@ -62,6 +63,7 @@ const ORIGINAL_SELECTED_MODEL = useChatStore.getState().selectedModelId;
 afterEach(() => {
   chats.clear();
   usePreferencesStore.setState({ agentPermissionProfiles: {} });
+  useWorkspaceEnvStore.setState({ env: { kind: "local" } });
   useChatStore.setState({
     activeSessionId: null,
     mini: { open: false, minimized: false },
@@ -706,6 +708,38 @@ describe("active todo lifecycle", () => {
 });
 
 describe("sendMessageToSession", () => {
+  it("captures a peer run's workspace environment and isolated checkout", () => {
+    useWorkspaceEnvStore.setState({ env: { kind: "wsl", distro: "Arch" } });
+    const base = sessionMeta();
+    const session = {
+      ...base,
+      profile: {
+        ...base.profile,
+        workspaceId: "local:c:/work/clack",
+        workspaceRoot: "C:/work/clack",
+      },
+    };
+    useChatStore.setState({ sessions: [session] });
+
+    const started = useChatStore.getState().beginRun(SESSION_ID, undefined, {
+      peerTaskId: "peer-a",
+      mutationMode: "isolated-worktree",
+      checkoutId: "local:c:/cache/worktree-a",
+      checkoutRoot: "C:/cache/worktree-a",
+      workspaceEnvironment: { kind: "local" },
+    });
+
+    expect(started).toEqual({ ok: true });
+    expect(useChatStore.getState().sessions[0].run).toMatchObject({
+      workspaceId: "local:c:/work/clack",
+      workspaceRoot: "C:/work/clack",
+      checkoutId: "local:c:/cache/worktree-a",
+      checkoutRoot: "C:/cache/worktree-a",
+      workspaceEnvironment: { kind: "local" },
+      mutationMode: "isolated-worktree",
+    });
+  });
+
   it("sends to the existing conversation without opening the transcript", async () => {
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     chats.set(SESSION_ID, { sendMessage } as unknown as Chat<UIMessage>);

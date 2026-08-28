@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
   currentWorkspaceEnv,
+  LOCAL_WORKSPACE,
   type WorkspaceEnv,
 } from "@/modules/workspace/env";
 
@@ -100,6 +101,16 @@ export type GitPushResult = {
   pushed: boolean;
 };
 
+export type AgentWorktreeInfo = {
+  checkoutRoot: string;
+  baseSha: string;
+};
+
+export type AgentWorktreePatch = {
+  patch: string;
+  changedPaths: string[];
+};
+
 export type GitLogEntry = {
   sha: string;
   shortSha: string;
@@ -140,79 +151,97 @@ export const native = {
       path,
       workspace: currentWorkspaceEnv(),
     }),
-  readFile: (path: string) =>
+  readFile: (path: string, workspace?: WorkspaceEnv) =>
     invoke<ReadResult>("fs_read_file", {
       path,
-      workspace: currentWorkspaceEnv(),
+      workspace: workspace ?? currentWorkspaceEnv(),
     }),
-  writeFile: (path: string, content: string) =>
+  writeFile: (path: string, content: string, workspace?: WorkspaceEnv) =>
     invoke<void>("fs_write_file", {
       path,
       content,
-      workspace: currentWorkspaceEnv(),
+      workspace: workspace ?? currentWorkspaceEnv(),
     }),
-  canonicalize: (path: string) =>
+  canonicalize: (path: string, workspace?: WorkspaceEnv) =>
     invoke<string>("fs_canonicalize", {
       path,
-      workspace: currentWorkspaceEnv(),
+      workspace: workspace ?? currentWorkspaceEnv(),
     }),
   stat: (path: string, workspace?: WorkspaceEnv) =>
     invoke<FileStat>("fs_stat", {
       path,
       workspace: workspace ?? currentWorkspaceEnv(),
     }),
-  createFile: (path: string) =>
-    invoke<void>("fs_create_file", { path, workspace: currentWorkspaceEnv() }),
-  createDir: (path: string) =>
-    invoke<void>("fs_create_dir", { path, workspace: currentWorkspaceEnv() }),
+  createFile: (path: string, workspace?: WorkspaceEnv) =>
+    invoke<void>("fs_create_file", {
+      path,
+      workspace: workspace ?? currentWorkspaceEnv(),
+    }),
+  createDir: (path: string, workspace?: WorkspaceEnv) =>
+    invoke<void>("fs_create_dir", {
+      path,
+      workspace: workspace ?? currentWorkspaceEnv(),
+    }),
   // AI tooling never sees dot-prefixed entries regardless of the user's
   // explorer preference — keeps .git / .env / .ssh out of agent context.
-  readDir: (path: string) =>
+  readDir: (path: string, workspace?: WorkspaceEnv) =>
     invoke<DirEntry[]>("fs_read_dir", {
       path,
       showHidden: false,
-      workspace: currentWorkspaceEnv(),
+      workspace: workspace ?? currentWorkspaceEnv(),
     }),
-  grep: (params: {
-    pattern: string;
-    root: string;
-    glob?: string[];
-    caseInsensitive?: boolean;
-    maxResults?: number;
-  }) =>
+  grep: (
+    params: {
+      pattern: string;
+      root: string;
+      glob?: string[];
+      caseInsensitive?: boolean;
+      maxResults?: number;
+    },
+    workspace?: WorkspaceEnv,
+  ) =>
     invoke<GrepResponse>("fs_grep", {
       pattern: params.pattern,
       root: params.root,
       glob: params.glob ?? null,
       caseInsensitive: params.caseInsensitive ?? null,
       maxResults: params.maxResults ?? null,
-      workspace: currentWorkspaceEnv(),
+      workspace: workspace ?? currentWorkspaceEnv(),
     }),
-  glob: (params: { pattern: string; root: string; maxResults?: number }) =>
+  glob: (
+    params: { pattern: string; root: string; maxResults?: number },
+    workspace?: WorkspaceEnv,
+  ) =>
     invoke<GlobResponse>("fs_glob", {
       pattern: params.pattern,
       root: params.root,
       maxResults: params.maxResults ?? null,
-      workspace: currentWorkspaceEnv(),
+      workspace: workspace ?? currentWorkspaceEnv(),
     }),
-  runCommand: (command: string, cwd?: string | null, timeoutSecs?: number) =>
+  runCommand: (
+    command: string,
+    cwd?: string | null,
+    timeoutSecs?: number,
+    workspace?: WorkspaceEnv,
+  ) =>
     invoke<CommandOutput>("shell_run_command", {
       command,
       cwd: cwd ?? null,
       timeoutSecs: timeoutSecs ?? null,
-      workspace: currentWorkspaceEnv(),
+      workspace: workspace ?? currentWorkspaceEnv(),
     }),
 
-  shellSessionOpen: (cwd?: string | null) =>
+  shellSessionOpen: (cwd?: string | null, workspace?: WorkspaceEnv) =>
     invoke<number>("shell_session_open", {
       cwd: cwd ?? null,
-      workspace: currentWorkspaceEnv(),
+      workspace: workspace ?? currentWorkspaceEnv(),
     }),
   shellSessionRun: (
     id: number,
     command: string,
     cwd?: string | null,
     timeoutSecs?: number,
+    workspace?: WorkspaceEnv,
   ) =>
     invoke<{
       stdout: string;
@@ -226,15 +255,19 @@ export const native = {
       command,
       cwd: cwd ?? null,
       timeoutSecs: timeoutSecs ?? null,
-      workspace: currentWorkspaceEnv(),
+      workspace: workspace ?? currentWorkspaceEnv(),
     }),
   shellSessionClose: (id: number) =>
     invoke<void>("shell_session_close", { id }),
-  shellBgSpawn: (command: string, cwd?: string | null) =>
+  shellBgSpawn: (
+    command: string,
+    cwd?: string | null,
+    workspace?: WorkspaceEnv,
+  ) =>
     invoke<number>("shell_bg_spawn", {
       command,
       cwd: cwd ?? null,
-      workspace: currentWorkspaceEnv(),
+      workspace: workspace ?? currentWorkspaceEnv(),
     }),
   shellBgLogs: (handle: number, sinceOffset?: number) =>
     invoke<{
@@ -256,10 +289,10 @@ export const native = {
         exit_code: number | null;
       }[]
     >("shell_bg_list"),
-  gitResolveRepo: (cwd: string) =>
+  gitResolveRepo: (cwd: string, workspace?: WorkspaceEnv) =>
     invoke<GitRepoInfo | null>("git_resolve_repo", {
       cwd,
-      workspace: currentWorkspaceEnv(),
+      workspace: workspace ?? currentWorkspaceEnv(),
     }),
   gitPanelSnapshot: (cwd: string) =>
     invoke<GitPanelSnapshot>("git_panel_snapshot", {
@@ -370,5 +403,35 @@ export const native = {
       repoRoot,
       name: name ?? null,
       workspace: currentWorkspaceEnv(),
+    }),
+  gitAgentWorktreeCreate: (repoRoot: string, taskId: string) =>
+    invoke<AgentWorktreeInfo>("git_agent_worktree_create", {
+      repoRoot,
+      taskId,
+      workspace: LOCAL_WORKSPACE,
+    }),
+  gitAgentWorktreeCapture: (
+    repoRoot: string,
+    taskId: string,
+    baseSha: string,
+  ) =>
+    invoke<AgentWorktreePatch>("git_agent_worktree_capture", {
+      repoRoot,
+      taskId,
+      baseSha,
+      workspace: LOCAL_WORKSPACE,
+    }),
+  gitAgentWorktreeRemove: (repoRoot: string, taskId: string) =>
+    invoke<void>("git_agent_worktree_remove", {
+      repoRoot,
+      taskId,
+      workspace: LOCAL_WORKSPACE,
+    }),
+  gitAgentPatchApply: (repoRoot: string, baseSha: string, patch: string) =>
+    invoke<void>("git_agent_patch_apply", {
+      repoRoot,
+      baseSha,
+      patch,
+      workspace: LOCAL_WORKSPACE,
     }),
 };

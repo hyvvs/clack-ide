@@ -48,6 +48,27 @@ describe("PeerTaskFeed", () => {
     expect(html).toContain("Cancel");
     expect(html).not.toContain("Looks safe");
   });
+
+  it("exposes an isolated change set for review without auto-applying it", () => {
+    const isolated = task({
+      executionMode: "isolated-worktree",
+      changeSet: {
+        baseSha: "0123456789abcdef0123456789abcdef01234567",
+        patch: "diff --git a/src/parser.ts b/src/parser.ts\n",
+        changedPaths: ["src/parser.ts"],
+      },
+    });
+
+    const html = renderToStaticMarkup(
+      <PeerTaskCard task={isolated} viewingSessionId="source" />,
+    );
+
+    expect(html).toContain("isolated worktree");
+    expect(html).toContain("src/parser.ts");
+    expect(html).toContain("Review patch");
+    expect(html).toContain("Apply patch");
+    expect(html).not.toContain("Applied to workspace");
+  });
 });
 
 function session(id: string, title: string) {
@@ -66,7 +87,9 @@ function task(overrides: Partial<PeerTask> = {}): PeerTask {
     targetModelId: "model-reviewer",
     workspaceId: "local:c:/workspace",
     workspaceRoot: "C:/workspace",
+    workspaceEnvironment: { kind: "local" },
     kind: "review",
+    executionMode: "read-only",
     prompt: "Review the parser",
     artifactRefs: [{ kind: "file", path: "src/parser.ts" }],
     parentTaskId: null,

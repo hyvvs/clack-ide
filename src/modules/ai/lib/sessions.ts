@@ -5,6 +5,7 @@ import type { RunBudgetState } from "@/modules/ai/lib/runBudget";
 import type { ProviderId } from "@/modules/ai/config";
 import { workspacePermissionKey } from "@/modules/ai/lib/permissions";
 import { normalizeWorkspacePath } from "@/modules/workspace";
+import type { WorkspaceEnv } from "@/modules/workspace/env";
 
 export const SESSION_PROFILE_SCHEMA_VERSION = 1;
 
@@ -32,12 +33,21 @@ export type SessionRunState =
   | "cancelled"
   | "interrupted";
 
+export type RunMutationMode =
+  | "read-only"
+  | "shared-write"
+  | "isolated-worktree";
+
 export type SessionRun = {
   state: SessionRunState;
   agentId?: string;
   modelId?: string;
   workspaceId?: string;
   workspaceRoot?: string;
+  checkoutId?: string;
+  checkoutRoot?: string;
+  mutationMode?: RunMutationMode;
+  workspaceEnvironment?: WorkspaceEnv;
   providerId?: ProviderId;
   transportModelId?: string;
   endpointBaseURL?: string;
@@ -79,6 +89,15 @@ export function createConversationProfile(input: {
       : null,
     workspaceRoot: root,
   };
+}
+
+export function workspaceEnvironmentFromId(
+  workspaceId: string | null | undefined,
+): WorkspaceEnv | null {
+  if (!workspaceId) return null;
+  if (workspaceId.startsWith("local:")) return { kind: "local" };
+  const wsl = /^wsl:([^:]+):/.exec(workspaceId);
+  return wsl?.[1] ? { kind: "wsl", distro: wsl[1] } : null;
 }
 
 export function migrateSessionProfiles(

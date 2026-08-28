@@ -4,6 +4,7 @@ import {
   recoverInterruptedPeerTasks,
   savePeerTasks,
   type PeerTask,
+  type PeerTaskChangeSet,
   type PeerTaskError,
   type PeerTaskResult,
 } from "../lib/peerTasks";
@@ -14,6 +15,14 @@ type PeerTaskStore = {
   hydrate: () => Promise<void>;
   add: (task: PeerTask) => void;
   claim: (id: string) => PeerTask | null;
+  setWorktree: (
+    id: string,
+    worktree: { checkoutRoot: string; baseSha: string },
+  ) => void;
+  clearWorktree: (id: string) => void;
+  setChangeSet: (id: string, changeSet: PeerTaskChangeSet) => void;
+  markChangeSetApplied: (id: string) => void;
+  setChangeSetApplyError: (id: string, message: string) => void;
   complete: (id: string, result: PeerTaskResult) => void;
   fail: (id: string, error: PeerTaskError) => void;
   cancel: (id: string) => void;
@@ -27,7 +36,8 @@ export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
   hydrated: false,
   tasks: [],
   hydrate: async () => {
-    const recovered = recoverInterruptedPeerTasks(await loadPeerTasks());
+    const loaded = await loadPeerTasks();
+    const recovered = recoverInterruptedPeerTasks(loaded);
     set({ tasks: recovered, hydrated: true });
     persist(recovered);
   },
@@ -50,6 +60,63 @@ export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
     set({ tasks });
     persist(tasks);
     return claimed;
+  },
+  setWorktree: (id, worktree) => {
+    const tasks = get().tasks.map((task) =>
+      task.id === id
+        ? { ...task, worktree, updatedAt: Date.now() }
+        : task,
+    );
+    set({ tasks });
+    persist(tasks);
+  },
+  clearWorktree: (id) => {
+    const tasks = get().tasks.map((task) =>
+      task.id === id
+        ? { ...task, worktree: undefined, updatedAt: Date.now() }
+        : task,
+    );
+    set({ tasks });
+    persist(tasks);
+  },
+  setChangeSet: (id, changeSet) => {
+    const tasks = get().tasks.map((task) =>
+      task.id === id
+        ? { ...task, changeSet, worktree: undefined, updatedAt: Date.now() }
+        : task,
+    );
+    set({ tasks });
+    persist(tasks);
+  },
+  markChangeSetApplied: (id) => {
+    const tasks = get().tasks.map((task) =>
+      task.id === id && task.changeSet
+        ? {
+            ...task,
+            changeSet: {
+              ...task.changeSet,
+              appliedAt: Date.now(),
+              applyError: undefined,
+            },
+            updatedAt: Date.now(),
+          }
+        : task,
+    );
+    set({ tasks });
+    persist(tasks);
+  },
+  setChangeSetApplyError: (id, message) => {
+    const tasks = get().tasks.map((task) =>
+      task.id === id && task.changeSet
+        ? {
+            ...task,
+            changeSet: { ...task.changeSet, applyError: message },
+            updatedAt: Date.now(),
+          }
+        : task,
+    );
+    set({ tasks });
+    persist(tasks);
   },
   complete: (id, result) => {
     const now = Date.now();

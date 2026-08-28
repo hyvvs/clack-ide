@@ -1,9 +1,11 @@
 use tauri::{AppHandle, Manager};
 
+use crate::modules::git::agent_worktree;
 use crate::modules::git::operations;
 use crate::modules::git::types::{
-    DiscardEntry, GitCommitFileChange, GitCommitResult, GitDiffContentResult, GitDiffResult,
-    GitLogEntry, GitPanelSnapshot, GitPushResult, GitRepoInfo, GitStatusSnapshot,
+    AgentWorktreeInfo, AgentWorktreePatch, DiscardEntry, GitCommitFileChange, GitCommitResult,
+    GitDiffContentResult, GitDiffResult, GitLogEntry, GitPanelSnapshot, GitPushResult, GitRepoInfo,
+    GitStatusSnapshot,
 };
 use crate::modules::workspace::{WorkspaceEnv, WorkspaceRegistry};
 
@@ -278,6 +280,78 @@ pub async fn git_remote_url(
     let workspace = WorkspaceEnv::from_option(workspace);
     blocking(app, move |r| {
         operations::remote_url(r, &repo_root, &remote, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_agent_worktree_create(
+    repo_root: String,
+    task_id: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<AgentWorktreeInfo, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let cache_root = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    blocking(app, move |registry| {
+        agent_worktree::create(registry, &repo_root, &task_id, &cache_root, &workspace)
+            .map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_agent_worktree_capture(
+    repo_root: String,
+    task_id: String,
+    base_sha: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<AgentWorktreePatch, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let cache_root = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    blocking(app, move |registry| {
+        agent_worktree::capture_and_remove(
+            registry,
+            &repo_root,
+            &task_id,
+            &base_sha,
+            &cache_root,
+            &workspace,
+        )
+        .map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_agent_worktree_remove(
+    repo_root: String,
+    task_id: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let cache_root = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    blocking(app, move |registry| {
+        agent_worktree::remove(registry, &repo_root, &task_id, &cache_root, &workspace)
+            .map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_agent_patch_apply(
+    repo_root: String,
+    base_sha: String,
+    patch: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |registry| {
+        agent_worktree::apply_patch(registry, &repo_root, &base_sha, &patch, &workspace)
+            .map_err(Into::into)
     })
     .await
 }

@@ -33,6 +33,12 @@ ${targets.length > 0 ? targets.join("\n") : "- No eligible peer conversations ar
       inputSchema: z.object({
         targetSessionId: z.string().describe("Exact target conversation ID."),
         kind: z.enum(["delegate", "review", "question"]),
+        executionMode: z
+          .enum(["read-only", "shared-write", "isolated-worktree"])
+          .default("read-only")
+          .describe(
+            "Read-only blocks mutation tools. Shared-write serializes mutations in the project checkout. Isolated-worktree requires a clean local Git repository and returns a reviewable patch.",
+          ),
         prompt: z
           .string()
           .min(1)
@@ -49,7 +55,13 @@ ${targets.length > 0 ? targets.join("\n") : "- No eligible peer conversations ar
           .optional()
           .describe("Optional workspace file or diff paths; contents are not copied."),
       }),
-      execute: async ({ targetSessionId, kind, prompt, artifactRefs }) => {
+      execute: async ({
+        targetSessionId,
+        kind,
+        executionMode,
+        prompt,
+        artifactRefs,
+      }) => {
         const currentSessionId = ctx.getSessionId();
         if (!currentSessionId) {
           return { error: "No source conversation is active.", code: "peer_source_missing" };
@@ -58,6 +70,7 @@ ${targets.length > 0 ? targets.join("\n") : "- No eligible peer conversations ar
           sourceSessionId: currentSessionId,
           targetSessionId,
           kind,
+          executionMode,
           prompt,
           artifactRefs,
         });

@@ -32,6 +32,7 @@ vi.mock("./todos", async (importOriginal) => {
 });
 
 import {
+  applyPeerTaskChangeSet,
   cancelPeerTask,
   requestPeerTask,
 } from "./peerTaskCoordinator";
@@ -44,6 +45,8 @@ import {
 import { chats, useChatStore } from "../store/chatStore";
 import { sendMessageToSession } from "../store/chatRuntime";
 import { usePeerTaskStore } from "../store/peerTaskStore";
+import { native } from "./native";
+import { clearWorkspaceWriteLeasesForTests } from "./workspaceWriteLease";
 
 const SOURCE = "chat-source";
 const TARGET = "chat-target";
@@ -68,6 +71,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  clearWorkspaceWriteLeasesForTests();
   chats.clear();
   usePeerTaskStore.setState({ hydrated: false, tasks: [] });
   useChatStore.setState({ activeSessionId: null, sessions: [] });
@@ -240,6 +245,87 @@ describe("peer task coordination", () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(usePeerTaskStore.getState().tasks[0].status).toBe("cancelled");
   });
+
+  it("captures isolated Git changes as a reviewable patch", async () => {
+    vi.spyOn(native, "gitResolveRepo").mockResolvedValue({
+      repoRoot: "C:/workspace",
+      branch: "main",
+      upstream: null,
+      isDetached: false,
+    });
+    vi.spyOn(native, "gitAgentWorktreeCreate").mockResolvedValue({
+      checkoutRoot: "C:/cache/agent-worktrees/task",
+      baseSha: "0123456789abcdef0123456789abcdef01234567",
+    });
+    vi.spyOn(native, "gitAgentWorktreeCapture").mockResolvedValue({
+      patch: "diff --git a/src/a.ts b/src/a.ts\n",
+      changedPaths: ["src/a.ts"],
+    });
+    const apply = vi.spyOn(native, "gitAgentPatchApply").mockResolvedValue();
+
+    const result = await requestPeerTask({
+      sourceSessionId: SOURCE,
+      targetSessionId: TARGET,
+      kind: "delegate",
+      executionMode: "isolated-worktree",
+      prompt: "Implement the bounded change.",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.task).toMatchObject({
+      status: "completed",
+      executionMode: "isolated-worktree",
+      changeSet: {
+        changedPaths: ["src/a.ts"],
+        baseSha: "0123456789abcdef0123456789abcdef01234567",
+      },
+    });
+    expect(sendMessageToSession).toHaveBeenCalledWith(
+      TARGET,
+      expect.any(Object),
+      expect.objectContaining({
+        mutationMode: "isolated-worktree",
+        checkoutRoot: "C:/cache/agent-worktrees/task",
+      }),
+    );
+
+    await expect(applyPeerTaskChangeSet(result.task.id)).resolves.toEqual({
+      ok: true,
+    });
+    expect(apply).toHaveBeenCalledWith(
+      "C:/workspace",
+      "0123456789abcdef0123456789abcdef01234567",
+      "diff --git a/src/a.ts b/src/a.ts\n",
+    );
+    expect(
+      usePeerTaskStore.getState().tasks[0].changeSet?.appliedAt,
+    ).toEqual(expect.any(Number));
+  });
+
+  it("keeps a conflicting patch unapplied with a visible error", async () => {
+    const isolated = task({
+      status: "completed",
+      executionMode: "isolated-worktree",
+      changeSet: {
+        baseSha: "0123456789abcdef0123456789abcdef01234567",
+        patch: "diff --git a/src/a.ts b/src/a.ts\n",
+        changedPaths: ["src/a.ts"],
+      },
+    });
+    usePeerTaskStore.setState({ tasks: [isolated] });
+    vi.spyOn(native, "gitAgentPatchApply").mockRejectedValue(
+      new Error("agent patch base is stale"),
+    );
+
+    await expect(applyPeerTaskChangeSet(isolated.id)).resolves.toMatchObject({
+      ok: false,
+      message: expect.stringContaining("stale"),
+    });
+    const changeSet = usePeerTaskStore.getState().tasks[0].changeSet;
+    expect(changeSet?.appliedAt).toBeUndefined();
+    expect(changeSet?.applyError).toContain("stale");
+  });
 });
 
 describe("peer task persistence recovery", () => {
@@ -285,7 +371,9 @@ function task(overrides: Partial<PeerTask> = {}): PeerTask {
     targetModelId: "model-b",
     workspaceId: "local:c:/workspace",
     workspaceRoot: "C:/workspace",
+    workspaceEnvironment: { kind: "local" },
     kind: "review",
+    executionMode: "read-only",
     prompt: "Review",
     artifactRefs: [],
     parentTaskId: null,

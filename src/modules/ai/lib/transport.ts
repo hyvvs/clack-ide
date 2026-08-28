@@ -10,6 +10,7 @@ import type {
   ModelTransportIdentity,
   SavedProviderModel,
 } from "./savedProviderModels";
+import type { WorkspaceEnv } from "@/modules/workspace/env";
 
 const PROJECT_MEMORY_MAX_BYTES = 32 * 1024;
 type MemoryCacheEntry = { content: string | null; mtime: number };
@@ -17,14 +18,16 @@ const projectMemoryCache = new Map<string, MemoryCacheEntry>();
 
 async function readProjectMemory(
   workspaceRoot: string | null,
+  workspace?: WorkspaceEnv,
 ): Promise<string | null> {
   if (!workspaceRoot) return null;
-  const cached = projectMemoryCache.get(workspaceRoot);
+  const cacheKey = `${workspace?.kind === "wsl" ? `wsl:${workspace.distro}` : "local"}:${workspaceRoot}`;
+  const cached = projectMemoryCache.get(cacheKey);
   if (cached && Date.now() - cached.mtime < 30_000) return cached.content;
   for (const name of ["CLACK.md", "TERAX.md"]) {
     const path = `${workspaceRoot.replace(/\/$/, "")}/${name}`;
     try {
-      const r = await native.readFile(path);
+      const r = await native.readFile(path, workspace);
       if (r.kind !== "text") {
         continue;
       }
@@ -32,13 +35,13 @@ async function readProjectMemory(
         r.content.length > PROJECT_MEMORY_MAX_BYTES
           ? r.content.slice(0, PROJECT_MEMORY_MAX_BYTES)
           : r.content;
-      projectMemoryCache.set(workspaceRoot, { content, mtime: Date.now() });
+      projectMemoryCache.set(cacheKey, { content, mtime: Date.now() });
       return content;
     } catch {
       continue;
     }
   }
-  projectMemoryCache.set(workspaceRoot, { content: null, mtime: Date.now() });
+  projectMemoryCache.set(cacheKey, { content: null, mtime: Date.now() });
   return null;
 }
 
@@ -96,7 +99,10 @@ export function createContextAwareTransport(deps: Deps) {
   const run = async (options: SendOptions) => {
     const batch = deps.onBatchStart?.() ?? { isLogicalContinuation: false };
     const live = deps.getLive();
-    const projectMemory = await readProjectMemory(live.workspaceRoot);
+    const projectMemory = await readProjectMemory(
+      live.workspaceRoot,
+      deps.toolContext.getWorkspaceEnv?.(),
+    );
     const envBlock = formatEnvBlock(live);
     const messagesForRun = envBlock
       ? injectEnvIntoLastUser(options.messages, envBlock)

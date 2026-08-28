@@ -115,6 +115,20 @@ pub struct GitPushResult {
     pub pushed: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentWorktreeInfo {
+    pub checkout_root: String,
+    pub base_sha: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentWorktreePatch {
+    pub patch: String,
+    pub changed_paths: Vec<String>,
+}
+
 pub(crate) struct GitOutput {
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,

@@ -11,13 +11,38 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { requestPeerTask } from "../lib/peerTaskCoordinator";
-import type { PeerTaskKind } from "../lib/peerTasks";
+import type {
+  PeerTaskExecutionMode,
+  PeerTaskKind,
+} from "../lib/peerTasks";
 import type { SessionMeta } from "../lib/sessions";
 
 const KINDS: Array<{ id: PeerTaskKind; label: string }> = [
   { id: "question", label: "Ask" },
   { id: "review", label: "Review" },
   { id: "delegate", label: "Delegate" },
+];
+
+const EXECUTION_MODES: Array<{
+  id: PeerTaskExecutionMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: "read-only",
+    label: "Read only",
+    description: "Can inspect and review, but mutation tools are blocked.",
+  },
+  {
+    id: "shared-write",
+    label: "Shared edit",
+    description: "Writes to this workspace, serialized behind other agents.",
+  },
+  {
+    id: "isolated-worktree",
+    label: "Isolated Git",
+    description: "Works in a clean Git worktree and returns a patch to review.",
+  },
 ];
 
 export function PeerTaskDialog({
@@ -32,6 +57,8 @@ export function PeerTaskDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const [kind, setKind] = useState<PeerTaskKind>("question");
+  const [executionMode, setExecutionMode] =
+    useState<PeerTaskExecutionMode>("read-only");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -41,6 +68,7 @@ export function PeerTaskDialog({
     setPrompt("");
     setError(null);
     setKind("question");
+    setExecutionMode("read-only");
   }, [open]);
 
   const submit = async () => {
@@ -51,6 +79,7 @@ export function PeerTaskDialog({
       sourceSessionId,
       targetSessionId: target.id,
       kind,
+      executionMode,
       prompt,
       awaitCompletion: false,
     });
@@ -109,6 +138,38 @@ export function PeerTaskDialog({
               }
             }}
           />
+          <div className="space-y-1.5">
+            <div className="text-[10px] font-medium uppercase text-muted-foreground">
+              Workspace access
+            </div>
+            <div className="grid grid-cols-3 gap-1 rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] p-1">
+              {EXECUTION_MODES.map((mode) => {
+                const unavailable =
+                  mode.id === "isolated-worktree" &&
+                  !target?.profile?.workspaceId?.startsWith("local:");
+                return (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    disabled={unavailable}
+                    onClick={() => setExecutionMode(mode.id)}
+                    title={unavailable ? "Isolated worktrees are unavailable for WSL workspaces." : mode.description}
+                    className={cn(
+                      "h-7 rounded-[var(--clack-radius-button)] px-1 text-[10px] transition-colors disabled:opacity-40",
+                      executionMode === mode.id
+                        ? "bg-[var(--clack-surface-1)] text-[var(--clack-text-1)] shadow-sm"
+                        : "text-[var(--clack-text-3)] hover:text-[var(--clack-text-1)]",
+                    )}
+                  >
+                    {mode.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              {EXECUTION_MODES.find((mode) => mode.id === executionMode)?.description}
+            </p>
+          </div>
           {error ? <p className="text-[11px] text-destructive">{error}</p> : null}
           <div className="text-[10px] text-muted-foreground">
             {target?.run?.state === "running"

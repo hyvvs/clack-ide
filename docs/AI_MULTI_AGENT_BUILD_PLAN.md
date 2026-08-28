@@ -560,6 +560,45 @@ Required tests:
 
 Exit criteria: simultaneous mutations cannot overwrite each other silently.
 
+Implementation record (2026-08-28):
+
+- peer work now has an explicit Read only, Shared edit, or Isolated Git mode;
+  read-only runs reject file, directory, and command mutation tools before
+  provider execution can reach them
+- shared-checkout mutations acquire one environment-aware FIFO lease for the
+  logical session; other chats show who they are waiting for, reads continue
+  concurrently, and completion, cancellation, deletion, or shutdown releases
+  ownership and queued waiters
+- edit, multi-edit, overwrite, and deferred plan application validate the
+  session's last read snapshot, so a user or another agent changing a file
+  produces a visible stale-snapshot error instead of last-writer-wins
+- local Git repositories can use managed detached worktrees under Clack's app
+  cache; setup requires a clean authorized repository and retains canonical
+  project identity separately from the checkout root and lease identity
+- isolated runs capture their Local/WSL environment and checkout for every
+  native filesystem, search, project-memory, and shell call; direct file tools
+  cannot target paths outside the isolated checkout
+- isolated tracked and untracked changes are staged only inside the disposable
+  worktree, captured as a bounded binary patch, and shown with changed paths
+  and an expandable patch review; Clack never commits, merges, resets, or
+  auto-resolves the result
+- applying a patch is an explicit source-chat action protected by the project
+  lease; it requires a clean workspace and the exact original HEAD, runs
+  `git apply --check`, and leaves stale, dirty, or overlapping changes as a
+  visible unapplied conflict
+- successful capture removes the managed checkout; interrupted or failed
+  capture preserves its path for recovery and exposes an explicit discard
+  action instead of silently deleting uncollected work
+- non-Git and WSL projects use the serialized shared-edit lane; isolated Git
+  worktrees are intentionally limited to local repositories because Clack does
+  not pretend a cross-environment checkout exists
+- phase gate: type check passed; lint passed with pre-existing warnings only;
+  538 frontend tests passed; production build passed; Rust formatting and
+  strict Clippy passed; 217 Rust unit/integration tests passed; diff whitespace
+  check passed
+- concurrent live-provider/manual GUI acceptance remains in the integrated
+  Phase 7 smoke matrix
+
 ## Phase 7: Integrated UX and Release Verification
 
 UX tasks:

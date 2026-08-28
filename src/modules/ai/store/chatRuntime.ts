@@ -11,6 +11,7 @@ import {
 } from "../config";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { workspacePathsEqual } from "@/modules/workspace";
+import { currentWorkspaceEnv } from "@/modules/workspace/env";
 import { BUILTIN_AGENTS } from "../lib/agents";
 import { TERAX_CMD_RE } from "../lib/slashCommands";
 import { useAgentsStore } from "./agentsStore";
@@ -26,6 +27,7 @@ import {
 } from "../lib/errors";
 import type { ProviderRetryEvent } from "../lib/providerRetry";
 import { findSavedProviderModel } from "../lib/savedProviderModels";
+import { workspaceEnvironmentFromId } from "../lib/sessions";
 import type { ToolContext } from "../tools/tools";
 import {
   chats,
@@ -45,7 +47,10 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       .getState()
       .sessions.find((session) => session.id === sessionId);
   const ownerWorkspaceRoot = () =>
-    owner()?.run?.workspaceRoot ?? owner()?.profile?.workspaceRoot ?? null;
+    owner()?.run?.checkoutRoot ??
+    owner()?.run?.workspaceRoot ??
+    owner()?.profile?.workspaceRoot ??
+    null;
   const foregroundMatchesOwner = () =>
     workspacePathsEqual(
       useChatStore.getState().live.getWorkspaceRoot(),
@@ -57,6 +62,31 @@ function makeChat(sessionId: string): Chat<UIMessage> {
         ? useChatStore.getState().live.getCwd()
         : ownerWorkspaceRoot(),
     getWorkspaceRoot: ownerWorkspaceRoot,
+    getWorkspaceId: () =>
+      owner()?.run?.checkoutId ??
+      owner()?.run?.workspaceId ??
+      owner()?.profile?.workspaceId ??
+      null,
+    getMutationMode: () => owner()?.run?.mutationMode ?? "shared-write",
+    getWorkspaceEnv: () =>
+      owner()?.run?.workspaceEnvironment ??
+      workspaceEnvironmentFromId(owner()?.profile?.workspaceId) ??
+      currentWorkspaceEnv(),
+    onWorkspaceWriteWait: ({ agentId }) => {
+      const name =
+        [...BUILTIN_AGENTS, ...useAgentsStore.getState().customAgents].find(
+          (agent) => agent.id === agentId,
+        )?.name ?? "another agent";
+      useChatStore.getState().patchAgentMeta(sessionId, {
+        step: `Waiting for ${name} to finish writing in this workspace...`,
+      });
+    },
+    onWorkspaceWriteAcquired: (waited) => {
+      if (!waited) return;
+      useChatStore.getState().patchAgentMeta(sessionId, {
+        step: "Workspace write access acquired.",
+      });
+    },
     getTerminalContext: () =>
       foregroundMatchesOwner()
         ? useChatStore.getState().live.getTerminalContext()
@@ -373,7 +403,13 @@ function commandNameFromMessage(message: SessionChatMessage): string | undefined
 export async function sendMessageToSession(
   sessionId: string,
   message: SessionChatMessage,
-  options?: { peerTaskId?: string },
+  options?: {
+    peerTaskId?: string;
+    checkoutId?: string;
+    checkoutRoot?: string;
+    mutationMode?: "read-only" | "shared-write" | "isolated-worktree";
+    workspaceEnvironment?: import("@/modules/workspace/env").WorkspaceEnv;
+  },
 ): Promise<void> {
   const store = useChatStore.getState();
   const profileModel = store.sessions.find(

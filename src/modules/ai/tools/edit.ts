@@ -4,30 +4,31 @@ import { native } from "../lib/native";
 import { checkWritableCanonical } from "../lib/security";
 import { newQueuedEditId, usePlanStore } from "../store/planStore";
 import { resolvePath, type ToolContext } from "./context";
+import { hashText, validateReadSnapshot } from "../lib/readSnapshot";
+import type { WorkspaceEnv } from "@/modules/workspace/env";
 
 type EditResult =
   | { ok: true; replacements: number; bytesWritten: number; path: string }
-  | { error: string; path: string };
-
-function djb2(s: string): number {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-  return h >>> 0;
-}
+  | { error: string; path: string; code?: string };
 
 async function applyEdits(
   abs: string,
   edits: { old_string: string; new_string: string; replace_all?: boolean }[],
   kind: "edit" | "multi_edit",
   readCache: Map<string, { size: number; hash: number }>,
+  workspace?: WorkspaceEnv,
 ): Promise<EditResult> {
-  const r = await native.readFile(abs);
+  const r = await native.readFile(abs, workspace);
   if (r.kind === "binary")
     return { error: "binary file refused", path: abs };
   if (r.kind === "toolarge")
     return { error: `file too large (${r.size} bytes)`, path: abs };
 
   const original = r.content;
+  const snapshot = validateReadSnapshot(original, readCache.get(abs));
+  if (!snapshot.ok) {
+    return { error: snapshot.error, code: snapshot.code, path: abs };
+  }
   let content = original;
   let totalReplacements = 0;
 
@@ -92,8 +93,9 @@ async function applyEdits(
       kind,
       path: abs,
       originalContent: original,
-      proposedContent: content,
-      isNewFile: false,
+    proposedContent: content,
+    isNewFile: false,
+    workspaceEnvironment: workspace,
     });
     return {
       ok: true,
@@ -104,8 +106,8 @@ async function applyEdits(
   }
 
   try {
-    await native.writeFile(abs, content);
-    readCache.set(abs, { size: content.length, hash: djb2(content) });
+    await native.writeFile(abs, content, workspace);
+    readCache.set(abs, { size: content.length, hash: hashText(content) });
     return {
       ok: true,
       replacements: totalReplacements,
@@ -118,6 +120,9 @@ async function applyEdits(
 }
 
 export function buildEditTools(ctx: ToolContext) {
+  const workspace = () => ctx.getWorkspaceEnv?.();
+  const canonicalize = (path: string) =>
+    native.canonicalize(path, workspace());
   return {
     edit: tool({
       description:
@@ -132,7 +137,7 @@ export function buildEditTools(ctx: ToolContext) {
       }),
       execute: async ({ path, old_string, new_string, replace_all }) => {
         const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkWritableCanonical(reqPath, native.canonicalize);
+        const safety = await checkWritableCanonical(reqPath, canonicalize);
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
         if (!ctx.readCache.has(abs)) {
@@ -147,6 +152,7 @@ export function buildEditTools(ctx: ToolContext) {
           [{ old_string, new_string, replace_all }],
           "edit",
           ctx.readCache,
+          workspace(),
         );
       },
     }),
@@ -168,7 +174,7 @@ export function buildEditTools(ctx: ToolContext) {
       }),
       execute: async ({ path, edits }) => {
         const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkWritableCanonical(reqPath, native.canonicalize);
+        const safety = await checkWritableCanonical(reqPath, canonicalize);
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
         if (!ctx.readCache.has(abs)) {
@@ -178,7 +184,13 @@ export function buildEditTools(ctx: ToolContext) {
             path: abs,
           };
         }
-        return applyEdits(abs, edits, "multi_edit", ctx.readCache);
+        return applyEdits(
+          abs,
+          edits,
+          "multi_edit",
+          ctx.readCache,
+          workspace(),
+        );
       },
     }),
   } as const;

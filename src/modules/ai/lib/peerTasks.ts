@@ -1,10 +1,16 @@
 import { LazyStore } from "@tauri-apps/plugin-store";
+import type { WorkspaceEnv } from "@/modules/workspace/env";
+import { workspaceEnvironmentFromId } from "./sessions";
 
 export const PEER_TASK_SCHEMA_VERSION = 1;
 export const PEER_TASK_MAX_HOPS = 3;
 export const PEER_TASK_MAX_PER_ROOT = 8;
 
 export type PeerTaskKind = "delegate" | "review" | "question";
+export type PeerTaskExecutionMode =
+  | "read-only"
+  | "shared-write"
+  | "isolated-worktree";
 export type PeerTaskStatus =
   | "queued"
   | "running"
@@ -25,6 +31,14 @@ export type PeerTaskResult = {
   completedAt: number;
 };
 
+export type PeerTaskChangeSet = {
+  baseSha: string;
+  patch: string;
+  changedPaths: string[];
+  appliedAt?: number;
+  applyError?: string;
+};
+
 export type PeerTaskError = {
   code: string;
   message: string;
@@ -41,7 +55,9 @@ export type PeerTask = {
   targetModelId: string;
   workspaceId: string;
   workspaceRoot: string;
+  workspaceEnvironment: WorkspaceEnv;
   kind: PeerTaskKind;
+  executionMode: PeerTaskExecutionMode;
   prompt: string;
   artifactRefs: PeerArtifactRef[];
   parentTaskId: string | null;
@@ -54,6 +70,8 @@ export type PeerTask = {
   endedAt?: number;
   result?: PeerTaskResult;
   error?: PeerTaskError;
+  worktree?: { checkoutRoot: string; baseSha: string };
+  changeSet?: PeerTaskChangeSet;
 };
 
 const STORE_PATH = "clack-ai-peer-tasks.json";
@@ -89,7 +107,9 @@ export function recoverInterruptedPeerTasks(
           endedAt: now,
           error: {
             code: "peer_task_interrupted",
-            message: "Clack closed before the peer task completed.",
+            message: task.worktree
+              ? `Clack closed before the peer task completed. Isolated changes remain in the preserved worktree at ${task.worktree.checkoutRoot}.`
+              : "Clack closed before the peer task completed.",
           },
         }
       : task,
@@ -100,12 +120,14 @@ export function peerTaskFingerprint(input: {
   sourceSessionId: string;
   targetSessionId: string;
   kind: PeerTaskKind;
+  executionMode?: PeerTaskExecutionMode;
   prompt: string;
 }): string {
   return [
     input.sourceSessionId,
     input.targetSessionId,
     input.kind,
+    input.executionMode ?? "read-only",
     input.prompt.trim().replace(/\s+/g, " ").toLowerCase(),
   ].join("|");
 }
@@ -126,7 +148,16 @@ function normalizePeerTask(value: unknown): PeerTask | null {
   ) {
     return null;
   }
-  return task as PeerTask;
+  return {
+    ...(task as PeerTask),
+    workspaceEnvironment:
+      task.workspaceEnvironment ??
+      workspaceEnvironmentFromId(task.workspaceId) ??
+      { kind: "local" },
+    executionMode: isExecutionMode(task.executionMode)
+      ? task.executionMode
+      : "read-only",
+  };
 }
 
 function nonEmpty(value: unknown): value is string {
@@ -144,5 +175,13 @@ function isStatus(value: unknown): value is PeerTaskStatus {
     value === "completed" ||
     value === "failed" ||
     value === "cancelled"
+  );
+}
+
+function isExecutionMode(value: unknown): value is PeerTaskExecutionMode {
+  return (
+    value === "read-only" ||
+    value === "shared-write" ||
+    value === "isolated-worktree"
   );
 }

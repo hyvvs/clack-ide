@@ -2,7 +2,11 @@ import type { Chat, UIMessage } from "@ai-sdk/react";
 import { create } from "zustand";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setLastUsedAiSelection } from "@/modules/settings/store";
-import { currentWorkspaceScopeKey } from "@/modules/workspace";
+import {
+  currentWorkspaceEnv,
+  currentWorkspaceScopeKey,
+  type WorkspaceEnv,
+} from "@/modules/workspace";
 import {
   DEFAULT_MODEL_ID,
   endpointIdFromCompatModel,
@@ -56,6 +60,7 @@ import {
   type RunLoopTracker,
   type RunStepObservation,
 } from "../lib/runBudget";
+import { releaseWorkspaceWriteLeasesForSession } from "../lib/workspaceWriteLease";
 
 export type Live = {
   getCwd: () => string | null;
@@ -203,7 +208,13 @@ type StoreState = {
   beginRun: (
     id: string,
     commandName?: string,
-    options?: { peerTaskId?: string },
+    options?: {
+      peerTaskId?: string;
+      checkoutId?: string;
+      checkoutRoot?: string;
+      mutationMode?: "read-only" | "shared-write" | "isolated-worktree";
+      workspaceEnvironment?: WorkspaceEnv;
+    },
   ) => { ok: true } | { ok: false; reason: string };
   startRunBatch: (id: string) => { isLogicalContinuation: boolean };
   recordRunStep: (id: string, observation: RunStepObservation) => void;
@@ -503,11 +514,18 @@ export const useChatStore = create<StoreState>((set, get) => ({
         modelId: get().selectedModelId,
         workspaceRoot: null,
       });
-    const validation = validateConversationProfileForRun(
-      profile,
-      get().live.getWorkspaceRoot(),
-      currentWorkspaceScopeKey(),
-    );
+    const validation = options?.peerTaskId
+      ? profile.workspaceId && profile.workspaceRoot
+        ? { ok: true as const }
+        : {
+            ok: false as const,
+            reason: "The peer chat is not bound to a workspace.",
+          }
+      : validateConversationProfileForRun(
+          profile,
+          get().live.getWorkspaceRoot(),
+          currentWorkspaceScopeKey(),
+        );
     if (!validation.ok) return validation;
 
     const { agentId, modelId, workspaceId, workspaceRoot } = profile;
@@ -557,6 +575,17 @@ export const useChatStore = create<StoreState>((set, get) => ({
                 : {}),
               ...(workspaceId ? { workspaceId } : {}),
               ...(workspaceRoot ? { workspaceRoot } : {}),
+              ...(options?.checkoutId
+                ? { checkoutId: options.checkoutId }
+                : {}),
+              ...(options?.checkoutRoot
+                ? { checkoutRoot: options.checkoutRoot }
+                : {}),
+              ...(options?.mutationMode
+                ? { mutationMode: options.mutationMode }
+                : {}),
+              workspaceEnvironment:
+                options?.workspaceEnvironment ?? currentWorkspaceEnv(),
               ...(commandName ? { commandName } : {}),
               ...(options?.peerTaskId
                 ? { peerTaskId: options.peerTaskId }
@@ -795,6 +824,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     void saveSessionsList(next);
     useTodosStore.getState().finalizeRun(id, state);
     runLoopTrackers.delete(id);
+    releaseWorkspaceWriteLeasesForSession(id);
   },
 
   sessionsHydrated: false,
@@ -991,6 +1021,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     chats.delete(id);
     seedMessages.delete(id);
     runLoopTrackers.delete(id);
+    releaseWorkspaceWriteLeasesForSession(id);
     const pend = pendingPersist.get(id);
     if (pend) {
       clearTimeout(pend.timer);
