@@ -1,5 +1,7 @@
 import {
+  endpointIdFromCompatModel,
   getProvider,
+  isCompatModelId,
   PROVIDERS,
   resolveModel,
   type CustomEndpoint,
@@ -24,6 +26,13 @@ export type SavedProviderModelsMigration = {
   models: SavedProviderModel[];
   version: number;
   changed: boolean;
+};
+
+export type ModelTransportIdentity = {
+  providerId: ProviderId;
+  transportModelId: string;
+  endpointBaseURL?: string;
+  customEndpointId?: string;
 };
 
 type CreateSavedProviderModelInput = {
@@ -224,6 +233,78 @@ export function providerForModelSelection(
   } catch {
     return null;
   }
+}
+
+export function resolveModelTransportIdentity(
+  selectionId: string,
+  config: {
+    customEndpoints?: readonly CustomEndpoint[];
+    savedProviderModels?: readonly SavedProviderModel[];
+    lmstudioModelId?: string;
+    mlxModelId?: string;
+    ollamaModelId?: string;
+    openaiCompatibleBaseURL?: string;
+    openaiCompatibleModelId?: string;
+    openrouterModelId?: string;
+  } = {},
+): ModelTransportIdentity {
+  const saved = resolveSavedProviderModelTarget(
+    selectionId,
+    config.savedProviderModels ?? [],
+  );
+  if (saved) return saved;
+
+  if (isCompatModelId(selectionId)) {
+    const endpointId = endpointIdFromCompatModel(selectionId);
+    const endpoint = config.customEndpoints?.find(
+      (candidate) => candidate.id === endpointId,
+    );
+    if (!endpoint?.modelId.trim() || !endpoint.baseURL.trim()) {
+      throw new Error(`Custom endpoint is unavailable: ${endpointId}`);
+    }
+    return {
+      providerId: "openai-compatible",
+      transportModelId: endpoint.modelId.trim(),
+      endpointBaseURL: endpoint.baseURL.trim(),
+      customEndpointId: endpointId,
+    };
+  }
+
+  const info = resolveModel(selectionId, config.customEndpoints ?? []);
+  let transportModelId = info.id;
+  let endpointBaseURL: string | undefined;
+  if (info.id === "lmstudio-local") {
+    transportModelId = requiredConfiguredId("LM Studio", config.lmstudioModelId);
+  } else if (info.id === "mlx-local") {
+    transportModelId = requiredConfiguredId("MLX", config.mlxModelId);
+  } else if (info.id === "ollama-local") {
+    transportModelId = requiredConfiguredId("Ollama", config.ollamaModelId);
+  } else if (info.id === "openai-compatible-custom") {
+    transportModelId = requiredConfiguredId(
+      "OpenAI-compatible",
+      config.openaiCompatibleModelId,
+    );
+    endpointBaseURL = requiredConfiguredId(
+      "OpenAI-compatible endpoint",
+      config.openaiCompatibleBaseURL,
+    );
+  } else if (info.id === "openrouter-custom") {
+    transportModelId = requiredConfiguredId(
+      "OpenRouter",
+      config.openrouterModelId,
+    );
+  }
+  return {
+    providerId: info.provider,
+    transportModelId,
+    ...(endpointBaseURL ? { endpointBaseURL } : {}),
+  };
+}
+
+function requiredConfiguredId(label: string, value: string | undefined): string {
+  const normalized = value?.trim();
+  if (!normalized) throw new Error(`${label} is not configured.`);
+  return normalized;
 }
 
 function normalizeSavedProviderModel(value: unknown): SavedProviderModel | null {

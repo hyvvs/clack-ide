@@ -6,7 +6,10 @@ import { native } from "./native";
 import type { ToolContext } from "../tools/tools";
 import type { RunStepObservation } from "./runBudget";
 import type { ProviderRetryEvent } from "./providerRetry";
-import type { SavedProviderModel } from "./savedProviderModels";
+import type {
+  ModelTransportIdentity,
+  SavedProviderModel,
+} from "./savedProviderModels";
 
 const PROJECT_MEMORY_MAX_BYTES = 32 * 1024;
 type MemoryCacheEntry = { content: string | null; mtime: number };
@@ -64,6 +67,7 @@ type Deps = {
   getOpenaiCompatibleContextLimit?: () => number | undefined;
   getOpenrouterModelId?: () => string | undefined;
   getSavedProviderModels?: () => readonly SavedProviderModel[];
+  getCapturedModelIdentity?: () => ModelTransportIdentity | undefined;
   getCustomEndpoints?: () => readonly CustomEndpoint[];
   getCustomEndpointKeys?: () => CustomEndpointKeys;
   onStep?: (step: string | null) => void;
@@ -121,6 +125,7 @@ export function createContextAwareTransport(deps: Deps) {
       openaiCompatibleContextLimit: deps.getOpenaiCompatibleContextLimit?.(),
       openrouterModelId: deps.getOpenrouterModelId?.(),
       savedProviderModels: deps.getSavedProviderModels?.(),
+      capturedModelIdentity: deps.getCapturedModelIdentity?.(),
       customEndpoints: deps.getCustomEndpoints?.(),
       customEndpointKeys: deps.getCustomEndpointKeys?.(),
       planMode: deps.getPlanMode?.(),

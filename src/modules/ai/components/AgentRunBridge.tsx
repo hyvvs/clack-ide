@@ -11,7 +11,6 @@ import {
   type PendingToolApproval,
 } from "../store/chatStore";
 import { getOrCreateChat } from "../store/chatRuntime";
-import { useAgentsStore } from "../store/agentsStore";
 
 /**
  * Headless bridge that mirrors chat lifecycle into the store, so the status
@@ -182,11 +181,7 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
         .getState()
         .sessions.find((item) => item.id === sessionId);
       if (!session?.run) {
-        beginRun(
-          sessionId,
-          session?.run?.agentId ?? useAgentsStore.getState().activeId,
-          session?.run?.commandName,
-        );
+        beginRun(sessionId, session?.run?.commandName);
       }
     } else {
       finishRun(sessionId, "completed");

@@ -237,26 +237,42 @@ function ModelDropdown() {
   const savedProviderModels = usePreferencesStore(
     (s) => s.savedProviderModels,
   );
-  const current = useMemo(() => {
+  const currentState = useMemo(() => {
     try {
-      return resolveModelSelectionInfo(
-        selected,
-        customEndpoints,
-        savedProviderModels,
-      );
+      return {
+        valid: true,
+        info: resolveModelSelectionInfo(
+          selected,
+          customEndpoints,
+          savedProviderModels,
+        ),
+      };
     } catch {
-      return MODELS[0];
+      return {
+        valid: false,
+        info: {
+          id: selected,
+          provider: "openai-compatible" as const,
+          label: "Missing model",
+          hint: "Unavailable",
+          description: selected,
+          capabilities: { intelligence: 0, speed: 0, cost: 0 },
+        },
+      };
     }
   }, [customEndpoints, savedProviderModels, selected]);
+  const current = currentState.info;
   const [search, setSearch] = useState("");
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("all");
   const inputRef = useRef<HTMLInputElement>(null);
-  const currentProviderHasKey = isCompatModelId(selected)
-    ? true
-    : providerNeedsKey(current.provider)
-      ? !!apiKeys[current.provider]
-      : true;
+  const currentProviderHasKey =
+    currentState.valid &&
+    (isCompatModelId(selected)
+      ? true
+      : providerNeedsKey(current.provider)
+        ? !!apiKeys[current.provider]
+        : true);
 
   const hasKeyFor = (id: ProviderId) =>
     providerNeedsKey(id) ? !!apiKeys[id] : true;

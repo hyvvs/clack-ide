@@ -18,6 +18,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { CLACK_Z_INDEX } from "@/lib/layers";
 import { cn } from "@/lib/utils";
 import { ConfiguredBackgroundLayer } from "@/modules/theme/ConfiguredBackgroundLayer";
+import { workspaceName, workspacePathsEqual } from "@/modules/workspace";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import {
   Add01Icon,
@@ -311,14 +312,15 @@ function Header({
   messages?: UIMessage[];
   onHeaderPointerDown: (e: React.PointerEvent) => void;
 }) {
-  const activeAgentId = useAgentsStore((state) => state.activeId);
-  const runAgentId = useChatStore((state) => {
-    if (runState !== "running") return null;
-    return state.sessions.find(
-      (session) => session.id === state.activeSessionId,
-    )?.run?.agentId;
+  const defaultAgentId = useAgentsStore((state) => state.activeId);
+  const conversationAgentId = useChatStore((state) => {
+    const session = state.sessions.find(
+      (item) => item.id === state.activeSessionId,
+    );
+    if (runState === "running") return session?.run?.agentId;
+    return session?.profile?.agentId;
   });
-  const displayedAgentId = runAgentId ?? activeAgentId;
+  const displayedAgentId = conversationAgentId ?? defaultAgentId;
 
   return (
     <div
@@ -533,9 +535,18 @@ function SessionPicker() {
   const switchSession = useChatStore((s) => s.switchSession);
   const newSession = useChatStore((s) => s.newSession);
   const deleteSession = useChatStore((s) => s.deleteSession);
+  const bindSessionToCurrentWorkspace = useChatStore(
+    (s) => s.bindSessionToCurrentWorkspace,
+  );
+  const currentWorkspaceRoot = useChatStore((s) => s.live.getWorkspaceRoot());
 
   const active = sessions.find((s) => s.id === activeId) ?? null;
   if (!active) return null;
+  const boundWorkspaceRoot = active.profile?.workspaceRoot ?? null;
+  const workspaceMatches = workspacePathsEqual(
+    boundWorkspaceRoot,
+    currentWorkspaceRoot,
+  );
 
   const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
 
@@ -549,7 +560,11 @@ function SessionPicker() {
             "text-[11px] text-[var(--clack-text-3)] transition-colors",
             "hover:bg-[var(--clack-accent-soft)] hover:text-[var(--clack-text-1)]",
           )}
-          title="Switch session"
+          title={
+            boundWorkspaceRoot
+              ? `Switch session · ${workspaceName(boundWorkspaceRoot)}`
+              : "Switch session · workspace unbound"
+          }
         >
           <span className="truncate">{active.title || "New chat"}</span>
           <HugeiconsIcon
@@ -568,6 +583,23 @@ function SessionPicker() {
           <HugeiconsIcon icon={Add01Icon} size={12} strokeWidth={1.75} />
           New session
         </DropdownMenuItem>
+        {boundWorkspaceRoot ? (
+          <div className="px-2 py-1 text-[10px] text-muted-foreground">
+            Workspace: {workspaceName(boundWorkspaceRoot)}
+            {!workspaceMatches ? " (not open)" : ""}
+          </div>
+        ) : currentWorkspaceRoot ? (
+          <DropdownMenuItem
+            onSelect={() => bindSessionToCurrentWorkspace(active.id)}
+            className="text-xs"
+          >
+            Bind to {workspaceName(currentWorkspaceRoot)}
+          </DropdownMenuItem>
+        ) : (
+          <div className="px-2 py-1 text-[10px] text-muted-foreground">
+            No workspace bound
+          </div>
+        )}
         {sorted.length > 0 ? <DropdownMenuSeparator /> : null}
         {sorted.map((s) => (
           <SessionRow

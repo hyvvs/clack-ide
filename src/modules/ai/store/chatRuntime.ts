@@ -10,6 +10,7 @@ import {
   resolveModel,
 } from "../config";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { workspacePathsEqual } from "@/modules/workspace";
 import { BUILTIN_AGENTS } from "../lib/agents";
 import { TERAX_CMD_RE } from "../lib/slashCommands";
 import { useAgentsStore } from "./agentsStore";
@@ -38,17 +39,39 @@ import {
 function makeChat(sessionId: string): Chat<UIMessage> {
   let pendingTerminalStreamError: unknown;
   const readCache = new Map<string, { size: number; hash: number }>();
+  const owner = () =>
+    useChatStore
+      .getState()
+      .sessions.find((session) => session.id === sessionId);
+  const ownerWorkspaceRoot = () =>
+    owner()?.run?.workspaceRoot ?? owner()?.profile?.workspaceRoot ?? null;
+  const foregroundMatchesOwner = () =>
+    workspacePathsEqual(
+      useChatStore.getState().live.getWorkspaceRoot(),
+      ownerWorkspaceRoot(),
+    );
   const toolContext: ToolContext = {
-    getCwd: () => useChatStore.getState().live.getCwd(),
-    getWorkspaceRoot: () => useChatStore.getState().live.getWorkspaceRoot(),
-    getTerminalContext: () => useChatStore.getState().live.getTerminalContext(),
+    getCwd: () =>
+      foregroundMatchesOwner()
+        ? useChatStore.getState().live.getCwd()
+        : ownerWorkspaceRoot(),
+    getWorkspaceRoot: ownerWorkspaceRoot,
+    getTerminalContext: () =>
+      foregroundMatchesOwner()
+        ? useChatStore.getState().live.getTerminalContext()
+        : null,
     isActiveTerminalPrivate: () =>
-      useChatStore.getState().live.isActiveTerminalPrivate(),
+      foregroundMatchesOwner()
+        ? useChatStore.getState().live.isActiveTerminalPrivate()
+        : true,
     injectIntoActivePty: (text) =>
+      foregroundMatchesOwner() &&
       useChatStore.getState().live.injectIntoActivePty(text),
     openPreview: (url) => useChatStore.getState().live.openPreview(url),
     spawnAgent: (prompt) =>
-      useChatStore.getState().live.spawnManagedAgent(prompt, sessionId),
+      foregroundMatchesOwner()
+        ? useChatStore.getState().live.spawnManagedAgent(prompt, sessionId)
+        : null,
     readAgentOutput: (leafId) =>
       useChatStore.getState().live.readLeafBuffer(leafId),
     readCache,
@@ -57,7 +80,10 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       const state = useChatStore.getState();
       return (
         state.sessions.find((session) => session.id === sessionId)?.run
-          ?.agentId ?? useAgentsStore.getState().activeId
+          ?.agentId ??
+        state.sessions.find((session) => session.id === sessionId)?.profile
+          ?.agentId ??
+        useAgentsStore.getState().activeId
       );
     },
   };
@@ -76,22 +102,24 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       usePreferencesStore.getState().customInstructions,
     getAgentPersona: () => {
       const { activeId, customAgents } = useAgentsStore.getState();
-      const runAgentId = useChatStore
-        .getState()
-        .sessions.find((session) => session.id === sessionId)?.run?.agentId;
+      const session = owner();
+      const conversationAgentId =
+        session?.run?.agentId ?? session?.profile?.agentId;
       const all = [...BUILTIN_AGENTS, ...customAgents];
       const a =
-        all.find((agent) => agent.id === (runAgentId ?? activeId)) ??
+        all.find((agent) => agent.id === (conversationAgentId ?? activeId)) ??
         BUILTIN_AGENTS[0];
       return { name: a.name, instructions: a.instructions };
     },
     getLive: () => {
       const live = useChatStore.getState().live;
+      const workspaceRoot = ownerWorkspaceRoot();
+      const matches = foregroundMatchesOwner();
       return {
-        cwd: live.getCwd(),
-        terminalPrivate: live.isActiveTerminalPrivate(),
-        workspaceRoot: live.getWorkspaceRoot(),
-        activeFile: live.getActiveFile(),
+        cwd: matches ? live.getCwd() : workspaceRoot,
+        terminalPrivate: matches ? live.isActiveTerminalPrivate() : true,
+        workspaceRoot,
+        activeFile: matches ? live.getActiveFile() : null,
       };
     },
     getPlanMode: () => usePlanStore.getState().active,
@@ -111,6 +139,20 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       usePreferencesStore.getState().openrouterModelId,
     getSavedProviderModels: () =>
       usePreferencesStore.getState().savedProviderModels,
+    getCapturedModelIdentity: () => {
+      const run = owner()?.run;
+      if (!run?.providerId || !run.transportModelId) return undefined;
+      return {
+        providerId: run.providerId,
+        transportModelId: run.transportModelId,
+        ...(run.endpointBaseURL
+          ? { endpointBaseURL: run.endpointBaseURL }
+          : {}),
+        ...(run.customEndpointId
+          ? { customEndpointId: run.customEndpointId }
+          : {}),
+      };
+    },
     getCustomEndpoints: () => usePreferencesStore.getState().customEndpoints,
     getCustomEndpointKeys: () => useChatStore.getState().customEndpointKeys,
     onBatchStart: () => {
@@ -225,14 +267,24 @@ function recordProviderRetry(
 
 function currentAiErrorContext(sessionId: string): AiErrorContext {
   const state = useChatStore.getState();
-  const selectedModelId =
-    state.sessions.find((session) => session.id === sessionId)?.run?.modelId ??
-    state.selectedModelId;
+  const session = state.sessions.find((item) => item.id === sessionId);
+  const selectedModelId = session?.run?.modelId ?? state.selectedModelId;
   const preferences = usePreferencesStore.getState();
   const customEndpoints = preferences.customEndpoints;
   let provider: string | undefined;
   let model: string | undefined;
   let endpoint: string | undefined;
+
+  if (session?.run?.providerId && session.run.transportModelId) {
+    provider = getProvider(session.run.providerId).label;
+    model = session.run.transportModelId;
+    endpoint =
+      session.run.endpointBaseURL ??
+      (session.run.providerId === "openrouter"
+        ? "https://openrouter.ai/api/v1"
+        : undefined);
+    return { provider, model, endpoint };
+  }
 
   const saved = findSavedProviderModel(
     selectedModelId,
@@ -322,12 +374,18 @@ export async function sendMessageToSession(
   message: SessionChatMessage,
 ): Promise<void> {
   const store = useChatStore.getState();
-  recordSelectedModelUse(store.selectedModelId);
-  store.beginRun(
-    sessionId,
-    useAgentsStore.getState().activeId,
-    commandNameFromMessage(message),
-  );
+  const profileModel = store.sessions.find(
+    (session) => session.id === sessionId,
+  )?.profile?.modelId;
+  if (!profileModel || !hasKeyForModel(profileModel)) {
+    throw new Error("This chat's model is unavailable or not configured.");
+  }
+  const started = store.beginRun(sessionId, commandNameFromMessage(message));
+  if (!started.ok) throw new Error(started.reason);
+  const runModel = useChatStore
+    .getState()
+    .sessions.find((session) => session.id === sessionId)?.run?.modelId;
+  if (runModel) recordSelectedModelUse(runModel);
   try {
     await getOrCreateChat(sessionId).sendMessage(message);
   } catch (error) {
@@ -340,14 +398,17 @@ export async function sendMessage(text: string): Promise<boolean> {
   const state = useChatStore.getState();
   const sessionId = state.activeSessionId;
   if (!sessionId) return false;
-  if (!hasKeyForModel(state.selectedModelId)) return false;
+  const profileModel = state.sessions.find(
+    (session) => session.id === sessionId,
+  )?.profile?.modelId;
+  if (!profileModel || !hasKeyForModel(profileModel)) return false;
   const c = getOrCreateChat(sessionId);
-  recordSelectedModelUse(state.selectedModelId);
-  state.beginRun(
-    sessionId,
-    useAgentsStore.getState().activeId,
-    commandNameFromMessage({ text }),
-  );
+  const started = state.beginRun(sessionId, commandNameFromMessage({ text }));
+  if (!started.ok) return false;
+  const runModel = useChatStore
+    .getState()
+    .sessions.find((session) => session.id === sessionId)?.run?.modelId;
+  if (runModel) recordSelectedModelUse(runModel);
   try {
     await c.sendMessage({ text });
   } catch (error) {

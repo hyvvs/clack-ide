@@ -39,9 +39,10 @@ Auto-executes (no approval) — subagents are read-only by design.`,
         } =
           useChatStore.getState();
         const preferences = usePreferencesStore.getState();
-        const runModelId =
-          sessions.find((session) => session.id === ctx.getSessionId())?.run
-            ?.modelId ?? selectedModelId;
+        const run = sessions.find(
+          (session) => session.id === ctx.getSessionId(),
+        )?.run;
+        const runModelId = run?.modelId ?? selectedModelId;
         try {
           const r = await runSubagent({
             type,
@@ -64,6 +65,19 @@ Auto-executes (no approval) — subagents are read-only by design.`,
               savedProviderModels: preferences.savedProviderModels,
               customEndpoints: preferences.customEndpoints,
               customEndpointKeys,
+              capturedModelIdentity:
+                run?.providerId && run.transportModelId
+                  ? {
+                      providerId: run.providerId,
+                      transportModelId: run.transportModelId,
+                      ...(run.endpointBaseURL
+                        ? { endpointBaseURL: run.endpointBaseURL }
+                        : {}),
+                      ...(run.customEndpointId
+                        ? { customEndpointId: run.customEndpointId }
+                        : {}),
+                    }
+                  : undefined,
             },
             onStep: (label) => patchAgentMeta({ step: label }),
           });

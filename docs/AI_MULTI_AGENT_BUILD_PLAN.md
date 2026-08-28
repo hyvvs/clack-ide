@@ -22,8 +22,8 @@ changes the scope.
 | --- | --- | --- | --- |
 | 0 | Preserve the known-good AI runtime baseline | Complete | `e427a4b` |
 | 1 | Stable saved-model identity and migration core | Complete | `8af9b12` |
-| 2 | Multiple models per provider in settings and picker | Complete | phase checkpoint |
-| 3 | Conversation-owned agent, model, and workspace identity | Pending | |
+| 2 | Multiple models per provider in settings and picker | Complete | `08d079c` |
+| 3 | Conversation-owned agent, model, and workspace identity | Complete | phase checkpoint |
 | 4 | Per-session runtime isolation and background execution | Pending | |
 | 5 | Durable inter-agent delegation and review protocol | Pending | |
 | 6 | Concurrent mutation isolation and conflict handling | Pending | |
@@ -372,6 +372,25 @@ Manual acceptance:
 6. Switch workspace and confirm ownership does not change silently.
 
 Exit criteria: Goal 2 is complete for sequential runs.
+
+Implementation record (2026-08-28):
+
+- each session persists a versioned conversation profile containing agent,
+  model-selection, normalized workspace root, and environment-aware workspace ID
+- legacy sessions receive the current valid agent/model defaults but remain
+  explicitly unbound; no historical workspace is guessed
+- New Chat captures the visible agent, model, and workspace, while switching
+  sessions restores the owning model and Agent Switcher reads/writes the owning
+  session instead of a global active identity
+- run start validates missing/deleted identities and workspace ownership, then
+  snapshots agent, selection, provider, exact transport model, endpoint routing,
+  workspace ID, and workspace root
+- transport, persona, diagnostics, permissions, terminal context, and read-only
+  subagents use the captured run identity; foreground state from another
+  workspace is not injected into the owning chat
+- phase gate: type check and lint passed; 497 tests passed; production build and
+  diff whitespace check passed
+- sequential manual GUI acceptance is deferred to the integrated Phase 7 matrix
 
 ## Phase 4: Per-Session Runtime Isolation
 

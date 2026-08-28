@@ -11,6 +11,13 @@ function session(state: "running" | "completed"): SessionMeta {
     title: state,
     createdAt: 1,
     updatedAt: 1,
+    profileVersion: 1,
+    profile: {
+      agentId: "builtin:coder",
+      modelId: "gpt-5.4-mini",
+      workspaceId: null,
+      workspaceRoot: null,
+    },
     run: { state, startedAt: 2 },
   };
 }

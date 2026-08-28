@@ -20,6 +20,7 @@ import {
   resolveModel,
   selectSystemPrompt,
   type CustomEndpoint,
+  type ModelInfo,
   type ProviderId,
 } from "../config";
 import { buildTools, type ToolContext } from "../tools/tools";
@@ -36,6 +37,7 @@ import {
   isSavedProviderModelSelectionId,
   resolveSavedProviderModelTarget,
   resolveModelSelectionInfo,
+  type ModelTransportIdentity,
   type SavedProviderModel,
 } from "./savedProviderModels";
 
@@ -247,6 +249,7 @@ export type LocalProviderConfig = {
   savedProviderModels?: readonly SavedProviderModel[];
   customEndpoints?: readonly CustomEndpoint[];
   customEndpointKeys?: CustomEndpointKeys;
+  capturedModelIdentity?: ModelTransportIdentity;
 };
 
 export function buildConfiguredLanguageModel(
@@ -254,6 +257,24 @@ export function buildConfiguredLanguageModel(
   keys: ProviderKeys,
   local: LocalProviderConfig = {},
 ): Promise<LanguageModel> {
+  if (local.capturedModelIdentity) {
+    const captured = local.capturedModelIdentity;
+    return buildLanguageModel(
+      captured.providerId,
+      keys,
+      captured.transportModelId,
+      {
+        lmstudioBaseURL: local.lmstudioBaseURL,
+        mlxBaseURL: local.mlxBaseURL,
+        ollamaBaseURL: local.ollamaBaseURL,
+        openaiCompatibleBaseURL:
+          captured.endpointBaseURL ?? local.openaiCompatibleBaseURL,
+      },
+      captured.customEndpointId
+        ? local.customEndpointKeys?.[captured.customEndpointId]
+        : undefined,
+    );
+  }
   if (isSavedProviderModelSelectionId(modelId)) {
     const target = resolveSavedProviderModelTarget(
       modelId,
@@ -427,6 +448,7 @@ export type RunAgentOptions = {
   savedProviderModels?: readonly SavedProviderModel[];
   customEndpoints?: readonly CustomEndpoint[];
   customEndpointKeys?: CustomEndpointKeys;
+  capturedModelIdentity?: ModelTransportIdentity;
   planMode?: boolean;
   projectMemory?: string | null;
   logicalContinuation?: boolean;
@@ -449,13 +471,28 @@ export async function runAgentStream(opts: RunAgentOptions) {
     savedProviderModels: opts.savedProviderModels,
     customEndpoints: opts.customEndpoints,
     customEndpointKeys: opts.customEndpointKeys,
+    capturedModelIdentity: opts.capturedModelIdentity,
   });
   const endpoints = opts.customEndpoints ?? [];
-  const info = resolveModelSelectionInfo(
-    modelId,
-    endpoints,
-    opts.savedProviderModels ?? [],
-  );
+  let info: ModelInfo;
+  try {
+    info = resolveModelSelectionInfo(
+      modelId,
+      endpoints,
+      opts.savedProviderModels ?? [],
+    );
+  } catch {
+    const captured = opts.capturedModelIdentity;
+    if (!captured) throw new Error(`Model selection is unavailable: ${modelId}`);
+    info = {
+      id: modelId,
+      provider: captured.providerId,
+      label: captured.transportModelId,
+      hint: captured.providerId,
+      description: captured.transportModelId,
+      capabilities: { intelligence: 3, speed: 3, cost: 3 },
+    };
+  }
   const provider = info.provider;
   const model = withProviderRetryTracking(
     baseModel,

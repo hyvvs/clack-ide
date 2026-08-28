@@ -48,6 +48,8 @@ import { shouldShowHeaderStop } from "../components/AiMiniWindow";
 import { shouldShowTodoStrip } from "../components/TodoStrip";
 
 const SESSION_ID = "compact-session";
+const ORIGINAL_API_KEYS = useChatStore.getState().apiKeys;
+const ORIGINAL_SELECTED_MODEL = useChatStore.getState().selectedModelId;
 
 afterEach(() => {
   chats.delete(SESSION_ID);
@@ -56,6 +58,8 @@ afterEach(() => {
     activeSessionId: null,
     mini: { open: false, minimized: false },
     panelOpen: false,
+    apiKeys: ORIGINAL_API_KEYS,
+    selectedModelId: ORIGINAL_SELECTED_MODEL,
     sessions: [],
     agentMeta: {
       ...useChatStore.getState().agentMeta,
@@ -159,8 +163,8 @@ describe("autonomous run budget integration", () => {
   it("continues Full Access in the same logical run and preserves todos", () => {
     setPermissionMode("full-access");
     useChatStore.setState({
-      sessions: [sessionMeta()],
-      selectedModelId: "openai:gpt-5.2",
+      sessions: [sessionMeta("gpt-5.4-mini")],
+      selectedModelId: "gpt-5.4-mini",
     });
     useChatStore.getState().beginRun(SESSION_ID, "builtin:coder");
     useTodosStore
@@ -169,7 +173,7 @@ describe("autonomous run budget integration", () => {
         { id: "active", title: "Keep working", status: "in_progress" },
       ]);
     const startedAt = useChatStore.getState().sessions[0].run?.startedAt;
-    useChatStore.setState({ selectedModelId: "anthropic:claude-sonnet-4-5" });
+    useChatStore.setState({ selectedModelId: "claude-sonnet-4-6" });
 
     useChatStore.getState().recordRunBatch(SESSION_ID, cappedBatch());
     const messages: UIMessage[] = [
@@ -185,7 +189,7 @@ describe("autonomous run budget integration", () => {
     expect(consumed).toBe(true);
     expect(run?.startedAt).toBe(startedAt);
     expect(run?.agentId).toBe("builtin:coder");
-    expect(run?.modelId).toBe("openai:gpt-5.2");
+    expect(run?.modelId).toBe("gpt-5.4-mini");
     expect(run?.budget?.continuationCount).toBe(1);
     expect(useTodosStore.getState().bySession[SESSION_ID]).toHaveLength(1);
     expect(messages).toHaveLength(1);
@@ -477,10 +481,7 @@ describe("active todo lifecycle", () => {
       activeSessionId: SESSION_ID,
       sessions: [
         {
-          id: SESSION_ID,
-          title: "Run",
-          createdAt: 1,
-          updatedAt: 1,
+          ...sessionMeta(),
           run: {
             state: "running",
             agentId: "builtin:coder",
@@ -544,6 +545,11 @@ describe("sendMessageToSession", () => {
       activeSessionId: SESSION_ID,
       mini: { open: false, minimized: false },
       panelOpen: true,
+      sessions: [sessionMeta()],
+      apiKeys: {
+        ...useChatStore.getState().apiKeys,
+        openai: "test-key",
+      },
     });
 
     const message = {
@@ -578,12 +584,19 @@ function setPermissionMode(mode: "ask" | "trusted-workspace" | "full-access") {
   });
 }
 
-function sessionMeta() {
+function sessionMeta(modelId = "gpt-5.4-mini") {
   return {
     id: SESSION_ID,
     title: "Run",
     createdAt: 1,
     updatedAt: 1,
+    profileVersion: 1,
+    profile: {
+      agentId: "builtin:coder",
+      modelId,
+      workspaceId: null,
+      workspaceRoot: null,
+    },
   };
 }
 

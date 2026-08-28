@@ -61,14 +61,27 @@ function AiToolApprovalImpl({ part, toolName, onRespond }: Props) {
   const sessionId = useChatStore((s) => s.activeSessionId);
   const live = useChatStore((s) => s.live);
   const permissionContext: PermissionContext = {
-    getCwd: live.getCwd,
-    getWorkspaceRoot: live.getWorkspaceRoot,
+    getCwd: () => {
+      const session = useChatStore
+        .getState()
+        .sessions.find((item) => item.id === sessionId);
+      return session?.run?.workspaceRoot ?? session?.profile?.workspaceRoot ?? live.getCwd();
+    },
+    getWorkspaceRoot: () => {
+      const session = useChatStore
+        .getState()
+        .sessions.find((item) => item.id === sessionId);
+      return session?.run?.workspaceRoot ?? session?.profile?.workspaceRoot ?? null;
+    },
     getSessionId: () => sessionId,
     getAgentId: () => {
       const state = useChatStore.getState();
       return (
         state.sessions.find((session) => session.id === sessionId)?.run
-          ?.agentId ?? useAgentsStore.getState().activeId
+          ?.agentId ??
+        state.sessions.find((session) => session.id === sessionId)?.profile
+          ?.agentId ??
+        useAgentsStore.getState().activeId
       );
     },
   };

@@ -474,34 +474,45 @@ export function ModelsSection() {
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            {visibleProviders.map((p) =>
-              p.id === "openrouter" ? (
-                <OpenRouterProviderCard
-                  key={p.id}
-                  provider={p}
-                  configured={configuredIds.has(p.id)}
-                  meta={LOCAL_META[p.id]!}
-                  models={openrouterModels}
-                  apiKey={keys[p.id]}
-                  onSaveKey={(v) => onSaveKey(p.id, v)}
-                  onClearKey={() => onClearKey(p.id)}
-                  onAddModel={addOpenrouterModel}
-                  onUpdateModel={updateOpenrouterModel}
-                  onRemoveModel={removeOpenrouterModel}
-                  onRemoveProvider={() => removeProvider(p.id)}
-                />
-              ) : isLocalProvider(p.id) ? (
-                <LocalProviderCard
-                  key={p.id}
-                  provider={p}
-                  configured={configuredIds.has(p.id)}
-                  config={localConfig(p.id)!}
-                  meta={LOCAL_META[p.id]!}
-                  onSaveKey={(v) => onSaveKey(p.id, v)}
-                  onClearKey={() => onClearKey(p.id)}
-                  onRemove={() => removeProvider(p.id)}
-                />
-              ) : (
+            {visibleProviders.map((p) => {
+              if (p.id === "openrouter") {
+                const meta = LOCAL_META[p.id];
+                if (!meta) return null;
+                return (
+                  <OpenRouterProviderCard
+                    key={p.id}
+                    provider={p}
+                    configured={configuredIds.has(p.id)}
+                    meta={meta}
+                    models={openrouterModels}
+                    apiKey={keys[p.id]}
+                    onSaveKey={(v) => onSaveKey(p.id, v)}
+                    onClearKey={() => onClearKey(p.id)}
+                    onAddModel={addOpenrouterModel}
+                    onUpdateModel={updateOpenrouterModel}
+                    onRemoveModel={removeOpenrouterModel}
+                    onRemoveProvider={() => removeProvider(p.id)}
+                  />
+                );
+              }
+              if (isLocalProvider(p.id)) {
+                const config = localConfig(p.id);
+                const meta = LOCAL_META[p.id];
+                if (!config || !meta) return null;
+                return (
+                  <LocalProviderCard
+                    key={p.id}
+                    provider={p}
+                    configured={configuredIds.has(p.id)}
+                    config={config}
+                    meta={meta}
+                    onSaveKey={(v) => onSaveKey(p.id, v)}
+                    onClearKey={() => onClearKey(p.id)}
+                    onRemove={() => removeProvider(p.id)}
+                  />
+                );
+              }
+              return (
                 <ProviderKeyCard
                   key={p.id}
                   provider={p}
@@ -510,8 +521,8 @@ export function ModelsSection() {
                   onClear={() => onClearKey(p.id)}
                   onRemove={() => removeProvider(p.id)}
                 />
-              ),
-            )}
+              );
+            })}
             {customEndpoints.map((ep) => (
               <CustomEndpointCard
                 key={ep.id}

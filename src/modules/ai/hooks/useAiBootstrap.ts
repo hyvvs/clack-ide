@@ -139,10 +139,16 @@ export function useAiBootstrap(): {
   ]);
 
   useEffect(() => {
-    void hydrateSessions();
-    void useAgentsStore.getState().hydrate();
+    if (!prefsHydrated || !keysLoaded) return;
+    void (async () => {
+      await useAgentsStore.getState().hydrate();
+      await hydrateSessions();
+    })();
+  }, [hydrateSessions, keysLoaded, prefsHydrated]);
+
+  useEffect(() => {
     void useSnippetsStore.getState().hydrate();
-  }, [hydrateSessions]);
+  }, []);
 
   return { hasComposer, keysLoaded };
 }

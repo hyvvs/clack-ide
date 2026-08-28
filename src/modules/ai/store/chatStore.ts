@@ -2,6 +2,7 @@ import type { Chat, UIMessage } from "@ai-sdk/react";
 import { create } from "zustand";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setLastUsedAiSelection } from "@/modules/settings/store";
+import { currentWorkspaceScopeKey } from "@/modules/workspace";
 import {
   DEFAULT_MODEL_ID,
   endpointIdFromCompatModel,
@@ -14,20 +15,28 @@ import { usePlanStore } from "./planStore";
 import type { AgentUsage } from "../lib/agent";
 import { EMPTY_PROVIDER_KEYS, type ProviderKeys, type CustomEndpointKeys } from "../lib/keyring";
 import {
+  createConversationProfile,
   deleteSessionData,
   deriveTitle,
   loadAll,
   loadMessages,
+  migrateSessionProfiles,
   newSessionId,
   saveActiveId,
   saveMessages,
   saveSessionsList,
+  validateConversationProfileForRun,
   recoverInterruptedSessions,
   type SessionMeta,
   type SessionRunState,
 } from "../lib/sessions";
+import { useAgentsStore } from "./agentsStore";
 import { pushRecentModel } from "../lib/modelPrefs";
 import { providerForSelectedModel } from "../lib/providerRestore";
+import {
+  resolveModelTransportIdentity,
+  type ModelTransportIdentity,
+} from "../lib/savedProviderModels";
 import {
   clearChatPermissions,
   normalizeAgentPermissionProfile,
@@ -191,10 +200,8 @@ type StoreState = {
 
   beginRun: (
     id: string,
-    agentId: string,
     commandName?: string,
-    modelId?: string,
-  ) => void;
+  ) => { ok: true } | { ok: false; reason: string };
   startRunBatch: (id: string) => { isLogicalContinuation: boolean };
   recordRunStep: (id: string, observation: RunStepObservation) => void;
   recordRunBatch: (id: string, result: RunBatchResult) => void;
@@ -213,6 +220,8 @@ type StoreState = {
   hydrateSessions: () => Promise<void>;
   newSession: () => string;
   switchSession: (id: string) => void;
+  setSessionAgentId: (id: string, agentId: string) => boolean;
+  bindSessionToCurrentWorkspace: (id: string) => boolean;
   deleteSession: (id: string) => void;
   renameSession: (id: string, title: string) => void;
   /** Persist messages of a session and bump its updatedAt + auto-title. */
@@ -304,7 +313,36 @@ export const useChatStore = create<StoreState>((set, get) => ({
 
   selectedModelId: DEFAULT_MODEL_ID,
   setSelectedModelId: (id, persistSelection = true) => {
-    set({ selectedModelId: id });
+    const state = get();
+    const active = state.sessions.find(
+      (session) => session.id === state.activeSessionId,
+    );
+    if (!persistSelection && state.sessionsHydrated && active?.profile?.modelId) {
+      set({ selectedModelId: active.profile.modelId });
+      return;
+    }
+    if (active?.run?.state === "running") return;
+    const next = active
+      ? state.sessions.map((session) =>
+          session.id === active.id
+            ? {
+                ...session,
+                profile: {
+                  ...(session.profile ??
+                    createConversationProfile({
+                      agentId: useAgentsStore.getState().activeId,
+                      modelId: id,
+                      workspaceRoot: null,
+                    })),
+                  modelId: id,
+                },
+                updatedAt: Date.now(),
+              }
+            : session,
+        )
+      : state.sessions;
+    set({ selectedModelId: id, sessions: next });
+    if (active) void saveSessionsList(next);
     if (persistSelection) recordSelectedModelUse(id);
   },
 
@@ -407,16 +445,73 @@ export const useChatStore = create<StoreState>((set, get) => ({
       },
     })),
 
-  beginRun: (id, agentId, commandName, modelId) => {
+  beginRun: (id, commandName) => {
+    const session = get().sessions.find((item) => item.id === id);
+    if (!session) return { ok: false, reason: "Chat session not found." };
+    if (session.run?.state === "running") {
+      return { ok: false, reason: "This chat is already running." };
+    }
+    const profile =
+      session.profile ??
+      createConversationProfile({
+        agentId: useAgentsStore.getState().activeId,
+        modelId: get().selectedModelId,
+        workspaceRoot: null,
+      });
+    const validation = validateConversationProfileForRun(
+      profile,
+      get().live.getWorkspaceRoot(),
+      currentWorkspaceScopeKey(),
+    );
+    if (!validation.ok) return validation;
+
+    const { agentId, modelId, workspaceId, workspaceRoot } = profile;
+    if (!agentId || !modelId) {
+      return { ok: false, reason: "The chat identity is incomplete." };
+    }
+    if (!useAgentsStore.getState().all().some((agent) => agent.id === agentId)) {
+      return {
+        ok: false,
+        reason: "This chat's agent no longer exists. Select another agent.",
+      };
+    }
+    const preferences = usePreferencesStore.getState();
+    let transportIdentity: ModelTransportIdentity;
+    try {
+      transportIdentity = resolveModelTransportIdentity(modelId, {
+        customEndpoints: preferences.customEndpoints,
+        savedProviderModels: preferences.savedProviderModels,
+        lmstudioModelId: preferences.lmstudioModelId,
+        mlxModelId: preferences.mlxModelId,
+        ollamaModelId: preferences.ollamaModelId,
+        openaiCompatibleBaseURL: preferences.openaiCompatibleBaseURL,
+        openaiCompatibleModelId: preferences.openaiCompatibleModelId,
+        openrouterModelId: preferences.openrouterModelId,
+      });
+    } catch (error) {
+      return { ok: false, reason: String(error) };
+    }
     const now = Date.now();
     const next = get().sessions.map((session) =>
       session.id === id
         ? {
             ...session,
+            profileVersion: 1,
+            profile,
             run: {
               state: "running" as const,
               agentId,
-              modelId: modelId ?? get().selectedModelId,
+              modelId,
+              providerId: transportIdentity.providerId,
+              transportModelId: transportIdentity.transportModelId,
+              ...(transportIdentity.endpointBaseURL
+                ? { endpointBaseURL: transportIdentity.endpointBaseURL }
+                : {}),
+              ...(transportIdentity.customEndpointId
+                ? { customEndpointId: transportIdentity.customEndpointId }
+                : {}),
+              ...(workspaceId ? { workspaceId } : {}),
+              ...(workspaceRoot ? { workspaceRoot } : {}),
               ...(commandName ? { commandName } : {}),
               startedAt: now,
               budget: createRunBudget(permissionModeForAgent(agentId)),
@@ -439,12 +534,13 @@ export const useChatStore = create<StoreState>((set, get) => ({
     useTodosStore.getState().prepareRun(id);
     runLoopTrackers.set(id, createRunLoopTracker());
     void saveSessionsList(next);
+    return { ok: true };
   },
 
   startRunBatch: (id) => {
     const session = get().sessions.find((item) => item.id === id);
     const run = session?.run;
-    if (!run || run.state !== "running") {
+    if (run?.state !== "running") {
       return { isLogicalContinuation: false };
     }
     const mode = permissionModeForAgent(run.agentId ?? "builtin:coder");
@@ -479,7 +575,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
   recordRunBatch: (id, result) => {
     const session = get().sessions.find((item) => item.id === id);
     const run = session?.run;
-    if (!run || run.state !== "running") return;
+    if (run?.state !== "running") return;
     const mode = permissionModeForAgent(run.agentId ?? "builtin:coder");
     const tracker = runLoopTrackers.get(id) ?? createRunLoopTracker();
     const budget = recordBudgetBatch(
@@ -509,7 +605,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
   consumeAutoContinuation: (id) => {
     const session = get().sessions.find((item) => item.id === id);
     const run = session?.run;
-    if (!run || run.state !== "running" || !run.budget) return false;
+    if (run?.state !== "running" || !run.budget) return false;
     const mode = permissionModeForAgent(run.agentId ?? "builtin:coder");
     if (!autoContinueForPermissionMode(mode)) {
       const budget = { ...run.budget, autoContinue: false, phase: "soft-limit" as const };
@@ -545,7 +641,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
   resumeRun: (id, allowHardLimit) => {
     const session = get().sessions.find((item) => item.id === id);
     const run = session?.run;
-    if (!run || run.state !== "running" || !run.budget) return false;
+    if (run?.state !== "running" || !run.budget) return false;
     const budget = resumeRunBudget(run.budget, allowHardLimit);
     if (!budget) return false;
     if (allowHardLimit) {
@@ -626,9 +722,13 @@ export const useChatStore = create<StoreState>((set, get) => ({
   hydrateSessions: async () => {
     if (get().sessionsHydrated) return;
     const loaded = await loadAll();
-    const recovered = recoverInterruptedSessions(loaded.sessions);
+    const profiled = migrateSessionProfiles(loaded.sessions, {
+      agentId: useAgentsStore.getState().activeId,
+      modelId: get().selectedModelId,
+    });
+    const recovered = recoverInterruptedSessions(profiled.sessions);
     const sessions = recovered.sessions;
-    if (recovered.interruptedIds.length > 0) {
+    if (profiled.changed || recovered.interruptedIds.length > 0) {
       await Promise.all(
         recovered.interruptedIds.map((id) =>
           useTodosStore.getState().hydrate(id),
@@ -666,6 +766,12 @@ export const useChatStore = create<StoreState>((set, get) => ({
         title: "New chat",
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        profileVersion: 1,
+        profile: createConversationProfile({
+          agentId: useAgentsStore.getState().activeId,
+          modelId: get().selectedModelId,
+          workspaceRoot: get().live.getWorkspaceRoot(),
+        }),
       };
       nextSessions = [fresh, ...sessions];
       void saveSessionsList(nextSessions);
@@ -682,6 +788,9 @@ export const useChatStore = create<StoreState>((set, get) => ({
       sessions: nextSessions,
       activeSessionId: freshId,
       sessionsHydrated: true,
+      selectedModelId:
+        nextSessions.find((session) => session.id === freshId)?.profile
+          ?.modelId ?? get().selectedModelId,
       agentMeta: restoredError
         ? { ...IDLE_META, status: "error", error: restoredError }
         : IDLE_META,
@@ -695,9 +804,20 @@ export const useChatStore = create<StoreState>((set, get) => ({
       title: "New chat",
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      profileVersion: 1,
+      profile: createConversationProfile({
+        agentId: useAgentsStore.getState().activeId,
+        modelId: get().selectedModelId,
+        workspaceRoot: get().live.getWorkspaceRoot(),
+      }),
     };
     const next = [meta, ...get().sessions];
-    set({ sessions: next, activeSessionId: id, agentMeta: IDLE_META });
+    set({
+      sessions: next,
+      activeSessionId: id,
+      selectedModelId: meta.profile?.modelId ?? get().selectedModelId,
+      agentMeta: IDLE_META,
+    });
     void saveSessionsList(next);
     void saveActiveId(id);
     return id;
@@ -715,6 +835,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
         session?.run?.state === "failed" ? session.run.error ?? null : null;
       set({
         activeSessionId: id,
+        selectedModelId: session?.profile?.modelId ?? get().selectedModelId,
         agentMeta: restoredError
           ? { ...IDLE_META, status: "error", error: restoredError }
           : IDLE_META,
@@ -729,6 +850,53 @@ export const useChatStore = create<StoreState>((set, get) => ({
       if (m && m.length > 0 && !chats.has(id)) seedMessages.set(id, m);
       flip();
     });
+  },
+
+  setSessionAgentId: (id, agentId) => {
+    const session = get().sessions.find((item) => item.id === id);
+    if (!session || session.run?.state === "running") return false;
+    const next = get().sessions.map((item) =>
+      item.id === id
+        ? {
+            ...item,
+            profile: {
+              ...(item.profile ??
+                createConversationProfile({
+                  agentId,
+                  modelId: get().selectedModelId,
+                  workspaceRoot: null,
+                })),
+              agentId,
+            },
+            updatedAt: Date.now(),
+          }
+        : item,
+    );
+    set({ sessions: next });
+    void saveSessionsList(next);
+    return true;
+  },
+
+  bindSessionToCurrentWorkspace: (id) => {
+    const session = get().sessions.find((item) => item.id === id);
+    const workspaceRoot = get().live.getWorkspaceRoot();
+    if (!session || session.run?.state === "running" || !workspaceRoot) {
+      return false;
+    }
+    const profile = createConversationProfile({
+      agentId:
+        session.profile?.agentId ?? useAgentsStore.getState().activeId,
+      modelId: session.profile?.modelId ?? get().selectedModelId,
+      workspaceRoot,
+    });
+    const next = get().sessions.map((item) =>
+      item.id === id
+        ? { ...item, profile, updatedAt: Date.now() }
+        : item,
+    );
+    set({ sessions: next });
+    void saveSessionsList(next);
+    return true;
   },
 
   deleteSession: (id) => {
@@ -760,6 +928,12 @@ export const useChatStore = create<StoreState>((set, get) => ({
         title: "New chat",
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        profileVersion: 1,
+        profile: createConversationProfile({
+          agentId: useAgentsStore.getState().activeId,
+          modelId: get().selectedModelId,
+          workspaceRoot: get().live.getWorkspaceRoot(),
+        }),
       };
       set({ sessions: [fresh], activeSessionId: fresh.id });
       void saveSessionsList([fresh]);
@@ -769,7 +943,15 @@ export const useChatStore = create<StoreState>((set, get) => ({
 
     const wasActive = get().activeSessionId === id;
     const nextActive = wasActive ? remaining[0].id : get().activeSessionId;
-    set({ sessions: remaining, activeSessionId: nextActive });
+    const nextModel = wasActive
+      ? remaining.find((session) => session.id === nextActive)?.profile
+          ?.modelId ?? get().selectedModelId
+      : get().selectedModelId;
+    set({
+      sessions: remaining,
+      activeSessionId: nextActive,
+      selectedModelId: nextModel,
+    });
     void saveSessionsList(remaining);
     if (wasActive) void saveActiveId(nextActive);
   },

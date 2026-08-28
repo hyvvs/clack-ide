@@ -10,6 +10,7 @@ import {
   normalizeSavedProviderModels,
   providerForModelSelection,
   resolveModelSelectionInfo,
+  resolveModelTransportIdentity,
   resolveSavedProviderModelTarget,
   savedProviderModelIdFromSelection,
   savedProviderModelSelectionId,
@@ -219,5 +220,34 @@ describe("saved provider models", () => {
         [saved],
       ),
     ).toBe("openrouter");
+    expect(
+      resolveModelTransportIdentity(savedProviderModelSelectionId(saved.id), {
+        savedProviderModels: [saved],
+      }),
+    ).toEqual({
+      providerId: "openrouter",
+      transportModelId: "anthropic/model",
+    });
+  });
+
+  it("captures custom endpoint routing without credentials", () => {
+    expect(
+      resolveModelTransportIdentity("compat-team", {
+        customEndpoints: [
+          {
+            id: "team",
+            name: "Team endpoint",
+            baseURL: "https://models.example/v1",
+            modelId: "review-model",
+            contextLimit: 32_000,
+          },
+        ],
+      }),
+    ).toEqual({
+      providerId: "openai-compatible",
+      transportModelId: "review-model",
+      endpointBaseURL: "https://models.example/v1",
+      customEndpointId: "team",
+    });
   });
 });

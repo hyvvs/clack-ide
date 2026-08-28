@@ -22,6 +22,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { AgentIconId } from "../lib/agents";
 import { useAgentsStore } from "../store/agentsStore";
+import { useChatStore } from "../store/chatStore";
 
 const ICONS: Record<AgentIconId, typeof CodeIcon> = {
   coder: CodeIcon,
@@ -45,12 +46,30 @@ export function AgentSwitcher({
   const customAgents = useAgentsStore((s) => s.customAgents);
   const activeId = useAgentsStore((s) => s.activeId);
   const setActiveId = useAgentsStore((s) => s.setActiveId);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const sessionAgentId = useChatStore((s) =>
+    s.sessions.find((session) => session.id === s.activeSessionId)?.profile
+      ?.agentId,
+  );
+  const setSessionAgentId = useChatStore((s) => s.setSessionAgentId);
 
   const list = useAgentsStore.getState().all();
   void customAgents; // keeps the store subscription alive
 
-  const displayedAgentId = agentId ?? activeId;
-  const active = list.find((a) => a.id === displayedAgentId) ?? list[0];
+  const displayedAgentId = agentId ?? sessionAgentId ?? activeId;
+  const selectAgent = (id: string) => {
+    if (activeSessionId && !setSessionAgentId(activeSessionId, id)) return;
+    setActiveId(id);
+  };
+  const matchedAgent = list.find((a) => a.id === displayedAgentId);
+  const active = matchedAgent ?? {
+    id: displayedAgentId,
+    name: "Missing agent",
+    description: "Select a replacement for this conversation.",
+    instructions: "",
+    icon: "spark" as const,
+    builtIn: false,
+  };
   const builtIn = list.filter((a) => a.builtIn);
   const custom = list.filter((a) => !a.builtIn);
   const ActiveIcon = ICONS[active.icon] ?? SparklesIcon;
@@ -88,7 +107,7 @@ export function AgentSwitcher({
           return (
             <DropdownMenuItem
               key={a.id}
-              onSelect={() => setActiveId(a.id)}
+              onSelect={() => selectAgent(a.id)}
               className={cn(
                 "flex items-start gap-2 pr-2 text-[12px]",
                 a.id === displayedAgentId && "bg-accent/40",
@@ -133,7 +152,7 @@ export function AgentSwitcher({
               return (
                 <DropdownMenuItem
                   key={a.id}
-                  onSelect={() => setActiveId(a.id)}
+                  onSelect={() => selectAgent(a.id)}
                   className={cn(
                     "flex items-start gap-2 text-[12px]",
                     a.id === displayedAgentId && "bg-accent/40",
