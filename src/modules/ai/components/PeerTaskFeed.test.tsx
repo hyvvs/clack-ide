@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { PEER_TASK_SCHEMA_VERSION, type PeerTask } from "../lib/peerTasks";
 import { useChatStore } from "../store/chatStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
-import { PeerTaskCard } from "./PeerTaskFeed";
+import { buildPeerTaskLineage, PeerTaskCard } from "./PeerTaskFeed";
 
 afterEach(() => {
   usePeerTaskStore.setState({ tasks: [], hydrated: false });
@@ -68,6 +68,44 @@ describe("PeerTaskFeed", () => {
     expect(html).toContain("Review patch");
     expect(html).toContain("Apply patch");
     expect(html).not.toContain("Applied to workspace");
+  });
+
+  it("renders a compact, ordered lineage for follow-up work", () => {
+    const root = task();
+    const child = task({
+      id: "peer-2",
+      kind: "question",
+      parentTaskId: root.id,
+      rootTaskId: root.id,
+      hopCount: 1,
+    });
+    usePeerTaskStore.setState({ tasks: [child, root], hydrated: true });
+
+    expect(buildPeerTaskLineage(child, [child, root]).map((item) => item.id)).toEqual([
+      "peer-1",
+      "peer-2",
+    ]);
+
+    const html = renderToStaticMarkup(
+      <PeerTaskCard
+        task={child}
+        viewingSessionId="source"
+        allTasks={[child, root]}
+      />,
+    );
+    expect(html).toContain("Task lineage");
+    expect(html).toContain("review");
+    expect(html).toContain("question");
+  });
+
+  it("stops malformed lineage cycles without looping", () => {
+    const first = task({ id: "peer-1", parentTaskId: "peer-2" });
+    const second = task({ id: "peer-2", parentTaskId: "peer-1" });
+
+    expect(buildPeerTaskLineage(first, [first, second]).map((item) => item.id)).toEqual([
+      "peer-2",
+      "peer-1",
+    ]);
   });
 });
 

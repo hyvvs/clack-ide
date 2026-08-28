@@ -5,6 +5,8 @@ import { workspaceEnvironmentFromId } from "./sessions";
 export const PEER_TASK_SCHEMA_VERSION = 1;
 export const PEER_TASK_MAX_HOPS = 3;
 export const PEER_TASK_MAX_PER_ROOT = 8;
+export const PEER_TASK_MAX_ACTIVE = 32;
+export const PEER_TASK_MAX_STORED = 256;
 
 export type PeerTaskKind = "delegate" | "review" | "question";
 export type PeerTaskExecutionMode =
@@ -91,7 +93,30 @@ export async function loadPeerTasks(): Promise<PeerTask[]> {
 }
 
 export async function savePeerTasks(tasks: readonly PeerTask[]): Promise<void> {
-  await store.set(TASKS_KEY, tasks);
+  await store.set(TASKS_KEY, compactPeerTasks(tasks));
+}
+
+export function compactPeerTasks(tasks: readonly PeerTask[]): PeerTask[] {
+  if (tasks.length <= PEER_TASK_MAX_STORED) return [...tasks];
+
+  const protectedRoots = new Set(
+    tasks
+      .filter((task) => task.status === "queued" || task.status === "running")
+      .map((task) => task.rootTaskId),
+  );
+  const protectedIds = new Set(
+    tasks
+      .filter((task) => protectedRoots.has(task.rootTaskId))
+      .map((task) => task.id),
+  );
+  const retained = tasks
+    .filter((task) => protectedIds.has(task.id))
+    .sort((left, right) => right.updatedAt - left.updatedAt);
+  const remaining = tasks
+    .filter((task) => !protectedIds.has(task.id))
+    .sort((left, right) => right.updatedAt - left.updatedAt);
+
+  return [...retained, ...remaining].slice(0, PEER_TASK_MAX_STORED);
 }
 
 export function recoverInterruptedPeerTasks(

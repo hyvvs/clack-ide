@@ -30,7 +30,12 @@ export function PeerTaskFeed({ sessionId }: { sessionId: string }) {
   return (
     <section className="flex flex-col gap-2" aria-label="Inter-agent tasks">
       {tasks.map((task) => (
-        <PeerTaskCard key={task.id} task={task} viewingSessionId={sessionId} />
+        <PeerTaskCard
+          key={task.id}
+          task={task}
+          viewingSessionId={sessionId}
+          allTasks={allTasks}
+        />
       ))}
     </section>
   );
@@ -39,18 +44,26 @@ export function PeerTaskFeed({ sessionId }: { sessionId: string }) {
 export function PeerTaskCard({
   task,
   viewingSessionId,
+  allTasks: providedTasks,
 }: {
   task: PeerTask;
   viewingSessionId: string;
+  allTasks?: readonly PeerTask[];
 }) {
   const sessions = useChatStore((state) => state.sessions);
   const switchSession = useChatStore((state) => state.switchSession);
+  const storedTasks = usePeerTaskStore((state) => state.tasks);
+  const allTasks = providedTasks ?? storedTasks;
   const source = sessions.find((session) => session.id === task.sourceSessionId);
   const target = sessions.find((session) => session.id === task.targetSessionId);
   const viewingSource = viewingSessionId === task.sourceSessionId;
   const [applying, setApplying] = useState(false);
   const [showPatch, setShowPatch] = useState(false);
   const [discardingWorktree, setDiscardingWorktree] = useState(false);
+  const lineage = useMemo(
+    () => buildPeerTaskLineage(task, allTasks),
+    [allTasks, task],
+  );
   const peer = viewingSource ? target : source;
   const active = task.status === "queued" || task.status === "running";
   const tone =
@@ -205,6 +218,28 @@ export function PeerTaskCard({
             </button>
           </div>
         ) : null}
+        {lineage.length > 1 ? (
+          <nav
+            className="flex min-w-0 items-center gap-1 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[9.5px] text-[var(--clack-text-3)]"
+            aria-label="Task lineage"
+          >
+            <span className="shrink-0">Lineage</span>
+            {lineage.map((item, index) => (
+              <span key={item.id} className="flex min-w-0 items-center gap-1">
+                {index > 0 ? <span aria-hidden>&gt;</span> : null}
+                <span
+                  className={cn(
+                    "max-w-20 truncate capitalize",
+                    item.id === task.id && "font-medium text-[var(--clack-text-2)]",
+                  )}
+                  title={`${item.kind} task ${item.id} (${item.status})`}
+                >
+                  {item.kind}
+                </span>
+              </span>
+            ))}
+          </nav>
+        ) : null}
         <div className="flex items-center gap-2 text-[9.5px] text-[var(--clack-text-3)]">
           <span className="capitalize">
             {task.executionMode.replace(/-/g, " ")}
@@ -225,4 +260,24 @@ export function PeerTaskCard({
       </div>
     </section>
   );
+}
+
+export function buildPeerTaskLineage(
+  task: PeerTask,
+  tasks: readonly PeerTask[],
+): PeerTask[] {
+  const byId = new Map(tasks.map((item) => [item.id, item]));
+  const lineage: PeerTask[] = [];
+  const visited = new Set<string>();
+  let current: PeerTask | undefined = task;
+
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    lineage.unshift(current);
+    current = current.parentTaskId
+      ? byId.get(current.parentTaskId)
+      : undefined;
+  }
+
+  return lineage;
 }

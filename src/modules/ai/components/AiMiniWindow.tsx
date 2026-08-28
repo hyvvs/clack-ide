@@ -489,7 +489,17 @@ function ContextIndicator({
 
   return (
     <Context usedTokens={used} maxTokens={max} modelId={modelId}>
-      <ContextTrigger className="h-6 gap-1 px-0 text-[10.5px]" />
+      <ContextTrigger
+        className="h-6 min-w-0 gap-1 px-1 text-[10.5px]"
+        title={`Model: ${modelLabel}`}
+      >
+        <span className="max-w-24 truncate text-[var(--clack-text-2)]">
+          {modelLabel}
+        </span>
+        <span className="shrink-0 text-[9.5px] text-[var(--clack-text-3)]">
+          {Math.round((used / Math.max(max, 1)) * 100)}%
+        </span>
+      </ContextTrigger>
       <ContextContent className="w-64 text-[11px]">
         <ContextContentHeader />
         <ContextContentBody>
@@ -596,7 +606,7 @@ function SessionPicker() {
         <button
           type="button"
           className={cn(
-            "flex min-w-0 max-w-48 items-center gap-1 rounded-[var(--clack-radius-button)] px-1.5 py-1",
+            "flex min-w-0 max-w-56 items-center gap-1 rounded-[var(--clack-radius-button)] px-1.5 py-1",
             "text-[11px] text-[var(--clack-text-3)] transition-colors",
             "hover:bg-[var(--clack-accent-soft)] hover:text-[var(--clack-text-1)]",
           )}
@@ -615,6 +625,21 @@ function SessionPicker() {
           }
         >
           <span className="truncate">{active.title || "New chat"}</span>
+          <span className="shrink-0 text-[var(--clack-text-3)]" aria-hidden>
+            /
+          </span>
+          <span
+            className={cn(
+              "max-w-20 truncate text-[10px]",
+              boundWorkspaceRoot
+                ? "text-[var(--clack-text-3)]"
+                : "text-[var(--clack-warning)]",
+            )}
+          >
+            {boundWorkspaceRoot
+              ? workspaceName(boundWorkspaceRoot)
+              : "Unbound"}
+          </span>
           {backgroundRunningCount > 0 ? (
             <span
               className="flex shrink-0 items-center gap-1 text-[10px] text-[var(--clack-accent)]"

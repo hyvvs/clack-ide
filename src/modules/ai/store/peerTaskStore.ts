@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import {
+  compactPeerTasks,
   loadPeerTasks,
   recoverInterruptedPeerTasks,
   savePeerTasks,
@@ -32,17 +33,21 @@ function persist(tasks: PeerTask[]): void {
   void savePeerTasks(tasks);
 }
 
+function bounded(tasks: PeerTask[]): PeerTask[] {
+  return compactPeerTasks(tasks);
+}
+
 export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
   hydrated: false,
   tasks: [],
   hydrate: async () => {
     const loaded = await loadPeerTasks();
-    const recovered = recoverInterruptedPeerTasks(loaded);
+    const recovered = bounded(recoverInterruptedPeerTasks(loaded));
     set({ tasks: recovered, hydrated: true });
     persist(recovered);
   },
   add: (task) => {
-    const tasks = [task, ...get().tasks];
+    const tasks = bounded([task, ...get().tasks]);
     set({ tasks });
     persist(tasks);
   },

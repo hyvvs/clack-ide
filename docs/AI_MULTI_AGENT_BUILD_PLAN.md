@@ -1,6 +1,6 @@
 # Clack Multi-Model and Multi-Agent Build Plan
 
-Status: Implementation in progress
+Status: Implementation complete; external-platform acceptance is recorded below
 Baseline commit: `e427a4b086781ff21461eef808985d234304e50a`
 Last updated: 2026-08-28
 
@@ -23,11 +23,11 @@ changes the scope.
 | 0 | Preserve the known-good AI runtime baseline | Complete | `e427a4b` |
 | 1 | Stable saved-model identity and migration core | Complete | `8af9b12` |
 | 2 | Multiple models per provider in settings and picker | Complete | `08d079c` |
-| 3 | Conversation-owned agent, model, and workspace identity | Complete | phase checkpoint |
-| 4 | Per-session runtime isolation and background execution | Pending | |
-| 5 | Durable inter-agent delegation and review protocol | Pending | |
-| 6 | Concurrent mutation isolation and conflict handling | Pending | |
-| 7 | Integrated UX, migration audit, and release verification | Pending | |
+| 3 | Conversation-owned agent, model, and workspace identity | Complete | `09ca89c` |
+| 4 | Per-session runtime isolation and background execution | Complete | `c865027` |
+| 5 | Durable inter-agent delegation and review protocol | Complete | `61f0363` |
+| 6 | Concurrent mutation isolation and conflict handling | Complete | `cc6c310` |
+| 7 | Integrated UX, migration audit, and release verification | Complete | final checkpoint |
 
 Allowed status values are `Pending`, `In progress`, `Blocked`, and `Complete`.
 A phase is complete only after its exit criteria and verification gate pass.
@@ -669,6 +669,33 @@ Exit criteria:
 - documentation matches behavior
 - incomplete controls remain hidden
 - the ledger records final commit hashes
+
+Implementation record (2026-08-28):
+
+- the compact chat header now exposes its saved model and bound workspace next
+  to the conversation-owned agent; legacy sessions show an explicit Unbound
+  state instead of implying ownership
+- the session picker retains background run and approval attention, while peer
+  work continues to expose Ask, Review, Delegate, queue, cancellation, result,
+  failure, change-set review, conflict, and recovery states
+- follow-up peer tasks render a compact ordered lineage from the persisted
+  parent chain; malformed cycles terminate safely instead of hanging the UI
+- peer collaboration is bounded to 32 queued/running tasks and 256 persisted
+  task records; active collaboration roots and their lineage take retention
+  priority over older terminal history
+- the security audit found no new credential persistence, provider request on
+  render, endpoint bypass, hidden transcript sharing, hidden billed run, or
+  permission/run-budget bypass; task prompts and explicit artifact references
+  remain the only source context sent to a peer
+- final gate: type check passed; lint passed with the existing 71 warnings and
+  two informational diagnostics, with no errors; 543 frontend tests passed;
+  production build passed; NSIS release build passed; Rust formatting and
+  strict Clippy passed; 217 Rust tests passed; diff whitespace check passed
+- native Windows smoke: the release executable launched, remained responsive,
+  rendered the restored workspace/editor/terminal, and exited cleanly
+- not exercised on this Windows host: a billed live-provider conversation,
+  simultaneous live peer runs, installation of the generated NSIS artifact,
+  Linux/NVIDIA Wayland, native Arch/CachyOS, and Linux package uninstall
 
 ## Checkpoint Policy
 

@@ -37,6 +37,7 @@ import {
   requestPeerTask,
 } from "./peerTaskCoordinator";
 import {
+  PEER_TASK_MAX_ACTIVE,
   PEER_TASK_MAX_HOPS,
   PEER_TASK_SCHEMA_VERSION,
   recoverInterruptedPeerTasks,
@@ -244,6 +245,31 @@ describe("peer task coordination", () => {
 
     expect(stop).toHaveBeenCalledOnce();
     expect(usePeerTaskStore.getState().tasks[0].status).toBe("cancelled");
+  });
+
+  it("bounds queued and running peer work before creating another billed task", async () => {
+    usePeerTaskStore.setState({
+      tasks: Array.from({ length: PEER_TASK_MAX_ACTIVE }, (_, index) =>
+        task({
+          id: `active-${index}`,
+          rootTaskId: `active-${index}`,
+          status: index % 2 === 0 ? "queued" : "running",
+        }),
+      ),
+    });
+
+    await expect(
+      requestPeerTask({
+        sourceSessionId: SOURCE,
+        targetSessionId: TARGET,
+        kind: "question",
+        prompt: "Start one more task.",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: "peer_active_task_limit",
+    });
+    expect(sendMessageToSession).not.toHaveBeenCalled();
   });
 
   it("captures isolated Git changes as a reviewable patch", async () => {

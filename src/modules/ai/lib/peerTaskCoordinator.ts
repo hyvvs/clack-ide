@@ -7,6 +7,7 @@ import { workspacePathsEqual } from "@/modules/workspace";
 import { normalizeAiError } from "./errors";
 import {
   PEER_TASK_MAX_HOPS,
+  PEER_TASK_MAX_ACTIVE,
   PEER_TASK_MAX_PER_ROOT,
   PEER_TASK_SCHEMA_VERSION,
   newPeerTaskId,
@@ -362,6 +363,16 @@ function validateRequest(request: PeerTaskRequest):
     };
   }
   const tasks = usePeerTaskStore.getState().tasks;
+  const activeTaskCount = tasks.filter(
+    (task) => task.status === "queued" || task.status === "running",
+  ).length;
+  if (activeTaskCount >= PEER_TASK_MAX_ACTIVE) {
+    return {
+      ok: false,
+      code: "peer_active_task_limit",
+      message: `Clack supports up to ${PEER_TASK_MAX_ACTIVE} queued or running peer tasks at once.`,
+    };
+  }
   const parentId = source.run?.peerTaskId ?? null;
   const parent = parentId
     ? (tasks.find((task) => task.id === parentId) ?? null)
