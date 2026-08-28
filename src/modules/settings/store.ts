@@ -16,6 +16,11 @@ import {
   type ProviderId,
   type SttProvider,
 } from "@/modules/ai/config";
+import {
+  migrateSavedProviderModels,
+  SAVED_PROVIDER_MODELS_SCHEMA_VERSION,
+  type SavedProviderModel,
+} from "@/modules/ai/lib/savedProviderModels";
 import type { KeyBinding, ShortcutId } from "@/modules/shortcuts/shortcuts";
 import type {
   AgentPermissionProfile,
@@ -151,6 +156,7 @@ export type Preferences = {
   openaiCompatibleContextLimit: number;
   customEndpoints: CustomEndpoint[];
   openrouterModelId: string;
+  savedProviderModels: SavedProviderModel[];
   sttProvider: SttProvider;
   groqSttModel: string;
   whispercppBaseURL: string;
@@ -203,6 +209,8 @@ const KEY_OPENAI_COMPAT_MODEL_ID = "openaiCompatibleModelId";
 const KEY_OPENAI_COMPAT_CONTEXT_LIMIT = "openaiCompatibleContextLimit";
 const KEY_CUSTOM_ENDPOINTS = "customEndpoints";
 const KEY_OPENROUTER_MODEL_ID = "openrouterModelId";
+const KEY_SAVED_PROVIDER_MODELS = "savedProviderModels";
+const KEY_SAVED_PROVIDER_MODELS_VERSION = "savedProviderModelsVersion";
 const KEY_STT_PROVIDER = "sttProvider";
 const KEY_GROQ_STT_MODEL = "groqSttModel";
 const KEY_WHISPERCPP_BASE_URL = "whispercppBaseURL";
@@ -270,6 +278,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   openaiCompatibleContextLimit: 128_000,
   customEndpoints: [],
   openrouterModelId: "",
+  savedProviderModels: [],
   sttProvider: DEFAULT_STT_PROVIDER,
   groqSttModel: "whisper-large-v3-turbo",
   whispercppBaseURL: WHISPERCPP_DEFAULT_BASE_URL,
@@ -349,6 +358,23 @@ export async function loadPreferences(): Promise<Preferences> {
   const entries = await store.entries();
   const map = new Map<string, unknown>(entries);
   const get = <T>(k: string): T | undefined => map.get(k) as T | undefined;
+  const legacyOpenrouterModelId = get<string>(KEY_OPENROUTER_MODEL_ID) ?? "";
+  const savedProviderModelsMigration = migrateSavedProviderModels({
+    stored: get<unknown>(KEY_SAVED_PROVIDER_MODELS),
+    storedVersion: get<unknown>(KEY_SAVED_PROVIDER_MODELS_VERSION),
+    legacyOpenrouterModelId,
+  });
+  if (savedProviderModelsMigration.changed) {
+    await store.set(
+      KEY_SAVED_PROVIDER_MODELS,
+      savedProviderModelsMigration.models,
+    );
+    await store.set(
+      KEY_SAVED_PROVIDER_MODELS_VERSION,
+      SAVED_PROVIDER_MODELS_SCHEMA_VERSION,
+    );
+    await store.save();
+  }
   return {
     theme: get<ThemePref>(KEY_THEME) ?? DEFAULT_PREFERENCES.theme,
     themeId: get<string>(KEY_THEME_ID) ?? DEFAULT_PREFERENCES.themeId,
@@ -429,8 +455,8 @@ export async function loadPreferences(): Promise<Preferences> {
       );
     })(),
     openrouterModelId:
-      get<string>(KEY_OPENROUTER_MODEL_ID) ??
-      DEFAULT_PREFERENCES.openrouterModelId,
+      legacyOpenrouterModelId || DEFAULT_PREFERENCES.openrouterModelId,
+    savedProviderModels: savedProviderModelsMigration.models,
     sttProvider:
       get<SttProvider>(KEY_STT_PROVIDER) ?? DEFAULT_PREFERENCES.sttProvider,
     groqSttModel:
@@ -644,6 +670,17 @@ export async function setOpenrouterModelId(value: string): Promise<void> {
   await writePref(KEY_OPENROUTER_MODEL_ID, value);
 }
 
+export async function setSavedProviderModels(
+  value: SavedProviderModel[],
+): Promise<void> {
+  const migration = migrateSavedProviderModels({
+    stored: value,
+    storedVersion: SAVED_PROVIDER_MODELS_SCHEMA_VERSION,
+    legacyOpenrouterModelId: "",
+  });
+  await writePref(KEY_SAVED_PROVIDER_MODELS, migration.models);
+}
+
 export async function setSttProvider(value: SttProvider): Promise<void> {
   await writePref(KEY_STT_PROVIDER, value);
 }
@@ -796,6 +833,7 @@ export async function onPreferencesChange(
     [KEY_OPENAI_COMPAT_CONTEXT_LIMIT]: "openaiCompatibleContextLimit",
     [KEY_CUSTOM_ENDPOINTS]: "customEndpoints",
     [KEY_OPENROUTER_MODEL_ID]: "openrouterModelId",
+    [KEY_SAVED_PROVIDER_MODELS]: "savedProviderModels",
     [KEY_STT_PROVIDER]: "sttProvider",
     [KEY_GROQ_STT_MODEL]: "groqSttModel",
     [KEY_WHISPERCPP_BASE_URL]: "whispercppBaseURL",

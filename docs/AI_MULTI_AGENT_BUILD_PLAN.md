@@ -21,7 +21,7 @@ changes the scope.
 | Phase | Deliverable | Status | Commit |
 | --- | --- | --- | --- |
 | 0 | Preserve the known-good AI runtime baseline | Complete | `e427a4b` |
-| 1 | Stable saved-model identity and migration core | Pending | |
+| 1 | Stable saved-model identity and migration core | In progress | |
 | 2 | Multiple models per provider in settings and picker | Pending | |
 | 3 | Conversation-owned agent, model, and workspace identity | Pending | |
 | 4 | Per-session runtime isolation and background execution | Pending | |
