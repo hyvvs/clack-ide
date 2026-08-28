@@ -24,6 +24,7 @@ import {
   Add01Icon,
   AlertCircleIcon,
   ArrowDown01Icon,
+  ArrowRight01Icon,
   Cancel01Icon,
   Delete02Icon,
   FilterIcon,
@@ -33,7 +34,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { PresenceState } from "@/lib/usePresence";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { estimateCost, getModelContextLimit } from "../config";
 import type { ResizeDir } from "../lib/miniWindowGeometry";
 import { resolveModelSelectionInfo } from "../lib/savedProviderModels";
@@ -59,6 +60,7 @@ import { AgentPermissionControl } from "./AgentPermissionControl";
 import { AiChatView } from "./AiChat";
 import { PlanDiffReview } from "./PlanDiffReview";
 import { TodoStrip } from "./TodoStrip";
+import { PeerTaskDialog } from "./PeerTaskDialog";
 
 const SUGGESTIONS = [
   {
@@ -571,6 +573,7 @@ function SessionPicker() {
     (s) => s.bindSessionToCurrentWorkspace,
   );
   const currentWorkspaceRoot = useChatStore((s) => s.live.getWorkspaceRoot());
+  const [peerTarget, setPeerTarget] = useState<SessionMeta | null>(null);
 
   const active = sessions.find((s) => s.id === activeId) ?? null;
   if (!active) return null;
@@ -587,6 +590,7 @@ function SessionPicker() {
   ).length;
 
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
@@ -662,12 +666,27 @@ function SessionPicker() {
             session={s}
             active={s.id === activeId}
             approvalsPending={pendingApprovalsBySession[s.id]?.length ?? 0}
+            canPeer={
+              s.id !== activeId &&
+              !!active.profile?.workspaceId &&
+              s.profile?.workspaceId === active.profile.workspaceId
+            }
             onSelect={() => switchSession(s.id)}
+            onPeer={() => setPeerTarget(s)}
             onDelete={() => deleteSession(s.id)}
           />
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
+    <PeerTaskDialog
+      sourceSessionId={active.id}
+      target={peerTarget}
+      open={peerTarget !== null}
+      onOpenChange={(open) => {
+        if (!open) setPeerTarget(null);
+      }}
+    />
+    </>
   );
 }
 
@@ -675,13 +694,17 @@ function SessionRow({
   session,
   active,
   approvalsPending,
+  canPeer,
   onSelect,
+  onPeer,
   onDelete,
 }: {
   session: SessionMeta;
   active: boolean;
   approvalsPending: number;
+  canPeer: boolean;
   onSelect: () => void;
+  onPeer: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -689,7 +712,7 @@ function SessionRow({
       onSelect={(e) => {
         // Don't dismiss if user clicked the trash icon.
         const target = e.target as HTMLElement | null;
-        if (target?.closest("[data-session-delete]")) {
+        if (target?.closest("[data-session-action]")) {
           e.preventDefault();
           return;
         }
@@ -713,9 +736,23 @@ function SessionRow({
           Running
         </span>
       ) : null}
+      {canPeer ? (
+        <button
+          type="button"
+          data-session-action
+          onClick={(event) => {
+            event.stopPropagation();
+            onPeer();
+          }}
+          title={`Ask ${session.title || "this chat"}`}
+          className="rounded-[var(--clack-radius-button)] p-0.5 text-[var(--clack-text-3)] opacity-0 transition-opacity hover:bg-[var(--clack-accent-soft)] hover:text-[var(--clack-accent)] group-hover:opacity-100"
+        >
+          <HugeiconsIcon icon={ArrowRight01Icon} size={11} strokeWidth={1.75} />
+        </button>
+      ) : null}
       <button
         type="button"
-        data-session-delete
+        data-session-action
         onClick={(e) => {
           e.stopPropagation();
           onDelete();

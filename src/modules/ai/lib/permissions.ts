@@ -17,7 +17,8 @@ export type PermissionContext = Pick<
 export type PermissionCategory =
   | "write-files"
   | "create-files"
-  | "run-commands";
+  | "run-commands"
+  | "delegate-runs";
 
 export type PermissionScope = "once" | "chat" | "workspace";
 
@@ -75,6 +76,7 @@ export const PERMISSION_CATEGORY_LABELS: Record<PermissionCategory, string> = {
   "write-files": "Write or edit files",
   "create-files": "Create directories",
   "run-commands": "Run terminal commands",
+  "delegate-runs": "Start another agent run",
 };
 
 export const PERMISSION_CATEGORIES = Object.keys(
@@ -88,6 +90,7 @@ const TOOL_CATEGORIES: Readonly<Record<string, PermissionCategory>> = {
   create_directory: "create-files",
   bash_run: "run-commands",
   bash_background: "run-commands",
+  request_peer_task: "delegate-runs",
 };
 
 const chatGrants = new Map<string, Set<PermissionCategory>>();
@@ -193,6 +196,7 @@ export function canPersistPermission(
   const category = permissionCategoryForTool(toolName);
   const workspaceRoot = ctx.getWorkspaceRoot();
   if (!category || !workspaceRoot) return false;
+  if (category === "delegate-runs") return true;
   if (category === "run-commands") {
     const cwd = typeof input.cwd === "string" ? input.cwd : ctx.getCwd();
     return cwd ? isInsideWorkspace(cwd, workspaceRoot) : false;

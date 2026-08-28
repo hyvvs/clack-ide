@@ -373,6 +373,7 @@ function commandNameFromMessage(message: SessionChatMessage): string | undefined
 export async function sendMessageToSession(
   sessionId: string,
   message: SessionChatMessage,
+  options?: { peerTaskId?: string },
 ): Promise<void> {
   const store = useChatStore.getState();
   const profileModel = store.sessions.find(
@@ -381,7 +382,11 @@ export async function sendMessageToSession(
   if (!profileModel || !hasKeyForModel(profileModel)) {
     throw new Error("This chat's model is unavailable or not configured.");
   }
-  const started = store.beginRun(sessionId, commandNameFromMessage(message));
+  const started = store.beginRun(
+    sessionId,
+    commandNameFromMessage(message),
+    options,
+  );
   if (!started.ok) throw new Error(started.reason);
   const runModel = useChatStore
     .getState()

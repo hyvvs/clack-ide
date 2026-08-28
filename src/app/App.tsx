@@ -14,6 +14,7 @@ import {
   AgentRunBridge,
   AiMiniWindow,
   LocalAgentNotificationsBridge,
+  PeerTaskQueueBridge,
   SelectionAskAi,
   useAiBootstrap,
   useAiLiveBridge,
@@ -1736,6 +1737,7 @@ export default function App() {
                 openAiDiffTab={openAiDiffTab}
                 closeAiDiffTab={closeAiDiffTab}
               />
+              <PeerTaskQueueBridge />
               <LocalAgentNotificationsBridge />
             </>
           ) : null}

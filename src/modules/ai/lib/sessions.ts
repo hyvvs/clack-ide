@@ -42,6 +42,7 @@ export type SessionRun = {
   transportModelId?: string;
   endpointBaseURL?: string;
   customEndpointId?: string;
+  peerTaskId?: string;
   commandName?: string;
   startedAt: number;
   budget?: RunBudgetState;

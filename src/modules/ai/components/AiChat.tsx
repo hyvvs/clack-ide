@@ -54,6 +54,9 @@ import {
   shouldPresentAiError,
 } from "@/modules/ai/lib/errors";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import { PeerTaskFeed } from "./PeerTaskFeed";
+
+const PEER_TASK_ENVELOPE_RE = /^<peer-task\s+id="[^"]+">[\s\S]*<\/peer-task>\s*$/;
 
 function CommandSnippet({ name }: { name: string }) {
   const meta = SLASH_COMMANDS[name];
@@ -267,6 +270,7 @@ export function AiChatView({
             streaming={m.id === streamingMessageId}
           />
         ))}
+        {activeSessionId ? <PeerTaskFeed sessionId={activeSessionId} /> : null}
         {compactionNotice && (
           <CompactionNotice
             droppedCount={compactionNotice.droppedCount}
@@ -458,6 +462,8 @@ export const RenderedMessage = memo(function RenderedMessage({
       .filter((p): p is { type: "text"; text: string } => p.type === "text")
       .map((p) => p.text)
       .join("\n");
+
+    if (PEER_TASK_ENVELOPE_RE.test(rawText.trim())) return null;
 
     const cmdMatch = rawText.match(TERAX_CMD_RE);
     const commandName = cmdMatch?.[1] ?? null;

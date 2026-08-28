@@ -203,9 +203,11 @@ type StoreState = {
   beginRun: (
     id: string,
     commandName?: string,
+    options?: { peerTaskId?: string },
   ) => { ok: true } | { ok: false; reason: string };
   startRunBatch: (id: string) => { isLogicalContinuation: boolean };
   recordRunStep: (id: string, observation: RunStepObservation) => void;
+  recordPeerTaskStart: (id: string) => void;
   recordRunBatch: (id: string, result: RunBatchResult) => void;
   consumeAutoContinuation: (id: string) => boolean;
   resumeRun: (id: string, allowHardLimit: boolean) => boolean;
@@ -488,7 +490,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
       },
     })),
 
-  beginRun: (id, commandName) => {
+  beginRun: (id, commandName, options) => {
     const session = get().sessions.find((item) => item.id === id);
     if (!session) return { ok: false, reason: "Chat session not found." };
     if (session.run?.state === "running") {
@@ -556,6 +558,9 @@ export const useChatStore = create<StoreState>((set, get) => ({
               ...(workspaceId ? { workspaceId } : {}),
               ...(workspaceRoot ? { workspaceRoot } : {}),
               ...(commandName ? { commandName } : {}),
+              ...(options?.peerTaskId
+                ? { peerTaskId: options.peerTaskId }
+                : {}),
               startedAt: now,
               budget: createRunBudget(permissionModeForAgent(agentId)),
             },
@@ -620,6 +625,25 @@ export const useChatStore = create<StoreState>((set, get) => ({
     if (run?.state !== "running") return;
     const current = runLoopTrackers.get(id) ?? createRunLoopTracker();
     runLoopTrackers.set(id, observeRunStep(current, observation));
+  },
+
+  recordPeerTaskStart: (id) => {
+    const next = get().sessions.map((session) =>
+      session.id === id && session.run?.state === "running" && session.run.budget
+        ? {
+            ...session,
+            run: {
+              ...session.run,
+              budget: {
+                ...session.run.budget,
+                peerTaskCount: session.run.budget.peerTaskCount + 1,
+              },
+            },
+          }
+        : session,
+    );
+    set({ sessions: next });
+    void saveSessionsList(next);
   },
 
   recordRunBatch: (id, result) => {

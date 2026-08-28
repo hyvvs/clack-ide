@@ -24,6 +24,7 @@ export type RunBudgetState = {
   maxAutoContinuations: number;
   totalSteps: number;
   continuationCount: number;
+  peerTaskCount: number;
   phase: RunBudgetPhase;
   stopReason: RunBudgetStopReason | null;
   lastFinishReason: string;
@@ -64,6 +65,7 @@ export function createRunBudget(mode: AgentPermissionMode): RunBudgetState {
     maxAutoContinuations: AGENT_MAX_AUTO_CONTINUATIONS,
     totalSteps: 0,
     continuationCount: 0,
+    peerTaskCount: 0,
     phase: "running",
     stopReason: null,
     lastFinishReason: "",

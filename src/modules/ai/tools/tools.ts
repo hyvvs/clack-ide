@@ -1,4 +1,5 @@
 import { buildManagedAgentTools } from "./agent";
+import { buildPeerTaskTools } from "./peer";
 import { buildEditTools } from "./edit";
 import { buildFsTools } from "./fs";
 import { buildSearchTools } from "./search";
@@ -39,6 +40,7 @@ export function buildTools(ctx: import("./context").ToolContext) {
     ...buildTerminalTools(ctx),
     ...buildTodoTools(ctx),
     ...buildManagedAgentTools(ctx),
+    ...buildPeerTaskTools(ctx),
   } as const, ctx);
 }
 

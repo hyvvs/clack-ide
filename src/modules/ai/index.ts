@@ -2,6 +2,7 @@ export {
   AgentRunBridge,
   AiInputBarConnect,
   AiMiniWindow,
+  PeerTaskQueueBridge,
   SelectionAskAi,
 } from "./components/lazy";
 export { AgentStatusPill } from "./components/AgentStatusPill";

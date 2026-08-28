@@ -84,6 +84,22 @@ describe("agent permission resolver", () => {
     );
   });
 
+  it("treats another billed agent run as an explicit permission category", () => {
+    const input = { targetSessionId: "chat-b", kind: "review" };
+    expect(decision("chat-only", "request_peer_task", input).outcome).toBe(
+      "deny",
+    );
+    expect(decision("ask", "request_peer_task", input).outcome).toBe(
+      "prompt",
+    );
+    expect(
+      decision("trusted-workspace", "request_peer_task", input).outcome,
+    ).toBe("allow");
+    expect(decision("full-access", "request_peer_task", input).outcome).toBe(
+      "allow",
+    );
+  });
+
   it("treats Allow once as one response without creating a grant", () => {
     expect(
       requiresToolApproval(

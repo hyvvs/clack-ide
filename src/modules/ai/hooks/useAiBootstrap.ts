@@ -11,6 +11,7 @@ import { useAgentsStore } from "../store/agentsStore";
 import { useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
 import { resolveRestoredModel } from "../lib/providerRestore";
+import { usePeerTaskStore } from "../store/peerTaskStore";
 
 /**
  * Startup wiring for the AI subsystem: loads provider keys (and keeps them in
@@ -148,6 +149,7 @@ export function useAiBootstrap(): {
 
   useEffect(() => {
     void useSnippetsStore.getState().hydrate();
+    void usePeerTaskStore.getState().hydrate();
   }, []);
 
   return { hasComposer, keysLoaded };

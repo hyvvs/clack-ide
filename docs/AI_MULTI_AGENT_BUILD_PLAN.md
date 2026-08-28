@@ -502,6 +502,32 @@ Manual acceptance:
 
 Exit criteria: Goal 3 is complete for read-only and serialized work.
 
+Implementation record (2026-08-28):
+
+- peer tasks persist in a separate versioned ledger with source, target, both
+  captured identities, workspace ownership, lineage, timestamps, status,
+  explicit artifact references, structured failure, and result provenance
+- users can start Ask, Review, or Delegate work from the session picker, while
+  agents use the permission-aware `request_peer_task` tool
+- Chat Only denies billed peer runs, Ask prompts, Trusted Workspace and Full
+  Access follow their existing semantics, and Custom exposes a dedicated
+  Start another agent run category
+- idle targets start immediately under their own conversation profile; busy
+  targets queue and are claimed one at a time by the global queue bridge
+- task cards render in both source and target conversations, link back to the
+  peer chat, expose queue/run/result/error state, and allow real cancellation
+- the broker sends only the explicit bounded prompt and artifact paths; it
+  never copies source transcript, hidden reasoning, credentials, or secrets
+- peer runs capture their task lineage, enforce three-hop and eight-task root
+  ceilings, reject active duplicate requests, and increment the initiating
+  logical run's peer-task budget counter
+- startup marks interrupted in-flight peer work failed instead of replaying a
+  potentially billed run; queued work resumes only after chat sessions hydrate
+- phase gate: type check passed; lint passed with pre-existing warnings only;
+  513 tests passed; production build and diff whitespace check passed
+- live-provider multi-agent GUI acceptance is deferred to the integrated Phase
+  7 matrix
+
 ## Phase 6: Concurrent Mutation and Conflicts
 
 Goal: Allow agents to modify the same project without silent corruption.
