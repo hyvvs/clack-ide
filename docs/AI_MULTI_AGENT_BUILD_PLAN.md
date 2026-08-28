@@ -27,7 +27,7 @@ changes the scope.
 | 4 | Per-session runtime isolation and background execution | Complete | `c865027` |
 | 5 | Durable inter-agent delegation and review protocol | Complete | `61f0363` |
 | 6 | Concurrent mutation isolation and conflict handling | Complete | `cc6c310` |
-| 7 | Integrated UX, migration audit, and release verification | Complete | final checkpoint |
+| 7 | Integrated UX, migration audit, and release verification | Complete | `cb9d081` |
 
 Allowed status values are `Pending`, `In progress`, `Blocked`, and `Complete`.
 A phase is complete only after its exit criteria and verification gate pass.
