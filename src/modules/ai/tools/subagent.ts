@@ -3,6 +3,7 @@ import { z } from "zod";
 import { runSubagent } from "../agents/runSubagent";
 import { SUBAGENTS, type SubagentType } from "../agents/registry";
 import { useChatStore } from "../store/chatStore";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { ToolContext } from "./context";
 
 const TYPE_KEYS = Object.keys(SUBAGENTS) as [SubagentType, ...SubagentType[]];
@@ -29,15 +30,41 @@ Auto-executes (no approval) — subagents are read-only by design.`,
           .describe("Short label shown in the chat UI for the spawn card."),
       }),
       execute: async ({ type, prompt, description }) => {
-        const { apiKeys, selectedModelId, patchAgentMeta } =
+        const {
+          apiKeys,
+          customEndpointKeys,
+          selectedModelId,
+          patchAgentMeta,
+          sessions,
+        } =
           useChatStore.getState();
+        const preferences = usePreferencesStore.getState();
+        const runModelId =
+          sessions.find((session) => session.id === ctx.getSessionId())?.run
+            ?.modelId ?? selectedModelId;
         try {
           const r = await runSubagent({
             type,
             prompt,
             keys: apiKeys,
-            modelId: selectedModelId,
+            modelId: runModelId,
             toolContext: ctx,
+            providerConfig: {
+              lmstudioBaseURL: preferences.lmstudioBaseURL,
+              lmstudioModelId: preferences.lmstudioModelId,
+              mlxBaseURL: preferences.mlxBaseURL,
+              mlxModelId: preferences.mlxModelId,
+              ollamaBaseURL: preferences.ollamaBaseURL,
+              ollamaModelId: preferences.ollamaModelId,
+              openaiCompatibleBaseURL:
+                preferences.openaiCompatibleBaseURL,
+              openaiCompatibleModelId:
+                preferences.openaiCompatibleModelId,
+              openrouterModelId: preferences.openrouterModelId,
+              savedProviderModels: preferences.savedProviderModels,
+              customEndpoints: preferences.customEndpoints,
+              customEndpointKeys,
+            },
             onStep: (label) => patchAgentMeta({ step: label }),
           });
           return {

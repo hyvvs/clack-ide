@@ -33,8 +33,9 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { PresenceState } from "@/lib/usePresence";
 import { useEffect, useMemo } from "react";
-import { estimateCost, getModel, getModelContextLimit, type ModelId } from "../config";
+import { estimateCost, getModelContextLimit } from "../config";
 import type { ResizeDir } from "../lib/miniWindowGeometry";
+import { resolveModelSelectionInfo } from "../lib/savedProviderModels";
 import type { SessionMeta, SessionRunState } from "../lib/sessions";
 import { useMiniWindowGeometry } from "../lib/useMiniWindowGeometry";
 import { useAgentsStore } from "../store/agentsStore";
@@ -431,14 +432,22 @@ function ContextIndicator({ messages }: { messages: UIMessage[] }) {
   const openaiCompatibleContextLimit = usePreferencesStore(
     (s) => s.openaiCompatibleContextLimit,
   );
+  const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
+  const savedProviderModels = usePreferencesStore(
+    (s) => s.savedProviderModels,
+  );
   const max = getModelContextLimit(modelId, openaiCompatibleContextLimit);
   const modelLabel = useMemo(() => {
     try {
-      return getModel(modelId as ModelId).label;
+      return resolveModelSelectionInfo(
+        modelId,
+        customEndpoints,
+        savedProviderModels,
+      ).label;
     } catch {
       return modelId;
     }
-  }, [modelId]);
+  }, [customEndpoints, modelId, savedProviderModels]);
   const cost = estimateCost(modelId, tokens);
   const cacheRate =
     tokens.inputTokens > 0

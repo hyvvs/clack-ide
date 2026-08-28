@@ -1,6 +1,9 @@
 import { generateText, stepCountIs } from "ai";
-import { DEFAULT_MODEL_ID, getModel, type ModelId } from "../config";
-import { buildLanguageModel } from "../lib/agent";
+import { DEFAULT_MODEL_ID, type ModelId } from "../config";
+import {
+  buildConfiguredLanguageModel,
+  type LocalProviderConfig,
+} from "../lib/agent";
 import type { ProviderKeys } from "../lib/keyring";
 import type { ToolContext } from "../tools/context";
 import { buildFsTools } from "../tools/fs";
@@ -15,7 +18,7 @@ type Args = {
   keys: ProviderKeys;
   modelId: string;
   toolContext: ToolContext;
-  lmstudioBaseURL?: string;
+  providerConfig?: LocalProviderConfig;
   onStep?: (label: string) => void;
 };
 
@@ -31,7 +34,7 @@ export async function runSubagent({
   keys,
   modelId,
   toolContext,
-  lmstudioBaseURL,
+  providerConfig,
   onStep,
 }: Args): Promise<RunResult> {
   const def = SUBAGENTS[type];
@@ -46,11 +49,10 @@ export async function runSubagent({
     if (t in readOnly) tools[t] = readOnly[t];
   }
 
-  const model = await buildLanguageModel(
-    getModel(modelId as ModelId).provider,
+  const model = await buildConfiguredLanguageModel(
+    modelId,
     keys,
-    getModel(modelId as ModelId).id,
-    { lmstudioBaseURL },
+    providerConfig,
   );
 
   const start = Date.now();

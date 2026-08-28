@@ -47,6 +47,9 @@ export function useAiBootstrap(): {
   );
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
   const openrouterModelId = usePreferencesStore((s) => s.openrouterModelId);
+  const savedProviderModels = usePreferencesStore(
+    (s) => s.savedProviderModels,
+  );
   const lastUsedProviderId = usePreferencesStore(
     (s) => s.lastUsedProviderId,
   );
@@ -111,6 +114,7 @@ export function useAiBootstrap(): {
       openaiCompatibleModelId,
       openrouterModelId,
       customEndpoints,
+      savedProviderModels,
     });
     if (restored) setSelectedModelId(restored, false);
   }, [
@@ -130,6 +134,7 @@ export function useAiBootstrap(): {
     openrouterModelId,
     prefDefaultModel,
     prefsHydrated,
+    savedProviderModels,
     setSelectedModelId,
   ]);
 

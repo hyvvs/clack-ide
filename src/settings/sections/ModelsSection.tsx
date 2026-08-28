@@ -36,6 +36,11 @@ import {
   setCustomEndpointKey,
   type CustomEndpointKeys,
 } from "@/modules/ai/lib/keyring";
+import {
+  createSavedProviderModel,
+  savedProviderModelSelectionId,
+  type SavedProviderModel,
+} from "@/modules/ai/lib/savedProviderModels";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -56,6 +61,7 @@ import {
   setOpenaiCompatibleContextLimit,
   setOpenaiCompatibleModelId,
   setOpenrouterModelId,
+  setSavedProviderModels,
   setRecentModelIds,
   setGroqSttModel,
   setSttProvider,
@@ -154,7 +160,13 @@ export function ModelsSection() {
     (s) => s.openaiCompatibleContextLimit,
   );
   const openrouterModelId = usePreferencesStore((s) => s.openrouterModelId);
+  const savedProviderModels = usePreferencesStore(
+    (s) => s.savedProviderModels,
+  );
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
+  const openrouterModels = savedProviderModels.filter(
+    (model) => model.providerId === "openrouter",
+  );
 
   useEffect(() => {
     void getAllKeys().then(setKeys);
@@ -243,6 +255,97 @@ export function ModelsSection() {
     await setCustomEndpoints(remaining);
   };
 
+  const addOpenrouterModel = async (
+    transportModelId: string,
+    displayName: string,
+  ): Promise<boolean> => {
+    const normalized = transportModelId.trim();
+    if (
+      !normalized ||
+      openrouterModels.some((model) => model.transportModelId === normalized)
+    ) {
+      return false;
+    }
+    const model = createSavedProviderModel({
+      providerId: "openrouter",
+      transportModelId: normalized,
+      displayName,
+    });
+    await setSavedProviderModels([...savedProviderModels, model]);
+    if (!openrouterModelId.trim()) await setOpenrouterModelId(normalized);
+    return true;
+  };
+
+  const updateOpenrouterModel = async (
+    id: string,
+    patch: Pick<SavedProviderModel, "transportModelId" | "displayName">,
+  ): Promise<boolean> => {
+    const transportModelId = patch.transportModelId.trim();
+    const displayName = patch.displayName?.trim() ?? "";
+    if (
+      !transportModelId ||
+      openrouterModels.some(
+        (model) =>
+          model.id !== id && model.transportModelId === transportModelId,
+      )
+    ) {
+      return false;
+    }
+    const current = openrouterModels.find((model) => model.id === id);
+    if (!current) return false;
+    const next = savedProviderModels.map((model) =>
+      model.id === id
+        ? {
+            ...model,
+            transportModelId,
+            ...(displayName
+              ? { displayName }
+              : { displayName: undefined }),
+            updatedAt: Date.now(),
+          }
+        : model,
+    );
+    await setSavedProviderModels(next);
+    if (openrouterModelId === current.transportModelId) {
+      await setOpenrouterModelId(transportModelId);
+    }
+    return true;
+  };
+
+  const removeOpenrouterModel = async (id: string) => {
+    const removed = openrouterModels.find((model) => model.id === id);
+    const remaining = savedProviderModels.filter((model) => model.id !== id);
+    const remainingOpenrouter = remaining.filter(
+      (model) => model.providerId === "openrouter",
+    );
+    const deadSelectionId = savedProviderModelSelectionId(id);
+    const { favoriteModelIds, recentModelIds } = usePreferencesStore.getState();
+    if (favoriteModelIds.includes(deadSelectionId)) {
+      await setFavoriteModelIds(
+        favoriteModelIds.filter((modelId) => modelId !== deadSelectionId),
+      );
+    }
+    if (recentModelIds.includes(deadSelectionId)) {
+      await setRecentModelIds(
+        recentModelIds.filter((modelId) => modelId !== deadSelectionId),
+      );
+    }
+    const { selectedModelId, setSelectedModelId } = useChatStore.getState();
+    if (selectedModelId === deadSelectionId) {
+      setSelectedModelId(
+        remainingOpenrouter[0]
+          ? savedProviderModelSelectionId(remainingOpenrouter[0].id)
+          : DEFAULT_MODEL_ID,
+      );
+    }
+    await setSavedProviderModels(remaining);
+    if (removed?.transportModelId === openrouterModelId) {
+      await setOpenrouterModelId(
+        remainingOpenrouter[0]?.transportModelId ?? "",
+      );
+    }
+  };
+
   const localConfig = (id: ProviderId): LocalConfig | null => {
     switch (id) {
       case "lmstudio":
@@ -275,14 +378,6 @@ export function ModelsSection() {
           contextLimit: compatContextLimit,
           setContextLimit: setOpenaiCompatibleContextLimit,
         };
-      case "openrouter":
-        return {
-          baseURL: "",
-          modelId: openrouterModelId,
-          setBaseURL: async () => {},
-          setModelId: setOpenrouterModelId,
-          noBaseURL: true,
-        };
       default:
         return null;
     }
@@ -290,7 +385,7 @@ export function ModelsSection() {
 
   const isConfigured = (id: ProviderId): boolean => {
     if (id === "openrouter")
-      return !!keys?.[id] && !!openrouterModelId.trim();
+      return !!keys?.[id] && openrouterModels.some((model) => model.enabled);
     if (!isLocalProvider(id)) return !!keys?.[id];
     const cfg = localConfig(id);
     if (!cfg) return false;
@@ -318,6 +413,9 @@ export function ModelsSection() {
   const removeProvider = (id: ProviderId) => {
     if (id === "openrouter") {
       void setOpenrouterModelId("");
+      void setSavedProviderModels(
+        savedProviderModels.filter((model) => model.providerId !== id),
+      );
       void onClearKey(id);
     } else if (isLocalProvider(id)) {
       const cfg = localConfig(id);
@@ -378,16 +476,19 @@ export function ModelsSection() {
           <div className="flex flex-col gap-2">
             {visibleProviders.map((p) =>
               p.id === "openrouter" ? (
-                <LocalProviderCard
+                <OpenRouterProviderCard
                   key={p.id}
                   provider={p}
                   configured={configuredIds.has(p.id)}
-                  config={localConfig(p.id)!}
                   meta={LOCAL_META[p.id]!}
-                  compatKey={keys[p.id]}
+                  models={openrouterModels}
+                  apiKey={keys[p.id]}
                   onSaveKey={(v) => onSaveKey(p.id, v)}
                   onClearKey={() => onClearKey(p.id)}
-                  onRemove={() => removeProvider(p.id)}
+                  onAddModel={addOpenrouterModel}
+                  onUpdateModel={updateOpenrouterModel}
+                  onRemoveModel={removeOpenrouterModel}
+                  onRemoveProvider={() => removeProvider(p.id)}
                 />
               ) : isLocalProvider(p.id) ? (
                 <LocalProviderCard
@@ -438,6 +539,276 @@ type LocalConfig = {
   setContextLimit?: (v: number) => Promise<void>;
   noBaseURL?: boolean;
 };
+
+function OpenRouterProviderCard({
+  provider,
+  configured,
+  meta,
+  models,
+  apiKey,
+  onSaveKey,
+  onClearKey,
+  onAddModel,
+  onUpdateModel,
+  onRemoveModel,
+  onRemoveProvider,
+}: {
+  provider: ProviderInfo;
+  configured: boolean;
+  meta: LocalMeta;
+  models: SavedProviderModel[];
+  apiKey: string | null;
+  onSaveKey: (value: string) => Promise<void>;
+  onClearKey: () => Promise<void>;
+  onAddModel: (modelId: string, displayName: string) => Promise<boolean>;
+  onUpdateModel: (
+    id: string,
+    patch: Pick<SavedProviderModel, "transportModelId" | "displayName">,
+  ) => Promise<boolean>;
+  onRemoveModel: (id: string) => Promise<void>;
+  onRemoveProvider: () => void;
+}) {
+  const [keyDraft, setKeyDraft] = useState("");
+  const [modelDraft, setModelDraft] = useState("");
+  const [labelDraft, setLabelDraft] = useState("");
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const addModel = async () => {
+    const modelId = modelDraft.trim();
+    if (!modelId) {
+      setAddError("Enter a model ID.");
+      return;
+    }
+    if (!(await onAddModel(modelId, labelDraft))) {
+      setAddError("That OpenRouter model is already saved.");
+      return;
+    }
+    setModelDraft("");
+    setLabelDraft("");
+    setAddError(null);
+  };
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/60 px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <ProviderIcon provider={provider.id} size={15} />
+        <span className="text-[12.5px] font-medium">{provider.label}</span>
+        {configured ? (
+          <Badge
+            variant="outline"
+            className="ml-1 h-4 gap-1 border-border/60 bg-muted/40 px-1.5 text-[10px] font-normal text-muted-foreground"
+          >
+            <HugeiconsIcon icon={CheckmarkCircle02Icon} size={9} strokeWidth={2} />
+            Connected
+          </Badge>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => void openUrl(provider.consoleUrl)}
+          className="ml-auto inline-flex items-center gap-0.5 text-[10.5px] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          Models
+          <HugeiconsIcon icon={ArrowUpRight01Icon} size={11} strokeWidth={1.75} />
+        </button>
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={onRemoveProvider}
+          title="Remove provider"
+          className="size-7 text-muted-foreground hover:text-destructive"
+        >
+          <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
+        </Button>
+      </div>
+
+      <span className="text-[10.5px] leading-relaxed text-muted-foreground">
+        {meta.description}
+      </span>
+
+      <div className="mt-0.5 flex flex-col gap-2.5">
+        <FieldRow label="Models">
+          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+            {models.map((model) => (
+              <OpenRouterModelRow
+                key={model.id}
+                model={model}
+                onUpdate={onUpdateModel}
+                onRemove={onRemoveModel}
+              />
+            ))}
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_9rem_auto] gap-1.5">
+              <Input
+                value={modelDraft}
+                onChange={(event) => {
+                  setModelDraft(event.target.value);
+                  setAddError(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void addModel();
+                }}
+                placeholder={meta.modelPlaceholder}
+                aria-label="New OpenRouter model ID"
+                spellCheck={false}
+                className="h-8 min-w-0 font-mono text-[11.5px]"
+              />
+              <Input
+                value={labelDraft}
+                onChange={(event) => setLabelDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void addModel();
+                }}
+                placeholder="Label (optional)"
+                aria-label="New OpenRouter model label"
+                className="h-8 min-w-0 text-[11.5px]"
+              />
+              <Button
+                size="icon"
+                variant="outline"
+                onClick={() => void addModel()}
+                disabled={!modelDraft.trim()}
+                title="Add model"
+                aria-label="Add OpenRouter model"
+                className="size-8"
+              >
+                <HugeiconsIcon icon={Add01Icon} size={13} strokeWidth={1.8} />
+              </Button>
+            </div>
+            {addError ? (
+              <span className="text-[10.5px] text-destructive">{addError}</span>
+            ) : models.length === 0 ? (
+              <span className="text-[10.5px] text-muted-foreground">
+                Add at least one provider/model ID.
+              </span>
+            ) : null}
+          </div>
+        </FieldRow>
+
+        <FieldRow label="API key">
+          {apiKey ? (
+            <div className="flex flex-1 items-center gap-1.5">
+              <code className="flex-1 truncate rounded bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+                {`${apiKey.slice(0, 4)}${"•".repeat(8)}${apiKey.slice(-4)}`}
+              </code>
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => void onClearKey()}
+                title="Remove key"
+                className="size-7 text-muted-foreground hover:text-destructive"
+              >
+                <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-1 gap-1.5">
+              <Input
+                type="password"
+                value={keyDraft}
+                onChange={(event) => setKeyDraft(event.target.value)}
+                placeholder="sk-or-..."
+                spellCheck={false}
+                className="h-8 flex-1 font-mono text-[11.5px]"
+              />
+              <Button
+                size="sm"
+                onClick={async () => {
+                  const value = keyDraft.trim();
+                  if (!value) return;
+                  await onSaveKey(value);
+                  setKeyDraft("");
+                }}
+                disabled={!keyDraft.trim()}
+                className="h-8 px-3 text-[11px]"
+              >
+                Save
+              </Button>
+            </div>
+          )}
+        </FieldRow>
+
+        {meta.modelHint ? (
+          <p className="text-[10.5px] leading-relaxed text-muted-foreground">
+            {meta.modelHint}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function OpenRouterModelRow({
+  model,
+  onUpdate,
+  onRemove,
+}: {
+  model: SavedProviderModel;
+  onUpdate: (
+    id: string,
+    patch: Pick<SavedProviderModel, "transportModelId" | "displayName">,
+  ) => Promise<boolean>;
+  onRemove: (id: string) => Promise<void>;
+}) {
+  const [modelDraft, setModelDraft] = useState(model.transportModelId);
+  const [labelDraft, setLabelDraft] = useState(model.displayName ?? "");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => setModelDraft(model.transportModelId), [model.transportModelId]);
+  useEffect(() => setLabelDraft(model.displayName ?? ""), [model.displayName]);
+
+  const save = async () => {
+    if (
+      modelDraft.trim() === model.transportModelId &&
+      labelDraft.trim() === (model.displayName ?? "")
+    ) {
+      return;
+    }
+    const saved = await onUpdate(model.id, {
+      transportModelId: modelDraft,
+      displayName: labelDraft,
+    });
+    if (!saved) {
+      setError("Model IDs must be non-empty and unique.");
+      setModelDraft(model.transportModelId);
+      setLabelDraft(model.displayName ?? "");
+      return;
+    }
+    setError(null);
+  };
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_9rem_auto] gap-1.5">
+        <Input
+          value={modelDraft}
+          onChange={(event) => setModelDraft(event.target.value)}
+          onBlur={() => void save()}
+          aria-label="OpenRouter model ID"
+          spellCheck={false}
+          className="h-8 min-w-0 font-mono text-[11.5px]"
+        />
+        <Input
+          value={labelDraft}
+          onChange={(event) => setLabelDraft(event.target.value)}
+          onBlur={() => void save()}
+          placeholder="Label (optional)"
+          aria-label="OpenRouter model label"
+          className="h-8 min-w-0 text-[11.5px]"
+        />
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={() => void onRemove(model.id)}
+          title="Remove model"
+          aria-label={`Remove ${model.displayName || model.transportModelId}`}
+          className="size-8 text-muted-foreground hover:text-destructive"
+        >
+          <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
+        </Button>
+      </div>
+      {error ? <span className="text-[10.5px] text-destructive">{error}</span> : null}
+    </div>
+  );
+}
 
 function AddProviderMenu({
   providers,

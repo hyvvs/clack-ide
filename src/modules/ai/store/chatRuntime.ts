@@ -5,12 +5,9 @@ import {
 } from "ai";
 import {
   endpointIdFromCompatModel,
-  getModel,
   getProvider,
   isCompatModelId,
-  providerNeedsKey,
   resolveModel,
-  type ModelId,
 } from "../config";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { BUILTIN_AGENTS } from "../lib/agents";
@@ -27,10 +24,11 @@ import {
   type NormalizedAiError,
 } from "../lib/errors";
 import type { ProviderRetryEvent } from "../lib/providerRetry";
+import { findSavedProviderModel } from "../lib/savedProviderModels";
 import type { ToolContext } from "../tools/tools";
 import {
   chats,
-  getActiveProviderKey,
+  hasKeyForModel,
   recordSelectedModelUse,
   seedMessages,
   touchChat,
@@ -111,6 +109,8 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       usePreferencesStore.getState().openaiCompatibleContextLimit,
     getOpenrouterModelId: () =>
       usePreferencesStore.getState().openrouterModelId,
+    getSavedProviderModels: () =>
+      usePreferencesStore.getState().savedProviderModels,
     getCustomEndpoints: () => usePreferencesStore.getState().customEndpoints,
     getCustomEndpointKeys: () => useChatStore.getState().customEndpointKeys,
     onBatchStart: () => {
@@ -234,6 +234,19 @@ function currentAiErrorContext(sessionId: string): AiErrorContext {
   let model: string | undefined;
   let endpoint: string | undefined;
 
+  const saved = findSavedProviderModel(
+    selectedModelId,
+    preferences.savedProviderModels,
+  );
+  if (saved) {
+    provider = getProvider(saved.providerId).label;
+    model = saved.transportModelId;
+    if (saved.providerId === "openrouter") {
+      endpoint = "https://openrouter.ai/api/v1";
+    }
+    return { provider, model, endpoint };
+  }
+
   if (isCompatModelId(selectedModelId)) {
     const endpointId = endpointIdFromCompatModel(selectedModelId);
     const custom = customEndpoints.find((entry) => entry.id === endpointId);
@@ -327,11 +340,7 @@ export async function sendMessage(text: string): Promise<boolean> {
   const state = useChatStore.getState();
   const sessionId = state.activeSessionId;
   if (!sessionId) return false;
-  if (
-    providerNeedsKey(getModel(state.selectedModelId as ModelId).provider) &&
-    !getActiveProviderKey()
-  )
-    return false;
+  if (!hasKeyForModel(state.selectedModelId)) return false;
   const c = getOrCreateChat(sessionId);
   recordSelectedModelUse(state.selectedModelId);
   state.beginRun(

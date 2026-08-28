@@ -51,20 +51,23 @@ import { useMemo, useRef, useState } from "react";
 import {
   compatModelIdForEndpoint,
   getCompatModelInfo,
-  getModel,
   isCompatModelId,
   MODELS,
   providerNeedsKey,
   PROVIDERS,
   STT_PROVIDER_LABELS,
   type ModelCapabilities,
-  type ModelId,
   type ModelInfo,
   type ProviderId,
 } from "../config";
 import { ACCEPTED_FILES, useComposer } from "../lib/composer";
 import { toggleFavoriteModel } from "../lib/modelPrefs";
 import { partitionProvidersByConfiguration } from "../lib/providerOrdering";
+import {
+  getEnabledSavedProviderModelInfos,
+  modelSelectionMatchesQuery,
+  resolveModelSelectionInfo,
+} from "../lib/savedProviderModels";
 import { useChatStore } from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
@@ -231,9 +234,20 @@ function ModelDropdown() {
   const favoriteIds = usePreferencesStore((s) => s.favoriteModelIds);
   const recentIds = usePreferencesStore((s) => s.recentModelIds);
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
-  const current = isCompatModelId(selected)
-    ? getCompatModelInfo(selected, customEndpoints)
-    : getModel(selected as ModelId);
+  const savedProviderModels = usePreferencesStore(
+    (s) => s.savedProviderModels,
+  );
+  const current = useMemo(() => {
+    try {
+      return resolveModelSelectionInfo(
+        selected,
+        customEndpoints,
+        savedProviderModels,
+      );
+    } catch {
+      return MODELS[0];
+    }
+  }, [customEndpoints, savedProviderModels, selected]);
   const [search, setSearch] = useState("");
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("all");
@@ -253,14 +267,23 @@ function ModelDropdown() {
     );
   }, [customEndpoints]);
 
+  const savedModelInfos = useMemo(
+    () => getEnabledSavedProviderModelInfos(savedProviderModels),
+    [savedProviderModels],
+  );
+
   const sortedProviders = useMemo(
     () => partitionProvidersByConfiguration(PROVIDERS, apiKeys),
     [apiKeys],
   );
 
   const allModels = useMemo(
-    () => [...MODELS, ...epModelInfos],
-    [epModelInfos],
+    () => [
+      ...MODELS.filter((model) => model.id !== "openrouter-custom"),
+      ...savedModelInfos,
+      ...epModelInfos,
+    ],
+    [epModelInfos, savedModelInfos],
   );
 
   const COMPAT_PROVIDER_ID = "__compat__";
@@ -283,14 +306,7 @@ function ModelDropdown() {
       pool = pool.filter((m) => m.provider === activeProvider);
     }
     if (q) {
-      pool = pool.filter(
-        (m) =>
-          m.label.toLowerCase().includes(q) ||
-          m.hint.toLowerCase().includes(q) ||
-          m.description.toLowerCase().includes(q) ||
-          m.provider.includes(q) ||
-          (m.tags?.some((t) => t.includes(q)) ?? false),
-      );
+      pool = pool.filter((model) => modelSelectionMatchesQuery(model, q));
     }
     return pool;
   }, [activeProvider, allModels, favoriteIds, recentIds, search, tab]);
@@ -310,10 +326,15 @@ function ModelDropdown() {
           )}
           title={
             currentProviderHasKey
-              ? `Model: ${current.label}`
-              : `${current.label} — no key configured`
+              ? `${current.hint}: ${current.label}`
+              : `${current.hint}: ${current.label} — no key configured`
           }
         >
+          <HugeiconsIcon
+            icon={PROVIDER_ICON[current.provider]}
+            size={12}
+            strokeWidth={1.6}
+          />
           {current.label}
           <HugeiconsIcon
             icon={ArrowDown01Icon}
@@ -446,7 +467,10 @@ function ModelDropdown() {
                   favorite={favoriteIds.includes(m.id)}
                   showProviderIcon={activeProvider === null}
                   onPick={() => {
-                    if (!isCompatModelId(m.id) && !hasKeyFor(m.provider)) {
+                    if (
+                      !isCompatModelId(m.id) &&
+                      !hasKeyFor(m.provider)
+                    ) {
                       void openSettingsWindow("models");
                       return;
                     }

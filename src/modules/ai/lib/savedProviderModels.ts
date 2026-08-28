@@ -1,6 +1,8 @@
 import {
   getProvider,
   PROVIDERS,
+  resolveModel,
+  type CustomEndpoint,
   type ModelInfo,
   type ProviderId,
 } from "@/modules/ai/config";
@@ -144,6 +146,18 @@ export function findSavedProviderModel(
   return models.find((model) => model.id === id) ?? null;
 }
 
+export function resolveSavedProviderModelTarget(
+  selectionId: string,
+  models: readonly SavedProviderModel[],
+): { providerId: ProviderId; transportModelId: string } | null {
+  const model = findSavedProviderModel(selectionId, models);
+  if (!model?.enabled) return null;
+  return {
+    providerId: model.providerId,
+    transportModelId: model.transportModelId,
+  };
+}
+
 export function getSavedProviderModelInfo(
   selectionId: string,
   models: readonly SavedProviderModel[],
@@ -159,6 +173,57 @@ export function getSavedProviderModelInfo(
     description: `${provider.label} model ${model.transportModelId}`,
     capabilities: { intelligence: 3, speed: 3, cost: 3 },
   };
+}
+
+export function getEnabledSavedProviderModelInfos(
+  models: readonly SavedProviderModel[],
+): ModelInfo[] {
+  return models
+    .filter((model) => model.enabled)
+    .map((model) =>
+      getSavedProviderModelInfo(savedProviderModelSelectionId(model.id), models),
+    );
+}
+
+export function modelSelectionMatchesQuery(
+  model: ModelInfo,
+  query: string,
+): boolean {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return true;
+  return (
+    model.label.toLowerCase().includes(normalized) ||
+    model.hint.toLowerCase().includes(normalized) ||
+    model.description.toLowerCase().includes(normalized) ||
+    model.provider.includes(normalized) ||
+    (model.tags?.some((tag) => tag.toLowerCase().includes(normalized)) ?? false)
+  );
+}
+
+export function resolveModelSelectionInfo(
+  selectionId: string,
+  customEndpoints: readonly CustomEndpoint[] = [],
+  savedModels: readonly SavedProviderModel[] = [],
+): ModelInfo {
+  return isSavedProviderModelSelectionId(selectionId)
+    ? getSavedProviderModelInfo(selectionId, savedModels)
+    : resolveModel(selectionId, customEndpoints);
+}
+
+export function providerForModelSelection(
+  selectionId: string,
+  customEndpoints: readonly CustomEndpoint[],
+  savedModels: readonly SavedProviderModel[],
+): ProviderId | null {
+  try {
+    return resolveModelSelectionInfo(
+      selectionId,
+      customEndpoints,
+      savedModels,
+    ).provider;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeSavedProviderModel(value: unknown): SavedProviderModel | null {

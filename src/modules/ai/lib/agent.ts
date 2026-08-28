@@ -32,6 +32,12 @@ import {
   withProviderRetryTracking,
   type ProviderRetryEvent,
 } from "./providerRetry";
+import {
+  isSavedProviderModelSelectionId,
+  resolveSavedProviderModelTarget,
+  resolveModelSelectionInfo,
+  type SavedProviderModel,
+} from "./savedProviderModels";
 
 const localProxyFetch = createProxyFetch({ allowPrivateNetwork: true });
 
@@ -238,6 +244,7 @@ export type LocalProviderConfig = {
   openaiCompatibleBaseURL?: string;
   openaiCompatibleModelId?: string;
   openrouterModelId?: string;
+  savedProviderModels?: readonly SavedProviderModel[];
   customEndpoints?: readonly CustomEndpoint[];
   customEndpointKeys?: CustomEndpointKeys;
 };
@@ -247,6 +254,26 @@ export function buildConfiguredLanguageModel(
   keys: ProviderKeys,
   local: LocalProviderConfig = {},
 ): Promise<LanguageModel> {
+  if (isSavedProviderModelSelectionId(modelId)) {
+    const target = resolveSavedProviderModelTarget(
+      modelId,
+      local.savedProviderModels ?? [],
+    );
+    if (!target) {
+      throw new Error(`Saved provider model is unavailable: ${modelId}`);
+    }
+    return buildLanguageModel(
+      target.providerId,
+      keys,
+      target.transportModelId,
+      {
+        lmstudioBaseURL: local.lmstudioBaseURL,
+        mlxBaseURL: local.mlxBaseURL,
+        ollamaBaseURL: local.ollamaBaseURL,
+        openaiCompatibleBaseURL: local.openaiCompatibleBaseURL,
+      },
+    );
+  }
   if (isCompatModelId(modelId)) {
     const eid = endpointIdFromCompatModel(modelId);
     const ep = local.customEndpoints?.find((e) => e.id === eid);
@@ -397,6 +424,7 @@ export type RunAgentOptions = {
   openaiCompatibleModelId?: string;
   openaiCompatibleContextLimit?: number;
   openrouterModelId?: string;
+  savedProviderModels?: readonly SavedProviderModel[];
   customEndpoints?: readonly CustomEndpoint[];
   customEndpointKeys?: CustomEndpointKeys;
   planMode?: boolean;
@@ -418,11 +446,16 @@ export async function runAgentStream(opts: RunAgentOptions) {
     openaiCompatibleBaseURL: opts.openaiCompatibleBaseURL,
     openaiCompatibleModelId: opts.openaiCompatibleModelId,
     openrouterModelId: opts.openrouterModelId,
+    savedProviderModels: opts.savedProviderModels,
     customEndpoints: opts.customEndpoints,
     customEndpointKeys: opts.customEndpointKeys,
   });
   const endpoints = opts.customEndpoints ?? [];
-  const info = resolveModel(modelId, endpoints);
+  const info = resolveModelSelectionInfo(
+    modelId,
+    endpoints,
+    opts.savedProviderModels ?? [],
+  );
   const provider = info.provider;
   const model = withProviderRetryTracking(
     baseModel,

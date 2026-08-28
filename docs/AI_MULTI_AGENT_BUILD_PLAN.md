@@ -1,6 +1,6 @@
 # Clack Multi-Model and Multi-Agent Build Plan
 
-Status: Approved architecture plan, implementation not started
+Status: Implementation in progress
 Baseline commit: `e427a4b086781ff21461eef808985d234304e50a`
 Last updated: 2026-08-28
 
@@ -21,8 +21,8 @@ changes the scope.
 | Phase | Deliverable | Status | Commit |
 | --- | --- | --- | --- |
 | 0 | Preserve the known-good AI runtime baseline | Complete | `e427a4b` |
-| 1 | Stable saved-model identity and migration core | In progress | |
-| 2 | Multiple models per provider in settings and picker | Pending | |
+| 1 | Stable saved-model identity and migration core | Complete | `8af9b12` |
+| 2 | Multiple models per provider in settings and picker | Complete | phase checkpoint |
 | 3 | Conversation-owned agent, model, and workspace identity | Pending | |
 | 4 | Per-session runtime isolation and background execution | Pending | |
 | 5 | Durable inter-agent delegation and review protocol | Pending | |
@@ -304,6 +304,22 @@ Manual acceptance:
 5. Remove one model and confirm the others and key remain.
 
 Exit criteria: Goal 1 is complete and all provider paths still work.
+
+Implementation record (2026-08-28):
+
+- OpenRouter retains one keychain credential and now exposes compact repeatable
+  model-ID rows with optional labels.
+- enabled saved models appear as independent picker choices with stable IDs;
+  favorites, recents, search, restore, error diagnostics, primary agent runs,
+  and read-only subagents resolve through the same selection helpers
+- the legacy scalar model migrates idempotently and its old selection restores
+  to the stable migrated record
+- no provider connection, discovery, account-health, or fallback-catalog
+  architecture was introduced
+- phase gate: type check passed; lint passed with pre-existing warnings only;
+  487 tests passed; production build passed; diff whitespace check passed
+- live-provider/manual GUI acceptance is deferred to the integrated Phase 7
+  smoke matrix because no disposable OpenRouter credential is stored in tests
 
 ## Phase 3: Conversation-Owned Identity
 

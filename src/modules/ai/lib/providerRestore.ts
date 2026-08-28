@@ -8,6 +8,13 @@ import {
   type ProviderId,
 } from "../config";
 import type { ProviderKeys } from "./keyring";
+import {
+  findSavedProviderModel,
+  isSavedProviderModelSelectionId,
+  providerForModelSelection,
+  savedProviderModelSelectionId,
+  type SavedProviderModel,
+} from "./savedProviderModels";
 
 export type ProviderRestoreConfig = {
   apiKeys: ProviderKeys;
@@ -24,6 +31,7 @@ export type ProviderRestoreConfig = {
   openaiCompatibleModelId: string;
   openrouterModelId: string;
   customEndpoints: readonly CustomEndpoint[];
+  savedProviderModels: readonly SavedProviderModel[];
 };
 
 function filled(value: string): boolean {
@@ -63,6 +71,10 @@ function modelUsable(
   config: ProviderRestoreConfig,
 ): boolean {
   if (!isProviderConfigured(provider, config)) return false;
+  if (isSavedProviderModelSelectionId(modelId)) {
+    const saved = findSavedProviderModel(modelId, config.savedProviderModels);
+    return Boolean(saved?.enabled && saved.providerId === provider);
+  }
   if (isCompatModelId(modelId)) {
     if (provider !== "openai-compatible") return false;
     const endpointId = endpointIdFromCompatModel(modelId);
@@ -91,6 +103,12 @@ function fallbackForProvider(
   provider: ProviderId,
   config: ProviderRestoreConfig,
 ): string | null {
+  const saved = config.savedProviderModels.find(
+    (model) => model.providerId === provider && model.enabled,
+  );
+  if (saved && isProviderConfigured(provider, config)) {
+    return savedProviderModelSelectionId(saved.id);
+  }
   const registered = MODELS.find((model) =>
     modelUsable(model.id, provider, config),
   );
@@ -108,6 +126,16 @@ export function resolveRestoredModel(
   const lastProvider = config.lastUsedProviderId;
   const lastModel = config.lastUsedModelId;
   if (lastProvider && isProviderConfigured(lastProvider, config)) {
+    if (lastProvider === "openrouter" && lastModel === "openrouter-custom") {
+      const migrated = config.savedProviderModels.find(
+        (model) =>
+          model.providerId === "openrouter" &&
+          model.enabled &&
+          (!config.openrouterModelId ||
+            model.transportModelId === config.openrouterModelId),
+      );
+      if (migrated) return savedProviderModelSelectionId(migrated.id);
+    }
     if (lastModel && modelUsable(lastModel, lastProvider, config)) {
       return lastModel;
     }
@@ -135,13 +163,11 @@ export function resolveRestoredModel(
 export function providerForSelectedModel(
   modelId: string,
   customEndpoints: readonly CustomEndpoint[],
+  savedProviderModels: readonly SavedProviderModel[],
 ): ProviderId | null {
-  if (isCompatModelId(modelId)) {
-    return customEndpoints.some(
-      (endpoint) => endpoint.id === endpointIdFromCompatModel(modelId),
-    )
-      ? "openai-compatible"
-      : null;
-  }
-  return MODELS.find((model) => model.id === modelId)?.provider ?? null;
+  return providerForModelSelection(
+    modelId,
+    customEndpoints,
+    savedProviderModels,
+  );
 }

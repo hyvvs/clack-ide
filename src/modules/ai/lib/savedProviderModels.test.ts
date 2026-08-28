@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   createSavedProviderModel,
   findSavedProviderModel,
+  getEnabledSavedProviderModelInfos,
   getSavedProviderModelInfo,
   isSavedProviderModelSelectionId,
   migrateSavedProviderModels,
+  modelSelectionMatchesQuery,
   normalizeSavedProviderModels,
+  providerForModelSelection,
+  resolveModelSelectionInfo,
+  resolveSavedProviderModelTarget,
   savedProviderModelIdFromSelection,
   savedProviderModelSelectionId,
 } from "./savedProviderModels";
@@ -136,6 +141,26 @@ describe("saved provider models", () => {
       "openrouter",
       "openrouter",
     ]);
+    const infos = getEnabledSavedProviderModelInfos(models);
+    expect(infos.map((model) => model.id)).toEqual([
+      savedProviderModelSelectionId("one"),
+      savedProviderModelSelectionId("two"),
+    ]);
+  });
+
+  it("searches saved models by local label and exact transport ID", () => {
+    const model = createSavedProviderModel(
+      {
+        providerId: "openrouter",
+        transportModelId: "anthropic/claude-sonnet-4.6",
+        displayName: "Reviewer",
+      },
+      "reviewer",
+    );
+    const info = getEnabledSavedProviderModelInfos([model])[0];
+    expect(modelSelectionMatchesQuery(info, "reviewer")).toBe(true);
+    expect(modelSelectionMatchesQuery(info, "claude-sonnet-4.6")).toBe(true);
+    expect(modelSelectionMatchesQuery(info, "gemini")).toBe(false);
   });
 
   it("round-trips a saved selection identity", () => {
@@ -162,11 +187,37 @@ describe("saved provider models", () => {
       label: "Review model",
       hint: "OpenRouter",
     });
+    expect(resolveSavedProviderModelTarget(selection, [model])).toEqual({
+      providerId: "openrouter",
+      transportModelId: "anthropic/model",
+    });
   });
 
   it("fails clearly for a missing saved model", () => {
     expect(() =>
       getSavedProviderModelInfo(savedProviderModelSelectionId("missing"), []),
     ).toThrow("Saved provider model not found");
+  });
+
+  it("resolves static and saved selections through one helper", () => {
+    const saved = createSavedProviderModel(
+      { providerId: "openrouter", transportModelId: "anthropic/model" },
+      "saved",
+    );
+    expect(resolveModelSelectionInfo("gpt-5.4-mini").provider).toBe("openai");
+    expect(
+      resolveModelSelectionInfo(
+        savedProviderModelSelectionId(saved.id),
+        [],
+        [saved],
+      ).provider,
+    ).toBe("openrouter");
+    expect(
+      providerForModelSelection(
+        savedProviderModelSelectionId(saved.id),
+        [],
+        [saved],
+      ),
+    ).toBe("openrouter");
   });
 });

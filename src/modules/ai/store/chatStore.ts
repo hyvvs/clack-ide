@@ -5,10 +5,8 @@ import { setLastUsedAiSelection } from "@/modules/settings/store";
 import {
   DEFAULT_MODEL_ID,
   endpointIdFromCompatModel,
-  getModel,
   isCompatModelId,
   providerNeedsKey,
-  type ModelId,
   type ProviderId,
 } from "../config";
 import { useTodosStore } from "./todoStore";
@@ -824,7 +822,13 @@ export function getActiveProviderKey(): string | null {
     const eid = endpointIdFromCompatModel(selectedModelId);
     return customEndpointKeys[eid] ?? null;
   }
-  return apiKeys[getModel(selectedModelId as ModelId).provider] ?? null;
+  const preferences = usePreferencesStore.getState();
+  const provider = providerForSelectedModel(
+    selectedModelId,
+    preferences.customEndpoints,
+    preferences.savedProviderModels,
+  );
+  return provider ? (apiKeys[provider] ?? null) : null;
 }
 
 export function hasKeyForModel(modelId: string): boolean {
@@ -832,7 +836,13 @@ export function hasKeyForModel(modelId: string): boolean {
   if (isCompatModelId(modelId)) {
     return true;
   }
-  const provider = getModel(modelId as ModelId).provider;
+  const preferences = usePreferencesStore.getState();
+  const provider = providerForSelectedModel(
+    modelId,
+    preferences.customEndpoints,
+    preferences.savedProviderModels,
+  );
+  if (!provider) return false;
   return providerNeedsKey(provider) ? !!apiKeys[provider] : true;
 }
 
@@ -847,9 +857,11 @@ export function stop(): void {
 }
 
 export function recordSelectedModelUse(modelId: string): void {
+  const preferences = usePreferencesStore.getState();
   const provider = providerForSelectedModel(
     modelId,
-    usePreferencesStore.getState().customEndpoints,
+    preferences.customEndpoints,
+    preferences.savedProviderModels,
   );
   if (!provider) return;
   void pushRecentModel(modelId);
