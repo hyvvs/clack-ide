@@ -433,6 +433,27 @@ Manual acceptance:
 
 Exit criteria: concurrent independent conversations are reliable.
 
+Implementation record (2026-08-28):
+
+- runtime status, retry state, usage, errors, compaction notices, and approval
+  counts are keyed by session rather than stored in a visible-chat singleton
+- approval responders are registered per session, so diff and tool decisions
+  resolve only the request that owns them
+- Stop accepts an explicit session ID; cancelling one run leaves every other
+  run, responder, and chat transport untouched
+- the lifecycle bridge remains mounted for the foreground chat and every
+  background-running chat, preserving message persistence and terminal state
+- the session picker shows background run counts plus per-session Running and
+  Approval required states
+- application shutdown rejects pending approvals, marks all running sessions
+  interrupted, stops every chat transport, and flushes pending message writes
+- the chat LRU excludes the foreground chat and every running chat from
+  eviction
+- phase gate: type check and lint passed; 504 tests passed; production build
+  and diff whitespace check passed
+- concurrent manual GUI acceptance is deferred to the integrated Phase 7
+  matrix
+
 ## Phase 5: Inter-Agent Delegation and Review
 
 Goal: Let one chat request bounded work from another and receive a durable,

@@ -30,7 +30,15 @@ vi.mock("../lib/todos", async (importOriginal) => {
     deleteTodos: vi.fn().mockResolvedValue(undefined),
   };
 });
-import { cancelActiveRun, chats, useChatStore } from "./chatStore";
+import {
+  cancelActiveRun,
+  cancelRun,
+  chats,
+  getAgentMeta,
+  interruptAllRunsForShutdown,
+  touchChat,
+  useChatStore,
+} from "./chatStore";
 import {
   continueActiveRun,
   sendMessageToSession,
@@ -52,7 +60,7 @@ const ORIGINAL_API_KEYS = useChatStore.getState().apiKeys;
 const ORIGINAL_SELECTED_MODEL = useChatStore.getState().selectedModelId;
 
 afterEach(() => {
-  chats.delete(SESSION_ID);
+  chats.clear();
   usePreferencesStore.setState({ agentPermissionProfiles: {} });
   useChatStore.setState({
     activeSessionId: null,
@@ -61,13 +69,9 @@ afterEach(() => {
     apiKeys: ORIGINAL_API_KEYS,
     selectedModelId: ORIGINAL_SELECTED_MODEL,
     sessions: [],
-    agentMeta: {
-      ...useChatStore.getState().agentMeta,
-      status: "idle",
-      step: null,
-      approvalsPending: 0,
-      error: null,
-    },
+    runtimeBySession: {},
+    approvalRespondersBySession: {},
+    pendingApprovalsBySession: {},
   });
 });
 
@@ -93,7 +97,7 @@ describe("cancelActiveRun", () => {
     } as unknown as Chat<UIMessage>);
     useChatStore.setState({
       activeSessionId: SESSION_ID,
-      approvalResponder: respond,
+      approvalRespondersBySession: { [SESSION_ID]: respond },
       sessions: [
         {
           id: SESSION_ID,
@@ -110,11 +114,11 @@ describe("cancelActiveRun", () => {
     expect(respond).toHaveBeenCalledWith("approval-1", false);
     expect(stop).toHaveBeenCalledOnce();
     expect(useChatStore.getState().sessions[0].run?.state).toBe("cancelled");
-    expect(useChatStore.getState().agentMeta.status).toBe("idle");
+    expect(getAgentMeta(SESSION_ID).status).toBe("idle");
 
     useChatStore.getState().beginRun(SESSION_ID, "builtin:coder");
     expect(useChatStore.getState().sessions[0].run?.state).toBe("running");
-    expect(useChatStore.getState().agentMeta.status).toBe("thinking");
+    expect(getAgentMeta(SESSION_ID).status).toBe("thinking");
   });
 
   it("prevents a pending Full Access continuation when Stop wins the race", async () => {
@@ -138,6 +142,166 @@ describe("cancelActiveRun", () => {
       false,
     );
     expect(useChatStore.getState().sessions[0].run?.state).toBe("cancelled");
+  });
+});
+
+describe("per-session runtime isolation", () => {
+  it("keeps status, errors, and token accounting separate", () => {
+    const secondId = "session-b";
+    useChatStore.setState({
+      activeSessionId: SESSION_ID,
+      sessions: [sessionMeta(), sessionMetaFor(secondId, "gpt-5.4-mini")],
+    });
+
+    useChatStore.getState().beginRun(SESSION_ID, "builtin:coder");
+    useChatStore.getState().beginRun(secondId, "builtin:reviewer");
+    useChatStore.getState().patchAgentMeta(SESSION_ID, {
+      status: "streaming",
+      tokens: {
+        inputTokens: 120,
+        outputTokens: 30,
+        cachedInputTokens: 20,
+      },
+    });
+    const failure = normalizeAiError(new Error("Session B failed"));
+    useChatStore.getState().patchAgentMeta(secondId, {
+      status: "error",
+      error: failure,
+    });
+
+    expect(getAgentMeta(SESSION_ID)).toMatchObject({
+      status: "streaming",
+      error: null,
+      tokens: { inputTokens: 120, outputTokens: 30 },
+    });
+    expect(getAgentMeta(secondId)).toMatchObject({
+      status: "error",
+      error: failure,
+      tokens: { inputTokens: 0, outputTokens: 0 },
+    });
+  });
+
+  it("routes approvals and cancellation only to the owning session", async () => {
+    const secondId = "session-b";
+    const stopA = vi.fn().mockResolvedValue(undefined);
+    const stopB = vi.fn().mockResolvedValue(undefined);
+    const respondA = vi.fn();
+    const respondB = vi.fn();
+    chats.set(SESSION_ID, { stop: stopA, messages: [] } as unknown as Chat<UIMessage>);
+    chats.set(secondId, { stop: stopB, messages: [] } as unknown as Chat<UIMessage>);
+    useChatStore.setState({
+      activeSessionId: secondId,
+      sessions: [
+        { ...sessionMeta(), run: { state: "running", startedAt: 1 } },
+        {
+          ...sessionMetaFor(secondId, "gpt-5.4-mini"),
+          run: { state: "running", startedAt: 2 },
+        },
+      ],
+      approvalRespondersBySession: {
+        [SESSION_ID]: respondA,
+        [secondId]: respondB,
+      },
+      pendingApprovalsBySession: {
+        [SESSION_ID]: [pendingApproval("approval-a", SESSION_ID)],
+        [secondId]: [pendingApproval("approval-b", secondId)],
+      },
+    });
+
+    useChatStore.getState().respondToApproval("approval-b", true);
+    await cancelRun(SESSION_ID);
+
+    expect(respondB).toHaveBeenCalledWith("approval-b", true);
+    expect(respondA).toHaveBeenCalledWith("approval-a", false);
+    expect(stopA).toHaveBeenCalledOnce();
+    expect(stopB).not.toHaveBeenCalled();
+    expect(
+      useChatStore.getState().sessions.find((item) => item.id === SESSION_ID)
+        ?.run?.state,
+    ).toBe("cancelled");
+    expect(
+      useChatStore.getState().sessions.find((item) => item.id === secondId)?.run
+        ?.state,
+    ).toBe("running");
+  });
+
+  it("keeps running and active chats resident under LRU pressure", () => {
+    const activeId = "active-session";
+    const runningId = "background-run";
+    const ids = [activeId, runningId, ...Array.from({ length: 10 }, (_, i) => `idle-${i}`)];
+    useChatStore.setState({
+      activeSessionId: activeId,
+      sessions: ids.map((id) => ({
+        ...sessionMetaFor(id, "gpt-5.4-mini"),
+        ...(id === runningId
+          ? { run: { state: "running" as const, startedAt: 1 } }
+          : {}),
+      })),
+    });
+
+    for (const id of ids) {
+      touchChat(id, { stop: vi.fn() } as unknown as Chat<UIMessage>);
+    }
+
+    expect(chats.has(activeId)).toBe(true);
+    expect(chats.has(runningId)).toBe(true);
+    expect(chats.size).toBeLessThanOrEqual(8);
+  });
+
+  it("switches foreground chats without interrupting either run", () => {
+    const secondId = "session-b";
+    chats.set(secondId, {} as Chat<UIMessage>);
+    useChatStore.setState({
+      activeSessionId: SESSION_ID,
+      sessions: [
+        { ...sessionMeta(), run: { state: "running", startedAt: 1 } },
+        {
+          ...sessionMetaFor(secondId, "claude-sonnet-4-6"),
+          run: { state: "running", startedAt: 2 },
+        },
+      ],
+    });
+
+    useChatStore.getState().switchSession(secondId);
+
+    expect(useChatStore.getState().activeSessionId).toBe(secondId);
+    expect(useChatStore.getState().sessions.map((item) => item.run?.state)).toEqual([
+      "running",
+      "running",
+    ]);
+  });
+
+  it("interrupts every running chat during application shutdown", async () => {
+    const secondId = "session-b";
+    const stopA = vi.fn().mockResolvedValue(undefined);
+    const stopB = vi.fn().mockResolvedValue(undefined);
+    const respondB = vi.fn();
+    chats.set(SESSION_ID, { stop: stopA } as unknown as Chat<UIMessage>);
+    chats.set(secondId, { stop: stopB } as unknown as Chat<UIMessage>);
+    useChatStore.setState({
+      activeSessionId: SESSION_ID,
+      sessions: [
+        { ...sessionMeta(), run: { state: "running", startedAt: 1 } },
+        {
+          ...sessionMetaFor(secondId, "gpt-5.4-mini"),
+          run: { state: "running", startedAt: 2 },
+        },
+      ],
+      approvalRespondersBySession: { [secondId]: respondB },
+      pendingApprovalsBySession: {
+        [secondId]: [pendingApproval("approval-b", secondId)],
+      },
+    });
+
+    await interruptAllRunsForShutdown();
+
+    expect(stopA).toHaveBeenCalledOnce();
+    expect(stopB).toHaveBeenCalledOnce();
+    expect(respondB).toHaveBeenCalledWith("approval-b", false);
+    expect(useChatStore.getState().sessions.map((item) => item.run?.state)).toEqual([
+      "interrupted",
+      "interrupted",
+    ]);
   });
 });
 
@@ -278,7 +442,7 @@ describe("autonomous run budget integration", () => {
     useChatStore.setState({ sessions: [sessionMeta()] });
     useChatStore.getState().beginRun(SESSION_ID, "builtin:coder");
     useChatStore.getState().recordRunBatch(SESSION_ID, cappedBatch());
-    useChatStore.getState().patchAgentMeta({
+    useChatStore.getState().patchAgentMeta(SESSION_ID, {
       status: "error",
       error: normalizeAiError({ statusCode: 429, message: "Rate limited" }),
     });
@@ -309,7 +473,7 @@ describe("run error state", () => {
 
     expect(toolFailure.error.disposition).toBe("recoverable");
     expect(useChatStore.getState().sessions[0].run?.state).toBe("running");
-    expect(useChatStore.getState().agentMeta.error).toBeNull();
+    expect(getAgentMeta(SESSION_ID).error).toBeNull();
 
     useChatStore.getState().recordRunBatch(SESSION_ID, cappedBatch());
     expect(shouldAutomaticallySendSession(SESSION_ID, [])).toBe(true);
@@ -334,14 +498,14 @@ describe("run error state", () => {
     });
 
     expect(useChatStore.getState().sessions[0].run?.state).toBe("running");
-    expect(useChatStore.getState().agentMeta.status).toBe("retrying");
+    expect(getAgentMeta(SESSION_ID).status).toBe("retrying");
     expect(shouldPresentAiError(error, "running")).toBe(false);
     expect(shouldShowHeaderStop("running")).toBe(true);
 
     useChatStore.getState().clearProviderRetry(SESSION_ID);
 
-    expect(useChatStore.getState().agentMeta.providerRetry).toBeNull();
-    expect(useChatStore.getState().agentMeta.status).toBe("thinking");
+    expect(getAgentMeta(SESSION_ID).providerRetry).toBeNull();
+    expect(getAgentMeta(SESSION_ID).status).toBe("thinking");
     expect(useChatStore.getState().sessions[0].run?.state).toBe("running");
   });
 
@@ -377,9 +541,11 @@ describe("run error state", () => {
       const state = useChatStore.getState();
       expect(state.sessions[0].run?.state).toBe("failed");
       expect(state.sessions[0].run?.error).toEqual(terminal);
-      expect(state.agentMeta.status).toBe("error");
-      expect(state.agentMeta.providerRetry).toBeNull();
-      expect(shouldPresentAiError(state.agentMeta.error, "failed")).toBe(true);
+      expect(getAgentMeta(SESSION_ID).status).toBe("error");
+      expect(getAgentMeta(SESSION_ID).providerRetry).toBeNull();
+      expect(shouldPresentAiError(getAgentMeta(SESSION_ID).error, "failed")).toBe(
+        true,
+      );
       expect(shouldShowHeaderStop("failed")).toBe(false);
       expect(shouldShowTodoStrip("failed", 1)).toBe(false);
       expect(useTodosStore.getState().bySession[SESSION_ID]).toEqual([]);
@@ -407,8 +573,8 @@ describe("run error state", () => {
 
     expect(stop).toHaveBeenCalledOnce();
     expect(useChatStore.getState().sessions[0].run?.state).toBe("cancelled");
-    expect(useChatStore.getState().agentMeta.providerRetry).toBeNull();
-    expect(useChatStore.getState().agentMeta.error).toBeNull();
+    expect(getAgentMeta(SESSION_ID).providerRetry).toBeNull();
+    expect(getAgentMeta(SESSION_ID).error).toBeNull();
   });
 
   it("persists a normalized failure on the session run", () => {
@@ -427,10 +593,12 @@ describe("run error state", () => {
           run: { state: "running", startedAt: 1 },
         },
       ],
-      agentMeta: {
-        ...useChatStore.getState().agentMeta,
-        status: "error",
-        error: normalized,
+      runtimeBySession: {
+        [SESSION_ID]: {
+          ...getAgentMeta(SESSION_ID),
+          status: "error",
+          error: normalized,
+        },
       },
     });
 
@@ -465,8 +633,8 @@ describe("run error state", () => {
 
     useChatStore.getState().switchSession(SESSION_ID);
 
-    expect(useChatStore.getState().agentMeta.error).toEqual(normalized);
-    expect(useChatStore.getState().agentMeta.status).toBe("error");
+    expect(getAgentMeta(SESSION_ID).error).toEqual(normalized);
+    expect(getAgentMeta(SESSION_ID).status).toBe("error");
   });
 });
 
@@ -585,8 +753,12 @@ function setPermissionMode(mode: "ask" | "trusted-workspace" | "full-access") {
 }
 
 function sessionMeta(modelId = "gpt-5.4-mini") {
+  return sessionMetaFor(SESSION_ID, modelId);
+}
+
+function sessionMetaFor(id: string, modelId: string) {
   return {
-    id: SESSION_ID,
+    id,
     title: "Run",
     createdAt: 1,
     updatedAt: 1,
@@ -597,6 +769,15 @@ function sessionMeta(modelId = "gpt-5.4-mini") {
       workspaceId: null,
       workspaceRoot: null,
     },
+  };
+}
+
+function pendingApproval(id: string, sessionId: string) {
+  return {
+    id,
+    sessionId,
+    toolName: "write_file",
+    input: { path: "README.md" },
   };
 }
 

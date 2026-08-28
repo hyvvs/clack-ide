@@ -367,7 +367,10 @@ export function useSourceControlPanel(
     | null,
 ): SourceControlPanelState {
   const selectedModelId = useChatStore((state) => state.selectedModelId);
-  const agentStatus = useChatStore((state) => state.agentMeta.status);
+  const agentStatus = useChatStore((state) => {
+    const id = state.activeSessionId;
+    return id ? (state.runtimeBySession[id]?.status ?? "idle") : "idle";
+  });
   const hasApiKeyForSelected = useChatStore((state) => {
     const model = resolveModel(state.selectedModelId);
     return !providerNeedsKey(model.provider) || !!state.apiKeys[model.provider];

@@ -145,14 +145,16 @@ type StoreState = {
   live: Live;
   setLive: (live: Live) => void;
 
-  /**
-   * Set by AgentRunBridge each render. Lets surfaces outside the chat hook
-   * tree (e.g. the AI diff tab in the editor area) resolve a pending tool
-   * approval through the active session's `addToolApprovalResponse`.
-   */
-  approvalResponder: ApprovalResponder | null;
-  setApprovalResponder: (fn: ApprovalResponder | null) => void;
-  respondToApproval: (approvalId: string, approved: boolean) => void;
+  approvalRespondersBySession: Record<string, ApprovalResponder>;
+  setApprovalResponder: (
+    sessionId: string,
+    fn: ApprovalResponder | null,
+  ) => void;
+  respondToApproval: (
+    approvalId: string,
+    approved: boolean,
+    sessionId?: string,
+  ) => void;
 
   apiKeys: ProviderKeys;
   setApiKeys: (keys: ProviderKeys) => void;
@@ -186,9 +188,9 @@ type StoreState = {
   attachSelection: (text: string, source: "terminal" | "editor") => void;
   consumeSelections: () => PendingSelection[];
 
-  agentMeta: AgentMeta;
-  patchAgentMeta: (patch: Partial<AgentMeta>) => void;
-  resetAgentMeta: () => void;
+  runtimeBySession: Record<string, AgentMeta>;
+  patchAgentMeta: (sessionId: string, patch: Partial<AgentMeta>) => void;
+  resetAgentMeta: (sessionId: string) => void;
   setProviderRetry: (id: string, retry: ProviderRetryState) => void;
   clearProviderRetry: (id: string) => void;
 
@@ -247,9 +249,15 @@ export function touchChat(id: string, c: Chat<UIMessage>) {
   if (chats.has(id)) chats.delete(id);
   chats.set(id, c);
   while (chats.size > CHATS_LRU_CAP) {
-    const oldest = chats.keys().next().value;
-    if (!oldest || oldest === id) break;
-    if (useChatStore.getState().activeSessionId === oldest) break;
+    const activeSessionId = useChatStore.getState().activeSessionId;
+    const oldest = Array.from(chats.keys()).find((candidate) => {
+      if (candidate === id || candidate === activeSessionId) return false;
+      const run = useChatStore
+        .getState()
+        .sessions.find((session) => session.id === candidate)?.run;
+      return run?.state !== "running";
+    });
+    if (!oldest) break;
     flushPersistEntry(oldest);
     void chats.get(oldest)?.stop();
     chats.delete(oldest);
@@ -295,10 +303,24 @@ export const useChatStore = create<StoreState>((set, get) => ({
   live: NOOP_LIVE,
   setLive: (live) => set({ live }),
 
-  approvalResponder: null,
-  setApprovalResponder: (fn) => set({ approvalResponder: fn }),
-  respondToApproval: (approvalId, approved) => {
-    const fn = get().approvalResponder;
+  approvalRespondersBySession: {},
+  setApprovalResponder: (sessionId, fn) =>
+    set((state) => {
+      const next = { ...state.approvalRespondersBySession };
+      if (fn) next[sessionId] = fn;
+      else delete next[sessionId];
+      return { approvalRespondersBySession: next };
+    }),
+  respondToApproval: (approvalId, approved, explicitSessionId) => {
+    const state = get();
+    const sessionId =
+      explicitSessionId ??
+      Object.entries(state.pendingApprovalsBySession).find(([, approvals]) =>
+        approvals.some((approval) => approval.id === approvalId),
+      )?.[0];
+    const fn = sessionId
+      ? state.approvalRespondersBySession[sessionId]
+      : undefined;
     if (fn) fn(approvalId, approved);
   },
 
@@ -405,33 +427,54 @@ export const useChatStore = create<StoreState>((set, get) => ({
     return v;
   },
 
-  agentMeta: IDLE_META,
-  patchAgentMeta: (patch) =>
-    set((s) => ({ agentMeta: { ...s.agentMeta, ...patch } })),
-  resetAgentMeta: () => set({ agentMeta: IDLE_META }),
+  runtimeBySession: {},
+  patchAgentMeta: (sessionId, patch) =>
+    set((state) => ({
+      runtimeBySession: {
+        ...state.runtimeBySession,
+        [sessionId]: {
+          ...(state.runtimeBySession[sessionId] ?? IDLE_META),
+          ...patch,
+        },
+      },
+    })),
+  resetAgentMeta: (sessionId) =>
+    set((state) => ({
+      runtimeBySession: {
+        ...state.runtimeBySession,
+        [sessionId]: IDLE_META,
+      },
+    })),
   setProviderRetry: (id, retry) => {
     const state = get();
     const run = state.sessions.find((session) => session.id === id)?.run;
-    if (run?.state !== "running" || state.activeSessionId !== id) return;
+    if (run?.state !== "running") return;
     set((store) => ({
-      agentMeta: {
-        ...store.agentMeta,
-        status: "retrying",
-        step: null,
-        error: null,
-        providerRetry: retry,
+      runtimeBySession: {
+        ...store.runtimeBySession,
+        [id]: {
+          ...(store.runtimeBySession[id] ?? IDLE_META),
+          status: "retrying",
+          step: null,
+          error: null,
+          providerRetry: retry,
+        },
       },
     }));
   },
   clearProviderRetry: (id) => {
     const state = get();
     const run = state.sessions.find((session) => session.id === id)?.run;
-    if (state.activeSessionId !== id || !state.agentMeta.providerRetry) return;
+    const runtime = state.runtimeBySession[id];
+    if (!runtime?.providerRetry) return;
     set((store) => ({
-      agentMeta: {
-        ...store.agentMeta,
-        status: run?.state === "running" ? "thinking" : store.agentMeta.status,
-        providerRetry: null,
+      runtimeBySession: {
+        ...store.runtimeBySession,
+        [id]: {
+          ...runtime,
+          status: run?.state === "running" ? "thinking" : runtime.status,
+          providerRetry: null,
+        },
       },
     }));
   },
@@ -520,17 +563,21 @@ export const useChatStore = create<StoreState>((set, get) => ({
           }
         : session,
     );
-    set({
+    const runtime = get().runtimeBySession[id] ?? IDLE_META;
+    set((state) => ({
       sessions: next,
-      agentMeta: {
-        ...get().agentMeta,
-        status: "thinking",
-        step: null,
-        approvalsPending: 0,
-        error: null,
-        providerRetry: null,
+      runtimeBySession: {
+        ...state.runtimeBySession,
+        [id]: {
+          ...runtime,
+          status: "thinking",
+          step: null,
+          approvalsPending: 0,
+          error: null,
+          providerRetry: null,
+        },
       },
-    });
+    }));
     useTodosStore.getState().prepareRun(id);
     runLoopTrackers.set(id, createRunLoopTracker());
     void saveSessionsList(next);
@@ -552,14 +599,17 @@ export const useChatStore = create<StoreState>((set, get) => ({
     );
     set((state) => ({
       sessions: next,
-      agentMeta: started.isLogicalContinuation
+      runtimeBySession: started.isLogicalContinuation
         ? {
-            ...state.agentMeta,
-            status: "thinking",
-            step: "Continuing autonomously...",
-            hitStepCap: false,
+            ...state.runtimeBySession,
+            [id]: {
+              ...(state.runtimeBySession[id] ?? IDLE_META),
+              status: "thinking",
+              step: "Continuing autonomously...",
+              hitStepCap: false,
+            },
           }
-        : state.agentMeta,
+        : state.runtimeBySession,
     }));
     void saveSessionsList(next);
     return { isLogicalContinuation: started.isLogicalContinuation };
@@ -590,13 +640,16 @@ export const useChatStore = create<StoreState>((set, get) => ({
     );
     set((state) => ({
       sessions: next,
-      agentMeta: {
-        ...state.agentMeta,
-        hitStepCap: budget.phase === "soft-limit",
-        step:
-          budget.phase === "auto-continue-pending"
-            ? "Continuing autonomously..."
-            : null,
+      runtimeBySession: {
+        ...state.runtimeBySession,
+        [id]: {
+          ...(state.runtimeBySession[id] ?? IDLE_META),
+          hitStepCap: budget.phase === "soft-limit",
+          step:
+            budget.phase === "auto-continue-pending"
+              ? "Continuing autonomously..."
+              : null,
+        },
       },
     }));
     void saveSessionsList(next);
@@ -627,11 +680,14 @@ export const useChatStore = create<StoreState>((set, get) => ({
     );
     set((state) => ({
       sessions: next,
-      agentMeta: {
-        ...state.agentMeta,
-        status: "thinking",
-        step: "Continuing autonomously...",
-        hitStepCap: false,
+      runtimeBySession: {
+        ...state.runtimeBySession,
+        [id]: {
+          ...(state.runtimeBySession[id] ?? IDLE_META),
+          status: "thinking",
+          step: "Continuing autonomously...",
+          hitStepCap: false,
+        },
       },
     }));
     void saveSessionsList(next);
@@ -654,11 +710,14 @@ export const useChatStore = create<StoreState>((set, get) => ({
     );
     set((state) => ({
       sessions: next,
-      agentMeta: {
-        ...state.agentMeta,
-        status: "thinking",
-        step: "Continuing...",
-        hitStepCap: false,
+      runtimeBySession: {
+        ...state.runtimeBySession,
+        [id]: {
+          ...(state.runtimeBySession[id] ?? IDLE_META),
+          status: "thinking",
+          step: "Continuing...",
+          hitStepCap: false,
+        },
       },
     }));
     void saveSessionsList(next);
@@ -673,7 +732,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     const runError =
       state === "failed"
         ? (error ??
-          (get().activeSessionId === id ? get().agentMeta.error : undefined) ??
+          get().runtimeBySession[id]?.error ??
           currentRun.error)
         : undefined;
     const next = get().sessions.map((session) =>
@@ -696,19 +755,18 @@ export const useChatStore = create<StoreState>((set, get) => ({
         ...store.pendingApprovalsBySession,
         [id]: [],
       },
-      ...(store.activeSessionId === id
-        ? {
-            agentMeta: {
-              ...store.agentMeta,
-              status:
-                state === "failed" ? ("error" as const) : ("idle" as const),
-              step: null,
-              approvalsPending: 0,
-              error: state === "failed" ? (runError ?? null) : null,
-              providerRetry: null,
-            },
-          }
-        : {}),
+      runtimeBySession: {
+        ...store.runtimeBySession,
+        [id]: {
+          ...(store.runtimeBySession[id] ?? IDLE_META),
+          status:
+            state === "failed" ? ("error" as const) : ("idle" as const),
+          step: null,
+          approvalsPending: 0,
+          error: state === "failed" ? (runError ?? null) : null,
+          providerRetry: null,
+        },
+      },
     }));
     void saveSessionsList(next);
     useTodosStore.getState().finalizeRun(id, state);
@@ -778,12 +836,6 @@ export const useChatStore = create<StoreState>((set, get) => ({
     }
     void saveActiveId(freshId);
 
-    const restoredRun = nextSessions.find(
-      (session) => session.id === freshId,
-    )?.run;
-    const restoredError =
-      restoredRun?.state === "failed" ? restoredRun.error ?? null : null;
-
     set({
       sessions: nextSessions,
       activeSessionId: freshId,
@@ -791,9 +843,14 @@ export const useChatStore = create<StoreState>((set, get) => ({
       selectedModelId:
         nextSessions.find((session) => session.id === freshId)?.profile
           ?.modelId ?? get().selectedModelId,
-      agentMeta: restoredError
-        ? { ...IDLE_META, status: "error", error: restoredError }
-        : IDLE_META,
+      runtimeBySession: Object.fromEntries(
+        nextSessions.map((session) => [
+          session.id,
+          session.run?.state === "failed" && session.run.error
+            ? { ...IDLE_META, status: "error", error: session.run.error }
+            : IDLE_META,
+        ]),
+      ),
     });
   },
 
@@ -816,7 +873,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
       sessions: next,
       activeSessionId: id,
       selectedModelId: meta.profile?.modelId ?? get().selectedModelId,
-      agentMeta: IDLE_META,
+      runtimeBySession: { ...get().runtimeBySession, [id]: IDLE_META },
     });
     void saveSessionsList(next);
     void saveActiveId(id);
@@ -836,9 +893,14 @@ export const useChatStore = create<StoreState>((set, get) => ({
       set({
         activeSessionId: id,
         selectedModelId: session?.profile?.modelId ?? get().selectedModelId,
-        agentMeta: restoredError
-          ? { ...IDLE_META, status: "error", error: restoredError }
-          : IDLE_META,
+        runtimeBySession: {
+          ...get().runtimeBySession,
+          [id]:
+            get().runtimeBySession[id] ??
+            (restoredError
+              ? { ...IDLE_META, status: "error", error: restoredError }
+              : IDLE_META),
+        },
       });
       void saveActiveId(id);
     };
@@ -918,8 +980,18 @@ export const useChatStore = create<StoreState>((set, get) => ({
       const pendingApprovalsBySession = {
         ...state.pendingApprovalsBySession,
       };
+      const runtimeBySession = { ...state.runtimeBySession };
+      const approvalRespondersBySession = {
+        ...state.approvalRespondersBySession,
+      };
       delete pendingApprovalsBySession[id];
-      return { pendingApprovalsBySession };
+      delete runtimeBySession[id];
+      delete approvalRespondersBySession[id];
+      return {
+        pendingApprovalsBySession,
+        runtimeBySession,
+        approvalRespondersBySession,
+      };
     });
 
     if (remaining.length === 0) {
@@ -935,7 +1007,14 @@ export const useChatStore = create<StoreState>((set, get) => ({
           workspaceRoot: get().live.getWorkspaceRoot(),
         }),
       };
-      set({ sessions: [fresh], activeSessionId: fresh.id });
+      set((state) => ({
+        sessions: [fresh],
+        activeSessionId: fresh.id,
+        runtimeBySession: {
+          ...state.runtimeBySession,
+          [fresh.id]: IDLE_META,
+        },
+      }));
       void saveSessionsList([fresh]);
       void saveActiveId(fresh.id);
       return;
@@ -994,8 +1073,17 @@ export const useChatStore = create<StoreState>((set, get) => ({
   },
 }));
 
-export function getAgentMeta(): AgentMeta {
-  return useChatStore.getState().agentMeta;
+export function getAgentMeta(sessionId?: string | null): AgentMeta {
+  const state = useChatStore.getState();
+  const id = sessionId ?? state.activeSessionId;
+  return id ? (state.runtimeBySession[id] ?? IDLE_META) : IDLE_META;
+}
+
+export function useActiveAgentMeta(): AgentMeta {
+  return useChatStore((state) => {
+    const id = state.activeSessionId;
+    return id ? (state.runtimeBySession[id] ?? IDLE_META) : IDLE_META;
+  });
 }
 
 export function getActiveProviderKey(): string | null {
@@ -1071,9 +1159,13 @@ export function pendingApprovalIds(messages: readonly UIMessage[]): string[] {
 }
 
 export async function cancelActiveRun(): Promise<void> {
-  const state = useChatStore.getState();
-  const id = state.activeSessionId;
+  const id = useChatStore.getState().activeSessionId;
   if (!id) return;
+  await cancelRun(id);
+}
+
+export async function cancelRun(id: string): Promise<void> {
+  const state = useChatStore.getState();
   const chat = chats.get(id);
   const pending = state.pendingApprovalsBySession[id] ?? [];
   const approvalIds =
@@ -1082,15 +1174,42 @@ export async function cancelActiveRun(): Promise<void> {
       : pendingApprovalIds(chat?.messages ?? []);
   state.finishRun(id, "cancelled");
   for (const approvalId of approvalIds) {
-    state.respondToApproval(approvalId, false);
+    state.respondToApproval(approvalId, false, id);
   }
   await chat?.stop();
   const latest = useChatStore.getState();
-  usePlanStore.getState().disable();
-  latest.patchAgentMeta({
+  if (latest.activeSessionId === id) usePlanStore.getState().disable();
+  latest.patchAgentMeta(id, {
     status: "idle",
     step: null,
     approvalsPending: 0,
     error: null,
   });
+}
+
+export async function interruptAllRunsForShutdown(): Promise<void> {
+  const state = useChatStore.getState();
+  const runningIds = state.sessions
+    .filter((session) => session.run?.state === "running")
+    .map((session) => session.id);
+  for (const id of runningIds) {
+    const pending = state.pendingApprovalsBySession[id] ?? [];
+    for (const approval of pending) {
+      state.respondToApproval(approval.id, false, id);
+    }
+    state.finishRun(id, "interrupted");
+    state.patchAgentMeta(id, {
+      status: "idle",
+      step: null,
+      approvalsPending: 0,
+      error: null,
+      providerRetry: null,
+    });
+  }
+  await Promise.allSettled(
+    runningIds.map(async (id) => {
+      await chats.get(id)?.stop();
+      flushPersist(id);
+    }),
+  );
 }

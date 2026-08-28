@@ -29,6 +29,7 @@ import { findSavedProviderModel } from "../lib/savedProviderModels";
 import type { ToolContext } from "../tools/tools";
 import {
   chats,
+  getAgentMeta,
   hasKeyForModel,
   recordSelectedModelUse,
   seedMessages,
@@ -160,13 +161,13 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       return useChatStore.getState().startRunBatch(sessionId);
     },
     onStep: (step) => {
-      useChatStore.getState().patchAgentMeta({ step });
+      useChatStore.getState().patchAgentMeta(sessionId, { step });
     },
     onRunStep: (observation) => {
       useChatStore.getState().recordRunStep(sessionId, observation);
     },
     onCompact: (info) => {
-      useChatStore.getState().patchAgentMeta({
+      useChatStore.getState().patchAgentMeta(sessionId, {
         compactionNotice: { droppedCount: info.droppedCount, at: Date.now() },
       });
     },
@@ -178,8 +179,8 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       });
     },
     onUsage: (delta) => {
-      const cur = useChatStore.getState().agentMeta.tokens;
-      useChatStore.getState().patchAgentMeta({
+      const cur = getAgentMeta(sessionId).tokens;
+      useChatStore.getState().patchAgentMeta(sessionId, {
         tokens: {
           inputTokens: cur.inputTokens + delta.inputTokens,
           outputTokens: cur.outputTokens + delta.outputTokens,

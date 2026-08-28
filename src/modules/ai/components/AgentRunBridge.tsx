@@ -17,12 +17,12 @@ import { getOrCreateChat } from "../store/chatRuntime";
  * pill / mini-window / panel can react without being inside the chat hook tree.
  *
  * Side effects:
- *  - Patches `agentMeta` on every status / approvals change.
+ *  - Patches the owning session runtime on every status / approvals change.
  *  - Surfaces approval attention, restoring the window unless the user
  *    deliberately minimized it.
  *  - For pending `write_file` calls, opens an AI diff tab in the editor area
  *    so the user can review the proposed change before approving.
- *  - Persists messages of the active session on every change.
+ *  - Persists messages for every active or background-running session.
  */
 
 export type DiffOpenInput = {
@@ -39,9 +39,31 @@ export type AgentRunBridgeProps = {
 };
 
 export function AgentRunBridge(props: AgentRunBridgeProps) {
-  const sessionId = useChatStore((s) => s.activeSessionId);
-  if (!sessionId) return null;
-  return <Bridge sessionId={sessionId} {...props} />;
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const sessions = useChatStore((s) => s.sessions);
+  const sessionIds = useMemo(
+    () => agentRunBridgeSessionIds(sessions, activeSessionId),
+    [activeSessionId, sessions],
+  );
+  return (
+    <>
+      {sessionIds.map((sessionId) => (
+        <Bridge key={sessionId} sessionId={sessionId} {...props} />
+      ))}
+    </>
+  );
+}
+
+export function agentRunBridgeSessionIds(
+  sessions: readonly { id: string; run?: { state: string } }[],
+  activeSessionId: string | null,
+): string[] {
+  const ids = new Set<string>();
+  if (activeSessionId) ids.add(activeSessionId);
+  for (const session of sessions) {
+    if (session.run?.state === "running") ids.add(session.id);
+  }
+  return Array.from(ids);
 }
 
 type BridgeProps = { sessionId: string } & AgentRunBridgeProps;
@@ -73,16 +95,18 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
   const runState = useChatStore(
     (s) => s.sessions.find((item) => item.id === sessionId)?.run?.state,
   );
-  const providerRetry = useChatStore((s) => s.agentMeta.providerRetry);
+  const providerRetry = useChatStore(
+    (s) => s.runtimeBySession[sessionId]?.providerRetry ?? null,
+  );
 
   // Expose the approval responder so the diff tab can resolve approvals.
   // We keep it in a ref-stable closure so identity is stable per render.
   useEffect(() => {
-    setApprovalResponder((id, approved) =>
+    setApprovalResponder(sessionId, (id, approved) =>
       addToolApprovalResponse({ id, approved }),
     );
-    return () => setApprovalResponder(null);
-  }, [setApprovalResponder, addToolApprovalResponse]);
+    return () => setApprovalResponder(sessionId, null);
+  }, [sessionId, setApprovalResponder, addToolApprovalResponse]);
 
   useEffect(() => {
     persistMessages(sessionId, messages);
@@ -164,7 +188,7 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
     )
       runStatus = "thinking";
     else runStatus = "idle";
-    patch({
+    patch(sessionId, {
       status: runStatus,
       approvalsPending,
       ...(runStatus === "idle" || runStatus === "error" ? { step: null } : {}),
@@ -294,7 +318,12 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
 
     let cancelled = false;
     void (async () => {
-      const cwd = useChatStore.getState().live.getCwd();
+      const store = useChatStore.getState();
+      const owner = store.sessions.find((item) => item.id === sessionId);
+      const cwd =
+        owner?.run?.workspaceRoot ??
+        owner?.profile?.workspaceRoot ??
+        store.live.getCwd();
       for (const p of pending) {
         if (cancelled) return;
         // Mark as opened up-front so a re-render mid-await doesn't double-open.
@@ -338,6 +367,7 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
     fileMutationTracking,
     openAiDiffTab,
     closeAiDiffTab,
+    sessionId,
   ]);
 
   return null;

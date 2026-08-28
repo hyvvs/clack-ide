@@ -2,7 +2,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { AlertCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useChatStore, type AgentMeta } from "../store/chatStore";
+import {
+  useActiveAgentMeta,
+  useChatStore,
+  type AgentMeta,
+} from "../store/chatStore";
 import type { RunBudgetPhase } from "../lib/runBudget";
 import type { SessionRunState } from "../lib/sessions";
 
@@ -11,7 +15,7 @@ type Props = {
 };
 
 export function AgentStatusPill({ onClick }: Props) {
-  const meta = useChatStore((s) => s.agentMeta);
+  const meta = useActiveAgentMeta();
   const run = useChatStore((s) => {
     const id = s.activeSessionId;
     return s.sessions.find((session) => session.id === id)?.run;

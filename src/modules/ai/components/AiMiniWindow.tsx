@@ -40,10 +40,20 @@ import { resolveModelSelectionInfo } from "../lib/savedProviderModels";
 import type { SessionMeta, SessionRunState } from "../lib/sessions";
 import { useMiniWindowGeometry } from "../lib/useMiniWindowGeometry";
 import { useAgentsStore } from "../store/agentsStore";
-import { cancelActiveRun, useChatStore } from "../store/chatStore";
+import {
+  cancelActiveRun,
+  cancelRun,
+  useChatStore,
+} from "../store/chatStore";
 import { getOrCreateChat } from "../store/chatRuntime";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { usePlanStore } from "../store/planStore";
+
+const EMPTY_TOKEN_USAGE = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cachedInputTokens: 0,
+};
 import { AgentSwitcher } from "./AgentSwitcher";
 import { AgentPermissionControl } from "./AgentPermissionControl";
 import { AiChatView } from "./AiChat";
@@ -182,7 +192,9 @@ function Body({
   onHeaderPointerDown: (e: React.PointerEvent) => void;
 }) {
   const focusInput = useChatStore((s) => s.focusInput);
-  const step = useChatStore((s) => s.agentMeta.step);
+  const step = useChatStore(
+    (s) => s.runtimeBySession[sessionId]?.step ?? null,
+  );
   const run = useChatStore(
     (s) => s.sessions.find((session) => session.id === sessionId)?.run,
   );
@@ -196,6 +208,7 @@ function Body({
   return (
     <>
       <Header
+        sessionId={sessionId}
         step={step}
         isBusy={
           isBusy ||
@@ -204,7 +217,7 @@ function Body({
               run?.budget?.phase === "auto-continue-pending"))
         }
         runState={runState}
-        onStop={cancelActiveRun}
+        onStop={() => cancelRun(sessionId)}
         onClose={onClose}
         onMinimize={onMinimize}
         onExpand={onExpand}
@@ -225,7 +238,7 @@ function Body({
               error={helpers.error}
               clearError={helpers.clearError}
               addToolApprovalResponse={helpers.addToolApprovalResponse}
-              stop={cancelActiveRun}
+              stop={() => cancelRun(sessionId)}
             />
           </div>
         )}
@@ -293,6 +306,7 @@ function EmptyShell({
 }
 
 function Header({
+  sessionId,
   step,
   isBusy,
   runState,
@@ -302,6 +316,7 @@ function Header({
   messages,
   onHeaderPointerDown,
 }: {
+  sessionId?: string;
   step: string | null;
   isBusy: boolean;
   runState: SessionRunState | undefined;
@@ -314,9 +329,7 @@ function Header({
 }) {
   const defaultAgentId = useAgentsStore((state) => state.activeId);
   const conversationAgentId = useChatStore((state) => {
-    const session = state.sessions.find(
-      (item) => item.id === state.activeSessionId,
-    );
+    const session = state.sessions.find((item) => item.id === sessionId);
     if (runState === "running") return session?.run?.agentId;
     return session?.profile?.agentId;
   });
@@ -335,7 +348,7 @@ function Header({
         />
         <AgentPermissionControl agentId={displayedAgentId} compact />
         {messages !== undefined ? (
-          <ContextIndicator messages={messages} />
+          <ContextIndicator sessionId={sessionId} messages={messages} />
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-1">
@@ -423,11 +436,27 @@ function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
-function ContextIndicator({ messages }: { messages: UIMessage[] }) {
-  const modelId = useChatStore((s) => s.selectedModelId);
-  const tokens = useChatStore((s) => s.agentMeta.tokens);
-  const lastInput = useChatStore((s) => s.agentMeta.lastInputTokens);
-  const lastCached = useChatStore((s) => s.agentMeta.lastCachedTokens);
+function ContextIndicator({
+  sessionId,
+  messages,
+}: {
+  sessionId?: string;
+  messages: UIMessage[];
+}) {
+  const modelId = useChatStore((s) => {
+    const session = s.sessions.find((item) => item.id === sessionId);
+    return session?.run?.modelId ?? session?.profile?.modelId ?? s.selectedModelId;
+  });
+  const tokens = useChatStore(
+    (s) =>
+      s.runtimeBySession[sessionId ?? ""]?.tokens ?? EMPTY_TOKEN_USAGE,
+  );
+  const lastInput = useChatStore(
+    (s) => s.runtimeBySession[sessionId ?? ""]?.lastInputTokens ?? 0,
+  );
+  const lastCached = useChatStore(
+    (s) => s.runtimeBySession[sessionId ?? ""]?.lastCachedTokens ?? 0,
+  );
   const estimated = useMemo(() => estimateTokens(messages), [messages]);
   const used = lastInput > 0 ? lastInput : estimated;
   const reported = tokens.inputTokens + tokens.outputTokens;
@@ -532,6 +561,9 @@ function ContextIndicator({ messages }: { messages: UIMessage[] }) {
 function SessionPicker() {
   const sessions = useChatStore((s) => s.sessions);
   const activeId = useChatStore((s) => s.activeSessionId);
+  const pendingApprovalsBySession = useChatStore(
+    (s) => s.pendingApprovalsBySession,
+  );
   const switchSession = useChatStore((s) => s.switchSession);
   const newSession = useChatStore((s) => s.newSession);
   const deleteSession = useChatStore((s) => s.deleteSession);
@@ -549,6 +581,10 @@ function SessionPicker() {
   );
 
   const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
+  const backgroundRunningCount = sessions.filter(
+    (session) =>
+      session.id !== activeId && session.run?.state === "running",
+  ).length;
 
   return (
     <DropdownMenu>
@@ -562,11 +598,30 @@ function SessionPicker() {
           )}
           title={
             boundWorkspaceRoot
-              ? `Switch session · ${workspaceName(boundWorkspaceRoot)}`
-              : "Switch session · workspace unbound"
+              ? `Switch session · ${workspaceName(boundWorkspaceRoot)}${
+                  backgroundRunningCount > 0
+                    ? ` · ${backgroundRunningCount} running in background`
+                    : ""
+                }`
+              : `Switch session · workspace unbound${
+                  backgroundRunningCount > 0
+                    ? ` · ${backgroundRunningCount} running in background`
+                    : ""
+                }`
           }
         >
           <span className="truncate">{active.title || "New chat"}</span>
+          {backgroundRunningCount > 0 ? (
+            <span
+              className="flex shrink-0 items-center gap-1 text-[10px] text-[var(--clack-accent)]"
+              title={`${backgroundRunningCount} AI ${
+                backgroundRunningCount === 1 ? "run" : "runs"
+              } active in background`}
+            >
+              <Spinner className="size-2.5" />
+              {backgroundRunningCount}
+            </span>
+          ) : null}
           <HugeiconsIcon
             icon={ArrowDown01Icon}
             size={10}
@@ -606,6 +661,7 @@ function SessionPicker() {
             key={s.id}
             session={s}
             active={s.id === activeId}
+            approvalsPending={pendingApprovalsBySession[s.id]?.length ?? 0}
             onSelect={() => switchSession(s.id)}
             onDelete={() => deleteSession(s.id)}
           />
@@ -618,11 +674,13 @@ function SessionPicker() {
 function SessionRow({
   session,
   active,
+  approvalsPending,
   onSelect,
   onDelete,
 }: {
   session: SessionMeta;
   active: boolean;
+  approvalsPending: number;
   onSelect: () => void;
   onDelete: () => void;
 }) {
@@ -645,6 +703,16 @@ function SessionRow({
       <span className="min-w-0 flex-1 truncate">
         {session.title || "New chat"}
       </span>
+      {approvalsPending > 0 ? (
+        <span className="shrink-0 text-[10px] text-[var(--clack-warning)]">
+          Approval required
+        </span>
+      ) : session.run?.state === "running" ? (
+        <span className="flex shrink-0 items-center gap-1 text-[10px] text-[var(--clack-accent)]">
+          <Spinner className="size-2.5" />
+          Running
+        </span>
+      ) : null}
       <button
         type="button"
         data-session-delete

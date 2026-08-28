@@ -29,7 +29,7 @@ beforeEach(() => {
     panelOpen: false,
     focusSignal: 0,
     pendingPrefill: null,
-    approvalResponder: null,
+    approvalRespondersBySession: {},
     pendingApprovalsBySession: {},
     activeSessionId: "session-a",
     sessions: [
@@ -49,9 +49,9 @@ afterEach(() => {
     panelOpen: original.panelOpen,
     focusSignal: original.focusSignal,
     pendingPrefill: original.pendingPrefill,
-    approvalResponder: original.approvalResponder,
+    approvalRespondersBySession: original.approvalRespondersBySession,
     pendingApprovalsBySession: original.pendingApprovalsBySession,
-    agentMeta: original.agentMeta,
+    runtimeBySession: original.runtimeBySession,
     activeSessionId: original.activeSessionId,
     sessions: original.sessions,
   });
@@ -116,7 +116,7 @@ describe("AI shell visibility", () => {
   it("does not cancel or reset an active run when minimized", () => {
     const responder = () => undefined;
     useChatStore.setState({
-      approvalResponder: responder,
+      approvalRespondersBySession: { "session-a": responder },
       sessions: [
         {
           id: "session-a",
@@ -130,9 +130,11 @@ describe("AI shell visibility", () => {
           },
         },
       ],
-      agentMeta: {
-        ...useChatStore.getState().agentMeta,
-        status: "streaming",
+      runtimeBySession: {
+        "session-a": {
+          ...useChatStore.getState().runtimeBySession["session-a"],
+          status: "streaming",
+        },
       },
     });
 
@@ -140,8 +142,8 @@ describe("AI shell visibility", () => {
 
     const state = useChatStore.getState();
     expect(state.sessions[0].run?.state).toBe("running");
-    expect(state.agentMeta.status).toBe("streaming");
-    expect(state.approvalResponder).toBe(responder);
+    expect(state.runtimeBySession["session-a"].status).toBe("streaming");
+    expect(state.approvalRespondersBySession["session-a"]).toBe(responder);
   });
 
   it("preserves a completed run while the transcript is minimized", () => {

@@ -11,6 +11,7 @@ import ReactDOM from "react-dom/client";
 import App from "./app/App";
 import { initLaunchDir } from "./lib/launchDir";
 import { USE_CUSTOM_WINDOW_CONTROLS } from "./lib/platform";
+import { interruptAllRunsForShutdown } from "./modules/ai/store/chatStore";
 
 if (USE_CUSTOM_WINDOW_CONTROLS) {
   document.documentElement.dataset.chrome = "borderless";
@@ -33,11 +34,18 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <App />,
 );
 
+const appWindow = getCurrentWindow();
+void appWindow.onCloseRequested(async (event) => {
+  event.preventDefault();
+  await interruptAllRunsForShutdown();
+  await appWindow.destroy();
+});
+
 // Window starts hidden (per tauri.conf.json) so users never see a transparent
 // shadow-only frame before React paints. Use setTimeout — rAF is throttled
 // while the window is hidden and would never fire.
 const showWindow = () => {
-  getCurrentWindow()
+  appWindow
     .show()
     .catch((e) => console.error("window.show failed:", e));
 };

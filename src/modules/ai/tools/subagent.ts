@@ -30,6 +30,7 @@ Auto-executes (no approval) — subagents are read-only by design.`,
           .describe("Short label shown in the chat UI for the spawn card."),
       }),
       execute: async ({ type, prompt, description }) => {
+        const sessionId = ctx.getSessionId();
         const {
           apiKeys,
           customEndpointKeys,
@@ -40,7 +41,7 @@ Auto-executes (no approval) — subagents are read-only by design.`,
           useChatStore.getState();
         const preferences = usePreferencesStore.getState();
         const run = sessions.find(
-          (session) => session.id === ctx.getSessionId(),
+          (session) => session.id === sessionId,
         )?.run;
         const runModelId = run?.modelId ?? selectedModelId;
         try {
@@ -79,7 +80,8 @@ Auto-executes (no approval) — subagents are read-only by design.`,
                     }
                   : undefined,
             },
-            onStep: (label) => patchAgentMeta({ step: label }),
+            onStep: (label) =>
+              sessionId && patchAgentMeta(sessionId, { step: label }),
           });
           return {
             type,

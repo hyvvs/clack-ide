@@ -205,11 +205,14 @@ export function AiChatView({
     status === "streaming" && lastMessage?.role === "assistant"
       ? lastMessage.id
       : null;
-  const step = useChatStore((s) => s.agentMeta.step);
-  const compactionNotice = useChatStore((s) => s.agentMeta.compactionNotice);
-  const storedError = useChatStore((s) => s.agentMeta.error);
-  const providerRetry = useChatStore((s) => s.agentMeta.providerRetry);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const runtime = useChatStore((s) =>
+    s.activeSessionId ? s.runtimeBySession[s.activeSessionId] : undefined,
+  );
+  const step = runtime?.step ?? null;
+  const compactionNotice = runtime?.compactionNotice ?? null;
+  const storedError = runtime?.error ?? null;
+  const providerRetry = runtime?.providerRetry ?? null;
   const run = useChatStore(
     (s) => s.sessions.find((session) => session.id === activeSessionId)?.run,
   );
@@ -267,7 +270,11 @@ export function AiChatView({
         {compactionNotice && (
           <CompactionNotice
             droppedCount={compactionNotice.droppedCount}
-            onDismiss={() => patchAgentMeta({ compactionNotice: null })}
+            onDismiss={() => {
+              if (activeSessionId) {
+                patchAgentMeta(activeSessionId, { compactionNotice: null });
+              }
+            }}
           />
         )}
         {showSpinner && (
@@ -313,7 +320,12 @@ export function AiChatView({
             onOpenProviderSettings={() => void openSettingsWindow("models")}
             onDismiss={() => {
               clearError();
-              patchAgentMeta({ status: "idle", error: null });
+              if (activeSessionId) {
+                patchAgentMeta(activeSessionId, {
+                  status: "idle",
+                  error: null,
+                });
+              }
             }}
           />
         ) : null}

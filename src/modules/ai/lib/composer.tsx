@@ -73,7 +73,11 @@ type ProviderProps = {
 
 export function AiComposerProvider({ children }: ProviderProps) {
   const sessionId = useChatStore((s) => s.activeSessionId);
-  const status = useChatStore((s) => s.agentMeta.status);
+  const status = useChatStore((s) =>
+    s.activeSessionId
+      ? (s.runtimeBySession[s.activeSessionId]?.status ?? "idle")
+      : "idle",
+  );
   const runState = useChatStore(
     (s) =>
       s.sessions.find((session) => session.id === s.activeSessionId)?.run
@@ -308,7 +312,10 @@ export function AiComposerProvider({ children }: ProviderProps) {
 
     if (!sessionId) return;
     const store = useChatStore.getState();
-    store.patchAgentMeta({ hitStepCap: false, compactionNotice: null });
+    store.patchAgentMeta(sessionId, {
+      hitStepCap: false,
+      compactionNotice: null,
+    });
     void (async () => {
       const { sendMessageToSession } = await import("../store/chatRuntime");
       await sendMessageToSession(sessionId, { role: "user", parts });

@@ -3,7 +3,7 @@ import { useWindowFocus } from "@/modules/agents/lib/useWindowFocus";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
 import type { AgentStatus } from "@/modules/agents/lib/types";
 import { useEffect, useRef } from "react";
-import { useChatStore } from "../store/chatStore";
+import { useActiveAgentMeta, useChatStore } from "../store/chatStore";
 
 const AGENT = "Clack";
 
@@ -32,8 +32,9 @@ function liveStatus(s: RunStatus): AgentStatus | null {
 }
 
 export function LocalAgentNotificationsBridge() {
-  const status = useChatStore((s) => s.agentMeta.status) as RunStatus;
-  const error = useChatStore((s) => s.agentMeta.error);
+  const activeRuntime = useActiveAgentMeta();
+  const status = activeRuntime.status as RunStatus;
+  const error = activeRuntime.error;
   const visible = useChatStore((s) => s.panelOpen || s.mini.open);
   const focused = useWindowFocus();
 
