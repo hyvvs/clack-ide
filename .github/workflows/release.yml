@@ -89,13 +89,69 @@ jobs:
           printf '%s' "$KEY_CONTENT" > "$HOME/private_keys/AuthKey.p8"
           echo "APPLE_API_KEY_PATH=$HOME/private_keys/AuthKey.p8" >> "$GITHUB_ENV"
 
+      - name: Import Apple signing certificate
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERTIFICATE_PATH="$RUNNER_TEMP/clack-signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/clack-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+
+          if ! printf '%s' "$CERTIFICATE_BASE64" \
+            | openssl base64 -d -A -out "$CERTIFICATE_PATH"; then
+            echo "::error::APPLE_CERTIFICATE is not valid base64-encoded PKCS#12 data."
+            exit 1
+          fi
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          if ! security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12; then
+            echo "::error::Could not import APPLE_CERTIFICATE as PKCS#12. Check the certificate data and APPLE_CERTIFICATE_PASSWORD."
+            exit 1
+          fi
+
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          KEYCHAINS=("$KEYCHAIN_PATH")
+          while IFS= read -r keychain; do
+            keychain="${keychain//\"/}"
+            keychain="${keychain#"${keychain%%[![:space:]]*}"}"
+            keychain="${keychain%"${keychain##*[![:space:]]}"}"
+            if [[ -n "$keychain" && "$keychain" != "$KEYCHAIN_PATH" ]]; then
+              KEYCHAINS+=("$keychain")
+            fi
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "${KEYCHAINS[@]}"
+
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | sed -n 's/.*"\(.*\)"/\1/p' \
+            | sed -n '1p')"
+          if [[ -z "$SIGNING_IDENTITY" ]]; then
+            echo "::error::APPLE_CERTIFICATE contains no usable code-signing identity."
+            exit 1
+          fi
+          echo "APPLE_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+
       - id: tauri
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -106,6 +162,17 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Clean up Apple signing certificate
+        if: always() && startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/clack-signing.keychain-db"
+          if [[ -f "$KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi
+          rm -f "$RUNNER_TEMP/clack-signing.p12"
 
       - name: Upload macOS app archive for Nix
         if: startsWith(matrix.platform, 'macos')
