@@ -5,9 +5,16 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (for example v0.8.0)"
+        required: true
+        type: string
 
 jobs:
   publish-tauri:
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     permissions:
       contents: write
     strategy:
@@ -30,6 +37,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -42,12 +51,11 @@ jobs:
             libssl-dev \
             patchelf
 
-      - uses: pnpm/action-setup@v6
-
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: pnpm
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -60,7 +68,14 @@ jobs:
           key: ${{ matrix.platform }}-${{ matrix.rust-target }}
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+        run: npm ci
+
+      - name: Validate release tag
+        run: >-
+          node -e "const expected = 'v' + require('./package.json').version;
+          if (process.env.RELEASE_TAG !== expected) {
+          console.error('Release tag ' + process.env.RELEASE_TAG +
+          ' does not match package version ' + expected); process.exit(1); }"
 
       - name: Write Apple API key to disk
         if: startsWith(matrix.platform, 'macos')
@@ -76,10 +91,6 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -87,12 +98,31 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Terax ${{ github.ref_name }}"
-          releaseBody: "See the assets to download and install. Auto-update is built in."
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: "Clack ${{ env.RELEASE_TAG }}"
+          releaseBody: "See the attached platform installers and packages."
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Upload macOS app archive for Nix
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          case "${{ matrix.rust-target }}" in
+            aarch64-apple-darwin) ARCHIVE="Clack_aarch64.app.tar.gz" ;;
+            x86_64-apple-darwin) ARCHIVE="Clack_x64.app.tar.gz" ;;
+            *) echo "unsupported macOS target: ${{ matrix.rust-target }}"; exit 1 ;;
+          esac
+          APP_DIR="src-tauri/target/${{ matrix.rust-target }}/release/bundle/macos"
+          test -d "$APP_DIR/Clack.app" \
+            || { echo "Clack.app missing from $APP_DIR"; exit 1; }
+          tar -czf "$ARCHIVE" -C "$APP_DIR" Clack.app
+          gh release upload "$RELEASE_TAG" "$ARCHIVE" \
+            --clobber --repo "$GITHUB_REPOSITORY"
 
       # Strip the bundled libwayland-* libs from the AppImage so it loads the
       # host copies at runtime. The Ubuntu 22.04 build host ships libwayland
@@ -102,15 +132,11 @@ jobs:
       # hard-links these three, so removing them only redirects resolution to
       # the host copy, which every GTK-capable system has. They are on the
       # AppImage excludelist for this exact reason. The re-signed AppImage and
-      # its .sig are re-uploaded here; the updater manifest is patched in the
-      # patch-appimage-updater job after all matrix legs finish, so a parallel
-      # macOS/Windows upload cannot clobber the combined latest.json.
-      - name: Fix AppImage wayland libs and re-sign
-        if: matrix.platform == 'ubuntu-22.04' && startsWith(github.ref, 'refs/tags/')
+      # repacked AppImage replaces the original release asset.
+      - name: Fix AppImage wayland libs
+        if: matrix.platform == 'ubuntu-22.04' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
@@ -149,52 +175,11 @@ jobs:
             test ! -e "squashfs-root/usr/lib/$lib" \
               || { echo "lib still present after repack: $lib"; exit 1; }
           done
-          test -x squashfs-root/usr/bin/terax \
-            || { echo "terax binary missing from repacked AppImage"; exit 1; }
+          test -x squashfs-root/usr/bin/clack \
+            || { echo "clack binary missing from repacked AppImage"; exit 1; }
           popd >/dev/null
 
           cp "$WORK/$BASENAME" "$APPIMAGE"
-
-          rm -f "$APPIMAGE.sig"
-          pnpm tauri signer sign "$APPIMAGE"
-
-          TAG="${GITHUB_REF_NAME}"
-          gh release upload "$TAG" "$APPIMAGE" "$APPIMAGE.sig" \
+          TAG="$RELEASE_TAG"
+          gh release upload "$TAG" "$APPIMAGE" \
             --clobber --repo "$GITHUB_REPOSITORY"
-
-  # Patch the AppImage signature into the combined updater manifest. Runs once,
-  # after every matrix leg has finished merging its platform into latest.json,
-  # so it operates on the full manifest and cannot be clobbered by a parallel
-  # macOS/Windows upload. Both linux keys point at the AppImage and both carry
-  # a signature, so both are patched.
-  patch-appimage-updater:
-    needs: publish-tauri
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Patch latest.json with re-signed AppImage signature
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "latest.json" --pattern "*_amd64.AppImage.sig" --clobber
-
-          SIG_FILE=$(ls ./*_amd64.AppImage.sig | head -n1)
-          NEW_SIG=$(cat "$SIG_FILE")
-
-          jq -e 'has("platforms") and (.platforms | has("linux-x86_64"))' latest.json >/dev/null \
-            || { echo "latest.json missing platforms.linux-x86_64"; exit 1; }
-
-          jq --arg sig "$NEW_SIG" '
-            .platforms["linux-x86_64"].signature = $sig
-            | if .platforms["linux-x86_64-appimage"]
-              then .platforms["linux-x86_64-appimage"].signature = $sig else . end
-          ' latest.json > latest.json.tmp
-          mv latest.json.tmp latest.json
-
-          gh release upload "$TAG" latest.json --clobber --repo "$GITHUB_REPOSITORY"

@@ -16,11 +16,11 @@ Examples: feat(terminal): add split panes / fix(explorer): close button alignmen
 <!-- How did you verify this works? "Ran tsc clean" is not enough on its own —
      describe the actual flows you exercised. -->
 
-- [ ] `pnpm exec tsc --noEmit` clean
+- [ ] `npm run check-types` clean
 - [ ] Manual smoke-test of the affected feature
 - [ ] (If you touched `src-tauri/`) `cargo test --locked` and `cargo clippy --all-targets --locked -- -D warnings` clean
 - [ ] (If you changed a `#[tauri::command]` signature) called out below so the FE caller can be updated in lockstep
-- [ ] (If UI) tested in `pnpm tauri dev`
+- [ ] (If UI) tested with `npm run tauri -- dev`
 - [ ] Platforms tested: <!-- macOS / Linux / Windows -->
 - [ ] Shells tested (if relevant): <!-- bash / zsh / fish / pwsh / cmd -->
 

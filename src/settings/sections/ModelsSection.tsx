@@ -673,15 +673,15 @@ function OpenRouterProviderCard({
                 className="h-8 min-w-0 text-[11.5px]"
               />
               <Button
-                size="icon"
                 variant="outline"
                 onClick={() => void addModel()}
                 disabled={!modelDraft.trim()}
                 title="Add model"
                 aria-label="Add OpenRouter model"
-                className="size-8"
+                className="h-8 gap-1.5 px-2.5 text-[11.5px]"
               >
                 <HugeiconsIcon icon={Add01Icon} size={13} strokeWidth={1.8} />
+                Add model
               </Button>
             </div>
             {addError ? (
