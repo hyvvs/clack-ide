@@ -1,7 +1,15 @@
 name: Arch Package
 
 on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (for example v0.8.0)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -13,6 +21,7 @@ concurrency:
 jobs:
   build-arch-package:
     name: Build native Arch package
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     timeout-minutes: 90
@@ -22,10 +31,17 @@ jobs:
       CARGO_HOME: /home/builder/.cargo
       RUSTUP_HOME: /home/builder/.rustup
       CARGO_TERM_COLOR: always
+    outputs:
+      release_tag: ${{ steps.release.outputs.tag }}
+      release_version: ${{ steps.release.outputs.version }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Install Arch build dependencies
         shell: bash
@@ -47,6 +63,34 @@ jobs:
             rustup \
             webkit2gtk-4.1 \
             xdg-utils
+
+      - name: Validate release tag and version
+        id: release
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          expected_tag="v$version"
+          if [[ "$REQUESTED_TAG" != "$expected_tag" ]]; then
+            echo "::error::Release ref $REQUESTED_TAG does not match package version $expected_tag."
+            exit 1
+          fi
+
+          if ! tag_commit="$(git rev-list -n 1 "$expected_tag")"; then
+            echo "::error::Release tag does not resolve: $expected_tag"
+            exit 1
+          fi
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$tag_commit" != "$head_commit" ]]; then
+            echo "::error::Release tag $expected_tag resolves to $tag_commit, but the checked-out commit is $head_commit."
+            exit 1
+          fi
+
+          echo "tag=$expected_tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "::notice::Validated $expected_tag at $head_commit"
 
       - name: Create unprivileged package builder
         shell: bash
@@ -313,3 +357,103 @@ jobs:
           pacman -Rns --noconfirm clack
           test ! -e /usr/bin/clack
           test ! -e /usr/lib/clack/clack-bin
+
+  publish-release:
+    name: Attach Arch package and publish release
+    needs: [build-arch-package, verify-clean-install]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.build-arch-package.outputs.release_tag }}
+      RELEASE_VERSION: ${{ needs.build-arch-package.outputs.release_version }}
+
+    steps:
+      - name: Download validated Arch package
+        uses: actions/download-artifact@v7
+        with:
+          name: clack-arch-package
+          path: arch-artifact
+
+      - name: Attach package and verify complete release
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="arch-artifact/clack-$RELEASE_VERSION-1-x86_64.pkg.tar.zst"
+          test -f "$package"
+          (
+            cd arch-artifact
+            sha256sum --check SHA256SUMS.txt
+          )
+
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "$RELEASE_TAG" \
+            "$package" \
+            arch-artifact/SHA256SUMS.txt \
+            arch-artifact/ARCH_PACKAGE_README.txt \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"
+
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name' > release-assets.txt
+
+          require_asset() {
+            local asset="$1"
+            if grep -Fxq "$asset" release-assets.txt; then
+              echo "::notice::Release asset found: $asset"
+              return
+            fi
+            echo "::error::Expected release asset is missing: $asset"
+            echo "::group::Available release assets"
+            cat release-assets.txt
+            echo "::endgroup::"
+            return 1
+          }
+
+          require_asset "Clack_${RELEASE_VERSION}_x64_en-US.msi"
+          require_asset "Clack_${RELEASE_VERSION}_x64-setup.exe"
+          require_asset "Clack_${RELEASE_VERSION}_amd64.deb"
+          require_asset "Clack-${RELEASE_VERSION}-1.x86_64.rpm"
+          require_asset "Clack_${RELEASE_VERSION}_amd64.AppImage"
+          require_asset "Clack_${RELEASE_VERSION}_aarch64.dmg"
+          require_asset "Clack_${RELEASE_VERSION}_x64.dmg"
+          require_asset "Clack_aarch64.app.tar.gz"
+          require_asset "Clack_x64.app.tar.gz"
+          require_asset "clack-${RELEASE_VERSION}-1-x86_64.pkg.tar.zst"
+          require_asset "SHA256SUMS.txt"
+          require_asset "ARCH_PACKAGE_README.txt"
+
+      - name: Publish completed release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<EOF
+          Clack $RELEASE_VERSION packages for Windows, Linux, macOS, and native Arch/CachyOS.
+
+          The native Arch package installs the compiled launcher at /usr/bin/clack and the application binary at /usr/lib/clack/clack-bin. On proprietary NVIDIA with Wayland, the launcher conditionally applies the process-local explicit-sync workaround.
+
+          macOS signing and notarization are applied only when the repository's Apple release credentials are configured. Unsigned macOS packages may require explicit approval in Gatekeeper.
+
+          The AppImage is experimental on affected proprietary-NVIDIA/Wayland systems. Prefer the native Arch package on Arch or CachyOS.
+          EOF
+
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Clack $RELEASE_TAG" \
+            --notes-file release-notes.md
+
+          is_draft="$(gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json isDraft \
+            --jq '.isDraft')"
+          if [[ "$is_draft" == "true" ]]; then
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft=false
+            echo "::notice::Published release $RELEASE_TAG"
+          else
+            echo "::notice::Release $RELEASE_TAG was already published"
+          fi
