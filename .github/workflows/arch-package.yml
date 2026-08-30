@@ -371,6 +371,7 @@ jobs:
     needs: [build-arch-package, verify-clean-install]
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
@@ -465,3 +466,13 @@ jobs:
           else
             echo "::notice::Release $RELEASE_TAG was already published"
           fi
+
+      - name: Dispatch Nix source update
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run update-nix-sources.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            --field tag="$RELEASE_TAG"
+          echo "::notice::Dispatched Nix source update for $RELEASE_TAG"
