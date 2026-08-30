@@ -78,6 +78,8 @@ jobs:
             exit 1
           fi
 
+          git fetch --force origin \
+            "refs/tags/$expected_tag:refs/tags/$expected_tag"
           if ! tag_commit="$(git rev-list -n 1 "$expected_tag")"; then
             echo "::error::Release tag does not resolve: $expected_tag"
             exit 1
