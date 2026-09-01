@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
   createContext,
   useCallback,
@@ -7,32 +6,31 @@ import {
   useRef,
   useState,
 } from "react";
+import { toast } from "sonner";
 import { useWhisperRecording } from "../hooks/useWhisperRecording";
+import {
+  ACCEPTED_ATTACHMENT_FILES,
+  ATTACHMENT_LIMITS,
+  type AttachmentRecord,
+  createSelectionAttachment,
+  formatSelectionAttachmentBlock,
+  formatTextAttachmentBlock,
+  isDeliverableAttachment,
+  mergeAttachmentRecords,
+  normalizePickerAttachment,
+  normalizeWorkspaceAttachment,
+} from "./attachments";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
 import { cancelRun, useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
-import { currentWorkspaceEnv } from "@/modules/workspace";
-
-export type FileAttachment = {
-  id: string;
-  name: string;
-  kind: "image" | "text" | "selection";
-  mediaType: string;
-  url?: string;
-  text?: string;
-  size: number;
-  /** For kind === "selection": which surface it came from. */
-  source?: "terminal" | "editor";
-};
 
 type MessagePart =
   | { type: "text"; text: string }
   | { type: "file"; mediaType: string; url: string; filename?: string };
 
-export const MAX_TEXT_INLINE = 200_000;
-export const ACCEPTED_FILES =
-  "image/*,.txt,.md,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cpp,.h,.hpp,.html,.css,.csv,.log,.env,.config,.conf,.ini,Dockerfile,.dockerfile";
+export const MAX_TEXT_INLINE = ATTACHMENT_LIMITS.maxTextBytes;
+export const ACCEPTED_FILES = ACCEPTED_ATTACHMENT_FILES;
 
 type Voice = ReturnType<typeof useWhisperRecording>;
 
@@ -40,7 +38,7 @@ type ComposerCtx = {
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   value: string;
   setValue: React.Dispatch<React.SetStateAction<string>>;
-  files: FileAttachment[];
+  files: AttachmentRecord[];
   addFiles: (list: FileList | null) => Promise<void>;
   /** Attach a file by absolute path — used by the file explorer's "Attach to Agent". */
   attachFileByPath: (path: string) => Promise<void>;
@@ -91,7 +89,8 @@ export function AiComposerProvider({
     status === "thinking" || status === "streaming" || runState === "running";
 
   const [value, setValue] = useState("");
-  const [files, setFiles] = useState<FileAttachment[]>([]);
+  const [files, setFiles] = useState<AttachmentRecord[]>([]);
+  const filesRef = useRef<AttachmentRecord[]>([]);
   const [pickedSnippets, setPickedSnippets] = useState<Snippet[]>([]);
   const [pickedCommands, setPickedCommands] = useState<SlashCommandMeta[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -102,39 +101,33 @@ export function AiComposerProvider({
   const pendingSelections = useChatStore((s) => s.pendingSelections);
   const consumeSelections = useChatStore((s) => s.consumeSelections);
 
-  const attachFileByPath = useCallback(async (path: string) => {
-    try {
-      type ReadResult =
-        | { kind: "text"; content: string; size: number }
-        | { kind: "binary"; size: number }
-        | { kind: "toolarge"; size: number; limit: number };
-      const result = await invoke<ReadResult>("fs_read_file", {
-        path,
-        workspace: currentWorkspaceEnv(),
-      });
-      if (result.kind !== "text") {
-        console.warn("attachFileByPath: skipped non-text file", path, result);
-        return;
-      }
-      const name = path.split("/").pop() || path;
-      const id = `path-${path}`;
-      setFiles((prev) => {
-        if (prev.some((f) => f.id === id)) return prev;
-        const att: FileAttachment = {
-          id,
-          name,
-          kind: "text",
-          mediaType: "text/plain",
-          text: result.content,
-          size: result.size,
-        };
-        return [...prev, att];
-      });
-      useChatStore.getState().focusInput();
-    } catch (e) {
-      console.error("attachFileByPath failed:", e);
+  const appendAttachments = useCallback((incoming: AttachmentRecord[]) => {
+    const merged = mergeAttachmentRecords(filesRef.current, incoming);
+    filesRef.current = merged.records;
+    setFiles(merged.records);
+    for (const record of incoming) {
+      if (!record.error) continue;
+      const message = `${record.displayName}: ${record.error.message}`;
+      if (record.processingState === "unsupported") toast.warning(message);
+      else toast.error(message);
+    }
+    for (const rejection of merged.rejected) {
+      toast.error(`${rejection.displayName}: ${rejection.message}`);
     }
   }, []);
+
+  const attachFileByPath = useCallback(
+    async (path: string) => {
+      const workspaceRoot = useChatStore.getState().live.getWorkspaceRoot();
+      const attachment = await normalizeWorkspaceAttachment(
+        path,
+        workspaceRoot,
+      );
+      appendAttachments([attachment]);
+      useChatStore.getState().focusInput();
+    },
+    [appendAttachments],
+  );
 
   useEffect(() => {
     if (!consumeExternalEvents) return;
@@ -173,25 +166,21 @@ export function AiComposerProvider({
     if (pendingSelections.length === 0) return;
     const drained = consumeSelections();
     if (drained.length === 0) return;
-    setFiles((prev) => {
-      const existing = new Set(prev.map((f) => f.id));
-      const next: FileAttachment[] = [];
-      for (const sel of drained) {
-        if (existing.has(sel.id)) continue;
-        next.push({
-          id: sel.id,
-          name:
-            sel.source === "editor" ? "Editor selection" : "Terminal selection",
-          kind: "selection",
-          mediaType: "text/plain",
-          text: sel.text,
-          size: sel.text.length,
-          source: sel.source,
-        });
-      }
-      return next.length ? [...prev, ...next] : prev;
-    });
-  }, [consumeExternalEvents, pendingSelections, consumeSelections]);
+    appendAttachments(
+      drained.map((selection) =>
+        createSelectionAttachment({
+          id: selection.id,
+          text: selection.text,
+          surface: selection.source,
+        }),
+      ),
+    );
+  }, [
+    appendAttachments,
+    consumeExternalEvents,
+    pendingSelections,
+    consumeSelections,
+  ]);
 
   const voice = useWhisperRecording({
     onResult: (transcript: string) => {
@@ -202,16 +191,18 @@ export function AiComposerProvider({
 
   const addFiles = async (list: FileList | null) => {
     if (!list) return;
-    const next: FileAttachment[] = [];
+    const next: AttachmentRecord[] = [];
     for (const f of Array.from(list)) {
-      const att = await readAttachment(f);
-      if (att) next.push(att);
+      next.push(await normalizePickerAttachment(f));
     }
-    if (next.length) setFiles((prev) => [...prev, ...next]);
+    if (next.length) appendAttachments(next);
   };
 
-  const removeFile = (id: string) =>
-    setFiles((prev) => prev.filter((f) => f.id !== id));
+  const removeFile = (id: string) => {
+    const next = filesRef.current.filter((file) => file.id !== id);
+    filesRef.current = next;
+    setFiles(next);
+  };
 
   const addSnippet = (s: Snippet) =>
     setPickedSnippets((prev) =>
@@ -232,7 +223,7 @@ export function AiComposerProvider({
     const trimmed = value.trim();
     if (
       !trimmed &&
-      files.length === 0 &&
+      !files.some(isDeliverableAttachment) &&
       pickedSnippets.length === 0 &&
       pickedCommands.length === 0
     )
@@ -267,17 +258,21 @@ export function AiComposerProvider({
 
     const parts: MessagePart[] = [];
     const fileBlocks = files
-      .filter((f) => f.kind === "text")
-      .map(
+      .filter(
         (f) =>
-          `<file name="${f.name}" mediaType="${f.mediaType}">\n${f.text ?? ""}\n</file>`,
-      );
+          f.processingState === "ready" &&
+          f.contentKind === "text" &&
+          f.textRepresentation !== undefined,
+      )
+      .map(formatTextAttachmentBlock);
     const selectionBlocks = files
-      .filter((f) => f.kind === "selection")
-      .map(
+      .filter(
         (f) =>
-          `<selection source="${f.source ?? "terminal"}">\n${f.text ?? ""}\n</selection>`,
-      );
+          f.processingState === "ready" &&
+          f.contentKind === "selection" &&
+          f.textRepresentation !== undefined,
+      )
+      .map(formatSelectionAttachmentBlock);
     const { body: bodyAfterTokens, blocks: snippetBlocks } =
       expandSnippetTokens(effectiveText, useSnippetsStore.getState().snippets);
     const seenHandles = new Set<string>();
@@ -307,12 +302,16 @@ export function AiComposerProvider({
     if (composed) parts.push({ type: "text", text: composed });
 
     for (const f of files) {
-      if (f.kind === "image" && f.url) {
+      if (
+        f.processingState === "ready" &&
+        f.contentKind === "image" &&
+        f.imageRepresentation
+      ) {
         parts.push({
           type: "file",
-          mediaType: f.mediaType,
-          url: f.url,
-          filename: f.name,
+          mediaType: f.detectedMediaType,
+          url: f.imageRepresentation,
+          filename: f.displayName,
         });
       }
     }
@@ -328,6 +327,7 @@ export function AiComposerProvider({
       await sendMessageToSession(sessionId, { role: "user", parts });
     })();
     setValue("");
+    filesRef.current = [];
     setFiles([]);
     setPickedSnippets([]);
     setPickedCommands([]);
@@ -342,7 +342,7 @@ export function AiComposerProvider({
   const canSend =
     !isBusy &&
     (value.trim().length > 0 ||
-      files.length > 0 ||
+      files.some(isDeliverableAttachment) ||
       pickedSnippets.length > 0 ||
       pickedCommands.length > 0);
 
@@ -368,38 +368,4 @@ export function AiComposerProvider({
   };
 
   return <Ctx.Provider value={ctx}>{children}</Ctx.Provider>;
-}
-
-async function readAttachment(file: File): Promise<FileAttachment | null> {
-  const id = `${file.name}-${file.size}-${file.lastModified}`;
-  if (file.type.startsWith("image/")) {
-    const url = await readAsDataURL(file);
-    return {
-      id,
-      name: file.name,
-      kind: "image",
-      mediaType: file.type || "image/png",
-      url,
-      size: file.size,
-    };
-  }
-  if (file.size > MAX_TEXT_INLINE) return null;
-  const text = await file.text();
-  return {
-    id,
-    name: file.name,
-    kind: "text",
-    mediaType: file.type || "text/plain",
-    text,
-    size: file.size,
-  };
-}
-
-function readAsDataURL(file: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
 }

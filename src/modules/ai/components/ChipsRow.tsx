@@ -1,14 +1,19 @@
-import { CodeIcon, HashtagIcon, TerminalIcon } from "@hugeicons/core-free-icons";
+import {
+  AlertCircleIcon,
+  CodeIcon,
+  HashtagIcon,
+  TerminalIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
-import type { FileAttachment } from "../lib/composer";
+import { type AttachmentRecord, formatBytes } from "../lib/attachments";
 import type { Snippet } from "../lib/snippets";
 import { Chip } from "./Chip";
 
 type CommandChip = { name: string; label: string; icon: typeof HashtagIcon };
 
 type Props = {
-  files: FileAttachment[];
+  files: AttachmentRecord[];
   onRemoveFile: (id: string) => void;
   snippets: Snippet[];
   onRemoveSnippet: (id: string) => void;
@@ -60,11 +65,22 @@ export function ChipsRow({
         <Chip
           key={f.id}
           iconNode={fileIcon(f)}
+          title={
+            f.error?.message ??
+            `${f.detectedMediaType} · ${formatBytes(f.byteSize)}`
+          }
           onRemove={() => onRemoveFile(f.id)}
         >
-          {f.name}
-          {f.kind === "selection" && f.text ? (
-            <span className="ml-1 opacity-60">· {selLineCount(f.text)}L</span>
+          {f.displayName}
+          {f.contentKind === "selection" && f.textRepresentation ? (
+            <span className="ml-1 opacity-60">
+              · {selLineCount(f.textRepresentation)}L
+            </span>
+          ) : null}
+          {f.processingState !== "ready" ? (
+            <span className="ml-1 text-destructive">
+              · {f.processingState === "unsupported" ? "Unsupported" : "Failed"}
+            </span>
           ) : null}
         </Chip>
       ))}
@@ -72,14 +88,38 @@ export function ChipsRow({
   );
 }
 
-function fileIcon(f: FileAttachment): ReactNode {
-  if (f.kind === "image" && f.url) {
-    return <img src={f.url} alt="" className="size-4 shrink-0 rounded object-cover" />;
-  }
-  if (f.kind === "selection") {
+function fileIcon(f: AttachmentRecord): ReactNode {
+  if (f.processingState !== "ready") {
     return (
       <HugeiconsIcon
-        icon={f.source === "editor" ? CodeIcon : TerminalIcon}
+        icon={AlertCircleIcon}
+        size={11}
+        strokeWidth={1.75}
+        className="shrink-0 text-destructive"
+      />
+    );
+  }
+  if (
+    f.contentKind === "image" &&
+    f.imageRepresentation &&
+    f.detectedMediaType !== "image/svg+xml"
+  ) {
+    return (
+      <img
+        src={f.imageRepresentation}
+        alt=""
+        className="size-4 shrink-0 rounded object-cover"
+      />
+    );
+  }
+  if (f.contentKind === "selection") {
+    return (
+      <HugeiconsIcon
+        icon={
+          f.source.kind === "selection" && f.source.surface === "editor"
+            ? CodeIcon
+            : TerminalIcon
+        }
         size={11}
         strokeWidth={1.75}
         className="shrink-0 opacity-80"
@@ -88,7 +128,7 @@ function fileIcon(f: FileAttachment): ReactNode {
   }
   return (
     <span className="shrink-0 font-mono text-[10px] opacity-70">
-      {extOf(f.name)}
+      {extOf(f.displayName)}
     </span>
   );
 }

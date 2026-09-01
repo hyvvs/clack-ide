@@ -11,7 +11,6 @@ import { AiInputBarConnect } from "@/modules/ai";
 import { Chip } from "@/modules/ai/components/Chip";
 import { ChipsRow } from "@/modules/ai/components/ChipsRow";
 import { useComposer } from "@/modules/ai/lib/composer";
-import { prepareSessionChat } from "@/modules/ai/store/chatRuntime";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { useBlockController } from "@/modules/terminal/lib/blockController";
 import { focusLeafInput } from "@/modules/terminal/lib/useTerminalSession";
@@ -111,6 +110,9 @@ export function WorkspaceInputBar({
   const dispatcherTitle = activeSession?.title?.trim() || "New chat";
 
   const selectDispatcherSession = async (sessionId: string) => {
+    const { prepareSessionChat } = await import(
+      "@/modules/ai/store/chatRuntime"
+    );
     await prepareSessionChat(sessionId);
     switchSession(sessionId);
     requestAnimationFrame(() => c.textareaRef.current?.focus());

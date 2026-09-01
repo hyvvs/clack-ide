@@ -19,7 +19,7 @@ export function explorerActionEligibility(
     canOpenFolderInTerminal: Boolean(single?.isDir),
     canOpenAsWorkspace: Boolean(single?.isDir),
     canRevealSingle: Boolean(single),
-    canAttachSingle: Boolean(single),
+    canAttachSingle: Boolean(single && !single.isDir),
     canDelete: entries.length > 0,
     canCopyPaths: entries.length > 0,
   };

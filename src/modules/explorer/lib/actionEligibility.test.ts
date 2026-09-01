@@ -9,6 +9,7 @@ describe("explorerActionEligibility", () => {
       canOpenAsWorkspace: true,
       canOpenFolderInTerminal: true,
       canOpenFile: false,
+      canAttachSingle: false,
     });
   });
 
@@ -18,6 +19,7 @@ describe("explorerActionEligibility", () => {
     ).toMatchObject({
       canOpenFile: true,
       canOpenAsWorkspace: false,
+      canAttachSingle: true,
     });
   });
 
