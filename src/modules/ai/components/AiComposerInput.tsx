@@ -2,13 +2,14 @@ import { Popover, PopoverAnchor } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { usePresence } from "@/lib/usePresence";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useWorkspaceFiles } from "../hooks/useWorkspaceFiles";
 import {
   transferContainsFiles,
   transferContainsImage,
 } from "../lib/attachmentTransfer";
 import { useComposer } from "../lib/composer";
+import { resizeComposerTextarea } from "../lib/composerTextareaSizing";
 import { SLASH_COMMANDS } from "../lib/slashCommands";
 import { useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
@@ -96,8 +97,8 @@ export function AiComposerInput({
     return () => window.clearTimeout(t);
   }, [fileTrigger]);
 
-  useEffect(() => {
-    autoresize(c.textareaRef.current, c.value);
+  useLayoutEffect(() => {
+    resizeComposerTextarea(c.textareaRef.current, c.value);
   }, [c.value, c.textareaRef]);
 
   const updateTrigger = () => {
@@ -323,7 +324,7 @@ export function AiComposerInput({
               placeholder={placeholder}
               rows={1}
               className={cn(
-                "max-h-40 flex-1 resize-none bg-transparent text-[13px] leading-relaxed outline-none",
+                "min-h-[22px] max-h-40 flex-1 resize-none bg-transparent text-[13px] leading-relaxed outline-none",
                 "placeholder:text-muted-foreground/60",
               )}
             />
@@ -366,10 +367,4 @@ export function AiComposerInput({
       )}
     </>
   );
-}
-
-function autoresize(el: HTMLTextAreaElement | null, expectedValue: string) {
-  if (!el || el.value !== expectedValue) return;
-  el.style.height = "auto";
-  el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
 }
