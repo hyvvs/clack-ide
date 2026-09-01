@@ -4,6 +4,10 @@ import { cn } from "@/lib/utils";
 import { usePresence } from "@/lib/usePresence";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkspaceFiles } from "../hooks/useWorkspaceFiles";
+import {
+  transferContainsFiles,
+  transferContainsImage,
+} from "../lib/attachmentTransfer";
 import { useComposer } from "../lib/composer";
 import { SLASH_COMMANDS } from "../lib/slashCommands";
 import { useChatStore } from "../store/chatStore";
@@ -77,6 +81,7 @@ export function AiComposerInput({
 
   const [trigger, setTrigger] = useState<SnippetTrigger | null>(null);
   const [fileTrigger, setFileTrigger] = useState<FileTrigger | null>(null);
+  const [fileDragActive, setFileDragActive] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const workspaceFiles = useWorkspaceFiles(workspaceRoot, fileTrigger !== null);
 
@@ -227,7 +232,13 @@ export function AiComposerInput({
     <>
       <Popover open={pickerOpen}>
         <PopoverAnchor asChild>
-          <div className="flex items-start gap-2">
+          <div
+            className={cn(
+              "flex items-start gap-2 rounded-md outline outline-1 outline-transparent transition-colors",
+              fileDragActive &&
+                "bg-primary/10 outline-[color:var(--clack-accent)]",
+            )}
+          >
             <textarea
               ref={c.textareaRef}
               value={c.value}
@@ -235,6 +246,40 @@ export function AiComposerInput({
               onKeyUp={updateTrigger}
               onClick={updateTrigger}
               onSelect={updateTrigger}
+              onDragEnter={(event) => {
+                if (
+                  !transferContainsFiles(Array.from(event.dataTransfer.types))
+                ) {
+                  return;
+                }
+                event.preventDefault();
+                setFileDragActive(true);
+              }}
+              onDragOver={(event) => {
+                if (
+                  !transferContainsFiles(Array.from(event.dataTransfer.types))
+                ) {
+                  return;
+                }
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "copy";
+              }}
+              onDragLeave={() => setFileDragActive(false)}
+              onDrop={(event) => {
+                if (
+                  !transferContainsFiles(Array.from(event.dataTransfer.types))
+                ) {
+                  return;
+                }
+                event.preventDefault();
+                setFileDragActive(false);
+                void c.addFiles(event.dataTransfer.files);
+              }}
+              onPaste={(event) => {
+                if (!transferContainsImage(event.clipboardData.files)) return;
+                event.preventDefault();
+                void c.addFiles(event.clipboardData.files);
+              }}
               onKeyDown={(e) => {
                 if (pickerOpen) {
                   const items = fileTrigger ? filteredFiles : filteredItems;

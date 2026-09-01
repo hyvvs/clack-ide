@@ -56,4 +56,18 @@ describe("ChipsRow model capability state", () => {
     expect(html).not.toContain("Unsupported by model");
     expect(html).not.toContain("Support unknown");
   });
+
+  it("shows processing while the shared normalizer is reading a file", () => {
+    const html = renderToStaticMarkup(
+      <ChipsRow
+        files={[{ ...IMAGE, processingState: "processing" }]}
+        onRemoveFile={() => {}}
+        snippets={[]}
+        onRemoveSnippet={() => {}}
+        commands={[]}
+        onRemoveCommand={() => {}}
+      />,
+    );
+    expect(html).toContain("Processing");
+  });
 });

@@ -6,6 +6,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
+import { Spinner } from "@/components/ui/spinner";
 import { type AttachmentRecord, formatBytes } from "../lib/attachments";
 import type { AttachmentCapabilityStatus } from "../lib/modelCapabilities";
 import type { Snippet } from "../lib/snippets";
@@ -82,8 +83,14 @@ export function ChipsRow({
             </span>
           ) : null}
           {f.processingState !== "ready" ? (
-            <span className="ml-1 text-destructive">
-              · {f.processingState === "unsupported" ? "Unsupported" : "Failed"}
+            <span
+              className={
+                f.processingState === "processing"
+                  ? "ml-1 opacity-60"
+                  : "ml-1 text-destructive"
+              }
+            >
+              · {processingLabel(f.processingState)}
             </span>
           ) : attachmentCapabilities?.[f.id]?.state === "blocked" ? (
             <span className="ml-1 text-destructive">
@@ -97,6 +104,9 @@ export function ChipsRow({
 }
 
 function fileIcon(f: AttachmentRecord): ReactNode {
+  if (f.processingState === "processing") {
+    return <Spinner className="size-3 shrink-0" />;
+  }
   if (f.processingState !== "ready") {
     return (
       <HugeiconsIcon
@@ -139,6 +149,12 @@ function fileIcon(f: AttachmentRecord): ReactNode {
       {extOf(f.displayName)}
     </span>
   );
+}
+
+function processingLabel(state: AttachmentRecord["processingState"]): string {
+  if (state === "processing") return "Processing";
+  if (state === "unsupported") return "Unsupported";
+  return "Failed";
 }
 
 function selLineCount(text: string): number {

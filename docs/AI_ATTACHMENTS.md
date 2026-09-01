@@ -70,6 +70,20 @@ binary references are metadata-only at transport level; current ingestion
 continues to mark those formats unsupported until their dedicated processors
 exist.
 
+## Image input routes
+
+PNG, JPEG, WEBP, GIF, and SVG files can enter the shared normalizer through the
+file picker, a file dropped onto the AI composer, an image pasted from the
+clipboard, the workspace `@` picker, or Explorer's Attach to Agent action. A
+picker, drop, or paste file appears immediately with a `Processing` chip and is
+then replaced in place by its ready or specific error state.
+
+Raster images receive bounded previews and are delivered as image parts only
+under the capability policy above. SVG is handled differently: Clack validates
+bounded strict UTF-8 source, never embeds the SVG as active composer markup,
+and delivers its source as text. This lets text models inspect SVG structure
+without claiming that they saw a rendered image.
+
 Identical content is deduplicated. In-memory leases protect unsent and active
 content from cleanup. Startup and session deletion reconcile the store against
 persisted references; unreferenced files and abandoned staging files are

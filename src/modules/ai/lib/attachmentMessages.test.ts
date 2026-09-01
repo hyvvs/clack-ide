@@ -135,6 +135,30 @@ describe("attachment message references", () => {
     });
   });
 
+  it("delivers SVG as bounded source text without creating an image URL", async () => {
+    const svgRecord = {
+      ...record("image"),
+      displayName: "icon.svg",
+      detectedMediaType: "image/svg+xml",
+      byteSize: 11,
+      contentRef: { id: HASH, contentHash: HASH, byteSize: 11 },
+    };
+    const toDataUrl = vi.fn();
+    const materialized = await materializeAttachmentMessages(
+      [messageWith(toAttachmentMessagePart(svgRecord))],
+      { ...VISION_CAPABILITIES, image: "unsupported" },
+      {
+        loadContent: async () => new TextEncoder().encode("<svg></svg>"),
+        toDataUrl,
+      },
+    );
+    expect(materialized[0].parts[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("<svg></svg>"),
+    });
+    expect(toDataUrl).not.toHaveBeenCalled();
+  });
+
   it("collects deduplicated content IDs from persisted messages", () => {
     const reference = toAttachmentMessagePart(record("text"));
     expect(

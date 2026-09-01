@@ -29,7 +29,11 @@ export type AttachmentContentKind =
   | "archive"
   | "binary";
 
-export type AttachmentProcessingState = "ready" | "failed" | "unsupported";
+export type AttachmentProcessingState =
+  | "processing"
+  | "ready"
+  | "failed"
+  | "unsupported";
 
 export type AttachmentSource =
   | { kind: "picker"; token: string }
@@ -133,6 +137,42 @@ function newAttachmentId(): string {
     return `attachment-${crypto.randomUUID()}`;
   }
   return `attachment-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function pickerDisplayName(file: File): string {
+  const name = file.name.trim();
+  if (name) return name;
+  if (file.type === "image/jpeg") return "Pasted image.jpg";
+  if (file.type === "image/webp") return "Pasted image.webp";
+  if (file.type === "image/gif") return "Pasted image.gif";
+  if (file.type === "image/svg+xml") return "Pasted image.svg";
+  return "Pasted image.png";
+}
+
+function pickerToken(
+  file: File,
+  displayName = pickerDisplayName(file),
+): string {
+  return `${displayName}:${file.size}:${file.lastModified}`;
+}
+
+export function createPendingPickerAttachment(file: File): AttachmentRecord {
+  const displayName = pickerDisplayName(file);
+  return {
+    id: newAttachmentId(),
+    source: { kind: "picker", token: pickerToken(file, displayName) },
+    displayName,
+    detectedMediaType: file.type || "application/octet-stream",
+    byteSize: file.size,
+    contentKind: "binary",
+    processingState: "processing",
+    security: {
+      secretPathCheck: "not-applicable",
+      workspaceScopeCheck: "not-applicable",
+      mimeSniffed: false,
+    },
+    createdAt: Date.now(),
+  };
 }
 
 function basename(path: string): string {
@@ -548,23 +588,61 @@ export async function normalizeAttachmentBytes(input: {
       options,
     });
   }
-  if (detected.mediaType !== "image/svg+xml") {
-    if (
-      !detected.imageDimensions ||
-      !validImageDimensions(detected.imageDimensions)
-    ) {
+  if (detected.mediaType === "image/svg+xml") {
+    if (bytes.byteLength > ATTACHMENT_LIMITS.maxTextBytes) {
       return failureRecord({
         source,
         displayName,
         byteSize: bytes.byteLength,
         contentKind: "image",
         mediaType: detected.mediaType,
-        code: "image_dimensions_unsafe",
-        message: `Image dimensions are malformed or exceed the ${formatBytes(ATTACHMENT_LIMITS.maxDecodedImageBytes)} decoded-image budget.`,
+        code: "svg_attachment_too_large",
+        message: `SVG attachments must be ${formatBytes(ATTACHMENT_LIMITS.maxTextBytes)} or smaller.`,
         security,
         options,
       });
     }
+    if (strictText(bytes) === null) {
+      return failureRecord({
+        source,
+        displayName,
+        byteSize: bytes.byteLength,
+        contentKind: "image",
+        mediaType: detected.mediaType,
+        state: "unsupported",
+        code: "invalid_svg_encoding",
+        message: "SVG attachments must contain valid UTF-8 source.",
+        security,
+        options,
+      });
+    }
+    return {
+      id: options?.id ?? newAttachmentId(),
+      source,
+      displayName,
+      detectedMediaType: detected.mediaType,
+      byteSize: bytes.byteLength,
+      contentKind: "image",
+      processingState: "ready",
+      security,
+      createdAt: options?.createdAt ?? Date.now(),
+    };
+  }
+  if (
+    !detected.imageDimensions ||
+    !validImageDimensions(detected.imageDimensions)
+  ) {
+    return failureRecord({
+      source,
+      displayName,
+      byteSize: bytes.byteLength,
+      contentKind: "image",
+      mediaType: detected.mediaType,
+      code: "image_dimensions_unsafe",
+      message: `Image dimensions are malformed or exceed the ${formatBytes(ATTACHMENT_LIMITS.maxDecodedImageBytes)} decoded-image budget.`,
+      security,
+      options,
+    });
   }
   try {
     const ownedBytes = Uint8Array.from(bytes);
@@ -600,16 +678,18 @@ export async function normalizeAttachmentBytes(input: {
 
 export async function normalizePickerAttachment(
   file: File,
+  options?: Pick<NormalizeOptions, "id" | "createdAt">,
 ): Promise<AttachmentRecord> {
+  const displayName = pickerDisplayName(file);
   const source: AttachmentSource = {
     kind: "picker",
-    token: `${file.name}:${file.size}:${file.lastModified}`,
+    token: pickerToken(file, displayName),
   };
-  const nameSafety = checkReadable(file.name);
+  const nameSafety = checkReadable(displayName);
   if (!nameSafety.ok) {
     return failureRecord({
       source,
-      displayName: file.name,
+      displayName,
       byteSize: file.size,
       code: "secret_path_rejected",
       message: nameSafety.reason,
@@ -618,12 +698,13 @@ export async function normalizePickerAttachment(
         workspaceScopeCheck: "not-applicable",
         mimeSniffed: false,
       },
+      options,
     });
   }
   if (file.size > ATTACHMENT_LIMITS.maxIndividualBytes) {
     return failureRecord({
       source,
-      displayName: file.name,
+      displayName,
       byteSize: file.size,
       code: "attachment_too_large",
       message: `Files must be ${formatBytes(ATTACHMENT_LIMITS.maxIndividualBytes)} or smaller.`,
@@ -632,21 +713,39 @@ export async function normalizePickerAttachment(
         workspaceScopeCheck: "not-applicable",
         mimeSniffed: false,
       },
+      options,
     });
   }
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const normalized = await normalizeAttachmentBytes({
-    source,
-    displayName: file.name,
-    bytes,
-    reportedMediaType: file.type,
-    security: {
-      secretPathCheck: "passed",
-      workspaceScopeCheck: "not-applicable",
-      mimeSniffed: true,
-    },
-  });
-  return persistAttachmentRecord(normalized, bytes);
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const normalized = await normalizeAttachmentBytes({
+      source,
+      displayName,
+      bytes,
+      reportedMediaType: file.type,
+      security: {
+        secretPathCheck: "passed",
+        workspaceScopeCheck: "not-applicable",
+        mimeSniffed: true,
+      },
+      options,
+    });
+    return persistAttachmentRecord(normalized, bytes);
+  } catch (error) {
+    return failureRecord({
+      source,
+      displayName,
+      byteSize: file.size,
+      code: "attachment_read_failed",
+      message: error instanceof Error ? error.message : String(error),
+      security: {
+        secretPathCheck: "passed",
+        workspaceScopeCheck: "not-applicable",
+        mimeSniffed: false,
+      },
+      options,
+    });
+  }
 }
 
 function rawBytes(value: ArrayBuffer | Uint8Array): Uint8Array {

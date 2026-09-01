@@ -71,6 +71,11 @@ export function attachmentCapabilityStatus(
     return readyStatus("Text content is ready for the selected model.");
   }
   if (attachment.contentKind === "image") {
+    if (attachment.detectedMediaType === "image/svg+xml") {
+      return readyStatus(
+        "SVG source is ready as bounded text for the selected model.",
+      );
+    }
     return supportStatus(
       capabilities.image,
       "Image is ready for the selected model.",

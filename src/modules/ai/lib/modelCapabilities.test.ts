@@ -94,6 +94,19 @@ describe("model attachment capabilities", () => {
     );
   });
 
+  it("routes SVG as bounded source text without claiming raster vision", () => {
+    const svg = {
+      ...attachment("image"),
+      displayName: "icon.svg",
+      detectedMediaType: "image/svg+xml",
+    };
+    const model = resolveModelInputCapabilities("gpt-5.3-codex");
+    expect(attachmentCapabilityStatus(svg, model)).toMatchObject({
+      state: "ready",
+      support: "supported",
+    });
+  });
+
   it("returns the first blocked ready attachment and ignores ingestion failures", () => {
     const failed = {
       ...attachment("image"),

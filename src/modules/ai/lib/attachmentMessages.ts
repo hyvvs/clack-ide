@@ -177,12 +177,22 @@ export async function materializeAttachmentMessages(
         continue;
       }
       if (reference.contentKind === "image") {
-        parts.push({
-          type: "file",
-          mediaType: reference.mediaType,
-          filename: reference.displayName,
-          url: await deps.toDataUrl(bytes, reference.mediaType),
-        });
+        if (reference.mediaType === "image/svg+xml") {
+          parts.push({
+            type: "text",
+            text: formatTextBlock(
+              reference,
+              decodeStoredText(bytes, reference.displayName),
+            ),
+          });
+        } else {
+          parts.push({
+            type: "file",
+            mediaType: reference.mediaType,
+            filename: reference.displayName,
+            url: await deps.toDataUrl(bytes, reference.mediaType),
+          });
+        }
       }
     }
     materialized.push(

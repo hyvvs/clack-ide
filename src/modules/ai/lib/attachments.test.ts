@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ATTACHMENT_LIMITS,
   type AttachmentRecord,
+  createPendingPickerAttachment,
   detectAttachment,
   formatTextAttachmentBlock,
   mergeAttachmentRecords,
@@ -77,6 +78,22 @@ describe("attachment detection", () => {
 });
 
 describe("attachment normalization", () => {
+  it("creates an immediate processing record for picker, drop, and paste files", () => {
+    const bytes = png();
+    const pending = createPendingPickerAttachment(
+      new File([bytes.buffer as ArrayBuffer], "screen.png", {
+        type: "image/png",
+        lastModified: 7,
+      }),
+    );
+    expect(pending).toMatchObject({
+      displayName: "screen.png",
+      byteSize: 24,
+      processingState: "processing",
+      security: { mimeSniffed: false },
+    });
+  });
+
   it("keeps bounded strict UTF-8 text and its line breaks", async () => {
     const normalized = await normalizeAttachmentBytes({
       source: { kind: "picker", token: "notes" },
@@ -122,6 +139,39 @@ describe("attachment normalization", () => {
       error: { code: "image_dimensions_unsafe" },
     });
     expect(dataUrl).not.toHaveBeenCalled();
+  });
+
+  it("accepts bounded UTF-8 SVG source without rendering a preview URL", async () => {
+    const dataUrl = vi.fn();
+    const normalized = await normalizeAttachmentBytes({
+      source: { kind: "picker", token: "svg" },
+      displayName: "icon.svg",
+      bytes: new TextEncoder().encode('<svg viewBox="0 0 1 1"></svg>'),
+      reportedMediaType: "image/svg+xml",
+      security: SECURITY,
+      options: { dataUrl },
+    });
+    expect(normalized).toMatchObject({
+      processingState: "ready",
+      contentKind: "image",
+      detectedMediaType: "image/svg+xml",
+    });
+    expect(normalized.imageRepresentation).toBeUndefined();
+    expect(dataUrl).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed SVG encoding", async () => {
+    const normalized = await normalizeAttachmentBytes({
+      source: { kind: "picker", token: "svg-bad" },
+      displayName: "icon.svg",
+      bytes: Uint8Array.from([0x3c, 0x73, 0x76, 0x67, 0x3e, 0xff]),
+      reportedMediaType: "image/svg+xml",
+      security: SECURITY,
+    });
+    expect(normalized).toMatchObject({
+      processingState: "unsupported",
+      error: { code: "invalid_svg_encoding" },
+    });
   });
 
   it("keeps unsupported binaries explicit", async () => {

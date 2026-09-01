@@ -13,6 +13,7 @@ import {
   ACCEPTED_ATTACHMENT_FILES,
   ATTACHMENT_LIMITS,
   type AttachmentRecord,
+  createPendingPickerAttachment,
   createSelectionAttachment,
   isDeliverableAttachment,
   mergeAttachmentRecords,
@@ -142,7 +143,56 @@ export function AiComposerProvider({
     for (const rejection of merged.rejected) {
       toast.error(`${rejection.displayName}: ${rejection.message}`);
     }
+    return retainedIds;
   }, []);
+
+  const settlePickerAttachment = useCallback(
+    (pendingId: string, normalized: AttachmentRecord) => {
+      const pendingIndex = filesRef.current.findIndex(
+        (record) => record.id === pendingId,
+      );
+      if (pendingIndex === -1) {
+        if (normalized.contentRef) {
+          releaseAttachmentContent(normalized.contentRef.id);
+        }
+        releaseAttachmentPreview(normalized);
+        return;
+      }
+      const remaining = filesRef.current.filter(
+        (record) => record.id !== pendingId,
+      );
+      const merged = mergeAttachmentRecords(remaining, [normalized]);
+      const insertedIndex = merged.records.findIndex(
+        (record) => record.id === normalized.id,
+      );
+      const inserted =
+        insertedIndex === -1 ? null : merged.records[insertedIndex];
+      const next =
+        insertedIndex === -1
+          ? merged.records
+          : merged.records.filter((_, index) => index !== insertedIndex);
+      if (inserted) {
+        next.splice(Math.min(pendingIndex, next.length), 0, inserted);
+      } else {
+        if (normalized.contentRef) {
+          releaseAttachmentContent(normalized.contentRef.id);
+        }
+        releaseAttachmentPreview(normalized);
+      }
+      filesRef.current = next;
+      setFiles(next);
+      if (normalized.error) {
+        const message = `${normalized.displayName}: ${normalized.error.message}`;
+        if (normalized.processingState === "unsupported")
+          toast.warning(message);
+        else toast.error(message);
+      }
+      for (const rejection of merged.rejected) {
+        toast.error(`${rejection.displayName}: ${rejection.message}`);
+      }
+    },
+    [],
+  );
 
   const attachFileByPath = useCallback(
     async (path: string) => {
@@ -234,11 +284,25 @@ export function AiComposerProvider({
 
   const addFiles = async (list: FileList | null) => {
     if (!list) return;
-    const next: AttachmentRecord[] = [];
-    for (const f of Array.from(list)) {
-      next.push(await normalizePickerAttachment(f));
-    }
-    if (next.length) appendAttachments(next);
+    const selected = Array.from(list).map((file) => ({
+      file,
+      pending: createPendingPickerAttachment(file),
+    }));
+    if (selected.length === 0) return;
+    const retainedIds = appendAttachments(
+      selected.map(({ pending }) => pending),
+    );
+    await Promise.all(
+      selected
+        .filter(({ pending }) => retainedIds.has(pending.id))
+        .map(async ({ file, pending }) => {
+          const normalized = await normalizePickerAttachment(file, {
+            id: pending.id,
+            createdAt: pending.createdAt,
+          });
+          settlePickerAttachment(pending.id, normalized);
+        }),
+    );
   };
 
   const removeFile = (id: string) => {
