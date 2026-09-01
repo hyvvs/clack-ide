@@ -26,4 +26,36 @@ describe("AttachmentMessageCard", () => {
     expect(html).not.toContain("<img");
     expect(html).toContain("icon.svg");
   });
+
+  it("shows PDF page count without loading raw document content", () => {
+    const html = renderToStaticMarkup(
+      <AttachmentMessageCard
+        part={{
+          type: CLACK_ATTACHMENT_PART_TYPE,
+          data: {
+            attachmentId: "pdf-1",
+            contentId: HASH,
+            contentHash: HASH,
+            displayName: "report.pdf",
+            mediaType: "application/pdf",
+            byteSize: 1024,
+            contentKind: "document",
+            documentRepresentation: {
+              pageCount: 3,
+              extractedTextBytes: 12,
+              truncated: false,
+              pages: [{ pageNumber: 1, textBytes: 12, truncated: false }],
+              textContentRef: {
+                id: "b".repeat(64),
+                contentHash: "b".repeat(64),
+                byteSize: 12,
+              },
+            },
+          },
+        }}
+      />,
+    );
+    expect(html).toContain("PDF | 3 pages");
+    expect(html).toContain("report.pdf");
+  });
 });

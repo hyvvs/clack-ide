@@ -108,6 +108,9 @@ export function AttachmentMessageCard({
           {failed
             ? "Content unavailable"
             : attachmentKindLabel(data.contentKind)}
+          {data.documentRepresentation
+            ? ` | ${data.documentRepresentation.pageCount} page${data.documentRepresentation.pageCount === 1 ? "" : "s"}`
+            : ""}
           {` | ${formatBytes(data.byteSize)}`}
         </span>
       </span>

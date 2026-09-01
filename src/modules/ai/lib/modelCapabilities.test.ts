@@ -107,6 +107,30 @@ describe("model attachment capabilities", () => {
     });
   });
 
+  it("routes extracted PDF text independently of native document support", () => {
+    const document = {
+      ...attachment("document"),
+      displayName: "report.pdf",
+      detectedMediaType: "application/pdf",
+      documentRepresentation: {
+        pageCount: 1,
+        extractedTextBytes: 4,
+        truncated: false,
+        pages: [{ pageNumber: 1, textBytes: 4, truncated: false }],
+        textContentRef: {
+          id: "a".repeat(64),
+          contentHash: "a".repeat(64),
+          byteSize: 4,
+        },
+      },
+    } satisfies AttachmentRecord;
+    const model = resolveModelInputCapabilities("gpt-5.3-codex");
+    expect(attachmentCapabilityStatus(document, model)).toMatchObject({
+      state: "ready",
+      support: "supported",
+    });
+  });
+
   it("returns the first blocked ready attachment and ignores ingestion failures", () => {
     const failed = {
       ...attachment("image"),

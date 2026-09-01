@@ -111,6 +111,21 @@ describe("attachment normalization", () => {
     });
   });
 
+  it("routes signed PDFs into backend document processing", async () => {
+    const normalized = await normalizeAttachmentBytes({
+      source: { kind: "picker", token: "pdf" },
+      displayName: "report.pdf",
+      bytes: new TextEncoder().encode("%PDF-1.7"),
+      reportedMediaType: "application/octet-stream",
+      security: SECURITY,
+    });
+    expect(normalized).toMatchObject({
+      processingState: "ready",
+      contentKind: "document",
+      detectedMediaType: "application/pdf",
+    });
+  });
+
   it("rejects invalid UTF-8 instead of decoding binary replacement text", async () => {
     const normalized = await normalizeAttachmentBytes({
       source: { kind: "picker", token: "bad" },

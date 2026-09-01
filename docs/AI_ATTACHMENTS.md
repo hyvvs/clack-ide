@@ -14,9 +14,12 @@ This document records the attachment safety contract. All picker, workspace
 | Image payload | 8 MiB |
 | Combined ready attachments | 20 MiB |
 | Estimated decoded raster image | 64 MiB at 4 bytes per pixel |
+| PDF pages | 10,000 maximum; first 128 inspected |
+| PDF decompressed page content | 4 MiB per inspected page |
+| PDF extracted text | 64 KiB per page; 512 KiB total |
 
 The decoded-image limit is enforced from PNG, JPEG, GIF, and WEBP dimensions.
-SVG files use the individual-byte limit and are not rendered as composer
+SVG files use the 1 MiB text-byte limit and are not rendered as composer
 thumbnails. Later image work may add stricter SVG and animated-image handling.
 
 ## Security contract
@@ -64,11 +67,9 @@ unknown image capability also blocks delivery and asks the user to choose a
 model with confirmed vision support. The composer chip shows the same state,
 and the transport repeats the check to cover non-composer send paths.
 
-Native PDF/document input remains unsupported for known registry models until
-the PDF processing checkpoint adds a real representation. Archive and unknown
-binary references are metadata-only at transport level; current ingestion
-continues to mark those formats unsupported until their dedicated processors
-exist.
+Archive and unknown binary references are metadata-only at transport level;
+current ingestion continues to mark those formats unsupported until their
+dedicated processors exist.
 
 ## Image input routes
 
@@ -84,11 +85,26 @@ bounded strict UTF-8 source, never embeds the SVG as active composer markup,
 and delivers its source as text. This lets text models inspect SVG structure
 without claiming that they saw a rendered image.
 
+## PDF processing
+
+PDF parsing runs in Rust against the raw, signature-checked bytes. Clack uses
+bounded per-page decompression, records the total page count, and extracts
+embedded text into page-aware chunks. The raw PDF and the derived text are
+stored as separate content-addressed objects. Chat history keeps their hashes,
+page metadata, and limits rather than duplicating PDF bytes or extracted text.
+
+Transport loads only the bounded derived text and preserves page markers in the
+model input. It does not send the raw PDF to providers that lack confirmed
+native document support. PDFs beyond the extraction page or text budgets are
+marked truncated. Malformed and encrypted PDFs show a processing failure.
+Image-only PDFs show their page count and explain that no embedded text was
+found; Clack does not run OCR automatically.
+
 Identical content is deduplicated. In-memory leases protect unsent and active
 content from cleanup. Startup and session deletion reconcile the store against
 persisted references; unreferenced files and abandoned staging files are
 removed. Existing persisted data-URL attachments migrate when their chat is
 opened. A failed migration preserves the original history.
 
-PDF, ZIP, RAR, 7z, and unknown binary files are identified honestly but remain
+ZIP, RAR, 7z, and unknown binary files are identified honestly but remain
 unsupported until their dedicated processing checkpoints are implemented.

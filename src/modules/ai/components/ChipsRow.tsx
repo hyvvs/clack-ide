@@ -82,6 +82,11 @@ export function ChipsRow({
               · {selLineCount(f.textRepresentation)}L
             </span>
           ) : null}
+          {f.contentKind === "document" && f.documentRepresentation ? (
+            <span className="ml-1 opacity-60">
+              · {f.documentRepresentation.pageCount}p
+            </span>
+          ) : null}
           {f.processingState !== "ready" ? (
             <span
               className={

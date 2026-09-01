@@ -21,12 +21,12 @@ import {
   normalizeWorkspaceAttachment,
   persistAttachmentRecord,
   releaseAttachmentPreview,
+  releaseAttachmentRecordContent,
 } from "./attachments";
 import {
   type AttachmentMessagePart,
   toAttachmentMessagePart,
 } from "./attachmentMessages";
-import { releaseAttachmentContent } from "./attachmentStore";
 import {
   attachmentCapabilityStatus,
   firstBlockedAttachment,
@@ -128,7 +128,7 @@ export function AiComposerProvider({
     const retainedIds = new Set(merged.records.map((record) => record.id));
     for (const record of incoming) {
       if (!retainedIds.has(record.id) && record.contentRef) {
-        releaseAttachmentContent(record.contentRef.id);
+        releaseAttachmentRecordContent(record);
         releaseAttachmentPreview(record);
       }
     }
@@ -152,9 +152,7 @@ export function AiComposerProvider({
         (record) => record.id === pendingId,
       );
       if (pendingIndex === -1) {
-        if (normalized.contentRef) {
-          releaseAttachmentContent(normalized.contentRef.id);
-        }
+        releaseAttachmentRecordContent(normalized);
         releaseAttachmentPreview(normalized);
         return;
       }
@@ -174,9 +172,7 @@ export function AiComposerProvider({
       if (inserted) {
         next.splice(Math.min(pendingIndex, next.length), 0, inserted);
       } else {
-        if (normalized.contentRef) {
-          releaseAttachmentContent(normalized.contentRef.id);
-        }
+        releaseAttachmentRecordContent(normalized);
         releaseAttachmentPreview(normalized);
       }
       filesRef.current = next;
@@ -309,7 +305,7 @@ export function AiComposerProvider({
     const removed = filesRef.current.find((file) => file.id === id);
     if (removed) {
       releaseAttachmentPreview(removed);
-      if (removed.contentRef) releaseAttachmentContent(removed.contentRef.id);
+      releaseAttachmentRecordContent(removed);
     }
     const next = filesRef.current.filter((file) => file.id !== id);
     filesRef.current = next;
@@ -422,7 +418,7 @@ export function AiComposerProvider({
         await sendMessageToSession(sessionId, { role: "user", parts });
       } finally {
         for (const file of sentFiles) {
-          if (file.contentRef) releaseAttachmentContent(file.contentRef.id);
+          releaseAttachmentRecordContent(file);
         }
       }
     })();
@@ -440,7 +436,7 @@ export function AiComposerProvider({
     () => () => {
       for (const file of filesRef.current) {
         releaseAttachmentPreview(file);
-        if (file.contentRef) releaseAttachmentContent(file.contentRef.id);
+        releaseAttachmentRecordContent(file);
       }
       filesRef.current = [];
     },

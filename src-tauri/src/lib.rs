@@ -1,7 +1,7 @@
 pub mod modules;
 
 use modules::{
-    acp, agent, attachments, clipboard, fs, git, history, net, opener, pty, secrets, shell,
+    acp, agent, attachments, clipboard, fs, git, history, net, opener, pdf, pty, secrets, shell,
     workspace,
 };
 use std::sync::Mutex;
@@ -185,6 +185,7 @@ pub fn run() {
             attachments::attachment_store_put,
             attachments::attachment_store_get,
             attachments::attachment_store_reconcile,
+            pdf::attachment_pdf_extract,
             fs::tree::list_subdirs,
             fs::tree::fs_read_dir,
             fs::file::fs_read_file,

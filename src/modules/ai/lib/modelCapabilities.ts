@@ -84,6 +84,11 @@ export function attachmentCapabilityStatus(
     );
   }
   if (attachment.contentKind === "document") {
+    if (attachment.documentRepresentation?.textContentRef) {
+      return readyStatus(
+        "Extracted PDF text is ready with page provenance for the selected model.",
+      );
+    }
     return supportStatus(
       capabilities.document,
       "Document input is ready for the selected model.",

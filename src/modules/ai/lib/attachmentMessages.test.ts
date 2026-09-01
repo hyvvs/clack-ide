@@ -21,7 +21,7 @@ const VISION_CAPABILITIES: ModelInputCapabilities = {
 };
 
 function record(
-  contentKind: "text" | "image" | "selection" = "text",
+  contentKind: "text" | "image" | "selection" | "document" = "text",
 ): AttachmentRecord {
   return {
     id: `record-${contentKind}`,
@@ -29,8 +29,18 @@ function record(
       contentKind === "selection"
         ? { kind: "selection", surface: "editor" }
         : { kind: "picker", token: contentKind },
-    displayName: contentKind === "image" ? "screen.png" : "notes.txt",
-    detectedMediaType: contentKind === "image" ? "image/png" : "text/plain",
+    displayName:
+      contentKind === "image"
+        ? "screen.png"
+        : contentKind === "document"
+          ? "report.pdf"
+          : "notes.txt",
+    detectedMediaType:
+      contentKind === "image"
+        ? "image/png"
+        : contentKind === "document"
+          ? "application/pdf"
+          : "text/plain",
     byteSize: 5,
     contentKind,
     processingState: "ready",
@@ -167,6 +177,45 @@ describe("attachment message references", () => {
         messageWith({ type: "text", text: "plain" }),
       ]),
     ).toEqual([HASH]);
+  });
+
+  it("persists and materializes bounded PDF text by derived reference", async () => {
+    const extractedHash = "b".repeat(64);
+    const pdf = {
+      ...record("document"),
+      documentRepresentation: {
+        pageCount: 2,
+        extractedTextBytes: 11,
+        truncated: false,
+        pages: [
+          { pageNumber: 1, textBytes: 11, truncated: false },
+          { pageNumber: 2, textBytes: 0, truncated: false },
+        ],
+        textContentRef: {
+          id: extractedHash,
+          contentHash: extractedHash,
+          byteSize: 11,
+        },
+      },
+    } satisfies AttachmentRecord;
+    const reference = toAttachmentMessagePart(pdf);
+    expect(collectAttachmentContentIds([messageWith(reference)])).toEqual([
+      HASH,
+      extractedHash,
+    ]);
+    const loadContent = vi.fn(async (id: string) => {
+      expect(id).toBe(extractedHash);
+      return new TextEncoder().encode("Page 1 text");
+    });
+    const materialized = await materializeAttachmentMessages(
+      [messageWith(reference)],
+      VISION_CAPABILITIES,
+      { loadContent, toDataUrl: vi.fn() },
+    );
+    expect(materialized[0].parts[0]).toEqual({
+      type: "text",
+      text: "Page 1 text",
+    });
   });
 
   it("migrates a legacy data URL into the content store", async () => {

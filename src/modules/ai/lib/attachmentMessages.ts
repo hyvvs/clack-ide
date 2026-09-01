@@ -1,5 +1,5 @@
 import type { UIMessage } from "ai";
-import type { AttachmentRecord } from "./attachments";
+import type { AttachmentRecord, DocumentRepresentation } from "./attachments";
 import {
   attachmentBytesToDataUrl,
   loadAttachmentContent,
@@ -30,6 +30,7 @@ export type AttachmentMessageReference = {
   byteSize: number;
   contentKind: AttachmentRecord["contentKind"];
   selectionSource?: "terminal" | "editor";
+  documentRepresentation?: DocumentRepresentation;
 };
 
 export type AttachmentMessagePart = {
@@ -65,6 +66,9 @@ export function toAttachmentMessagePart(
       ...(record.source.kind === "selection"
         ? { selectionSource: record.source.surface }
         : {}),
+      ...(record.documentRepresentation
+        ? { documentRepresentation: record.documentRepresentation }
+        : {}),
     },
   };
 }
@@ -95,7 +99,9 @@ export function isAttachmentMessagePart(
     data.byteSize > 0 &&
     data.byteSize <= 8 * 1024 * 1024 &&
     typeof data.contentKind === "string" &&
-    ATTACHMENT_CONTENT_KINDS.has(data.contentKind)
+    ATTACHMENT_CONTENT_KINDS.has(data.contentKind) &&
+    (data.documentRepresentation == null || data.contentKind === "document") &&
+    validDocumentRepresentation(data.documentRepresentation)
   );
 }
 
@@ -107,7 +113,10 @@ export function collectAttachmentContentIds(messages: unknown): string[] {
     const parts = (message as { parts?: unknown }).parts;
     if (!Array.isArray(parts)) continue;
     for (const part of parts) {
-      if (isAttachmentMessagePart(part)) ids.add(part.data.contentId);
+      if (!isAttachmentMessagePart(part)) continue;
+      ids.add(part.data.contentId);
+      const extracted = part.data.documentRepresentation?.textContentRef;
+      if (extracted) ids.add(extracted.id);
     }
   }
   return [...ids];
@@ -148,7 +157,8 @@ export async function materializeAttachmentMessages(
       if (
         reference.contentKind !== "text" &&
         reference.contentKind !== "selection" &&
-        reference.contentKind !== "image"
+        reference.contentKind !== "image" &&
+        reference.contentKind !== "document"
       ) {
         parts.push({
           type: "text",
@@ -156,8 +166,22 @@ export async function materializeAttachmentMessages(
         });
         continue;
       }
-      const bytes = await deps.loadContent(reference.contentId);
-      if (bytes.byteLength !== reference.byteSize) {
+      const contentRef =
+        reference.contentKind === "document"
+          ? reference.documentRepresentation?.textContentRef
+          : {
+              id: reference.contentId,
+              byteSize: reference.byteSize,
+            };
+      if (!contentRef) {
+        parts.push({
+          type: "text",
+          text: `PDF ${JSON.stringify(reference.displayName)} has no extractable text representation.`,
+        });
+        continue;
+      }
+      const bytes = await deps.loadContent(contentRef.id);
+      if (bytes.byteLength !== contentRef.byteSize) {
         throw new Error(
           `Stored attachment size changed for ${reference.displayName}.`,
         );
@@ -173,6 +197,13 @@ export async function materializeAttachmentMessages(
             reference.contentKind === "selection"
               ? formatSelectionBlock(reference, text)
               : formatTextBlock(reference, text),
+        });
+        continue;
+      }
+      if (reference.contentKind === "document") {
+        parts.push({
+          type: "text",
+          text: decodeStoredText(bytes, reference.displayName),
         });
         continue;
       }
@@ -323,6 +354,7 @@ function referenceAsRecord(
     byteSize: reference.byteSize,
     contentKind: reference.contentKind,
     processingState: "ready",
+    documentRepresentation: reference.documentRepresentation,
     security: {
       secretPathCheck: "not-applicable",
       workspaceScopeCheck: "not-applicable",
@@ -330,6 +362,48 @@ function referenceAsRecord(
     },
     createdAt: 0,
   };
+}
+
+function validDocumentRepresentation(value: unknown): boolean {
+  if (value == null) return true;
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<DocumentRepresentation>;
+  if (
+    !Number.isInteger(candidate.pageCount) ||
+    (candidate.pageCount ?? 0) <= 0 ||
+    (candidate.pageCount ?? 0) > 10_000 ||
+    !Number.isInteger(candidate.extractedTextBytes) ||
+    (candidate.extractedTextBytes ?? -1) < 0 ||
+    (candidate.extractedTextBytes ?? 0) > 512 * 1024 ||
+    typeof candidate.truncated !== "boolean" ||
+    !Array.isArray(candidate.pages) ||
+    candidate.pages.length > 128
+  ) {
+    return false;
+  }
+  if (
+    candidate.textContentRef &&
+    (!/^[a-f0-9]{64}$/.test(candidate.textContentRef.id) ||
+      candidate.textContentRef.contentHash !== candidate.textContentRef.id ||
+      !Number.isInteger(candidate.textContentRef.byteSize) ||
+      candidate.textContentRef.byteSize <= 0 ||
+      candidate.textContentRef.byteSize > 768 * 1024)
+  ) {
+    return false;
+  }
+  return candidate.pages.every(
+    (page) =>
+      page &&
+      Number.isInteger(page.pageNumber) &&
+      page.pageNumber > 0 &&
+      page.pageNumber <= (candidate.pageCount ?? 0) &&
+      Number.isInteger(page.textBytes) &&
+      page.textBytes >= 0 &&
+      page.textBytes <= 64 * 1024 &&
+      typeof page.truncated === "boolean" &&
+      (page.error == null ||
+        (typeof page.error === "string" && page.error.length <= 512)),
+  );
 }
 
 function decodeLegacyDataUrl(

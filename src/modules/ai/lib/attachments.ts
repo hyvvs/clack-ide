@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import {
   type AttachmentContentRef,
+  releaseAttachmentContent,
   retainAttachmentContent,
   storeAttachmentContent,
 } from "./attachmentStore";
@@ -19,7 +20,7 @@ export const ATTACHMENT_LIMITS = {
 } as const;
 
 export const ACCEPTED_ATTACHMENT_FILES =
-  "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,.txt,.md,.markdown,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.ps1,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cc,.cpp,.h,.hpp,.html,.css,.scss,.csv,.log,.config,.conf,.ini,.xml,.sql,Dockerfile,.dockerfile,Makefile";
+  "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,application/pdf,.pdf,.txt,.md,.markdown,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.ps1,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cc,.cpp,.h,.hpp,.html,.css,.scss,.csv,.log,.config,.conf,.ini,.xml,.sql,Dockerfile,.dockerfile,Makefile";
 
 export type AttachmentContentKind =
   | "text"
@@ -51,6 +52,21 @@ export type AttachmentError = {
   message: string;
 };
 
+export type DocumentPageRepresentation = {
+  pageNumber: number;
+  textBytes: number;
+  truncated: boolean;
+  error?: string;
+};
+
+export type DocumentRepresentation = {
+  pageCount: number;
+  extractedTextBytes: number;
+  truncated: boolean;
+  pages: DocumentPageRepresentation[];
+  textContentRef?: AttachmentContentRef;
+};
+
 export type AttachmentRecord = {
   id: string;
   source: AttachmentSource;
@@ -62,6 +78,7 @@ export type AttachmentRecord = {
   contentRef?: AttachmentContentRef;
   textRepresentation?: string;
   imageRepresentation?: string;
+  documentRepresentation?: DocumentRepresentation;
   error?: AttachmentError;
   security: AttachmentSecurityResult;
   createdAt: number;
@@ -430,10 +447,11 @@ export async function persistAttachmentRecord(
   persistContent = storeAttachmentContent,
 ): Promise<AttachmentRecord> {
   if (record.processingState !== "ready") return record;
+  let persisted: AttachmentRecord;
   try {
     const contentRef = await persistContent(bytes);
     retainAttachmentContent(contentRef.id);
-    return {
+    persisted = {
       ...record,
       contentRef,
       ...(record.contentKind === "text" || record.contentKind === "selection"
@@ -454,6 +472,9 @@ export async function persistAttachmentRecord(
       },
     };
   }
+  if (persisted.contentKind !== "document") return persisted;
+  const { processPdfAttachment } = await import("./pdfAttachments");
+  return processPdfAttachment(persisted, bytes);
 }
 
 export function releaseAttachmentPreview(record: AttachmentRecord): void {
@@ -462,6 +483,14 @@ export function releaseAttachmentPreview(record: AttachmentRecord): void {
     typeof URL.revokeObjectURL === "function"
   ) {
     URL.revokeObjectURL(record.imageRepresentation);
+  }
+}
+
+export function releaseAttachmentRecordContent(record: AttachmentRecord): void {
+  if (record.contentRef) releaseAttachmentContent(record.contentRef.id);
+  const extracted = record.documentRepresentation?.textContentRef;
+  if (extracted && extracted.id !== record.contentRef?.id) {
+    releaseAttachmentContent(extracted.id);
   }
 }
 
@@ -492,18 +521,17 @@ export async function normalizeAttachmentBytes(input: {
     input.reportedMediaType,
   );
   if (detected.contentKind === "document") {
-    return failureRecord({
+    return {
+      id: options?.id ?? newAttachmentId(),
       source,
       displayName,
+      detectedMediaType: detected.mediaType,
       byteSize: bytes.byteLength,
       contentKind: "document",
-      mediaType: detected.mediaType,
-      state: "unsupported",
-      code: "pdf_not_supported",
-      message: "PDF inspection is not available yet.",
+      processingState: "ready",
       security,
-      options,
-    });
+      createdAt: options?.createdAt ?? Date.now(),
+    };
   }
   if (detected.contentKind === "archive") {
     return failureRecord({
@@ -949,6 +977,8 @@ export function isDeliverableAttachment(record: AttachmentRecord): boolean {
     Boolean(record.contentRef) &&
     (record.contentKind === "text" ||
       record.contentKind === "image" ||
+      (record.contentKind === "document" &&
+        Boolean(record.documentRepresentation?.textContentRef)) ||
       record.contentKind === "selection")
   );
 }
