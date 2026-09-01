@@ -111,6 +111,9 @@ export function AttachmentMessageCard({
           {data.documentRepresentation
             ? ` | ${data.documentRepresentation.pageCount} page${data.documentRepresentation.pageCount === 1 ? "" : "s"}`
             : ""}
+          {data.archiveRepresentation
+            ? ` | ${data.archiveRepresentation.fileCount} files | ${formatBytes(data.archiveRepresentation.totalExpandedBytes)}`
+            : ""}
           {` | ${formatBytes(data.byteSize)}`}
         </span>
       </span>

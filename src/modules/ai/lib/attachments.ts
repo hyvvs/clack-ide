@@ -20,7 +20,7 @@ export const ATTACHMENT_LIMITS = {
 } as const;
 
 export const ACCEPTED_ATTACHMENT_FILES =
-  "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,application/pdf,.pdf,.txt,.md,.markdown,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.ps1,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cc,.cpp,.h,.hpp,.html,.css,.scss,.csv,.log,.config,.conf,.ini,.xml,.sql,Dockerfile,.dockerfile,Makefile";
+  "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,application/pdf,application/zip,.pdf,.zip,.txt,.md,.markdown,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.ps1,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cc,.cpp,.h,.hpp,.html,.css,.scss,.csv,.log,.config,.conf,.ini,.xml,.sql,Dockerfile,.dockerfile,Makefile";
 
 export type AttachmentContentKind =
   | "text"
@@ -39,6 +39,13 @@ export type AttachmentProcessingState =
 export type AttachmentSource =
   | { kind: "picker"; token: string }
   | { kind: "workspace-path"; path: string; canonicalPath?: string }
+  | {
+      kind: "archive-entry";
+      archiveAttachmentId: string;
+      archiveDisplayName: string;
+      entryIndex: number;
+      path: string;
+    }
   | { kind: "selection"; surface: "terminal" | "editor" };
 
 export type AttachmentSecurityResult = {
@@ -67,6 +74,30 @@ export type DocumentRepresentation = {
   textContentRef?: AttachmentContentRef;
 };
 
+export type ArchiveManifestEntry = {
+  index: number;
+  path: string;
+  entryType: "file" | "folder";
+  compressedSize: number;
+  expandedSize: number;
+  mediaType?: string;
+  status: "ready" | "blocked";
+  selectable: boolean;
+  reason?: string;
+};
+
+export type ArchiveRepresentation = {
+  format: "zip";
+  entryCount: number;
+  fileCount: number;
+  folderCount: number;
+  totalCompressedBytes: number;
+  totalExpandedBytes: number;
+  nestedArchiveDepthLimit: number;
+  manifestContentRef: AttachmentContentRef;
+  entries?: ArchiveManifestEntry[];
+};
+
 export type AttachmentRecord = {
   id: string;
   source: AttachmentSource;
@@ -79,6 +110,7 @@ export type AttachmentRecord = {
   textRepresentation?: string;
   imageRepresentation?: string;
   documentRepresentation?: DocumentRepresentation;
+  archiveRepresentation?: ArchiveRepresentation;
   error?: AttachmentError;
   security: AttachmentSecurityResult;
   createdAt: number;
@@ -472,9 +504,18 @@ export async function persistAttachmentRecord(
       },
     };
   }
-  if (persisted.contentKind !== "document") return persisted;
-  const { processPdfAttachment } = await import("./pdfAttachments");
-  return processPdfAttachment(persisted, bytes);
+  if (persisted.contentKind === "document") {
+    const { processPdfAttachment } = await import("./pdfAttachments");
+    return processPdfAttachment(persisted, bytes);
+  }
+  if (
+    persisted.contentKind === "archive" &&
+    persisted.detectedMediaType === "application/zip"
+  ) {
+    const { processZipAttachment } = await import("./archiveAttachments");
+    return processZipAttachment(persisted, bytes);
+  }
+  return persisted;
 }
 
 export function releaseAttachmentPreview(record: AttachmentRecord): void {
@@ -491,6 +532,14 @@ export function releaseAttachmentRecordContent(record: AttachmentRecord): void {
   const extracted = record.documentRepresentation?.textContentRef;
   if (extracted && extracted.id !== record.contentRef?.id) {
     releaseAttachmentContent(extracted.id);
+  }
+  const manifest = record.archiveRepresentation?.manifestContentRef;
+  if (
+    manifest &&
+    manifest.id !== record.contentRef?.id &&
+    manifest.id !== extracted?.id
+  ) {
+    releaseAttachmentContent(manifest.id);
   }
 }
 
@@ -534,6 +583,19 @@ export async function normalizeAttachmentBytes(input: {
     };
   }
   if (detected.contentKind === "archive") {
+    if (detected.mediaType === "application/zip") {
+      return {
+        id: options?.id ?? newAttachmentId(),
+        source,
+        displayName,
+        detectedMediaType: detected.mediaType,
+        byteSize: bytes.byteLength,
+        contentKind: "archive",
+        processingState: "ready",
+        security,
+        createdAt: options?.createdAt ?? Date.now(),
+      };
+    }
     return failureRecord({
       source,
       displayName,
@@ -542,7 +604,7 @@ export async function normalizeAttachmentBytes(input: {
       mediaType: detected.mediaType,
       state: "unsupported",
       code: "archive_not_supported",
-      message: "Archive inspection is not available yet.",
+      message: "RAR and 7z inspection are not available yet.",
       security,
       options,
     });
@@ -919,6 +981,9 @@ function sourceKey(record: AttachmentRecord): string {
     return `path:${record.source.canonicalPath ?? record.source.path}`;
   }
   if (record.source.kind === "picker") return `picker:${record.source.token}`;
+  if (record.source.kind === "archive-entry") {
+    return `archive:${record.source.archiveAttachmentId}:${record.source.entryIndex}`;
+  }
   return `selection:${record.id}`;
 }
 
@@ -979,6 +1044,8 @@ export function isDeliverableAttachment(record: AttachmentRecord): boolean {
       record.contentKind === "image" ||
       (record.contentKind === "document" &&
         Boolean(record.documentRepresentation?.textContentRef)) ||
+      (record.contentKind === "archive" &&
+        Boolean(record.archiveRepresentation?.manifestContentRef)) ||
       record.contentKind === "selection")
   );
 }

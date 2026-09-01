@@ -17,6 +17,13 @@ This document records the attachment safety contract. All picker, workspace
 | PDF pages | 10,000 maximum; first 128 inspected |
 | PDF decompressed page content | 4 MiB per inspected page |
 | PDF extracted text | 64 KiB per page; 512 KiB total |
+| ZIP input | 8 MiB |
+| ZIP entries | 2,048 |
+| ZIP expanded entry | 4 MiB |
+| ZIP total expanded data | 64 MiB |
+| ZIP compression ratio | 200:1 per entry |
+| ZIP entry path | 1,024 bytes; 256 KiB total manifest paths |
+| Nested archive depth | 0; listed but not opened |
 
 The decoded-image limit is enforced from PNG, JPEG, GIF, and WEBP dimensions.
 SVG files use the 1 MiB text-byte limit and are not rendered as composer
@@ -67,9 +74,10 @@ unknown image capability also blocks delivery and asks the user to choose a
 model with confirmed vision support. The composer chip shows the same state,
 and the transport repeats the check to cover non-composer send paths.
 
-Archive and unknown binary references are metadata-only at transport level;
-current ingestion continues to mark those formats unsupported until their
-dedicated processors exist.
+ZIP archives are delivered as bounded manifests plus any entries the user
+explicitly selected. Selected entries pass through the same normalizer,
+capability routing, and content store as direct attachments. RAR, 7z, and
+unknown binary references remain unsupported or metadata-only.
 
 ## Image input routes
 
@@ -100,11 +108,36 @@ marked truncated. Malformed and encrypted PDFs show a processing failure.
 Image-only PDFs show their page count and explain that no embedded text was
 found; Clack does not run OCR automatically.
 
+## ZIP processing
+
+ZIP inspection runs in Rust against signature-checked bytes. Clack rejects
+absolute, UNC, Windows-drive, NUL, traversal, duplicate, oversized, and
+control-character paths. Symbolic links and every non-regular Unix entry type
+are rejected, covering devices, FIFOs, and represented link-like entries.
+Entry count, compressed size, expanded size, per-entry size, path metadata,
+and compression ratio are all bounded before any entry is decompressed.
+
+Inspection returns a compact manifest. The composer initially renders only a
+bounded searchable portion of that manifest, and nested archives are visible
+but non-selectable. Clack never recursively opens nested archives in this
+checkpoint.
+
+Selecting one entry asks Rust to revalidate the complete archive and expand
+only that entry into a bounded in-memory buffer. The bytes then enter the same
+normal attachment pipeline used by picker and workspace files. This catches
+disguised executables, invalid UTF-8, oversized text, oversized images, and
+model capability mismatches without a ZIP-specific bypass.
+
+No archive content is written into the workspace or a temporary extraction
+tree. Cancellation and failures drop bounded in-memory buffers, so there are
+no extracted permissions or temporary files to clean up. Executable mode bits
+are never propagated and archive content is never executed.
+
 Identical content is deduplicated. In-memory leases protect unsent and active
 content from cleanup. Startup and session deletion reconcile the store against
 persisted references; unreferenced files and abandoned staging files are
 removed. Existing persisted data-URL attachments migrate when their chat is
 opened. A failed migration preserves the original history.
 
-ZIP, RAR, 7z, and unknown binary files are identified honestly but remain
+RAR, 7z, and unknown binary files are identified honestly but remain
 unsupported until their dedicated processing checkpoints are implemented.

@@ -1,8 +1,8 @@
 pub mod modules;
 
 use modules::{
-    acp, agent, attachments, clipboard, fs, git, history, net, opener, pdf, pty, secrets, shell,
-    workspace,
+    acp, agent, archive, attachments, clipboard, fs, git, history, net, opener, pdf, pty, secrets,
+    shell, workspace,
 };
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -185,6 +185,8 @@ pub fn run() {
             attachments::attachment_store_put,
             attachments::attachment_store_get,
             attachments::attachment_store_reconcile,
+            archive::attachment_zip_inspect,
+            archive::attachment_zip_read_entry,
             pdf::attachment_pdf_extract,
             fs::tree::list_subdirs,
             fs::tree::fs_read_dir,

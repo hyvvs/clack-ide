@@ -10,6 +10,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { type AttachmentRecord, formatBytes } from "../lib/attachments";
 import type { AttachmentCapabilityStatus } from "../lib/modelCapabilities";
 import type { Snippet } from "../lib/snippets";
+import { ArchiveAttachmentChip } from "./ArchiveAttachmentChip";
 import { Chip } from "./Chip";
 
 type CommandChip = { name: string; label: string; icon: typeof HashtagIcon };
@@ -17,6 +18,10 @@ type CommandChip = { name: string; label: string; icon: typeof HashtagIcon };
 type Props = {
   files: AttachmentRecord[];
   onRemoveFile: (id: string) => void;
+  onMaterializeArchiveEntry: (
+    archiveAttachmentId: string,
+    entryIndex: number,
+  ) => Promise<void>;
   snippets: Snippet[];
   onRemoveSnippet: (id: string) => void;
   commands: CommandChip[];
@@ -29,6 +34,7 @@ type Props = {
 export function ChipsRow({
   files,
   onRemoveFile,
+  onMaterializeArchiveEntry,
   snippets,
   onRemoveSnippet,
   commands,
@@ -65,45 +71,64 @@ export function ChipsRow({
           {s.handle}
         </Chip>
       ))}
-      {files.map((f) => (
-        <Chip
-          key={f.id}
-          iconNode={fileIcon(f)}
-          title={
-            f.error?.message ??
-            attachmentCapabilities?.[f.id]?.message ??
-            `${f.detectedMediaType} · ${formatBytes(f.byteSize)}`
-          }
-          onRemove={() => onRemoveFile(f.id)}
-        >
-          {f.displayName}
-          {f.contentKind === "selection" && f.textRepresentation ? (
-            <span className="ml-1 opacity-60">
-              · {selLineCount(f.textRepresentation)}L
-            </span>
-          ) : null}
-          {f.contentKind === "document" && f.documentRepresentation ? (
-            <span className="ml-1 opacity-60">
-              · {f.documentRepresentation.pageCount}p
-            </span>
-          ) : null}
-          {f.processingState !== "ready" ? (
-            <span
-              className={
-                f.processingState === "processing"
-                  ? "ml-1 opacity-60"
-                  : "ml-1 text-destructive"
-              }
-            >
-              · {processingLabel(f.processingState)}
-            </span>
-          ) : attachmentCapabilities?.[f.id]?.state === "blocked" ? (
-            <span className="ml-1 text-destructive">
-              · {attachmentCapabilities[f.id].label}
-            </span>
-          ) : null}
-        </Chip>
-      ))}
+      {files.map((f) =>
+        f.contentKind === "archive" &&
+        f.processingState === "ready" &&
+        f.archiveRepresentation ? (
+          <ArchiveAttachmentChip
+            key={f.id}
+            archive={f}
+            selectedEntries={files.filter(
+              (entry) =>
+                entry.source.kind === "archive-entry" &&
+                entry.source.archiveAttachmentId === f.id,
+            )}
+            onMaterialize={(entryIndex) =>
+              onMaterializeArchiveEntry(f.id, entryIndex)
+            }
+            onRemoveSelected={onRemoveFile}
+            onRemove={() => onRemoveFile(f.id)}
+          />
+        ) : (
+          <Chip
+            key={f.id}
+            iconNode={fileIcon(f)}
+            title={
+              f.error?.message ??
+              attachmentCapabilities?.[f.id]?.message ??
+              `${f.detectedMediaType} · ${formatBytes(f.byteSize)}`
+            }
+            onRemove={() => onRemoveFile(f.id)}
+          >
+            {f.displayName}
+            {f.contentKind === "selection" && f.textRepresentation ? (
+              <span className="ml-1 opacity-60">
+                · {selLineCount(f.textRepresentation)}L
+              </span>
+            ) : null}
+            {f.contentKind === "document" && f.documentRepresentation ? (
+              <span className="ml-1 opacity-60">
+                · {f.documentRepresentation.pageCount}p
+              </span>
+            ) : null}
+            {f.processingState !== "ready" ? (
+              <span
+                className={
+                  f.processingState === "processing"
+                    ? "ml-1 opacity-60"
+                    : "ml-1 text-destructive"
+                }
+              >
+                · {processingLabel(f.processingState)}
+              </span>
+            ) : attachmentCapabilities?.[f.id]?.state === "blocked" ? (
+              <span className="ml-1 text-destructive">
+                · {attachmentCapabilities[f.id].label}
+              </span>
+            ) : null}
+          </Chip>
+        ),
+      )}
     </div>
   );
 }

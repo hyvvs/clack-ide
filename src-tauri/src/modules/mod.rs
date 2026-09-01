@@ -1,5 +1,6 @@
 pub mod acp;
 pub mod agent;
+pub mod archive;
 pub mod attachments;
 pub mod clipboard;
 pub mod fs;

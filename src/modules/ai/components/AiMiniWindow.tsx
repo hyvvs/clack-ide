@@ -466,6 +466,7 @@ function PaneComposer({ sessionId }: { sessionId: string }) {
           files={composer.files}
           attachmentCapabilities={composer.attachmentCapabilities}
           onRemoveFile={composer.removeFile}
+          onMaterializeArchiveEntry={composer.materializeArchiveEntry}
           snippets={composer.pickedSnippets}
           onRemoveSnippet={composer.removeSnippet}
           commands={composer.pickedCommands}

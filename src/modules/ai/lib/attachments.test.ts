@@ -54,7 +54,7 @@ describe("attachment detection", () => {
     });
   });
 
-  it("recognizes PDF and archive signatures without claiming support", () => {
+  it("recognizes PDF and archive signatures independently of extensions", () => {
     expect(
       detectAttachment(new TextEncoder().encode("%PDF-1.7"), "report.bin"),
     ).toMatchObject({ contentKind: "document", mediaType: "application/pdf" });
@@ -123,6 +123,31 @@ describe("attachment normalization", () => {
       processingState: "ready",
       contentKind: "document",
       detectedMediaType: "application/pdf",
+    });
+  });
+
+  it("routes ZIPs to inspection while leaving RAR unsupported", async () => {
+    const zip = await normalizeAttachmentBytes({
+      source: { kind: "picker", token: "zip" },
+      displayName: "project.bin",
+      bytes: Uint8Array.from([0x50, 0x4b, 0x03, 0x04]),
+      reportedMediaType: "application/octet-stream",
+      security: SECURITY,
+    });
+    expect(zip).toMatchObject({
+      processingState: "ready",
+      contentKind: "archive",
+      detectedMediaType: "application/zip",
+    });
+    const rar = await normalizeAttachmentBytes({
+      source: { kind: "picker", token: "rar" },
+      displayName: "project.rar",
+      bytes: Uint8Array.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07]),
+      security: SECURITY,
+    });
+    expect(rar).toMatchObject({
+      processingState: "unsupported",
+      error: { code: "archive_not_supported" },
     });
   });
 

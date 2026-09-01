@@ -21,7 +21,7 @@ const VISION_CAPABILITIES: ModelInputCapabilities = {
 };
 
 function record(
-  contentKind: "text" | "image" | "selection" | "document" = "text",
+  contentKind: "text" | "image" | "selection" | "document" | "archive" = "text",
 ): AttachmentRecord {
   return {
     id: `record-${contentKind}`,
@@ -34,13 +34,17 @@ function record(
         ? "screen.png"
         : contentKind === "document"
           ? "report.pdf"
-          : "notes.txt",
+          : contentKind === "archive"
+            ? "project.zip"
+            : "notes.txt",
     detectedMediaType:
       contentKind === "image"
         ? "image/png"
         : contentKind === "document"
           ? "application/pdf"
-          : "text/plain",
+          : contentKind === "archive"
+            ? "application/zip"
+            : "text/plain",
     byteSize: 5,
     contentKind,
     processingState: "ready",
@@ -215,6 +219,60 @@ describe("attachment message references", () => {
     expect(materialized[0].parts[0]).toEqual({
       type: "text",
       text: "Page 1 text",
+    });
+  });
+
+  it("persists only ZIP summary metadata and materializes its manifest reference", async () => {
+    const manifestHash = "c".repeat(64);
+    const zip = {
+      ...record("archive"),
+      archiveRepresentation: {
+        format: "zip",
+        entryCount: 1,
+        fileCount: 1,
+        folderCount: 0,
+        totalCompressedBytes: 4,
+        totalExpandedBytes: 8,
+        nestedArchiveDepthLimit: 0,
+        manifestContentRef: {
+          id: manifestHash,
+          contentHash: manifestHash,
+          byteSize: 8,
+        },
+        entries: [
+          {
+            index: 0,
+            path: "notes.txt",
+            entryType: "file",
+            compressedSize: 4,
+            expandedSize: 8,
+            mediaType: "text/plain",
+            status: "ready",
+            selectable: true,
+          },
+        ],
+      },
+    } satisfies AttachmentRecord;
+    const reference = toAttachmentMessagePart(zip);
+    expect(reference.data.archiveRepresentation).not.toHaveProperty("entries");
+    expect(collectAttachmentContentIds([messageWith(reference)])).toEqual([
+      HASH,
+      manifestHash,
+    ]);
+    const materialized = await materializeAttachmentMessages(
+      [messageWith(reference)],
+      VISION_CAPABILITIES,
+      {
+        loadContent: async (id) => {
+          expect(id).toBe(manifestHash);
+          return new TextEncoder().encode("manifest");
+        },
+        toDataUrl: vi.fn(),
+      },
+    );
+    expect(materialized[0].parts[0]).toEqual({
+      type: "text",
+      text: "manifest",
     });
   });
 

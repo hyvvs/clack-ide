@@ -131,6 +131,33 @@ describe("model attachment capabilities", () => {
     });
   });
 
+  it("routes a bounded ZIP manifest independently of native document support", () => {
+    const archive = {
+      ...attachment("archive"),
+      displayName: "project.zip",
+      detectedMediaType: "application/zip",
+      archiveRepresentation: {
+        format: "zip",
+        entryCount: 1,
+        fileCount: 1,
+        folderCount: 0,
+        totalCompressedBytes: 4,
+        totalExpandedBytes: 8,
+        nestedArchiveDepthLimit: 0,
+        manifestContentRef: {
+          id: "b".repeat(64),
+          contentHash: "b".repeat(64),
+          byteSize: 8,
+        },
+      },
+    } satisfies AttachmentRecord;
+    const model = resolveModelInputCapabilities("gpt-5.3-codex");
+    expect(attachmentCapabilityStatus(archive, model)).toMatchObject({
+      state: "ready",
+      support: "supported",
+    });
+  });
+
   it("returns the first blocked ready attachment and ignores ingestion failures", () => {
     const failed = {
       ...attachment("image"),

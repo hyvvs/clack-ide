@@ -58,4 +58,40 @@ describe("AttachmentMessageCard", () => {
     expect(html).toContain("PDF | 3 pages");
     expect(html).toContain("report.pdf");
   });
+
+  it("shows ZIP file count and expanded size compactly", () => {
+    const manifestHash = "c".repeat(64);
+    const html = renderToStaticMarkup(
+      <AttachmentMessageCard
+        part={{
+          type: CLACK_ATTACHMENT_PART_TYPE,
+          data: {
+            attachmentId: "zip-1",
+            contentId: HASH,
+            contentHash: HASH,
+            displayName: "project.zip",
+            mediaType: "application/zip",
+            byteSize: 1024,
+            contentKind: "archive",
+            archiveRepresentation: {
+              format: "zip",
+              entryCount: 127,
+              fileCount: 120,
+              folderCount: 7,
+              totalCompressedBytes: 1024,
+              totalExpandedBytes: 4 * 1024 * 1024,
+              nestedArchiveDepthLimit: 0,
+              manifestContentRef: {
+                id: manifestHash,
+                contentHash: manifestHash,
+                byteSize: 100,
+              },
+            },
+          },
+        }}
+      />,
+    );
+    expect(html).toContain("Archive | 120 files | 4 MB");
+    expect(html).toContain("project.zip");
+  });
 });

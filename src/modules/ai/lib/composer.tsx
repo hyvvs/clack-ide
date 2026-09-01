@@ -53,6 +53,10 @@ type ComposerCtx = {
   addFiles: (list: FileList | null) => Promise<void>;
   /** Attach a file by absolute path — used by the file explorer's "Attach to Agent". */
   attachFileByPath: (path: string) => Promise<void>;
+  materializeArchiveEntry: (
+    archiveAttachmentId: string,
+    entryIndex: number,
+  ) => Promise<void>;
   removeFile: (id: string) => void;
   pickedSnippets: Snippet[];
   addSnippet: (s: Snippet) => void;
@@ -113,6 +117,7 @@ export function AiComposerProvider({
   const [value, setValue] = useState("");
   const [files, setFiles] = useState<AttachmentRecord[]>([]);
   const filesRef = useRef<AttachmentRecord[]>([]);
+  const pendingArchiveEntriesRef = useRef(new Set<string>());
   const [pickedSnippets, setPickedSnippets] = useState<Snippet[]>([]);
   const [pickedCommands, setPickedCommands] = useState<SlashCommandMeta[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -302,15 +307,53 @@ export function AiComposerProvider({
   };
 
   const removeFile = (id: string) => {
-    const removed = filesRef.current.find((file) => file.id === id);
-    if (removed) {
-      releaseAttachmentPreview(removed);
-      releaseAttachmentRecordContent(removed);
+    const removed = filesRef.current.filter(
+      (file) =>
+        file.id === id ||
+        (file.source.kind === "archive-entry" &&
+          file.source.archiveAttachmentId === id),
+    );
+    for (const file of removed) {
+      releaseAttachmentPreview(file);
+      releaseAttachmentRecordContent(file);
     }
-    const next = filesRef.current.filter((file) => file.id !== id);
+    const removedIds = new Set(removed.map((file) => file.id));
+    const next = filesRef.current.filter((file) => !removedIds.has(file.id));
     filesRef.current = next;
     setFiles(next);
   };
+
+  const materializeArchiveEntry = useCallback(
+    async (archiveAttachmentId: string, entryIndex: number) => {
+      const key = `${archiveAttachmentId}:${entryIndex}`;
+      if (pendingArchiveEntriesRef.current.has(key)) return;
+      if (
+        filesRef.current.some(
+          (file) =>
+            file.source.kind === "archive-entry" &&
+            file.source.archiveAttachmentId === archiveAttachmentId &&
+            file.source.entryIndex === entryIndex,
+        )
+      ) {
+        return;
+      }
+      const archive = filesRef.current.find(
+        (file) => file.id === archiveAttachmentId,
+      );
+      if (!archive) return;
+      pendingArchiveEntriesRef.current.add(key);
+      try {
+        const { materializeZipEntry } = await import("./archiveAttachments");
+        const entry = await materializeZipEntry(archive, entryIndex);
+        appendAttachments([entry]);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : String(error));
+      } finally {
+        pendingArchiveEntriesRef.current.delete(key);
+      }
+    },
+    [appendAttachments],
+  );
 
   const addSnippet = (s: Snippet) =>
     setPickedSnippets((prev) =>
@@ -462,6 +505,7 @@ export function AiComposerProvider({
     files,
     addFiles,
     attachFileByPath,
+    materializeArchiveEntry,
     removeFile,
     pickedSnippets,
     addSnippet,

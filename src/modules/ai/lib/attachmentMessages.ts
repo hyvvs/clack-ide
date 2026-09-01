@@ -1,5 +1,9 @@
 import type { UIMessage } from "ai";
-import type { AttachmentRecord, DocumentRepresentation } from "./attachments";
+import type {
+  ArchiveRepresentation,
+  AttachmentRecord,
+  DocumentRepresentation,
+} from "./attachments";
 import {
   attachmentBytesToDataUrl,
   loadAttachmentContent,
@@ -31,6 +35,7 @@ export type AttachmentMessageReference = {
   contentKind: AttachmentRecord["contentKind"];
   selectionSource?: "terminal" | "editor";
   documentRepresentation?: DocumentRepresentation;
+  archiveRepresentation?: Omit<ArchiveRepresentation, "entries">;
 };
 
 export type AttachmentMessagePart = {
@@ -69,6 +74,24 @@ export function toAttachmentMessagePart(
       ...(record.documentRepresentation
         ? { documentRepresentation: record.documentRepresentation }
         : {}),
+      ...(record.archiveRepresentation
+        ? {
+            archiveRepresentation: {
+              format: record.archiveRepresentation.format,
+              entryCount: record.archiveRepresentation.entryCount,
+              fileCount: record.archiveRepresentation.fileCount,
+              folderCount: record.archiveRepresentation.folderCount,
+              totalCompressedBytes:
+                record.archiveRepresentation.totalCompressedBytes,
+              totalExpandedBytes:
+                record.archiveRepresentation.totalExpandedBytes,
+              nestedArchiveDepthLimit:
+                record.archiveRepresentation.nestedArchiveDepthLimit,
+              manifestContentRef:
+                record.archiveRepresentation.manifestContentRef,
+            },
+          }
+        : {}),
     },
   };
 }
@@ -101,7 +124,9 @@ export function isAttachmentMessagePart(
     typeof data.contentKind === "string" &&
     ATTACHMENT_CONTENT_KINDS.has(data.contentKind) &&
     (data.documentRepresentation == null || data.contentKind === "document") &&
-    validDocumentRepresentation(data.documentRepresentation)
+    validDocumentRepresentation(data.documentRepresentation) &&
+    (data.archiveRepresentation == null || data.contentKind === "archive") &&
+    validArchiveRepresentation(data.archiveRepresentation)
   );
 }
 
@@ -117,6 +142,8 @@ export function collectAttachmentContentIds(messages: unknown): string[] {
       ids.add(part.data.contentId);
       const extracted = part.data.documentRepresentation?.textContentRef;
       if (extracted) ids.add(extracted.id);
+      const manifest = part.data.archiveRepresentation?.manifestContentRef;
+      if (manifest) ids.add(manifest.id);
     }
   }
   return [...ids];
@@ -158,7 +185,8 @@ export async function materializeAttachmentMessages(
         reference.contentKind !== "text" &&
         reference.contentKind !== "selection" &&
         reference.contentKind !== "image" &&
-        reference.contentKind !== "document"
+        reference.contentKind !== "document" &&
+        reference.contentKind !== "archive"
       ) {
         parts.push({
           type: "text",
@@ -166,17 +194,19 @@ export async function materializeAttachmentMessages(
         });
         continue;
       }
-      const contentRef =
-        reference.contentKind === "document"
-          ? reference.documentRepresentation?.textContentRef
-          : {
-              id: reference.contentId,
-              byteSize: reference.byteSize,
-            };
+      const contentRef = (() => {
+        if (reference.contentKind === "document") {
+          return reference.documentRepresentation?.textContentRef;
+        }
+        if (reference.contentKind === "archive") {
+          return reference.archiveRepresentation?.manifestContentRef;
+        }
+        return { id: reference.contentId, byteSize: reference.byteSize };
+      })();
       if (!contentRef) {
         parts.push({
           type: "text",
-          text: `PDF ${JSON.stringify(reference.displayName)} has no extractable text representation.`,
+          text: `${reference.contentKind === "archive" ? "ZIP" : "PDF"} ${JSON.stringify(reference.displayName)} has no inspectable representation.`,
         });
         continue;
       }
@@ -200,7 +230,10 @@ export async function materializeAttachmentMessages(
         });
         continue;
       }
-      if (reference.contentKind === "document") {
+      if (
+        reference.contentKind === "document" ||
+        reference.contentKind === "archive"
+      ) {
         parts.push({
           type: "text",
           text: decodeStoredText(bytes, reference.displayName),
@@ -355,6 +388,7 @@ function referenceAsRecord(
     contentKind: reference.contentKind,
     processingState: "ready",
     documentRepresentation: reference.documentRepresentation,
+    archiveRepresentation: reference.archiveRepresentation,
     security: {
       secretPathCheck: "not-applicable",
       workspaceScopeCheck: "not-applicable",
@@ -403,6 +437,39 @@ function validDocumentRepresentation(value: unknown): boolean {
       typeof page.truncated === "boolean" &&
       (page.error == null ||
         (typeof page.error === "string" && page.error.length <= 512)),
+  );
+}
+
+function validArchiveRepresentation(value: unknown): boolean {
+  if (value == null) return true;
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<ArchiveRepresentation>;
+  const manifest = candidate.manifestContentRef;
+  return (
+    candidate.format === "zip" &&
+    Number.isInteger(candidate.entryCount) &&
+    (candidate.entryCount ?? -1) >= 0 &&
+    (candidate.entryCount ?? 0) <= 2_048 &&
+    Number.isInteger(candidate.fileCount) &&
+    (candidate.fileCount ?? -1) >= 0 &&
+    Number.isInteger(candidate.folderCount) &&
+    (candidate.folderCount ?? -1) >= 0 &&
+    (candidate.fileCount ?? 0) + (candidate.folderCount ?? 0) ===
+      candidate.entryCount &&
+    Number.isInteger(candidate.totalCompressedBytes) &&
+    (candidate.totalCompressedBytes ?? -1) >= 0 &&
+    (candidate.totalCompressedBytes ?? 0) <= 8 * 1024 * 1024 &&
+    Number.isInteger(candidate.totalExpandedBytes) &&
+    (candidate.totalExpandedBytes ?? -1) >= 0 &&
+    (candidate.totalExpandedBytes ?? 0) <= 64 * 1024 * 1024 &&
+    candidate.nestedArchiveDepthLimit === 0 &&
+    candidate.entries == null &&
+    Boolean(manifest) &&
+    /^[a-f0-9]{64}$/.test(manifest?.id ?? "") &&
+    manifest?.contentHash === manifest?.id &&
+    Number.isInteger(manifest?.byteSize) &&
+    (manifest?.byteSize ?? 0) > 0 &&
+    (manifest?.byteSize ?? 0) <= 768 * 1024
   );
 }
 

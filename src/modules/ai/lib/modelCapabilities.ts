@@ -96,6 +96,14 @@ export function attachmentCapabilityStatus(
       "Document support is unknown for the selected model.",
     );
   }
+  if (
+    attachment.contentKind === "archive" &&
+    attachment.archiveRepresentation?.manifestContentRef
+  ) {
+    return readyStatus(
+      "ZIP manifest and selected normalized entries are ready for the selected model.",
+    );
+  }
   return readyStatus(
     "Clack will provide metadata only for this attachment type.",
   );

@@ -204,6 +204,7 @@ export function WorkspaceInputBar({
             files={c.files}
             attachmentCapabilities={c.attachmentCapabilities}
             onRemoveFile={c.removeFile}
+            onMaterializeArchiveEntry={c.materializeArchiveEntry}
             snippets={c.pickedSnippets}
             onRemoveSnippet={(id) => {
               const snip = c.pickedSnippets.find((s) => s.id === id);

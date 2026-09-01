@@ -26,6 +26,7 @@ function render(status: AttachmentCapabilityStatus): string {
       files={[IMAGE]}
       attachmentCapabilities={{ [IMAGE.id]: status }}
       onRemoveFile={() => {}}
+      onMaterializeArchiveEntry={async () => {}}
       snippets={[]}
       onRemoveSnippet={() => {}}
       commands={[]}
@@ -62,6 +63,7 @@ describe("ChipsRow model capability state", () => {
       <ChipsRow
         files={[{ ...IMAGE, processingState: "processing" }]}
         onRemoveFile={() => {}}
+        onMaterializeArchiveEntry={async () => {}}
         snippets={[]}
         onRemoveSnippet={() => {}}
         commands={[]}
@@ -69,5 +71,65 @@ describe("ChipsRow model capability state", () => {
       />,
     );
     expect(html).toContain("Processing");
+  });
+
+  it("renders a compact inspectable ZIP chip instead of every manifest entry", () => {
+    const manifestHash = "b".repeat(64);
+    const archive = {
+      ...IMAGE,
+      id: "zip-1",
+      displayName: "project.zip",
+      detectedMediaType: "application/zip",
+      contentKind: "archive" as const,
+      archiveRepresentation: {
+        format: "zip" as const,
+        entryCount: 2,
+        fileCount: 2,
+        folderCount: 0,
+        totalCompressedBytes: 10,
+        totalExpandedBytes: 20,
+        nestedArchiveDepthLimit: 0,
+        manifestContentRef: {
+          id: manifestHash,
+          contentHash: manifestHash,
+          byteSize: 20,
+        },
+        entries: [
+          {
+            index: 0,
+            path: "first.txt",
+            entryType: "file" as const,
+            compressedSize: 5,
+            expandedSize: 10,
+            status: "ready" as const,
+            selectable: true,
+          },
+          {
+            index: 1,
+            path: "second.txt",
+            entryType: "file" as const,
+            compressedSize: 5,
+            expandedSize: 10,
+            status: "ready" as const,
+            selectable: true,
+          },
+        ],
+      },
+    } satisfies AttachmentRecord;
+    const html = renderToStaticMarkup(
+      <ChipsRow
+        files={[archive]}
+        onRemoveFile={() => {}}
+        onMaterializeArchiveEntry={async () => {}}
+        snippets={[]}
+        onRemoveSnippet={() => {}}
+        commands={[]}
+        onRemoveCommand={() => {}}
+      />,
+    );
+    expect(html).toContain("project.zip");
+    expect(html).toContain("2 files");
+    expect(html).not.toContain("first.txt");
+    expect(html).not.toContain("second.txt");
   });
 });
