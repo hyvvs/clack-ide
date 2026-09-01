@@ -6,6 +6,11 @@ import type { ProviderId } from "@/modules/ai/config";
 import { workspacePermissionKey } from "@/modules/ai/lib/permissions";
 import { normalizeWorkspacePath } from "@/modules/workspace";
 import type { WorkspaceEnv } from "@/modules/workspace/env";
+import {
+  collectAttachmentContentIds,
+  migrateLegacyDataUrlAttachments,
+} from "@/modules/ai/lib/attachmentMessages";
+import { reconcileAttachmentContent } from "@/modules/ai/lib/attachmentStore";
 
 export const SESSION_PROFILE_SCHEMA_VERSION = 1;
 
@@ -70,6 +75,7 @@ const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
 export type LoadedSessions = {
   sessions: SessionMeta[];
   activeId: string | null;
+  attachmentContentIds: string[];
 };
 
 export function createConversationProfile(input: {
@@ -195,11 +201,21 @@ export async function loadAll(): Promise<LoadedSessions> {
   const entries = await store.entries();
   let sessions: SessionMeta[] | undefined;
   let activeId: string | null | undefined;
+  const attachmentContentIds = new Set<string>();
   for (const [k, v] of entries) {
     if (k === KEY_SESSIONS) sessions = v as SessionMeta[];
     else if (k === KEY_ACTIVE) activeId = v as string | null;
+    else if (k.startsWith("messages:")) {
+      for (const id of collectAttachmentContentIds(v)) {
+        attachmentContentIds.add(id);
+      }
+    }
   }
-  return { sessions: sessions ?? [], activeId: activeId ?? null };
+  return {
+    sessions: sessions ?? [],
+    activeId: activeId ?? null,
+    attachmentContentIds: [...attachmentContentIds],
+  };
 }
 
 export function recoverInterruptedSessions(
@@ -219,7 +235,11 @@ export function recoverInterruptedSessions(
 }
 
 export async function loadMessages(id: string): Promise<UIMessage[] | null> {
-  return (await store.get<UIMessage[]>(messagesKey(id))) ?? null;
+  const messages = (await store.get<UIMessage[]>(messagesKey(id))) ?? null;
+  if (!messages) return null;
+  const migrated = await migrateLegacyDataUrlAttachments(messages);
+  if (migrated.changed) await saveMessages(id, migrated.messages);
+  return migrated.messages;
 }
 
 export async function saveSessionsList(sessions: SessionMeta[]): Promise<void> {
@@ -239,6 +259,19 @@ export async function saveMessages(
 
 export async function deleteSessionData(id: string): Promise<void> {
   await store.delete(messagesKey(id));
+  await reconcilePersistedAttachmentContent();
+}
+
+export async function reconcilePersistedAttachmentContent(
+  additionalRetainIds: readonly string[] = [],
+): Promise<number> {
+  const entries = await store.entries();
+  const retained = new Set(additionalRetainIds);
+  for (const [key, value] of entries) {
+    if (!key.startsWith("messages:")) continue;
+    for (const id of collectAttachmentContentIds(value)) retained.add(id);
+  }
+  return reconcileAttachmentContent([...retained]);
 }
 
 export function newSessionId(): string {

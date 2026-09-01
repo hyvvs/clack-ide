@@ -1,7 +1,8 @@
 pub mod modules;
 
 use modules::{
-    acp, agent, clipboard, fs, git, history, net, opener, pty, secrets, shell, workspace,
+    acp, agent, attachments, clipboard, fs, git, history, net, opener, pty, secrets, shell,
+    workspace,
 };
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -181,6 +182,9 @@ pub fn run() {
             pty::pty_has_foreground_process,
             pty::pty_has_foreground_job,
             pty::pty_shell_name,
+            attachments::attachment_store_put,
+            attachments::attachment_store_get,
+            attachments::attachment_store_reconcile,
             fs::tree::list_subdirs,
             fs::tree::fs_read_dir,
             fs::file::fs_read_file,

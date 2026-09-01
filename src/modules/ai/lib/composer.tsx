@@ -13,13 +13,18 @@ import {
   ATTACHMENT_LIMITS,
   type AttachmentRecord,
   createSelectionAttachment,
-  formatSelectionAttachmentBlock,
-  formatTextAttachmentBlock,
   isDeliverableAttachment,
   mergeAttachmentRecords,
   normalizePickerAttachment,
   normalizeWorkspaceAttachment,
+  persistAttachmentRecord,
+  releaseAttachmentPreview,
 } from "./attachments";
+import {
+  type AttachmentMessagePart,
+  toAttachmentMessagePart,
+} from "./attachmentMessages";
+import { releaseAttachmentContent } from "./attachmentStore";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
 import { cancelRun, useChatStore } from "../store/chatStore";
@@ -27,7 +32,7 @@ import { useSnippetsStore } from "../store/snippetsStore";
 
 type MessagePart =
   | { type: "text"; text: string }
-  | { type: "file"; mediaType: string; url: string; filename?: string };
+  | AttachmentMessagePart;
 
 export const MAX_TEXT_INLINE = ATTACHMENT_LIMITS.maxTextBytes;
 export const ACCEPTED_FILES = ACCEPTED_ATTACHMENT_FILES;
@@ -103,6 +108,13 @@ export function AiComposerProvider({
 
   const appendAttachments = useCallback((incoming: AttachmentRecord[]) => {
     const merged = mergeAttachmentRecords(filesRef.current, incoming);
+    const retainedIds = new Set(merged.records.map((record) => record.id));
+    for (const record of incoming) {
+      if (!retainedIds.has(record.id) && record.contentRef) {
+        releaseAttachmentContent(record.contentRef.id);
+        releaseAttachmentPreview(record);
+      }
+    }
     filesRef.current = merged.records;
     setFiles(merged.records);
     for (const record of incoming) {
@@ -166,15 +178,19 @@ export function AiComposerProvider({
     if (pendingSelections.length === 0) return;
     const drained = consumeSelections();
     if (drained.length === 0) return;
-    appendAttachments(
-      drained.map((selection) =>
-        createSelectionAttachment({
+    void Promise.all(
+      drained.map((selection) => {
+        const record = createSelectionAttachment({
           id: selection.id,
           text: selection.text,
           surface: selection.source,
-        }),
-      ),
-    );
+        });
+        return persistAttachmentRecord(
+          record,
+          new TextEncoder().encode(selection.text),
+        );
+      }),
+    ).then(appendAttachments);
   }, [
     appendAttachments,
     consumeExternalEvents,
@@ -199,6 +215,11 @@ export function AiComposerProvider({
   };
 
   const removeFile = (id: string) => {
+    const removed = filesRef.current.find((file) => file.id === id);
+    if (removed) {
+      releaseAttachmentPreview(removed);
+      if (removed.contentRef) releaseAttachmentContent(removed.contentRef.id);
+    }
     const next = filesRef.current.filter((file) => file.id !== id);
     filesRef.current = next;
     setFiles(next);
@@ -257,22 +278,6 @@ export function AiComposerProvider({
     }
 
     const parts: MessagePart[] = [];
-    const fileBlocks = files
-      .filter(
-        (f) =>
-          f.processingState === "ready" &&
-          f.contentKind === "text" &&
-          f.textRepresentation !== undefined,
-      )
-      .map(formatTextAttachmentBlock);
-    const selectionBlocks = files
-      .filter(
-        (f) =>
-          f.processingState === "ready" &&
-          f.contentKind === "selection" &&
-          f.textRepresentation !== undefined,
-      )
-      .map(formatSelectionAttachmentBlock);
     const { body: bodyAfterTokens, blocks: snippetBlocks } =
       expandSnippetTokens(effectiveText, useSnippetsStore.getState().snippets);
     const seenHandles = new Set<string>();
@@ -293,40 +298,35 @@ export function AiComposerProvider({
     const composed = [
       commandMarker ?? "",
       allSnippetBlocks.join("\n\n"),
-      selectionBlocks.join("\n\n"),
-      fileBlocks.join("\n\n"),
       bodyAfterTokens,
     ]
       .filter(Boolean)
       .join("\n\n");
     if (composed) parts.push({ type: "text", text: composed });
 
-    for (const f of files) {
-      if (
-        f.processingState === "ready" &&
-        f.contentKind === "image" &&
-        f.imageRepresentation
-      ) {
-        parts.push({
-          type: "file",
-          mediaType: f.detectedMediaType,
-          url: f.imageRepresentation,
-          filename: f.displayName,
-        });
-      }
+    for (const file of files.filter(isDeliverableAttachment)) {
+      parts.push(toAttachmentMessagePart(file));
     }
 
     if (!sessionId) return;
+    const sentFiles = [...filesRef.current];
     const store = useChatStore.getState();
     store.patchAgentMeta(sessionId, {
       hitStepCap: false,
       compactionNotice: null,
     });
     void (async () => {
-      const { sendMessageToSession } = await import("../store/chatRuntime");
-      await sendMessageToSession(sessionId, { role: "user", parts });
+      try {
+        const { sendMessageToSession } = await import("../store/chatRuntime");
+        await sendMessageToSession(sessionId, { role: "user", parts });
+      } finally {
+        for (const file of sentFiles) {
+          if (file.contentRef) releaseAttachmentContent(file.contentRef.id);
+        }
+      }
     })();
     setValue("");
+    for (const file of filesRef.current) releaseAttachmentPreview(file);
     filesRef.current = [];
     setFiles([]);
     setPickedSnippets([]);
@@ -334,6 +334,17 @@ export function AiComposerProvider({
     // Re-focus immediately after submit so the user can type a follow-up
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
+
+  useEffect(
+    () => () => {
+      for (const file of filesRef.current) {
+        releaseAttachmentPreview(file);
+        if (file.contentRef) releaseAttachmentContent(file.contentRef.id);
+      }
+      filesRef.current = [];
+    },
+    [],
+  );
 
   const stop = () => {
     if (sessionId) void cancelRun(sessionId);

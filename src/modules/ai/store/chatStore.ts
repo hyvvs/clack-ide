@@ -38,6 +38,7 @@ import {
   type SessionMeta,
   type SessionRunState,
 } from "../lib/sessions";
+import { reconcileAttachmentContent } from "../lib/attachmentStore";
 import { useAgentsStore } from "./agentsStore";
 import { pushRecentModel } from "../lib/modelPrefs";
 import { providerForSelectedModel } from "../lib/providerRestore";
@@ -885,6 +886,11 @@ export const useChatStore = create<StoreState>((set, get) => ({
   hydrateSessions: async () => {
     if (get().sessionsHydrated) return;
     const loaded = await loadAll();
+    try {
+      await reconcileAttachmentContent(loaded.attachmentContentIds);
+    } catch (error) {
+      console.warn("[clack] Could not reconcile attachment content:", error);
+    }
     const profiled = migrateSessionProfiles(loaded.sessions, {
       agentId: useAgentsStore.getState().activeId,
       modelId: get().selectedModelId,

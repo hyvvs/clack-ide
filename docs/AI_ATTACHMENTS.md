@@ -37,7 +37,22 @@ thumbnails. Later image work may add stricter SVG and animated-image handling.
 
 ## Current delivery
 
-Bounded text and source files are sent as delimited text with JSON-escaped
-metadata. Bounded images are sent through the existing AI SDK image part.
+Attachment bytes are stored once under Clack's app-data `ai-attachments`
+directory. Files are named by their SHA-256 content hash and written
+atomically. Message history contains a small `data-clack-attachment` reference,
+not raw text or a base64 data URL.
+
+When a request is sent, the transport reads and integrity-checks the referenced
+content. Bounded text and source files become transient delimited text with
+JSON-escaped metadata. Bounded images become transient AI SDK image parts. The
+transcript renders compact attachment cards and loads image thumbnails only
+near the viewport.
+
+Identical content is deduplicated. In-memory leases protect unsent and active
+content from cleanup. Startup and session deletion reconcile the store against
+persisted references; unreferenced files and abandoned staging files are
+removed. Existing persisted data-URL attachments migrate when their chat is
+opened. A failed migration preserves the original history.
+
 PDF, ZIP, RAR, 7z, and unknown binary files are identified honestly but remain
 unsupported until their dedicated processing checkpoints are implemented.

@@ -52,6 +52,8 @@ import {
 } from "@/modules/ai/lib/errors";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { PeerTaskFeed } from "./PeerTaskFeed";
+import { AttachmentMessageCard } from "./AttachmentMessageCard";
+import { isAttachmentMessagePart } from "../lib/attachmentMessages";
 
 const PEER_TASK_ENVELOPE_RE =
   /^<peer-task\s+id="[^"]+">[\s\S]*<\/peer-task>\s*$/;
@@ -94,6 +96,10 @@ const SELECTION_RE =
   /<selection\s+source="(terminal|editor)">\n?([\s\S]*?)\n?<\/selection>/g;
 const FILE_RE = /<file\s+name="([^"]+)"[^>]*>\n?([\s\S]*?)\n?<\/file>/g;
 const SNIPPET_RE = /<snippet\s+name="([^"]+)">\n?[\s\S]*?\n?<\/snippet>/g;
+const CLACK_FILE_RE =
+  /----- CLACK ATTACHMENT -----\n([^\n]*)\n([\s\S]*?)\n----- END CLACK ATTACHMENT -----/g;
+const CLACK_SELECTION_RE =
+  /----- CLACK SELECTION -----\n([^\n]*)\n([\s\S]*?)\n----- END CLACK SELECTION -----/g;
 
 function countLines(s: string): number {
   if (!s) return 0;
@@ -120,11 +126,42 @@ function stripUserContextBlocks(text: string): {
     chips.push({ kind: "file", name, lines: countLines(body) });
     return "";
   });
+  out = out.replace(CLACK_FILE_RE, (_match, metadata: string, body: string) => {
+    chips.push({
+      kind: "file",
+      name: jsonStringField(metadata, "name") ?? "Attached file",
+      lines: countLines(body),
+    });
+    return "";
+  });
+  out = out.replace(
+    CLACK_SELECTION_RE,
+    (_match, metadata: string, body: string) => {
+      chips.push({
+        kind: "selection",
+        source:
+          jsonStringField(metadata, "source") === "editor"
+            ? "editor"
+            : "terminal",
+        lines: countLines(body),
+      });
+      return "";
+    },
+  );
   out = out.replace(SNIPPET_RE, (_m, name: string) => {
     chips.push({ kind: "snippet", name });
     return "";
   });
   return { text: out.trim(), chips };
+}
+
+function jsonStringField(value: string, field: string): string | null {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    return typeof parsed[field] === "string" ? parsed[field] : null;
+  } catch {
+    return null;
+  }
 }
 
 const ContextChips = memo(function ContextChips({
@@ -462,6 +499,7 @@ export const RenderedMessage = memo(function RenderedMessage({
     const commandName = cmdMatch?.[1] ?? null;
     const withoutCmd = cmdMatch ? rawText.slice(cmdMatch[0].length) : rawText;
     const stripped = stripUserContextBlocks(withoutCmd);
+    const attachments = message.parts.filter(isAttachmentMessagePart);
 
     return (
       <Message from="user">
@@ -469,6 +507,16 @@ export const RenderedMessage = memo(function RenderedMessage({
           {commandName ? <CommandSnippet name={commandName} /> : null}
           {stripped.chips.length > 0 ? (
             <ContextChips chips={stripped.chips} />
+          ) : null}
+          {attachments.length > 0 ? (
+            <div className="mb-1 flex flex-wrap gap-1.5">
+              {attachments.map((part) => (
+                <AttachmentMessageCard
+                  key={part.data.attachmentId}
+                  part={part}
+                />
+              ))}
+            </div>
           ) : null}
           {stripped.text ? (
             <p className="whitespace-pre-wrap wrap-break-word">

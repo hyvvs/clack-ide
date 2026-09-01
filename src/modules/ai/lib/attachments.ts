@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { currentWorkspaceEnv } from "@/modules/workspace";
+import {
+  type AttachmentContentRef,
+  retainAttachmentContent,
+  storeAttachmentContent,
+} from "./attachmentStore";
 import { checkReadable, checkReadableCanonical } from "./security";
 
 const MIB = 1024 * 1024;
@@ -50,6 +55,7 @@ export type AttachmentRecord = {
   byteSize: number;
   contentKind: AttachmentContentKind;
   processingState: AttachmentProcessingState;
+  contentRef?: AttachmentContentRef;
   textRepresentation?: string;
   imageRepresentation?: string;
   error?: AttachmentError;
@@ -80,6 +86,7 @@ type WorkspaceAttachmentDeps = {
     path: string,
     workspaceRoot: string,
   ) => Promise<ArrayBuffer | Uint8Array>;
+  persistContent?: (bytes: Uint8Array) => Promise<AttachmentContentRef>;
 };
 
 const TEXT_MIME_BY_EXTENSION: Record<string, string> = {
@@ -371,13 +378,51 @@ function strictText(bytes: Uint8Array): string | null {
 }
 
 function defaultDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () =>
-      reject(reader.error ?? new Error("Could not read attachment."));
-    reader.readAsDataURL(blob);
-  });
+  if (typeof URL.createObjectURL !== "function") {
+    return Promise.reject(new Error("Image previews are unavailable."));
+  }
+  return Promise.resolve(URL.createObjectURL(blob));
+}
+
+export async function persistAttachmentRecord(
+  record: AttachmentRecord,
+  bytes: Uint8Array,
+  persistContent = storeAttachmentContent,
+): Promise<AttachmentRecord> {
+  if (record.processingState !== "ready") return record;
+  try {
+    const contentRef = await persistContent(bytes);
+    retainAttachmentContent(contentRef.id);
+    return {
+      ...record,
+      contentRef,
+      ...(record.contentKind === "text" || record.contentKind === "selection"
+        ? { textRepresentation: undefined }
+        : {}),
+    };
+  } catch (error) {
+    releaseAttachmentPreview(record);
+    return {
+      ...record,
+      processingState: "failed",
+      contentRef: undefined,
+      textRepresentation: undefined,
+      imageRepresentation: undefined,
+      error: {
+        code: "attachment_persistence_failed",
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
+
+export function releaseAttachmentPreview(record: AttachmentRecord): void {
+  if (
+    record.imageRepresentation?.startsWith("blob:") &&
+    typeof URL.revokeObjectURL === "function"
+  ) {
+    URL.revokeObjectURL(record.imageRepresentation);
+  }
 }
 
 export async function normalizeAttachmentBytes(input: {
@@ -590,7 +635,7 @@ export async function normalizePickerAttachment(
     });
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
-  return normalizeAttachmentBytes({
+  const normalized = await normalizeAttachmentBytes({
     source,
     displayName: file.name,
     bytes,
@@ -601,6 +646,7 @@ export async function normalizePickerAttachment(
       mimeSniffed: true,
     },
   });
+  return persistAttachmentRecord(normalized, bytes);
 }
 
 function rawBytes(value: ArrayBuffer | Uint8Array): Uint8Array {
@@ -639,6 +685,7 @@ export async function normalizeWorkspaceAttachment(
         workspace,
         maxBytes: ATTACHMENT_LIMITS.maxIndividualBytes,
       }),
+    persistContent: storeAttachmentContent,
   };
   const safety = await checkReadableCanonical(path, activeDeps.canonicalize);
   if (!safety.ok) {
@@ -665,16 +712,22 @@ export async function normalizeWorkspaceAttachment(
       safety.canonical,
       workspaceRoot,
     );
-    return normalizeAttachmentBytes({
+    const bytes = rawBytes(response);
+    const normalized = await normalizeAttachmentBytes({
       source: canonicalSource,
       displayName,
-      bytes: rawBytes(response),
+      bytes,
       security: {
         secretPathCheck: "passed",
         workspaceScopeCheck: "passed",
         mimeSniffed: true,
       },
     });
+    return persistAttachmentRecord(
+      normalized,
+      bytes,
+      activeDeps.persistContent,
+    );
   } catch (error) {
     return failureRecord({
       source: canonicalSource,
@@ -794,6 +847,7 @@ export function mergeAttachmentRecords(
 export function isDeliverableAttachment(record: AttachmentRecord): boolean {
   return (
     record.processingState === "ready" &&
+    Boolean(record.contentRef) &&
     (record.contentKind === "text" ||
       record.contentKind === "image" ||
       record.contentKind === "selection")

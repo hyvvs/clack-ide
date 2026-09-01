@@ -87,6 +87,45 @@ describe("RenderedMessage", () => {
     );
   });
 
+  it("renders normalized legacy attachment blocks without internal delimiters", () => {
+    const html = renderMessage(
+      userMessage(
+        '----- CLACK ATTACHMENT -----\n{"name":"notes.md","mediaType":"text/markdown"}\none\ntwo\n----- END CLACK ATTACHMENT -----\nReview it',
+      ),
+    );
+    expect(html).toContain("notes.md");
+    expect(html).toContain("2L");
+    expect(html).toContain("Review it");
+    expect(html).not.toContain("CLACK ATTACHMENT");
+  });
+
+  it("renders a persisted attachment reference as a compact transcript card", () => {
+    const hash = "c".repeat(64);
+    const html = renderMessage({
+      id: "attachment-message",
+      role: "user",
+      parts: [
+        { type: "text", text: "Inspect this" },
+        {
+          type: "data-clack-attachment",
+          data: {
+            attachmentId: "attachment-1",
+            contentId: hash,
+            contentHash: hash,
+            displayName: "screen.png",
+            mediaType: "image/png",
+            byteSize: 1024,
+            contentKind: "image",
+          },
+        },
+      ],
+    } as UIMessage);
+
+    expect(html).toContain("screen.png");
+    expect(html).toContain("Image | 1 KB");
+    expect(html).toContain('data-clack-attachment="attachment-1"');
+  });
+
   it("groups consecutive read tool parts", () => {
     const html = renderMessage(groupedReadMessage);
 

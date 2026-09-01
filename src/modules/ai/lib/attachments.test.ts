@@ -190,6 +190,30 @@ describe("workspace attachment security", () => {
       security: { workspaceScopeCheck: "rejected" },
     });
   });
+
+  it("stores authorized workspace text by content reference", async () => {
+    const hash = "b".repeat(64);
+    const persistContent = vi.fn(async () => ({
+      id: hash,
+      contentHash: hash,
+      byteSize: 5,
+    }));
+    const normalized = await normalizeWorkspaceAttachment(
+      "/repo/note.txt",
+      "/repo",
+      {
+        canonicalize: async (path) => path,
+        readBytes: async () => new TextEncoder().encode("hello"),
+        persistContent,
+      },
+    );
+    expect(normalized).toMatchObject({
+      processingState: "ready",
+      contentRef: { id: hash, contentHash: hash, byteSize: 5 },
+      textRepresentation: undefined,
+    });
+    expect(persistContent).toHaveBeenCalledOnce();
+  });
 });
 
 describe("attachment message limits", () => {
