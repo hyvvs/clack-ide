@@ -15,7 +15,8 @@ export function AttachmentMessageCard({
   part: AttachmentMessagePart;
 }) {
   const { data } = part;
-  const image = data.contentKind === "image";
+  const image =
+    data.contentKind === "image" && data.mediaType !== "image/svg+xml";
   const anchorRef = useRef<HTMLDivElement>(null);
   const [nearViewport, setNearViewport] = useState(!image);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -104,7 +105,9 @@ export function AttachmentMessageCard({
           {data.displayName}
         </span>
         <span className="truncate text-[10px] text-[var(--clack-text-3)]">
-          {failed ? "Content unavailable" : attachmentKindLabel(data.contentKind)}
+          {failed
+            ? "Content unavailable"
+            : attachmentKindLabel(data.contentKind)}
           {` | ${formatBytes(data.byteSize)}`}
         </span>
       </span>
