@@ -202,6 +202,7 @@ export function WorkspaceInputBar({
               </>
             }
             files={c.files}
+            attachmentCapabilities={c.attachmentCapabilities}
             onRemoveFile={c.removeFile}
             snippets={c.pickedSnippets}
             onRemoveSnippet={(id) => {

@@ -7,6 +7,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import { type AttachmentRecord, formatBytes } from "../lib/attachments";
+import type { AttachmentCapabilityStatus } from "../lib/modelCapabilities";
 import type { Snippet } from "../lib/snippets";
 import { Chip } from "./Chip";
 
@@ -19,6 +20,7 @@ type Props = {
   onRemoveSnippet: (id: string) => void;
   commands: CommandChip[];
   onRemoveCommand: (name: string) => void;
+  attachmentCapabilities?: Readonly<Record<string, AttachmentCapabilityStatus>>;
   /** Passive chips rendered before the attachment chips (e.g. cwd + branch). */
   leading?: ReactNode;
 };
@@ -30,6 +32,7 @@ export function ChipsRow({
   onRemoveSnippet,
   commands,
   onRemoveCommand,
+  attachmentCapabilities,
   leading,
 }: Props) {
   const hasAttachments =
@@ -67,6 +70,7 @@ export function ChipsRow({
           iconNode={fileIcon(f)}
           title={
             f.error?.message ??
+            attachmentCapabilities?.[f.id]?.message ??
             `${f.detectedMediaType} · ${formatBytes(f.byteSize)}`
           }
           onRemove={() => onRemoveFile(f.id)}
@@ -80,6 +84,10 @@ export function ChipsRow({
           {f.processingState !== "ready" ? (
             <span className="ml-1 text-destructive">
               · {f.processingState === "unsupported" ? "Unsupported" : "Failed"}
+            </span>
+          ) : attachmentCapabilities?.[f.id]?.state === "blocked" ? (
+            <span className="ml-1 text-destructive">
+              · {attachmentCapabilities[f.id].label}
             </span>
           ) : null}
         </Chip>

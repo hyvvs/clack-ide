@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -25,14 +26,18 @@ import {
   toAttachmentMessagePart,
 } from "./attachmentMessages";
 import { releaseAttachmentContent } from "./attachmentStore";
+import {
+  attachmentCapabilityStatus,
+  firstBlockedAttachment,
+  resolveModelInputCapabilities,
+  type AttachmentCapabilityStatus,
+} from "./modelCapabilities";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
 import { cancelRun, useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
 
-type MessagePart =
-  | { type: "text"; text: string }
-  | AttachmentMessagePart;
+type MessagePart = { type: "text"; text: string } | AttachmentMessagePart;
 
 export const MAX_TEXT_INLINE = ATTACHMENT_LIMITS.maxTextBytes;
 export const ACCEPTED_FILES = ACCEPTED_ATTACHMENT_FILES;
@@ -59,6 +64,7 @@ type ComposerCtx = {
   stop: () => void;
   voice: Voice;
   canSend: boolean;
+  attachmentCapabilities: Readonly<Record<string, AttachmentCapabilityStatus>>;
 };
 
 const Ctx = createContext<ComposerCtx | null>(null);
@@ -92,6 +98,16 @@ export function AiComposerProvider({
   );
   const isBusy =
     status === "thinking" || status === "streaming" || runState === "running";
+  const modelId = useChatStore((state) => {
+    const session = state.sessions.find(
+      (candidate) => candidate.id === sessionId,
+    );
+    return session?.profile?.modelId ?? state.selectedModelId;
+  });
+  const modelCapabilities = useMemo(
+    () => resolveModelInputCapabilities(modelId),
+    [modelId],
+  );
 
   const [value, setValue] = useState("");
   const [files, setFiles] = useState<AttachmentRecord[]>([]);
@@ -205,6 +221,17 @@ export function AiComposerProvider({
     },
   });
 
+  const attachmentCapabilities = useMemo(
+    () =>
+      Object.fromEntries(
+        files.map((file) => [
+          file.id,
+          attachmentCapabilityStatus(file, modelCapabilities),
+        ]),
+      ),
+    [files, modelCapabilities],
+  );
+
   const addFiles = async (list: FileList | null) => {
     if (!list) return;
     const next: AttachmentRecord[] = [];
@@ -241,6 +268,16 @@ export function AiComposerProvider({
 
   const submit = () => {
     if (isBusy) return;
+    const blockedAttachment = firstBlockedAttachment(
+      filesRef.current,
+      modelCapabilities,
+    );
+    if (blockedAttachment) {
+      toast.warning(
+        `${blockedAttachment.attachment.displayName}: ${blockedAttachment.status.message}`,
+      );
+      return;
+    }
     const trimmed = value.trim();
     if (
       !trimmed &&
@@ -352,6 +389,7 @@ export function AiComposerProvider({
 
   const canSend =
     !isBusy &&
+    !firstBlockedAttachment(files, modelCapabilities) &&
     (value.trim().length > 0 ||
       files.some(isDeliverableAttachment) ||
       pickedSnippets.length > 0 ||
@@ -376,6 +414,7 @@ export function AiComposerProvider({
     stop,
     voice,
     canSend,
+    attachmentCapabilities,
   };
 
   return <Ctx.Provider value={ctx}>{children}</Ctx.Provider>;

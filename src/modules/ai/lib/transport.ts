@@ -12,6 +12,7 @@ import type {
 } from "./savedProviderModels";
 import type { WorkspaceEnv } from "@/modules/workspace/env";
 import { materializeAttachmentMessages } from "./attachmentMessages";
+import { resolveModelInputCapabilities } from "./modelCapabilities";
 
 const PROJECT_MEMORY_MAX_BYTES = 32 * 1024;
 type MemoryCacheEntry = { content: string | null; mtime: number };
@@ -107,6 +108,7 @@ export function createContextAwareTransport(deps: Deps) {
     const envBlock = formatEnvBlock(live);
     const messagesWithAttachments = await materializeAttachmentMessages(
       options.messages,
+      resolveModelInputCapabilities(deps.getModelId()),
     );
     const messagesForRun = envBlock
       ? injectEnvIntoLastUser(messagesWithAttachments, envBlock)

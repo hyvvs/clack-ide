@@ -8,8 +8,17 @@ import {
   migrateLegacyDataUrlAttachments,
   toAttachmentMessagePart,
 } from "./attachmentMessages";
+import type { ModelInputCapabilities } from "./modelCapabilities";
 
 const HASH = "a".repeat(64);
+const VISION_CAPABILITIES: ModelInputCapabilities = {
+  text: "supported",
+  image: "supported",
+  document: "unsupported",
+  tools: "supported",
+  audio: "unsupported",
+  evidence: "registry",
+};
 
 function record(
   contentKind: "text" | "image" | "selection" = "text",
@@ -21,8 +30,7 @@ function record(
         ? { kind: "selection", surface: "editor" }
         : { kind: "picker", token: contentKind },
     displayName: contentKind === "image" ? "screen.png" : "notes.txt",
-    detectedMediaType:
-      contentKind === "image" ? "image/png" : "text/plain",
+    detectedMediaType: contentKind === "image" ? "image/png" : "text/plain",
     byteSize: 5,
     contentKind,
     processingState: "ready",
@@ -56,12 +64,18 @@ describe("attachment message references", () => {
 
   it("materializes text content only for the outgoing model request", async () => {
     const reference = toAttachmentMessagePart(record("text"));
-    const messages = [messageWith({ type: "text", text: "Review it" }, reference)];
+    const messages = [
+      messageWith({ type: "text", text: "Review it" }, reference),
+    ];
     const loadContent = vi.fn(async () => new TextEncoder().encode("hello"));
-    const materialized = await materializeAttachmentMessages(messages, {
-      loadContent,
-      toDataUrl: vi.fn(),
-    });
+    const materialized = await materializeAttachmentMessages(
+      messages,
+      VISION_CAPABILITIES,
+      {
+        loadContent,
+        toDataUrl: vi.fn(),
+      },
+    );
     expect(loadContent).toHaveBeenCalledWith(HASH);
     expect(materialized[0].parts).toHaveLength(2);
     expect(materialized[0].parts[1]).toMatchObject({
@@ -76,6 +90,7 @@ describe("attachment message references", () => {
     const toDataUrl = vi.fn(async () => "data:image/png;base64,aGVsbG8=");
     const materialized = await materializeAttachmentMessages(
       [messageWith(reference)],
+      VISION_CAPABILITIES,
       {
         loadContent: async () => new TextEncoder().encode("hello"),
         toDataUrl,
@@ -86,6 +101,37 @@ describe("attachment message references", () => {
       filename: "screen.png",
       mediaType: "image/png",
       url: "data:image/png;base64,aGVsbG8=",
+    });
+  });
+
+  it("blocks image delivery for an explicitly text-only model", async () => {
+    const reference = toAttachmentMessagePart(record("image"));
+    const loadContent = vi.fn();
+    await expect(
+      materializeAttachmentMessages(
+        [messageWith(reference)],
+        { ...VISION_CAPABILITIES, image: "unsupported" },
+        { loadContent, toDataUrl: vi.fn() },
+      ),
+    ).rejects.toMatchObject({
+      code: "attachment_capability_blocked",
+      attachmentName: "screen.png",
+      support: "unsupported",
+    });
+    expect(loadContent).not.toHaveBeenCalled();
+  });
+
+  it("blocks image delivery when freeform model support is unknown", async () => {
+    const reference = toAttachmentMessagePart(record("image"));
+    await expect(
+      materializeAttachmentMessages(
+        [messageWith(reference)],
+        { ...VISION_CAPABILITIES, image: "unknown", evidence: "freeform" },
+        { loadContent: vi.fn(), toDataUrl: vi.fn() },
+      ),
+    ).rejects.toMatchObject({
+      code: "attachment_capability_blocked",
+      support: "unknown",
     });
   });
 

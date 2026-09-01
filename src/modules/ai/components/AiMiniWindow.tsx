@@ -464,6 +464,7 @@ function PaneComposer({ sessionId }: { sessionId: string }) {
         />
         <ChipsRow
           files={composer.files}
+          attachmentCapabilities={composer.attachmentCapabilities}
           onRemoveFile={composer.removeFile}
           snippets={composer.pickedSnippets}
           onRemoveSnippet={composer.removeSnippet}

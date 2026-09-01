@@ -44,9 +44,31 @@ not raw text or a base64 data URL.
 
 When a request is sent, the transport reads and integrity-checks the referenced
 content. Bounded text and source files become transient delimited text with
-JSON-escaped metadata. Bounded images become transient AI SDK image parts. The
-transcript renders compact attachment cards and loads image thumbnails only
-near the viewport.
+JSON-escaped metadata. Bounded images become transient AI SDK image parts only
+when the selected model has confirmed vision support. The transcript renders
+compact attachment cards and loads image thumbnails only near the viewport.
+
+## Model capability routing
+
+Clack represents text, image, native document, tool, and audio capability as
+`supported`, `unsupported`, or `unknown`. Known registry models use their
+existing explicit `vision` and `tools` tags. Saved provider IDs, custom
+OpenAI-compatible endpoints, and local freeform model IDs remain `unknown` for
+modalities that Clack cannot verify. Clack never infers vision support from a
+model name.
+
+Text attachments are delivered as bounded text because every configured chat
+transport accepts text. Images are sent only when vision support is confirmed.
+An explicitly text-only model blocks the image before provider invocation. An
+unknown image capability also blocks delivery and asks the user to choose a
+model with confirmed vision support. The composer chip shows the same state,
+and the transport repeats the check to cover non-composer send paths.
+
+Native PDF/document input remains unsupported for known registry models until
+the PDF processing checkpoint adds a real representation. Archive and unknown
+binary references are metadata-only at transport level; current ingestion
+continues to mark those formats unsupported until their dedicated processors
+exist.
 
 Identical content is deduplicated. In-memory leases protect unsent and active
 content from cleanup. Startup and session deletion reconcile the store against

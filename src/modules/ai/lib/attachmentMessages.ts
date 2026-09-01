@@ -6,6 +6,10 @@ import {
   storeAttachmentContent,
   type AttachmentContentRef,
 } from "./attachmentStore";
+import {
+  attachmentCapabilityStatus,
+  type ModelInputCapabilities,
+} from "./modelCapabilities";
 
 export const CLACK_ATTACHMENT_PART_TYPE = "data-clack-attachment" as const;
 const ATTACHMENT_CONTENT_KINDS = new Set([
@@ -111,6 +115,7 @@ export function collectAttachmentContentIds(messages: unknown): string[] {
 
 export async function materializeAttachmentMessages(
   messages: UIMessage[],
+  capabilities: ModelInputCapabilities,
   deps: MaterializeDeps = {
     loadContent: loadAttachmentContent,
     toDataUrl: attachmentBytesToDataUrl,
@@ -119,6 +124,7 @@ export async function materializeAttachmentMessages(
   let changed = false;
   const materialized: UIMessage[] = [];
   for (const message of messages) {
+    let messageChanged = false;
     const parts: unknown[] = [];
     for (const part of message.parts) {
       if (!isAttachmentMessagePart(part)) {
@@ -126,7 +132,30 @@ export async function materializeAttachmentMessages(
         continue;
       }
       changed = true;
+      messageChanged = true;
       const reference = part.data;
+      const compatibility = attachmentCapabilityStatus(
+        referenceAsRecord(reference),
+        capabilities,
+      );
+      if (compatibility.state === "blocked") {
+        throw new AttachmentCapabilityError(
+          reference.displayName,
+          compatibility.support,
+          compatibility.message,
+        );
+      }
+      if (
+        reference.contentKind !== "text" &&
+        reference.contentKind !== "selection" &&
+        reference.contentKind !== "image"
+      ) {
+        parts.push({
+          type: "text",
+          text: `Attachment ${JSON.stringify(reference.displayName)} is available as metadata only.`,
+        });
+        continue;
+      }
       const bytes = await deps.loadContent(reference.contentId);
       if (bytes.byteLength !== reference.byteSize) {
         throw new Error(
@@ -154,18 +183,26 @@ export async function materializeAttachmentMessages(
           filename: reference.displayName,
           url: await deps.toDataUrl(bytes, reference.mediaType),
         });
-        continue;
       }
-      parts.push({
-        type: "text",
-        text: `Attachment ${JSON.stringify(reference.displayName)} is available as metadata only.`,
-      });
     }
     materialized.push(
-      changed ? ({ ...message, parts } as UIMessage) : message,
+      messageChanged ? ({ ...message, parts } as UIMessage) : message,
     );
   }
   return changed ? materialized : messages;
+}
+
+export class AttachmentCapabilityError extends Error {
+  readonly code = "attachment_capability_blocked";
+
+  constructor(
+    readonly attachmentName: string,
+    readonly support: "unsupported" | "unknown",
+    message: string,
+  ) {
+    super(`${attachmentName}: ${message}`);
+    this.name = "AttachmentCapabilityError";
+  }
 }
 
 export async function migrateLegacyDataUrlAttachments(
@@ -230,7 +267,9 @@ function decodeStoredText(bytes: Uint8Array, displayName: string): string {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
-    throw new Error(`Stored attachment is no longer valid UTF-8: ${displayName}.`);
+    throw new Error(
+      `Stored attachment is no longer valid UTF-8: ${displayName}.`,
+    );
   }
 }
 
@@ -261,6 +300,28 @@ function formatSelectionBlock(
   ].join("\n");
 }
 
+function referenceAsRecord(
+  reference: AttachmentMessageReference,
+): AttachmentRecord {
+  return {
+    id: reference.attachmentId,
+    source: reference.selectionSource
+      ? { kind: "selection", surface: reference.selectionSource }
+      : { kind: "picker", token: "persisted" },
+    displayName: reference.displayName,
+    detectedMediaType: reference.mediaType,
+    byteSize: reference.byteSize,
+    contentKind: reference.contentKind,
+    processingState: "ready",
+    security: {
+      secretPathCheck: "not-applicable",
+      workspaceScopeCheck: "not-applicable",
+      mimeSniffed: true,
+    },
+    createdAt: 0,
+  };
+}
+
 function decodeLegacyDataUrl(
   value: string,
 ): { bytes: Uint8Array; mediaType: string } | null {
@@ -276,14 +337,10 @@ function decodeLegacyDataUrl(
       for (let index = 0; index < binary.length; index += 1) {
         bytes[index] = binary.charCodeAt(index);
       }
-      return bytes.byteLength <= 8 * 1024 * 1024
-        ? { bytes, mediaType }
-        : null;
+      return bytes.byteLength <= 8 * 1024 * 1024 ? { bytes, mediaType } : null;
     }
     const bytes = new TextEncoder().encode(decodeURIComponent(match[3]));
-    return bytes.byteLength <= 8 * 1024 * 1024
-      ? { bytes, mediaType }
-      : null;
+    return bytes.byteLength <= 8 * 1024 * 1024 ? { bytes, mediaType } : null;
   } catch {
     return null;
   }
