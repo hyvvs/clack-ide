@@ -27,7 +27,7 @@ import {
 } from "../lib/errors";
 import type { ProviderRetryEvent } from "../lib/providerRetry";
 import { findSavedProviderModel } from "../lib/savedProviderModels";
-import { workspaceEnvironmentFromId } from "../lib/sessions";
+import { loadMessages, workspaceEnvironmentFromId } from "../lib/sessions";
 import type { ToolContext } from "../tools/tools";
 import {
   chats,
@@ -251,6 +251,16 @@ function makeChat(sessionId: string): Chat<UIMessage> {
   });
 }
 
+export async function prepareSessionChat(sessionId: string): Promise<void> {
+  if (!chats.has(sessionId) && !seedMessages.has(sessionId)) {
+    const messages = await loadMessages(sessionId);
+    if (messages && messages.length > 0 && !chats.has(sessionId)) {
+      seedMessages.set(sessionId, messages);
+    }
+  }
+  getOrCreateChat(sessionId);
+}
+
 function recordTerminalAiFailure(
   sessionId: string,
   error: unknown,
@@ -263,8 +273,8 @@ function recordTerminalAiFailure(
     disposition: "terminal",
   });
   const state = useChatStore.getState();
-  const runState = state.sessions.find((session) => session.id === sessionId)?.run
-    ?.state;
+  const runState = state.sessions.find((session) => session.id === sessionId)
+    ?.run?.state;
   const canTerminalize =
     runState === "running" &&
     normalized.kind !== "cancelled" &&
@@ -388,7 +398,9 @@ export function shouldAutomaticallySendSession(
   );
 }
 
-function commandNameFromMessage(message: SessionChatMessage): string | undefined {
+function commandNameFromMessage(
+  message: SessionChatMessage,
+): string | undefined {
   const candidate = message as {
     text?: string;
     parts?: Array<{ type?: string; text?: string }>;
@@ -463,9 +475,17 @@ export async function sendMessage(text: string): Promise<boolean> {
 export async function continueActiveRun(
   allowHardLimit = false,
 ): Promise<boolean> {
+  const sessionId = useChatStore.getState().activeSessionId;
+  if (!sessionId) return false;
+  return continueRun(sessionId, allowHardLimit);
+}
+
+export async function continueRun(
+  sessionId: string,
+  allowHardLimit = false,
+): Promise<boolean> {
   const state = useChatStore.getState();
-  const sessionId = state.activeSessionId;
-  if (!sessionId || !state.resumeRun(sessionId, allowHardLimit)) return false;
+  if (!state.resumeRun(sessionId, allowHardLimit)) return false;
   try {
     await getOrCreateChat(sessionId).sendMessage();
   } catch (error) {

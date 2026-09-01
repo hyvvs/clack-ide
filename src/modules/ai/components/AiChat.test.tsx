@@ -9,16 +9,14 @@ import {
 } from "./AiChat";
 import { AiInputBarConnect } from "./AiInputBar";
 import { createRunBudget } from "../lib/runBudget";
-import {
-  normalizeAiError,
-  normalizeAiStreamPartError,
-} from "../lib/errors";
+import { normalizeAiError, normalizeAiStreamPartError } from "../lib/errors";
 
 const onApproval = () => {};
 
 function renderMessage(message: UIMessage): string {
   return renderToStaticMarkup(
     <RenderedMessage
+      sessionId="test-session"
       message={message}
       onApproval={onApproval}
       streaming={false}
@@ -180,9 +178,7 @@ describe("provider retry notice", () => {
       { provider: "OpenRouter", disposition: "retrying" },
     );
     const html = renderToStaticMarkup(
-      <ProviderRetryNotice
-        retry={{ error, retryNumber: 1, maxRetries: 2 }}
-      />,
+      <ProviderRetryNotice retry={{ error, retryNumber: 1, maxRetries: 2 }} />,
     );
 
     expect(html).toContain("Rate limited by OpenRouter. Retrying...");

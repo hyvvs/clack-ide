@@ -33,6 +33,7 @@ import { memo } from "react";
 type Props = {
   part: Extract<ToolUIPart, { state: "approval-requested" }>;
   toolName: string;
+  sessionId: string;
   onRespond: (approved: boolean) => void;
 };
 
@@ -54,25 +55,30 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     request_peer_task: { label: "Start peer agent task", icon: ToolsIcon },
   };
 
-function AiToolApprovalImpl({ part, toolName, onRespond }: Props) {
+function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
   const meta = TOOL_META[toolName];
   const label = meta?.label ?? toolName;
   const Icon = meta?.icon ?? ToolsIcon;
   const input = part.input as Record<string, unknown>;
-  const sessionId = useChatStore((s) => s.activeSessionId);
   const live = useChatStore((s) => s.live);
   const permissionContext: PermissionContext = {
     getCwd: () => {
       const session = useChatStore
         .getState()
         .sessions.find((item) => item.id === sessionId);
-      return session?.run?.workspaceRoot ?? session?.profile?.workspaceRoot ?? live.getCwd();
+      return (
+        session?.run?.workspaceRoot ??
+        session?.profile?.workspaceRoot ??
+        live.getCwd()
+      );
     },
     getWorkspaceRoot: () => {
       const session = useChatStore
         .getState()
         .sessions.find((item) => item.id === sessionId);
-      return session?.run?.workspaceRoot ?? session?.profile?.workspaceRoot ?? null;
+      return (
+        session?.run?.workspaceRoot ?? session?.profile?.workspaceRoot ?? null
+      );
     },
     getSessionId: () => sessionId,
     getAgentId: () => {
@@ -164,9 +170,7 @@ function AiToolApprovalImpl({ part, toolName, onRespond }: Props) {
               <DropdownMenuItem onSelect={() => void allowScoped("chat")}>
                 Allow for this chat
               </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => void allowScoped("workspace")}
-              >
+              <DropdownMenuItem onSelect={() => void allowScoped("workspace")}>
                 Allow for this workspace
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -183,6 +187,7 @@ export const AiToolApproval = memo(AiToolApprovalImpl, (a, b) => {
   // don't want to re-render on every downstream token.
   return (
     a.toolName === b.toolName &&
+    a.sessionId === b.sessionId &&
     a.part.approval.id === b.part.approval.id &&
     a.onRespond === b.onRespond
   );
@@ -223,7 +228,9 @@ function PreviewBlock({
     const lines = content ? content.split("\n").length : 0;
     return (
       <div className="space-y-0.5 font-mono text-[11px]">
-        <div className="text-[var(--clack-text-3)]">{String(input.path ?? "")}</div>
+        <div className="text-[var(--clack-text-3)]">
+          {String(input.path ?? "")}
+        </div>
         <div className="text-[10.5px] text-[var(--clack-text-3)]">
           {lines} line{lines === 1 ? "" : "s"} | review in the diff tab
         </div>
@@ -254,7 +261,9 @@ function PreviewBlock({
       : [];
     return (
       <div className="space-y-0.5 font-mono text-[11px]">
-        <div className="text-[var(--clack-text-3)]">{String(input.path ?? "")}</div>
+        <div className="text-[var(--clack-text-3)]">
+          {String(input.path ?? "")}
+        </div>
         <div className="text-[10.5px] text-[var(--clack-text-3)]">
           {edits.length} edit{edits.length === 1 ? "" : "s"} | review in the
           diff tab

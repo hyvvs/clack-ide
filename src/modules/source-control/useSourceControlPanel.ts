@@ -6,7 +6,7 @@ import {
   type GitStatusSnapshot,
 } from "@/modules/ai/lib/native";
 import { useChatStore } from "@/modules/ai/store/chatStore";
-import { providerNeedsKey, resolveModel } from "@/modules/ai/config";
+import { providerNeedsKey } from "@/modules/ai/config";
 import {
   invalidateDiff,
   invalidateRepoDiffs,
@@ -14,6 +14,7 @@ import {
 } from "@/modules/editor/lib/diffCache";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { resolveSourceControlModel } from "./sourceControlModel";
 import type { SourceControlSummary } from "./useSourceControl";
 
 type PanelState = "closed" | "loading" | "no-repo" | "ready" | "error";
@@ -371,10 +372,11 @@ export function useSourceControlPanel(
     const id = state.activeSessionId;
     return id ? (state.runtimeBySession[id]?.status ?? "idle") : "idle";
   });
-  const hasApiKeyForSelected = useChatStore((state) => {
-    const model = resolveModel(state.selectedModelId);
-    return !providerNeedsKey(model.provider) || !!state.apiKeys[model.provider];
-  });
+  const apiKeys = useChatStore((state) => state.apiKeys);
+  const customEndpoints = usePreferencesStore((state) => state.customEndpoints);
+  const savedProviderModels = usePreferencesStore(
+    (state) => state.savedProviderModels,
+  );
   const lmstudioModelId = usePreferencesStore((state) => state.lmstudioModelId);
   const mlxModelId = usePreferencesStore((state) => state.mlxModelId);
   const ollamaModelId = usePreferencesStore((state) => state.ollamaModelId);
@@ -465,12 +467,27 @@ export function useSourceControlPanel(
 
   const allClean = stagedEntries.length === 0 && unstagedEntries.length === 0;
   const canPush = !!status?.upstream && status.behind === 0;
-  const selectedModel = resolveModel(selectedModelId);
+  const selectedModel = useMemo(
+    () =>
+      resolveSourceControlModel(
+        selectedModelId,
+        customEndpoints,
+        savedProviderModels,
+      ),
+    [customEndpoints, savedProviderModels, selectedModelId],
+  );
+  const hasApiKeyForSelected =
+    !!selectedModel &&
+    (!providerNeedsKey(selectedModel.provider) ||
+      !!apiKeys[selectedModel.provider]);
   const aiBusy = agentStatus !== "idle" && agentStatus !== "error";
   const anyActionBusy = localActionBusy !== null || summary.busyAction !== null;
   const aiUnavailableReason = useMemo(() => {
     if (stagedEntries.length === 0) {
       return "Stage changes to generate a commit message";
+    }
+    if (!selectedModel) {
+      return "Select an available AI model to generate commit messages";
     }
     if (!hasApiKeyForSelected) {
       return "Connect an AI provider to generate commit messages";

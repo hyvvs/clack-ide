@@ -64,7 +64,11 @@ function detectFileTrigger(value: string, caret: number): FileTrigger | null {
   return null;
 }
 
-export function AiComposerInput() {
+export function AiComposerInput({
+  showAgentSwitcher = true,
+}: {
+  showAgentSwitcher?: boolean;
+}) {
   const c = useComposer();
   const snippets = useSnippetsStore((s) => s.snippets);
   const workspaceRoot = useChatStore((s) => s.live.getWorkspaceRoot());
@@ -276,7 +280,7 @@ export function AiComposerInput() {
                 "placeholder:text-muted-foreground/60",
               )}
             />
-            <AgentSwitcher />
+            {showAgentSwitcher ? <AgentSwitcher /> : null}
           </div>
         </PopoverAnchor>
         {fileTrigger ? (

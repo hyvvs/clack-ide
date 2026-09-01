@@ -16,13 +16,20 @@ import type { PeerTask } from "../lib/peerTasks";
 import { useChatStore } from "../store/chatStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
 
-export function PeerTaskFeed({ sessionId }: { sessionId: string }) {
+export function PeerTaskFeed({
+  sessionId,
+  onOpenSession,
+}: {
+  sessionId: string;
+  onOpenSession?: (sessionId: string) => void;
+}) {
   const allTasks = usePeerTaskStore((state) => state.tasks);
   const tasks = useMemo(
     () =>
       allTasks.filter(
-      (task) =>
-        task.sourceSessionId === sessionId || task.targetSessionId === sessionId,
+        (task) =>
+          task.sourceSessionId === sessionId ||
+          task.targetSessionId === sessionId,
       ),
     [allTasks, sessionId],
   );
@@ -35,6 +42,7 @@ export function PeerTaskFeed({ sessionId }: { sessionId: string }) {
           task={task}
           viewingSessionId={sessionId}
           allTasks={allTasks}
+          onOpenSession={onOpenSession}
         />
       ))}
     </section>
@@ -45,17 +53,23 @@ export function PeerTaskCard({
   task,
   viewingSessionId,
   allTasks: providedTasks,
+  onOpenSession,
 }: {
   task: PeerTask;
   viewingSessionId: string;
   allTasks?: readonly PeerTask[];
+  onOpenSession?: (sessionId: string) => void;
 }) {
   const sessions = useChatStore((state) => state.sessions);
   const switchSession = useChatStore((state) => state.switchSession);
   const storedTasks = usePeerTaskStore((state) => state.tasks);
   const allTasks = providedTasks ?? storedTasks;
-  const source = sessions.find((session) => session.id === task.sourceSessionId);
-  const target = sessions.find((session) => session.id === task.targetSessionId);
+  const source = sessions.find(
+    (session) => session.id === task.sourceSessionId,
+  );
+  const target = sessions.find(
+    (session) => session.id === task.targetSessionId,
+  );
   const viewingSource = viewingSessionId === task.sourceSessionId;
   const [applying, setApplying] = useState(false);
   const [showPatch, setShowPatch] = useState(false);
@@ -82,7 +96,10 @@ export function PeerTaskCard({
   };
 
   return (
-    <section className="clack-ai-block overflow-hidden" data-peer-task-id={task.id}>
+    <section
+      className="clack-ai-block overflow-hidden"
+      data-peer-task-id={task.id}
+    >
       <div className="flex items-center gap-2 border-b border-[color:var(--clack-border-subtle)] px-2.5 py-2">
         {task.status === "running" || task.status === "queued" ? (
           <Spinner className="size-3" />
@@ -97,15 +114,23 @@ export function PeerTaskCard({
         <span className="text-[11.5px] font-semibold capitalize text-[var(--clack-text-1)]">
           {task.kind}
         </span>
-        <span className={cn("text-[10px] capitalize", tone)}>{task.status}</span>
+        <span className={cn("text-[10px] capitalize", tone)}>
+          {task.status}
+        </span>
         <button
           type="button"
           disabled={!peer}
-          onClick={() => peer && switchSession(peer.id)}
+          onClick={() => {
+            if (!peer) return;
+            if (onOpenSession) onOpenSession(peer.id);
+            else switchSession(peer.id);
+          }}
           className="ml-auto flex min-w-0 items-center gap-1 text-[10.5px] text-[var(--clack-text-3)] hover:text-[var(--clack-text-1)] disabled:pointer-events-none"
           title={peer ? `Open ${peer.title}` : "Peer conversation deleted"}
         >
-          <span className="max-w-36 truncate">{peer?.title ?? "Deleted chat"}</span>
+          <span className="max-w-36 truncate">
+            {peer?.title ?? "Deleted chat"}
+          </span>
           <HugeiconsIcon icon={ArrowRight01Icon} size={10} strokeWidth={1.8} />
         </button>
       </div>
@@ -230,7 +255,8 @@ export function PeerTaskCard({
                 <span
                   className={cn(
                     "max-w-20 truncate capitalize",
-                    item.id === task.id && "font-medium text-[var(--clack-text-2)]",
+                    item.id === task.id &&
+                      "font-medium text-[var(--clack-text-2)]",
                   )}
                   title={`${item.kind} task ${item.id} (${item.status})`}
                 >
@@ -274,9 +300,7 @@ export function buildPeerTaskLineage(
   while (current && !visited.has(current.id)) {
     visited.add(current.id);
     lineage.unshift(current);
-    current = current.parentTaskId
-      ? byId.get(current.parentTaskId)
-      : undefined;
+    current = current.parentTaskId ? byId.get(current.parentTaskId) : undefined;
   }
 
   return lineage;

@@ -157,10 +157,62 @@ export function useMiniWindowGeometry() {
     (dir: ResizeDir) => (e: React.PointerEvent) => {
       if (e.button !== 0) return;
       e.stopPropagation();
-      beginGesture(e, (start, dx, dy, vp) => applyResize(start, dir, dx, dy, vp), 0);
+      beginGesture(
+        e,
+        (start, dx, dy, vp) => applyResize(start, dir, dx, dy, vp),
+        0,
+      );
     },
     [beginGesture],
   );
 
-  return { ref, onHeaderPointerDown, startResize };
+  const ensureWidth = useCallback(
+    (minimumWidth: number) => {
+      const vp = viewport();
+      const current = geom.current;
+      const width = Math.min(
+        Math.max(current.w, minimumWidth),
+        Math.max(0, vp.vw - 32),
+      );
+      const right = Math.min(current.x + current.w, vp.vw - 16);
+      const maxX = Math.max(16, vp.vw - width - 16);
+      const next = clampGeom(
+        {
+          ...current,
+          x: Math.min(maxX, Math.max(16, right - width)),
+          w: width,
+        },
+        vp,
+      );
+      write(next);
+      saveGeom(next);
+    },
+    [write],
+  );
+
+  const ensureHeight = useCallback(
+    (minimumHeight: number) => {
+      const vp = viewport();
+      const current = geom.current;
+      const height = Math.min(
+        Math.max(current.h, minimumHeight),
+        Math.max(0, vp.vh - 32),
+      );
+      const bottom = Math.min(current.y + current.h, vp.vh - 16);
+      const maxY = Math.max(16, vp.vh - height - 16);
+      const next = clampGeom(
+        {
+          ...current,
+          y: Math.min(maxY, Math.max(16, bottom - height)),
+          h: height,
+        },
+        vp,
+      );
+      write(next);
+      saveGeom(next);
+    },
+    [write],
+  );
+
+  return { ref, onHeaderPointerDown, startResize, ensureWidth, ensureHeight };
 }

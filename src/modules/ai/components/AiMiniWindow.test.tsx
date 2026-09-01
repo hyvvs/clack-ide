@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { invokeHeaderStop, shouldShowHeaderStop } from "./AiMiniWindow";
+import { canAddAiPane } from "../store/aiPaneStore";
 
 describe("AI header Stop", () => {
   it("appears only for an active run", () => {
@@ -15,5 +16,20 @@ describe("AI header Stop", () => {
     const cancel = vi.fn(async () => {});
     await invokeHeaderStop(cancel);
     expect(cancel).toHaveBeenCalledOnce();
+  });
+});
+
+describe("AI pane capacity", () => {
+  it("requires usable pane widths and respects the four-pane cap", () => {
+    expect(canAddAiPane(640, 1)).toBe(false);
+    expect(canAddAiPane(900, 1)).toBe(true);
+    expect(canAddAiPane(1440, 3)).toBe(true);
+    expect(canAddAiPane(2560, 4)).toBe(false);
+  });
+
+  it("checks vertical splits against height instead of width", () => {
+    expect(canAddAiPane(500, 1, "row", 900)).toBe(false);
+    expect(canAddAiPane(500, 1, "col", 900)).toBe(true);
+    expect(canAddAiPane(1400, 1, "col", 400)).toBe(false);
   });
 });

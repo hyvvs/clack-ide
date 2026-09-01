@@ -17,7 +17,11 @@ import {
 import { useTodosStore } from "./todoStore";
 import { usePlanStore } from "./planStore";
 import type { AgentUsage } from "../lib/agent";
-import { EMPTY_PROVIDER_KEYS, type ProviderKeys, type CustomEndpointKeys } from "../lib/keyring";
+import {
+  EMPTY_PROVIDER_KEYS,
+  type ProviderKeys,
+  type CustomEndpointKeys,
+} from "../lib/keyring";
 import {
   createConversationProfile,
   deleteSessionData,
@@ -141,10 +145,7 @@ export type PendingSelection = {
   source: "terminal" | "editor";
 };
 
-export type ApprovalResponder = (
-  approvalId: string,
-  approved: boolean,
-) => void;
+export type ApprovalResponder = (approvalId: string, approved: boolean) => void;
 
 type StoreState = {
   live: Live;
@@ -170,6 +171,11 @@ type StoreState = {
 
   selectedModelId: string;
   setSelectedModelId: (id: string, persistSelection?: boolean) => void;
+  setSessionModelId: (
+    sessionId: string,
+    modelId: string,
+    persistSelection?: boolean,
+  ) => boolean;
 
   mini: MiniState;
   openMini: () => void;
@@ -282,7 +288,8 @@ export const seedMessages = new Map<string, UIMessage[]>();
 const runLoopTrackers = new Map<string, RunLoopTracker>();
 
 function permissionModeForAgent(agentId: string) {
-  const profile = usePreferencesStore.getState().agentPermissionProfiles[agentId];
+  const profile =
+    usePreferencesStore.getState().agentPermissionProfiles[agentId];
   return normalizeAgentPermissionProfile(profile).mode;
 }
 
@@ -352,7 +359,11 @@ export const useChatStore = create<StoreState>((set, get) => ({
     const active = state.sessions.find(
       (session) => session.id === state.activeSessionId,
     );
-    if (!persistSelection && state.sessionsHydrated && active?.profile?.modelId) {
+    if (
+      !persistSelection &&
+      state.sessionsHydrated &&
+      active?.profile?.modelId
+    ) {
       set({ selectedModelId: active.profile.modelId });
       return;
     }
@@ -380,6 +391,37 @@ export const useChatStore = create<StoreState>((set, get) => ({
     if (active) void saveSessionsList(next);
     if (persistSelection) recordSelectedModelUse(id);
   },
+  setSessionModelId: (sessionId, modelId, persistSelection = true) => {
+    const state = get();
+    const session = state.sessions.find((item) => item.id === sessionId);
+    if (!session || session.run?.state === "running") return false;
+    const next = state.sessions.map((item) =>
+      item.id === sessionId
+        ? {
+            ...item,
+            profile: {
+              ...(item.profile ??
+                createConversationProfile({
+                  agentId: useAgentsStore.getState().activeId,
+                  modelId,
+                  workspaceRoot: null,
+                })),
+              modelId,
+            },
+            updatedAt: Date.now(),
+          }
+        : item,
+    );
+    set({
+      sessions: next,
+      ...(state.activeSessionId === sessionId
+        ? { selectedModelId: modelId }
+        : {}),
+    });
+    void saveSessionsList(next);
+    if (persistSelection) recordSelectedModelUse(modelId);
+    return true;
+  },
 
   mini: { open: false, minimized: false },
   openMini: () => set({ mini: { open: true, minimized: false } }),
@@ -393,9 +435,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     })),
   showApprovalAttention: () =>
     set((state) =>
-      state.mini.minimized
-        ? state
-        : { mini: { open: true, minimized: false } },
+      state.mini.minimized ? state : { mini: { open: true, minimized: false } },
     ),
 
   panelOpen: false,
@@ -431,7 +471,10 @@ export const useChatStore = create<StoreState>((set, get) => ({
     set((s) => ({
       panelOpen: true,
       focusSignal: s.focusSignal + 1,
-      pendingSelections: [...s.pendingSelections, { id, text: trimmed, source }],
+      pendingSelections: [
+        ...s.pendingSelections,
+        { id, text: trimmed, source },
+      ],
     }));
   },
   consumeSelections: () => {
@@ -532,7 +575,12 @@ export const useChatStore = create<StoreState>((set, get) => ({
     if (!agentId || !modelId) {
       return { ok: false, reason: "The chat identity is incomplete." };
     }
-    if (!useAgentsStore.getState().all().some((agent) => agent.id === agentId)) {
+    if (
+      !useAgentsStore
+        .getState()
+        .all()
+        .some((agent) => agent.id === agentId)
+    ) {
       return {
         ok: false,
         reason: "This chat's agent no longer exists. Select another agent.",
@@ -658,7 +706,9 @@ export const useChatStore = create<StoreState>((set, get) => ({
 
   recordPeerTaskStart: (id) => {
     const next = get().sessions.map((session) =>
-      session.id === id && session.run?.state === "running" && session.run.budget
+      session.id === id &&
+      session.run?.state === "running" &&
+      session.run.budget
         ? {
             ...session,
             run: {
@@ -714,7 +764,11 @@ export const useChatStore = create<StoreState>((set, get) => ({
     if (run?.state !== "running" || !run.budget) return false;
     const mode = permissionModeForAgent(run.agentId ?? "builtin:coder");
     if (!autoContinueForPermissionMode(mode)) {
-      const budget = { ...run.budget, autoContinue: false, phase: "soft-limit" as const };
+      const budget = {
+        ...run.budget,
+        autoContinue: false,
+        phase: "soft-limit" as const,
+      };
       const next = get().sessions.map((item) =>
         item.id === id && item.run
           ? { ...item, run: { ...item.run, budget } }
@@ -784,9 +838,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     const now = Date.now();
     const runError =
       state === "failed"
-        ? (error ??
-          get().runtimeBySession[id]?.error ??
-          currentRun.error)
+        ? (error ?? get().runtimeBySession[id]?.error ?? currentRun.error)
         : undefined;
     const next = get().sessions.map((session) =>
       session.id === id
@@ -812,8 +864,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
         ...store.runtimeBySession,
         [id]: {
           ...(store.runtimeBySession[id] ?? IDLE_META),
-          status:
-            state === "failed" ? ("error" as const) : ("idle" as const),
+          status: state === "failed" ? ("error" as const) : ("idle" as const),
           step: null,
           approvalsPending: 0,
           error: state === "failed" ? (runError ?? null) : null,
@@ -858,7 +909,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     const interruptedActive = recovered.interruptedIds.includes(
       loaded.activeId ?? "",
     )
-      ? sessions.find((session) => session.id === loaded.activeId) ?? null
+      ? (sessions.find((session) => session.id === loaded.activeId) ?? null)
       : null;
     const reusable = sessions[0]?.title === "New chat" ? sessions[0] : null;
     let nextSessions: SessionMeta[];
@@ -943,7 +994,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     const flip = () => {
       const session = get().sessions.find((item) => item.id === id);
       const restoredError =
-        session?.run?.state === "failed" ? session.run.error ?? null : null;
+        session?.run?.state === "failed" ? (session.run.error ?? null) : null;
       set({
         activeSessionId: id,
         selectedModelId: session?.profile?.modelId ?? get().selectedModelId,
@@ -1000,15 +1051,12 @@ export const useChatStore = create<StoreState>((set, get) => ({
       return false;
     }
     const profile = createConversationProfile({
-      agentId:
-        session.profile?.agentId ?? useAgentsStore.getState().activeId,
+      agentId: session.profile?.agentId ?? useAgentsStore.getState().activeId,
       modelId: session.profile?.modelId ?? get().selectedModelId,
       workspaceRoot,
     });
     const next = get().sessions.map((item) =>
-      item.id === id
-        ? { ...item, profile, updatedAt: Date.now() }
-        : item,
+      item.id === id ? { ...item, profile, updatedAt: Date.now() } : item,
     );
     set({ sessions: next });
     void saveSessionsList(next);
@@ -1078,8 +1126,8 @@ export const useChatStore = create<StoreState>((set, get) => ({
     const wasActive = get().activeSessionId === id;
     const nextActive = wasActive ? remaining[0].id : get().activeSessionId;
     const nextModel = wasActive
-      ? remaining.find((session) => session.id === nextActive)?.profile
-          ?.modelId ?? get().selectedModelId
+      ? (remaining.find((session) => session.id === nextActive)?.profile
+          ?.modelId ?? get().selectedModelId)
       : get().selectedModelId;
     set({
       sessions: remaining,
@@ -1142,7 +1190,8 @@ export function useActiveAgentMeta(): AgentMeta {
 }
 
 export function getActiveProviderKey(): string | null {
-  const { selectedModelId, apiKeys, customEndpointKeys } = useChatStore.getState();
+  const { selectedModelId, apiKeys, customEndpointKeys } =
+    useChatStore.getState();
   if (isCompatModelId(selectedModelId)) {
     const eid = endpointIdFromCompatModel(selectedModelId);
     return customEndpointKeys[eid] ?? null;
@@ -1202,10 +1251,7 @@ export function pendingApprovalIds(messages: readonly UIMessage[]): string[] {
         state?: string;
         approval?: { id?: string };
       };
-      if (
-        candidate.state === "approval-requested" &&
-        candidate.approval?.id
-      ) {
+      if (candidate.state === "approval-requested" && candidate.approval?.id) {
         ids.push(candidate.approval.id);
       }
     }

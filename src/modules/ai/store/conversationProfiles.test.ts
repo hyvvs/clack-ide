@@ -44,11 +44,7 @@ const originalAgentId = useAgentsStore.getState().activeId;
 const originalSavedModels = usePreferencesStore.getState().savedProviderModels;
 const ROOT = "C:/Work/Clack";
 
-function session(
-  id: string,
-  agentId: string,
-  modelId: string,
-): SessionMeta {
+function session(id: string, agentId: string, modelId: string): SessionMeta {
   return {
     id,
     title: id,
@@ -117,11 +113,15 @@ describe("conversation-owned profiles", () => {
     });
     const state = useChatStore.getState();
     expect(state.selectedModelId).toBe("gpt-5.4-mini");
-    expect(state.sessions.find((item) => item.id === "chat-a")?.profile).toMatchObject({
+    expect(
+      state.sessions.find((item) => item.id === "chat-a")?.profile,
+    ).toMatchObject({
       agentId: "builtin:coder",
       modelId: "gpt-5.4-mini",
     });
-    expect(state.sessions.find((item) => item.id === "chat-b")?.profile).toMatchObject({
+    expect(
+      state.sessions.find((item) => item.id === "chat-b")?.profile,
+    ).toMatchObject({
       agentId: "builtin:security",
       modelId: "claude-opus-4-7",
     });
@@ -147,6 +147,29 @@ describe("conversation-owned profiles", () => {
       providerId: "openai",
       transportModelId: "gpt-5.4-mini",
       workspaceRoot: ROOT,
+    });
+  });
+
+  it("changes one pane's agent and model without mutating another", () => {
+    expect(
+      useChatStore.getState().setSessionAgentId("chat-b", "builtin:security"),
+    ).toBe(true);
+    expect(
+      useChatStore.getState().setSessionModelId("chat-b", "claude-opus-4-7"),
+    ).toBe(true);
+
+    const state = useChatStore.getState();
+    expect(
+      state.sessions.find((item) => item.id === "chat-a")?.profile,
+    ).toMatchObject({
+      agentId: "builtin:coder",
+      modelId: "gpt-5.4-mini",
+    });
+    expect(
+      state.sessions.find((item) => item.id === "chat-b")?.profile,
+    ).toMatchObject({
+      agentId: "builtin:security",
+      modelId: "claude-opus-4-7",
     });
   });
 

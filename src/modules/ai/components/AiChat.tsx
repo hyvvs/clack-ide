@@ -32,11 +32,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { SLASH_COMMANDS, TERAX_CMD_RE } from "../lib/slashCommands";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  useChatStore,
-  type ProviderRetryState,
-} from "../store/chatStore";
-import { continueActiveRun } from "../store/chatRuntime";
+import { useChatStore, type ProviderRetryState } from "../store/chatStore";
+import { continueRun } from "../store/chatRuntime";
 import { describeRunBudgetStop, type RunBudgetState } from "../lib/runBudget";
 import type {
   ChatStatus,
@@ -56,7 +53,8 @@ import {
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { PeerTaskFeed } from "./PeerTaskFeed";
 
-const PEER_TASK_ENVELOPE_RE = /^<peer-task\s+id="[^"]+">[\s\S]*<\/peer-task>\s*$/;
+const PEER_TASK_ENVELOPE_RE =
+  /^<peer-task\s+id="[^"]+">[\s\S]*<\/peer-task>\s*$/;
 
 function CommandSnippet({ name }: { name: string }) {
   const meta = SLASH_COMMANDS[name];
@@ -186,6 +184,8 @@ type ApprovalArg = {
 };
 
 type Props = {
+  sessionId: string;
+  onOpenSession?: (sessionId: string) => void;
   messages: UIMessage[];
   status: ChatStatus;
   error: Error | undefined;
@@ -195,6 +195,8 @@ type Props = {
 };
 
 export function AiChatView({
+  sessionId,
+  onOpenSession,
   messages,
   status,
   error,
@@ -208,23 +210,19 @@ export function AiChatView({
     status === "streaming" && lastMessage?.role === "assistant"
       ? lastMessage.id
       : null;
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const runtime = useChatStore((s) =>
-    s.activeSessionId ? s.runtimeBySession[s.activeSessionId] : undefined,
-  );
+  const runtime = useChatStore((s) => s.runtimeBySession[sessionId]);
   const step = runtime?.step ?? null;
   const compactionNotice = runtime?.compactionNotice ?? null;
   const storedError = runtime?.error ?? null;
   const providerRetry = runtime?.providerRetry ?? null;
   const run = useChatStore(
-    (s) => s.sessions.find((session) => session.id === activeSessionId)?.run,
+    (s) => s.sessions.find((session) => session.id === sessionId)?.run,
   );
   const isBusy = run?.state === "running" && chatIsBusy;
   const showSpinner = isBusy && lastMessage?.role === "user";
   const patchAgentMeta = useChatStore((s) => s.patchAgentMeta);
   const hookError = useMemo(
-    () =>
-      error ? normalizeAiError(error, { disposition: "terminal" }) : null,
+    () => (error ? normalizeAiError(error, { disposition: "terminal" }) : null),
     [error],
   );
   const normalizedError = storedError ?? hookError;
@@ -265,19 +263,18 @@ export function AiChatView({
         {messages.map((m) => (
           <RenderedMessage
             key={m.id}
+            sessionId={sessionId}
             message={m}
             onApproval={onApproval}
             streaming={m.id === streamingMessageId}
           />
         ))}
-        {activeSessionId ? <PeerTaskFeed sessionId={activeSessionId} /> : null}
+        <PeerTaskFeed sessionId={sessionId} onOpenSession={onOpenSession} />
         {compactionNotice && (
           <CompactionNotice
             droppedCount={compactionNotice.droppedCount}
             onDismiss={() => {
-              if (activeSessionId) {
-                patchAgentMeta(activeSessionId, { compactionNotice: null });
-              }
+              patchAgentMeta(sessionId, { compactionNotice: null });
             }}
           />
         )}
@@ -310,12 +307,12 @@ export function AiChatView({
           <RunTerminalStatus state={run.state} commandName={run.commandName} />
         ) : null}
         {showContinue && (
-          <ContinueRow onContinue={() => void continueActiveRun(false)} />
+          <ContinueRow onContinue={() => void continueRun(sessionId, false)} />
         )}
         {showHardLimit && run?.budget ? (
           <HardLimitRow
             budget={run.budget}
-            onContinue={() => void continueActiveRun(true)}
+            onContinue={() => void continueRun(sessionId, true)}
           />
         ) : null}
         {visibleError ? (
@@ -324,12 +321,10 @@ export function AiChatView({
             onOpenProviderSettings={() => void openSettingsWindow("models")}
             onDismiss={() => {
               clearError();
-              if (activeSessionId) {
-                patchAgentMeta(activeSessionId, {
-                  status: "idle",
-                  error: null,
-                });
-              }
+              patchAgentMeta(sessionId, {
+                status: "idle",
+                error: null,
+              });
             }}
           />
         ) : null}
@@ -339,11 +334,7 @@ export function AiChatView({
   );
 }
 
-export function ProviderRetryNotice({
-  retry,
-}: {
-  retry: ProviderRetryState;
-}) {
+export function ProviderRetryNotice({ retry }: { retry: ProviderRetryState }) {
   const provider = retry.error.provider ?? "AI provider";
   const rateLimited = retry.error.kind === "rate_limit";
   return (
@@ -435,10 +426,12 @@ export const ContinueRow = memo(function ContinueRow({
 });
 
 export const RenderedMessage = memo(function RenderedMessage({
+  sessionId,
   message,
   onApproval,
   streaming,
 }: {
+  sessionId: string;
   message: UIMessage;
   onApproval: (id: string, approved: boolean) => void;
   streaming: boolean;
@@ -514,6 +507,7 @@ export const RenderedMessage = memo(function RenderedMessage({
             return (
               <PartAppear key={`${message.id}-${g.key}`}>
                 <RenderedPart
+                  sessionId={sessionId}
                   part={g.part}
                   onApproval={onApproval}
                   streaming={streaming && g.idx === lastTextIdx}
@@ -713,10 +707,12 @@ const ReadRow = memo(function ReadRow({ part }: { part: AnyPart }) {
 });
 
 const RenderedPart = memo(function RenderedPart({
+  sessionId,
   part,
   onApproval,
   streaming,
 }: {
+  sessionId: string;
   part: AnyPart;
   onApproval: (id: string, approved: boolean) => void;
   streaming: boolean;
@@ -746,6 +742,7 @@ const RenderedPart = memo(function RenderedPart({
   ) {
     return (
       <RenderedTool
+        sessionId={sessionId}
         part={part as unknown as AnyToolPart}
         onApproval={onApproval}
       />
@@ -756,9 +753,11 @@ const RenderedPart = memo(function RenderedPart({
 });
 
 const RenderedTool = memo(function RenderedTool({
+  sessionId,
   part,
   onApproval,
 }: {
+  sessionId: string;
   part: AnyToolPart;
   onApproval: (id: string, approved: boolean) => void;
 }) {
@@ -772,6 +771,7 @@ const RenderedTool = memo(function RenderedTool({
   if (part.state === "approval-requested") {
     return (
       <AiToolApproval
+        sessionId={sessionId}
         part={part as Extract<ToolUIPart, { state: "approval-requested" }>}
         toolName={toolName}
         onRespond={(approved) => onApproval(part.approval.id, approved)}

@@ -36,10 +36,12 @@ const ICONS: Record<AgentIconId, typeof CodeIcon> = {
 export function AgentSwitcher({
   isMiniWindow,
   agentId,
+  sessionId,
   disabled = false,
 }: {
   isMiniWindow?: boolean;
   agentId?: string;
+  sessionId?: string;
   disabled?: boolean;
 }) {
   // Subscribe to customAgents + activeId so the trigger updates live.
@@ -47,9 +49,11 @@ export function AgentSwitcher({
   const activeId = useAgentsStore((s) => s.activeId);
   const setActiveId = useAgentsStore((s) => s.setActiveId);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const sessionAgentId = useChatStore((s) =>
-    s.sessions.find((session) => session.id === s.activeSessionId)?.profile
-      ?.agentId,
+  const sessionAgentId = useChatStore(
+    (s) =>
+      s.sessions.find(
+        (session) => session.id === (sessionId ?? s.activeSessionId),
+      )?.profile?.agentId,
   );
   const setSessionAgentId = useChatStore((s) => s.setSessionAgentId);
 
@@ -58,7 +62,8 @@ export function AgentSwitcher({
 
   const displayedAgentId = agentId ?? sessionAgentId ?? activeId;
   const selectAgent = (id: string) => {
-    if (activeSessionId && !setSessionAgentId(activeSessionId, id)) return;
+    const targetSessionId = sessionId ?? activeSessionId;
+    if (targetSessionId && !setSessionAgentId(targetSessionId, id)) return;
     setActiveId(id);
   };
   const matchedAgent = list.find((a) => a.id === displayedAgentId);

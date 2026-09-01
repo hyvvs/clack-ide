@@ -37,6 +37,7 @@ type Props = {
   home: string | null;
   hasComposer: boolean;
   panelOpen: boolean;
+  aiWindowOpen: boolean;
   keysLoaded: boolean;
   onConnect: () => void;
 };
@@ -49,6 +50,7 @@ export function WorkspaceInputBar({
   home,
   hasComposer,
   panelOpen,
+  aiWindowOpen,
   keysLoaded,
   onConnect,
 }: Props) {
@@ -72,12 +74,16 @@ export function WorkspaceInputBar({
   }, [blockMode]);
   const branch = useGitBranch(isTerminalTab ? cwd : null, promptNonce);
 
-  const showToggle = isBlockTab && hasComposer;
+  const showToggle = isBlockTab && hasComposer && !aiWindowOpen;
   const [mode, setMode] = useState<"shell" | "ai">("shell");
-  const effectiveMode = !isBlockTab ? "ai" : hasComposer ? mode : "shell";
+  const effectiveMode = !isBlockTab
+    ? "ai"
+    : hasComposer && !aiWindowOpen
+      ? mode
+      : "shell";
 
   const mounted = keysLoaded || isBlockTab;
-  const open = isBlockTab || (keysLoaded && panelOpen);
+  const open = isBlockTab || (keysLoaded && panelOpen && !aiWindowOpen);
 
   const [aiLoaded, setAiLoaded] = useState(false);
   useEffect(() => {

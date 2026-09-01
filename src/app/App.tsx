@@ -22,7 +22,13 @@ import {
   useSelectionAskAi,
 } from "@/modules/ai";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
+import { routeAiPaneShortcut } from "@/modules/ai/lib/aiPaneShortcuts";
 import { native } from "@/modules/ai/lib/native";
+import {
+  canAddAiPane,
+  focusAiPaneElement,
+  useAiPaneStore,
+} from "@/modules/ai/store/aiPaneStore";
 import { CommandPalette, createCommandItems } from "@/modules/command-palette";
 import {
   NewEditorDialog,
@@ -805,18 +811,71 @@ export default function App() {
     void handleClose(activeId);
   }, [activeId, closeActivePane, handleClose]);
 
+  const handleAiPaneShortcut = useCallback(
+    (
+      id:
+        | "tab.new"
+        | "tab.close"
+        | "pane.splitRight"
+        | "pane.splitDown"
+        | "pane.focusNext"
+        | "pane.focusPrev",
+      event: KeyboardEvent,
+    ) => {
+      const target =
+        (event.target as HTMLElement | null) ?? document.activeElement;
+      return routeAiPaneShortcut(id, target, {
+        split: (dir) => {
+          const panes = useAiPaneStore.getState();
+          const count = leafIds(panes.tree).length;
+          if (
+            !canAddAiPane(window.innerWidth, count, dir, window.innerHeight)
+          ) {
+            toast.info("AI pane split needs more window space.");
+            return;
+          }
+          const paneId = panes.splitPane(panes.activePaneId, dir);
+          if (paneId !== null) focusAiPaneElement(paneId);
+        },
+        close: () => {
+          const panes = useAiPaneStore.getState();
+          if (leafIds(panes.tree).length <= 1) {
+            useChatStore.getState().closeMini();
+            return;
+          }
+          const paneId = panes.closePane(panes.activePaneId);
+          if (paneId === null) return;
+          const sessionId = useAiPaneStore.getState().bindings[paneId];
+          if (sessionId) useChatStore.getState().switchSession(sessionId);
+          focusAiPaneElement(paneId);
+        },
+        focus: (delta) => {
+          const paneId = useAiPaneStore.getState().focusAdjacent(delta);
+          const sessionId = useAiPaneStore.getState().bindings[paneId];
+          if (sessionId) useChatStore.getState().switchSession(sessionId);
+          focusAiPaneElement(paneId);
+        },
+      });
+    },
+    [],
+  );
+
   const [zenMode, setZenMode] = useState(false);
 
   const shortcutHandlers = useMemo<ShortcutHandlers>(
     () => ({
       "commandPalette.open": () => openCommandPalette("commands"),
       "commandPalette.content": () => openCommandPalette("content"),
-      "tab.new": openNewTab,
+      "tab.new": (event) => {
+        if (!handleAiPaneShortcut("tab.new", event)) openNewTab();
+      },
       "tab.newBlock": openNewBlockTab,
       "tab.newPrivate": openNewPrivateTab,
       "tab.newPreview": () => openPreviewTab(""),
       "tab.newEditor": () => setNewEditorOpen(true),
-      "tab.close": handleCloseTabOrPane,
+      "tab.close": (event) => {
+        if (!handleAiPaneShortcut("tab.close", event)) handleCloseTabOrPane();
+      },
       "tab.next": () => cycleTab(1),
       "tab.prev": () => cycleTab(-1),
       "tab.selectByIndex": (e) => {
@@ -829,10 +888,26 @@ export default function App() {
       "space.next": () => cycleSpace(1),
       "space.prev": () => cycleSpace(-1),
       "space.overview": () => setSwitcherOpen(true),
-      "pane.splitRight": () => splitActivePaneInActiveTab("row"),
-      "pane.splitDown": () => splitActivePaneInActiveTab("col"),
-      "pane.focusNext": () => focusNextPaneInTab(activeId, 1),
-      "pane.focusPrev": () => focusNextPaneInTab(activeId, -1),
+      "pane.splitRight": (event) => {
+        if (!handleAiPaneShortcut("pane.splitRight", event)) {
+          splitActivePaneInActiveTab("row");
+        }
+      },
+      "pane.splitDown": (event) => {
+        if (!handleAiPaneShortcut("pane.splitDown", event)) {
+          splitActivePaneInActiveTab("col");
+        }
+      },
+      "pane.focusNext": (event) => {
+        if (!handleAiPaneShortcut("pane.focusNext", event)) {
+          focusNextPaneInTab(activeId, 1);
+        }
+      },
+      "pane.focusPrev": (event) => {
+        if (!handleAiPaneShortcut("pane.focusPrev", event)) {
+          focusNextPaneInTab(activeId, -1);
+        }
+      },
       "pane.source": toggleSourceControl,
       "terminal.selectAll": () => {
         if (activeLeafId !== null) {
@@ -876,6 +951,7 @@ export default function App() {
       cycleTab,
       cycleSpace,
       handleCloseTabOrPane,
+      handleAiPaneShortcut,
       openNewTab,
       openNewBlockTab,
       openNewPrivateTab,
@@ -904,6 +980,9 @@ export default function App() {
       const inTerminal = !!(target as HTMLElement | null)?.closest?.(
         ".clack-terminal-pane",
       );
+      const inAiPane = !!(target as HTMLElement | null)?.closest?.(
+        "[data-ai-mini-window]",
+      );
       if (id === "explorer.search" && inTerminal) return true;
       if (
         id === "terminal.selectAll" ||
@@ -911,7 +990,7 @@ export default function App() {
         id === "terminal.paste" ||
         id === "terminal.search"
       ) {
-        return !inTerminal;
+        return !inTerminal && !inAiPane;
       }
       if (
         (id === "pane.focusNext" || id === "pane.focusPrev") &&
@@ -1699,6 +1778,7 @@ export default function App() {
             home={home}
             hasComposer={hasComposer}
             panelOpen={panelOpen}
+            aiWindowOpen={miniOpen}
             keysLoaded={keysLoaded}
             onConnect={() => void openSettingsWindow("models")}
           />
@@ -1789,5 +1869,9 @@ export default function App() {
     </ThemeProvider>
   );
 
-  return <AiComposerProvider>{shell}</AiComposerProvider>;
+  return (
+    <AiComposerProvider consumeExternalEvents={!miniOpen}>
+      {shell}
+    </AiComposerProvider>
+  );
 }

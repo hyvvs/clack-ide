@@ -10,7 +10,7 @@ import {
 import { useWhisperRecording } from "../hooks/useWhisperRecording";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
-import { cancelActiveRun, useChatStore } from "../store/chatStore";
+import { cancelRun, useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 
@@ -69,19 +69,23 @@ export function useComposer(): ComposerCtx {
 
 type ProviderProps = {
   children: React.ReactNode;
+  sessionId?: string | null;
+  consumeExternalEvents?: boolean;
 };
 
-export function AiComposerProvider({ children }: ProviderProps) {
-  const sessionId = useChatStore((s) => s.activeSessionId);
+export function AiComposerProvider({
+  children,
+  sessionId: explicitSessionId,
+  consumeExternalEvents = true,
+}: ProviderProps) {
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const sessionId =
+    explicitSessionId === undefined ? activeSessionId : explicitSessionId;
   const status = useChatStore((s) =>
-    s.activeSessionId
-      ? (s.runtimeBySession[s.activeSessionId]?.status ?? "idle")
-      : "idle",
+    sessionId ? (s.runtimeBySession[sessionId]?.status ?? "idle") : "idle",
   );
   const runState = useChatStore(
-    (s) =>
-      s.sessions.find((session) => session.id === s.activeSessionId)?.run
-        ?.state,
+    (s) => s.sessions.find((session) => session.id === sessionId)?.run?.state,
   );
   const isBusy =
     status === "thinking" || status === "streaming" || runState === "running";
@@ -133,13 +137,14 @@ export function AiComposerProvider({ children }: ProviderProps) {
   }, []);
 
   useEffect(() => {
+    if (!consumeExternalEvents) return;
     if (focusSignal === 0) return;
     textareaRef.current?.focus();
     if (pendingPrefill != null) {
       const text = consumePrefill();
       if (text) setValue((v) => (v ? `${text}${v}` : text));
     }
-  }, [focusSignal, pendingPrefill, consumePrefill]);
+  }, [consumeExternalEvents, focusSignal, pendingPrefill, consumePrefill]);
 
   // Re-focus the textarea whenever the agent finishes a response
   const prevIsBusyRef = useRef(false);
@@ -152,6 +157,7 @@ export function AiComposerProvider({ children }: ProviderProps) {
 
   // Listen for explorer's "Attach to Agent" event.
   useEffect(() => {
+    if (!consumeExternalEvents) return;
     const onAttach = (e: Event) => {
       const path = (e as CustomEvent<string>).detail;
       if (typeof path === "string" && path.length > 0) {
@@ -160,9 +166,10 @@ export function AiComposerProvider({ children }: ProviderProps) {
     };
     window.addEventListener("terax:ai-attach-file", onAttach);
     return () => window.removeEventListener("terax:ai-attach-file", onAttach);
-  }, [attachFileByPath]);
+  }, [attachFileByPath, consumeExternalEvents]);
 
   useEffect(() => {
+    if (!consumeExternalEvents) return;
     if (pendingSelections.length === 0) return;
     const drained = consumeSelections();
     if (drained.length === 0) return;
@@ -174,9 +181,7 @@ export function AiComposerProvider({ children }: ProviderProps) {
         next.push({
           id: sel.id,
           name:
-            sel.source === "editor"
-              ? "Editor selection"
-              : "Terminal selection",
+            sel.source === "editor" ? "Editor selection" : "Terminal selection",
           kind: "selection",
           mediaType: "text/plain",
           text: sel.text,
@@ -186,7 +191,7 @@ export function AiComposerProvider({ children }: ProviderProps) {
       }
       return next.length ? [...prev, ...next] : prev;
     });
-  }, [pendingSelections, consumeSelections]);
+  }, [consumeExternalEvents, pendingSelections, consumeSelections]);
 
   const voice = useWhisperRecording({
     onResult: (transcript: string) => {
@@ -238,7 +243,11 @@ export function AiComposerProvider({ children }: ProviderProps) {
     let effectiveText = trimmed;
     let commandMarker: string | null = null;
     let commandSource = trimmed;
-    if (pickedCommands.length > 0 && !trimmed.startsWith("/") && !trimmed.startsWith("#")) {
+    if (
+      pickedCommands.length > 0 &&
+      !trimmed.startsWith("/") &&
+      !trimmed.startsWith("#")
+    ) {
       commandSource = `#${pickedCommands[0].name} ${trimmed}`.trim();
     }
     if (commandSource.startsWith("/") || commandSource.startsWith("#")) {
@@ -269,10 +278,8 @@ export function AiComposerProvider({ children }: ProviderProps) {
         (f) =>
           `<selection source="${f.source ?? "terminal"}">\n${f.text ?? ""}\n</selection>`,
       );
-    const { body: bodyAfterTokens, blocks: snippetBlocks } = expandSnippetTokens(
-      effectiveText,
-      useSnippetsStore.getState().snippets,
-    );
+    const { body: bodyAfterTokens, blocks: snippetBlocks } =
+      expandSnippetTokens(effectiveText, useSnippetsStore.getState().snippets);
     const seenHandles = new Set<string>();
     const allSnippetBlocks: string[] = [];
     for (const s of pickedSnippets) {
@@ -329,7 +336,7 @@ export function AiComposerProvider({ children }: ProviderProps) {
   };
 
   const stop = () => {
-    void cancelActiveRun();
+    if (sessionId) void cancelRun(sessionId);
   };
 
   const canSend =
