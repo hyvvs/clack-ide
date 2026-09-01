@@ -20,7 +20,7 @@ export const ATTACHMENT_LIMITS = {
 } as const;
 
 export const ACCEPTED_ATTACHMENT_FILES =
-  "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,application/pdf,application/zip,.pdf,.zip,.txt,.md,.markdown,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.ps1,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cc,.cpp,.h,.hpp,.html,.css,.scss,.csv,.log,.config,.conf,.ini,.xml,.sql,Dockerfile,.dockerfile,Makefile";
+  "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,application/pdf,application/zip,application/vnd.rar,application/x-7z-compressed,.pdf,.zip,.rar,.7z,.txt,.md,.markdown,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.ps1,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cc,.cpp,.h,.hpp,.html,.css,.scss,.csv,.log,.config,.conf,.ini,.xml,.sql,Dockerfile,.dockerfile,Makefile";
 
 export type AttachmentContentKind =
   | "text"
@@ -83,11 +83,13 @@ export type ArchiveManifestEntry = {
   mediaType?: string;
   status: "ready" | "blocked";
   selectable: boolean;
+  encrypted?: boolean;
   reason?: string;
 };
 
 export type ArchiveRepresentation = {
-  format: "zip";
+  format: "zip" | "7z";
+  encrypted?: boolean;
   entryCount: number;
   fileCount: number;
   folderCount: number;
@@ -399,7 +401,10 @@ export function detectAttachment(
   ) {
     return { contentKind: "archive", mediaType: "application/zip" };
   }
-  if (startsWith(bytes, [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07])) {
+  if (
+    startsWith(bytes, [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]) ||
+    startsWith(bytes, [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00])
+  ) {
     return { contentKind: "archive", mediaType: "application/vnd.rar" };
   }
   if (startsWith(bytes, [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c])) {
@@ -508,12 +513,9 @@ export async function persistAttachmentRecord(
     const { processPdfAttachment } = await import("./pdfAttachments");
     return processPdfAttachment(persisted, bytes);
   }
-  if (
-    persisted.contentKind === "archive" &&
-    persisted.detectedMediaType === "application/zip"
-  ) {
-    const { processZipAttachment } = await import("./archiveAttachments");
-    return processZipAttachment(persisted, bytes);
+  if (persisted.contentKind === "archive") {
+    const { processArchiveAttachment } = await import("./archiveAttachments");
+    return processArchiveAttachment(persisted, bytes);
   }
   return persisted;
 }
@@ -583,7 +585,10 @@ export async function normalizeAttachmentBytes(input: {
     };
   }
   if (detected.contentKind === "archive") {
-    if (detected.mediaType === "application/zip") {
+    if (
+      detected.mediaType === "application/zip" ||
+      detected.mediaType === "application/x-7z-compressed"
+    ) {
       return {
         id: options?.id ?? newAttachmentId(),
         source,
@@ -604,7 +609,8 @@ export async function normalizeAttachmentBytes(input: {
       mediaType: detected.mediaType,
       state: "unsupported",
       code: "archive_not_supported",
-      message: "RAR and 7z inspection are not available yet.",
+      message:
+        "RAR4 and RAR5 are detected, but safe embedded RAR inspection is not available in this build.",
       security,
       options,
     });

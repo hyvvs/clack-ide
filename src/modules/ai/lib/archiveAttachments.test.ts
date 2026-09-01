@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AttachmentRecord } from "@/modules/ai/lib/attachments";
 import {
-  materializeZipEntry,
-  processZipAttachment,
-  ZIP_LIMITS,
+  ARCHIVE_LIMITS,
+  materializeArchiveEntry,
+  processArchiveAttachment,
 } from "@/modules/ai/lib/archiveAttachments";
 
 const RAW_HASH = "a".repeat(64);
@@ -12,6 +12,7 @@ const ENTRY_HASH = "c".repeat(64);
 
 const MANIFEST = {
   format: "zip",
+  encrypted: false,
   entryCount: 2,
   fileCount: 2,
   folderCount: 0,
@@ -28,6 +29,7 @@ const MANIFEST = {
       mediaType: "text/typescript",
       status: "ready",
       selectable: true,
+      encrypted: false,
       reason: null,
     },
     {
@@ -39,6 +41,7 @@ const MANIFEST = {
       mediaType: "application/zip",
       status: "blocked",
       selectable: false,
+      encrypted: false,
       reason: "Nested archives are not opened automatically.",
     },
   ],
@@ -88,7 +91,7 @@ describe("ZIP attachment processing", () => {
       contentHash: MANIFEST_HASH,
       byteSize: bytes.byteLength,
     }));
-    const processed = await processZipAttachment(
+    const processed = await processArchiveAttachment(
       zipRecord(),
       new Uint8Array(16),
       {
@@ -119,7 +122,7 @@ describe("ZIP attachment processing", () => {
       contentHash: ENTRY_HASH,
       byteSize: bytes.byteLength,
     }));
-    const selected = await materializeZipEntry(processedZipRecord(), 0, {
+    const selected = await materializeArchiveEntry(processedZipRecord(), 0, {
       inspect: vi.fn(),
       readEntry,
       storeContent,
@@ -142,7 +145,7 @@ describe("ZIP attachment processing", () => {
 
   it("does not bypass normal text attachment limits", async () => {
     const storeContent = vi.fn();
-    const selected = await materializeZipEntry(processedZipRecord(), 0, {
+    const selected = await materializeArchiveEntry(processedZipRecord(), 0, {
       inspect: vi.fn(),
       readEntry: async () =>
         new Uint8Array(1024 * 1024 + 1).fill("a".charCodeAt(0)),
@@ -159,7 +162,7 @@ describe("ZIP attachment processing", () => {
   it("rejects blocked, sensitive, and nested entries before reading", async () => {
     const readEntry = vi.fn();
     await expect(
-      materializeZipEntry(processedZipRecord(), 1, {
+      materializeArchiveEntry(processedZipRecord(), 1, {
         inspect: vi.fn(),
         readEntry,
         storeContent: vi.fn(),
@@ -171,13 +174,13 @@ describe("ZIP attachment processing", () => {
 
   it("rejects out-of-bounds or inconsistent inspector output", async () => {
     const storeContent = vi.fn();
-    const processed = await processZipAttachment(
+    const processed = await processArchiveAttachment(
       zipRecord(),
       new Uint8Array(16),
       {
         inspect: async () => ({
           ...MANIFEST,
-          totalExpandedBytes: ZIP_LIMITS.maxExpandedBytes + 1,
+          totalExpandedBytes: ARCHIVE_LIMITS.maxExpandedBytes + 1,
         }),
         readEntry: vi.fn(),
         storeContent,
@@ -186,8 +189,51 @@ describe("ZIP attachment processing", () => {
     );
     expect(processed).toMatchObject({
       processingState: "failed",
-      error: { code: "zip_processing_failed" },
+      error: { code: "archive_processing_failed" },
     });
     expect(storeContent).not.toHaveBeenCalled();
+  });
+
+  it("accepts the shared 7z manifest without a format-specific pipeline", async () => {
+    const record = {
+      ...zipRecord(),
+      displayName: "project.7z",
+      detectedMediaType: "application/x-7z-compressed",
+    };
+    const processed = await processArchiveAttachment(
+      record,
+      new Uint8Array(16),
+      {
+        inspect: async () => ({ ...MANIFEST, format: "7z" }),
+        readEntry: vi.fn(),
+        storeContent: async (bytes) => ({
+          id: MANIFEST_HASH,
+          contentHash: MANIFEST_HASH,
+          byteSize: bytes.byteLength,
+        }),
+        loadContent: vi.fn(),
+      },
+    );
+    expect(processed).toMatchObject({
+      processingState: "ready",
+      archiveRepresentation: { format: "7z", fileCount: 2 },
+    });
+  });
+
+  it("rejects a parser format that disagrees with signature detection", async () => {
+    const processed = await processArchiveAttachment(
+      zipRecord(),
+      new Uint8Array(16),
+      {
+        inspect: async () => ({ ...MANIFEST, format: "7z" }),
+        readEntry: vi.fn(),
+        storeContent: vi.fn(),
+        loadContent: vi.fn(),
+      },
+    );
+    expect(processed).toMatchObject({
+      processingState: "failed",
+      error: { code: "archive_processing_failed" },
+    });
   });
 });

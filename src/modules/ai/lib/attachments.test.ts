@@ -126,7 +126,7 @@ describe("attachment normalization", () => {
     });
   });
 
-  it("routes ZIPs to inspection while leaving RAR unsupported", async () => {
+  it("routes signed ZIP and 7z archives while leaving RAR unsupported", async () => {
     const zip = await normalizeAttachmentBytes({
       source: { kind: "picker", token: "zip" },
       displayName: "project.bin",
@@ -139,10 +139,24 @@ describe("attachment normalization", () => {
       contentKind: "archive",
       detectedMediaType: "application/zip",
     });
+    const sevenZip = await normalizeAttachmentBytes({
+      source: { kind: "picker", token: "7z" },
+      displayName: "project.bin",
+      bytes: Uint8Array.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]),
+      reportedMediaType: "application/octet-stream",
+      security: SECURITY,
+    });
+    expect(sevenZip).toMatchObject({
+      processingState: "ready",
+      contentKind: "archive",
+      detectedMediaType: "application/x-7z-compressed",
+    });
     const rar = await normalizeAttachmentBytes({
       source: { kind: "picker", token: "rar" },
       displayName: "project.rar",
-      bytes: Uint8Array.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07]),
+      bytes: Uint8Array.from([
+        0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00,
+      ]),
       security: SECURITY,
     });
     expect(rar).toMatchObject({

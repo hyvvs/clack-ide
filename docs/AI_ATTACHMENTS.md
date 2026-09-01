@@ -17,12 +17,12 @@ This document records the attachment safety contract. All picker, workspace
 | PDF pages | 10,000 maximum; first 128 inspected |
 | PDF decompressed page content | 4 MiB per inspected page |
 | PDF extracted text | 64 KiB per page; 512 KiB total |
-| ZIP input | 8 MiB |
-| ZIP entries | 2,048 |
-| ZIP expanded entry | 4 MiB |
-| ZIP total expanded data | 64 MiB |
-| ZIP compression ratio | 200:1 per entry |
-| ZIP entry path | 1,024 bytes; 256 KiB total manifest paths |
+| ZIP or 7z input | 8 MiB |
+| Archive entries | 2,048 |
+| Archive expanded entry | 4 MiB |
+| Archive total expanded data | 64 MiB |
+| Archive compression ratio | 200:1 per ZIP entry or 7z compression block |
+| Archive entry path | 1,024 bytes; 256 KiB total manifest paths |
 | Nested archive depth | 0; listed but not opened |
 
 The decoded-image limit is enforced from PNG, JPEG, GIF, and WEBP dimensions.
@@ -74,10 +74,11 @@ unknown image capability also blocks delivery and asks the user to choose a
 model with confirmed vision support. The composer chip shows the same state,
 and the transport repeats the check to cover non-composer send paths.
 
-ZIP archives are delivered as bounded manifests plus any entries the user
+ZIP and 7z archives are delivered as bounded manifests plus any entries the user
 explicitly selected. Selected entries pass through the same normalizer,
-capability routing, and content store as direct attachments. RAR, 7z, and
-unknown binary references remain unsupported or metadata-only.
+capability routing, and content store as direct attachments. RAR4 and RAR5 are
+signature-detected but remain unsupported. Unknown binary references remain
+unsupported or metadata-only.
 
 ## Image input routes
 
@@ -108,14 +109,18 @@ marked truncated. Malformed and encrypted PDFs show a processing failure.
 Image-only PDFs show their page count and explain that no embedded text was
 found; Clack does not run OCR automatically.
 
-## ZIP processing
+## Archive processing
 
-ZIP inspection runs in Rust against signature-checked bytes. Clack rejects
+ZIP and 7z inspection runs in Rust against signature-checked bytes. Clack rejects
 absolute, UNC, Windows-drive, NUL, traversal, duplicate, oversized, and
-control-character paths. Symbolic links and every non-regular Unix entry type
-are rejected, covering devices, FIFOs, and represented link-like entries.
+control-character paths. Symbolic links, Windows reparse points, anti-items, and
+every non-regular Unix entry type are rejected, covering devices, FIFOs,
+sockets, and represented link-like entries.
 Entry count, compressed size, expanded size, per-entry size, path metadata,
-and compression ratio are all bounded before any entry is decompressed.
+and compression ratio are all bounded before any selected entry is
+decompressed. ZIP ratio checks are per entry. 7z ratio checks are per decoder
+block so solid archives cannot hide unsafe expansion behind zero per-file
+compressed-size metadata.
 
 Inspection returns a compact manifest. The composer initially renders only a
 bounded searchable portion of that manifest, and nested archives are visible
@@ -139,5 +144,28 @@ persisted references; unreferenced files and abandoned staging files are
 removed. Existing persisted data-URL attachments migrate when their chat is
 opened. A failed migration preserves the original history.
 
-RAR, 7z, and unknown binary files are identified honestly but remain
-unsupported until their dedicated processing checkpoints are implemented.
+7z uses `sevenz-rust2` 0.22.2, an Apache-2.0, maintained, in-process Rust
+reader. Clack enables its standard COPY, LZMA, LZMA2, BZIP2, and PPMd support.
+It never invokes `7z`, `7zz`, PowerShell, or another system archive program.
+Unicode names are decoded by the reader and then normalized by the shared path
+policy. Stored POSIX type bits and the Windows reparse flag are checked before
+an entry is selectable. The 7z format does not expose a separate hardlink
+record through this reader; materialization returns bytes only and never
+creates filesystem links or propagates permissions.
+
+Encrypted 7z content is shown as locked and non-selectable when the unencrypted
+header exposes its entries. An encrypted header produces a visible unsupported
+processing error. Clack does not prompt for, store, or attempt archive
+passwords. Nested ZIP, RAR, and 7z entries remain visible but non-selectable;
+the nested archive depth is zero.
+
+RAR4 and RAR5 signatures are distinguished from other files, but safe RAR
+inspection is intentionally blocked. The audited pure Rust `unrar-rs` 0.7.0
+reader exposes the required redirection metadata but is GPL-3.0-or-later with
+the UnRAR restriction, which is not compatible with this Apache-2.0 package.
+The `unrar` 0.5.8 crate uses bundled RARLAB C++ code under the UnRAR license and
+does not expose enough redirection metadata in its high-level entry API to
+guarantee Clack's symlink and hardlink rejection policy. Clack does not fall
+back to a system `unrar` executable. A suitable permissively licensed embedded
+reader with trustworthy link metadata is required before RAR materialization
+can be enabled.

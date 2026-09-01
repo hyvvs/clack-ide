@@ -13,7 +13,7 @@ import {
 } from "@/modules/ai/lib/attachmentStore";
 import { checkReadable } from "@/modules/ai/lib/security";
 
-export const ZIP_LIMITS = {
+export const ARCHIVE_LIMITS = {
   maxArchiveBytes: 8 * 1024 * 1024,
   maxEntryCount: 2_048,
   maxEntryBytes: 4 * 1024 * 1024,
@@ -25,8 +25,9 @@ export const ZIP_LIMITS = {
   maxNestedArchiveDepth: 0,
 } as const;
 
-type ZipManifest = {
-  format: "zip";
+type ArchiveManifestContract = {
+  format: "zip" | "7z";
+  encrypted: boolean;
   entryCount: number;
   fileCount: number;
   folderCount: number;
@@ -44,20 +45,20 @@ type ArchiveProcessingDeps = {
 };
 
 const DEFAULT_DEPS: ArchiveProcessingDeps = {
-  inspect: (bytes) => invoke("attachment_zip_inspect", bytes),
+  inspect: (bytes) => invoke("attachment_archive_inspect", bytes),
   readEntry: async (bytes, entryIndex) => {
     if (
       !Number.isInteger(entryIndex) ||
       entryIndex < 0 ||
       entryIndex > 0xffffffff
     ) {
-      throw new Error("ZIP entry index is invalid.");
+      throw new Error("Archive entry index is invalid.");
     }
     const request = new Uint8Array(bytes.byteLength + 4);
     new DataView(request.buffer).setUint32(0, entryIndex, true);
     request.set(bytes, 4);
     const response = await invoke<ArrayBuffer>(
-      "attachment_zip_read_entry",
+      "attachment_archive_read_entry",
       request,
     );
     return new Uint8Array(response);
@@ -66,25 +67,27 @@ const DEFAULT_DEPS: ArchiveProcessingDeps = {
   loadContent: loadAttachmentContent,
 };
 
-export async function processZipAttachment(
+export async function processArchiveAttachment(
   record: AttachmentRecord,
   bytes: Uint8Array,
   deps: ArchiveProcessingDeps = DEFAULT_DEPS,
 ): Promise<AttachmentRecord> {
   if (
     record.contentKind !== "archive" ||
-    record.detectedMediaType !== "application/zip" ||
     record.processingState !== "ready" ||
     !record.contentRef
   ) {
     return record;
   }
   try {
-    const manifest = validateZipManifest(await deps.inspect(bytes));
-    const representation = formatZipManifest(record.displayName, manifest);
+    const manifest = validateArchiveManifest(
+      await deps.inspect(bytes),
+      record.detectedMediaType,
+    );
+    const representation = formatArchiveManifest(record.displayName, manifest);
     const encoded = new TextEncoder().encode(representation);
-    if (encoded.byteLength > ZIP_LIMITS.maxManifestBytes) {
-      throw new Error("ZIP manifest exceeds Clack's safe storage limit.");
+    if (encoded.byteLength > ARCHIVE_LIMITS.maxManifestBytes) {
+      throw new Error("Archive manifest exceeds Clack's safe storage limit.");
     }
     const manifestContentRef = await deps.storeContent(encoded);
     retainAttachmentContent(manifestContentRef.id);
@@ -102,14 +105,14 @@ export async function processZipAttachment(
       processingState: "failed",
       archiveRepresentation: undefined,
       error: {
-        code: "zip_processing_failed",
+        code: "archive_processing_failed",
         message: error instanceof Error ? error.message : String(error),
       },
     };
   }
 }
 
-export async function materializeZipEntry(
+export async function materializeArchiveEntry(
   archive: AttachmentRecord,
   entryIndex: number,
   deps: ArchiveProcessingDeps = DEFAULT_DEPS,
@@ -120,20 +123,19 @@ export async function materializeZipEntry(
   );
   if (
     archive.contentKind !== "archive" ||
-    archive.detectedMediaType !== "application/zip" ||
     archive.processingState !== "ready" ||
     !archive.contentRef ||
     !entry ||
     !entry.selectable ||
     entry.entryType !== "file"
   ) {
-    throw new Error("ZIP entry is not safe to materialize.");
+    throw new Error("Archive entry is not safe to materialize.");
   }
   const readable = checkReadable(entry.path);
   if (!readable.ok) throw new Error(readable.reason);
   const archiveBytes = await deps.loadContent(archive.contentRef.id);
   if (archiveBytes.byteLength !== archive.contentRef.byteSize) {
-    throw new Error("Stored ZIP size changed before entry materialization.");
+    throw new Error("Stored archive size changed before entry materialization.");
   }
   const entryBytes = await deps.readEntry(archiveBytes, entry.index);
   const security = {
@@ -158,33 +160,46 @@ export async function materializeZipEntry(
   return persistAttachmentRecord(normalized, entryBytes, deps.storeContent);
 }
 
-function validateZipManifest(value: unknown): ZipManifest {
+function expectedArchiveFormat(mediaType: string): "zip" | "7z" | undefined {
+  if (mediaType === "application/zip") return "zip";
+  if (mediaType === "application/x-7z-compressed") return "7z";
+  return undefined;
+}
+
+function validateArchiveManifest(
+  value: unknown,
+  detectedMediaType: string,
+): ArchiveManifestContract {
   if (!value || typeof value !== "object") {
-    throw new Error("ZIP inspector returned invalid metadata.");
+    throw new Error("Archive inspector returned invalid metadata.");
   }
-  const candidate = value as Partial<ZipManifest>;
+  const candidate = value as Partial<ArchiveManifestContract>;
+  const expectedFormat = expectedArchiveFormat(detectedMediaType);
   if (
-    candidate.format !== "zip" ||
+    (candidate.format !== "zip" && candidate.format !== "7z") ||
+    (expectedFormat != null && candidate.format !== expectedFormat) ||
+    typeof candidate.encrypted !== "boolean" ||
     !Number.isInteger(candidate.entryCount) ||
     (candidate.entryCount ?? -1) < 0 ||
-    (candidate.entryCount ?? 0) > ZIP_LIMITS.maxEntryCount ||
+    (candidate.entryCount ?? 0) > ARCHIVE_LIMITS.maxEntryCount ||
     !Number.isInteger(candidate.fileCount) ||
     (candidate.fileCount ?? -1) < 0 ||
     !Number.isInteger(candidate.folderCount) ||
     (candidate.folderCount ?? -1) < 0 ||
     !Number.isInteger(candidate.totalCompressedBytes) ||
     (candidate.totalCompressedBytes ?? -1) < 0 ||
-    (candidate.totalCompressedBytes ?? 0) > ZIP_LIMITS.maxArchiveBytes ||
+    (candidate.totalCompressedBytes ?? 0) > ARCHIVE_LIMITS.maxArchiveBytes ||
     !Number.isInteger(candidate.totalExpandedBytes) ||
     (candidate.totalExpandedBytes ?? -1) < 0 ||
-    (candidate.totalExpandedBytes ?? 0) > ZIP_LIMITS.maxExpandedBytes ||
-    candidate.nestedArchiveDepthLimit !== ZIP_LIMITS.maxNestedArchiveDepth ||
+    (candidate.totalExpandedBytes ?? 0) > ARCHIVE_LIMITS.maxExpandedBytes ||
+    candidate.nestedArchiveDepthLimit !==
+      ARCHIVE_LIMITS.maxNestedArchiveDepth ||
     !Array.isArray(candidate.entries) ||
     candidate.entries.length !== candidate.entryCount ||
     (candidate.fileCount ?? 0) + (candidate.folderCount ?? 0) !==
       candidate.entryCount
   ) {
-    throw new Error("ZIP inspector returned out-of-bounds metadata.");
+    throw new Error("Archive inspector returned out-of-bounds metadata.");
   }
 
   const entryCount = candidate.entryCount as number;
@@ -196,7 +211,9 @@ function validateZipManifest(value: unknown): ZipManifest {
   const paths = new Set<string>();
   const entries = candidate.entries.map((entry, position) => {
     if (!entry || typeof entry !== "object") {
-      throw new Error(`ZIP inspector returned invalid entry ${position + 1}.`);
+      throw new Error(
+        `Archive inspector returned invalid entry ${position + 1}.`,
+      );
     }
     const item = entry as Partial<ArchiveManifestEntry>;
     const index = item.index ?? -1;
@@ -213,24 +230,27 @@ function validateZipManifest(value: unknown): ZipManifest {
       indexes.has(index) ||
       typeof item.path !== "string" ||
       pathBytes === 0 ||
-      pathBytes > ZIP_LIMITS.maxPathBytes ||
+      pathBytes > ARCHIVE_LIMITS.maxPathBytes ||
       paths.has(item.path) ||
       (item.entryType !== "file" && item.entryType !== "folder") ||
       !Number.isInteger(item.compressedSize) ||
       compressedSize < 0 ||
       !Number.isInteger(item.expandedSize) ||
       expandedSize < 0 ||
-      expandedSize > ZIP_LIMITS.maxEntryBytes ||
+      expandedSize > ARCHIVE_LIMITS.maxEntryBytes ||
       (item.mediaType != null &&
         (typeof item.mediaType !== "string" || item.mediaType.length > 128)) ||
       (item.status !== "ready" && item.status !== "blocked") ||
       typeof item.selectable !== "boolean" ||
+      (item.encrypted != null && typeof item.encrypted !== "boolean") ||
       (item.entryType === "folder" && item.selectable) ||
       (item.status === "blocked" && item.selectable) ||
       (item.reason != null &&
         (typeof item.reason !== "string" || item.reason.length > 256))
     ) {
-      throw new Error(`ZIP inspector returned invalid entry ${position + 1}.`);
+      throw new Error(
+        `Archive inspector returned invalid entry ${position + 1}.`,
+      );
     }
     indexes.add(index);
     paths.add(item.path);
@@ -252,23 +272,30 @@ function validateZipManifest(value: unknown): ZipManifest {
         };
   });
   if (
-    totalPathBytes > ZIP_LIMITS.maxTotalPathBytes ||
+    totalPathBytes > ARCHIVE_LIMITS.maxTotalPathBytes ||
     totalCompressedBytes !== candidate.totalCompressedBytes ||
     totalExpandedBytes !== candidate.totalExpandedBytes
   ) {
-    throw new Error("ZIP inspector returned inconsistent aggregate metadata.");
+    throw new Error(
+      "Archive inspector returned inconsistent aggregate metadata.",
+    );
   }
-  return { ...(candidate as ZipManifest), entries };
+  return { ...(candidate as ArchiveManifestContract), entries };
 }
 
-function formatZipManifest(displayName: string, manifest: ZipManifest): string {
+function formatArchiveManifest(
+  displayName: string,
+  manifest: ArchiveManifestContract,
+): string {
+  const formatLabel = manifest.format === "7z" ? "7Z" : "ZIP";
   const header = [
-    "----- CLACK ZIP MANIFEST -----",
+    `----- CLACK ${formatLabel} MANIFEST -----`,
     JSON.stringify({
       name: displayName,
       files: manifest.fileCount,
       folders: manifest.folderCount,
       expandedBytes: manifest.totalExpandedBytes,
+      encrypted: manifest.encrypted,
       nestedArchiveDepthLimit: manifest.nestedArchiveDepthLimit,
     }),
   ];
@@ -280,10 +307,13 @@ function formatZipManifest(displayName: string, manifest: ZipManifest): string {
       bytes: entry.expandedSize,
       status: entry.status,
       selectable: entry.selectable,
+      ...(entry.encrypted ? { encrypted: true } : {}),
       ...(entry.reason ? { reason: entry.reason } : {}),
     }),
   );
-  return [...header, ...entries, "----- END CLACK ZIP MANIFEST -----"].join(
-    "\n",
-  );
+  return [
+    ...header,
+    ...entries,
+    `----- END CLACK ${formatLabel} MANIFEST -----`,
+  ].join("\n");
 }

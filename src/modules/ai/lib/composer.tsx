@@ -343,8 +343,8 @@ export function AiComposerProvider({
       if (!archive) return;
       pendingArchiveEntriesRef.current.add(key);
       try {
-        const { materializeZipEntry } = await import("./archiveAttachments");
-        const entry = await materializeZipEntry(archive, entryIndex);
+        const { materializeArchiveEntry } = await import("./archiveAttachments");
+        const entry = await materializeArchiveEntry(archive, entryIndex);
         appendAttachments([entry]);
       } catch (error) {
         toast.error(error instanceof Error ? error.message : String(error));

@@ -102,7 +102,7 @@ export function ArchiveAttachmentChip({
           <button
             type="button"
             className="inline-flex h-full min-w-0 items-center gap-1.5 rounded-l-md px-2 outline-none hover:bg-foreground/[0.05] focus-visible:ring-1 focus-visible:ring-primary"
-            title="Inspect ZIP contents"
+            title="Inspect archive contents"
           >
             <HugeiconsIcon icon={File01Icon} size={11} strokeWidth={1.75} />
             <span className="max-w-[10rem] truncate font-medium">
@@ -134,8 +134,8 @@ export function ArchiveAttachmentChip({
           </div>
           <div className="mt-0.5 text-[10.5px] text-muted-foreground">
             {representation
-              ? `${representation.fileCount} files · ${representation.folderCount} folders · ${formatBytes(representation.totalExpandedBytes)}`
-              : "ZIP manifest unavailable"}
+              ? `${representation.fileCount} files · ${representation.folderCount} folders · ${formatBytes(representation.totalExpandedBytes)}${representation.encrypted ? " · encrypted" : ""}`
+              : "Archive manifest unavailable"}
           </div>
         </div>
         <label className="relative mx-3 my-2 block">
