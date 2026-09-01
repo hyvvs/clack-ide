@@ -1778,7 +1778,6 @@ export default function App() {
             home={home}
             hasComposer={hasComposer}
             panelOpen={panelOpen}
-            aiWindowOpen={miniOpen}
             keysLoaded={keysLoaded}
             onConnect={() => void openSettingsWindow("models")}
           />
@@ -1870,7 +1869,7 @@ export default function App() {
   );
 
   return (
-    <AiComposerProvider consumeExternalEvents={!miniOpen}>
+    <AiComposerProvider>
       {shell}
     </AiComposerProvider>
   );

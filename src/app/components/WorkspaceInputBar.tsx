@@ -1,24 +1,38 @@
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { CLACK_Z_INDEX } from "@/lib/layers";
 import { AiInputBarConnect } from "@/modules/ai";
 import { Chip } from "@/modules/ai/components/Chip";
 import { ChipsRow } from "@/modules/ai/components/ChipsRow";
 import { useComposer } from "@/modules/ai/lib/composer";
+import { prepareSessionChat } from "@/modules/ai/store/chatRuntime";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { useBlockController } from "@/modules/terminal/lib/blockController";
 import { focusLeafInput } from "@/modules/terminal/lib/useTerminalSession";
 import { useTheme } from "@/modules/theme";
 import {
   AiContentGenerator02Icon,
+  Add01Icon,
+  ArrowDown01Icon,
   CommandLineIcon,
   Folder01Icon,
   GitBranchIcon,
+  Message01Icon,
   TerminalIcon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { OsIcon } from "./OsIcon";
 import { useGitBranch } from "./useGitBranch";
 import { useSystemInfo } from "./useSystemInfo";
+import { resolveWorkspaceInputPresentation } from "./workspaceInputPresentation";
 
 const ShellInput = lazy(() => import("@/modules/terminal/block/ShellInput"));
 const AiComposerInput = lazy(() =>
@@ -37,7 +51,6 @@ type Props = {
   home: string | null;
   hasComposer: boolean;
   panelOpen: boolean;
-  aiWindowOpen: boolean;
   keysLoaded: boolean;
   onConnect: () => void;
 };
@@ -50,12 +63,15 @@ export function WorkspaceInputBar({
   home,
   hasComposer,
   panelOpen,
-  aiWindowOpen,
   keysLoaded,
   onConnect,
 }: Props) {
   const c = useComposer();
   const focusSignal = useChatStore((s) => s.focusSignal);
+  const sessions = useChatStore((s) => s.sessions);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const switchSession = useChatStore((s) => s.switchSession);
+  const newSession = useChatStore((s) => s.newSession);
   const { resolvedMode, themeId, customThemes } = useTheme();
   const themeKey = `${resolvedMode}:${themeId}:${customThemes.length}`;
   const { os, shell } = useSystemInfo();
@@ -74,22 +90,36 @@ export function WorkspaceInputBar({
   }, [blockMode]);
   const branch = useGitBranch(isTerminalTab ? cwd : null, promptNonce);
 
-  const showToggle = isBlockTab && hasComposer && !aiWindowOpen;
   const [mode, setMode] = useState<"shell" | "ai">("shell");
-  const effectiveMode = !isBlockTab
-    ? "ai"
-    : hasComposer && !aiWindowOpen
-      ? mode
-      : "shell";
-
-  const mounted = keysLoaded || isBlockTab;
-  const open = isBlockTab || (keysLoaded && panelOpen && !aiWindowOpen);
+  const { showToggle, effectiveMode, mounted, open } =
+    resolveWorkspaceInputPresentation({
+      isBlockTab,
+      hasComposer,
+      mode,
+      keysLoaded,
+      panelOpen,
+    });
 
   const [aiLoaded, setAiLoaded] = useState(false);
   useEffect(() => {
     if (open && effectiveMode === "ai") setAiLoaded(true);
   }, [open, effectiveMode]);
   const renderAi = hasComposer && aiLoaded;
+  const activeSession = sessions.find(
+    (session) => session.id === activeSessionId,
+  );
+  const dispatcherTitle = activeSession?.title?.trim() || "New chat";
+
+  const selectDispatcherSession = async (sessionId: string) => {
+    await prepareSessionChat(sessionId);
+    switchSession(sessionId);
+    requestAnimationFrame(() => c.textareaRef.current?.focus());
+  };
+
+  const createDispatcherSession = () => {
+    newSession();
+    requestAnimationFrame(() => c.textareaRef.current?.focus());
+  };
 
   const switchMode = (next: "shell" | "ai") => {
     setMode(next);
@@ -154,7 +184,21 @@ export function WorkspaceInputBar({
       <div className="shrink-0 border-t border-border/60 bg-card/40 px-3 py-2">
         <div className="flex flex-col gap-2 rounded-lg px-1 py-1">
           <ChipsRow
-            leading={terminalChips}
+            leading={
+              <>
+                {terminalChips}
+                {effectiveMode === "ai" ? (
+                  <DispatcherTarget
+                    sessions={sessions}
+                    activeSessionId={activeSessionId}
+                    onSelect={(sessionId) =>
+                      void selectDispatcherSession(sessionId)
+                    }
+                    onCreate={createDispatcherSession}
+                  />
+                ) : null}
+              </>
+            }
             files={c.files}
             onRemoveFile={c.removeFile}
             snippets={c.pickedSnippets}
@@ -188,9 +232,13 @@ export function WorkspaceInputBar({
               )}
               {renderAi && (
                 <div className={cn(effectiveMode !== "ai" && "hidden")}>
-                  <Suspense fallback={null}>
-                    <AiComposerInput />
-                  </Suspense>
+                  <div data-ai-composer-role="dispatcher">
+                    <Suspense fallback={null}>
+                      <AiComposerInput
+                        placeholder={`Dispatch to ${dispatcherTitle}   -   # commands, @ files`}
+                      />
+                    </Suspense>
+                  </div>
                 </div>
               )}
             </div>
@@ -208,12 +256,110 @@ export function WorkspaceInputBar({
     <div
       data-ai-input-bar
       data-state={open ? "open" : "closed"}
-      className="clack-reveal"
+      className="clack-reveal relative"
+      style={{ zIndex: CLACK_Z_INDEX.miniWindow + 1 }}
       aria-hidden={!open}
     >
       <div>{content}</div>
     </div>
   );
+}
+
+function DispatcherTarget({
+  sessions,
+  activeSessionId,
+  onSelect,
+  onCreate,
+}: {
+  sessions: ReturnType<typeof useChatStore.getState>["sessions"];
+  activeSessionId: string | null;
+  onSelect: (sessionId: string) => void;
+  onCreate: () => void;
+}) {
+  const active = sessions.find((session) => session.id === activeSessionId);
+  const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          data-ai-dispatch-target
+          className="inline-flex h-[22px] max-w-[15rem] items-center gap-1.5 rounded-md border border-[color:var(--clack-border-strong)] bg-[var(--clack-accent-soft)] px-2 text-[11px] text-[var(--clack-text-1)] outline-none transition-colors hover:bg-accent/70 focus-visible:ring-1 focus-visible:ring-[var(--clack-focus)]"
+          title={`Dispatch target: ${active?.title || "New chat"}`}
+          aria-label={`Choose dispatch target. Current target: ${active?.title || "New chat"}`}
+        >
+          <HugeiconsIcon icon={Message01Icon} size={11} strokeWidth={1.8} />
+          <span className="shrink-0 text-[var(--clack-text-3)]">To</span>
+          <span className="min-w-0 truncate font-medium">
+            {active?.title || "New chat"}
+          </span>
+          <HugeiconsIcon
+            icon={ArrowDown01Icon}
+            size={10}
+            strokeWidth={2}
+            className="shrink-0 text-[var(--clack-text-3)]"
+          />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" side="top" className="w-72">
+        <div className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase text-[var(--clack-text-3)]">
+          Dispatch to chat
+        </div>
+        {sorted.map((session) => {
+          const selected = session.id === activeSessionId;
+          return (
+            <DropdownMenuItem
+              key={session.id}
+              onSelect={() => onSelect(session.id)}
+              className={cn(
+                "min-w-0 gap-2 px-2 py-1.5 text-xs",
+                selected && "bg-[var(--clack-accent-soft)]",
+              )}
+            >
+              <HugeiconsIcon
+                icon={Message01Icon}
+                size={12}
+                strokeWidth={1.75}
+                className="shrink-0 text-[var(--clack-text-3)]"
+              />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate font-medium">
+                  {session.title || "New chat"}
+                </span>
+                <span className="truncate text-[10px] font-normal text-[var(--clack-text-3)]">
+                  {session.run?.state === "running"
+                    ? "Running"
+                    : workspaceLabel(session.profile?.workspaceRoot)}
+                </span>
+              </span>
+              {selected ? (
+                <HugeiconsIcon
+                  icon={Tick02Icon}
+                  size={12}
+                  strokeWidth={2}
+                  className="shrink-0"
+                />
+              ) : null}
+            </DropdownMenuItem>
+          );
+        })}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={onCreate}
+          className="gap-2 px-2 py-1.5 text-xs"
+        >
+          <HugeiconsIcon icon={Add01Icon} size={12} strokeWidth={1.8} />
+          New chat
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function workspaceLabel(root: string | null | undefined): string {
+  if (!root) return "Unbound conversation";
+  const segments = root.split(/[\\/]/).filter(Boolean);
+  return segments[segments.length - 1] || root;
 }
 
 function ModeToggle({

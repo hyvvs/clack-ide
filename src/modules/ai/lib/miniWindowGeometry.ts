@@ -4,6 +4,7 @@ export type ResizeDir = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
 export const MIN_W = 400;
 export const MIN_H = 280;
+export const DOCK_GAP = 6;
 
 const MARGIN_X = 16;
 const BOTTOM_GAP = 96;
@@ -11,6 +12,17 @@ const TOP_GAP = 16;
 
 const clamp = (v: number, lo: number, hi: number) =>
   v < lo ? lo : v > hi ? hi : v;
+
+export function viewportAboveDock(
+  vp: Viewport,
+  dockTop: number | null,
+): Viewport {
+  if (dockTop === null || !Number.isFinite(dockTop) || dockTop <= 0) return vp;
+  return {
+    ...vp,
+    vh: Math.min(vp.vh, Math.max(0, dockTop - DOCK_GAP)),
+  };
+}
 
 export function defaultGeom(vp: Viewport): Geom {
   const w = Math.max(MIN_W, Math.min(500, vp.vw - MARGIN_X * 2));

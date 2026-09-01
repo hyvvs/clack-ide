@@ -4,6 +4,7 @@ import {
   applyResize,
   clampGeom,
   defaultGeom,
+  viewportAboveDock,
   type Geom,
   type ResizeDir,
   type Viewport,
@@ -11,10 +12,13 @@ import {
 
 const STORE_KEY = "terax-ui-mini-window-geom";
 
-const viewport = (): Viewport => ({
-  vw: window.innerWidth,
-  vh: window.innerHeight,
-});
+const viewport = (): Viewport => {
+  const full = { vw: window.innerWidth, vh: window.innerHeight };
+  const dock = document.querySelector<HTMLElement>(
+    '[data-ai-input-bar][data-state="open"]',
+  );
+  return viewportAboveDock(full, dock?.getBoundingClientRect().top ?? null);
+};
 
 function loadGeom(): Geom | null {
   try {
@@ -88,8 +92,12 @@ export function useMiniWindowGeometry() {
     // since loadGeom re-clamps on startup anyway.
     const onResize = () => write(clampGeom(geom.current, viewport()));
     window.addEventListener("resize", onResize);
+    const dock = document.querySelector<HTMLElement>("[data-ai-input-bar]");
+    const dockObserver = dock ? new ResizeObserver(onResize) : null;
+    if (dock) dockObserver?.observe(dock);
     return () => {
       window.removeEventListener("resize", onResize);
+      dockObserver?.disconnect();
       if (frame.current) cancelAnimationFrame(frame.current);
     };
   }, [write]);

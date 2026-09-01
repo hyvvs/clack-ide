@@ -66,8 +66,10 @@ function detectFileTrigger(value: string, caret: number): FileTrigger | null {
 
 export function AiComposerInput({
   showAgentSwitcher = true,
+  placeholder = "Ask Clack anything   -   # for snippets and commands, @ for files",
 }: {
   showAgentSwitcher?: boolean;
+  placeholder?: string;
 }) {
   const c = useComposer();
   const snippets = useSnippetsStore((s) => s.snippets);
@@ -273,7 +275,7 @@ export function AiComposerInput({
                   c.submit();
                 }
               }}
-              placeholder="Ask Clack anything   -   # for snippets and commands, @ for files"
+              placeholder={placeholder}
               rows={1}
               className={cn(
                 "max-h-40 flex-1 resize-none bg-transparent text-[13px] leading-relaxed outline-none",

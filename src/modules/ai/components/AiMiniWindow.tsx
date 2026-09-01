@@ -348,7 +348,7 @@ function Body({
   onOpenSession: (sessionId: string) => void;
 }) {
   return (
-    <AiComposerProvider sessionId={sessionId} consumeExternalEvents={focused}>
+    <AiComposerProvider sessionId={sessionId} consumeExternalEvents={false}>
       <SessionPane
         sessionId={sessionId}
         paneCount={paneCount}
@@ -432,16 +432,24 @@ function SessionPane({
       </div>
 
       <TodoStrip sessionId={sessionId} />
-      <PaneComposer />
+      <PaneComposer sessionId={sessionId} />
     </>
   );
 }
 
-function PaneComposer() {
+function PaneComposer({ sessionId }: { sessionId: string }) {
   const composer = useComposer();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const title = useChatStore(
+    (state) =>
+      state.sessions.find((session) => session.id === sessionId)?.title ||
+      "this chat",
+  );
   return (
-    <div className="shrink-0 border-t border-[color:var(--clack-border-subtle)] bg-[color-mix(in_srgb,var(--clack-surface-1)_82%,transparent)] px-3 py-2">
+    <div
+      data-ai-composer-role="reply"
+      className="shrink-0 border-t border-[color:var(--clack-border-subtle)] bg-[color-mix(in_srgb,var(--clack-surface-1)_82%,transparent)] px-3 py-2"
+    >
       <div className="flex min-w-0 flex-col gap-1.5">
         <input
           ref={fileInputRef}
@@ -506,7 +514,10 @@ function PaneComposer() {
             </Button>
           ) : null}
           <div className="min-w-0 flex-1 py-0.5">
-            <AiComposerInput showAgentSwitcher={false} />
+            <AiComposerInput
+              showAgentSwitcher={false}
+              placeholder={`Reply to ${title}`}
+            />
           </div>
           <Button
             type="button"

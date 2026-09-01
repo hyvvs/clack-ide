@@ -5,13 +5,28 @@ import {
   applyResize,
   clampGeom,
   defaultGeom,
+  DOCK_GAP,
   MIN_H,
   MIN_W,
+  viewportAboveDock,
   type Geom,
   type Viewport,
 } from "./miniWindowGeometry";
 
 const vp: Viewport = { vw: 1440, vh: 900 };
+
+describe("viewportAboveDock", () => {
+  it("reserves the visible dispatcher dock from AI window geometry", () => {
+    expect(viewportAboveDock(vp, 780)).toEqual({
+      vw: vp.vw,
+      vh: 780 - DOCK_GAP,
+    });
+  });
+
+  it("uses the full viewport when the dispatcher is absent", () => {
+    expect(viewportAboveDock(vp, null)).toEqual(vp);
+  });
+});
 
 describe("defaultGeom", () => {
   it("anchors to the bottom-right and stays on screen", () => {
