@@ -42,6 +42,9 @@ export type AttachmentSource =
   | {
       kind: "archive-entry";
       archiveAttachmentId: string;
+      archiveContentId: string;
+      archiveContentHash: string;
+      archiveFormat: "zip" | "7z";
       archiveDisplayName: string;
       entryIndex: number;
       path: string;

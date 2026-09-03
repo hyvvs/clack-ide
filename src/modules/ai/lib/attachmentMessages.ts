@@ -34,6 +34,15 @@ export type AttachmentMessageReference = {
   byteSize: number;
   contentKind: AttachmentRecord["contentKind"];
   selectionSource?: "terminal" | "editor";
+  archiveEntryProvenance?: {
+    archiveAttachmentId: string;
+    archiveContentId: string;
+    archiveContentHash: string;
+    archiveFormat: "zip" | "7z";
+    archiveDisplayName: string;
+    entryIndex: number;
+    entryPath: string;
+  };
   documentRepresentation?: DocumentRepresentation;
   archiveRepresentation?: Omit<ArchiveRepresentation, "entries">;
 };
@@ -70,6 +79,19 @@ export function toAttachmentMessagePart(
       contentKind: record.contentKind,
       ...(record.source.kind === "selection"
         ? { selectionSource: record.source.surface }
+        : {}),
+      ...(record.source.kind === "archive-entry"
+        ? {
+            archiveEntryProvenance: {
+              archiveAttachmentId: record.source.archiveAttachmentId,
+              archiveContentId: record.source.archiveContentId,
+              archiveContentHash: record.source.archiveContentHash,
+              archiveFormat: record.source.archiveFormat,
+              archiveDisplayName: record.source.archiveDisplayName,
+              entryIndex: record.source.entryIndex,
+              entryPath: record.source.path,
+            },
+          }
         : {}),
       ...(record.documentRepresentation
         ? { documentRepresentation: record.documentRepresentation }
@@ -125,6 +147,7 @@ export function isAttachmentMessagePart(
     ATTACHMENT_CONTENT_KINDS.has(data.contentKind) &&
     (data.documentRepresentation == null || data.contentKind === "document") &&
     validDocumentRepresentation(data.documentRepresentation) &&
+    validArchiveEntryProvenance(data.archiveEntryProvenance) &&
     (data.archiveRepresentation == null || data.contentKind === "archive") &&
     validArchiveRepresentation(data.archiveRepresentation)
   );
@@ -206,7 +229,7 @@ export async function materializeAttachmentMessages(
       if (!contentRef) {
         parts.push({
           type: "text",
-          text: `${reference.contentKind === "archive" ? "ZIP" : "PDF"} ${JSON.stringify(reference.displayName)} has no inspectable representation.`,
+          text: `${reference.contentKind === "archive" ? "Archive" : "PDF"} ${JSON.stringify(reference.displayName)} has no inspectable representation.`,
         });
         continue;
       }
@@ -446,7 +469,7 @@ function validArchiveRepresentation(value: unknown): boolean {
   const candidate = value as Partial<ArchiveRepresentation>;
   const manifest = candidate.manifestContentRef;
   return (
-    candidate.format === "zip" &&
+    (candidate.format === "zip" || candidate.format === "7z") &&
     Number.isInteger(candidate.entryCount) &&
     (candidate.entryCount ?? -1) >= 0 &&
     (candidate.entryCount ?? 0) <= 2_048 &&
@@ -470,6 +493,27 @@ function validArchiveRepresentation(value: unknown): boolean {
     Number.isInteger(manifest?.byteSize) &&
     (manifest?.byteSize ?? 0) > 0 &&
     (manifest?.byteSize ?? 0) <= 768 * 1024
+  );
+}
+
+function validArchiveEntryProvenance(value: unknown): boolean {
+  if (value == null) return true;
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<
+    NonNullable<AttachmentMessageReference["archiveEntryProvenance"]>
+  >;
+  return (
+    typeof candidate.archiveAttachmentId === "string" &&
+    candidate.archiveAttachmentId.length > 0 &&
+    /^[a-f0-9]{64}$/.test(candidate.archiveContentId ?? "") &&
+    candidate.archiveContentHash === candidate.archiveContentId &&
+    (candidate.archiveFormat === "zip" || candidate.archiveFormat === "7z") &&
+    typeof candidate.archiveDisplayName === "string" &&
+    candidate.archiveDisplayName.length > 0 &&
+    Number.isInteger(candidate.entryIndex) &&
+    (candidate.entryIndex ?? -1) >= 0 &&
+    typeof candidate.entryPath === "string" &&
+    candidate.entryPath.length > 0
   );
 }
 

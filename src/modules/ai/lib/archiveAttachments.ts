@@ -125,17 +125,21 @@ export async function materializeArchiveEntry(
     archive.contentKind !== "archive" ||
     archive.processingState !== "ready" ||
     !archive.contentRef ||
+    !representation ||
     !entry ||
     !entry.selectable ||
     entry.entryType !== "file"
   ) {
     throw new Error("Archive entry is not safe to materialize.");
   }
+  const archiveFormat = representation.format;
   const readable = checkReadable(entry.path);
   if (!readable.ok) throw new Error(readable.reason);
   const archiveBytes = await deps.loadContent(archive.contentRef.id);
   if (archiveBytes.byteLength !== archive.contentRef.byteSize) {
-    throw new Error("Stored archive size changed before entry materialization.");
+    throw new Error(
+      "Stored archive size changed before entry materialization.",
+    );
   }
   const entryBytes = await deps.readEntry(archiveBytes, entry.index);
   const security = {
@@ -147,6 +151,9 @@ export async function materializeArchiveEntry(
     source: {
       kind: "archive-entry",
       archiveAttachmentId: archive.id,
+      archiveContentId: archive.contentRef.id,
+      archiveContentHash: archive.contentRef.contentHash,
+      archiveFormat,
       archiveDisplayName: archive.displayName,
       entryIndex: entry.index,
       path: entry.path,

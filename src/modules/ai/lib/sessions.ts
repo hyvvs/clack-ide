@@ -118,19 +118,23 @@ export function migrateSessionProfiles(
     };
     const hasCurrentProfile =
       raw.profileVersion === SESSION_PROFILE_SCHEMA_VERSION && !!raw.profile;
-    const profile = hasCurrentProfile && raw.profile
-      ? normalizeConversationProfile(raw.profile)
-      : createConversationProfile({
-          agentId: defaults.agentId,
-          modelId: defaults.modelId,
-          workspaceRoot: null,
-        });
+    const profile =
+      hasCurrentProfile && raw.profile
+        ? normalizeConversationProfile(raw.profile)
+        : createConversationProfile({
+            agentId: defaults.agentId,
+            modelId: defaults.modelId,
+            workspaceRoot: null,
+          });
     const next = {
       ...session,
       profileVersion: SESSION_PROFILE_SCHEMA_VERSION,
       profile,
     };
-    if (!hasCurrentProfile || JSON.stringify(next) !== JSON.stringify(session)) {
+    if (
+      !hasCurrentProfile ||
+      JSON.stringify(next) !== JSON.stringify(session)
+    ) {
       changed = true;
     }
     return next;
@@ -270,6 +274,12 @@ export async function reconcilePersistedAttachmentContent(
   for (const [key, value] of entries) {
     if (!key.startsWith("messages:")) continue;
     for (const id of collectAttachmentContentIds(value)) retained.add(id);
+  }
+  const { collectPeerTaskContentIds, loadPeerTasks } = await import(
+    "./peerTasks"
+  );
+  for (const id of collectPeerTaskContentIds(await loadPeerTasks())) {
+    retained.add(id);
   }
   return reconcileAttachmentContent([...retained]);
 }

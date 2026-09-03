@@ -5,6 +5,18 @@ vi.mock("../store/chatRuntime", () => ({
   sendMessageToSession: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("./attachmentStore", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./attachmentStore")>();
+  return {
+    ...original,
+    storeAttachmentContent: vi.fn(async (bytes: Uint8Array) => ({
+      id: "b".repeat(64),
+      contentHash: "b".repeat(64),
+      byteSize: bytes.byteLength,
+    })),
+  };
+});
+
 vi.mock("./peerTasks", async (importOriginal) => {
   const original = await importOriginal<typeof import("./peerTasks")>();
   return {
@@ -34,6 +46,7 @@ vi.mock("./todos", async (importOriginal) => {
 import {
   applyPeerTaskChangeSet,
   cancelPeerTask,
+  dispatchPeerTask,
   requestPeerTask,
 } from "./peerTaskCoordinator";
 import {
@@ -48,6 +61,7 @@ import { sendMessageToSession } from "../store/chatRuntime";
 import { usePeerTaskStore } from "../store/peerTaskStore";
 import { native } from "./native";
 import { clearWorkspaceWriteLeasesForTests } from "./workspaceWriteLease";
+import type { AttachmentMessageReference } from "./attachmentMessages";
 
 const SOURCE = "chat-source";
 const TARGET = "chat-target";
@@ -67,7 +81,10 @@ beforeEach(() => {
   usePeerTaskStore.setState({ hydrated: true, tasks: [] });
   useChatStore.setState({
     activeSessionId: SOURCE,
-    sessions: [session(SOURCE, "agent-a", "model-a"), session(TARGET, "agent-b", "model-b")],
+    sessions: [
+      session(SOURCE, "agent-a", "model-a"),
+      session(TARGET, "agent-b", "model-b"),
+    ],
   });
 });
 
@@ -86,7 +103,7 @@ describe("peer task coordination", () => {
       targetSessionId: TARGET,
       kind: "review",
       prompt: "Review the parser changes.",
-      artifactRefs: [{ kind: "file", path: "src/parser.ts" }],
+      attachmentReferences: [attachmentReference("src/parser.ts")],
     });
 
     expect(result.ok).toBe(true);
@@ -141,19 +158,118 @@ describe("peer task coordination", () => {
       targetSessionId: TARGET,
       kind: "delegate",
       prompt: "Inspect the explicit file only.",
-      artifactRefs: [{ kind: "file", path: "src/explicit.ts" }],
+      attachmentReferences: [attachmentReference("src/explicit.ts")],
     });
 
     expect(result.ok).toBe(true);
     expect(JSON.stringify(usePeerTaskStore.getState().tasks)).not.toContain(
       "UNRELATED SECRET TRANSCRIPT",
     );
-    expect(JSON.stringify(vi.mocked(sendMessageToSession).mock.calls)).toContain(
-      "src/explicit.ts",
-    );
-    expect(JSON.stringify(vi.mocked(sendMessageToSession).mock.calls)).not.toContain(
-      "UNRELATED SECRET TRANSCRIPT",
-    );
+    expect(
+      JSON.stringify(vi.mocked(sendMessageToSession).mock.calls),
+    ).toContain("src/explicit.ts");
+    expect(
+      JSON.stringify(vi.mocked(sendMessageToSession).mock.calls),
+    ).not.toContain("UNRELATED SECRET TRANSCRIPT");
+  });
+
+  it("delivers the original immutable reference after a queued source changes", async () => {
+    useChatStore.setState((state) => ({
+      sessions: state.sessions.map((item) =>
+        item.id === TARGET
+          ? { ...item, run: { state: "running", startedAt: 10 } }
+          : item,
+      ),
+    }));
+    const reference = attachmentReference("src/queued.ts");
+    const result = await requestPeerTask({
+      sourceSessionId: SOURCE,
+      targetSessionId: TARGET,
+      kind: "review",
+      prompt: "Review the queued snapshot.",
+      attachmentReferences: [reference],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    reference.contentId = "c".repeat(64);
+    reference.contentHash = reference.contentId;
+    useChatStore.setState((state) => ({
+      sessions: state.sessions.map((item) =>
+        item.id === TARGET ? { ...item, run: undefined } : item,
+      ),
+    }));
+
+    await dispatchPeerTask(result.task.id);
+
+    const sent = JSON.stringify(vi.mocked(sendMessageToSession).mock.calls);
+    expect(sent).toContain("a".repeat(64));
+    expect(sent).not.toContain("c".repeat(64));
+  });
+
+  it.each([
+    [
+      "Stored attachment content is unavailable",
+      "peer_artifact_content_missing",
+    ],
+    [
+      "Stored attachment content failed integrity validation",
+      "peer_artifact_integrity_failed",
+    ],
+    [
+      "The selected model does not support image input",
+      "peer_artifact_capability_blocked",
+    ],
+  ])("fails artifact delivery closed for %s", async (message, code) => {
+    vi.mocked(sendMessageToSession).mockRejectedValueOnce(new Error(message));
+    const result = await requestPeerTask({
+      sourceSessionId: SOURCE,
+      targetSessionId: TARGET,
+      kind: "review",
+      prompt: `Failure case ${code}`,
+      attachmentReferences: [attachmentReference("src/failure.ts")],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.task).toMatchObject({
+      status: "failed",
+      error: { code },
+    });
+  });
+
+  it("uses artifact hashes when detecting repeated peer work", async () => {
+    useChatStore.setState((state) => ({
+      sessions: state.sessions.map((item) =>
+        item.id === TARGET
+          ? { ...item, run: { state: "running", startedAt: 10 } }
+          : item,
+      ),
+    }));
+    const first = await requestPeerTask({
+      sourceSessionId: SOURCE,
+      targetSessionId: TARGET,
+      kind: "review",
+      prompt: "Compare this exact input.",
+      attachmentReferences: [attachmentReference("one.ts", "a")],
+    });
+    const different = await requestPeerTask({
+      sourceSessionId: SOURCE,
+      targetSessionId: TARGET,
+      kind: "review",
+      prompt: "Compare this exact input.",
+      attachmentReferences: [attachmentReference("two.ts", "c")],
+    });
+    const repeated = await requestPeerTask({
+      sourceSessionId: SOURCE,
+      targetSessionId: TARGET,
+      kind: "review",
+      prompt: "Compare this exact input.",
+      attachmentReferences: [attachmentReference("one.ts", "a")],
+    });
+
+    expect(first.ok).toBe(true);
+    expect(different.ok).toBe(true);
+    expect(repeated).toMatchObject({ ok: false, code: "peer_task_repeated" });
   });
 
   it("rejects cross-workspace requests and repeated collaboration loops", async () => {
@@ -178,10 +294,16 @@ describe("peer task coordination", () => {
       kind: "review",
       prompt: "Review once.",
     });
-    expect(mismatch).toMatchObject({ ok: false, code: "peer_workspace_mismatch" });
+    expect(mismatch).toMatchObject({
+      ok: false,
+      code: "peer_workspace_mismatch",
+    });
 
     useChatStore.setState({
-      sessions: [session(SOURCE, "agent-a", "model-a"), session(TARGET, "agent-b", "model-b")],
+      sessions: [
+        session(SOURCE, "agent-a", "model-a"),
+        session(TARGET, "agent-b", "model-b"),
+      ],
     });
     useChatStore.setState((state) => ({
       sessions: state.sessions.map((item) =>
@@ -206,7 +328,11 @@ describe("peer task coordination", () => {
   });
 
   it("enforces hop limits and cancels only a task-owned run", async () => {
-    const root = task({ id: "root", rootTaskId: "root", hopCount: PEER_TASK_MAX_HOPS });
+    const root = task({
+      id: "root",
+      rootTaskId: "root",
+      hopCount: PEER_TASK_MAX_HOPS,
+    });
     usePeerTaskStore.setState({ tasks: [root] });
     useChatStore.setState((state) => ({
       sessions: state.sessions.map((item) =>
@@ -228,7 +354,11 @@ describe("peer task coordination", () => {
 
     const stop = vi.fn().mockResolvedValue(undefined);
     chats.set(TARGET, { stop, messages: [] } as unknown as Chat<UIMessage>);
-    const running = task({ id: "running", status: "running", targetSessionId: TARGET });
+    const running = task({
+      id: "running",
+      status: "running",
+      targetSessionId: TARGET,
+    });
     usePeerTaskStore.setState({ tasks: [running] });
     useChatStore.setState((state) => ({
       sessions: state.sessions.map((item) =>
@@ -306,6 +436,14 @@ describe("peer task coordination", () => {
         changedPaths: ["src/a.ts"],
         baseSha: "0123456789abcdef0123456789abcdef01234567",
       },
+      result: {
+        artifacts: [
+          expect.objectContaining({
+            displayName: "Peer changes.patch",
+            originType: "diff",
+          }),
+        ],
+      },
     });
     expect(sendMessageToSession).toHaveBeenCalledWith(
       TARGET,
@@ -324,9 +462,9 @@ describe("peer task coordination", () => {
       "0123456789abcdef0123456789abcdef01234567",
       "diff --git a/src/a.ts b/src/a.ts\n",
     );
-    expect(
-      usePeerTaskStore.getState().tasks[0].changeSet?.appliedAt,
-    ).toEqual(expect.any(Number));
+    expect(usePeerTaskStore.getState().tasks[0].changeSet?.appliedAt).toEqual(
+      expect.any(Number),
+    );
   });
 
   it("keeps a conflicting patch unapplied with a visible error", async () => {
@@ -356,10 +494,10 @@ describe("peer task coordination", () => {
 
 describe("peer task persistence recovery", () => {
   it("marks an in-flight task failed instead of replaying billed work", () => {
-    const recovered = recoverInterruptedPeerTasks([
-      task({ status: "running" }),
-      task({ id: "queued", status: "queued" }),
-    ], 99);
+    const recovered = recoverInterruptedPeerTasks(
+      [task({ status: "running" }), task({ id: "queued", status: "queued" })],
+      99,
+    );
     expect(recovered[0]).toMatchObject({
       status: "failed",
       endedAt: 99,
@@ -409,5 +547,21 @@ function task(overrides: Partial<PeerTask> = {}): PeerTask {
     createdAt: 1,
     updatedAt: 1,
     ...overrides,
+  };
+}
+
+function attachmentReference(
+  displayName: string,
+  hashLetter = "a",
+): AttachmentMessageReference {
+  const hash = hashLetter.repeat(64);
+  return {
+    attachmentId: `attachment-${displayName}`,
+    contentId: hash,
+    contentHash: hash,
+    displayName,
+    mediaType: "text/typescript",
+    byteSize: 10,
+    contentKind: "text",
   };
 }

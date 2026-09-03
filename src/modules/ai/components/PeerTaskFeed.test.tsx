@@ -1,6 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
-import { PEER_TASK_SCHEMA_VERSION, type PeerTask } from "../lib/peerTasks";
+import {
+  PEER_TASK_SCHEMA_VERSION,
+  type PeerTask,
+  type PeerTaskArtifact,
+} from "../lib/peerTasks";
 import { useChatStore } from "../store/chatStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
 import { buildPeerTaskLineage, PeerTaskCard } from "./PeerTaskFeed";
@@ -49,6 +53,26 @@ describe("PeerTaskFeed", () => {
     expect(html).not.toContain("Looks safe");
   });
 
+  it("labels sent files and delegated context for each side", () => {
+    useChatStore.setState({
+      sessions: [session("source", "Planning"), session("target", "Reviewer")],
+      activeSessionId: "source",
+    });
+    const value = task();
+
+    const sourceHtml = renderToStaticMarkup(
+      <PeerTaskCard task={value} viewingSessionId="source" />,
+    );
+    const targetHtml = renderToStaticMarkup(
+      <PeerTaskCard task={value} viewingSessionId="target" />,
+    );
+
+    expect(sourceHtml).toContain("Files sent");
+    expect(sourceHtml).toContain("src/parser.ts");
+    expect(targetHtml).toContain("Delegated by agent-source");
+    expect(targetHtml).toContain("Context");
+  });
+
   it("exposes an isolated change set for review without auto-applying it", () => {
     const isolated = task({
       executionMode: "isolated-worktree",
@@ -81,10 +105,9 @@ describe("PeerTaskFeed", () => {
     });
     usePeerTaskStore.setState({ tasks: [child, root], hydrated: true });
 
-    expect(buildPeerTaskLineage(child, [child, root]).map((item) => item.id)).toEqual([
-      "peer-1",
-      "peer-2",
-    ]);
+    expect(
+      buildPeerTaskLineage(child, [child, root]).map((item) => item.id),
+    ).toEqual(["peer-1", "peer-2"]);
 
     const html = renderToStaticMarkup(
       <PeerTaskCard
@@ -102,10 +125,9 @@ describe("PeerTaskFeed", () => {
     const first = task({ id: "peer-1", parentTaskId: "peer-2" });
     const second = task({ id: "peer-2", parentTaskId: "peer-1" });
 
-    expect(buildPeerTaskLineage(first, [first, second]).map((item) => item.id)).toEqual([
-      "peer-2",
-      "peer-1",
-    ]);
+    expect(
+      buildPeerTaskLineage(first, [first, second]).map((item) => item.id),
+    ).toEqual(["peer-2", "peer-1"]);
   });
 });
 
@@ -129,7 +151,7 @@ function task(overrides: Partial<PeerTask> = {}): PeerTask {
     kind: "review",
     executionMode: "read-only",
     prompt: "Review the parser",
-    artifactRefs: [{ kind: "file", path: "src/parser.ts" }],
+    artifactRefs: [artifact()],
     parentTaskId: null,
     rootTaskId: "peer-1",
     hopCount: 0,
@@ -142,7 +164,31 @@ function task(overrides: Partial<PeerTask> = {}): PeerTask {
       targetAgentId: "agent-reviewer",
       targetModelId: "model-reviewer",
       completedAt: 2,
+      artifacts: [],
     },
     ...overrides,
+  };
+}
+
+function artifact(): PeerTaskArtifact {
+  const hash = "a".repeat(64);
+  return {
+    id: "artifact-1",
+    attachmentId: "attachment-1",
+    contentRef: { id: hash, contentHash: hash, byteSize: 10 },
+    displayName: "src/parser.ts",
+    mediaType: "text/typescript",
+    contentKind: "text",
+    byteSize: 10,
+    sourceSessionId: "source",
+    sourceTaskId: null,
+    sourceAgentId: "agent-source",
+    sourceModelId: "model-source",
+    workspaceId: "local:c:/workspace",
+    workspaceRoot: "C:/workspace",
+    createdAt: 1,
+    originType: "workspace-file",
+    accessPolicy: "model-input",
+    sourcePath: "src/parser.ts",
   };
 }

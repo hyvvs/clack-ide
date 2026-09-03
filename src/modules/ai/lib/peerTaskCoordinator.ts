@@ -1,8 +1,7 @@
 import type { UIMessage } from "@ai-sdk/react";
-import {
-  workspaceEnvironmentFromId,
-  type SessionMeta,
-} from "./sessions";
+import type { AttachmentRecord } from "./attachments";
+import type { AttachmentMessageReference } from "./attachmentMessages";
+import { workspaceEnvironmentFromId, type SessionMeta } from "./sessions";
 import { workspacePathsEqual } from "@/modules/workspace";
 import { normalizeAiError } from "./errors";
 import {
@@ -14,9 +13,17 @@ import {
   peerTaskFingerprint,
   type PeerArtifactRef,
   type PeerTask,
+  type PeerTaskArtifact,
   type PeerTaskExecutionMode,
   type PeerTaskKind,
 } from "./peerTasks";
+import {
+  PeerArtifactPackageError,
+  packagePeerTaskArtifacts,
+  packageReturnedPeerTaskArtifacts,
+  peerTaskArtifactToMessagePart,
+  retainPeerTaskArtifactContent,
+} from "./peerTaskArtifacts";
 import { native } from "./native";
 import {
   acquireWorkspaceWriteLease,
@@ -32,6 +39,8 @@ export type PeerTaskRequest = {
   kind: PeerTaskKind;
   prompt: string;
   artifactRefs?: PeerArtifactRef[];
+  attachmentRecords?: AttachmentRecord[];
+  attachmentReferences?: AttachmentMessageReference[];
   executionMode?: PeerTaskExecutionMode;
   awaitCompletion?: boolean;
 };
@@ -46,6 +55,46 @@ export async function requestPeerTask(
   const validation = validateRequest(request);
   if (!validation.ok) return validation;
   const { source, target, parent, rootTaskId, hopCount } = validation;
+  let artifacts: PeerTaskArtifact[];
+  try {
+    artifacts = await packagePeerTaskArtifacts(
+      {
+        pathRefs: request.artifactRefs,
+        attachmentRecords: request.attachmentRecords,
+        attachmentReferences: request.attachmentReferences,
+      },
+      {
+        sourceSessionId: source.id,
+        sourceTaskId: parent?.id ?? null,
+        sourceAgentId: source.run?.agentId ?? source.profile?.agentId ?? "",
+        sourceModelId: source.run?.modelId ?? source.profile?.modelId ?? "",
+        workspaceId: source.profile?.workspaceId ?? "",
+        workspaceRoot: source.profile?.workspaceRoot ?? "",
+      },
+    );
+  } catch (error) {
+    if (error instanceof PeerArtifactPackageError) {
+      return { ok: false, code: error.code, message: error.message };
+    }
+    return {
+      ok: false,
+      code: "peer_artifact_packaging_failed",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const fingerprint = peerTaskFingerprint({
+    ...request,
+    prompt: request.prompt.trim(),
+    artifactRefs: artifacts,
+  });
+  if (hasRepeatedTask(fingerprint, rootTaskId)) {
+    return {
+      ok: false,
+      code: "peer_task_repeated",
+      message:
+        "An equivalent peer request already exists in this collaboration chain.",
+    };
+  }
   const now = Date.now();
   const id = newPeerTaskId();
   const task: PeerTask = {
@@ -59,14 +108,15 @@ export async function requestPeerTask(
     targetModelId: target.profile?.modelId ?? "",
     workspaceId: source.profile?.workspaceId ?? "",
     workspaceRoot: source.profile?.workspaceRoot ?? "",
-    workspaceEnvironment:
-      workspaceEnvironmentFromId(source.profile?.workspaceId) ?? {
-        kind: "local",
-      },
+    workspaceEnvironment: workspaceEnvironmentFromId(
+      source.profile?.workspaceId,
+    ) ?? {
+      kind: "local",
+    },
     kind: request.kind,
     executionMode: request.executionMode ?? "read-only",
     prompt: request.prompt.trim(),
-    artifactRefs: normalizeArtifactRefs(request.artifactRefs),
+    artifactRefs: artifacts,
     parentTaskId: parent?.id ?? null,
     rootTaskId: rootTaskId ?? id,
     hopCount,
@@ -74,6 +124,7 @@ export async function requestPeerTask(
     createdAt: now,
     updatedAt: now,
   };
+  retainPeerTaskArtifactContent(artifacts);
   usePeerTaskStore.getState().add(task);
   useChatStore.getState().recordPeerTaskStart(source.id);
 
@@ -120,7 +171,8 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
   ) {
     peerStore.fail(taskId, {
       code: "peer_workspace_mismatch",
-      message: "The target conversation is no longer bound to the same workspace.",
+      message:
+        "The target conversation is no longer bound to the same workspace.",
     });
     return;
   }
@@ -129,9 +181,7 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
   let worktreeCreated = false;
   let captureStarted = false;
   try {
-    let checkout:
-      | { checkoutId: string; checkoutRoot: string }
-      | undefined;
+    let checkout: { checkoutId: string; checkoutRoot: string } | undefined;
     if (claimed.executionMode === "isolated-worktree") {
       if (!claimed.workspaceId.startsWith("local:")) {
         throw new Error(
@@ -161,10 +211,7 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
       if (!setupLease.ok) throw new Error(setupLease.message);
       const worktree = await (async () => {
         try {
-          return await native.gitAgentWorktreeCreate(
-            repo.repoRoot,
-            claimed.id,
-          );
+          return await native.gitAgentWorktreeCreate(repo.repoRoot, claimed.id);
         } finally {
           releaseWorkspaceWriteLeasesForSession(setupLeaseId);
         }
@@ -180,7 +227,10 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
       claimed.targetSessionId,
       {
         role: "user",
-        parts: [{ type: "text", text: peerTaskPrompt(claimed) }],
+        parts: [
+          { type: "text", text: peerTaskPrompt(claimed) },
+          ...claimed.artifactRefs.map(peerTaskArtifactToMessagePart),
+        ],
       },
       {
         peerTaskId: claimed.id,
@@ -195,11 +245,13 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
     const summary = latestVisibleAssistantText(
       getChat(claimed.targetSessionId)?.messages ?? [],
     );
+    let returnedArtifacts: PeerTaskArtifact[] = [];
     if (claimed.executionMode === "isolated-worktree") {
       const worktree = usePeerTaskStore
         .getState()
         .tasks.find((item) => item.id === claimed.id)?.worktree;
-      if (!worktree) throw new Error("The isolated worktree metadata is missing.");
+      if (!worktree)
+        throw new Error("The isolated worktree metadata is missing.");
       captureStarted = true;
       const changeSet = await native.gitAgentWorktreeCapture(
         claimed.workspaceRoot,
@@ -212,15 +264,41 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
         patch: changeSet.patch,
         changedPaths: changeSet.changedPaths,
       });
+      if (changeSet.patch.length > 0) {
+        returnedArtifacts = await packageReturnedPeerTaskArtifacts(
+          [
+            {
+              displayName: "Peer changes.patch",
+              mediaType: "text/x-diff",
+              contentKind: "text",
+              bytes: new TextEncoder().encode(changeSet.patch),
+              originType: "diff",
+              worktreeProvenance: {
+                taskId: claimed.id,
+                baseSha: worktree.baseSha,
+                changedPaths: changeSet.changedPaths,
+              },
+            },
+          ],
+          {
+            sourceSessionId: claimed.targetSessionId,
+            sourceTaskId: claimed.id,
+            sourceAgentId: currentTarget?.run?.agentId ?? claimed.targetAgentId,
+            sourceModelId: currentTarget?.run?.modelId ?? claimed.targetModelId,
+            workspaceId: claimed.workspaceId,
+            workspaceRoot: claimed.workspaceRoot,
+          },
+        );
+        retainPeerTaskArtifactContent(returnedArtifacts);
+      }
     }
     usePeerTaskStore.getState().complete(claimed.id, {
       summary: summary || "The peer run completed without a text response.",
       targetSessionId: claimed.targetSessionId,
-      targetAgentId:
-        currentTarget?.run?.agentId ?? claimed.targetAgentId,
-      targetModelId:
-        currentTarget?.run?.modelId ?? claimed.targetModelId,
+      targetAgentId: currentTarget?.run?.agentId ?? claimed.targetAgentId,
+      targetModelId: currentTarget?.run?.modelId ?? claimed.targetModelId,
       completedAt: Date.now(),
+      artifacts: returnedArtifacts,
     });
   } catch (error) {
     if (worktreeCreated && !captureStarted) {
@@ -233,7 +311,7 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
     }
     const normalized = normalizeAiError(error, { disposition: "terminal" });
     usePeerTaskStore.getState().fail(claimed.id, {
-      code: "peer_run_failed",
+      code: peerArtifactFailureCode(error),
       message: normalized.message,
     });
   }
@@ -286,7 +364,10 @@ export async function applyPeerTaskChangeSet(
     .getState()
     .tasks.find((item) => item.id === taskId);
   if (!task?.changeSet || task.changeSet.appliedAt) {
-    return { ok: false, message: "No unapplied agent change set is available." };
+    return {
+      ok: false,
+      message: "No unapplied agent change set is available.",
+    };
   }
   const applyLeaseId = `patch-apply:${task.id}`;
   const lease = await acquireWorkspaceWriteLease({
@@ -324,15 +405,27 @@ function validateRequest(request: PeerTaskRequest):
   | { ok: false; code: string; message: string } {
   const prompt = request.prompt.trim();
   if (!prompt) {
-    return { ok: false, code: "peer_prompt_empty", message: "Peer task prompt cannot be empty." };
+    return {
+      ok: false,
+      code: "peer_prompt_empty",
+      message: "Peer task prompt cannot be empty.",
+    };
   }
   if (request.sourceSessionId === request.targetSessionId) {
-    return { ok: false, code: "peer_target_same", message: "Choose a different conversation for peer work." };
+    return {
+      ok: false,
+      code: "peer_target_same",
+      message: "Choose a different conversation for peer work.",
+    };
   }
   const source = sessionById(request.sourceSessionId);
   const target = sessionById(request.targetSessionId);
   if (!source || !target) {
-    return { ok: false, code: "peer_session_missing", message: "The source or target conversation no longer exists." };
+    return {
+      ok: false,
+      code: "peer_session_missing",
+      message: "The source or target conversation no longer exists.",
+    };
   }
   const sourceProfile = source.profile;
   const targetProfile = target.profile;
@@ -341,7 +434,11 @@ function validateRequest(request: PeerTaskRequest):
     !sourceProfile.workspaceRoot ||
     sourceProfile.workspaceId !== targetProfile?.workspaceId
   ) {
-    return { ok: false, code: "peer_workspace_mismatch", message: "Peer conversations must be bound to the same workspace." };
+    return {
+      ok: false,
+      code: "peer_workspace_mismatch",
+      message: "Peer conversations must be bound to the same workspace.",
+    };
   }
   if (
     !sourceProfile.agentId ||
@@ -349,7 +446,11 @@ function validateRequest(request: PeerTaskRequest):
     !targetProfile?.agentId ||
     !targetProfile.modelId
   ) {
-    return { ok: false, code: "peer_identity_missing", message: "Both conversations need a valid agent and model." };
+    return {
+      ok: false,
+      code: "peer_identity_missing",
+      message: "Both conversations need a valid agent and model.",
+    };
   }
   if (
     request.executionMode === "isolated-worktree" &&
@@ -380,48 +481,30 @@ function validateRequest(request: PeerTaskRequest):
   const rootTaskId = parent?.rootTaskId ?? parent?.id ?? null;
   const hopCount = parent ? parent.hopCount + 1 : 0;
   if (hopCount > PEER_TASK_MAX_HOPS) {
-    return { ok: false, code: "peer_hop_limit", message: `Peer delegation is limited to ${PEER_TASK_MAX_HOPS} hops.` };
+    return {
+      ok: false,
+      code: "peer_hop_limit",
+      message: `Peer delegation is limited to ${PEER_TASK_MAX_HOPS} hops.`,
+    };
   }
   const rootCount = rootTaskId
     ? tasks.filter((task) => task.rootTaskId === rootTaskId).length
     : 0;
   if (rootCount >= PEER_TASK_MAX_PER_ROOT) {
-    return { ok: false, code: "peer_task_limit", message: `This collaboration chain reached its ${PEER_TASK_MAX_PER_ROOT}-task limit.` };
-  }
-  const fingerprint = peerTaskFingerprint({ ...request, prompt });
-  const repeated = tasks.some(
-    (task) =>
-      (rootTaskId
-        ? task.rootTaskId === rootTaskId
-        : task.parentTaskId === null &&
-          (task.status === "queued" || task.status === "running")) &&
-      task.status !== "cancelled" &&
-      peerTaskFingerprint(task) === fingerprint,
-  );
-  if (repeated) {
-    return { ok: false, code: "peer_task_repeated", message: "An equivalent peer request already exists in this collaboration chain." };
+    return {
+      ok: false,
+      code: "peer_task_limit",
+      message: `This collaboration chain reached its ${PEER_TASK_MAX_PER_ROOT}-task limit.`,
+    };
   }
   return { ok: true, source, target, parent, rootTaskId, hopCount };
 }
 
 function sessionById(id: string) {
-  return useChatStore.getState().sessions.find((session) => session.id === id) ?? null;
-}
-
-function normalizeArtifactRefs(
-  refs: readonly PeerArtifactRef[] | undefined,
-): PeerArtifactRef[] {
-  const seen = new Set<string>();
-  const result: PeerArtifactRef[] = [];
-  for (const ref of refs ?? []) {
-    const path = ref.path.trim();
-    const key = `${ref.kind}:${path}`;
-    if (!path || seen.has(key)) continue;
-    seen.add(key);
-    result.push({ kind: ref.kind, path });
-    if (result.length >= 20) break;
-  }
-  return result;
+  return (
+    useChatStore.getState().sessions.find((session) => session.id === id) ??
+    null
+  );
 }
 
 function peerTaskPrompt(task: PeerTask): string {
@@ -429,7 +512,13 @@ function peerTaskPrompt(task: PeerTask): string {
     kind: task.kind,
     executionMode: task.executionMode,
     prompt: task.prompt,
-    artifactRefs: task.artifactRefs,
+    artifacts: task.artifactRefs.map((artifact) => ({
+      id: artifact.id,
+      name: artifact.displayName,
+      mediaType: artifact.mediaType,
+      contentHash: artifact.contentRef.contentHash,
+      origin: artifact.originType,
+    })),
     source: {
       sessionId: task.sourceSessionId,
       agentId: task.sourceAgentId,
@@ -438,12 +527,46 @@ function peerTaskPrompt(task: PeerTask): string {
   })}\n\nComplete this bounded peer task in the current workspace. Return a concise, evidence-based result for the requesting conversation. Do not delegate again unless it is necessary and within the collaboration limits.\n</peer-task>`;
 }
 
+function hasRepeatedTask(
+  fingerprint: string,
+  rootTaskId: string | null,
+): boolean {
+  return usePeerTaskStore
+    .getState()
+    .tasks.some(
+      (task) =>
+        (rootTaskId
+          ? task.rootTaskId === rootTaskId
+          : task.parentTaskId === null &&
+            (task.status === "queued" || task.status === "running")) &&
+        task.status !== "cancelled" &&
+        peerTaskFingerprint(task) === fingerprint,
+    );
+}
+
+function peerArtifactFailureCode(error: unknown): string {
+  if (error instanceof PeerArtifactPackageError) return error.code;
+  const message = error instanceof Error ? error.message : String(error);
+  if (/unavailable|not found|cannot find/i.test(message)) {
+    return "peer_artifact_content_missing";
+  }
+  if (/integrity|size changed|hash/i.test(message)) {
+    return "peer_artifact_integrity_failed";
+  }
+  if (/capabilit|vision|image input/i.test(message)) {
+    return "peer_artifact_capability_blocked";
+  }
+  return "peer_run_failed";
+}
+
 function latestVisibleAssistantText(messages: readonly UIMessage[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role !== "assistant") continue;
     const text = message.parts
-      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .filter(
+        (part): part is { type: "text"; text: string } => part.type === "text",
+      )
       .map((part) => part.text)
       .join("\n")
       .trim();

@@ -43,7 +43,9 @@ ${targets.length > 0 ? targets.join("\n") : "- No eligible peer conversations ar
           .string()
           .min(1)
           .max(12_000)
-          .describe("Self-contained bounded task. Do not include secrets or hidden reasoning."),
+          .describe(
+            "Self-contained bounded task. Do not include secrets or hidden reasoning.",
+          ),
         artifactRefs: z
           .array(
             z.object({
@@ -51,9 +53,11 @@ ${targets.length > 0 ? targets.join("\n") : "- No eligible peer conversations ar
               path: z.string().min(1),
             }),
           )
-          .max(20)
+          .max(8)
           .optional()
-          .describe("Optional workspace file or diff paths; contents are not copied."),
+          .describe(
+            "Optional workspace file or diff paths. Clack snapshots their exact contents when the task is created.",
+          ),
       }),
       execute: async ({
         targetSessionId,
@@ -64,7 +68,10 @@ ${targets.length > 0 ? targets.join("\n") : "- No eligible peer conversations ar
       }) => {
         const currentSessionId = ctx.getSessionId();
         if (!currentSessionId) {
-          return { error: "No source conversation is active.", code: "peer_source_missing" };
+          return {
+            error: "No source conversation is active.",
+            code: "peer_source_missing",
+          };
         }
         const result = await requestPeerTask({
           sourceSessionId: currentSessionId,

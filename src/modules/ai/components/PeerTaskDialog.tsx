@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -9,13 +10,12 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { collectPeerTaskAttachmentReferences } from "../lib/peerTaskArtifacts";
 import { requestPeerTask } from "../lib/peerTaskCoordinator";
-import type {
-  PeerTaskExecutionMode,
-  PeerTaskKind,
-} from "../lib/peerTasks";
+import type { PeerTaskExecutionMode, PeerTaskKind } from "../lib/peerTasks";
 import type { SessionMeta } from "../lib/sessions";
+import { getChat } from "../store/chatStore";
 
 const KINDS: Array<{ id: PeerTaskKind; label: string }> = [
   { id: "question", label: "Ask" },
@@ -62,6 +62,18 @@ export function PeerTaskDialog({
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [selectedContentIds, setSelectedContentIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const availableAttachments = useMemo(
+    () =>
+      open
+        ? collectPeerTaskAttachmentReferences(
+            getChat(sourceSessionId)?.messages ?? [],
+          )
+        : [],
+    [open, sourceSessionId],
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -69,6 +81,7 @@ export function PeerTaskDialog({
     setError(null);
     setKind("question");
     setExecutionMode("read-only");
+    setSelectedContentIds(new Set());
   }, [open]);
 
   const submit = async () => {
@@ -81,6 +94,9 @@ export function PeerTaskDialog({
       kind,
       executionMode,
       prompt,
+      attachmentReferences: availableAttachments.filter((attachment) =>
+        selectedContentIds.has(attachment.contentId),
+      ),
       awaitCompletion: false,
     });
     setSubmitting(false);
@@ -138,6 +154,38 @@ export function PeerTaskDialog({
               }
             }}
           />
+          {availableAttachments.length > 0 ? (
+            <div className="space-y-1.5">
+              <div className="text-[10px] font-medium uppercase text-muted-foreground">
+                Files from this chat
+              </div>
+              <div className="max-h-28 space-y-1 overflow-auto rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] p-1.5">
+                {availableAttachments.map((attachment) => (
+                  <label
+                    key={attachment.contentId}
+                    htmlFor={`peer-artifact-${attachment.contentId}`}
+                    className="flex cursor-pointer items-center gap-2 rounded-[var(--clack-radius-button)] px-1.5 py-1 text-[10.5px] hover:bg-[var(--clack-surface-hover)]"
+                  >
+                    <Checkbox
+                      id={`peer-artifact-${attachment.contentId}`}
+                      checked={selectedContentIds.has(attachment.contentId)}
+                      onCheckedChange={(checked) => {
+                        setSelectedContentIds((current) => {
+                          const next = new Set(current);
+                          if (checked) next.add(attachment.contentId);
+                          else next.delete(attachment.contentId);
+                          return next;
+                        });
+                      }}
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      {attachment.displayName}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div className="space-y-1.5">
             <div className="text-[10px] font-medium uppercase text-muted-foreground">
               Workspace access
@@ -153,7 +201,11 @@ export function PeerTaskDialog({
                     type="button"
                     disabled={unavailable}
                     onClick={() => setExecutionMode(mode.id)}
-                    title={unavailable ? "Isolated worktrees are unavailable for WSL workspaces." : mode.description}
+                    title={
+                      unavailable
+                        ? "Isolated worktrees are unavailable for WSL workspaces."
+                        : mode.description
+                    }
                     className={cn(
                       "h-7 rounded-[var(--clack-radius-button)] px-1 text-[10px] transition-colors disabled:opacity-40",
                       executionMode === mode.id
@@ -167,10 +219,15 @@ export function PeerTaskDialog({
               })}
             </div>
             <p className="text-[10px] text-muted-foreground">
-              {EXECUTION_MODES.find((mode) => mode.id === executionMode)?.description}
+              {
+                EXECUTION_MODES.find((mode) => mode.id === executionMode)
+                  ?.description
+              }
             </p>
           </div>
-          {error ? <p className="text-[11px] text-destructive">{error}</p> : null}
+          {error ? (
+            <p className="text-[11px] text-destructive">{error}</p>
+          ) : null}
           <div className="text-[10px] text-muted-foreground">
             {target?.run?.state === "running"
               ? "This chat is busy, so the task will queue."
@@ -185,7 +242,11 @@ export function PeerTaskDialog({
             onClick={() => void submit()}
             disabled={!target || !prompt.trim() || submitting}
           >
-            {submitting ? "Starting..." : target?.run?.state === "running" ? "Queue task" : "Start task"}
+            {submitting
+              ? "Starting..."
+              : target?.run?.state === "running"
+                ? "Queue task"
+                : "Start task"}
           </Button>
         </DialogFooter>
       </DialogContent>

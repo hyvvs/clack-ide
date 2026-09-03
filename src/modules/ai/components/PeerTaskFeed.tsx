@@ -138,22 +138,53 @@ export function PeerTaskCard({
         <p className="whitespace-pre-wrap text-[var(--clack-text-1)]">
           {task.prompt}
         </p>
+        {!viewingSource ? (
+          <div className="text-[10px] text-[var(--clack-text-3)]">
+            Delegated by {source?.title ?? task.sourceAgentId}
+          </div>
+        ) : null}
         {task.artifactRefs.length > 0 ? (
-          <div className="flex flex-wrap gap-1">
-            {task.artifactRefs.map((ref) => (
-              <span
-                key={`${ref.kind}:${ref.path}`}
-                className="max-w-full truncate rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--clack-text-3)]"
-                title={ref.path}
-              >
-                {ref.kind}: {ref.path}
-              </span>
-            ))}
+          <div className="space-y-1">
+            <div className="text-[10px] font-medium text-[var(--clack-text-2)]">
+              {viewingSource ? "Files sent" : "Context"}
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {task.artifactRefs.map((artifact) => (
+                <span
+                  key={artifact.id}
+                  className="max-w-full truncate rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] px-1.5 py-0.5 text-[10px] text-[var(--clack-text-3)]"
+                  title={artifactProvenanceTitle(artifact)}
+                >
+                  {artifact.displayName}
+                  {artifact.archiveProvenance
+                    ? ` from ${artifact.archiveProvenance.archiveDisplayName}`
+                    : ""}
+                </span>
+              ))}
+            </div>
           </div>
         ) : null}
         {task.result ? (
           <div className="max-h-40 overflow-auto border-t border-[color:var(--clack-border-subtle)] pt-2 whitespace-pre-wrap text-[var(--clack-text-2)]">
             {task.result.summary}
+            {task.result.artifacts.length > 0 ? (
+              <div className="mt-2 space-y-1">
+                <div className="text-[10px] font-medium text-[var(--clack-text-2)]">
+                  Returned files
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {task.result.artifacts.map((artifact) => (
+                    <span
+                      key={artifact.id}
+                      className="max-w-full truncate rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] px-1.5 py-0.5 text-[10px] text-[var(--clack-text-3)]"
+                      title={artifactProvenanceTitle(artifact)}
+                    >
+                      {artifact.displayName}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : task.error ? (
           <p className="border-t border-[color:var(--clack-border-subtle)] pt-2 text-destructive">
@@ -286,6 +317,19 @@ export function PeerTaskCard({
       </div>
     </section>
   );
+}
+
+function artifactProvenanceTitle(
+  artifact: PeerTask["artifactRefs"][number],
+): string {
+  if (artifact.archiveProvenance) {
+    return `${artifact.archiveProvenance.entryPath} from ${artifact.archiveProvenance.archiveDisplayName}`;
+  }
+  if (artifact.pdfProvenance) {
+    const pages = artifact.pdfProvenance.pageNumbers.join(", ");
+    return `PDF pages ${pages || "none"}${artifact.pdfProvenance.truncated ? " (truncated)" : ""}`;
+  }
+  return artifact.sourcePath ?? artifact.displayName;
 }
 
 export function buildPeerTaskLineage(

@@ -101,7 +101,7 @@ export function attachmentCapabilityStatus(
     attachment.archiveRepresentation?.manifestContentRef
   ) {
     return readyStatus(
-      "ZIP manifest and selected normalized entries are ready for the selected model.",
+      "Archive manifest and selected normalized entries are ready for the selected model.",
     );
   }
   return readyStatus(

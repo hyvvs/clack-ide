@@ -887,7 +887,14 @@ export const useChatStore = create<StoreState>((set, get) => ({
     if (get().sessionsHydrated) return;
     const loaded = await loadAll();
     try {
-      await reconcileAttachmentContent(loaded.attachmentContentIds);
+      const { collectPeerTaskContentIds, loadPeerTasks } = await import(
+        "../lib/peerTasks"
+      );
+      const peerContentIds = collectPeerTaskContentIds(await loadPeerTasks());
+      await reconcileAttachmentContent([
+        ...loaded.attachmentContentIds,
+        ...peerContentIds,
+      ]);
     } catch (error) {
       console.warn("[clack] Could not reconcile attachment content:", error);
     }
