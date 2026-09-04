@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import {
+  collectPeerTaskContentIds,
   compactPeerTasks,
   loadPeerTasks,
   savePeerTasks,
@@ -14,13 +15,22 @@ import {
 } from "../lib/peerTaskCancellation";
 import {
   reconcilePeerTaskDependencies,
-  recoverPeerTaskLedger,
 } from "../lib/peerTaskDependencies";
+import { reconcilePersistedAttachmentContent } from "../lib/sessions";
+import type { SessionMeta } from "../lib/sessions";
+import { native } from "../lib/native";
+import { recoverPeerTasks } from "../lib/restartRecovery";
 
 type PeerTaskStore = {
   hydrated: boolean;
+  recoveryReady: boolean;
+  recoveryError: string | null;
   tasks: PeerTask[];
-  hydrate: () => Promise<void>;
+  hydrate: (context: {
+    sessions: readonly SessionMeta[];
+    isAgentConfigured: (agentId: string) => boolean;
+    isModelConfigured: (modelId: string) => boolean;
+  }) => Promise<void>;
   add: (task: PeerTask) => void;
   claim: (id: string) => PeerTask | null;
   setWorktree: (
@@ -52,12 +62,88 @@ function reconciled(tasks: PeerTask[]): PeerTask[] {
 
 export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
   hydrated: false,
+  recoveryReady: false,
+  recoveryError: null,
   tasks: [],
-  hydrate: async () => {
-    const loaded = await loadPeerTasks();
-    const recovered = bounded(recoverPeerTaskLedger(loaded));
-    set({ tasks: recovered, hydrated: true });
-    persist(recovered);
+  hydrate: async (context) => {
+    if (get().hydrated) return;
+    let recoveredWithoutStorage: PeerTask[] | null = null;
+    try {
+      const loaded = await loadPeerTasks();
+      const now = Date.now();
+      const baseContext = {
+        sessions: context.sessions,
+        contentIssues: [],
+        worktrees: [],
+        isAgentConfigured: context.isAgentConfigured,
+        isModelConfigured: context.isModelConfigured,
+        now,
+      } as const;
+      recoveredWithoutStorage = bounded(recoverPeerTasks(loaded, baseContext));
+      const content = await reconcilePersistedAttachmentContent(
+        collectPeerTaskContentIds(recoveredWithoutStorage),
+      );
+      const worktrees = await Promise.all(
+        recoveredWithoutStorage.flatMap((task) => {
+          if (!task.worktree) return [];
+          return [
+            native
+              .gitAgentWorktreeInspect(
+                task.id,
+                task.worktree.checkoutRoot,
+                task.worktree.baseSha,
+              )
+              .then((inspection) => ({ taskId: task.id, ...inspection }))
+              .catch(() => ({
+                taskId: task.id,
+                state: "invalid" as const,
+                message: "Clack could not validate the preserved worktree.",
+              })),
+          ];
+        }),
+      );
+      const cleanup = await native
+        .gitAgentWorktreeCleanup(
+          recoveredWithoutStorage.map((task) => task.id),
+        )
+        .catch((error) => {
+          console.warn(
+            "[clack] Could not reconcile orphaned agent worktrees:",
+            error,
+          );
+          return null;
+        });
+      if (cleanup && cleanup.preservedCount > 0) {
+        console.warn(
+          `[clack] Preserved ${cleanup.preservedCount} orphaned agent worktree(s) because they may contain recoverable changes.`,
+        );
+      }
+      const recovered = bounded(
+        recoverPeerTasks(recoveredWithoutStorage, {
+          ...baseContext,
+          contentIssues: content.issues,
+          worktrees,
+        }),
+      );
+      await savePeerTasks(recovered);
+      set({
+        tasks: recovered,
+        hydrated: true,
+        recoveryReady: true,
+        recoveryError: null,
+      });
+    } catch {
+      if (recoveredWithoutStorage) {
+        await savePeerTasks(recoveredWithoutStorage).catch(() => undefined);
+      }
+      set({
+        tasks: recoveredWithoutStorage ?? [],
+        hydrated: true,
+        recoveryReady: false,
+        recoveryError:
+          "Queued agent work is paused because Clack could not validate saved recovery state.",
+      });
+    }
   },
   add: (task) => {
     const tasks = reconciled([task, ...get().tasks]);

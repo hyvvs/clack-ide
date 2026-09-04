@@ -111,7 +111,11 @@ export function delegationStatusLabel(task: PeerTask): string {
   if (task.status === "waiting") return "Waiting";
   if (task.status === "queued") return "Queued";
   if (task.status === "running") return "Working";
-  if (task.status === "failed") return "Failed";
+  if (task.status === "failed") {
+    return task.error?.code === "peer_task_interrupted"
+      ? "Interrupted"
+      : "Failed";
+  }
   if (task.status === "cancelled") {
     const descendants = task.cancellation?.cancelledDescendantCount ?? 0;
     return descendants > 0
@@ -135,7 +139,11 @@ export function delegationCardTitle(
   if (task.status === "waiting") return `${targetAgentName} is waiting`;
   if (task.status === "queued") return `${targetAgentName} is queued`;
   if (task.status === "running") return `${targetAgentName} is working`;
-  if (task.status === "failed") return `${targetAgentName} failed`;
+  if (task.status === "failed") {
+    return task.error?.code === "peer_task_interrupted"
+      ? `${targetAgentName} was interrupted`
+      : `${targetAgentName} failed`;
+  }
   if (task.status === "cancelled") return "Delegated task cancelled";
   if (task.status === "blocked") return `${targetAgentName} is blocked`;
   if (task.changeSet?.patch && !task.changeSet.appliedAt) {

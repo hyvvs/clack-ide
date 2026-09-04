@@ -53,6 +53,7 @@ export function PeerTaskFeed({
   onOpenSession?: (sessionId: string) => void;
 }) {
   const allTasks = usePeerTaskStore((state) => state.tasks);
+  const recoveryError = usePeerTaskStore((state) => state.recoveryError);
   const tasks = useMemo(
     () =>
       allTasks.filter(
@@ -65,6 +66,11 @@ export function PeerTaskFeed({
   if (tasks.length === 0) return null;
   return (
     <section className="flex flex-col gap-2" aria-label="Inter-agent tasks">
+      {recoveryError ? (
+        <div className="clack-ai-block px-2.5 py-2 text-[10.5px] text-[var(--clack-warning)]">
+          {recoveryError}
+        </div>
+      ) : null}
       {tasks.map((task) => (
         <PeerTaskCard
           key={task.id}
@@ -152,6 +158,11 @@ export function PeerTaskCard({
   const peerAgentName = viewingSource ? targetAgentName : sourceAgentName;
   const active = isPeerTaskActive(task);
   const statusLabel = delegationStatusLabel(task);
+  const unavailableReturnedArtifactIds = new Set(
+    task.recovery?.contentIssues
+      ?.filter((issue) => issue.role === "returned")
+      .map((issue) => issue.artifactId) ?? [],
+  );
   const defaultTitle = delegationCardTitle(
     task,
     viewingSource,
@@ -348,6 +359,9 @@ export function PeerTaskCard({
                       title={artifactProvenanceTitle(artifact)}
                     >
                       {artifact.displayName}
+                      {unavailableReturnedArtifactIds.has(artifact.id)
+                        ? " · Unavailable"
+                        : ""}
                     </span>
                   ))}
                 </div>
@@ -441,7 +455,7 @@ export function PeerTaskCard({
             ) : null}
           </div>
         ) : null}
-        {task.worktree && !active ? (
+        {task.worktree && !active && !task.recovery?.worktree ? (
           <div className="space-y-1 border-t border-[color:var(--clack-border-subtle)] pt-2">
             <p className="text-[10px] text-[var(--clack-text-2)]">
               Preserved worktree
@@ -465,6 +479,21 @@ export function PeerTaskCard({
             >
               {discardingWorktree ? "Discarding..." : "Discard worktree"}
             </button>
+          </div>
+        ) : null}
+        {task.worktree && !active && task.recovery?.worktree ? (
+          <div className="space-y-1 border-t border-[color:var(--clack-border-subtle)] pt-2">
+            <p className="text-[10px] text-[var(--clack-warning)]">
+              Preserved worktree unavailable
+            </p>
+            <p className="text-[10px] text-[var(--clack-text-3)]">
+              {task.recovery.worktree.message}
+            </p>
+            {task.changeSet?.patch ? (
+              <p className="text-[10px] text-[var(--clack-text-3)]">
+                The captured patch remains available for review.
+              </p>
+            ) : null}
           </div>
         ) : null}
         {descendantAggregate.entries.length > 0 ? (

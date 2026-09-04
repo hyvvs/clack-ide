@@ -7,7 +7,10 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { formatBytes } from "@/modules/ai/lib/attachments";
 import type { AttachmentMessagePart } from "@/modules/ai/lib/attachmentMessages";
-import { loadAttachmentContent } from "@/modules/ai/lib/attachmentStore";
+import {
+  inspectAttachmentContent,
+  loadAttachmentContent,
+} from "@/modules/ai/lib/attachmentStore";
 
 export function AttachmentMessageCard({
   part,
@@ -42,17 +45,23 @@ export function AttachmentMessageCard({
   }, [image, nearViewport]);
 
   useEffect(() => {
-    if (!image || !nearViewport) return;
+    if (image && !nearViewport) return;
     let cancelled = false;
     let objectUrl: string | null = null;
     setFailed(false);
-    void loadAttachmentContent(data.contentId)
-      .then((bytes) => {
-        if (bytes.byteLength !== data.byteSize) {
+    const validation = image
+      ? loadAttachmentContent(data.contentId)
+      : inspectAttachmentContent(data.contentId);
+    void validation
+      .then((content) => {
+        const byteSize =
+          content instanceof Uint8Array ? content.byteLength : content.byteSize;
+        if (byteSize !== data.byteSize) {
           throw new Error("Stored attachment size changed.");
         }
+        if (!(content instanceof Uint8Array)) return;
         const nextUrl = URL.createObjectURL(
-          new Blob([Uint8Array.from(bytes).buffer], { type: data.mediaType }),
+          new Blob([Uint8Array.from(content).buffer], { type: data.mediaType }),
         );
         if (cancelled) {
           URL.revokeObjectURL(nextUrl);
@@ -106,7 +115,7 @@ export function AttachmentMessageCard({
         </span>
         <span className="truncate text-[10px] text-[var(--clack-text-3)]">
           {failed
-            ? "Content unavailable"
+            ? "Attachment unavailable"
             : attachmentKindLabel(data.contentKind)}
           {data.documentRepresentation
             ? ` | ${data.documentRepresentation.pageCount} page${data.documentRepresentation.pageCount === 1 ? "" : "s"}`

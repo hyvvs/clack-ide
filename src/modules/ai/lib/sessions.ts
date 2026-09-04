@@ -10,7 +10,10 @@ import {
   collectAttachmentContentIds,
   migrateLegacyDataUrlAttachments,
 } from "@/modules/ai/lib/attachmentMessages";
-import { reconcileAttachmentContent } from "@/modules/ai/lib/attachmentStore";
+import {
+  reconcileAttachmentContent,
+  type AttachmentReconcileResult,
+} from "@/modules/ai/lib/attachmentStore";
 
 export const SESSION_PROFILE_SCHEMA_VERSION = 1;
 
@@ -267,19 +270,23 @@ export async function deleteSessionData(id: string): Promise<void> {
 }
 
 export async function reconcilePersistedAttachmentContent(
-  additionalRetainIds: readonly string[] = [],
-): Promise<number> {
+  additionalRetainIds?: readonly string[],
+): Promise<AttachmentReconcileResult> {
   const entries = await store.entries();
-  const retained = new Set(additionalRetainIds);
+  const retained = new Set<string>();
   for (const [key, value] of entries) {
     if (!key.startsWith("messages:")) continue;
     for (const id of collectAttachmentContentIds(value)) retained.add(id);
   }
-  const { collectPeerTaskContentIds, loadPeerTasks } = await import(
-    "./peerTasks"
-  );
-  for (const id of collectPeerTaskContentIds(await loadPeerTasks())) {
-    retained.add(id);
+  if (additionalRetainIds) {
+    for (const id of additionalRetainIds) retained.add(id);
+  } else {
+    const { collectPeerTaskContentIds, loadPeerTasks } = await import(
+      "./peerTasks"
+    );
+    for (const id of collectPeerTaskContentIds(await loadPeerTasks())) {
+      retained.add(id);
+    }
   }
   return reconcileAttachmentContent([...retained]);
 }

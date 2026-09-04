@@ -12,7 +12,7 @@ import {
 } from "./attachmentMessages";
 import { workspaceEnvironmentFromId } from "./sessions";
 
-export const PEER_TASK_SCHEMA_VERSION = 4;
+export const PEER_TASK_SCHEMA_VERSION = 5;
 export const PEER_TASK_MAX_HOPS = 3;
 export const PEER_TASK_MAX_PER_ROOT = 8;
 export const PEER_TASK_MAX_ACTIVE = 32;
@@ -137,6 +137,34 @@ export type PeerTaskError = {
   message: string;
 };
 
+export type PeerTaskRecoveryContentIssue = {
+  artifactId: string;
+  contentId: string;
+  role: "input" | "returned";
+  representation:
+    | "content"
+    | "pdf-text"
+    | "archive-manifest"
+    | "archive-source";
+  code:
+    | "attachment_content_missing"
+    | "attachment_content_integrity_failed"
+    | "attachment_content_invalid";
+  message: string;
+};
+
+export type PeerTaskRecovery = {
+  interruption?: {
+    cause: "app-restart";
+    detectedAt: number;
+  };
+  contentIssues?: PeerTaskRecoveryContentIssue[];
+  worktree?: {
+    state: "missing" | "invalid";
+    message: string;
+  };
+};
+
 export type PeerTask = {
   schemaVersion: typeof PEER_TASK_SCHEMA_VERSION;
   id: string;
@@ -169,6 +197,7 @@ export type PeerTask = {
   endedAt?: number;
   result?: PeerTaskResult;
   error?: PeerTaskError;
+  recovery?: PeerTaskRecovery;
   worktree?: { checkoutRoot: string; baseSha: string };
   changeSet?: PeerTaskChangeSet;
 };
@@ -202,7 +231,9 @@ export function compactPeerTasks(tasks: readonly PeerTask[]): PeerTask[] {
         (task) =>
           task.status === "waiting" ||
           task.status === "queued" ||
-          task.status === "running",
+          task.status === "running" ||
+          Boolean(task.worktree) ||
+          Boolean(task.changeSet?.patch && !task.changeSet.appliedAt),
       )
       .map((task) => task.rootTaskId),
   );
@@ -235,8 +266,15 @@ export function recoverInterruptedPeerTasks(
           error: {
             code: "peer_task_interrupted",
             message: task.worktree
-              ? `Clack closed before the peer task completed. Isolated changes remain in the preserved worktree at ${task.worktree.checkoutRoot}.`
-              : "Clack closed before the peer task completed.",
+              ? `Interrupted when Clack closed. Changes remain in the preserved worktree at ${task.worktree.checkoutRoot}.`
+              : "Interrupted when Clack closed.",
+          },
+          recovery: {
+            ...task.recovery,
+            interruption: {
+              cause: "app-restart",
+              detectedAt: now,
+            },
           },
         }
       : task,
@@ -285,6 +323,7 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
     (task.schemaVersion !== 1 &&
       task.schemaVersion !== 2 &&
       task.schemaVersion !== 3 &&
+      task.schemaVersion !== 4 &&
       task.schemaVersion !== PEER_TASK_SCHEMA_VERSION) ||
     !nonEmpty(task.id) ||
     !nonEmpty(task.sourceSessionId) ||
@@ -315,25 +354,70 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
       : "read-only",
     dependsOn: normalizeDependencyIds(task.dependsOn),
     cancellation: normalizeCancellation(task.cancellation),
+    recovery: normalizeRecovery(task.recovery),
   };
+}
+
+export type PeerTaskContentReference = {
+  taskId: string;
+  artifactId: string;
+  contentId: string;
+  role: "input" | "returned";
+  representation: PeerTaskRecoveryContentIssue["representation"];
+};
+
+export function collectPeerTaskContentReferences(
+  tasks: readonly PeerTask[],
+): PeerTaskContentReference[] {
+  const references = new Map<string, PeerTaskContentReference>();
+  const addArtifact = (
+    task: PeerTask,
+    artifact: PeerTaskArtifact,
+    role: PeerTaskContentReference["role"],
+  ) => {
+    const add = (
+      contentId: string | undefined,
+      representation: PeerTaskContentReference["representation"],
+    ) => {
+      if (!contentId) return;
+      const key = `${task.id}:${artifact.id}:${role}:${representation}:${contentId}`;
+      references.set(key, {
+        taskId: task.id,
+        artifactId: artifact.id,
+        contentId,
+        role,
+        representation,
+      });
+    };
+    add(artifact.contentRef.id, "content");
+    add(artifact.documentRepresentation?.textContentRef?.id, "pdf-text");
+    add(
+      artifact.archiveRepresentation?.manifestContentRef.id,
+      "archive-manifest",
+    );
+    add(artifact.archiveProvenance?.archiveContentId, "archive-source");
+    add(artifact.pdfProvenance?.originalContentId, "content");
+    add(artifact.pdfProvenance?.extractedTextRef?.id, "pdf-text");
+  };
+  for (const task of tasks) {
+    for (const artifact of task.artifactRefs) {
+      addArtifact(task, artifact, "input");
+    }
+    for (const artifact of task.result?.artifacts ?? []) {
+      addArtifact(task, artifact, "returned");
+    }
+  }
+  return [...references.values()];
 }
 
 export function collectPeerTaskContentIds(
   tasks: readonly PeerTask[],
 ): string[] {
-  const ids = new Set<string>();
-  for (const task of tasks) {
-    for (const artifact of [
-      ...task.artifactRefs,
-      ...(task.result?.artifacts ?? []),
-    ]) {
-      ids.add(artifact.contentRef.id);
-      const extracted = artifact.documentRepresentation?.textContentRef;
-      if (extracted) ids.add(extracted.id);
-      const manifest = artifact.archiveRepresentation?.manifestContentRef;
-      if (manifest) ids.add(manifest.id);
-    }
-  }
+  const ids = new Set(
+    collectPeerTaskContentReferences(tasks).map(
+      (reference) => reference.contentId,
+    ),
+  );
   return [...ids];
 }
 
@@ -374,7 +458,71 @@ function migrateVersionOneTask(task: StoredPeerTask): PeerTask {
       : "read-only",
     dependsOn: [],
     cancellation: undefined,
+    recovery: undefined,
   };
+}
+
+function normalizeRecovery(value: unknown): PeerTaskRecovery | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Partial<PeerTaskRecovery>;
+  const interruption =
+    raw.interruption?.cause === "app-restart" &&
+    typeof raw.interruption.detectedAt === "number"
+      ? raw.interruption
+      : undefined;
+  const contentIssues = Array.isArray(raw.contentIssues)
+    ? raw.contentIssues.flatMap((value) => {
+        if (!value || typeof value !== "object") return [];
+        const issue = value as Partial<PeerTaskRecoveryContentIssue>;
+        if (
+          !nonEmpty(issue.artifactId) ||
+          !/^[a-f0-9]{64}$/.test(issue.contentId ?? "") ||
+          (issue.role !== "input" && issue.role !== "returned") ||
+          !isRecoveryRepresentation(issue.representation) ||
+          !isRecoveryIssueCode(issue.code) ||
+          !nonEmpty(issue.message)
+        ) {
+          return [];
+        }
+        return [issue as PeerTaskRecoveryContentIssue];
+      })
+    : undefined;
+  const worktree =
+    (raw.worktree?.state === "missing" ||
+      raw.worktree?.state === "invalid") &&
+    nonEmpty(raw.worktree.message)
+      ? {
+          state: raw.worktree.state,
+          message: raw.worktree.message,
+        }
+      : undefined;
+  if (!interruption && !contentIssues?.length && !worktree) return undefined;
+  return {
+    ...(interruption ? { interruption } : {}),
+    ...(contentIssues?.length ? { contentIssues } : {}),
+    ...(worktree ? { worktree } : {}),
+  };
+}
+
+function isRecoveryRepresentation(
+  value: unknown,
+): value is PeerTaskRecoveryContentIssue["representation"] {
+  return (
+    value === "content" ||
+    value === "pdf-text" ||
+    value === "archive-manifest" ||
+    value === "archive-source"
+  );
+}
+
+function isRecoveryIssueCode(
+  value: unknown,
+): value is PeerTaskRecoveryContentIssue["code"] {
+  return (
+    value === "attachment_content_missing" ||
+    value === "attachment_content_integrity_failed" ||
+    value === "attachment_content_invalid"
+  );
 }
 
 function normalizeArtifacts(value: unknown): PeerTaskArtifact[] {

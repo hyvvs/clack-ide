@@ -111,6 +111,16 @@ export type AgentWorktreePatch = {
   changedPaths: string[];
 };
 
+export type AgentWorktreeInspection = {
+  state: "available" | "missing" | "invalid";
+  message?: string;
+};
+
+export type AgentWorktreeCleanup = {
+  removedCount: number;
+  preservedCount: number;
+};
+
 export type GitLogEntry = {
   sha: string;
   shortSha: string;
@@ -419,6 +429,22 @@ export const native = {
       repoRoot,
       taskId,
       baseSha,
+      workspace: LOCAL_WORKSPACE,
+    }),
+  gitAgentWorktreeInspect: (
+    taskId: string,
+    checkoutRoot: string,
+    baseSha: string,
+  ) =>
+    invoke<AgentWorktreeInspection>("git_agent_worktree_inspect", {
+      taskId,
+      checkoutRoot,
+      baseSha,
+      workspace: LOCAL_WORKSPACE,
+    }),
+  gitAgentWorktreeCleanup: (retainedTaskIds: string[]) =>
+    invoke<AgentWorktreeCleanup>("git_agent_worktree_cleanup", {
+      retainedTaskIds,
       workspace: LOCAL_WORKSPACE,
     }),
   gitAgentWorktreeRemove: (repoRoot: string, taskId: string) =>

@@ -3,9 +3,9 @@ use tauri::{AppHandle, Manager};
 use crate::modules::git::agent_worktree;
 use crate::modules::git::operations;
 use crate::modules::git::types::{
-    AgentWorktreeInfo, AgentWorktreePatch, DiscardEntry, GitCommitFileChange, GitCommitResult,
-    GitDiffContentResult, GitDiffResult, GitLogEntry, GitPanelSnapshot, GitPushResult, GitRepoInfo,
-    GitStatusSnapshot,
+    AgentWorktreeCleanup, AgentWorktreeInfo, AgentWorktreeInspection, AgentWorktreePatch,
+    DiscardEntry, GitCommitFileChange, GitCommitResult, GitDiffContentResult, GitDiffResult,
+    GitLogEntry, GitPanelSnapshot, GitPushResult, GitRepoInfo, GitStatusSnapshot,
 };
 use crate::modules::workspace::{WorkspaceEnv, WorkspaceRegistry};
 
@@ -335,6 +335,38 @@ pub async fn git_agent_worktree_remove(
     let cache_root = app.path().app_cache_dir().map_err(|e| e.to_string())?;
     blocking(app, move |registry| {
         agent_worktree::remove(registry, &repo_root, &task_id, &cache_root, &workspace)
+            .map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_agent_worktree_inspect(
+    task_id: String,
+    checkout_root: String,
+    base_sha: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<AgentWorktreeInspection, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let cache_root = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    blocking(app, move |_registry| {
+        agent_worktree::inspect(&task_id, &checkout_root, &base_sha, &cache_root, &workspace)
+            .map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_agent_worktree_cleanup(
+    retained_task_ids: Vec<String>,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<AgentWorktreeCleanup, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let cache_root = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    blocking(app, move |_registry| {
+        agent_worktree::cleanup_orphans(&retained_task_ids, &cache_root, &workspace)
             .map_err(Into::into)
     })
     .await

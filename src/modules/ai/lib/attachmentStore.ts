@@ -8,6 +8,32 @@ export type AttachmentContentRef = {
   byteSize: number;
 };
 
+export type AttachmentContentIssueCode =
+  | "attachment_content_missing"
+  | "attachment_content_integrity_failed"
+  | "attachment_content_invalid";
+
+export type AttachmentContentIssue = {
+  id: string;
+  code: AttachmentContentIssueCode;
+  message: string;
+};
+
+export type AttachmentReconcileResult = {
+  removedCount: number;
+  issues: AttachmentContentIssue[];
+};
+
+export class AttachmentContentError extends Error {
+  constructor(
+    readonly code: AttachmentContentIssueCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AttachmentContentError";
+  }
+}
+
 export async function storeAttachmentContent(
   bytes: Uint8Array,
 ): Promise<AttachmentContentRef> {
@@ -27,22 +53,57 @@ export async function storeAttachmentContent(
 
 export async function loadAttachmentContent(id: string): Promise<Uint8Array> {
   if (!/^[a-f0-9]{64}$/.test(id)) {
-    throw new Error("Attachment content ID is invalid.");
+    throw new AttachmentContentError(
+      "attachment_content_invalid",
+      "Attachment content ID is invalid.",
+    );
   }
-  const response = await invoke<ArrayBuffer>("attachment_store_get", { id });
-  return new Uint8Array(response);
+  try {
+    const response = await invoke<ArrayBuffer>("attachment_store_get", { id });
+    return new Uint8Array(response);
+  } catch (error) {
+    throw attachmentContentError(error);
+  }
+}
+
+export async function inspectAttachmentContent(
+  id: string,
+): Promise<AttachmentContentRef> {
+  if (!/^[a-f0-9]{64}$/.test(id)) {
+    throw new AttachmentContentError(
+      "attachment_content_invalid",
+      "Attachment content ID is invalid.",
+    );
+  }
+  try {
+    return await invoke<AttachmentContentRef>("attachment_store_inspect", {
+      id,
+    });
+  } catch (error) {
+    throw attachmentContentError(error);
+  }
 }
 
 export async function reconcileAttachmentContent(
   retainIds: readonly string[],
-): Promise<number> {
+): Promise<AttachmentReconcileResult> {
   const retained = new Set(retainIds);
   for (const id of contentLeases.keys()) retained.add(id);
-  const result = await invoke<{ removedCount: number }>(
+  return invoke<AttachmentReconcileResult>(
     "attachment_store_reconcile",
     { retainIds: [...retained] },
   );
-  return result.removedCount;
+}
+
+function attachmentContentError(error: unknown): AttachmentContentError {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  const code: AttachmentContentIssueCode = lower.includes("integrity validation")
+    ? "attachment_content_integrity_failed"
+    : lower.includes("unavailable") || lower.includes("not found")
+      ? "attachment_content_missing"
+      : "attachment_content_invalid";
+  return new AttachmentContentError(code, message);
 }
 
 export function retainAttachmentContent(id: string): void {

@@ -65,6 +65,16 @@ export type PeerTaskRequestResult =
 export async function requestPeerTask(
   request: PeerTaskRequest,
 ): Promise<PeerTaskRequestResult> {
+  const peerStore = usePeerTaskStore.getState();
+  if (!peerStore.recoveryReady) {
+    return {
+      ok: false,
+      code: "peer_recovery_pending",
+      message:
+        peerStore.recoveryError ??
+        "Agent task recovery is still validating saved work.",
+    };
+  }
   const id = newPeerTaskId();
   const validation = validateRequest(request, id);
   if (!validation.ok) return validation;
@@ -169,6 +179,9 @@ export async function requestPeerTask(
 
 export async function dispatchPeerTask(taskId: string): Promise<void> {
   const peerStore = usePeerTaskStore.getState();
+  if (!peerStore.recoveryReady || !useChatStore.getState().sessionsHydrated) {
+    return;
+  }
   const task = peerStore.tasks.find((item) => item.id === taskId);
   if (task?.status !== "queued") return;
   const chatStore = useChatStore.getState();

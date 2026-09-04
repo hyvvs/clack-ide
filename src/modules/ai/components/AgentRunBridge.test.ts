@@ -1,5 +1,9 @@
+import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { agentRunBridgeSessionIds } from "./AgentRunBridge";
+import {
+  agentRunBridgeSessionIds,
+  pendingApprovalsForRun,
+} from "./AgentRunBridge";
 
 describe("agentRunBridgeSessionIds", () => {
   it("keeps the foreground session and every background run bridged", () => {
@@ -23,5 +27,29 @@ describe("agentRunBridgeSessionIds", () => {
         "foreground",
       ),
     ).toEqual(["foreground"]);
+  });
+
+  it("does not revive a persisted approval after its run was interrupted", () => {
+    const messages = [
+      {
+        id: "assistant",
+        role: "assistant" as const,
+        parts: [
+          {
+            type: "tool-write_file",
+            state: "approval-requested",
+            approval: { id: "approval-1" },
+            input: { path: "README.md" },
+          },
+        ],
+      },
+    ] as unknown as UIMessage[];
+
+    expect(pendingApprovalsForRun(messages, "chat", "interrupted")).toEqual(
+      [],
+    );
+    expect(pendingApprovalsForRun(messages, "chat", "running")).toHaveLength(
+      1,
+    );
   });
 });

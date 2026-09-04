@@ -12,6 +12,7 @@ import { useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
 import { resolveRestoredModel } from "../lib/providerRestore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
+import { hasKeyForModel } from "../store/chatStore";
 
 /**
  * Startup wiring for the AI subsystem: loads provider keys (and keeps them in
@@ -144,12 +145,20 @@ export function useAiBootstrap(): {
     void (async () => {
       await useAgentsStore.getState().hydrate();
       await hydrateSessions();
+      await usePeerTaskStore.getState().hydrate({
+        sessions: useChatStore.getState().sessions,
+        isAgentConfigured: (agentId) =>
+          useAgentsStore
+            .getState()
+            .all()
+            .some((agent) => agent.id === agentId),
+        isModelConfigured: hasKeyForModel,
+      });
     })();
   }, [hydrateSessions, keysLoaded, prefsHydrated]);
 
   useEffect(() => {
     void useSnippetsStore.getState().hydrate();
-    void usePeerTaskStore.getState().hydrate();
   }, []);
 
   return { hasComposer, keysLoaded };

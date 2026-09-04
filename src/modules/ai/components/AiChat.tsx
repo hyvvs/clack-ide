@@ -304,6 +304,7 @@ export function AiChatView({
             sessionId={sessionId}
             message={m}
             onApproval={onApproval}
+            approvalActive={run?.state === "running"}
             streaming={m.id === streamingMessageId}
           />
         ))}
@@ -467,11 +468,13 @@ export const RenderedMessage = memo(function RenderedMessage({
   sessionId,
   message,
   onApproval,
+  approvalActive = true,
   streaming,
 }: {
   sessionId: string;
   message: UIMessage;
   onApproval: (id: string, approved: boolean) => void;
+  approvalActive?: boolean;
   streaming: boolean;
 }) {
   // Index of the trailing text part. Only that one is live mid-stream.
@@ -559,6 +562,7 @@ export const RenderedMessage = memo(function RenderedMessage({
                   sessionId={sessionId}
                   part={g.part}
                   onApproval={onApproval}
+                  approvalActive={approvalActive}
                   streaming={streaming && g.idx === lastTextIdx}
                 />
               </PartAppear>
@@ -759,11 +763,13 @@ const RenderedPart = memo(function RenderedPart({
   sessionId,
   part,
   onApproval,
+  approvalActive,
   streaming,
 }: {
   sessionId: string;
   part: AnyPart;
   onApproval: (id: string, approved: boolean) => void;
+  approvalActive: boolean;
   streaming: boolean;
 }) {
   if (part.type === "text") {
@@ -794,6 +800,7 @@ const RenderedPart = memo(function RenderedPart({
         sessionId={sessionId}
         part={part as unknown as AnyToolPart}
         onApproval={onApproval}
+        approvalActive={approvalActive}
       />
     );
   }
@@ -805,10 +812,12 @@ const RenderedTool = memo(function RenderedTool({
   sessionId,
   part,
   onApproval,
+  approvalActive,
 }: {
   sessionId: string;
   part: AnyToolPart;
   onApproval: (id: string, approved: boolean) => void;
+  approvalActive: boolean;
 }) {
   const toolName =
     part.type === "dynamic-tool"
@@ -818,6 +827,16 @@ const RenderedTool = memo(function RenderedTool({
   const visualState = errorText ? "output-error" : part.state;
 
   if (part.state === "approval-requested") {
+    if (!approvalActive) {
+      return (
+        <Tool
+          toolName={toolName}
+          state="output-error"
+          input={part.input}
+          errorText="Approval expired when Clack closed. Retry the request to continue."
+        />
+      );
+    }
     return (
       <AiToolApproval
         sessionId={sessionId}

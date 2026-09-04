@@ -80,9 +80,15 @@ beforeEach(() => {
       },
     ],
   } as unknown as Chat<UIMessage>);
-  usePeerTaskStore.setState({ hydrated: true, tasks: [] });
+  usePeerTaskStore.setState({
+    hydrated: true,
+    recoveryReady: true,
+    recoveryError: null,
+    tasks: [],
+  });
   useChatStore.setState({
     activeSessionId: SOURCE,
+    sessionsHydrated: true,
     sessions: [
       session(SOURCE, "agent-a", "model-a"),
       session(TARGET, "agent-b", "model-b"),
@@ -94,11 +100,45 @@ afterEach(() => {
   vi.restoreAllMocks();
   clearWorkspaceWriteLeasesForTests();
   chats.clear();
-  usePeerTaskStore.setState({ hydrated: false, tasks: [] });
-  useChatStore.setState({ activeSessionId: null, sessions: [] });
+  usePeerTaskStore.setState({
+    hydrated: false,
+    recoveryReady: false,
+    recoveryError: null,
+    tasks: [],
+  });
+  useChatStore.setState({
+    activeSessionId: null,
+    sessionsHydrated: false,
+    sessions: [],
+  });
 });
 
 describe("peer task coordination", () => {
+  it("rejects new peer work until startup recovery is ready", async () => {
+    usePeerTaskStore.setState({ recoveryReady: false });
+
+    await expect(
+      requestPeerTask({
+        sourceSessionId: SOURCE,
+        targetSessionId: TARGET,
+        kind: "review",
+        prompt: "Review after recovery.",
+      }),
+    ).resolves.toMatchObject({ ok: false, code: "peer_recovery_pending" });
+    expect(usePeerTaskStore.getState().tasks).toEqual([]);
+    expect(sendMessageToSession).not.toHaveBeenCalled();
+  });
+
+  it("does not claim queued work before session and artifact recovery finish", async () => {
+    const queued = task({ id: "queued-before-recovery", status: "queued" });
+    usePeerTaskStore.setState({ recoveryReady: false, tasks: [queued] });
+
+    await dispatchPeerTask(queued.id);
+
+    expect(usePeerTaskStore.getState().tasks[0]?.status).toBe("queued");
+    expect(sendMessageToSession).not.toHaveBeenCalled();
+  });
+
   it("runs a task under the target identity and records visible provenance", async () => {
     const result = await requestPeerTask({
       sourceSessionId: SOURCE,

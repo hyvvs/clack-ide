@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,10 @@ use crate::modules::git::errors::{GitError, Result};
 use crate::modules::git::process::{
     ensure_git_available, ensure_success, git_stdout_line_opt, run_git,
 };
-use crate::modules::git::types::{AgentWorktreeInfo, AgentWorktreePatch, DEFAULT_TIMEOUT_SECS};
+use crate::modules::git::types::{
+    AgentWorktreeCleanup, AgentWorktreeInfo, AgentWorktreeInspection, AgentWorktreePatch,
+    DEFAULT_TIMEOUT_SECS,
+};
 use crate::modules::git::utils::{authorized_repo_root, display_path};
 use crate::modules::workspace::{WorkspaceEnv, WorkspaceRegistry};
 
@@ -148,6 +152,144 @@ pub fn remove(
     remove_checkout(&repo.git_path, &canonical, workspace)
 }
 
+pub fn inspect(
+    task_id: &str,
+    recorded_checkout_root: &str,
+    base_sha: &str,
+    cache_root: &Path,
+    workspace: &WorkspaceEnv,
+) -> Result<AgentWorktreeInspection> {
+    ensure_local_workspace(workspace)?;
+    validate_task_id(task_id)?;
+    validate_sha(base_sha)?;
+    let checkout = checkout_path(cache_root, task_id)?;
+    if !checkout.exists() {
+        return Ok(AgentWorktreeInspection {
+            state: "missing",
+            message: Some("The preserved worktree is no longer available.".into()),
+        });
+    }
+    let canonical = fs::canonicalize(&checkout)?;
+    let managed_root = fs::canonicalize(worktree_root(cache_root))?;
+    if !canonical.starts_with(&managed_root) || !canonical.is_dir() {
+        return Ok(AgentWorktreeInspection {
+            state: "invalid",
+            message: Some("The preserved worktree is outside Clack's managed storage.".into()),
+        });
+    }
+    let recorded = match fs::canonicalize(recorded_checkout_root) {
+        Ok(path) => path,
+        Err(_) => {
+            return Ok(AgentWorktreeInspection {
+                state: "invalid",
+                message: Some(
+                    "The preserved worktree path no longer matches its task record.".into(),
+                ),
+            });
+        }
+    };
+    if recorded != canonical {
+        return Ok(AgentWorktreeInspection {
+            state: "invalid",
+            message: Some("The preserved worktree path no longer matches its task record.".into()),
+        });
+    }
+    ensure_git_available(workspace)?;
+    let head = git_stdout_line_opt(workspace, &display_path(&canonical), ["rev-parse", "HEAD"])?;
+    if head.as_deref() != Some(base_sha) {
+        return Ok(AgentWorktreeInspection {
+            state: "invalid",
+            message: Some(
+                "The preserved worktree base changed and must be reviewed manually.".into(),
+            ),
+        });
+    }
+    Ok(AgentWorktreeInspection {
+        state: "available",
+        message: None,
+    })
+}
+
+pub fn cleanup_orphans(
+    retained_task_ids: &[String],
+    cache_root: &Path,
+    workspace: &WorkspaceEnv,
+) -> Result<AgentWorktreeCleanup> {
+    ensure_local_workspace(workspace)?;
+    for task_id in retained_task_ids {
+        validate_task_id(task_id)?;
+    }
+    let root = worktree_root(cache_root);
+    if !root.exists() {
+        return Ok(AgentWorktreeCleanup {
+            removed_count: 0,
+            preserved_count: 0,
+        });
+    }
+    let canonical_root = fs::canonicalize(&root)?;
+    let retained: HashSet<&str> = retained_task_ids.iter().map(String::as_str).collect();
+    let mut removed_count = 0;
+    let mut preserved_count = 0;
+    for entry in fs::read_dir(&canonical_root)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let Some(task_id) = entry.file_name().to_str().map(str::to_string) else {
+            preserved_count += 1;
+            continue;
+        };
+        if retained.contains(task_id.as_str()) {
+            continue;
+        }
+        if !file_type.is_dir() || file_type.is_symlink() || validate_task_id(&task_id).is_err() {
+            preserved_count += 1;
+            continue;
+        }
+        let checkout = fs::canonicalize(entry.path())?;
+        if !checkout.starts_with(&canonical_root) {
+            preserved_count += 1;
+            continue;
+        }
+        let checkout_display = display_path(&checkout);
+        let status = run_git(
+            workspace,
+            Some(&checkout_display),
+            [
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+                "--ignored",
+            ],
+            DEFAULT_TIMEOUT_SECS,
+        )?;
+        if status.timed_out || status.exit_code != Some(0) || !status.stdout.is_empty() {
+            preserved_count += 1;
+            continue;
+        }
+        let Some(common_dir) = git_stdout_line_opt(
+            workspace,
+            &checkout_display,
+            ["rev-parse", "--git-common-dir"],
+        )?
+        else {
+            preserved_count += 1;
+            continue;
+        };
+        let common_dir = PathBuf::from(common_dir);
+        let common_dir = if common_dir.is_absolute() {
+            common_dir
+        } else {
+            checkout.join(common_dir)
+        };
+        let common_dir = fs::canonicalize(common_dir)?;
+        remove_checkout(&display_path(&common_dir), &checkout, workspace)?;
+        removed_count += 1;
+    }
+    Ok(AgentWorktreeCleanup {
+        removed_count,
+        preserved_count,
+    })
+}
+
 pub fn apply_patch(
     registry: &WorkspaceRegistry,
     repo_root: &str,
@@ -282,7 +424,8 @@ fn ensure_local_workspace(workspace: &WorkspaceEnv) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_patch, capture_and_remove, checkout_path, create, validate_sha, validate_task_id,
+        apply_patch, capture_and_remove, checkout_path, cleanup_orphans, create, inspect, remove,
+        validate_sha, validate_task_id,
     };
     use crate::modules::workspace::{WorkspaceEnv, WorkspaceRegistry};
     use std::fs;
@@ -331,6 +474,15 @@ mod tests {
             &WorkspaceEnv::Local,
         )
         .unwrap();
+        let inspection = inspect(
+            "pt-roundtrip",
+            &created.checkout_root,
+            &created.base_sha,
+            cache.path(),
+            &WorkspaceEnv::Local,
+        )
+        .unwrap();
+        assert_eq!(inspection.state, "available");
         fs::write(
             Path::new(&created.checkout_root).join("tracked.txt"),
             "after\n",
@@ -373,6 +525,91 @@ mod tests {
                 .replace("\r\n", "\n"),
             "new\n"
         );
+    }
+
+    #[test]
+    fn reports_missing_managed_worktrees_without_creating_them() {
+        let cache = tempfile::tempdir().unwrap();
+        let inspection = inspect(
+            "pt-missing",
+            "/missing/worktree",
+            "0123456789abcdef0123456789abcdef01234567",
+            cache.path(),
+            &WorkspaceEnv::Local,
+        )
+        .unwrap();
+        assert_eq!(inspection.state, "missing");
+        assert!(!cache.path().join("agent-worktrees/pt-missing").exists());
+    }
+
+    #[test]
+    fn cleanup_removes_only_clean_worktrees_without_retained_task_records() {
+        let repo = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        git(repo.path(), &["init"]);
+        git(repo.path(), &["config", "user.email", "clack@example.test"]);
+        git(repo.path(), &["config", "user.name", "Clack Test"]);
+        fs::write(repo.path().join("tracked.txt"), "before\n").unwrap();
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(repo.path()).unwrap();
+
+        let clean = create(
+            &registry,
+            &repo.path().to_string_lossy(),
+            "pt-clean-orphan",
+            cache.path(),
+            &WorkspaceEnv::Local,
+        )
+        .unwrap();
+        let dirty = create(
+            &registry,
+            &repo.path().to_string_lossy(),
+            "pt-dirty-orphan",
+            cache.path(),
+            &WorkspaceEnv::Local,
+        )
+        .unwrap();
+        let retained = create(
+            &registry,
+            &repo.path().to_string_lossy(),
+            "pt-retained",
+            cache.path(),
+            &WorkspaceEnv::Local,
+        )
+        .unwrap();
+        fs::write(
+            Path::new(&dirty.checkout_root).join("tracked.txt"),
+            "changed\n",
+        )
+        .unwrap();
+
+        let cleanup =
+            cleanup_orphans(&["pt-retained".into()], cache.path(), &WorkspaceEnv::Local).unwrap();
+
+        assert_eq!(cleanup.removed_count, 1);
+        assert_eq!(cleanup.preserved_count, 1);
+        assert!(!Path::new(&clean.checkout_root).exists());
+        assert!(Path::new(&dirty.checkout_root).exists());
+        assert!(Path::new(&retained.checkout_root).exists());
+
+        remove(
+            &registry,
+            &repo.path().to_string_lossy(),
+            "pt-dirty-orphan",
+            cache.path(),
+            &WorkspaceEnv::Local,
+        )
+        .unwrap();
+        remove(
+            &registry,
+            &repo.path().to_string_lossy(),
+            "pt-retained",
+            cache.path(),
+            &WorkspaceEnv::Local,
+        )
+        .unwrap();
     }
 
     fn git(cwd: &Path, args: &[&str]) {

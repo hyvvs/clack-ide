@@ -38,7 +38,6 @@ import {
   type SessionMeta,
   type SessionRunState,
 } from "../lib/sessions";
-import { reconcileAttachmentContent } from "../lib/attachmentStore";
 import { useAgentsStore } from "./agentsStore";
 import { pushRecentModel } from "../lib/modelPrefs";
 import { providerForSelectedModel } from "../lib/providerRestore";
@@ -886,18 +885,6 @@ export const useChatStore = create<StoreState>((set, get) => ({
   hydrateSessions: async () => {
     if (get().sessionsHydrated) return;
     const loaded = await loadAll();
-    try {
-      const { collectPeerTaskContentIds, loadPeerTasks } = await import(
-        "../lib/peerTasks"
-      );
-      const peerContentIds = collectPeerTaskContentIds(await loadPeerTasks());
-      await reconcileAttachmentContent([
-        ...loaded.attachmentContentIds,
-        ...peerContentIds,
-      ]);
-    } catch (error) {
-      console.warn("[clack] Could not reconcile attachment content:", error);
-    }
     const profiled = migrateSessionProfiles(loaded.sessions, {
       agentId: useAgentsStore.getState().activeId,
       modelId: get().selectedModelId,
@@ -913,7 +900,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
       for (const id of recovered.interruptedIds) {
         useTodosStore.getState().finalizeRun(id, "interrupted");
       }
-      void saveSessionsList(sessions);
+      await saveSessionsList(sessions);
     }
 
     // Reuse the most recent untitled "New chat" session if one exists from
@@ -958,6 +945,8 @@ export const useChatStore = create<StoreState>((set, get) => ({
       sessions: nextSessions,
       activeSessionId: freshId,
       sessionsHydrated: true,
+      approvalRespondersBySession: {},
+      pendingApprovalsBySession: {},
       selectedModelId:
         nextSessions.find((session) => session.id === freshId)?.profile
           ?.modelId ?? get().selectedModelId,

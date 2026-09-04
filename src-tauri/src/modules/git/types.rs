@@ -129,6 +129,20 @@ pub struct AgentWorktreePatch {
     pub changed_paths: Vec<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentWorktreeInspection {
+    pub state: &'static str,
+    pub message: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentWorktreeCleanup {
+    pub removed_count: usize,
+    pub preserved_count: usize,
+}
+
 pub(crate) struct GitOutput {
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,

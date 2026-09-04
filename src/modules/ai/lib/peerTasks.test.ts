@@ -46,6 +46,35 @@ describe("peer task retention", () => {
     expect(compacted.some((item) => item.id === "active")).toBe(true);
   });
 
+  it("retains recoverable worktree and unapplied patch lineages", () => {
+    const unrelated = Array.from(
+      { length: PEER_TASK_MAX_STORED + 10 },
+      (_, index) => task(`new-${index}`, index + 100),
+    );
+    const worktree = task("worktree", 1, {
+      rootTaskId: "worktree",
+      status: "failed",
+      worktree: {
+        checkoutRoot: "C:/cache/agent-worktrees/worktree",
+        baseSha: "c".repeat(40),
+      },
+    });
+    const patch = task("patch", 2, {
+      rootTaskId: "patch",
+      status: "completed",
+      changeSet: {
+        baseSha: "d".repeat(40),
+        patch: "diff --git a/a b/a\n",
+        changedPaths: ["a"],
+      },
+    });
+
+    const compacted = compactPeerTasks([...unrelated, worktree, patch]);
+
+    expect(compacted.some((item) => item.id === worktree.id)).toBe(true);
+    expect(compacted.some((item) => item.id === patch.id)).toBe(true);
+  });
+
   it("includes sorted artifact hashes in loop fingerprints", () => {
     const base = {
       sourceSessionId: "source",
@@ -78,6 +107,14 @@ describe("peer task retention", () => {
         pages: [{ pageNumber: 1, textBytes: 2, truncated: false }],
         textContentRef: contentRef("c", 2),
       },
+      pdfProvenance: {
+        originalAttachmentId: "pdf",
+        originalContentId: "e".repeat(64),
+        originalContentHash: "e".repeat(64),
+        pageNumbers: [1],
+        extractedTextRef: contentRef("f", 2),
+        truncated: false,
+      },
     });
     const returned = artifact("b", {
       archiveRepresentation: {
@@ -89,6 +126,16 @@ describe("peer task retention", () => {
         totalExpandedBytes: 1,
         nestedArchiveDepthLimit: 0,
         manifestContentRef: contentRef("d", 2),
+      },
+      archiveProvenance: {
+        archiveAttachmentId: "archive",
+        archiveContentId: "g".repeat(64),
+        archiveContentHash: "g".repeat(64),
+        archiveFormat: "7z",
+        archiveDisplayName: "project.7z",
+        entryIndex: 0,
+        entryPath: "b.txt",
+        entryContentHash: "b".repeat(64),
       },
     });
     const stored = task("task", 1, {
@@ -104,7 +151,9 @@ describe("peer task retention", () => {
     });
 
     expect(collectPeerTaskContentIds([stored]).sort()).toEqual(
-      ["a", "b", "c", "d"].map((letter) => letter.repeat(64)).sort(),
+      ["a", "b", "c", "d", "e", "f", "g"]
+        .map((letter) => letter.repeat(64))
+        .sort(),
     );
   });
 
@@ -148,6 +197,16 @@ describe("peer task retention", () => {
       schemaVersion: PEER_TASK_SCHEMA_VERSION,
       cancellation: undefined,
     });
+
+    const versionFour = JSON.parse(JSON.stringify(original)) as Record<
+      string,
+      unknown
+    >;
+    versionFour.schemaVersion = 4;
+    expect(normalizePeerTask(versionFour)).toMatchObject({
+      schemaVersion: PEER_TASK_SCHEMA_VERSION,
+      recovery: undefined,
+    });
   });
 
   it("round-trips bounded cancellation provenance", () => {
@@ -166,6 +225,33 @@ describe("peer task retention", () => {
 
     expect(normalizePeerTask(JSON.parse(JSON.stringify(cancelled)))).toEqual(
       cancelled,
+    );
+  });
+
+  it("round-trips bounded restart recovery provenance", () => {
+    const recovered = task("task", 5, {
+      status: "failed",
+      recovery: {
+        interruption: { cause: "app-restart", detectedAt: 5 },
+        contentIssues: [
+          {
+            artifactId: "artifact-a",
+            contentId: "a".repeat(64),
+            role: "returned",
+            representation: "content",
+            code: "attachment_content_missing",
+            message: "Stored attachment content is unavailable.",
+          },
+        ],
+        worktree: {
+          state: "missing",
+          message: "The preserved worktree is no longer available.",
+        },
+      },
+    });
+
+    expect(normalizePeerTask(JSON.parse(JSON.stringify(recovered)))).toEqual(
+      recovered,
     );
   });
 });

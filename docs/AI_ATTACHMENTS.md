@@ -114,6 +114,41 @@ applies. Isolated-worktree patches are stored as immutable returned artifacts
 without changing the existing explicit review and apply flow. Retained input
 and returned PeerTask references participate in attachment-store cleanup.
 
+## Restart recovery
+
+AI startup is ordered so dead execution is never presented as resumed work:
+provider and agent settings load first, chat sessions recover stale runs, then
+PeerTasks validate their schema, captured conversation/workspace/agent/model
+identity, dependencies, cancellation state, immutable content, and managed Git
+worktrees. The PeerTask queue is enabled only after the recovered ledger has
+been saved.
+
+A chat that was running when Clack closed becomes interrupted and keeps the
+transcript received so far. A running PeerTask becomes failed with explicit
+app-restart provenance while preserving any persisted result, returned
+artifacts, worktree, and captured patch. Approval controls from the dead run
+are expired rather than reconnected to a nonexistent provider stream.
+
+Queued work survives only when its source and target conversations, workspace,
+captured target agent/model, dependencies, and immutable input content still
+validate. Missing or hash-invalid input content fails closed before dispatch.
+Returned artifact metadata remains visible when its blob is unavailable.
+Waiting tasks are recalculated from durable dependency state; blocked and
+cancelled tasks remain terminal.
+
+Content-store reconciliation retains references from normal chat messages and
+all PeerTask input, returned, PDF-derived, and archive-derived representations.
+It removes unreachable blobs and reports missing, invalid, or hash-mismatched
+retained content without deleting the affected durable metadata.
+
+Managed task worktrees are inspected without applying or modifying their
+changes. Valid worktrees remain available for review; a missing or invalid
+worktree is labeled unavailable while any durable patch remains reviewable.
+Successful capture removes its worktree, and explicit discard removes a
+preserved terminal worktree. Startup cleanup removes only clean managed
+worktrees that have no retained PeerTask record. Orphaned worktrees containing
+tracked, untracked, or ignored changes are preserved rather than deleted.
+
 ## Model capability routing
 
 Clack represents text, image, native document, tool, and audio capability as

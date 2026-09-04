@@ -77,6 +77,43 @@ type ToolPartLike = ToolUIPart & {
 
 type AnyPart = UIMessagePart<Record<string, never>, Record<string, never>>;
 
+export function pendingApprovalsForRun(
+  messages: readonly UIMessage[],
+  sessionId: string,
+  runState: string | undefined,
+): PendingToolApproval[] {
+  if (runState !== "running") return [];
+  const pending: PendingToolApproval[] = [];
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    for (const value of message.parts) {
+      const part = value as {
+        type?: string;
+        state?: string;
+        input?: unknown;
+        approval?: { id?: string };
+      };
+      if (
+        part.state !== "approval-requested" ||
+        !part.approval?.id ||
+        !part.type?.startsWith("tool-")
+      ) {
+        continue;
+      }
+      pending.push({
+        id: part.approval.id,
+        sessionId,
+        toolName: part.type.slice("tool-".length),
+        input:
+          part.input && typeof part.input === "object"
+            ? (part.input as Record<string, unknown>)
+            : {},
+      });
+    }
+  }
+  return pending;
+}
+
 function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
   const chat = useMemo(() => getOrCreateChat(sessionId), [sessionId]);
   const { status, messages, addToolApprovalResponse } = useChat<UIMessage>({
@@ -102,11 +139,15 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
   // Expose the approval responder so the diff tab can resolve approvals.
   // We keep it in a ref-stable closure so identity is stable per render.
   useEffect(() => {
+    if (runState !== "running") {
+      setApprovalResponder(sessionId, null);
+      return;
+    }
     setApprovalResponder(sessionId, (id, approved) =>
       addToolApprovalResponse({ id, approved }),
     );
     return () => setApprovalResponder(sessionId, null);
-  }, [sessionId, setApprovalResponder, addToolApprovalResponse]);
+  }, [sessionId, runState, setApprovalResponder, addToolApprovalResponse]);
 
   useEffect(() => {
     persistMessages(sessionId, messages);
@@ -124,36 +165,8 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
   }, [sessionId]);
 
   const pendingApprovals = useMemo(() => {
-    const pending: PendingToolApproval[] = [];
-    for (const m of messages) {
-      if (m.role !== "assistant") continue;
-      for (const p of m.parts) {
-        const part = p as {
-          type?: string;
-          state?: string;
-          input?: unknown;
-          approval?: { id?: string };
-        };
-        if (
-          part.state !== "approval-requested" ||
-          !part.approval?.id ||
-          !part.type?.startsWith("tool-")
-        ) {
-          continue;
-        }
-        pending.push({
-          id: part.approval.id,
-          sessionId,
-          toolName: part.type.slice("tool-".length),
-          input:
-            part.input && typeof part.input === "object"
-              ? (part.input as Record<string, unknown>)
-              : {},
-        });
-      }
-    }
-    return pending;
-  }, [messages, sessionId]);
+    return pendingApprovalsForRun(messages, sessionId, runState);
+  }, [messages, runState, sessionId]);
   const approvalsPending = pendingApprovals.length;
 
   useEffect(() => {

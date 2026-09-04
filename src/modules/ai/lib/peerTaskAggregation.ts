@@ -447,6 +447,14 @@ function aggregateCandidate(
     .map((path) => compactText(path, MAX_PATH_CHARS));
   const warnings = [
     ...(task.changeSet?.applyError ? [task.changeSet.applyError] : []),
+    ...(task.recovery?.contentIssues?.some(
+      (issue) => issue.role === "returned",
+    )
+      ? ["One or more returned files are unavailable."]
+      : []),
+    ...(task.recovery?.worktree
+      ? [task.recovery.worktree.message]
+      : []),
     ...(task.status === "completed" && !task.result
       ? ["The task is marked completed but has no durable result payload."]
       : []),
@@ -491,7 +499,7 @@ function aggregateCandidate(
     changedPathCount: availablePaths.length,
     omittedChangedPathCount,
     patchAvailable: Boolean(task.changeSet?.patch),
-    worktreeAvailable: Boolean(task.worktree),
+    worktreeAvailable: Boolean(task.worktree && !task.recovery?.worktree),
     rawResultAvailable: Boolean(task.result),
     truncated:
       prompt.truncated ||

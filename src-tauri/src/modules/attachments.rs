@@ -22,6 +22,15 @@ pub struct StoredAttachmentContent {
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentReconcileResult {
     removed_count: usize,
+    issues: Vec<AttachmentContentIssue>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentContentIssue {
+    id: String,
+    code: &'static str,
+    message: String,
 }
 
 fn content_hash(bytes: &[u8]) -> String {
@@ -58,6 +67,15 @@ fn read_content_from(store: &Path, id: &str) -> Result<Vec<u8>, String> {
         return Err("Stored attachment content failed integrity validation.".into());
     }
     Ok(bytes)
+}
+
+fn inspect_content_from(store: &Path, id: &str) -> Result<StoredAttachmentContent, String> {
+    let bytes = read_content_from(store, id)?;
+    Ok(StoredAttachmentContent {
+        id: id.to_string(),
+        content_hash: id.to_string(),
+        byte_size: bytes.len() as u64,
+    })
 }
 
 fn put_content_in(store: &Path, bytes: &[u8]) -> Result<StoredAttachmentContent, String> {
@@ -108,11 +126,36 @@ fn put_content_in(store: &Path, bytes: &[u8]) -> Result<StoredAttachmentContent,
     })
 }
 
-fn reconcile_store(store: &Path, retain_ids: &[String]) -> Result<usize, String> {
+fn reconcile_store(
+    store: &Path,
+    retain_ids: &[String],
+) -> Result<AttachmentReconcileResult, String> {
+    let mut retained_ids = retain_ids.to_vec();
+    retained_ids.sort();
+    retained_ids.dedup();
     if !store.exists() {
-        return Ok(0);
+        let issues = retained_ids
+            .into_iter()
+            .map(|id| AttachmentContentIssue {
+                code: if valid_content_id(&id) {
+                    "attachment_content_missing"
+                } else {
+                    "attachment_content_invalid"
+                },
+                message: if valid_content_id(&id) {
+                    "Stored attachment content is unavailable.".into()
+                } else {
+                    "Attachment content ID is invalid.".into()
+                },
+                id,
+            })
+            .collect();
+        return Ok(AttachmentReconcileResult {
+            removed_count: 0,
+            issues,
+        });
     }
-    let retained: HashSet<&str> = retain_ids
+    let retained: HashSet<&str> = retained_ids
         .iter()
         .filter_map(|id| valid_content_id(id).then_some(id.as_str()))
         .collect();
@@ -137,7 +180,36 @@ fn reconcile_store(store: &Path, retain_ids: &[String]) -> Result<usize, String>
             .map_err(|error| format!("Could not remove unused attachment content: {error}"))?;
         removed += 1;
     }
-    Ok(removed)
+    let issues = retained_ids
+        .into_iter()
+        .filter_map(|id| {
+            if !valid_content_id(&id) {
+                return Some(AttachmentContentIssue {
+                    id,
+                    code: "attachment_content_invalid",
+                    message: "Attachment content ID is invalid.".into(),
+                });
+            }
+            match read_content_from(store, &id) {
+                Ok(_) => None,
+                Err(message) => Some(AttachmentContentIssue {
+                    id,
+                    code: if message.contains("unavailable") {
+                        "attachment_content_missing"
+                    } else if message.contains("integrity validation") {
+                        "attachment_content_integrity_failed"
+                    } else {
+                        "attachment_content_invalid"
+                    },
+                    message,
+                }),
+            }
+        })
+        .collect();
+    Ok(AttachmentReconcileResult {
+        removed_count: removed,
+        issues,
+    })
 }
 
 #[tauri::command]
@@ -161,12 +233,19 @@ pub fn attachment_store_get(
 }
 
 #[tauri::command]
+pub fn attachment_store_inspect(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<StoredAttachmentContent, String> {
+    inspect_content_from(&store_dir(&app)?, &id)
+}
+
+#[tauri::command]
 pub fn attachment_store_reconcile(
     app: tauri::AppHandle,
     retain_ids: Vec<String>,
 ) -> Result<AttachmentReconcileResult, String> {
-    let removed_count = reconcile_store(&store_dir(&app)?, &retain_ids)?;
-    Ok(AttachmentReconcileResult { removed_count })
+    reconcile_store(&store_dir(&app)?, &retain_ids)
 }
 
 #[cfg(test)]
@@ -203,10 +282,46 @@ mod tests {
         let keep = put_content_in(store.path(), b"keep").unwrap();
         let remove = put_content_in(store.path(), b"remove").unwrap();
         fs::write(store.path().join("stale-temporary-file"), b"temp").unwrap();
-        let removed = reconcile_store(store.path(), std::slice::from_ref(&keep.id)).unwrap();
-        assert_eq!(removed, 2);
+        let result = reconcile_store(store.path(), std::slice::from_ref(&keep.id)).unwrap();
+        assert_eq!(result.removed_count, 2);
+        assert!(result.issues.is_empty());
         assert!(store.path().join(keep.id).is_file());
         assert!(!store.path().join(remove.id).exists());
+    }
+
+    #[test]
+    fn reconcile_reports_missing_and_corrupt_references_without_removing_them() {
+        let store = tempfile::tempdir().unwrap();
+        let corrupt = put_content_in(store.path(), b"original").unwrap();
+        fs::write(store.path().join(&corrupt.id), b"changed").unwrap();
+        let missing = "b".repeat(64);
+
+        let result = reconcile_store(store.path(), &[corrupt.id.clone(), missing.clone()]).unwrap();
+
+        assert_eq!(result.removed_count, 0);
+        assert_eq!(result.issues.len(), 2);
+        assert_eq!(result.issues[0].id, corrupt.id);
+        assert_eq!(result.issues[0].code, "attachment_content_integrity_failed");
+        assert_eq!(result.issues[1].id, missing);
+        assert_eq!(result.issues[1].code, "attachment_content_missing");
+    }
+
+    #[test]
+    fn reconcile_missing_store_reports_each_reference_once() {
+        let parent = tempfile::tempdir().unwrap();
+        let missing_store = parent.path().join("not-created");
+        let missing = "b".repeat(64);
+
+        let result = reconcile_store(
+            &missing_store,
+            &[missing.clone(), missing.clone(), "invalid".into()],
+        )
+        .unwrap();
+
+        assert_eq!(result.removed_count, 0);
+        assert_eq!(result.issues.len(), 2);
+        assert_eq!(result.issues[0].code, "attachment_content_missing");
+        assert_eq!(result.issues[1].code, "attachment_content_invalid");
     }
 
     #[test]
