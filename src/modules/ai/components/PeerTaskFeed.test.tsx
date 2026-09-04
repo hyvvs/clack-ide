@@ -127,6 +127,87 @@ describe("PeerTaskFeed", () => {
       />,
     );
     expect(html).toContain("2 linked tasks");
+    expect(html).toContain("Related work");
+    expect(html).toContain("Follow-up to agent-reviewer");
+  });
+
+  it("shows dependency progress without claiming waiting work is running", () => {
+    const investigation = task({
+      id: "investigation",
+      targetSessionId: "investigator-chat",
+      targetAgentId: "Investigator",
+      status: "completed",
+      prompt: "Inspect the API",
+    });
+    const review = task({
+      id: "review",
+      targetSessionId: "reviewer-chat",
+      targetAgentId: "Reviewer",
+      status: "running",
+      prompt: "Review the UI",
+      result: undefined,
+    });
+    const integration = task({
+      id: "integration",
+      status: "waiting",
+      prompt: "Integrate both findings",
+      dependsOn: [investigation.id, review.id],
+      result: undefined,
+    });
+
+    const html = renderToStaticMarkup(
+      <PeerTaskCard
+        task={integration}
+        viewingSessionId="source"
+        allTasks={[integration, investigation, review]}
+      />,
+    );
+
+    expect(html).toContain("Waiting for Investigator and Reviewer");
+    expect(html).toContain("Waiting on");
+    expect(html).toContain("Investigator: Inspect the API");
+    expect(html).toContain("Reviewer: Review the UI");
+    expect(html).toContain("Done");
+    expect(html).toContain("Working");
+    expect(html).not.toContain("agent-reviewer is working");
+  });
+
+  it("names the prerequisite that blocked a task", () => {
+    const review = task({
+      id: "review",
+      targetSessionId: "reviewer-chat",
+      targetAgentId: "Reviewer",
+      status: "failed",
+      prompt: "Review the UI",
+      result: undefined,
+      error: { code: "review_failed", message: "Review failed." },
+    });
+    const integration = task({
+      id: "integration",
+      status: "blocked",
+      prompt: "Integrate both findings",
+      dependsOn: [review.id],
+      blockedByTaskId: review.id,
+      blockedByStatus: "failed",
+      result: undefined,
+      error: {
+        code: "peer_dependency_blocked",
+        message: "Required task review failed.",
+      },
+    });
+
+    const html = renderToStaticMarkup(
+      <PeerTaskCard
+        task={integration}
+        viewingSessionId="source"
+        allTasks={[integration, review]}
+      />,
+    );
+
+    expect(html).toContain("Blocked: Reviewer failed");
+    expect(html).toContain("This task did not start because Reviewer failed.");
+    expect(html).toContain("Other independent tasks are unaffected.");
+    expect(html).not.toContain("could not complete this task");
   });
 
   it("shows working, completed artifacts, and failure in human language", () => {
@@ -201,6 +282,7 @@ function task(overrides: Partial<PeerTask> = {}): PeerTask {
     parentTaskId: null,
     rootTaskId: "peer-1",
     hopCount: 0,
+    dependsOn: [],
     status: "completed",
     createdAt: 1,
     updatedAt: 2,

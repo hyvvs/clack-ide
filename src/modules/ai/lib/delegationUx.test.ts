@@ -117,6 +117,12 @@ describe("delegation UX", () => {
     expect(
       delegationStatusLabel(task({ status: "queued", result: undefined })),
     ).toBe("Queued");
+    expect(
+      delegationStatusLabel(task({ status: "waiting", result: undefined })),
+    ).toBe("Waiting");
+    expect(
+      delegationStatusLabel(task({ status: "blocked", result: undefined })),
+    ).toBe("Blocked");
     expect(delegationStatusLabel(task())).toBe("Review complete");
     expect(delegationCardTitle(task(), true, "Coder", "Reviewer")).toBe(
       "Review complete",
@@ -237,6 +243,7 @@ function task(overrides: Partial<PeerTask> = {}): PeerTask {
     parentTaskId: null,
     rootTaskId: "task",
     hopCount: 0,
+    dependsOn: [],
     status: "completed",
     createdAt: 1,
     updatedAt: 2,

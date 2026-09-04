@@ -1223,7 +1223,9 @@ function DelegationActivity() {
       tasks.filter(
         (task) =>
           task.workspaceId === workspaceId &&
-          (task.status === "queued" || task.status === "running"),
+          (task.status === "waiting" ||
+            task.status === "queued" ||
+            task.status === "running"),
       ),
     [tasks, workspaceId],
   );
@@ -1266,7 +1268,11 @@ function DelegationActivity() {
                     {agentName}
                   </span>
                   <span className="shrink-0 text-[var(--clack-accent)]">
-                    {task.status === "running" ? "Working" : "Queued"}
+                    {task.status === "running"
+                      ? "Working"
+                      : task.status === "waiting"
+                        ? "Waiting"
+                        : "Queued"}
                   </span>
                 </div>
                 <div className="truncate text-[9.5px] text-[var(--clack-text-3)]">

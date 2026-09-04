@@ -55,9 +55,7 @@ describe("peer task retention", () => {
     };
     expect(
       peerTaskFingerprint({ ...base, artifactRefs: [artifact("a")] }),
-    ).not.toBe(
-      peerTaskFingerprint({ ...base, artifactRefs: [artifact("b")] }),
-    );
+    ).not.toBe(peerTaskFingerprint({ ...base, artifactRefs: [artifact("b")] }));
     expect(
       peerTaskFingerprint({
         ...base,
@@ -129,6 +127,17 @@ describe("peer task retention", () => {
       legacyArtifactRefs: [{ kind: "file", path: "src/old.ts" }],
       error: { code: "peer_artifact_upgrade_required" },
     });
+
+    const versionTwo = JSON.parse(JSON.stringify(original)) as Record<
+      string,
+      unknown
+    >;
+    versionTwo.schemaVersion = 2;
+    delete versionTwo.dependsOn;
+    expect(normalizePeerTask(versionTwo)).toMatchObject({
+      schemaVersion: PEER_TASK_SCHEMA_VERSION,
+      dependsOn: [],
+    });
   });
 });
 
@@ -156,6 +165,7 @@ function task(
     parentTaskId: null,
     rootTaskId: id,
     hopCount: 0,
+    dependsOn: [],
     status: "completed",
     createdAt: updatedAt,
     updatedAt,

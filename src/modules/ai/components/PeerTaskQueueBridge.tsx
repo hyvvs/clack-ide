@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { dispatchPeerTask } from "../lib/peerTaskCoordinator";
+import { selectDispatchablePeerTaskIds } from "../lib/peerTaskDependencies";
 import { useChatStore } from "../store/chatStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
 
@@ -14,10 +15,8 @@ export function PeerTaskQueueBridge() {
     const sessionState = new Map(
       sessions.map((session) => [session.id, session.run?.state]),
     );
-    for (const task of tasks) {
-      if (task.status !== "queued") continue;
-      if (sessionState.get(task.targetSessionId) === "running") continue;
-      void dispatchPeerTask(task.id);
+    for (const taskId of selectDispatchablePeerTaskIds(tasks, sessionState)) {
+      void dispatchPeerTask(taskId);
     }
   }, [hydrated, sessions, sessionsHydrated, tasks]);
 

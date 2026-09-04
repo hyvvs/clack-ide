@@ -528,6 +528,27 @@ Implementation record (2026-08-28):
 - live-provider multi-agent GUI acceptance is deferred to the integrated Phase
   7 matrix
 
+Peer-task orchestration extension (2026-09-04):
+
+- schema version 3 stores explicit dependency IDs, waiting and blocked states,
+  the time prerequisites became satisfied, and the direct prerequisite that
+  caused a durable block
+- tasks without dependencies follow the original queue and dispatch path;
+  dependent tasks wait until every prerequisite completes successfully, then
+  enter that same queue
+- failed, cancelled, interrupted, blocked, or missing prerequisites block only
+  their downstream dependents; independent siblings remain eligible
+- startup marks dead running streams failed, reevaluates every waiting task,
+  queues tasks whose prerequisites succeeded, and blocks tasks whose required
+  work ended unsuccessfully
+- orchestration remains bounded to 8 tasks per root, 8 dependency edges per
+  task, 8 dependency levels, 8 concurrently running peer tasks, 32 total
+  waiting/queued/running tasks, the existing 3 delegation hops, and 256 stored
+  ledger records
+- dependencies do not aggregate result text or artifacts automatically;
+  durable results remain inspectable and explicitly selected immutable
+  artifacts continue through the existing package pipeline
+
 ## Phase 6: Concurrent Mutation and Conflicts
 
 Goal: Allow agents to modify the same project without silent corruption.

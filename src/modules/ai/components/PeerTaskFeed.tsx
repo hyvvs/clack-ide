@@ -17,9 +17,10 @@ import {
   delegationCardTitle,
   delegationStatusLabel,
 } from "../lib/delegationUx";
-import type { PeerTask } from "../lib/peerTasks";
+import type { PeerTask, PeerTaskDependencyBlockStatus } from "../lib/peerTasks";
 import { resolveModelSelectionInfo } from "../lib/savedProviderModels";
-import { BUILTIN_AGENTS } from "../lib/agents";
+import { BUILTIN_AGENTS, type Agent } from "../lib/agents";
+import type { SessionMeta } from "../lib/sessions";
 import { useAgentsStore } from "../store/agentsStore";
 import { useChatStore } from "../store/chatStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
@@ -98,24 +99,58 @@ export function PeerTaskCard({
     () => buildPeerTaskLineage(task, allTasks),
     [allTasks, task],
   );
+  const dependencies = useMemo(
+    () =>
+      task.dependsOn.flatMap((dependencyId) => {
+        const dependency = allTasks.find((item) => item.id === dependencyId);
+        return dependency ? [dependency] : [];
+      }),
+    [allTasks, task.dependsOn],
+  );
+  const parent = task.parentTaskId
+    ? allTasks.find((item) => item.id === task.parentTaskId)
+    : undefined;
+  const children = allTasks.filter((item) => item.parentTaskId === task.id);
   const peer = viewingSource ? target : source;
   const peerAgentName = viewingSource ? targetAgentName : sourceAgentName;
-  const active = task.status === "queued" || task.status === "running";
+  const active =
+    task.status === "waiting" ||
+    task.status === "queued" ||
+    task.status === "running";
   const statusLabel = delegationStatusLabel(task);
-  const title = delegationCardTitle(
+  const defaultTitle = delegationCardTitle(
     task,
     viewingSource,
     sourceAgentName,
     targetAgentName,
   );
+  const dependencyAgentNames = dependencies.map((dependency) =>
+    taskTargetAgentName(dependency, sessions, agents),
+  );
+  const blockedDependency = task.blockedByTaskId
+    ? allTasks.find((item) => item.id === task.blockedByTaskId)
+    : undefined;
+  const blockedAgentName = blockedDependency
+    ? taskTargetAgentName(blockedDependency, sessions, agents)
+    : "A required task";
+  const title =
+    viewingSource &&
+    task.status === "waiting" &&
+    dependencyAgentNames.length > 0
+      ? `Waiting for ${humanList(dependencyAgentNames)}`
+      : viewingSource && task.status === "blocked"
+        ? `Blocked: ${blockedAgentName} ${blockStatusText(task.blockedByStatus)}`
+        : defaultTitle;
   const tone =
     task.status === "failed"
       ? "text-destructive"
-      : task.status === "completed"
-        ? "text-[var(--clack-success)]"
-        : task.status === "cancelled"
-          ? "text-[var(--clack-text-3)]"
-          : "text-[var(--clack-accent)]";
+      : task.status === "blocked"
+        ? "text-[var(--clack-warning)]"
+        : task.status === "completed"
+          ? "text-[var(--clack-success)]"
+          : task.status === "cancelled"
+            ? "text-[var(--clack-text-3)]"
+            : "text-[var(--clack-accent)]";
   const applyChangeSet = async () => {
     if (applying) return;
     setApplying(true);
@@ -129,7 +164,9 @@ export function PeerTaskCard({
       data-peer-task-id={task.id}
     >
       <div className="flex items-center gap-2 border-b border-[color:var(--clack-border-subtle)] px-2.5 py-2">
-        {task.status === "running" || task.status === "queued" ? (
+        {task.status === "waiting" ||
+        task.status === "running" ||
+        task.status === "queued" ? (
           <Spinner className="size-3" />
         ) : (
           <HugeiconsIcon
@@ -179,6 +216,37 @@ export function PeerTaskCard({
               : "Waiting to start."}
           </p>
         ) : null}
+        {task.dependsOn.length > 0 ? (
+          <div className="space-y-1 border-t border-[color:var(--clack-border-subtle)] pt-2">
+            <div className="text-[10px] font-medium text-[var(--clack-text-2)]">
+              {task.status === "waiting" ? "Waiting on" : "Prerequisites"}
+            </div>
+            <div className="space-y-1">
+              {task.dependsOn.map((dependencyId) => {
+                const dependency = allTasks.find(
+                  (item) => item.id === dependencyId,
+                );
+                return (
+                  <div
+                    key={dependencyId}
+                    className="flex min-w-0 items-center gap-2 text-[10px]"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-[var(--clack-text-2)]">
+                      {dependency
+                        ? `${taskTargetAgentName(dependency, sessions, agents)}: ${dependency.prompt}`
+                        : "Required task unavailable"}
+                    </span>
+                    <span className="shrink-0 text-[var(--clack-text-3)]">
+                      {dependency
+                        ? dependencyStatusLabel(dependency)
+                        : "Unavailable"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
         {task.artifactRefs.length > 0 ? (
           <div className="space-y-1">
             <div className="text-[10px] font-medium text-[var(--clack-text-2)]">
@@ -221,6 +289,16 @@ export function PeerTaskCard({
                 </div>
               </div>
             ) : null}
+          </div>
+        ) : task.status === "blocked" ? (
+          <div className="space-y-0.5 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[var(--clack-warning)]">
+            <p>
+              This task did not start because {blockedAgentName}{" "}
+              {blockStatusText(task.blockedByStatus)}.
+            </p>
+            <p className="text-[10px] text-[var(--clack-text-3)]">
+              Other independent tasks are unaffected.
+            </p>
           </div>
         ) : task.error ? (
           <div className="space-y-0.5 border-t border-[color:var(--clack-border-subtle)] pt-2 text-destructive">
@@ -325,6 +403,25 @@ export function PeerTaskCard({
             </button>
           </div>
         ) : null}
+        {parent || children.length > 0 ? (
+          <div className="space-y-1 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[10px] text-[var(--clack-text-3)]">
+            <div className="font-medium text-[var(--clack-text-2)]">
+              Related work
+            </div>
+            {parent ? (
+              <div className="truncate">
+                Follow-up to {taskTargetAgentName(parent, sessions, agents)}:{" "}
+                {parent.prompt}
+              </div>
+            ) : null}
+            {children.length > 0 ? (
+              <div>
+                {children.length} delegated task
+                {children.length === 1 ? "" : "s"}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <div className="flex items-center gap-2 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[9.5px] text-[var(--clack-text-3)]">
           <span>{executionModeLabel(task)}</span>
           <span className="truncate">
@@ -358,6 +455,44 @@ function executionModeLabel(task: PeerTask): string {
   if (task.executionMode === "shared-write") return "Can edit workspace";
   if (task.executionMode === "isolated-worktree") return "Isolated changes";
   return "Read only";
+}
+
+function taskTargetAgentName(
+  task: PeerTask,
+  sessions: readonly SessionMeta[],
+  agents: readonly Agent[],
+): string {
+  const session = sessions.find(
+    (candidate) => candidate.id === task.targetSessionId,
+  );
+  const agentId = session?.profile?.agentId ?? task.targetAgentId;
+  return agents.find((agent) => agent.id === agentId)?.name ?? agentId;
+}
+
+function dependencyStatusLabel(task: PeerTask): string {
+  if (task.status === "completed") return "Done";
+  if (task.status === "running") return "Working";
+  if (task.status === "queued") return "Queued";
+  if (task.status === "waiting") return "Waiting";
+  if (task.status === "failed") return "Failed";
+  if (task.status === "cancelled") return "Cancelled";
+  return "Blocked";
+}
+
+function blockStatusText(
+  status: PeerTaskDependencyBlockStatus | undefined,
+): string {
+  if (status === "failed") return "failed";
+  if (status === "cancelled") return "was cancelled";
+  if (status === "blocked") return "was blocked";
+  return "is unavailable";
+}
+
+function humanList(values: readonly string[]): string {
+  const unique = [...new Set(values)];
+  if (unique.length <= 1) return unique[0] ?? "required work";
+  if (unique.length === 2) return `${unique[0]} and ${unique[1]}`;
+  return `${unique.slice(0, -1).join(", ")}, and ${unique[unique.length - 1]}`;
 }
 
 function modelLabel(

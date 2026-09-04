@@ -2,13 +2,16 @@ import { create } from "zustand";
 import {
   compactPeerTasks,
   loadPeerTasks,
-  recoverInterruptedPeerTasks,
   savePeerTasks,
   type PeerTask,
   type PeerTaskChangeSet,
   type PeerTaskError,
   type PeerTaskResult,
 } from "../lib/peerTasks";
+import {
+  reconcilePeerTaskDependencies,
+  recoverPeerTaskLedger,
+} from "../lib/peerTaskDependencies";
 
 type PeerTaskStore = {
   hydrated: boolean;
@@ -37,17 +40,21 @@ function bounded(tasks: PeerTask[]): PeerTask[] {
   return compactPeerTasks(tasks);
 }
 
+function reconciled(tasks: PeerTask[]): PeerTask[] {
+  return bounded(reconcilePeerTaskDependencies(tasks));
+}
+
 export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
   hydrated: false,
   tasks: [],
   hydrate: async () => {
     const loaded = await loadPeerTasks();
-    const recovered = bounded(recoverInterruptedPeerTasks(loaded));
+    const recovered = bounded(recoverPeerTaskLedger(loaded));
     set({ tasks: recovered, hydrated: true });
     persist(recovered);
   },
   add: (task) => {
-    const tasks = bounded([task, ...get().tasks]);
+    const tasks = reconciled([task, ...get().tasks]);
     set({ tasks });
     persist(tasks);
   },
@@ -68,9 +75,7 @@ export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
   },
   setWorktree: (id, worktree) => {
     const tasks = get().tasks.map((task) =>
-      task.id === id
-        ? { ...task, worktree, updatedAt: Date.now() }
-        : task,
+      task.id === id ? { ...task, worktree, updatedAt: Date.now() } : task,
     );
     set({ tasks });
     persist(tasks);
@@ -125,48 +130,60 @@ export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
   },
   complete: (id, result) => {
     const now = Date.now();
-    const tasks = get().tasks.map((item) =>
-      item.id === id && item.status === "running"
-        ? {
-            ...item,
-            status: "completed" as const,
-            result,
-            error: undefined,
-            endedAt: now,
-            updatedAt: now,
-          }
-        : item,
+    const tasks = reconciled(
+      get().tasks.map((item) =>
+        item.id === id && item.status === "running"
+          ? {
+              ...item,
+              status: "completed" as const,
+              result,
+              error: undefined,
+              endedAt: now,
+              updatedAt: now,
+            }
+          : item,
+      ),
     );
     set({ tasks });
     persist(tasks);
   },
   fail: (id, error) => {
     const now = Date.now();
-    const tasks = get().tasks.map((item) =>
-      item.id === id && (item.status === "queued" || item.status === "running")
-        ? {
-            ...item,
-            status: "failed" as const,
-            error,
-            endedAt: now,
-            updatedAt: now,
-          }
-        : item,
+    const tasks = reconciled(
+      get().tasks.map((item) =>
+        item.id === id &&
+        (item.status === "waiting" ||
+          item.status === "queued" ||
+          item.status === "running")
+          ? {
+              ...item,
+              status: "failed" as const,
+              error,
+              endedAt: now,
+              updatedAt: now,
+            }
+          : item,
+      ),
     );
     set({ tasks });
     persist(tasks);
   },
   cancel: (id) => {
     const now = Date.now();
-    const tasks = get().tasks.map((item) =>
-      item.id === id && (item.status === "queued" || item.status === "running")
-        ? {
-            ...item,
-            status: "cancelled" as const,
-            endedAt: now,
-            updatedAt: now,
-          }
-        : item,
+    const tasks = reconciled(
+      get().tasks.map((item) =>
+        item.id === id &&
+        (item.status === "waiting" ||
+          item.status === "queued" ||
+          item.status === "running")
+          ? {
+              ...item,
+              status: "cancelled" as const,
+              endedAt: now,
+              updatedAt: now,
+            }
+          : item,
+      ),
     );
     set({ tasks });
     persist(tasks);

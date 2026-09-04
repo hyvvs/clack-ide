@@ -5,8 +5,8 @@ import { workspaceEnvironmentFromId, type SessionMeta } from "./sessions";
 import { workspacePathsEqual } from "@/modules/workspace";
 import { normalizeAiError } from "./errors";
 import {
-  PEER_TASK_MAX_HOPS,
   PEER_TASK_MAX_ACTIVE,
+  PEER_TASK_MAX_HOPS,
   PEER_TASK_MAX_PER_ROOT,
   PEER_TASK_SCHEMA_VERSION,
   newPeerTaskId,
@@ -17,6 +17,10 @@ import {
   type PeerTaskExecutionMode,
   type PeerTaskKind,
 } from "./peerTasks";
+import {
+  selectDispatchablePeerTaskIds,
+  validatePeerTaskDependencies,
+} from "./peerTaskDependencies";
 import {
   PeerArtifactPackageError,
   packagePeerTaskArtifacts,
@@ -42,6 +46,7 @@ export type PeerTaskRequest = {
   attachmentRecords?: AttachmentRecord[];
   attachmentReferences?: AttachmentMessageReference[];
   executionMode?: PeerTaskExecutionMode;
+  dependsOn?: string[];
   awaitCompletion?: boolean;
 };
 
@@ -52,9 +57,11 @@ export type PeerTaskRequestResult =
 export async function requestPeerTask(
   request: PeerTaskRequest,
 ): Promise<PeerTaskRequestResult> {
-  const validation = validateRequest(request);
+  const id = newPeerTaskId();
+  const validation = validateRequest(request, id);
   if (!validation.ok) return validation;
-  const { source, target, parent, rootTaskId, hopCount } = validation;
+  const { source, target, parent, rootTaskId, hopCount, dependsOn } =
+    validation;
   let artifacts: PeerTaskArtifact[];
   try {
     artifacts = await packagePeerTaskArtifacts(
@@ -86,8 +93,9 @@ export async function requestPeerTask(
     ...request,
     prompt: request.prompt.trim(),
     artifactRefs: artifacts,
+    dependsOn,
   });
-  if (hasRepeatedTask(fingerprint, rootTaskId)) {
+  if (hasRepeatedTask(fingerprint, parent ? rootTaskId : null)) {
     return {
       ok: false,
       code: "peer_task_repeated",
@@ -96,7 +104,6 @@ export async function requestPeerTask(
     };
   }
   const now = Date.now();
-  const id = newPeerTaskId();
   const task: PeerTask = {
     schemaVersion: PEER_TASK_SCHEMA_VERSION,
     id,
@@ -118,9 +125,10 @@ export async function requestPeerTask(
     prompt: request.prompt.trim(),
     artifactRefs: artifacts,
     parentTaskId: parent?.id ?? null,
-    rootTaskId: rootTaskId ?? id,
+    rootTaskId,
     hopCount,
-    status: "queued",
+    dependsOn,
+    status: dependsOn.length > 0 ? "waiting" : "queued",
     createdAt: now,
     updatedAt: now,
   };
@@ -128,15 +136,27 @@ export async function requestPeerTask(
   usePeerTaskStore.getState().add(task);
   useChatStore.getState().recordPeerTaskStart(source.id);
 
-  if (target.run?.state !== "running") {
-    const dispatch = dispatchPeerTask(task.id);
-    if (request.awaitCompletion !== false) await dispatch;
-    else void dispatch;
-  }
   const current = usePeerTaskStore
     .getState()
     .tasks.find((item) => item.id === task.id);
-  return { ok: true, task: current ?? task };
+  const sessionRunStates = new Map(
+    useChatStore
+      .getState()
+      .sessions.map((session) => [session.id, session.run?.state]),
+  );
+  const canDispatch = selectDispatchablePeerTaskIds(
+    usePeerTaskStore.getState().tasks,
+    sessionRunStates,
+  ).includes(task.id);
+  if (current?.status === "queued" && canDispatch) {
+    const dispatch = dispatchPeerTask(current.id);
+    if (request.awaitCompletion !== false) await dispatch;
+    else void dispatch;
+  }
+  const resultTask = usePeerTaskStore
+    .getState()
+    .tasks.find((item) => item.id === task.id);
+  return { ok: true, task: resultTask ?? task };
 }
 
 export async function dispatchPeerTask(taskId: string): Promise<void> {
@@ -144,6 +164,16 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
   const task = peerStore.tasks.find((item) => item.id === taskId);
   if (task?.status !== "queued") return;
   const chatStore = useChatStore.getState();
+  const sessionRunStates = new Map(
+    chatStore.sessions.map((session) => [session.id, session.run?.state]),
+  );
+  if (
+    !selectDispatchablePeerTaskIds(peerStore.tasks, sessionRunStates).includes(
+      taskId,
+    )
+  ) {
+    return;
+  }
   const source = chatStore.sessions.find(
     (session) => session.id === task.sourceSessionId,
   );
@@ -321,7 +351,13 @@ export async function cancelPeerTask(taskId: string): Promise<void> {
   const task = usePeerTaskStore
     .getState()
     .tasks.find((item) => item.id === taskId);
-  if (!task || (task.status !== "queued" && task.status !== "running")) return;
+  if (
+    !task ||
+    (task.status !== "waiting" &&
+      task.status !== "queued" &&
+      task.status !== "running")
+  )
+    return;
   usePeerTaskStore.getState().cancel(taskId);
   const targetRun = useChatStore
     .getState()
@@ -393,14 +429,18 @@ export async function applyPeerTaskChangeSet(
   }
 }
 
-function validateRequest(request: PeerTaskRequest):
+function validateRequest(
+  request: PeerTaskRequest,
+  taskId: string,
+):
   | {
       ok: true;
       source: SessionMeta;
       target: SessionMeta;
       parent: PeerTask | null;
-      rootTaskId: string | null;
+      rootTaskId: string;
       hopCount: number;
+      dependsOn: string[];
     }
   | { ok: false; code: string; message: string } {
   const prompt = request.prompt.trim();
@@ -465,20 +505,23 @@ function validateRequest(request: PeerTaskRequest):
   }
   const tasks = usePeerTaskStore.getState().tasks;
   const activeTaskCount = tasks.filter(
-    (task) => task.status === "queued" || task.status === "running",
+    (task) =>
+      task.status === "waiting" ||
+      task.status === "queued" ||
+      task.status === "running",
   ).length;
   if (activeTaskCount >= PEER_TASK_MAX_ACTIVE) {
     return {
       ok: false,
       code: "peer_active_task_limit",
-      message: `Clack supports up to ${PEER_TASK_MAX_ACTIVE} queued or running peer tasks at once.`,
+      message: `Clack supports up to ${PEER_TASK_MAX_ACTIVE} active peer tasks at once.`,
     };
   }
   const parentId = source.run?.peerTaskId ?? null;
   const parent = parentId
     ? (tasks.find((task) => task.id === parentId) ?? null)
     : null;
-  const rootTaskId = parent?.rootTaskId ?? parent?.id ?? null;
+  const rootTaskId = parent?.rootTaskId ?? parent?.id ?? taskId;
   const hopCount = parent ? parent.hopCount + 1 : 0;
   if (hopCount > PEER_TASK_MAX_HOPS) {
     return {
@@ -487,9 +530,9 @@ function validateRequest(request: PeerTaskRequest):
       message: `Peer delegation is limited to ${PEER_TASK_MAX_HOPS} hops.`,
     };
   }
-  const rootCount = rootTaskId
-    ? tasks.filter((task) => task.rootTaskId === rootTaskId).length
-    : 0;
+  const rootCount = tasks.filter(
+    (task) => task.rootTaskId === rootTaskId,
+  ).length;
   if (rootCount >= PEER_TASK_MAX_PER_ROOT) {
     return {
       ok: false,
@@ -497,7 +540,20 @@ function validateRequest(request: PeerTaskRequest):
       message: `This collaboration chain reached its ${PEER_TASK_MAX_PER_ROOT}-task limit.`,
     };
   }
-  return { ok: true, source, target, parent, rootTaskId, hopCount };
+  const dependencyValidation = validatePeerTaskDependencies(
+    { taskId, rootTaskId, dependsOn: request.dependsOn },
+    tasks,
+  );
+  if (!dependencyValidation.ok) return dependencyValidation;
+  return {
+    ok: true,
+    source,
+    target,
+    parent,
+    rootTaskId,
+    hopCount,
+    dependsOn: dependencyValidation.dependsOn,
+  };
 }
 
 function sessionById(id: string) {
@@ -512,6 +568,7 @@ function peerTaskPrompt(task: PeerTask): string {
     kind: task.kind,
     executionMode: task.executionMode,
     prompt: task.prompt,
+    dependsOn: task.dependsOn,
     artifacts: task.artifactRefs.map((artifact) => ({
       id: artifact.id,
       name: artifact.displayName,
@@ -538,7 +595,10 @@ function hasRepeatedTask(
         (rootTaskId
           ? task.rootTaskId === rootTaskId
           : task.parentTaskId === null &&
-            (task.status === "queued" || task.status === "running")) &&
+            (task.status === "waiting" ||
+              task.status === "queued" ||
+              task.status === "running")) &&
+        task.status !== "blocked" &&
         task.status !== "cancelled" &&
         peerTaskFingerprint(task) === fingerprint,
     );

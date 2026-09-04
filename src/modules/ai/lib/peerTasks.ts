@@ -12,10 +12,13 @@ import {
 } from "./attachmentMessages";
 import { workspaceEnvironmentFromId } from "./sessions";
 
-export const PEER_TASK_SCHEMA_VERSION = 2;
+export const PEER_TASK_SCHEMA_VERSION = 3;
 export const PEER_TASK_MAX_HOPS = 3;
 export const PEER_TASK_MAX_PER_ROOT = 8;
 export const PEER_TASK_MAX_ACTIVE = 32;
+export const PEER_TASK_MAX_RUNNING = 8;
+export const PEER_TASK_MAX_DEPENDENCIES = 8;
+export const PEER_TASK_MAX_DEPENDENCY_DEPTH = 8;
 export const PEER_TASK_MAX_STORED = 256;
 export const PEER_TASK_MAX_INPUT_ARTIFACTS = 8;
 export const PEER_TASK_MAX_INPUT_ARTIFACT_BYTES = 20 * 1024 * 1024;
@@ -28,11 +31,19 @@ export type PeerTaskExecutionMode =
   | "shared-write"
   | "isolated-worktree";
 export type PeerTaskStatus =
+  | "waiting"
   | "queued"
   | "running"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "blocked";
+
+export type PeerTaskDependencyBlockStatus =
+  | "failed"
+  | "cancelled"
+  | "blocked"
+  | "missing";
 
 export type PeerArtifactRef = {
   kind: "file" | "diff";
@@ -136,9 +147,13 @@ export type PeerTask = {
   parentTaskId: string | null;
   rootTaskId: string;
   hopCount: number;
+  dependsOn: string[];
   status: PeerTaskStatus;
   createdAt: number;
   updatedAt: number;
+  dependenciesSatisfiedAt?: number;
+  blockedByTaskId?: string;
+  blockedByStatus?: PeerTaskDependencyBlockStatus;
   startedAt?: number;
   endedAt?: number;
   result?: PeerTaskResult;
@@ -172,7 +187,12 @@ export function compactPeerTasks(tasks: readonly PeerTask[]): PeerTask[] {
 
   const protectedRoots = new Set(
     tasks
-      .filter((task) => task.status === "queued" || task.status === "running")
+      .filter(
+        (task) =>
+          task.status === "waiting" ||
+          task.status === "queued" ||
+          task.status === "running",
+      )
       .map((task) => task.rootTaskId),
   );
   const protectedIds = new Set(
@@ -219,6 +239,7 @@ export function peerTaskFingerprint(input: {
   executionMode?: PeerTaskExecutionMode;
   prompt: string;
   artifactRefs?: readonly Pick<PeerTaskArtifact, "contentRef">[];
+  dependsOn?: readonly string[];
 }): string {
   const artifactHashes = (input.artifactRefs ?? [])
     .map((artifact) => artifact.contentRef.contentHash)
@@ -231,6 +252,7 @@ export function peerTaskFingerprint(input: {
     input.executionMode ?? "read-only",
     input.prompt.trim().replace(/\s+/g, " ").toLowerCase(),
     artifactHashes,
+    [...(input.dependsOn ?? [])].sort().join(","),
   ].join("|");
 }
 
@@ -250,6 +272,7 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
   const task = value as StoredPeerTask;
   if (
     (task.schemaVersion !== 1 &&
+      task.schemaVersion !== 2 &&
       task.schemaVersion !== PEER_TASK_SCHEMA_VERSION) ||
     !nonEmpty(task.id) ||
     !nonEmpty(task.sourceSessionId) ||
@@ -278,6 +301,7 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
     executionMode: isExecutionMode(task.executionMode)
       ? task.executionMode
       : "read-only",
+    dependsOn: normalizeDependencyIds(task.dependsOn),
   };
 }
 
@@ -335,6 +359,7 @@ function migrateVersionOneTask(task: StoredPeerTask): PeerTask {
     executionMode: isExecutionMode(task.executionMode)
       ? task.executionMode
       : "read-only",
+    dependsOn: [],
   };
 }
 
@@ -496,11 +521,21 @@ function isKind(value: unknown): value is PeerTaskKind {
 
 function isStatus(value: unknown): value is PeerTaskStatus {
   return (
+    value === "waiting" ||
     value === "queued" ||
     value === "running" ||
     value === "completed" ||
     value === "failed" ||
-    value === "cancelled"
+    value === "cancelled" ||
+    value === "blocked"
+  );
+}
+
+function normalizeDependencyIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter(nonEmpty))].slice(
+    0,
+    PEER_TASK_MAX_DEPENDENCIES,
   );
 }
 

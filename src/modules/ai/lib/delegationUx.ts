@@ -108,10 +108,12 @@ export function buildDelegationRequest(input: {
 }
 
 export function delegationStatusLabel(task: PeerTask): string {
+  if (task.status === "waiting") return "Waiting";
   if (task.status === "queued") return "Queued";
   if (task.status === "running") return "Working";
   if (task.status === "failed") return "Failed";
   if (task.status === "cancelled") return "Cancelled";
+  if (task.status === "blocked") return "Blocked";
   if (task.changeSet?.patch && !task.changeSet.appliedAt)
     return "Changes ready";
   if (task.kind === "review") return "Review complete";
@@ -125,10 +127,12 @@ export function delegationCardTitle(
   targetAgentName: string,
 ): string {
   if (!viewingSource) return `Delegated by ${sourceAgentName}`;
+  if (task.status === "waiting") return `${targetAgentName} is waiting`;
   if (task.status === "queued") return `${targetAgentName} is queued`;
   if (task.status === "running") return `${targetAgentName} is working`;
   if (task.status === "failed") return `${targetAgentName} failed`;
   if (task.status === "cancelled") return "Delegated task cancelled";
+  if (task.status === "blocked") return `${targetAgentName} is blocked`;
   if (task.changeSet?.patch && !task.changeSet.appliedAt) {
     return "Changes ready to review";
   }

@@ -52,6 +52,7 @@ import {
 import {
   PEER_TASK_MAX_ACTIVE,
   PEER_TASK_MAX_HOPS,
+  PEER_TASK_MAX_PER_ROOT,
   PEER_TASK_SCHEMA_VERSION,
   recoverInterruptedPeerTasks,
   type PeerTask,
@@ -146,6 +147,80 @@ describe("peer task coordination", () => {
       useChatStore.getState().sessions.find((item) => item.id === TARGET)?.run
         ?.startedAt,
     ).toBe(10);
+  });
+
+  it("waits for prerequisites, then dispatches through the existing target path", async () => {
+    const root = task({
+      id: "root",
+      rootTaskId: "root",
+      targetSessionId: SOURCE,
+      status: "running",
+    });
+    const prerequisite = task({
+      id: "investigation",
+      rootTaskId: root.id,
+      parentTaskId: root.id,
+      targetSessionId: "investigator-chat",
+      status: "running",
+    });
+    usePeerTaskStore.setState({ tasks: [prerequisite, root] });
+    useChatStore.setState((state) => ({
+      sessions: state.sessions.map((item) =>
+        item.id === SOURCE
+          ? {
+              ...item,
+              run: { state: "running", startedAt: 1, peerTaskId: root.id },
+            }
+          : item,
+      ),
+    }));
+
+    const requested = await requestPeerTask({
+      sourceSessionId: SOURCE,
+      targetSessionId: TARGET,
+      kind: "review",
+      prompt: "Integrate the completed investigation.",
+      dependsOn: [prerequisite.id],
+      attachmentReferences: [attachmentReference("spec.md")],
+    });
+
+    expect(requested.ok).toBe(true);
+    if (!requested.ok) return;
+    expect(requested.task).toMatchObject({
+      status: "waiting",
+      rootTaskId: root.id,
+      dependsOn: [prerequisite.id],
+    });
+    expect(requested.task.artifactRefs).toHaveLength(1);
+    expect(sendMessageToSession).not.toHaveBeenCalled();
+
+    usePeerTaskStore.getState().complete(prerequisite.id, {
+      summary: "Investigation complete.",
+      targetSessionId: prerequisite.targetSessionId,
+      targetAgentId: prerequisite.targetAgentId,
+      targetModelId: prerequisite.targetModelId,
+      completedAt: 10,
+      artifacts: [],
+    });
+    expect(
+      usePeerTaskStore
+        .getState()
+        .tasks.find((item) => item.id === requested.task.id),
+    ).toMatchObject({
+      status: "queued",
+      dependenciesSatisfiedAt: expect.any(Number),
+    });
+
+    await dispatchPeerTask(requested.task.id);
+
+    expect(sendMessageToSession).toHaveBeenCalledWith(
+      TARGET,
+      expect.objectContaining({ role: "user" }),
+      expect.objectContaining({ peerTaskId: requested.task.id }),
+    );
+    expect(
+      JSON.stringify(vi.mocked(sendMessageToSession).mock.calls),
+    ).toContain(prerequisite.id);
   });
 
   it("shares only the explicit prompt and artifact references", async () => {
@@ -403,13 +478,51 @@ describe("peer task coordination", () => {
     expect(usePeerTaskStore.getState().tasks[0].status).toBe("cancelled");
   });
 
-  it("bounds queued and running peer work before creating another billed task", async () => {
+  it("keeps each collaboration root within its task ceiling", async () => {
+    const rootTasks = Array.from(
+      { length: PEER_TASK_MAX_PER_ROOT },
+      (_, index) =>
+        task({
+          id: index === 0 ? "root" : `child-${index}`,
+          rootTaskId: "root",
+          parentTaskId: index === 0 ? null : "root",
+          status: "completed",
+        }),
+    );
+    usePeerTaskStore.setState({ tasks: rootTasks });
+    useChatStore.setState((state) => ({
+      sessions: state.sessions.map((item) =>
+        item.id === SOURCE
+          ? {
+              ...item,
+              run: { state: "running", startedAt: 1, peerTaskId: "root" },
+            }
+          : item,
+      ),
+    }));
+
+    await expect(
+      requestPeerTask({
+        sourceSessionId: SOURCE,
+        targetSessionId: TARGET,
+        kind: "question",
+        prompt: "Add one more task.",
+      }),
+    ).resolves.toMatchObject({ ok: false, code: "peer_task_limit" });
+  });
+
+  it("bounds waiting, queued, and running work before another billed task", async () => {
     usePeerTaskStore.setState({
       tasks: Array.from({ length: PEER_TASK_MAX_ACTIVE }, (_, index) =>
         task({
           id: `active-${index}`,
           rootTaskId: `active-${index}`,
-          status: index % 2 === 0 ? "queued" : "running",
+          status:
+            index % 3 === 0
+              ? "waiting"
+              : index % 3 === 1
+                ? "queued"
+                : "running",
         }),
       ),
     });
@@ -569,6 +682,7 @@ function task(overrides: Partial<PeerTask> = {}): PeerTask {
     parentTaskId: null,
     rootTaskId: "task",
     hopCount: 0,
+    dependsOn: [],
     status: "queued",
     createdAt: 1,
     updatedAt: 1,
