@@ -123,6 +123,22 @@ describe("delegation UX", () => {
     expect(
       delegationStatusLabel(task({ status: "blocked", result: undefined })),
     ).toBe("Blocked");
+    expect(
+      delegationStatusLabel(
+        task({
+          status: "cancelled",
+          result: undefined,
+          cancellation: {
+            actor: "user",
+            cause: "direct",
+            requestedTaskId: "task",
+            reason: "Cancelled by user.",
+            cancelledAt: 1,
+            cancelledDescendantCount: 2,
+          },
+        }),
+      ),
+    ).toBe("Cancelled · 2 subtasks cancelled");
     expect(delegationStatusLabel(task())).toBe("Review complete");
     expect(delegationCardTitle(task(), true, "Coder", "Reviewer")).toBe(
       "Review complete",

@@ -210,6 +210,57 @@ describe("PeerTaskFeed", () => {
     expect(html).not.toContain("could not complete this task");
   });
 
+  it("explains direct and propagated cancellation without exposing task IDs", () => {
+    const parent = task({
+      id: "parent-internal-id",
+      targetAgentId: "Coder",
+      status: "cancelled",
+      result: undefined,
+      cancellation: {
+        actor: "user",
+        cause: "direct",
+        requestedTaskId: "parent-internal-id",
+        reason: "Cancelled by user.",
+        cancelledAt: 10,
+        cancelledDescendantCount: 2,
+      },
+    });
+    const child = task({
+      id: "child-internal-id",
+      parentTaskId: parent.id,
+      rootTaskId: parent.id,
+      status: "cancelled",
+      result: undefined,
+      cancellation: {
+        actor: "user",
+        cause: "parent",
+        requestedTaskId: parent.id,
+        cancelledByTaskId: parent.id,
+        reason: "Cancelled by user.",
+        cancelledAt: 10,
+      },
+    });
+
+    const parentHtml = renderToStaticMarkup(
+      <PeerTaskCard
+        task={parent}
+        viewingSessionId="source"
+        allTasks={[parent, child]}
+      />,
+    );
+    const childHtml = renderToStaticMarkup(
+      <PeerTaskCard
+        task={child}
+        viewingSessionId="source"
+        allTasks={[parent, child]}
+      />,
+    );
+
+    expect(parentHtml).toContain("Cancelled · 2 subtasks cancelled");
+    expect(childHtml).toContain("Cancelled by Coder");
+    expect(childHtml).not.toContain("parent-internal-id");
+  });
+
   it("shows working, completed artifacts, and failure in human language", () => {
     const workingHtml = renderToStaticMarkup(
       <PeerTaskCard

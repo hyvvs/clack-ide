@@ -1,6 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { requestPeerTask } from "../lib/peerTaskCoordinator";
+import { cancelPeerTask, requestPeerTask } from "../lib/peerTaskCoordinator";
 import { PEER_TASK_MAX_DEPENDENCIES } from "../lib/peerTasks";
 import { useChatStore } from "../store/chatStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
@@ -115,6 +115,54 @@ ${dependencyCandidates.length > 0 ? dependencyCandidates.join("\n") : "- No depe
           targetSessionId: result.task.targetSessionId,
           result: result.task.result?.summary,
           error: result.task.error,
+        };
+      },
+    }),
+    cancel_peer_task: tool({
+      description: `Cancel an active peer task in the current collaboration. Set cascade to true to cancel its active descendants as well. Completed, failed, blocked, sibling, and unrelated tasks are not cancelled.
+
+Tasks in this collaboration:
+${dependencyCandidates.length > 0 ? dependencyCandidates.join("\n") : "- No cancellable collaboration is active."}`,
+      inputSchema: z.object({
+        taskId: z.string().min(1).describe("Exact peer task ID."),
+        cascade: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Cancel active descendants in the selected task's subtree.",
+          ),
+        reason: z
+          .string()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe("Brief human-readable reason for the cancellation."),
+      }),
+      execute: async ({ taskId, cascade, reason }) => {
+        const currentSessionId = ctx.getSessionId();
+        const liveSession = useChatStore
+          .getState()
+          .sessions.find((session) => session.id === currentSessionId);
+        const liveTask = usePeerTaskStore
+          .getState()
+          .tasks.find((task) => task.id === liveSession?.run?.peerTaskId);
+        if (!liveTask) {
+          return {
+            error: "Only an active peer task may cancel collaboration work.",
+            code: "peer_cancellation_source_missing",
+          };
+        }
+        const result = await cancelPeerTask(taskId, {
+          actor: "programmatic",
+          cascade,
+          reason,
+          authorizedRootTaskId: liveTask.rootTaskId,
+        });
+        if (!result.ok) return { error: result.message, code: result.code };
+        return {
+          status: result.alreadyTerminal ? "already_terminal" : "cancelled",
+          cancelledTaskIds: result.cancelledTaskIds,
+          cancelledDescendantCount: result.cancelledDescendantCount,
         };
       },
     }),

@@ -53,6 +53,7 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     bash_run: { label: "Run shell command", icon: TerminalIcon },
     bash_background: { label: "Spawn background process", icon: TerminalIcon },
     request_peer_task: { label: "Start peer agent task", icon: ToolsIcon },
+    cancel_peer_task: { label: "Cancel peer agent task", icon: ToolsIcon },
   };
 
 function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {

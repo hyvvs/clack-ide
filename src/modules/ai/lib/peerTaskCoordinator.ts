@@ -22,6 +22,10 @@ import {
   validatePeerTaskDependencies,
 } from "./peerTaskDependencies";
 import {
+  planPeerTaskCancellation,
+  type PeerTaskCancellationRequest,
+} from "./peerTaskCancellation";
+import {
   PeerArtifactPackageError,
   packagePeerTaskArtifacts,
   packageReturnedPeerTaskArtifacts,
@@ -253,6 +257,10 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
         checkoutRoot: worktree.checkoutRoot,
       };
     }
+    const beforeRun = usePeerTaskStore
+      .getState()
+      .tasks.find((item) => item.id === claimed.id);
+    if (beforeRun?.status === "cancelled") return;
     await sendMessageToSession(
       claimed.targetSessionId,
       {
@@ -269,6 +277,10 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
         ...checkout,
       },
     );
+    const afterRun = usePeerTaskStore
+      .getState()
+      .tasks.find((item) => item.id === claimed.id);
+    if (afterRun?.status === "cancelled") return;
     const currentTarget = useChatStore
       .getState()
       .sessions.find((session) => session.id === claimed.targetSessionId);
@@ -331,7 +343,10 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
       artifacts: returnedArtifacts,
     });
   } catch (error) {
-    if (worktreeCreated && !captureStarted) {
+    const cancelled =
+      usePeerTaskStore.getState().tasks.find((item) => item.id === claimed.id)
+        ?.status === "cancelled";
+    if (worktreeCreated && !captureStarted && !cancelled) {
       try {
         await native.gitAgentWorktreeRemove(claimed.workspaceRoot, claimed.id);
       } catch {
@@ -339,6 +354,7 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
         // metadata when cleanup itself fails.
       }
     }
+    if (cancelled) return;
     const normalized = normalizeAiError(error, { disposition: "terminal" });
     usePeerTaskStore.getState().fail(claimed.id, {
       code: peerArtifactFailureCode(error),
@@ -347,32 +363,81 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
   }
 }
 
-export async function cancelPeerTask(taskId: string): Promise<void> {
-  const task = usePeerTaskStore
-    .getState()
-    .tasks.find((item) => item.id === taskId);
-  if (
-    !task ||
-    (task.status !== "waiting" &&
-      task.status !== "queued" &&
-      task.status !== "running")
-  )
-    return;
-  usePeerTaskStore.getState().cancel(taskId);
-  const targetRun = useChatStore
-    .getState()
-    .sessions.find((session) => session.id === task.targetSessionId)?.run;
-  if (targetRun?.state === "running" && targetRun.peerTaskId === task.id) {
-    await cancelRun(task.targetSessionId);
+export type CancelPeerTaskOptions = Omit<PeerTaskCancellationRequest, "taskId">;
+
+export type CancelPeerTaskResult =
+  | {
+      ok: true;
+      cancelledTaskIds: string[];
+      cancelledDescendantCount: number;
+      alreadyTerminal: boolean;
+    }
+  | {
+      ok: false;
+      code: string;
+      message: string;
+      cancelledTaskIds?: string[];
+    };
+
+export async function cancelPeerTask(
+  taskId: string,
+  options: Partial<CancelPeerTaskOptions> = {},
+): Promise<CancelPeerTaskResult> {
+  const peerStore = usePeerTaskStore.getState();
+  const plan = planPeerTaskCancellation(
+    {
+      taskId,
+      cascade: options.cascade ?? false,
+      actor: options.actor ?? "user",
+      reason: options.reason,
+      authorizedRootTaskId: options.authorizedRootTaskId,
+    },
+    peerStore.tasks,
+  );
+  if (!plan.ok) return plan;
+  if (plan.alreadyTerminal) {
+    return {
+      ok: true,
+      cancelledTaskIds: [],
+      cancelledDescendantCount: 0,
+      alreadyTerminal: true,
+    };
   }
-  if (task.executionMode === "isolated-worktree" && task.worktree) {
+
+  const transitions = usePeerTaskStore.getState().cancel(plan.targets);
+  const tasksById = new Map(
+    usePeerTaskStore.getState().tasks.map((task) => [task.id, task]),
+  );
+  for (const transition of transitions) {
+    if (transition.previousStatus !== "running") continue;
+    const task = tasksById.get(transition.taskId);
+    if (!task) continue;
+    const targetRun = useChatStore
+      .getState()
+      .sessions.find((session) => session.id === task.targetSessionId)?.run;
+    if (
+      targetRun?.state !== "running" ||
+      targetRun.peerTaskId !== transition.taskId
+    ) {
+      continue;
+    }
     try {
-      await native.gitAgentWorktreeRemove(task.workspaceRoot, task.id);
-      usePeerTaskStore.getState().clearWorktree(task.id);
-    } catch {
-      // Cancellation is durable even when native cleanup needs recovery.
+      await cancelRun(task.targetSessionId);
+    } catch (error) {
+      return {
+        ok: false,
+        code: "peer_cancellation_stop_failed",
+        message: normalizeAiError(error, { disposition: "terminal" }).message,
+        cancelledTaskIds: transitions.map((item) => item.taskId),
+      };
     }
   }
+  return {
+    ok: true,
+    cancelledTaskIds: transitions.map((item) => item.taskId),
+    cancelledDescendantCount: Math.max(0, transitions.length - 1),
+    alreadyTerminal: transitions.length === 0,
+  };
 }
 
 export async function discardPeerTaskWorktree(

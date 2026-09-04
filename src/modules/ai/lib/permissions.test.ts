@@ -109,6 +109,13 @@ describe("agent permission resolver", () => {
     expect(decision("full-access", "request_peer_task", input).outcome).toBe(
       "allow",
     );
+    expect(decision("chat-only", "cancel_peer_task", input).outcome).toBe(
+      "deny",
+    );
+    expect(decision("ask", "cancel_peer_task", input).outcome).toBe("prompt");
+    expect(decision("full-access", "cancel_peer_task", input).outcome).toBe(
+      "allow",
+    );
   });
 
   it("treats Allow once as one response without creating a grant", () => {
@@ -286,6 +293,7 @@ describe("agent permission resolver", () => {
     expect(requiresWorkspaceWriteLease("read_file")).toBe(false);
     expect(requiresWorkspaceWriteLease("grep_search")).toBe(false);
     expect(requiresWorkspaceWriteLease("request_peer_task")).toBe(false);
+    expect(requiresWorkspaceWriteLease("cancel_peer_task")).toBe(false);
   });
 
   it("serializes mutating tools from different sessions in one workspace", async () => {

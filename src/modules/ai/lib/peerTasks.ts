@@ -12,7 +12,7 @@ import {
 } from "./attachmentMessages";
 import { workspaceEnvironmentFromId } from "./sessions";
 
-export const PEER_TASK_SCHEMA_VERSION = 3;
+export const PEER_TASK_SCHEMA_VERSION = 4;
 export const PEER_TASK_MAX_HOPS = 3;
 export const PEER_TASK_MAX_PER_ROOT = 8;
 export const PEER_TASK_MAX_ACTIVE = 32;
@@ -44,6 +44,16 @@ export type PeerTaskDependencyBlockStatus =
   | "cancelled"
   | "blocked"
   | "missing";
+
+export type PeerTaskCancellation = {
+  actor: "user" | "programmatic";
+  cause: "direct" | "parent" | "orchestration";
+  requestedTaskId: string;
+  cancelledByTaskId?: string;
+  reason: string;
+  cancelledAt: number;
+  cancelledDescendantCount?: number;
+};
 
 export type PeerArtifactRef = {
   kind: "file" | "diff";
@@ -154,6 +164,7 @@ export type PeerTask = {
   dependenciesSatisfiedAt?: number;
   blockedByTaskId?: string;
   blockedByStatus?: PeerTaskDependencyBlockStatus;
+  cancellation?: PeerTaskCancellation;
   startedAt?: number;
   endedAt?: number;
   result?: PeerTaskResult;
@@ -273,6 +284,7 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
   if (
     (task.schemaVersion !== 1 &&
       task.schemaVersion !== 2 &&
+      task.schemaVersion !== 3 &&
       task.schemaVersion !== PEER_TASK_SCHEMA_VERSION) ||
     !nonEmpty(task.id) ||
     !nonEmpty(task.sourceSessionId) ||
@@ -302,6 +314,7 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
       ? task.executionMode
       : "read-only",
     dependsOn: normalizeDependencyIds(task.dependsOn),
+    cancellation: normalizeCancellation(task.cancellation),
   };
 }
 
@@ -360,6 +373,7 @@ function migrateVersionOneTask(task: StoredPeerTask): PeerTask {
       ? task.executionMode
       : "read-only",
     dependsOn: [],
+    cancellation: undefined,
   };
 }
 
@@ -537,6 +551,44 @@ function normalizeDependencyIds(value: unknown): string[] {
     0,
     PEER_TASK_MAX_DEPENDENCIES,
   );
+}
+
+function normalizeCancellation(
+  value: unknown,
+): PeerTaskCancellation | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Partial<PeerTaskCancellation>;
+  if (
+    (candidate.actor !== "user" && candidate.actor !== "programmatic") ||
+    (candidate.cause !== "direct" &&
+      candidate.cause !== "parent" &&
+      candidate.cause !== "orchestration") ||
+    !nonEmpty(candidate.requestedTaskId) ||
+    !nonEmpty(candidate.reason) ||
+    typeof candidate.cancelledAt !== "number" ||
+    !Number.isFinite(candidate.cancelledAt)
+  ) {
+    return undefined;
+  }
+  return {
+    actor: candidate.actor,
+    cause: candidate.cause,
+    requestedTaskId: candidate.requestedTaskId,
+    cancelledByTaskId: nonEmpty(candidate.cancelledByTaskId)
+      ? candidate.cancelledByTaskId
+      : undefined,
+    reason: candidate.reason.slice(0, 500),
+    cancelledAt: candidate.cancelledAt,
+    cancelledDescendantCount:
+      typeof candidate.cancelledDescendantCount === "number" &&
+      Number.isInteger(candidate.cancelledDescendantCount) &&
+      candidate.cancelledDescendantCount >= 0
+        ? Math.min(
+            candidate.cancelledDescendantCount,
+            PEER_TASK_MAX_PER_ROOT - 1,
+          )
+        : undefined,
+  };
 }
 
 function isExecutionMode(value: unknown): value is PeerTaskExecutionMode {

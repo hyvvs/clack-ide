@@ -9,6 +9,10 @@ import {
   type PeerTaskResult,
 } from "../lib/peerTasks";
 import {
+  applyPeerTaskCancellationTargets,
+  type PeerTaskCancellationTarget,
+} from "../lib/peerTaskCancellation";
+import {
   reconcilePeerTaskDependencies,
   recoverPeerTaskLedger,
 } from "../lib/peerTaskDependencies";
@@ -29,7 +33,9 @@ type PeerTaskStore = {
   setChangeSetApplyError: (id: string, message: string) => void;
   complete: (id: string, result: PeerTaskResult) => void;
   fail: (id: string, error: PeerTaskError) => void;
-  cancel: (id: string) => void;
+  cancel: (
+    targets: readonly PeerTaskCancellationTarget[],
+  ) => PeerTaskCancellationTarget[];
 };
 
 function persist(tasks: PeerTask[]): void {
@@ -168,24 +174,14 @@ export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
     set({ tasks });
     persist(tasks);
   },
-  cancel: (id) => {
-    const now = Date.now();
-    const tasks = reconciled(
-      get().tasks.map((item) =>
-        item.id === id &&
-        (item.status === "waiting" ||
-          item.status === "queued" ||
-          item.status === "running")
-          ? {
-              ...item,
-              status: "cancelled" as const,
-              endedAt: now,
-              updatedAt: now,
-            }
-          : item,
-      ),
+  cancel: (targetsToCancel) => {
+    const cancelled = applyPeerTaskCancellationTargets(
+      get().tasks,
+      targetsToCancel,
     );
+    const tasks = reconciled(cancelled.tasks);
     set({ tasks });
     persist(tasks);
+    return cancelled.transitions;
   },
 }));

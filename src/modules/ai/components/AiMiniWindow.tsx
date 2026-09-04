@@ -75,6 +75,7 @@ import {
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { usePlanStore } from "../store/planStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
+import { isPeerTaskActive } from "../lib/peerTaskCancellation";
 
 const EMPTY_TOKEN_USAGE = {
   inputTokens: 0,
@@ -1221,11 +1222,7 @@ function DelegationActivity() {
   const activeTasks = useMemo(
     () =>
       tasks.filter(
-        (task) =>
-          task.workspaceId === workspaceId &&
-          (task.status === "waiting" ||
-            task.status === "queued" ||
-            task.status === "running"),
+        (task) => task.workspaceId === workspaceId && isPeerTaskActive(task),
       ),
     [tasks, workspaceId],
   );

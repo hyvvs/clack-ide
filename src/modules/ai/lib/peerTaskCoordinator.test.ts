@@ -478,6 +478,189 @@ describe("peer task coordination", () => {
     expect(usePeerTaskStore.getState().tasks[0].status).toBe("cancelled");
   });
 
+  it("cancels running descendants through their existing session stop paths", async () => {
+    const childSessionId = "chat-child";
+    const parentStop = vi.fn().mockResolvedValue(undefined);
+    const childStop = vi.fn().mockResolvedValue(undefined);
+    chats.set(TARGET, {
+      stop: parentStop,
+      messages: [],
+    } as unknown as Chat<UIMessage>);
+    chats.set(childSessionId, {
+      stop: childStop,
+      messages: [],
+    } as unknown as Chat<UIMessage>);
+    const root = task({
+      id: "root",
+      rootTaskId: "root",
+      status: "running",
+      targetSessionId: TARGET,
+    });
+    const child = task({
+      id: "child",
+      rootTaskId: root.id,
+      parentTaskId: root.id,
+      hopCount: 1,
+      status: "running",
+      targetSessionId: childSessionId,
+    });
+    usePeerTaskStore.setState({ tasks: [root, child] });
+    useChatStore.setState((state) => ({
+      sessions: [
+        ...state.sessions.map((item) =>
+          item.id === TARGET
+            ? {
+                ...item,
+                run: {
+                  state: "running" as const,
+                  startedAt: 2,
+                  peerTaskId: root.id,
+                },
+              }
+            : item,
+        ),
+        {
+          ...session(childSessionId, "agent-c", "model-c"),
+          run: {
+            state: "running" as const,
+            startedAt: 3,
+            peerTaskId: child.id,
+          },
+        },
+      ],
+    }));
+
+    const result = await cancelPeerTask(root.id, {
+      actor: "user",
+      cascade: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      cancelledDescendantCount: 1,
+      cancelledTaskIds: [root.id, child.id],
+    });
+    expect(parentStop).toHaveBeenCalledOnce();
+    expect(childStop).toHaveBeenCalledOnce();
+    expect(usePeerTaskStore.getState().tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: root.id, status: "cancelled" }),
+        expect.objectContaining({
+          id: child.id,
+          status: "cancelled",
+          cancellation: {
+            actor: "user",
+            cause: "orchestration",
+            requestedTaskId: root.id,
+            cancelledByTaskId: root.id,
+            reason: "Cancelled by user.",
+            cancelledAt: expect.any(Number),
+            cancelledDescendantCount: undefined,
+          },
+        }),
+      ]),
+    );
+  });
+
+  it("can cancel only a parent while its running child continues", async () => {
+    const childSessionId = "chat-child";
+    const parentStop = vi.fn().mockResolvedValue(undefined);
+    const childStop = vi.fn().mockResolvedValue(undefined);
+    chats.set(TARGET, {
+      stop: parentStop,
+      messages: [],
+    } as unknown as Chat<UIMessage>);
+    chats.set(childSessionId, {
+      stop: childStop,
+      messages: [],
+    } as unknown as Chat<UIMessage>);
+    const root = task({
+      id: "root",
+      rootTaskId: "root",
+      status: "running",
+    });
+    const child = task({
+      id: "child",
+      rootTaskId: root.id,
+      parentTaskId: root.id,
+      hopCount: 1,
+      status: "running",
+      targetSessionId: childSessionId,
+    });
+    usePeerTaskStore.setState({ tasks: [root, child] });
+    useChatStore.setState((state) => ({
+      sessions: [
+        ...state.sessions.map((item) =>
+          item.id === TARGET
+            ? {
+                ...item,
+                run: {
+                  state: "running" as const,
+                  startedAt: 2,
+                  peerTaskId: root.id,
+                },
+              }
+            : item,
+        ),
+        {
+          ...session(childSessionId, "agent-c", "model-c"),
+          run: {
+            state: "running" as const,
+            startedAt: 3,
+            peerTaskId: child.id,
+          },
+        },
+      ],
+    }));
+
+    await cancelPeerTask(root.id, { actor: "user", cascade: false });
+
+    expect(parentStop).toHaveBeenCalledOnce();
+    expect(childStop).not.toHaveBeenCalled();
+    expect(
+      usePeerTaskStore.getState().tasks.find((item) => item.id === child.id)
+        ?.status,
+    ).toBe("running");
+  });
+
+  it("preserves a cancelled isolated worktree for explicit recovery", async () => {
+    const stop = vi.fn().mockResolvedValue(undefined);
+    chats.set(TARGET, { stop, messages: [] } as unknown as Chat<UIMessage>);
+    const remove = vi
+      .spyOn(native, "gitAgentWorktreeRemove")
+      .mockResolvedValue(undefined);
+    const isolated = task({
+      id: "isolated",
+      rootTaskId: "isolated",
+      status: "running",
+      executionMode: "isolated-worktree",
+      worktree: { checkoutRoot: "C:/tmp/clack-peer", baseSha: "abc" },
+    });
+    usePeerTaskStore.setState({ tasks: [isolated] });
+    useChatStore.setState((state) => ({
+      sessions: state.sessions.map((item) =>
+        item.id === TARGET
+          ? {
+              ...item,
+              run: {
+                state: "running" as const,
+                startedAt: 2,
+                peerTaskId: isolated.id,
+              },
+            }
+          : item,
+      ),
+    }));
+
+    await cancelPeerTask(isolated.id);
+
+    expect(remove).not.toHaveBeenCalled();
+    expect(usePeerTaskStore.getState().tasks[0]).toMatchObject({
+      status: "cancelled",
+      worktree: { checkoutRoot: "C:/tmp/clack-peer", baseSha: "abc" },
+    });
+  });
+
   it("keeps each collaboration root within its task ceiling", async () => {
     const rootTasks = Array.from(
       { length: PEER_TASK_MAX_PER_ROOT },

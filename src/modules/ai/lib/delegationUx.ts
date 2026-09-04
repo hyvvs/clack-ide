@@ -112,7 +112,12 @@ export function delegationStatusLabel(task: PeerTask): string {
   if (task.status === "queued") return "Queued";
   if (task.status === "running") return "Working";
   if (task.status === "failed") return "Failed";
-  if (task.status === "cancelled") return "Cancelled";
+  if (task.status === "cancelled") {
+    const descendants = task.cancellation?.cancelledDescendantCount ?? 0;
+    return descendants > 0
+      ? `Cancelled · ${descendants} subtask${descendants === 1 ? "" : "s"} cancelled`
+      : "Cancelled";
+  }
   if (task.status === "blocked") return "Blocked";
   if (task.changeSet?.patch && !task.changeSet.appliedAt)
     return "Changes ready";

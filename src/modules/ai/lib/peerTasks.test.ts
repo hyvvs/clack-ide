@@ -138,6 +138,35 @@ describe("peer task retention", () => {
       schemaVersion: PEER_TASK_SCHEMA_VERSION,
       dependsOn: [],
     });
+
+    const versionThree = JSON.parse(JSON.stringify(original)) as Record<
+      string,
+      unknown
+    >;
+    versionThree.schemaVersion = 3;
+    expect(normalizePeerTask(versionThree)).toMatchObject({
+      schemaVersion: PEER_TASK_SCHEMA_VERSION,
+      cancellation: undefined,
+    });
+  });
+
+  it("round-trips bounded cancellation provenance", () => {
+    const cancelled = task("task", 4, {
+      status: "cancelled",
+      cancellation: {
+        actor: "programmatic",
+        cause: "parent",
+        requestedTaskId: "parent",
+        cancelledByTaskId: "parent",
+        reason: "No longer needed.",
+        cancelledAt: 4,
+        cancelledDescendantCount: 1,
+      },
+    });
+
+    expect(normalizePeerTask(JSON.parse(JSON.stringify(cancelled)))).toEqual(
+      cancelled,
+    );
   });
 });
 

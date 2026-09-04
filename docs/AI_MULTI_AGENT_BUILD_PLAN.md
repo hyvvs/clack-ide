@@ -549,6 +549,28 @@ Peer-task orchestration extension (2026-09-04):
   durable results remain inspectable and explicitly selected immutable
   artifacts continue through the existing package pipeline
 
+Peer-task cancellation extension (2026-09-04):
+
+- schema version 4 records whether cancellation was direct, propagated from a
+  parent, or applied to an orchestration root, plus user or programmatic origin,
+  a bounded human reason, timestamp, and cancelled-descendant count
+- cancelling a task alone leaves its hierarchy running; cancelling its subtree
+  transitions waiting and queued descendants immediately and stops running
+  descendants through the existing session-specific cancellation path
+- traversal is deterministic, cycle-safe, same-root only, and bounded by the
+  existing eight-task collaboration and three-hop hierarchy limits
+- dependency semantics remain separate: tasks explicitly cancelled in a
+  subtree stay cancelled, while dependents outside that subtree become blocked
+  when their prerequisite is cancelled
+- terminal tasks win races and are never rewritten; repeated cancellation is
+  idempotent, cancelled work never re-enters dispatch after restart, and
+  unrelated branches keep running
+- immutable input and returned artifacts, captured patches, and recoverable
+  isolated worktrees remain attached to cancelled tasks for explicit review or
+  cleanup; cancellation never auto-applies changes
+- no result aggregation, child-output summarization, planning templates, or
+  provider changes are included in this checkpoint
+
 ## Phase 6: Concurrent Mutation and Conflicts
 
 Goal: Allow agents to modify the same project without silent corruption.

@@ -1,4 +1,14 @@
 import { Spinner } from "@/components/ui/spinner";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -17,6 +27,10 @@ import {
   delegationCardTitle,
   delegationStatusLabel,
 } from "../lib/delegationUx";
+import {
+  activePeerTaskDescendants,
+  isPeerTaskActive,
+} from "../lib/peerTaskCancellation";
 import type { PeerTask, PeerTaskDependencyBlockStatus } from "../lib/peerTasks";
 import { resolveModelSelectionInfo } from "../lib/savedProviderModels";
 import { BUILTIN_AGENTS, type Agent } from "../lib/agents";
@@ -95,6 +109,7 @@ export function PeerTaskCard({
   const [applying, setApplying] = useState(false);
   const [showPatch, setShowPatch] = useState(false);
   const [discardingWorktree, setDiscardingWorktree] = useState(false);
+  const [showCancelConfirmation, setShowCancelConfirmation] = useState(false);
   const lineage = useMemo(
     () => buildPeerTaskLineage(task, allTasks),
     [allTasks, task],
@@ -111,12 +126,13 @@ export function PeerTaskCard({
     ? allTasks.find((item) => item.id === task.parentTaskId)
     : undefined;
   const children = allTasks.filter((item) => item.parentTaskId === task.id);
+  const activeDescendants = useMemo(
+    () => activePeerTaskDescendants(task.id, allTasks),
+    [allTasks, task.id],
+  );
   const peer = viewingSource ? target : source;
   const peerAgentName = viewingSource ? targetAgentName : sourceAgentName;
-  const active =
-    task.status === "waiting" ||
-    task.status === "queued" ||
-    task.status === "running";
+  const active = isPeerTaskActive(task);
   const statusLabel = delegationStatusLabel(task);
   const defaultTitle = delegationCardTitle(
     task,
@@ -133,14 +149,30 @@ export function PeerTaskCard({
   const blockedAgentName = blockedDependency
     ? taskTargetAgentName(blockedDependency, sessions, agents)
     : "A required task";
+  const cancellingTask = task.cancellation?.cancelledByTaskId
+    ? allTasks.find((item) => item.id === task.cancellation?.cancelledByTaskId)
+    : undefined;
+  const cancelledTitle =
+    task.status !== "cancelled"
+      ? undefined
+      : task.cancellation?.cause === "parent"
+        ? `Cancelled by ${
+            cancellingTask
+              ? taskTargetAgentName(cancellingTask, sessions, agents)
+              : "parent task"
+          }`
+        : task.cancellation?.cause === "orchestration"
+          ? "Cancelled with orchestration"
+          : undefined;
   const title =
-    viewingSource &&
+    cancelledTitle ??
+    (viewingSource &&
     task.status === "waiting" &&
     dependencyAgentNames.length > 0
       ? `Waiting for ${humanList(dependencyAgentNames)}`
       : viewingSource && task.status === "blocked"
         ? `Blocked: ${blockedAgentName} ${blockStatusText(task.blockedByStatus)}`
-        : defaultTitle;
+        : defaultTitle);
   const tone =
     task.status === "failed"
       ? "text-destructive"
@@ -439,7 +471,16 @@ export function PeerTaskCard({
           {active ? (
             <button
               type="button"
-              onClick={() => void cancelPeerTask(task.id)}
+              onClick={() => {
+                if (activeDescendants.length > 0) {
+                  setShowCancelConfirmation(true);
+                  return;
+                }
+                void cancelPeerTask(task.id, {
+                  actor: "user",
+                  cascade: false,
+                });
+              }}
               className="shrink-0 text-[10px] hover:text-destructive"
             >
               Cancel task
@@ -447,6 +488,48 @@ export function PeerTaskCard({
           ) : null}
         </div>
       </div>
+      <AlertDialog
+        open={showCancelConfirmation}
+        onOpenChange={setShowCancelConfirmation}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Cancel this task and its active subtasks?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {activeDescendants.length} active subtask
+              {activeDescendants.length === 1 ? "" : "s"} can be cancelled with
+              this task. Completed and unrelated work will be left alone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep working</AlertDialogCancel>
+            <AlertDialogAction
+              variant="outline"
+              onClick={() =>
+                void cancelPeerTask(task.id, {
+                  actor: "user",
+                  cascade: false,
+                })
+              }
+            >
+              Cancel only this task
+            </AlertDialogAction>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() =>
+                void cancelPeerTask(task.id, {
+                  actor: "user",
+                  cascade: true,
+                })
+              }
+            >
+              Cancel task + subtasks
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }
