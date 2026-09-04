@@ -12,6 +12,7 @@ import {
 import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
+  ArrowDown01Icon,
   ArrowRight01Icon,
   Cancel01Icon,
   Tick02Icon,
@@ -31,6 +32,11 @@ import {
   activePeerTaskDescendants,
   isPeerTaskActive,
 } from "../lib/peerTaskCancellation";
+import {
+  buildPeerTaskDependencyAggregate,
+  buildPeerTaskDescendantAggregate,
+  type PeerTaskResultAggregate,
+} from "../lib/peerTaskAggregation";
 import type { PeerTask, PeerTaskDependencyBlockStatus } from "../lib/peerTasks";
 import { resolveModelSelectionInfo } from "../lib/savedProviderModels";
 import { BUILTIN_AGENTS, type Agent } from "../lib/agents";
@@ -110,6 +116,8 @@ export function PeerTaskCard({
   const [showPatch, setShowPatch] = useState(false);
   const [discardingWorktree, setDiscardingWorktree] = useState(false);
   const [showCancelConfirmation, setShowCancelConfirmation] = useState(false);
+  const [showDependencyContext, setShowDependencyContext] = useState(false);
+  const [showDescendantResults, setShowDescendantResults] = useState(false);
   const lineage = useMemo(
     () => buildPeerTaskLineage(task, allTasks),
     [allTasks, task],
@@ -125,11 +133,21 @@ export function PeerTaskCard({
   const parent = task.parentTaskId
     ? allTasks.find((item) => item.id === task.parentTaskId)
     : undefined;
-  const children = allTasks.filter((item) => item.parentTaskId === task.id);
   const activeDescendants = useMemo(
     () => activePeerTaskDescendants(task.id, allTasks),
     [allTasks, task.id],
   );
+  const dependencyAggregate = useMemo(
+    () => buildPeerTaskDependencyAggregate(task, allTasks),
+    [allTasks, task],
+  );
+  const descendantAggregate = useMemo(
+    () => buildPeerTaskDescendantAggregate(task, allTasks),
+    [allTasks, task],
+  );
+  const descendantAgentCount = new Set(
+    descendantAggregate.entries.map((entry) => entry.targetAgentId),
+  ).size;
   const peer = viewingSource ? target : source;
   const peerAgentName = viewingSource ? targetAgentName : sourceAgentName;
   const active = isPeerTaskActive(task);
@@ -277,6 +295,20 @@ export function PeerTaskCard({
                 );
               })}
             </div>
+            {task.status !== "waiting" &&
+            task.status !== "blocked" &&
+            dependencyAggregate.entries.length > 0 ? (
+              <AggregateDisclosure
+                label={`Context from ${dependencyAggregate.relevantTaskCount} prerequisite ${dependencyAggregate.relevantTaskCount === 1 ? "task" : "tasks"}`}
+                aggregate={dependencyAggregate}
+                open={showDependencyContext}
+                onOpenChange={setShowDependencyContext}
+                allTasks={allTasks}
+                sessions={sessions}
+                agents={agents}
+                onOpenSession={onOpenSession ?? switchSession}
+              />
+            ) : null}
           </div>
         ) : null}
         {task.artifactRefs.length > 0 ? (
@@ -435,23 +467,29 @@ export function PeerTaskCard({
             </button>
           </div>
         ) : null}
-        {parent || children.length > 0 ? (
+        {descendantAggregate.entries.length > 0 ? (
+          <div className="border-t border-[color:var(--clack-border-subtle)] pt-2">
+            <AggregateDisclosure
+              label={`Results from ${descendantAgentCount} ${descendantAgentCount === 1 ? "agent" : "agents"}`}
+              aggregate={descendantAggregate}
+              open={showDescendantResults}
+              onOpenChange={setShowDescendantResults}
+              allTasks={allTasks}
+              sessions={sessions}
+              agents={agents}
+              onOpenSession={onOpenSession ?? switchSession}
+            />
+          </div>
+        ) : null}
+        {parent ? (
           <div className="space-y-1 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[10px] text-[var(--clack-text-3)]">
             <div className="font-medium text-[var(--clack-text-2)]">
               Related work
             </div>
-            {parent ? (
-              <div className="truncate">
-                Follow-up to {taskTargetAgentName(parent, sessions, agents)}:{" "}
-                {parent.prompt}
-              </div>
-            ) : null}
-            {children.length > 0 ? (
-              <div>
-                {children.length} delegated task
-                {children.length === 1 ? "" : "s"}
-              </div>
-            ) : null}
+            <div className="truncate">
+              Follow-up to {taskTargetAgentName(parent, sessions, agents)}:{" "}
+              {parent.prompt}
+            </div>
           </div>
         ) : null}
         <div className="flex items-center gap-2 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[9.5px] text-[var(--clack-text-3)]">
@@ -534,6 +572,155 @@ export function PeerTaskCard({
   );
 }
 
+function AggregateDisclosure({
+  label,
+  aggregate,
+  open,
+  onOpenChange,
+  allTasks,
+  sessions,
+  agents,
+  onOpenSession,
+}: {
+  label: string;
+  aggregate: PeerTaskResultAggregate;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  allTasks: readonly PeerTask[];
+  sessions: readonly SessionMeta[];
+  agents: readonly Agent[];
+  onOpenSession: (sessionId: string) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <button
+        type="button"
+        onClick={() => onOpenChange(!open)}
+        className="flex w-full items-center gap-1.5 text-left text-[10px] text-[var(--clack-text-2)] hover:text-[var(--clack-text-1)]"
+        aria-expanded={open}
+      >
+        <HugeiconsIcon
+          icon={open ? ArrowDown01Icon : ArrowRight01Icon}
+          size={10}
+          strokeWidth={1.8}
+        />
+        <span className="font-medium">{label}</span>
+        <span className="ml-auto text-[var(--clack-text-3)]">
+          {aggregateProgressLabel(aggregate)}
+        </span>
+      </button>
+      {open ? (
+        <div className="space-y-2 border-l border-[color:var(--clack-border-subtle)] pl-2">
+          {aggregate.entries.map((entry) => {
+            const relatedTask = allTasks.find(
+              (candidate) => candidate.id === entry.taskId,
+            );
+            const targetName = relatedTask
+              ? taskTargetAgentName(relatedTask, sessions, agents)
+              : entry.targetAgentId;
+            const targetSession = relatedTask
+              ? sessions.find(
+                  (session) => session.id === relatedTask.targetSessionId,
+                )
+              : undefined;
+            return (
+              <div key={entry.taskId} className="space-y-1 text-[10px]">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate font-medium text-[var(--clack-text-1)]">
+                    {targetName} | {aggregateRelationLabel(entry.relation)}:{" "}
+                    {entry.promptSummary}
+                  </span>
+                  <span className="shrink-0 text-[var(--clack-text-3)]">
+                    {aggregateStatusLabel(entry.status)}
+                  </span>
+                </div>
+                {entry.resultSummary ? (
+                  <p className="whitespace-pre-wrap text-[var(--clack-text-2)]">
+                    {entry.resultSummary}
+                  </p>
+                ) : null}
+                {entry.warnings.map((warning) => (
+                  <p key={warning} className="text-[var(--clack-warning)]">
+                    {warning}
+                  </p>
+                ))}
+                {entry.error ? (
+                  <p className="text-destructive">{entry.error.message}</p>
+                ) : entry.cancellationReason ? (
+                  <p className="text-[var(--clack-text-3)]">
+                    {entry.cancellationReason}
+                  </p>
+                ) : null}
+                {entry.artifactRefs.length > 0 ? (
+                  <div className="flex flex-wrap gap-1">
+                    {entry.artifactRefs.map((artifact) => (
+                      <span
+                        key={`${entry.taskId}:${artifact.artifactId}`}
+                        className="max-w-full truncate rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] px-1.5 py-0.5 text-[9.5px] text-[var(--clack-text-3)]"
+                        title={`${artifact.mediaType} | ${artifact.byteSize} bytes`}
+                      >
+                        {artifact.displayName}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {entry.omittedArtifactCount > 0 ? (
+                  <p className="text-[var(--clack-text-3)]">
+                    {entry.omittedArtifactCount} additional returned file
+                    {entry.omittedArtifactCount === 1 ? "" : "s"} omitted from
+                    this compact view.
+                  </p>
+                ) : null}
+                {entry.changedPaths.length > 0 ? (
+                  <p className="truncate font-mono text-[9.5px] text-[var(--clack-text-3)]">
+                    {entry.changedPaths.join(", ")}
+                  </p>
+                ) : null}
+                {entry.omittedChangedPathCount > 0 ? (
+                  <p className="text-[var(--clack-text-3)]">
+                    {entry.omittedChangedPathCount} additional changed path
+                    {entry.omittedChangedPathCount === 1 ? "" : "s"} omitted.
+                  </p>
+                ) : null}
+                {entry.patchAvailable || entry.worktreeAvailable ? (
+                  <p className="text-[var(--clack-text-3)]">
+                    {entry.patchAvailable ? "Patch available" : ""}
+                    {entry.patchAvailable && entry.worktreeAvailable
+                      ? " | "
+                      : ""}
+                    {entry.worktreeAvailable ? "Worktree available" : ""}
+                  </p>
+                ) : null}
+                {entry.truncated ? (
+                  <p className="text-[var(--clack-text-3)]">
+                    Compact view truncated. Full task result is preserved.
+                  </p>
+                ) : null}
+                {entry.rawResultAvailable && targetSession ? (
+                  <button
+                    type="button"
+                    className="text-[10px] text-[var(--clack-accent)] hover:underline"
+                    onClick={() => onOpenSession(targetSession.id)}
+                  >
+                    Open full result
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
+          {aggregate.omittedTaskCount > 0 || aggregate.traversalTruncated ? (
+            <p className="text-[10px] text-[var(--clack-text-3)]">
+              {aggregate.omittedTaskCount > 0
+                ? `${aggregate.omittedTaskCount} additional result ${aggregate.omittedTaskCount === 1 ? "was" : "were"} omitted from this compact view.`
+                : "Additional related tasks were omitted at the traversal limit."}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function executionModeLabel(task: PeerTask): string {
   if (task.executionMode === "shared-write") return "Can edit workspace";
   if (task.executionMode === "isolated-worktree") return "Isolated changes";
@@ -552,7 +739,7 @@ function taskTargetAgentName(
   return agents.find((agent) => agent.id === agentId)?.name ?? agentId;
 }
 
-function dependencyStatusLabel(task: PeerTask): string {
+function dependencyStatusLabel(task: Pick<PeerTask, "status">): string {
   if (task.status === "completed") return "Done";
   if (task.status === "running") return "Working";
   if (task.status === "queued") return "Queued";
@@ -560,6 +747,35 @@ function dependencyStatusLabel(task: PeerTask): string {
   if (task.status === "failed") return "Failed";
   if (task.status === "cancelled") return "Cancelled";
   return "Blocked";
+}
+
+function aggregateStatusLabel(
+  status: PeerTaskResultAggregate["entries"][number]["status"],
+): string {
+  if (status === "missing") return "Unavailable";
+  return dependencyStatusLabel({ status });
+}
+
+function aggregateProgressLabel(aggregate: PeerTaskResultAggregate): string {
+  if (aggregate.complete) {
+    return aggregate.allSuccessful ? "Complete" : "Finished with issues";
+  }
+  return aggregate.entries.some(
+    (entry) =>
+      entry.status === "waiting" ||
+      entry.status === "queued" ||
+      entry.status === "running",
+  )
+    ? "In progress"
+    : "Partial";
+}
+
+function aggregateRelationLabel(
+  relation: PeerTaskResultAggregate["entries"][number]["relation"],
+): string {
+  if (relation === "dependency") return "Prerequisite";
+  if (relation === "child") return "Direct task";
+  return "Nested task";
 }
 
 function blockStatusText(

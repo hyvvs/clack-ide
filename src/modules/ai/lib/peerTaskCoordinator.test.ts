@@ -56,6 +56,7 @@ import {
   PEER_TASK_SCHEMA_VERSION,
   recoverInterruptedPeerTasks,
   type PeerTask,
+  type PeerTaskArtifact,
 } from "./peerTasks";
 import { chats, useChatStore } from "../store/chatStore";
 import { sendMessageToSession } from "../store/chatRuntime";
@@ -221,6 +222,130 @@ describe("peer task coordination", () => {
     expect(
       JSON.stringify(vi.mocked(sendMessageToSession).mock.calls),
     ).toContain(prerequisite.id);
+  });
+
+  it("delivers only relevant prerequisite aggregates without auto-attaching returned files", async () => {
+    const root = task({
+      id: "root",
+      rootTaskId: "root",
+      targetSessionId: SOURCE,
+      status: "running",
+    });
+    const returnedArtifact = peerArtifact("review.md", "returned-review");
+    const prerequisite = task({
+      id: "prerequisite",
+      rootTaskId: root.id,
+      parentTaskId: root.id,
+      targetSessionId: "reviewer-chat",
+      status: "completed",
+      result: {
+        summary: "RELEVANT REVIEW RESULT",
+        targetSessionId: "reviewer-chat",
+        targetAgentId: "reviewer",
+        targetModelId: "review-model",
+        completedAt: 10,
+        artifacts: [returnedArtifact],
+      },
+    });
+    const unrelated = task({
+      id: "unrelated",
+      rootTaskId: root.id,
+      parentTaskId: root.id,
+      targetSessionId: "unrelated-chat",
+      status: "completed",
+      result: {
+        summary: "UNRELATED PRIVATE RESULT",
+        targetSessionId: "unrelated-chat",
+        targetAgentId: "other",
+        targetModelId: "other-model",
+        completedAt: 11,
+        artifacts: [],
+      },
+    });
+    usePeerTaskStore.setState({ tasks: [unrelated, prerequisite, root] });
+    useChatStore.setState((state) => ({
+      sessions: state.sessions.map((item) =>
+        item.id === SOURCE
+          ? {
+              ...item,
+              run: { state: "running", startedAt: 1, peerTaskId: root.id },
+            }
+          : item,
+      ),
+    }));
+
+    const requested = await requestPeerTask({
+      sourceSessionId: SOURCE,
+      targetSessionId: TARGET,
+      kind: "review",
+      prompt: "Integrate the relevant review.",
+      dependsOn: [prerequisite.id],
+    });
+
+    expect(requested.ok).toBe(true);
+    const sentMessage = vi.mocked(sendMessageToSession).mock.calls[0]?.[1];
+    expect(sentMessage?.parts).toHaveLength(1);
+    const sentText = JSON.stringify(sentMessage);
+    expect(sentText).toContain("RELEVANT REVIEW RESULT");
+    expect(sentText).toContain("review.md");
+    expect(sentText).toContain(returnedArtifact.contentRef.id);
+    expect(sentText).not.toContain("UNRELATED PRIVATE RESULT");
+  });
+
+  it("keeps explicitly selected artifacts on the established model-input path", async () => {
+    const root = task({
+      id: "root",
+      rootTaskId: "root",
+      targetSessionId: SOURCE,
+      status: "running",
+    });
+    const prerequisite = task({
+      id: "prerequisite",
+      rootTaskId: root.id,
+      parentTaskId: root.id,
+      status: "completed",
+      result: {
+        summary: "Dependency result",
+        targetSessionId: "reviewer-chat",
+        targetAgentId: "reviewer",
+        targetModelId: "review-model",
+        completedAt: 10,
+        artifacts: [peerArtifact("not-selected.png", "returned-image")],
+      },
+    });
+    usePeerTaskStore.setState({ tasks: [prerequisite, root] });
+    useChatStore.setState((state) => ({
+      sessions: state.sessions.map((item) =>
+        item.id === SOURCE
+          ? {
+              ...item,
+              run: { state: "running", startedAt: 1, peerTaskId: root.id },
+            }
+          : item,
+      ),
+    }));
+
+    const requested = await requestPeerTask({
+      sourceSessionId: SOURCE,
+      targetSessionId: TARGET,
+      kind: "review",
+      prompt: "Integrate with the selected specification.",
+      dependsOn: [prerequisite.id],
+      attachmentReferences: [attachmentReference("selected-spec.md")],
+    });
+
+    expect(requested.ok).toBe(true);
+    const sentMessage = vi.mocked(sendMessageToSession).mock.calls[0]?.[1];
+    expect(sentMessage?.parts).toHaveLength(2);
+    expect(JSON.stringify(sentMessage?.parts?.[0])).toContain(
+      "not-selected.png",
+    );
+    expect(JSON.stringify(sentMessage?.parts?.[1])).toContain(
+      "selected-spec.md",
+    );
+    expect(JSON.stringify(sentMessage?.parts?.[1])).not.toContain(
+      "not-selected.png",
+    );
   });
 
   it("shares only the explicit prompt and artifact references", async () => {
@@ -870,6 +995,28 @@ function task(overrides: Partial<PeerTask> = {}): PeerTask {
     createdAt: 1,
     updatedAt: 1,
     ...overrides,
+  };
+}
+
+function peerArtifact(displayName: string, suffix: string): PeerTaskArtifact {
+  const hash = suffix.length.toString().slice(-1).repeat(64);
+  return {
+    id: `artifact-${suffix}`,
+    attachmentId: `attachment-${suffix}`,
+    contentRef: { id: hash, contentHash: hash, byteSize: 10 },
+    displayName,
+    mediaType: displayName.endsWith(".png") ? "image/png" : "text/markdown",
+    contentKind: displayName.endsWith(".png") ? "image" : "text",
+    byteSize: 10,
+    sourceSessionId: "reviewer-chat",
+    sourceTaskId: "prerequisite",
+    sourceAgentId: "reviewer",
+    sourceModelId: "review-model",
+    workspaceId: "local:c:/workspace",
+    workspaceRoot: "C:/workspace",
+    createdAt: 10,
+    originType: "generated-file",
+    accessPolicy: "model-input",
   };
 }
 

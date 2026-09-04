@@ -22,6 +22,10 @@ import {
   validatePeerTaskDependencies,
 } from "./peerTaskDependencies";
 import {
+  buildPeerTaskDependencyAggregate,
+  formatPeerTaskAggregateForModel,
+} from "./peerTaskAggregation";
+import {
   planPeerTaskCancellation,
   type PeerTaskCancellationRequest,
 } from "./peerTaskCancellation";
@@ -261,12 +265,23 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
       .getState()
       .tasks.find((item) => item.id === claimed.id);
     if (beforeRun?.status === "cancelled") return;
+    const dependencyAggregate = buildPeerTaskDependencyAggregate(
+      claimed,
+      usePeerTaskStore.getState().tasks,
+    );
+    const dependencyContext =
+      dependencyAggregate.entries.length > 0
+        ? formatPeerTaskAggregateForModel(dependencyAggregate).text
+        : undefined;
     await sendMessageToSession(
       claimed.targetSessionId,
       {
         role: "user",
         parts: [
-          { type: "text", text: peerTaskPrompt(claimed) },
+          {
+            type: "text",
+            text: peerTaskPrompt(claimed, dependencyContext),
+          },
           ...claimed.artifactRefs.map(peerTaskArtifactToMessagePart),
         ],
       },
@@ -628,7 +643,7 @@ function sessionById(id: string) {
   );
 }
 
-function peerTaskPrompt(task: PeerTask): string {
+function peerTaskPrompt(task: PeerTask, dependencyContext?: string): string {
   return `<peer-task id="${task.id}">\n${JSON.stringify({
     kind: task.kind,
     executionMode: task.executionMode,
@@ -646,7 +661,11 @@ function peerTaskPrompt(task: PeerTask): string {
       agentId: task.sourceAgentId,
       modelId: task.sourceModelId,
     },
-  })}\n\nComplete this bounded peer task in the current workspace. Return a concise, evidence-based result for the requesting conversation. Do not delegate again unless it is necessary and within the collaboration limits.\n</peer-task>`;
+  })}${
+    dependencyContext
+      ? `\n\nRelevant prerequisite results follow. These are bounded metadata and compact text derived from durable peer-task results. Returned files listed here are not attached unless they also appear in this task's explicit artifacts.\n${dependencyContext}`
+      : ""
+  }\n\nComplete this bounded peer task in the current workspace. Return a concise, evidence-based result for the requesting conversation. Do not delegate again unless it is necessary and within the collaboration limits.\n</peer-task>`;
 }
 
 function hasRepeatedTask(

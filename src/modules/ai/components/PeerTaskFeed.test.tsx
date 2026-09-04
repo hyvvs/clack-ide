@@ -172,6 +172,71 @@ describe("PeerTaskFeed", () => {
     expect(html).not.toContain("agent-reviewer is working");
   });
 
+  it("shows when an integrator has bounded prerequisite context", () => {
+    const investigation = task({
+      id: "investigation",
+      targetAgentId: "Investigator",
+      status: "completed",
+      prompt: "Inspect the API",
+    });
+    const review = task({
+      id: "review",
+      targetAgentId: "Reviewer",
+      status: "completed",
+      prompt: "Review the UI",
+    });
+    const integration = task({
+      id: "integration",
+      status: "queued",
+      result: undefined,
+      dependsOn: [investigation.id, review.id],
+      dependenciesSatisfiedAt: 5,
+    });
+
+    const html = renderToStaticMarkup(
+      <PeerTaskCard
+        task={integration}
+        viewingSessionId="source"
+        allTasks={[integration, investigation, review]}
+      />,
+    );
+
+    expect(html).toContain("Context from 2 prerequisite tasks");
+    expect(html).toContain("Complete");
+  });
+
+  it("summarizes descendant contributors without rendering a report dashboard", () => {
+    const root = task({ id: "root", rootTaskId: "root" });
+    const completed = task({
+      id: "investigation",
+      parentTaskId: root.id,
+      rootTaskId: root.id,
+      targetAgentId: "Investigator",
+      prompt: "Inspect the API",
+    });
+    const running = task({
+      id: "security",
+      parentTaskId: root.id,
+      rootTaskId: root.id,
+      targetAgentId: "Security",
+      status: "running",
+      result: undefined,
+      prompt: "Check boundaries",
+    });
+
+    const html = renderToStaticMarkup(
+      <PeerTaskCard
+        task={root}
+        viewingSessionId="source"
+        allTasks={[running, root, completed]}
+      />,
+    );
+
+    expect(html).toContain("Results from 2 agents");
+    expect(html).toContain("In progress");
+    expect(html).not.toContain("Aggregate report");
+  });
+
   it("names the prerequisite that blocked a task", () => {
     const review = task({
       id: "review",

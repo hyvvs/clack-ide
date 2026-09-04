@@ -571,6 +571,33 @@ Peer-task cancellation extension (2026-09-04):
 - no result aggregation, child-output summarization, planning templates, or
   provider changes are included in this checkpoint
 
+Bounded result aggregation extension (2026-09-04):
+
+- result aggregates are rebuilt deterministically from the durable peer-task
+  ledger; raw result text, returned artifacts, patches, and worktrees remain
+  the source of truth and are not replaced or rewritten
+- aggregates preserve task, relationship, depth, prompt, captured target
+  agent/model, status, completion, compact result, warnings/errors, returned
+  artifact metadata, changed paths, patch/worktree availability, truncation,
+  and session/root/parent provenance
+- aggregation is limited to 8 related task results, 800 result characters per
+  task, 8,000 model-context characters, 16 returned artifact references, 32
+  changed paths, 3 descendant levels, and 64 defensive traversal steps
+- dependencies retain declaration order; descendants use stable creation
+  order; duplicate task IDs, malformed cycles, cross-root tasks, and
+  cross-workspace tasks cannot expand the aggregate
+- downstream tasks receive only their explicitly declared prerequisite
+  aggregates through the existing peer-task prompt path; unrelated tasks are
+  excluded and no hidden summarizer call is made
+- returned files are described by bounded metadata only; actual content is
+  sent through the existing attachment and capability path only when selected
+  in the downstream task's immutable artifact references
+- task cards show compact prerequisite-context and descendant-result summaries,
+  distinguish incomplete work and terminal failures, and retain navigation to
+  the full durable result
+- restart reconstruction requires no provider call, preserves stable task and
+  content references, and produces the same ordering and truncation decisions
+
 ## Phase 6: Concurrent Mutation and Conflicts
 
 Goal: Allow agents to modify the same project without silent corruption.
