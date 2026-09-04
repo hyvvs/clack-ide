@@ -16,6 +16,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
@@ -69,6 +74,7 @@ import {
 } from "@/modules/terminal/lib/panes";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { usePlanStore } from "../store/planStore";
+import { usePeerTaskStore } from "../store/peerTaskStore";
 
 const EMPTY_TOKEN_USAGE = {
   inputTokens: 0,
@@ -84,6 +90,7 @@ import { PeerTaskDialog } from "./PeerTaskDialog";
 import { AiComposerInput } from "./AiComposerInput";
 import { ChipsRow } from "./ChipsRow";
 import { ModelDropdown } from "./AiStatusBarControls";
+import { BUILTIN_AGENTS } from "../lib/agents";
 
 const SUGGESTIONS = [
   {
@@ -956,63 +963,26 @@ function SessionStatus({
   return <span className="text-[9.5px] text-[var(--clack-text-3)]">Idle</span>;
 }
 
-function PeerAction({ sessionId }: { sessionId: string }) {
-  const sessions = useChatStore((s) => s.sessions);
-  const source = sessions.find((session) => session.id === sessionId) ?? null;
-  const peers = sessions.filter(
-    (session) =>
-      session.id !== sessionId &&
-      Boolean(source?.profile?.workspaceId) &&
-      session.profile?.workspaceId === source?.profile?.workspaceId,
-  );
-  const [target, setTarget] = useState<SessionMeta | null>(null);
-  if (peers.length === 0) return null;
-
+export function PeerAction({ sessionId }: { sessionId: string }) {
+  const [open, setOpen] = useState(false);
   return (
     <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="h-6 gap-1 px-1.5 text-[10.5px]"
-            title="Ask, review, or delegate to another chat agent"
-          >
-            <HugeiconsIcon
-              icon={ArrowRight01Icon}
-              size={11}
-              strokeWidth={1.8}
-            />
-            Delegate
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-56">
-          <div className="px-2 py-1 text-[10px] text-muted-foreground">
-            Choose a peer chat in this workspace
-          </div>
-          <DropdownMenuSeparator />
-          {peers.map((peer) => (
-            <DropdownMenuItem
-              key={peer.id}
-              onSelect={() => setTarget(peer)}
-              className="flex items-center gap-2 text-xs"
-            >
-              <span className="min-w-0 flex-1 truncate">
-                {peer.title || "New chat"}
-              </span>
-              <SessionStatus state={peer.run?.state} approvals={0} />
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        className="h-6 gap-1 px-1.5 text-[10.5px]"
+        title="Send a focused task to another agent"
+        aria-label="Ask another agent"
+        onClick={() => setOpen(true)}
+      >
+        <HugeiconsIcon icon={ArrowRight01Icon} size={11} strokeWidth={1.8} />
+        Ask another agent
+      </Button>
       <PeerTaskDialog
         sourceSessionId={sessionId}
-        target={target}
-        open={target !== null}
-        onOpenChange={(open) => {
-          if (!open) setTarget(null);
-        }}
+        open={open}
+        onOpenChange={setOpen}
       />
     </>
   );
@@ -1179,6 +1149,7 @@ function WindowHeader({
       <span className="text-[10px] text-[var(--clack-text-3)]">
         {paneCount} pane{paneCount === 1 ? "" : "s"}
       </span>
+      <DelegationActivity />
       <span className="flex-1" />
       <Button
         type="button"
@@ -1237,6 +1208,76 @@ function WindowHeader({
         <HugeiconsIcon icon={Cancel01Icon} size={11} strokeWidth={1.75} />
       </Button>
     </div>
+  );
+}
+
+function DelegationActivity() {
+  const tasks = usePeerTaskStore((state) => state.tasks);
+  const sessions = useChatStore((state) => state.sessions);
+  const activeSessionId = useChatStore((state) => state.activeSessionId);
+  const customAgents = useAgentsStore((state) => state.customAgents);
+  const workspaceId = sessions.find((session) => session.id === activeSessionId)
+    ?.profile?.workspaceId;
+  const activeTasks = useMemo(
+    () =>
+      tasks.filter(
+        (task) =>
+          task.workspaceId === workspaceId &&
+          (task.status === "queued" || task.status === "running"),
+      ),
+    [tasks, workspaceId],
+  );
+  if (activeTasks.length === 0) return null;
+
+  const agentCount = new Set(activeTasks.map((task) => task.targetSessionId))
+    .size;
+  const agents = [...BUILTIN_AGENTS, ...customAgents];
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="flex items-center gap-1 rounded-[var(--clack-radius-button)] px-1.5 py-0.5 text-[10px] text-[var(--clack-accent)] hover:bg-[var(--clack-accent-soft)]"
+          aria-label={`${agentCount} ${agentCount === 1 ? "agent" : "agents"} active`}
+        >
+          <Spinner className="size-2.5" />
+          {agentCount} {agentCount === 1 ? "agent" : "agents"} active
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72 gap-2 p-2.5">
+        <div className="px-1 text-[10px] font-medium uppercase text-[var(--clack-text-3)]">
+          Delegated work
+        </div>
+        <div className="space-y-1">
+          {activeTasks.map((task) => {
+            const session = sessions.find(
+              (candidate) => candidate.id === task.targetSessionId,
+            );
+            const agentId = session?.profile?.agentId ?? task.targetAgentId;
+            const agentName =
+              agents.find((agent) => agent.id === agentId)?.name ?? agentId;
+            return (
+              <div
+                key={task.id}
+                className="rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] px-2 py-1.5"
+              >
+                <div className="flex items-center gap-2 text-[10.5px]">
+                  <span className="min-w-0 flex-1 truncate font-medium text-[var(--clack-text-1)]">
+                    {agentName}
+                  </span>
+                  <span className="shrink-0 text-[var(--clack-accent)]">
+                    {task.status === "running" ? "Working" : "Queued"}
+                  </span>
+                </div>
+                <div className="truncate text-[9.5px] text-[var(--clack-text-3)]">
+                  {task.prompt}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

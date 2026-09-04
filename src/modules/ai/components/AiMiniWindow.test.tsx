@@ -1,5 +1,10 @@
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { invokeHeaderStop, shouldShowHeaderStop } from "./AiMiniWindow";
+import {
+  invokeHeaderStop,
+  PeerAction,
+  shouldShowHeaderStop,
+} from "./AiMiniWindow";
 import { canAddAiPane } from "../store/aiPaneStore";
 
 describe("AI header Stop", () => {
@@ -31,5 +36,14 @@ describe("AI pane capacity", () => {
     expect(canAddAiPane(500, 1, "row", 900)).toBe(false);
     expect(canAddAiPane(500, 1, "col", 900)).toBe(true);
     expect(canAddAiPane(1400, 1, "col", 400)).toBe(false);
+  });
+});
+
+describe("AI pane delegation", () => {
+  it("keeps Ask another agent discoverable before another chat exists", () => {
+    const html = renderToStaticMarkup(<PeerAction sessionId="chat-a" />);
+
+    expect(html).toContain("Ask another agent");
+    expect(html).toContain('aria-label="Ask another agent"');
   });
 });

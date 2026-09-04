@@ -34,6 +34,23 @@ describe("AI pane layout", () => {
     expect(bindAiPaneSession(split, 3, "chat-b")?.bindings[3]).toBe("chat-b");
   });
 
+  it("opens a delegated target without changing unrelated pane bindings", () => {
+    const split = splitAiPaneLayout(createAiPaneLayout("source"), 1, "row");
+    if (!split) throw new Error("Expected split layout");
+    const withUnrelated = bindAiPaneSession(split, 3, "unrelated");
+    if (!withUnrelated) throw new Error("Expected unrelated pane binding");
+    const nextSplit = splitAiPaneLayout(withUnrelated, 1, "col");
+    if (!nextSplit) throw new Error("Expected another split layout");
+    const targetPaneId = nextSplit.activePaneId;
+    const withTarget = bindAiPaneSession(nextSplit, targetPaneId, "reviewer");
+
+    expect(withTarget?.bindings).toMatchObject({
+      1: "source",
+      3: "unrelated",
+      [targetPaneId]: "reviewer",
+    });
+  });
+
   it("closes only the pane view and keeps the remaining binding", () => {
     const split = splitAiPaneLayout(createAiPaneLayout("chat-a"), 1, "row");
     if (!split) throw new Error("Expected split layout");

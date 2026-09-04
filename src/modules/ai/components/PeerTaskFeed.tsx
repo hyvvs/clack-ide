@@ -1,5 +1,6 @@
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   ArrowRight01Icon,
   Cancel01Icon,
@@ -12,7 +13,14 @@ import {
   cancelPeerTask,
   discardPeerTaskWorktree,
 } from "../lib/peerTaskCoordinator";
+import {
+  delegationCardTitle,
+  delegationStatusLabel,
+} from "../lib/delegationUx";
 import type { PeerTask } from "../lib/peerTasks";
+import { resolveModelSelectionInfo } from "../lib/savedProviderModels";
+import { BUILTIN_AGENTS } from "../lib/agents";
+import { useAgentsStore } from "../store/agentsStore";
 import { useChatStore } from "../store/chatStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
 
@@ -70,6 +78,18 @@ export function PeerTaskCard({
   const target = sessions.find(
     (session) => session.id === task.targetSessionId,
   );
+  const customAgents = useAgentsStore((state) => state.customAgents);
+  const customEndpoints = usePreferencesStore((state) => state.customEndpoints);
+  const savedProviderModels = usePreferencesStore(
+    (state) => state.savedProviderModels,
+  );
+  const agents = [...BUILTIN_AGENTS, ...customAgents];
+  const sourceAgentId = source?.profile?.agentId ?? task.sourceAgentId;
+  const targetAgentId = target?.profile?.agentId ?? task.targetAgentId;
+  const sourceAgentName =
+    agents.find((agent) => agent.id === sourceAgentId)?.name ?? sourceAgentId;
+  const targetAgentName =
+    agents.find((agent) => agent.id === targetAgentId)?.name ?? targetAgentId;
   const viewingSource = viewingSessionId === task.sourceSessionId;
   const [applying, setApplying] = useState(false);
   const [showPatch, setShowPatch] = useState(false);
@@ -79,7 +99,15 @@ export function PeerTaskCard({
     [allTasks, task],
   );
   const peer = viewingSource ? target : source;
+  const peerAgentName = viewingSource ? targetAgentName : sourceAgentName;
   const active = task.status === "queued" || task.status === "running";
+  const statusLabel = delegationStatusLabel(task);
+  const title = delegationCardTitle(
+    task,
+    viewingSource,
+    sourceAgentName,
+    targetAgentName,
+  );
   const tone =
     task.status === "failed"
       ? "text-destructive"
@@ -111,12 +139,10 @@ export function PeerTaskCard({
             className={tone}
           />
         )}
-        <span className="text-[11.5px] font-semibold capitalize text-[var(--clack-text-1)]">
-          {task.kind}
+        <span className="min-w-0 truncate text-[11.5px] font-semibold text-[var(--clack-text-1)]">
+          {title}
         </span>
-        <span className={cn("text-[10px] capitalize", tone)}>
-          {task.status}
-        </span>
+        <span className={cn("shrink-0 text-[10px]", tone)}>{statusLabel}</span>
         <button
           type="button"
           disabled={!peer}
@@ -125,28 +151,38 @@ export function PeerTaskCard({
             if (onOpenSession) onOpenSession(peer.id);
             else switchSession(peer.id);
           }}
-          className="ml-auto flex min-w-0 items-center gap-1 text-[10.5px] text-[var(--clack-text-3)] hover:text-[var(--clack-text-1)] disabled:pointer-events-none"
-          title={peer ? `Open ${peer.title}` : "Peer conversation deleted"}
+          className="ml-auto flex min-w-0 shrink-0 items-center gap-1 text-[10.5px] text-[var(--clack-text-3)] hover:text-[var(--clack-text-1)] disabled:pointer-events-none"
+          title={peer ? `Open ${peer.title}` : "Other conversation deleted"}
+          aria-label={
+            peer ? `Open ${peerAgentName}` : "Other conversation deleted"
+          }
         >
-          <span className="max-w-36 truncate">
-            {peer?.title ?? "Deleted chat"}
+          <span className="max-w-28 truncate">
+            {peer ? `Open ${peerAgentName}` : "Deleted chat"}
           </span>
           <HugeiconsIcon icon={ArrowRight01Icon} size={10} strokeWidth={1.8} />
         </button>
       </div>
       <div className="space-y-2 px-2.5 py-2 text-[11px]">
-        <p className="whitespace-pre-wrap text-[var(--clack-text-1)]">
-          {task.prompt}
-        </p>
-        {!viewingSource ? (
-          <div className="text-[10px] text-[var(--clack-text-3)]">
-            Delegated by {source?.title ?? task.sourceAgentId}
+        <div>
+          <div className="mb-0.5 text-[9.5px] font-medium uppercase text-[var(--clack-text-3)]">
+            Task
           </div>
+          <p className="whitespace-pre-wrap text-[var(--clack-text-1)]">
+            {task.prompt}
+          </p>
+        </div>
+        {task.status === "queued" ? (
+          <p className="text-[10px] text-[var(--clack-text-3)]">
+            {target?.run?.state === "running"
+              ? "Currently finishing another task. This one will start next."
+              : "Waiting to start."}
+          </p>
         ) : null}
         {task.artifactRefs.length > 0 ? (
           <div className="space-y-1">
             <div className="text-[10px] font-medium text-[var(--clack-text-2)]">
-              {viewingSource ? "Files sent" : "Context"}
+              {viewingSource ? "Context sent" : "Context received"}
             </div>
             <div className="flex flex-wrap gap-1">
               {task.artifactRefs.map((artifact) => (
@@ -187,12 +223,27 @@ export function PeerTaskCard({
             ) : null}
           </div>
         ) : task.error ? (
-          <p className="border-t border-[color:var(--clack-border-subtle)] pt-2 text-destructive">
-            {task.error.message}
-          </p>
+          <div className="space-y-0.5 border-t border-[color:var(--clack-border-subtle)] pt-2 text-destructive">
+            <p>
+              {targetAgentName} could not complete this task:{" "}
+              {task.error.message}
+            </p>
+            <p className="text-[10px] text-[var(--clack-text-3)]">
+              Nothing was returned.
+            </p>
+          </div>
         ) : null}
         {task.changeSet ? (
           <div className="space-y-1.5 border-t border-[color:var(--clack-border-subtle)] pt-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10.5px] font-medium text-[var(--clack-text-1)]">
+                Changes ready to review
+              </span>
+              <span className="text-[10px] text-[var(--clack-text-3)]">
+                {task.changeSet.changedPaths.length} file
+                {task.changeSet.changedPaths.length === 1 ? "" : "s"} changed
+              </span>
+            </div>
             <div className="flex flex-wrap gap-1">
               {task.changeSet.changedPaths.map((path) => (
                 <span
@@ -221,7 +272,7 @@ export function PeerTaskCard({
                   onClick={() => setShowPatch((visible) => !visible)}
                   className="text-[10px] text-[var(--clack-text-2)] hover:underline"
                 >
-                  {showPatch ? "Hide patch" : "Review patch"}
+                  {showPatch ? "Hide changes" : "Review changes"}
                 </button>
                 {showPatch ? (
                   <pre className="max-h-48 overflow-auto whitespace-pre font-mono text-[9.5px] text-[var(--clack-text-2)]">
@@ -274,49 +325,59 @@ export function PeerTaskCard({
             </button>
           </div>
         ) : null}
-        {lineage.length > 1 ? (
-          <nav
-            className="flex min-w-0 items-center gap-1 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[9.5px] text-[var(--clack-text-3)]"
-            aria-label="Task lineage"
-          >
-            <span className="shrink-0">Lineage</span>
-            {lineage.map((item, index) => (
-              <span key={item.id} className="flex min-w-0 items-center gap-1">
-                {index > 0 ? <span aria-hidden>&gt;</span> : null}
-                <span
-                  className={cn(
-                    "max-w-20 truncate capitalize",
-                    item.id === task.id &&
-                      "font-medium text-[var(--clack-text-2)]",
-                  )}
-                  title={`${item.kind} task ${item.id} (${item.status})`}
-                >
-                  {item.kind}
-                </span>
-              </span>
-            ))}
-          </nav>
-        ) : null}
-        <div className="flex items-center gap-2 text-[9.5px] text-[var(--clack-text-3)]">
-          <span className="capitalize">
-            {task.executionMode.replace(/-/g, " ")}
+        <div className="flex items-center gap-2 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[9.5px] text-[var(--clack-text-3)]">
+          <span>{executionModeLabel(task)}</span>
+          <span className="truncate">
+            {targetAgentName} |{" "}
+            {modelLabel(
+              task.targetModelId,
+              customEndpoints,
+              savedProviderModels,
+            )}
           </span>
-          <span className="truncate">Agent: {task.targetAgentId}</span>
-          <span className="truncate">Model: {task.targetModelId}</span>
-          <span className="ml-auto font-mono">hop {task.hopCount}</span>
+          {lineage.length > 1 ? (
+            <span className="shrink-0">{lineage.length} linked tasks</span>
+          ) : null}
+          <span className="ml-auto" />
           {active ? (
             <button
               type="button"
               onClick={() => void cancelPeerTask(task.id)}
-              className="text-[10px] hover:text-destructive"
+              className="shrink-0 text-[10px] hover:text-destructive"
             >
-              Cancel
+              Cancel task
             </button>
           ) : null}
         </div>
       </div>
     </section>
   );
+}
+
+function executionModeLabel(task: PeerTask): string {
+  if (task.executionMode === "shared-write") return "Can edit workspace";
+  if (task.executionMode === "isolated-worktree") return "Isolated changes";
+  return "Read only";
+}
+
+function modelLabel(
+  modelId: string,
+  customEndpoints: ReturnType<
+    typeof usePreferencesStore.getState
+  >["customEndpoints"],
+  savedProviderModels: ReturnType<
+    typeof usePreferencesStore.getState
+  >["savedProviderModels"],
+): string {
+  try {
+    return resolveModelSelectionInfo(
+      modelId,
+      customEndpoints,
+      savedProviderModels,
+    ).label;
+  } catch {
+    return modelId;
+  }
 }
 
 function artifactProvenanceTitle(

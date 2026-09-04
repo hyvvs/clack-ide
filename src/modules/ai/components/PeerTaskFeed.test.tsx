@@ -28,13 +28,20 @@ describe("PeerTaskFeed", () => {
 
     expect(html).toContain("Review the parser");
     expect(html).toContain("Looks safe after the bounds check.");
+    expect(html).toContain("Review complete");
     expect(html).toContain("agent-reviewer");
     expect(html).toContain("model-reviewer");
   });
 
   it("shows queued work as cancellable without inventing a result", () => {
     useChatStore.setState({
-      sessions: [session("source", "Planning"), session("target", "Reviewer")],
+      sessions: [
+        session("source", "Planning"),
+        {
+          ...session("target", "Reviewer"),
+          run: { state: "running", startedAt: 1 },
+        },
+      ],
       activeSessionId: "source",
     });
     usePeerTaskStore.setState({
@@ -49,7 +56,8 @@ describe("PeerTaskFeed", () => {
     );
 
     expect(html).toContain("queued");
-    expect(html).toContain("Cancel");
+    expect(html).toContain("Waiting to start");
+    expect(html).toContain("Cancel task");
     expect(html).not.toContain("Looks safe");
   });
 
@@ -67,10 +75,10 @@ describe("PeerTaskFeed", () => {
       <PeerTaskCard task={value} viewingSessionId="target" />,
     );
 
-    expect(sourceHtml).toContain("Files sent");
+    expect(sourceHtml).toContain("Context sent");
     expect(sourceHtml).toContain("src/parser.ts");
     expect(targetHtml).toContain("Delegated by agent-source");
-    expect(targetHtml).toContain("Context");
+    expect(targetHtml).toContain("Context received");
   });
 
   it("exposes an isolated change set for review without auto-applying it", () => {
@@ -87,9 +95,11 @@ describe("PeerTaskFeed", () => {
       <PeerTaskCard task={isolated} viewingSessionId="source" />,
     );
 
-    expect(html).toContain("isolated worktree");
+    expect(html).toContain("Isolated changes");
     expect(html).toContain("src/parser.ts");
-    expect(html).toContain("Review patch");
+    expect(html).toContain("Changes ready to review");
+    expect(html).toContain("1 file changed");
+    expect(html).toContain("Review changes");
     expect(html).toContain("Apply patch");
     expect(html).not.toContain("Applied to workspace");
   });
@@ -116,9 +126,45 @@ describe("PeerTaskFeed", () => {
         allTasks={[child, root]}
       />,
     );
-    expect(html).toContain("Task lineage");
-    expect(html).toContain("review");
-    expect(html).toContain("question");
+    expect(html).toContain("2 linked tasks");
+  });
+
+  it("shows working, completed artifacts, and failure in human language", () => {
+    const workingHtml = renderToStaticMarkup(
+      <PeerTaskCard
+        task={task({ status: "running", result: undefined })}
+        viewingSessionId="source"
+      />,
+    );
+    const returnedHtml = renderToStaticMarkup(
+      <PeerTaskCard
+        task={task({ result: resultWithArtifacts([artifact("report.md")]) })}
+        viewingSessionId="source"
+      />,
+    );
+    const failedHtml = renderToStaticMarkup(
+      <PeerTaskCard
+        task={task({
+          status: "failed",
+          result: undefined,
+          error: {
+            code: "unsupported",
+            message: "Image input is unavailable.",
+          },
+        })}
+        viewingSessionId="target"
+      />,
+    );
+
+    expect(workingHtml).toContain("agent-reviewer is working");
+    expect(workingHtml).toContain("Working");
+    expect(returnedHtml).toContain("Returned files");
+    expect(returnedHtml).toContain("report.md");
+    expect(failedHtml).toContain("Delegated by agent-source");
+    expect(failedHtml).toContain(
+      "agent-reviewer could not complete this task: Image input is unavailable.",
+    );
+    expect(failedHtml).toContain("Nothing was returned.");
   });
 
   it("stops malformed lineage cycles without looping", () => {
@@ -170,13 +216,13 @@ function task(overrides: Partial<PeerTask> = {}): PeerTask {
   };
 }
 
-function artifact(): PeerTaskArtifact {
+function artifact(displayName = "src/parser.ts"): PeerTaskArtifact {
   const hash = "a".repeat(64);
   return {
     id: "artifact-1",
     attachmentId: "attachment-1",
     contentRef: { id: hash, contentHash: hash, byteSize: 10 },
-    displayName: "src/parser.ts",
+    displayName,
     mediaType: "text/typescript",
     contentKind: "text",
     byteSize: 10,
@@ -190,5 +236,16 @@ function artifact(): PeerTaskArtifact {
     originType: "workspace-file",
     accessPolicy: "model-input",
     sourcePath: "src/parser.ts",
+  };
+}
+
+function resultWithArtifacts(artifacts: PeerTaskArtifact[]) {
+  return {
+    summary: "Returned the requested review.",
+    targetSessionId: "target",
+    targetAgentId: "agent-reviewer",
+    targetModelId: "model-reviewer",
+    completedAt: 2,
+    artifacts,
   };
 }

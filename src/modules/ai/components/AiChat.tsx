@@ -284,11 +284,12 @@ export function AiChatView({
   if (messages.length === 0) {
     return (
       <Conversation>
-        <ConversationContent>
+        <ConversationContent className="gap-5 p-3">
           <ConversationEmptyState
             title="Ask Clack anything"
             description="Explain command output, fix errors, generate snippets, or run a task."
           />
+          <PeerTaskFeed sessionId={sessionId} onOpenSession={onOpenSession} />
         </ConversationContent>
       </Conversation>
     );

@@ -117,6 +117,12 @@ describe("peer task coordination", () => {
       status: "completed",
       result: { summary: "Independent review result" },
     });
+    expect(sendMessageToSession).toHaveBeenCalledWith(
+      TARGET,
+      expect.any(Object),
+      expect.objectContaining({ peerTaskId: result.task.id }),
+    );
+    expect(useChatStore.getState().activeSessionId).toBe(SOURCE);
   });
 
   it("queues work for a busy target without mutating its active run", async () => {
@@ -353,7 +359,12 @@ describe("peer task coordination", () => {
     expect(limited).toMatchObject({ ok: false, code: "peer_hop_limit" });
 
     const stop = vi.fn().mockResolvedValue(undefined);
+    const unrelatedStop = vi.fn().mockResolvedValue(undefined);
     chats.set(TARGET, { stop, messages: [] } as unknown as Chat<UIMessage>);
+    chats.set("unrelated", {
+      stop: unrelatedStop,
+      messages: [],
+    } as unknown as Chat<UIMessage>);
     const running = task({
       id: "running",
       status: "running",
@@ -361,19 +372,34 @@ describe("peer task coordination", () => {
     });
     usePeerTaskStore.setState({ tasks: [running] });
     useChatStore.setState((state) => ({
-      sessions: state.sessions.map((item) =>
-        item.id === TARGET
-          ? {
-              ...item,
-              run: { state: "running", startedAt: 2, peerTaskId: running.id },
-            }
-          : item,
-      ),
+      sessions: [
+        ...state.sessions.map((item) =>
+          item.id === TARGET
+            ? {
+                ...item,
+                run: {
+                  state: "running" as const,
+                  startedAt: 2,
+                  peerTaskId: running.id,
+                },
+              }
+            : item,
+        ),
+        {
+          ...session("unrelated", "agent-c", "model-c"),
+          run: { state: "running" as const, startedAt: 3 },
+        },
+      ],
     }));
 
     await cancelPeerTask(running.id);
 
     expect(stop).toHaveBeenCalledOnce();
+    expect(unrelatedStop).not.toHaveBeenCalled();
+    expect(
+      useChatStore.getState().sessions.find((item) => item.id === "unrelated")
+        ?.run?.state,
+    ).toBe("running");
     expect(usePeerTaskStore.getState().tasks[0].status).toBe("cancelled");
   });
 
