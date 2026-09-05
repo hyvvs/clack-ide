@@ -122,7 +122,9 @@ describe("RenderedMessage", () => {
     } as UIMessage);
 
     expect(html).toContain("screen.png");
-    expect(html).toContain("Image | 1 KB");
+    expect(html).toContain("Ready");
+    expect(html).toContain("Vision input");
+    expect(html).toContain("Show delivery details for screen.png");
     expect(html).toContain('data-clack-attachment="attachment-1"');
   });
 

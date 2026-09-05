@@ -19,12 +19,15 @@ import {
   type AttachmentRecord,
   formatBytes,
 } from "@/modules/ai/lib/attachments";
+import { buildAttachmentPresentation } from "@/modules/ai/lib/attachmentPresentation";
+import { AttachmentStateIcon } from "./AttachmentDetailsPopover";
 
 const MAX_VISIBLE_ENTRIES = 200;
 
 type Props = {
   archive: AttachmentRecord;
   selectedEntries: AttachmentRecord[];
+  modelLabel?: string;
   onMaterialize: (entryIndex: number) => Promise<void>;
   onRemoveSelected: (attachmentId: string) => void;
   onRemove: () => void;
@@ -33,6 +36,7 @@ type Props = {
 export function ArchiveAttachmentChip({
   archive,
   selectedEntries,
+  modelLabel,
   onMaterialize,
   onRemoveSelected,
   onRemove,
@@ -41,6 +45,10 @@ export function ArchiveAttachmentChip({
   const [pending, setPending] = useState<Set<number>>(() => new Set());
   const [entryError, setEntryError] = useState<Record<number, string>>({});
   const representation = archive.archiveRepresentation;
+  const presentation = buildAttachmentPresentation(archive, {
+    selectedArchiveEntries: selectedEntries,
+    modelLabel,
+  });
   const selectedByIndex = useMemo(
     () =>
       new Map(
@@ -97,7 +105,7 @@ export function ArchiveAttachmentChip({
 
   return (
     <Popover>
-      <div className="group inline-flex h-[22px] items-center rounded-md border border-border/40 bg-foreground/[0.03] text-[11px] leading-none text-foreground/75">
+      <div className="group inline-flex h-7 max-w-[28rem] items-center rounded-md border border-border/40 bg-foreground/[0.03] text-[10.5px] leading-none text-foreground/75">
         <PopoverTrigger asChild>
           <button
             type="button"
@@ -108,11 +116,14 @@ export function ArchiveAttachmentChip({
             <span className="max-w-[10rem] truncate font-medium">
               {archive.displayName}
             </span>
-            {representation ? (
-              <span className="shrink-0 opacity-60">
-                · {representation.fileCount} files
+            <span className="flex min-w-0 items-center gap-1 text-[10px] text-[var(--clack-text-3)]">
+              <AttachmentStateIcon outcome={presentation.outcome} />
+              <span className="shrink-0 font-medium">
+                {presentation.statusLabel}
               </span>
-            ) : null}
+              <span aria-hidden>·</span>
+              <span className="truncate">{presentation.summary}</span>
+            </span>
           </button>
         </PopoverTrigger>
         <button
@@ -133,9 +144,10 @@ export function ArchiveAttachmentChip({
             {archive.displayName}
           </div>
           <div className="mt-0.5 text-[10.5px] text-muted-foreground">
-            {representation
-              ? `${representation.fileCount} files · ${representation.folderCount} folders · ${formatBytes(representation.totalExpandedBytes)}${representation.encrypted ? " · encrypted" : ""}`
-              : "Archive manifest unavailable"}
+            {presentation.statusLabel} · {presentation.summary}
+          </div>
+          <div className="mt-1 text-[10px] leading-relaxed text-[var(--clack-text-3)]">
+            {presentation.explanation}
           </div>
         </div>
         <label className="relative mx-3 my-2 block">
@@ -200,6 +212,18 @@ export function ArchiveAttachmentChip({
                     className="shrink-0 text-destructive"
                   />
                 ) : null}
+                {entry.entryType === "file" && (selected || blockedReason) ? (
+                  <span
+                    className={cn(
+                      "shrink-0 text-[9px]",
+                      selected
+                        ? "text-[var(--clack-accent)]"
+                        : "text-[var(--clack-warning)]",
+                    )}
+                  >
+                    {selected ? "Selected" : archiveEntryState(entry, error)}
+                  </span>
+                ) : null}
               </>
             );
             if (entry.entryType === "folder") {
@@ -244,7 +268,23 @@ export function ArchiveAttachmentChip({
             find other entries.
           </div>
         ) : null}
+        <div className="border-t border-border/40 px-3 py-2 text-[10px] text-[var(--clack-text-3)]">
+          {selectedEntries.length > 0
+            ? `${selectedEntries.length} selected. The model receives the archive index and only these selected file contents.`
+            : "No entries selected. The model receives the archive index, not every file in it."}
+        </div>
       </PopoverContent>
     </Popover>
   );
+}
+
+function archiveEntryState(
+  entry: ArchiveManifestEntry,
+  localError?: string,
+): string {
+  if (localError) return "Could not include";
+  if (entry.encrypted) return "Encrypted";
+  if (/nested archive/i.test(entry.reason ?? "")) return "Nested archive";
+  if (/sensitive/i.test(entry.reason ?? "")) return "Sensitive";
+  return entry.selectable ? "Selectable" : "Unsupported";
 }

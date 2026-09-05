@@ -29,45 +29,42 @@ The decoded-image limit is enforced from PNG, JPEG, GIF, and WEBP dimensions.
 SVG files use the 1 MiB text-byte limit and are not rendered as composer
 thumbnails. Later image work may add stricter SVG and animated-image handling.
 
-## Remaining attachment roadmap
+## Processing and delivery truth
 
-### Planned attachment truthfulness and delivery-transparency checkpoint
+Detection is not processing. Composer chips and persisted message cards show a
+user-facing outcome of `Ready`, `Limited`, `Unsupported`, `Blocked`,
+`Processing`, or `Failed`. A compact details view explains what Clack processed
+and what the selected model will actually receive. It includes relevant page,
+text, truncation, archive-selection, and image-capability facts without exposing
+content hashes or internal record names.
 
-Detection is not processing. A later attachment UX and polish checkpoint must
-make the useful processing outcome and model-delivery outcome explicit. This is
-not part of the completed ZIP/7z adapter checkpoint and must not be folded into
-Checkpoint 8, PeerTask immutable artifact packages, merely to expand that
-checkpoint. Checkpoint 8 must preserve enough structured outcome metadata for
-the later UX to report the truth without reparsing content.
+Attachment compatibility is evaluated before send and recomputed when the
+selected model changes. Raster images are ready only for a model with confirmed
+vision support. Unknown support and known text-only models do not silently send
+the image. Delegation applies the same capability check to the target model and
+prevents selecting context that cannot be delivered.
 
-The product rule is strict: no attachment may appear supported or ready unless
-Clack can state what useful content was processed and what will be delivered to
-the selected model. Detection-only formats must be labeled limited or
-unsupported. The UI must distinguish fully processed, partially processed or
-limited, truncated, and unsupported outcomes.
+Archives distinguish a safe index from selected entry contents. The archive
+index may be ready while zero entries are selected; this means only the bounded
+manifest is model input. Any selected entries are listed in the details view and
+still pass through the normal attachment security, size, normalization,
+capability, and content-store path.
 
-Required user-facing outcomes include:
+## Honest support matrix
 
-- Images: `Ready - vision input` only when image bytes will actually be sent to
-  a selected model with confirmed vision support; otherwise show that the
-  selected model does not support the image.
-- PDFs with embedded text: show ready state, page count, and extracted text.
-- Scanned or image-only PDFs: show a limited state explaining that no embedded
-  text was found and OCR is unavailable.
-- Bounded PDFs: show truncation when only bounded pages or text were processed.
-- ZIP and 7z: show that the archive was indexed and how many files were found;
-  make clear that entry contents are not sent until entries are selected.
-- RAR: show unsupported state and explain that the signature was detected but
-  the contents cannot be safely inspected.
-- Unknown binary files: show limited metadata-only state rather than implying
-  that the model can read the contents.
+| Format | Processed content and delivery |
+| --- | --- |
+| PNG, JPEG, WEBP, GIF | Bounded raster image; vision input only with confirmed model support |
+| SVG | Bounded strict UTF-8 source text; never presented as raster vision |
+| TXT, MD, source code, JSON, CSV | Bounded strict UTF-8 text |
+| PDF | Bounded embedded-text extraction with page provenance; no OCR; empty or truncated extraction is labeled `Limited` |
+| ZIP | Safe bounded index plus only explicitly selected, revalidated entries |
+| 7z | Safe bounded index plus only explicitly selected, revalidated entries |
+| RAR | Signature detected; contents are `Unsupported` and are not inspected |
+| Unknown binary | `Limited` metadata only; contents are not sent |
 
-The later compact attachment detail view should expose only useful delivery
-facts, including processed pages, extracted text size, truncation, selected
-archive entries, actual image-vision delivery, omitted or unsupported content,
-and processing errors. It must not expose unnecessary internal implementation
-details. The same truthful status must be used in the composer, persisted chat
-history, model capability routing, and future PeerTask artifact packages.
+Sensitive files are `Blocked` before content delivery. A detected format is
+never labeled ready merely because Clack recognized its signature.
 
 ## Security contract
 

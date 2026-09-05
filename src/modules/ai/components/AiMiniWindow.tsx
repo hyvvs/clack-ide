@@ -76,6 +76,8 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { usePlanStore } from "../store/planStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
 import { isPeerTaskActive } from "../lib/peerTaskCancellation";
+import { activeDelegationAgentCount } from "../lib/delegationUx";
+import type { PeerTask } from "../lib/peerTasks";
 
 const EMPTY_TOKEN_USAGE = {
   inputTokens: 0,
@@ -473,6 +475,7 @@ function PaneComposer({ sessionId }: { sessionId: string }) {
         <ChipsRow
           files={composer.files}
           attachmentCapabilities={composer.attachmentCapabilities}
+          modelLabel={composer.modelLabel}
           onRemoveFile={composer.removeFile}
           onMaterializeArchiveEntry={composer.materializeArchiveEntry}
           snippets={composer.pickedSnippets}
@@ -1228,8 +1231,7 @@ function DelegationActivity() {
   );
   if (activeTasks.length === 0) return null;
 
-  const agentCount = new Set(activeTasks.map((task) => task.targetSessionId))
-    .size;
+  const agentCount = activeDelegationAgentCount(tasks, workspaceId);
   const agents = [...BUILTIN_AGENTS, ...customAgents];
   return (
     <Popover>
@@ -1265,11 +1267,7 @@ function DelegationActivity() {
                     {agentName}
                   </span>
                   <span className="shrink-0 text-[var(--clack-accent)]">
-                    {task.status === "running"
-                      ? "Working"
-                      : task.status === "waiting"
-                        ? "Waiting"
-                        : "Queued"}
+                    {delegationActivityStatus(task, tasks, sessions, agents)}
                   </span>
                 </div>
                 <div className="truncate text-[9.5px] text-[var(--clack-text-3)]">
@@ -1282,6 +1280,27 @@ function DelegationActivity() {
       </PopoverContent>
     </Popover>
   );
+}
+
+function delegationActivityStatus(
+  task: PeerTask,
+  tasks: readonly PeerTask[],
+  sessions: readonly SessionMeta[],
+  agents: readonly { id: string; name: string }[],
+): string {
+  if (task.status === "running") return "Working";
+  if (task.status === "queued") return "Queued";
+  const waitingFor = task.dependsOn.flatMap((dependencyId) => {
+    const dependency = tasks.find((candidate) => candidate.id === dependencyId);
+    if (!dependency) return [];
+    const session = sessions.find(
+      (candidate) => candidate.id === dependency.targetSessionId,
+    );
+    const agentId = session?.profile?.agentId ?? dependency.targetAgentId;
+    return [agents.find((agent) => agent.id === agentId)?.name ?? agentId];
+  });
+  if (waitingFor.length === 0) return "Waiting";
+  return `Waiting for ${waitingFor.join(", ")}`;
 }
 
 function SessionRow({

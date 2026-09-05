@@ -310,7 +310,7 @@ export function PeerTaskCard({
             task.status !== "blocked" &&
             dependencyAggregate.entries.length > 0 ? (
               <AggregateDisclosure
-                label={`Context from ${dependencyAggregate.relevantTaskCount} prerequisite ${dependencyAggregate.relevantTaskCount === 1 ? "task" : "tasks"}`}
+                label={`Context from ${dependencyAggregate.relevantTaskCount} earlier ${dependencyAggregate.relevantTaskCount === 1 ? "task" : "tasks"}`}
                 aggregate={dependencyAggregate}
                 open={showDependencyContext}
                 onOpenChange={setShowDependencyContext}
@@ -322,11 +322,11 @@ export function PeerTaskCard({
             ) : null}
           </div>
         ) : null}
-        {task.artifactRefs.length > 0 ? (
-          <div className="space-y-1">
-            <div className="text-[10px] font-medium text-[var(--clack-text-2)]">
-              {viewingSource ? "Context sent" : "Context received"}
-            </div>
+        <div className="space-y-1">
+          <div className="text-[10px] font-medium text-[var(--clack-text-2)]">
+            {viewingSource ? "Context sent" : "Context received"}
+          </div>
+          {task.artifactRefs.length > 0 ? (
             <div className="flex flex-wrap gap-1">
               {task.artifactRefs.map((artifact) => (
                 <span
@@ -341,8 +341,13 @@ export function PeerTaskCard({
                 </span>
               ))}
             </div>
-          </div>
-        ) : null}
+          ) : (
+            <p className="text-[10px] text-[var(--clack-text-3)]">
+              No files or attachments were sent. Conversation history was not
+              copied.
+            </p>
+          )}
+        </div>
         {task.result ? (
           <div className="max-h-40 overflow-auto border-t border-[color:var(--clack-border-subtle)] pt-2 whitespace-pre-wrap text-[var(--clack-text-2)]">
             {task.result.summary}
@@ -802,7 +807,7 @@ function aggregateProgressLabel(aggregate: PeerTaskResultAggregate): string {
 function aggregateRelationLabel(
   relation: PeerTaskResultAggregate["entries"][number]["relation"],
 ): string {
-  if (relation === "dependency") return "Prerequisite";
+  if (relation === "dependency") return "Needed first";
   if (relation === "child") return "Direct task";
   return "Nested task";
 }

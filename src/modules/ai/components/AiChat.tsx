@@ -518,6 +518,13 @@ export const RenderedMessage = memo(function RenderedMessage({
                 <AttachmentMessageCard
                   key={part.data.attachmentId}
                   part={part}
+                  selectedArchiveEntries={attachments
+                    .filter(
+                      (candidate) =>
+                        candidate.data.archiveEntryProvenance
+                          ?.archiveAttachmentId === part.data.attachmentId,
+                    )
+                    .map((candidate) => candidate.data.displayName)}
                 />
               ))}
             </div>

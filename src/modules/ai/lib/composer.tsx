@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useWhisperRecording } from "../hooks/useWhisperRecording";
 import {
   ACCEPTED_ATTACHMENT_FILES,
@@ -37,6 +38,7 @@ import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
 import { cancelRun, useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
+import { resolveModelSelectionInfo } from "./savedProviderModels";
 
 type MessagePart = { type: "text"; text: string } | AttachmentMessagePart;
 
@@ -69,6 +71,7 @@ type ComposerCtx = {
   stop: () => void;
   voice: Voice;
   canSend: boolean;
+  modelLabel: string;
   attachmentCapabilities: Readonly<Record<string, AttachmentCapabilityStatus>>;
 };
 
@@ -113,6 +116,21 @@ export function AiComposerProvider({
     () => resolveModelInputCapabilities(modelId),
     [modelId],
   );
+  const customEndpoints = usePreferencesStore((state) => state.customEndpoints);
+  const savedProviderModels = usePreferencesStore(
+    (state) => state.savedProviderModels,
+  );
+  const modelLabel = useMemo(() => {
+    try {
+      return resolveModelSelectionInfo(
+        modelId,
+        customEndpoints,
+        savedProviderModels,
+      ).label;
+    } catch {
+      return modelId || "Selected model";
+    }
+  }, [customEndpoints, modelId, savedProviderModels]);
 
   const [value, setValue] = useState("");
   const [files, setFiles] = useState<AttachmentRecord[]>([]);
@@ -343,7 +361,9 @@ export function AiComposerProvider({
       if (!archive) return;
       pendingArchiveEntriesRef.current.add(key);
       try {
-        const { materializeArchiveEntry } = await import("./archiveAttachments");
+        const { materializeArchiveEntry } = await import(
+          "./archiveAttachments"
+        );
         const entry = await materializeArchiveEntry(archive, entryIndex);
         appendAttachments([entry]);
       } catch (error) {
@@ -518,6 +538,7 @@ export function AiComposerProvider({
     stop,
     voice,
     canSend,
+    modelLabel,
     attachmentCapabilities,
   };
 

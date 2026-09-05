@@ -201,7 +201,7 @@ describe("PeerTaskFeed", () => {
       />,
     );
 
-    expect(html).toContain("Context from 2 prerequisite tasks");
+    expect(html).toContain("Context from 2 earlier tasks");
     expect(html).toContain("Complete");
   });
 
@@ -362,6 +362,18 @@ describe("PeerTaskFeed", () => {
       "agent-reviewer could not complete this task: Image input is unavailable.",
     );
     expect(failedHtml).toContain("Nothing was returned.");
+  });
+
+  it("states explicitly when delegation copied no files or conversation history", () => {
+    const html = renderToStaticMarkup(
+      <PeerTaskCard
+        task={task({ artifactRefs: [] })}
+        viewingSessionId="target"
+      />,
+    );
+    expect(html).toContain("Context received");
+    expect(html).toContain("No files or attachments were sent");
+    expect(html).toContain("Conversation history was not copied");
   });
 
   it("stops malformed lineage cycles without looping", () => {

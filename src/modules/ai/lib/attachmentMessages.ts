@@ -194,7 +194,7 @@ export async function materializeAttachmentMessages(
       messageChanged = true;
       const reference = part.data;
       const compatibility = attachmentCapabilityStatus(
-        referenceAsRecord(reference),
+        attachmentReferenceAsRecord(reference),
         capabilities,
       );
       if (compatibility.state === "blocked") {
@@ -397,7 +397,7 @@ function formatSelectionBlock(
   ].join("\n");
 }
 
-function referenceAsRecord(
+export function attachmentReferenceAsRecord(
   reference: AttachmentMessageReference,
 ): AttachmentRecord {
   return {

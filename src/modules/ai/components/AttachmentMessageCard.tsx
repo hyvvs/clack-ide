@@ -1,21 +1,31 @@
 import {
   File01Icon,
   Image01Icon,
+  InformationCircleIcon,
   Loading03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
-import { formatBytes } from "@/modules/ai/lib/attachments";
-import type { AttachmentMessagePart } from "@/modules/ai/lib/attachmentMessages";
+import {
+  attachmentReferenceAsRecord,
+  type AttachmentMessagePart,
+} from "@/modules/ai/lib/attachmentMessages";
+import { buildAttachmentPresentation } from "@/modules/ai/lib/attachmentPresentation";
 import {
   inspectAttachmentContent,
   loadAttachmentContent,
 } from "@/modules/ai/lib/attachmentStore";
+import {
+  AttachmentDetailsPopover,
+  AttachmentStateIcon,
+} from "./AttachmentDetailsPopover";
 
 export function AttachmentMessageCard({
   part,
+  selectedArchiveEntries = [],
 }: {
   part: AttachmentMessagePart;
+  selectedArchiveEntries?: string[];
 }) {
   const { data } = part;
   const image =
@@ -24,6 +34,16 @@ export function AttachmentMessageCard({
   const [nearViewport, setNearViewport] = useState(!image);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const presentation = buildAttachmentPresentation(
+    attachmentReferenceAsRecord(data),
+    {
+      delivered: true,
+      contentAvailable: !failed,
+      selectedArchiveEntries: selectedArchiveEntries.map((displayName) => ({
+        displayName,
+      })),
+    },
+  );
 
   useEffect(() => {
     if (!image || nearViewport) return;
@@ -84,7 +104,7 @@ export function AttachmentMessageCard({
       ref={anchorRef}
       data-clack-attachment={data.attachmentId}
       className="flex min-w-0 max-w-sm items-center gap-2 rounded-[var(--clack-radius-button)] border border-[color:var(--clack-border-subtle)] bg-[var(--clack-surface-2)] p-1.5"
-      title={`${data.mediaType} | ${formatBytes(data.byteSize)}`}
+      title={`${presentation.statusLabel} · ${presentation.summary}`}
     >
       <div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-[4px] bg-[var(--clack-surface-3)] text-[var(--clack-text-3)]">
         {previewUrl ? (
@@ -113,30 +133,32 @@ export function AttachmentMessageCard({
         <span className="truncate text-[11px] font-medium text-[var(--clack-text-1)]">
           {data.displayName}
         </span>
-        <span className="truncate text-[10px] text-[var(--clack-text-3)]">
-          {failed
-            ? "Attachment unavailable"
-            : attachmentKindLabel(data.contentKind)}
-          {data.documentRepresentation
-            ? ` | ${data.documentRepresentation.pageCount} page${data.documentRepresentation.pageCount === 1 ? "" : "s"}`
-            : ""}
-          {data.archiveRepresentation
-            ? ` | ${data.archiveRepresentation.fileCount} files | ${formatBytes(data.archiveRepresentation.totalExpandedBytes)}`
-            : ""}
-          {` | ${formatBytes(data.byteSize)}`}
+        <span className="flex min-w-0 items-center gap-1 truncate text-[10px] text-[var(--clack-text-3)]">
+          <AttachmentStateIcon outcome={presentation.outcome} />
+          <span className="shrink-0 font-medium">
+            {presentation.statusLabel}
+          </span>
+          <span aria-hidden>·</span>
+          <span className="truncate">{presentation.summary}</span>
         </span>
       </span>
+      <AttachmentDetailsPopover
+        displayName={data.displayName}
+        presentation={presentation}
+      >
+        <button
+          type="button"
+          className="grid size-6 shrink-0 place-items-center rounded-[var(--clack-radius-button)] text-[var(--clack-text-3)] outline-none hover:bg-[var(--clack-surface-hover)] hover:text-[var(--clack-text-1)] focus-visible:ring-1 focus-visible:ring-[var(--clack-focus)]"
+          aria-label={`Show delivery details for ${data.displayName}`}
+          title="What the model received"
+        >
+          <HugeiconsIcon
+            icon={InformationCircleIcon}
+            size={12}
+            strokeWidth={1.75}
+          />
+        </button>
+      </AttachmentDetailsPopover>
     </div>
   );
-}
-
-function attachmentKindLabel(
-  kind: AttachmentMessagePart["data"]["contentKind"],
-): string {
-  if (kind === "selection") return "Selection";
-  if (kind === "image") return "Image";
-  if (kind === "document") return "PDF";
-  if (kind === "archive") return "Archive";
-  if (kind === "text") return "Text";
-  return "File";
 }

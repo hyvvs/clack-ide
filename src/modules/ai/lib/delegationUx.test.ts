@@ -2,8 +2,11 @@ import type { UIMessage } from "@ai-sdk/react";
 import { describe, expect, it } from "vitest";
 import type { AttachmentMessageReference } from "./attachmentMessages";
 import {
+  activeDelegationAgentCount,
   buildDelegationRequest,
   collectDelegationArtifactChoices,
+  delegationArtifactCannotBeDelivered,
+  delegationArtifactPresentation,
   delegationCardTitle,
   delegationStatusLabel,
   delegationTargetStatus,
@@ -88,6 +91,33 @@ describe("delegation UX", () => {
     expect(request.attachmentReferences).toEqual([]);
   });
 
+  it("shows target-model attachment incompatibility before delegation", () => {
+    const image = reference("a", "screen.png");
+    const unsupported = delegationArtifactPresentation(
+      image,
+      "gpt-5.4-nano",
+      "GPT 5.4 Nano",
+    );
+    const supported = delegationArtifactPresentation(
+      image,
+      "gpt-5.5",
+      "GPT 5.5",
+    );
+
+    expect(unsupported).toMatchObject({
+      outcome: "unsupported",
+      statusLabel: "Unsupported",
+      summary: "Selected model cannot receive images",
+    });
+    expect(delegationArtifactCannotBeDelivered(unsupported)).toBe(true);
+    expect(supported).toMatchObject({
+      outcome: "ready",
+      statusLabel: "Ready",
+      summary: "Vision input",
+    });
+    expect(delegationArtifactCannotBeDelivered(supported)).toBe(false);
+  });
+
   it("offers chat attachments and returned artifacts without unrelated results", () => {
     const chatReference = reference("a", "screen.png");
     const returned = artifact("b", "review.md");
@@ -157,6 +187,58 @@ describe("delegation UX", () => {
     expect(delegationCardTitle(task(), false, "Coder", "Reviewer")).toBe(
       "Delegated by Coder",
     );
+  });
+
+  it("counts only distinct agents with active work in the current workspace", () => {
+    const tasks = [
+      task({
+        id: "running-a",
+        status: "running",
+        targetSessionId: "reviewer",
+        result: undefined,
+      }),
+      task({
+        id: "queued-a",
+        status: "queued",
+        targetSessionId: "reviewer",
+        result: undefined,
+      }),
+      task({
+        id: "waiting-b",
+        status: "waiting",
+        targetSessionId: "investigator",
+        result: undefined,
+      }),
+      task({ id: "completed-c", targetSessionId: "security" }),
+      task({
+        id: "failed-d",
+        status: "failed",
+        targetSessionId: "writer",
+        result: undefined,
+      }),
+      task({
+        id: "cancelled-e",
+        status: "cancelled",
+        targetSessionId: "tester",
+        result: undefined,
+      }),
+      task({
+        id: "blocked-f",
+        status: "blocked",
+        targetSessionId: "architect",
+        result: undefined,
+      }),
+      task({
+        id: "other-workspace",
+        status: "running",
+        targetSessionId: "other",
+        workspaceId: "local:c:/elsewhere",
+        result: undefined,
+      }),
+    ];
+
+    expect(activeDelegationAgentCount(tasks, "local:c:/workspace")).toBe(2);
+    expect(activeDelegationAgentCount(tasks, null)).toBe(0);
   });
 });
 

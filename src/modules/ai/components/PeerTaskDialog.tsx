@@ -30,6 +30,8 @@ import { BUILTIN_AGENTS, type Agent } from "../lib/agents";
 import {
   buildDelegationRequest,
   collectDelegationArtifactChoices,
+  delegationArtifactCannotBeDelivered,
+  delegationArtifactPresentation,
   delegationTargetStatus,
   eligibleDelegationTargets,
 } from "../lib/delegationUx";
@@ -40,6 +42,7 @@ import type { SessionMeta } from "../lib/sessions";
 import { useAgentsStore } from "../store/agentsStore";
 import { getChat, useChatStore } from "../store/chatStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
+import { AttachmentStateIcon } from "./AttachmentDetailsPopover";
 
 const KINDS: Array<{ id: PeerTaskKind; label: string }> = [
   { id: "question", label: "Question" },
@@ -123,6 +126,31 @@ export function PeerTaskDialog({
     : (targets[0]?.id ?? "");
   const target =
     targets.find((session) => session.id === effectiveTargetSessionId) ?? null;
+  const targetDescription = target
+    ? describeTarget(target, agents, customEndpoints, savedProviderModels)
+    : null;
+  const artifactPresentations = useMemo(
+    () =>
+      new Map(
+        availableArtifacts.map((choice) => [
+          choice.reference.contentId,
+          delegationArtifactPresentation(
+            choice.reference,
+            target?.profile?.modelId ?? "",
+            targetDescription?.modelName,
+          ),
+        ]),
+      ),
+    [
+      availableArtifacts,
+      target?.profile?.modelId,
+      targetDescription?.modelName,
+    ],
+  );
+  const incompatibleSelected = [...selectedContentIds].filter((contentId) => {
+    const state = artifactPresentations.get(contentId);
+    return state ? delegationArtifactCannotBeDelivered(state) : true;
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -135,6 +163,12 @@ export function PeerTaskDialog({
 
   const submit = async () => {
     if (!target || !prompt.trim() || submitting) return;
+    if (incompatibleSelected.length > 0) {
+      setError(
+        "Remove context that cannot be delivered to this agent's selected model.",
+      );
+      return;
+    }
     setSubmitting(true);
     setError(null);
     const result = await requestPeerTask(
@@ -156,9 +190,6 @@ export function PeerTaskDialog({
     onOpenChange(false);
   };
 
-  const targetDescription = target
-    ? describeTarget(target, agents, customEndpoints, savedProviderModels)
-    : null;
   const access = EXECUTION_MODES.find((mode) => mode.id === executionMode);
 
   return (
@@ -261,7 +292,7 @@ export function PeerTaskDialog({
             />
           </div>
 
-          <Collapsible className="group/options">
+          <Collapsible defaultOpen className="group/options">
             <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-[var(--clack-radius-button)] px-1 py-1 text-left text-[11px] text-[var(--clack-text-2)] hover:text-[var(--clack-text-1)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--clack-focus)]">
               <HugeiconsIcon
                 icon={ArrowRight01Icon}
@@ -273,48 +304,82 @@ export function PeerTaskDialog({
               <span className="ml-auto text-[10px] text-[var(--clack-text-3)]">
                 {selectedContentIds.size > 0
                   ? `${selectedContentIds.size} selected`
-                  : "No files"}
+                  : "No files or attachments"}
                 {` | ${access?.label ?? "Read only"}`}
               </span>
             </CollapsibleTrigger>
             <CollapsibleContent className="clack-collapsible-content mt-1 space-y-3 rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] p-2.5">
               <div className="space-y-1.5">
                 <div className="text-[10px] font-medium uppercase text-muted-foreground">
-                  Files to send
+                  Context to send
                 </div>
                 {availableArtifacts.length > 0 ? (
                   <div className="max-h-28 space-y-1 overflow-auto">
-                    {availableArtifacts.map((choice) => (
-                      <label
-                        key={choice.reference.contentId}
-                        htmlFor={`delegation-artifact-${choice.reference.contentId}`}
-                        className="flex cursor-pointer items-center gap-2 rounded-[var(--clack-radius-button)] px-1 py-1 text-[10.5px] hover:bg-[var(--clack-surface-hover)]"
-                      >
-                        <Checkbox
-                          id={`delegation-artifact-${choice.reference.contentId}`}
-                          checked={selectedContentIds.has(
-                            choice.reference.contentId,
+                    {availableArtifacts.map((choice) => {
+                      const checked = selectedContentIds.has(
+                        choice.reference.contentId,
+                      );
+                      const presentation = artifactPresentations.get(
+                        choice.reference.contentId,
+                      );
+                      const incompatible = presentation
+                        ? delegationArtifactCannotBeDelivered(presentation)
+                        : true;
+                      return (
+                        <label
+                          key={choice.reference.contentId}
+                          htmlFor={`delegation-artifact-${choice.reference.contentId}`}
+                          className={cn(
+                            "flex items-center gap-2 rounded-[var(--clack-radius-button)] px-1 py-1 text-[10.5px]",
+                            incompatible && !checked
+                              ? "cursor-not-allowed opacity-65"
+                              : "cursor-pointer hover:bg-[var(--clack-surface-hover)]",
                           )}
-                          onCheckedChange={(checked) => {
-                            setSelectedContentIds((current) => {
-                              const next = new Set(current);
-                              if (checked) {
-                                next.add(choice.reference.contentId);
-                              } else {
-                                next.delete(choice.reference.contentId);
-                              }
-                              return next;
-                            });
-                          }}
-                        />
-                        <span className="min-w-0 flex-1 truncate">
-                          {choice.reference.displayName}
-                        </span>
-                        <span className="shrink-0 text-[9.5px] text-[var(--clack-text-3)]">
-                          {choice.originLabel}
-                        </span>
-                      </label>
-                    ))}
+                          title={presentation?.explanation}
+                        >
+                          <Checkbox
+                            id={`delegation-artifact-${choice.reference.contentId}`}
+                            checked={selectedContentIds.has(
+                              choice.reference.contentId,
+                            )}
+                            disabled={incompatible && !checked}
+                            onCheckedChange={(checked) => {
+                              setSelectedContentIds((current) => {
+                                const next = new Set(current);
+                                if (checked) {
+                                  next.add(choice.reference.contentId);
+                                } else {
+                                  next.delete(choice.reference.contentId);
+                                }
+                                return next;
+                              });
+                            }}
+                          />
+                          <span className="flex min-w-0 flex-1 flex-col">
+                            <span className="truncate">
+                              {choice.reference.displayName}
+                            </span>
+                            {presentation ? (
+                              <span className="flex min-w-0 items-center gap-1 truncate text-[9.5px] text-[var(--clack-text-3)]">
+                                <AttachmentStateIcon
+                                  outcome={presentation.outcome}
+                                />
+                                <span className="shrink-0 font-medium">
+                                  {presentation.statusLabel}
+                                </span>
+                                <span aria-hidden>·</span>
+                                <span className="truncate">
+                                  {presentation.summary}
+                                </span>
+                              </span>
+                            ) : null}
+                          </span>
+                          <span className="shrink-0 text-[9.5px] text-[var(--clack-text-3)]">
+                            {choice.originLabel}
+                          </span>
+                        </label>
+                      );
+                    })}
                   </div>
                 ) : (
                   <p className="text-[10.5px] text-[var(--clack-text-3)]">
@@ -322,8 +387,9 @@ export function PeerTaskDialog({
                   </p>
                 )}
                 <p className="text-[9.5px] text-[var(--clack-text-3)]">
-                  Only checked files are sent. Conversation history is not
-                  copied.
+                  {selectedContentIds.size === 0
+                    ? "No files or attachments will be sent. Conversation history is not copied."
+                    : `Only the ${selectedContentIds.size} checked ${selectedContentIds.size === 1 ? "item is" : "items are"} sent. Conversation history is not copied.`}
                 </p>
               </div>
 
@@ -399,7 +465,13 @@ export function PeerTaskDialog({
           </Button>
           <Button
             onClick={() => void submit()}
-            disabled={!target || !prompt.trim() || submitting}
+            disabled={
+              !target ||
+              !prompt.trim() ||
+              submitting ||
+              incompatibleSelected.length > 0
+            }
+            aria-disabled={incompatibleSelected.length > 0}
           >
             {submitting
               ? "Sending..."

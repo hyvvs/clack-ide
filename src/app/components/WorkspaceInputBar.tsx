@@ -203,6 +203,7 @@ export function WorkspaceInputBar({
             }
             files={c.files}
             attachmentCapabilities={c.attachmentCapabilities}
+            modelLabel={c.modelLabel}
             onRemoveFile={c.removeFile}
             onMaterializeArchiveEntry={c.materializeArchiveEntry}
             snippets={c.pickedSnippets}

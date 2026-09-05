@@ -1,5 +1,17 @@
 import type { UIMessage } from "@ai-sdk/react";
-import type { AttachmentMessageReference } from "./attachmentMessages";
+import {
+  attachmentReferenceAsRecord,
+  type AttachmentMessageReference,
+} from "./attachmentMessages";
+import {
+  buildAttachmentPresentation,
+  type AttachmentPresentation,
+} from "./attachmentPresentation";
+import {
+  attachmentCapabilityStatus,
+  resolveModelInputCapabilities,
+} from "./modelCapabilities";
+import { isPeerTaskActive } from "./peerTaskCancellation";
 import {
   collectPeerTaskAttachmentReferences,
   peerTaskArtifactToMessagePart,
@@ -105,6 +117,47 @@ export function buildDelegationRequest(input: {
     ),
     awaitCompletion: false,
   } as const;
+}
+
+export function delegationArtifactPresentation(
+  reference: AttachmentMessageReference,
+  targetModelId: string,
+  targetModelLabel?: string,
+): AttachmentPresentation {
+  const record = attachmentReferenceAsRecord(reference);
+  const capability = attachmentCapabilityStatus(
+    record,
+    resolveModelInputCapabilities(targetModelId),
+  );
+  return buildAttachmentPresentation(record, {
+    capability,
+    modelLabel: targetModelLabel ?? targetModelId,
+  });
+}
+
+export function delegationArtifactCannotBeDelivered(
+  presentation: AttachmentPresentation,
+): boolean {
+  return (
+    presentation.outcome === "unsupported" ||
+    presentation.outcome === "blocked" ||
+    presentation.outcome === "failed" ||
+    presentation.outcome === "processing"
+  );
+}
+
+export function activeDelegationAgentCount(
+  tasks: readonly PeerTask[],
+  workspaceId: string | null | undefined,
+): number {
+  if (!workspaceId) return 0;
+  return new Set(
+    tasks
+      .filter(
+        (task) => task.workspaceId === workspaceId && isPeerTaskActive(task),
+      )
+      .map((task) => task.targetSessionId),
+  ).size;
 }
 
 export function delegationStatusLabel(task: PeerTask): string {

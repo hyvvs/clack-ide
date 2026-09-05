@@ -55,7 +55,9 @@ describe("AttachmentMessageCard", () => {
         }}
       />,
     );
-    expect(html).toContain("PDF | 3 pages");
+    expect(html).toContain("Ready");
+    expect(html).toContain("3 pages · Text extracted");
+    expect(html).toContain("Show delivery details for report.pdf");
     expect(html).toContain("report.pdf");
   });
 
@@ -91,7 +93,43 @@ describe("AttachmentMessageCard", () => {
         }}
       />,
     );
-    expect(html).toContain("Archive | 120 files | 4 MB");
+    expect(html).toContain("120 files indexed · Select files to include");
     expect(html).toContain("project.zip");
+  });
+
+  it("shows how many archive entries were actually selected", () => {
+    const manifestHash = "d".repeat(64);
+    const html = renderToStaticMarkup(
+      <AttachmentMessageCard
+        selectedArchiveEntries={["src/main.ts", "README.md"]}
+        part={{
+          type: CLACK_ATTACHMENT_PART_TYPE,
+          data: {
+            attachmentId: "zip-2",
+            contentId: HASH,
+            contentHash: HASH,
+            displayName: "source.zip",
+            mediaType: "application/zip",
+            byteSize: 1024,
+            contentKind: "archive",
+            archiveRepresentation: {
+              format: "zip",
+              entryCount: 12,
+              fileCount: 10,
+              folderCount: 2,
+              totalCompressedBytes: 1024,
+              totalExpandedBytes: 4096,
+              nestedArchiveDepthLimit: 0,
+              manifestContentRef: {
+                id: manifestHash,
+                contentHash: manifestHash,
+                byteSize: 100,
+              },
+            },
+          },
+        }}
+      />,
+    );
+    expect(html).toContain("10 files indexed · 2 selected");
   });
 });

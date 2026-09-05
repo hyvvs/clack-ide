@@ -43,8 +43,9 @@ describe("ChipsRow model capability state", () => {
       label: "Unsupported by model",
       message: "The selected model does not support image input.",
     });
-    expect(html).toContain("Unsupported by model");
-    expect(html).toContain("selected model does not support image input");
+    expect(html).toContain("Unsupported");
+    expect(html).toContain("Selected model cannot receive images");
+    expect(html).toContain("Show delivery details for screen.png");
   });
 
   it("does not add a warning label for a ready image", () => {
@@ -54,8 +55,8 @@ describe("ChipsRow model capability state", () => {
       label: "Ready",
       message: "Image is ready for the selected model.",
     });
-    expect(html).not.toContain("Unsupported by model");
-    expect(html).not.toContain("Support unknown");
+    expect(html).toContain("Ready");
+    expect(html).toContain("Vision input");
   });
 
   it("shows processing while the shared normalizer is reading a file", () => {
@@ -70,7 +71,7 @@ describe("ChipsRow model capability state", () => {
         onRemoveCommand={() => {}}
       />,
     );
-    expect(html).toContain("Processing");
+    expect(html).toContain("Processing image");
   });
 
   it("renders a compact inspectable ZIP chip instead of every manifest entry", () => {
@@ -128,7 +129,8 @@ describe("ChipsRow model capability state", () => {
       />,
     );
     expect(html).toContain("project.zip");
-    expect(html).toContain("2 files");
+    expect(html).toContain("2 files indexed");
+    expect(html).toContain("Select files to include");
     expect(html).not.toContain("first.txt");
     expect(html).not.toContain("second.txt");
   });
