@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod fs;
 pub mod git;
 pub mod history;
+pub mod inference_probe;
 pub mod net;
 pub mod opener;
 pub mod pdf;

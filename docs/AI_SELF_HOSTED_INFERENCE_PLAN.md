@@ -1,6 +1,6 @@
 # Clack Self-Hosted Inference Plan
 
-Status: A1 complete; A2 and all later implementation checkpoints pending
+Status: A1-A2 complete; A3 and all later implementation checkpoints pending
 Audit date: 2026-09-06
 Audited baseline: 5415e5d9d34ced7b32fe10095275b161ca6b4f2a
 Baseline checkpoint: fix(ai): harden in-chat model switching
@@ -9,7 +9,8 @@ This is the durable product and engineering plan for self-hosted inference.
 It complements [the multi-agent build plan](AI_MULTI_AGENT_BUILD_PLAN.md) and
 preserves [the attachment safety contract](AI_ATTACHMENTS.md). Those programs
 are not to be repeated or replaced. All implementation checkpoints below are
-pending. This documentation change implements no inference features.
+tracked in the checkpoint ledger. The original planning commit implemented no
+inference features; implementation records below describe subsequent checkpoints.
 
 ## Purpose and Product Principles
 
@@ -585,7 +586,7 @@ roadmap deliverables, not silently excluded from completion.
 | Order | Checkpoint | Scope | Status | Commit / evidence |
 | --- | --- | --- | --- | --- |
 | 1 | A1 | Endpoint/profile identity, evidence and override persistence | Complete | `feat(ai): add self-hosted endpoint profiles`; [implementation record](#a1-implementation-record) |
-| 2 | A2 | Bounded authenticated backend handshakes | Pending | None |
+| 2 | A2 | Bounded authenticated backend handshakes | Complete | `feat(ai): probe self-hosted inference endpoints`; [implementation record](#a2-implementation-record) |
 | 3 | A3 | Add-server UX, endpoint-model bindings, capability routing | Pending | None |
 | 4 | D1 | Native cancellation, request lifecycle, truthful timed states | Pending | None |
 | 5 | E1 | Shared inference admission and PeerTask integration | Pending | None |
@@ -714,6 +715,150 @@ HTML response, unknown metadata, mixed model types, malicious redirects/DNS,
 oversized response, timeout/cancel and stale refresh. Configured context must
 never be copied from theoretical context. Rollback disables probing and uses
 existing manual endpoint fields; cached data does not alter older behavior.
+
+### A2 implementation record
+
+Implemented on Windows, 2026-09-06, after `1884e3b` (A1). Commit subject:
+`feat(ai): probe self-hosted inference endpoints`. A3 is not started.
+
+Ownership and entry points:
+
+- Native `modules/inference_probe/` owns metadata HTTP, parsers, cancellation,
+  generations and one bounded cache shared by all webviews. It accepts a saved
+  A1 endpoint ID, optional explicitly selected model ID, and explicit
+  `allowPrivateNetwork` (defaults false). It never accepts arbitrary request URLs,
+  auth headers, probe paths or generation payloads from a caller.
+- Commands: `self_hosted_probe_cache`, `self_hosted_probe`, and
+  `self_hosted_probe_cancel`. The TypeScript `createSelfHostedProbeClient` exposes
+  `inspect` (cached snapshot plus background refresh promise), `refresh`, and
+  `cancel`. No component invokes these automatically yet; A3 owns that wiring.
+- Requests use the A1 backend hint; no hint means generic compatible metadata.
+  No backend-family inference from a model name or a URL returned by metadata.
+  No scanning, inference, images, tools, benchmarks, loading, downloading or admin
+  requests. Existing provider/model selection and chat transport are unchanged.
+- Evidence uses A1's existing timestamp/source/confidence/scope schema and
+  endpoint/model/deployment identities. Namespaced `probe.*` metrics keep ownership
+  separate from recommendations/manual pins. Successful results update existing
+  profiles and create only the explicitly selected model's profile and at most
+  16 reported instance profiles, not a persisted profile per discovered model.
+  Native evidence commits share A1's settings lock, validate the current endpoint
+  and generation, save atomically, and emit the existing preference-change event.
+
+Actual routes and evidence (schemas rechecked against the primary links in
+[Backend Handshake and Evidence](#backend-handshake-and-evidence)):
+
+| Backend | Routes | Evidence and limits |
+| --- | --- | --- |
+| Ollama | GET `api/tags`; POST `api/show` only for selected model with `verbose:false`; GET `api/ps` | Installed IDs, explicit advertised completion/vision/tool-training flags, architecture-specific theoretical context, reported loaded state and loaded context. Parameters are not deployed context. Ollama exposes no stable instance ID here; loaded context has no invented digest-based identity and expires after 30 seconds. |
+| LM Studio | GET `api/v1/models`, fallback `api/v0/models`, then compatible `models` | Native model key/name/type, advertised max context and vision/tool-training flags, loaded instances with their IDs/context/parallel capacity. Embedding types have `chat:unsupported`. v0 loaded state/max context does not establish loaded context. Fallback is only on 404/405/501, never auth failure, HTML or malformed JSON. |
+| vLLM | GET compatible `models` | Valid IDs/creation metadata. Only the selected record with `object:model`, an explicit vLLM hint and an actual `max_model_len` establishes reported configured context. Missing LoRA context stays unknown. No parser guess or admin probe. |
+| MLX | GET compatible `models` | IDs, optional name and creation metadata. No assumed context, load state, vision or tools. |
+| Generic compatible | GET compatible `models` | Valid IDs and available bounded names/creation timestamps. Listing failure preserves the selected manual ID as unverified, with no fabricated model. vLLM-shaped fields are ignored. |
+
+Relative resolution preserves proxy prefixes. A compatible base `/proxy/v1`
+uses `/proxy/v1/models`; a host-only compatible base defaults to `/v1/models`.
+For native Ollama/LM routes, only a terminal compatible `/v1` is removed, then
+the native suffix is appended: `/ollama/v1` becomes `/ollama/api/tags`.
+A root `/api/...` is never tried to bypass a proxy prefix. Nonstandard base
+paths are used as configured, not guessed through retries.
+
+Safety and bounds:
+
+- Six requests per handshake, two active HTTP probes globally, five seconds per
+  probe including queue/DNS/body, twenty seconds for the handshake including
+  credential lookup. Automatic HTTP retries and redirects are disabled.
+- JSON body cap 2 MiB, including chunked/unknown-length bodies; 5,000 model records;
+  1 KiB UTF-8 IDs/names; 16 loaded instances per native model; 8 MiB normalized
+  evidence cap checked during parsing. Oversized responses fail explicitly.
+- **Encoding policy:** request `Accept-Encoding: identity` and reject encoded
+  responses instead of decompressing them. Thus compressed bombs cannot expand
+  beyond the JSON limit. Gzip/brotli-only servers are intentionally unsupported by
+  A2. Normal chat HTTP compression/dependencies are unchanged.
+- HTTP(S) only, no URL userinfo/query/fragment/control characters, metadata names
+  or addresses, including mapped IPv6 and transition-address bypasses. Private,
+  loopback and CGNAT addresses require explicit opt-in. All resolved addresses
+  must pass validation; exactly those addresses are pinned. No second DNS lookup,
+  automatic forward proxy or credential forwarding to a redirect origin.
+- Platform DNS and secret reads run in bounded blocking pools (two each). The
+  waiting handshake is cancellable/time-bounded, but an OS call itself cannot
+  always be forcibly interrupted. Its permit remains held until it really exits,
+  preventing unbounded orphan lookups. No network request follows cancelled work.
+- Credential references resolve through the existing `clack-ai` keychain account
+  with the existing `terax-ai` legacy fallback. Missing referenced credentials
+  fail closed, not anonymous. Only Rust sees the key; headers are sensitive,
+  raw backend error bodies are discarded, and echoed literal/JSON-escaped
+  credentials are rejected before metadata leaves Rust. No secret logging.
+- Structured errors distinguish DNS, reachability, TLS, timeout, auth, unsupported
+  route, invalid response, malformed/oversized metadata, cancellation and local
+  limits/storage errors. The frontend maps them to existing AI error semantics.
+  HTTP status alone is not Connected; a validated inventory is required. Even a
+  credential-bearing valid response is not proof the server enforces auth or can
+  successfully run inference. Optional route errors remain separately visible.
+
+Cache and freshness:
+
+- Inventory is a five-minute, on-demand stale-while-revalidate cache, with no idle
+  polling. Ordinary concurrent refreshes join one native flight. Explicit
+  `refresh(options, true)` supersedes it; endpoint/model selection changes also
+  supersede the old probe. Late generations cannot persist or replace new data.
+- Failed refresh retains useful prior models/evidence, marks them stale, records
+  the new failure and does not advance the successful timestamp. Successful
+  refresh replaces the old result. Missing optional metadata is unknown, never
+  resurrected from the old result as fresh.
+- Cache is in memory only: at most eight endpoint entries and 32 MiB serialized
+  snapshots, with eviction; all-busy capacity returns a structured error.
+  Inventory itself is not duplicated into another persistent endpoint store.
+- URL, backend hint, credential reference, deletion and key rotation invalidate
+  relevant cache/generations. Renaming does not. Key changes clear only owned
+  probe evidence for affected references; manual overrides remain intact.
+- `probeEvidenceIsFresh` requires current matching endpoint/configuration and a
+  non-stale successful snapshot containing that exact observation. It applies
+  30 seconds to loaded state/context/reported parallel evidence and five minutes
+  to inventory/advertised evidence. Persisted evidence alone after restart is
+  not fresh. B1/D1 must wire fresh-runtime requirements before affected runs;
+  A2 does not change budgeting, capability routing or inference admission.
+- Capability values remain supported/unsupported/unknown. Model names never
+  establish capability. Advertised tool training is not effective parser proof;
+  A3 must intersect model metadata with actual adapter support and permissions.
+
+Files: five native `inference_probe` files; native module/command registration,
+`net.rs` classifier visibility only, shared secret reading/invalidation,
+`self_hosted_profiles.rs` invalidation/lock reuse, explicit existing Tokio feature
+declarations, `selfHostedProbe.ts` and its test, and this ledger. No new dependency
+package or lockfile change. No provider, PeerTask, UI, permission, terminal,
+attachment or packaging change.
+
+Verification performed on Windows:
+
+- Focused native probe/parser/network/cache tests: **50 passed**. Includes real
+  loopback HTTP fixture servers, sensitive auth header delivery, redirects to a
+  second fixture origin, pinned fake-host routing, streamed response limits,
+  timeouts, concurrency, request caps, partial metadata and stale generations.
+- Focused frontend API/evidence/error tests: **11 passed** in one new file.
+- `npm.cmd run check-types`: passed.
+- `npm.cmd run lint`: passed, unchanged **71 warnings and two infos**.
+- `npm.cmd test`: **948 passed in 108 files**.
+- `npm.cmd run build`: passed; existing Vite plugin timing information only.
+- `cargo fmt --check`: passed.
+- `cargo clippy --all-targets --locked -- -D warnings`: passed.
+- `cargo test --locked`: **301 passed (251 unit + 50 integration)**; none ignored.
+- `git diff --check` and staged whitespace check: passed before commit.
+
+The Windows loopback fixture initially inherited nonblocking sockets and closed
+some requests too early; fixing the fixture's accepted socket mode resolved it.
+Production checks were not weakened and no automatic retry was added.
+
+Not performed: real-engine/hardware smoke, native GUI setup, real OS-keychain
+credential exercise, TLS certificate deployment smoke, Linux/macOS validation,
+inference, or packaging rebuilds. A3 must test actual server setup; synthetic
+fixtures are not a claim of universal engine compatibility. No real endpoint
+was scanned or probed. `autonomous_tracker/` remains untouched.
+The pre-existing uncommitted delegation-modal work was safety-stashed separately
+for A2 verification and restored after the A2 commit, not included in it.
+
+Rollback: revert this checkpoint only. A1 and all legacy manual model/provider
+fields remain valid; additive `probe.*` evidence is inert in older builds. Do
+not remove credentials, profiles, chats or unrelated modal work.
 
 ### A3: Simple endpoint setup and routing
 
@@ -965,14 +1110,16 @@ multi-GPU server for multi-GPU claims; otherwise explicitly Not tested.
 
 ## Continuation Instructions and Verification Record
 
-Next implementation checkpoint: A2 only, bounded authenticated backend handshakes,
-after explicit implementation request. A1 is complete; do not redo its migration
-or replace the additive identity model.
+Next implementation checkpoint: A3 only, simple Add Self-Hosted Server UX,
+endpoint-model bindings and capability routing, after explicit implementation
+request. A1-A2 are complete; do not redo migration/probing or replace the additive
+identity model. Preserve A2's native ownership, bounded request policy, freshness
+checks, explicit private-network authorization, and no-inference handshake rule.
 Future sessions must read this plan, the current git log/status, CLACK.md,
 AI_MULTI_AGENT_BUILD_PLAN.md and AI_ATTACHMENTS.md. Confirm the model-switch
 baseline remains present; preserve changes made since this audit. Refresh API
 evidence when implementing, then record exact files/tests/commit and pending
-native checks in the ledger. Do not infer later completion from A1's foundation.
+native checks in the ledger. Do not infer later completion from A1-A2's foundation.
 
 Planning-only verification: source audit and primary-source API review;
 git diff --check passed. The staged documentation must also pass
@@ -982,8 +1129,8 @@ inference request, network scan or benchmark was run for this plan.
 
 ## Requirement Traceability
 
-Numbers correspond to the 44 requirements in the planning request. Only A1's
-persistent foundation has implementation evidence above; full runtime and UI
+Numbers correspond to the 44 requirements in the planning request. A1's persistent
+foundation and A2's bounded probes have implementation evidence above; full runtime and UI
 acceptance remains pending for the owning checkpoints.
 
 | Requirement | Checkpoint / location | Acceptance evidence |

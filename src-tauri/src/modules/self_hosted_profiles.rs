@@ -3,8 +3,8 @@ use std::sync::Mutex;
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
-const KEY: &str = "selfHostedInference";
-static WRITE_LOCK: Mutex<()> = Mutex::new(());
+pub(super) const KEY: &str = "selfHostedInference";
+pub(super) static WRITE_LOCK: Mutex<()> = Mutex::new(());
 const SNAPSHOT_KEYS: &[&str] = &[
     KEY,
     "ollamaBaseURL",
@@ -33,7 +33,7 @@ pub fn self_hosted_profiles_snapshot(app: AppHandle) -> Result<Vec<(String, Valu
         .collect())
 }
 
-fn validate(value: &Value) -> Result<(), String> {
+pub(super) fn validate(value: &Value) -> Result<(), String> {
     if value.get("version").and_then(Value::as_u64) != Some(1)
         || value.get("revision").and_then(Value::as_u64).is_none()
         || value
@@ -83,7 +83,7 @@ pub fn self_hosted_profiles_compare_and_swap(
         expected,
         value,
         |next| {
-            store.set(KEY, next);
+            store.set(KEY, next.clone());
             if store.save().is_err() {
                 if let Some(old) = previous {
                     store.set(KEY, old);
@@ -92,6 +92,7 @@ pub fn self_hosted_profiles_compare_and_swap(
                 }
                 return Err("Could not save self-hosted settings".into());
             }
+            super::inference_probe::settings_changed(&app, &next);
             Ok(())
         },
     )

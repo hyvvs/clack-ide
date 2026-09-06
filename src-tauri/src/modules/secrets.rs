@@ -119,16 +119,25 @@ pub async fn secrets_get(
     service: String,
     account: String,
 ) -> Result<Option<String>, String> {
+    read_secret(&app, &state, &service, &account)
+}
+
+pub(super) fn read_secret(
+    app: &AppHandle,
+    state: &SecretsState,
+    service: &str,
+    account: &str,
+) -> Result<Option<String>, String> {
     #[cfg(target_os = "linux")]
     {
         let _ = state; // capture
-        let key = key(&service, &account);
-        with_store(&app, &state, |m| m.get(&key).cloned())
+        let key = key(service, account);
+        with_store(app, state, |m| m.get(&key).cloned())
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (app, state);
-        let e = entry(&service, &account)?;
+        let e = entry(service, account)?;
         match e.get_password() {
             Ok(v) => Ok(Some(v)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -145,6 +154,7 @@ pub async fn secrets_set(
     account: String,
     password: String,
 ) -> Result<(), String> {
+    let _probe_change = ProbeCredentialChange::new(&app, &service, &account);
     #[cfg(target_os = "linux")]
     {
         let key = key(&service, &account);
@@ -172,6 +182,7 @@ pub async fn secrets_delete(
     service: String,
     account: String,
 ) -> Result<(), String> {
+    let _probe_change = ProbeCredentialChange::new(&app, &service, &account);
     #[cfg(target_os = "linux")]
     {
         let key = key(&service, &account);
@@ -192,6 +203,27 @@ pub async fn secrets_delete(
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(err) => Err(err.to_string()),
         }
+    }
+}
+
+struct ProbeCredentialChange {
+    app: AppHandle,
+    service: String,
+    account: String,
+}
+impl ProbeCredentialChange {
+    fn new(app: &AppHandle, service: &str, account: &str) -> Self {
+        super::inference_probe::credential_changed(app, service, account);
+        Self {
+            app: app.clone(),
+            service: service.into(),
+            account: account.into(),
+        }
+    }
+}
+impl Drop for ProbeCredentialChange {
+    fn drop(&mut self) {
+        super::inference_probe::credential_changed(&self.app, &self.service, &self.account);
     }
 }
 

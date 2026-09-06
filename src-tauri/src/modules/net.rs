@@ -22,7 +22,7 @@ const HEADER_BLOCKLIST: &[&str] = &[
     "expect",
 ];
 
-fn is_blocked_host_name(host: &str) -> bool {
+pub(super) fn is_blocked_host_name(host: &str) -> bool {
     let host = host.to_ascii_lowercase();
     matches!(
         host.as_str(),
@@ -30,7 +30,7 @@ fn is_blocked_host_name(host: &str) -> bool {
     )
 }
 
-fn ip_kind(ip: IpAddr) -> IpKind {
+pub(super) fn ip_kind(ip: IpAddr) -> IpKind {
     match ip {
         IpAddr::V4(v) => {
             let o = v.octets();
@@ -75,7 +75,7 @@ fn ip_kind(ip: IpAddr) -> IpKind {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum IpKind {
+pub(super) enum IpKind {
     Public,
     Private,
     Loopback,

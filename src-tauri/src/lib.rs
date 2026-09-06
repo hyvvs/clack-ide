@@ -161,6 +161,7 @@ pub fn run() {
         .manage(pty::PtyState::default())
         .manage(shell::ShellState::default())
         .manage(secrets::SecretsState::default())
+        .manage(modules::inference_probe::ProbeState::default())
         .manage(fs::watch::FsWatchState::default())
         .manage(history::HistoryState::default())
         .manage(fs::grep::ContentSearchState::default())
@@ -260,6 +261,9 @@ pub fn run() {
             net::lm_ping,
             modules::self_hosted_profiles::self_hosted_profiles_compare_and_swap,
             modules::self_hosted_profiles::self_hosted_profiles_snapshot,
+            modules::inference_probe::self_hosted_probe,
+            modules::inference_probe::self_hosted_probe_cache,
+            modules::inference_probe::self_hosted_probe_cancel,
             net::ai_http_request,
             net::ai_http_stream,
             history::history_suggest,
