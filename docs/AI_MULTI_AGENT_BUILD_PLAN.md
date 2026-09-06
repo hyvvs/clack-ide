@@ -16,6 +16,11 @@ verification record as work lands. Do not revive the rolled-back provider
 connection or live model discovery architecture unless the user explicitly
 changes the scope.
 
+The next, separately scoped planning program is
+[Self-Hosted Inference](AI_SELF_HOSTED_INFERENCE_PLAN.md). It extends local and
+self-hosted endpoint runtime support without redesigning cloud providers or
+replacing this program. Its implementation checkpoints have not started.
+
 ## Status Ledger
 
 | Phase | Deliverable | Status | Commit |
