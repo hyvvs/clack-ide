@@ -258,6 +258,8 @@ pub fn run() {
             secrets::secrets_delete,
             secrets::secrets_get_all,
             net::lm_ping,
+            modules::self_hosted_profiles::self_hosted_profiles_compare_and_swap,
+            modules::self_hosted_profiles::self_hosted_profiles_snapshot,
             net::ai_http_request,
             net::ai_http_stream,
             history::history_suggest,

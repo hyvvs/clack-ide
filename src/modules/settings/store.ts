@@ -29,6 +29,16 @@ import type {
 } from "@/modules/ai/lib/permissions";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { LazyStore } from "@tauri-apps/plugin-store";
+import {
+  emptySelfHostedState,
+  readSelfHostedState,
+  SELF_HOSTED_SETTINGS_KEY,
+  type SelfHostedState,
+} from "@/modules/ai/lib/selfHostedProfiles";
+import {
+  createSelfHostedPersistence,
+  nativeSelfHostedStorage,
+} from "@/modules/settings/selfHostedPersistence";
 
 export type ThemePref = "system" | "light" | "dark";
 
@@ -155,6 +165,7 @@ export type Preferences = {
   openaiCompatibleModelId: string;
   openaiCompatibleContextLimit: number;
   customEndpoints: CustomEndpoint[];
+  selfHostedInference: SelfHostedState;
   openrouterModelId: string;
   savedProviderModels: SavedProviderModel[];
   sttProvider: SttProvider;
@@ -277,6 +288,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   openaiCompatibleModelId: "",
   openaiCompatibleContextLimit: 128_000,
   customEndpoints: [],
+  selfHostedInference: emptySelfHostedState(),
   openrouterModelId: "",
   savedProviderModels: [],
   sttProvider: DEFAULT_STT_PROVIDER,
@@ -339,6 +351,15 @@ export function normalizeAgentPermissionProfiles(
 }
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
+const selfHostedPersistence = createSelfHostedPersistence(
+  nativeSelfHostedStorage(),
+);
+
+export function updateSelfHostedProfiles(
+  change: (state: SelfHostedState) => SelfHostedState,
+): Promise<SelfHostedState> {
+  return selfHostedPersistence.update(change);
+}
 
 // LazyStore.onChange only fires within the writing process. The settings
 // page lives in a separate webview, so writes there never reach the main
@@ -350,6 +371,15 @@ async function writePref<T>(key: string, value: T): Promise<void> {
   await store.set(key, value);
   await store.save();
   await emit(PREFS_CHANGED_EVENT, { key, value });
+  if ([
+    KEY_LMSTUDIO_BASE_URL, KEY_LMSTUDIO_MODEL_ID,
+    KEY_MLX_BASE_URL, KEY_MLX_MODEL_ID,
+    KEY_OLLAMA_BASE_URL, KEY_OLLAMA_MODEL_ID,
+    KEY_CUSTOM_ENDPOINTS, KEY_OPENAI_COMPAT_BASE_URL,
+    KEY_OPENAI_COMPAT_MODEL_ID, KEY_OPENAI_COMPAT_CONTEXT_LIMIT,
+  ].includes(key)) {
+    await selfHostedPersistence.load();
+  }
 }
 
 export async function loadPreferences(): Promise<Preferences> {
@@ -375,7 +405,9 @@ export async function loadPreferences(): Promise<Preferences> {
     );
     await store.save();
   }
+  const selfHostedInference = await selfHostedPersistence.load();
   return {
+    selfHostedInference,
     theme: get<ThemePref>(KEY_THEME) ?? DEFAULT_PREFERENCES.theme,
     themeId: get<string>(KEY_THEME_ID) ?? DEFAULT_PREFERENCES.themeId,
     backgroundKind:
@@ -805,6 +837,13 @@ export type PrefKey = keyof Preferences;
 export async function onPreferencesChange(
   cb: (key: PrefKey, value: unknown) => void,
 ): Promise<UnlistenFn> {
+  let selfHostedRevision = -1;
+  const deliverSelfHosted = (value: unknown) => {
+    const state = readSelfHostedState(value);
+    if (state.revision <= selfHostedRevision) return;
+    selfHostedRevision = state.revision;
+    cb("selfHostedInference", state);
+  };
   const map: Record<string, PrefKey> = {
     [KEY_THEME]: "theme",
     [KEY_THEME_ID]: "themeId",
@@ -866,10 +905,14 @@ export async function onPreferencesChange(
   const unsubEvent = await listen<{ key: string; value: unknown }>(
     PREFS_CHANGED_EVENT,
     (e) => {
+      if (e.payload.key === SELF_HOSTED_SETTINGS_KEY)
+        deliverSelfHosted(e.payload.value);
       const mapped = map[e.payload.key];
       if (mapped) cb(mapped, e.payload.value);
     },
   );
+  // Reconcile after subscribing so an edit during hydration cannot be missed.
+  deliverSelfHosted(await selfHostedPersistence.load());
   return () => {
     unsubLocal();
     unsubEvent();

@@ -1,6 +1,6 @@
 # Clack Self-Hosted Inference Plan
 
-Status: Planning complete; implementation NOT STARTED
+Status: A1 complete; A2 and all later implementation checkpoints pending
 Audit date: 2026-09-06
 Audited baseline: 5415e5d9d34ced7b32fe10095275b161ca6b4f2a
 Baseline checkpoint: fix(ai): harden in-chat model switching
@@ -584,7 +584,7 @@ roadmap deliverables, not silently excluded from completion.
 
 | Order | Checkpoint | Scope | Status | Commit / evidence |
 | --- | --- | --- | --- | --- |
-| 1 | A1 | Endpoint/profile identity, evidence and override persistence | Pending | None |
+| 1 | A1 | Endpoint/profile identity, evidence and override persistence | Complete | `feat(ai): add self-hosted endpoint profiles`; [implementation record](#a1-implementation-record) |
 | 2 | A2 | Bounded authenticated backend handshakes | Pending | None |
 | 3 | A3 | Add-server UX, endpoint-model bindings, capability routing | Pending | None |
 | 4 | D1 | Native cancellation, request lifecycle, truthful timed states | Pending | None |
@@ -612,6 +612,98 @@ lost keys or changed cloud selections; two aliases/models remain distinct;
 rename/key rotation preserves identity; pins survive restart. Test malformed,
 partial and legacy settings plus cross-window updates. Rollback leaves old
 fields/readers usable and ignores additive profile metadata.
+
+### A1 implementation record
+
+Commit: the checkpoint commit containing this record, titled
+`feat(ai): add self-hosted endpoint profiles`, directly after planning commit
+`aba24d2`. This title identifies the commit without a self-referential hash.
+
+Design and actual scope:
+
+- Store version 1 metadata in the existing `terax-settings.json` under
+  `selfHostedInference`. Keep every legacy key, ProviderId, saved cloud/OpenRouter
+  model, chat profile and current transport reader unchanged.
+- Endpoints have generated stable IDs for new records, independent aliases,
+  canonical HTTP(S) URLs with proxy paths preserved, optional backend hints,
+  existing credential references, timestamps, metadata/configuration revisions
+  and optional deletion tombstones. HTTPS is unverified, not a health/TLS claim.
+- Reuse existing CustomEndpoint IDs and `compat-<id>` bindings. The three local
+  singleton sources get deterministic `legacy:ollama`, `legacy:lmstudio` and
+  `legacy:mlx` IDs and retain their original local selection IDs. The oldest
+  compatible singleton retains its own selection and provider credential reference.
+- Profile identity is the JSON tuple of endpoint ID, transport model ID and
+  optional deployed instance/revision ID. Aliases, address edits and credential
+  references are not identity. Old profiles survive changes to a legacy model.
+- Evidence records metric, value, source, nullable observation time, confidence,
+  and endpoint/model/deployment/configuration-revision scope. A1 creates no
+  discovered, measured or invented backend evidence. Zero/false differ from absent.
+- Recommendations and manual pins are separate per-field maps. A manual pin
+  wins; Reset deletes only that pin. Supported fields cover context, output,
+  concurrency, phase timeouts, compaction and continuation policy. Their runtime
+  behavior is NOT wired in A1. Configuration edits mark prior recommendations
+  stale without deleting them or overriding user pins; alias edits do not.
+- Migration is additive and snapshot-based. It imports configured local URLs
+  and models, compatible endpoints and explicit positive context limits. Legacy
+  context is an unverified user assertion with unknown observation time. Existing
+  settings edits reconcile into this metadata without replacing newer pins or
+  aliases. Repeating migration after JSON reload produces the identical state.
+- Only credential references enter the new records. No keyring reads, key copies,
+  inference requests, HTTP probes or new dependencies/permissions are introduced.
+  URL userinfo/query/fragment and invalid URLs are rejected. Malformed legacy
+  values remain untouched; corrupt/future new records are not overwritten on load.
+- Metadata deletion retains endpoint tombstones and profiles and returns an actionable
+  missing result, never a fallback provider. The deletion helper rejects supplied
+  active-run endpoint references; existing captured transport objects are unchanged.
+  New profile editing/deletion UI and runtime consumers belong to A3 and later,
+  not this foundation. Existing settings and runtime continue using legacy readers.
+- Native snapshot/compare-and-swap commands use the same plugin store, one lock
+  for this metadata key, save-error rollback and an eight-attempt functional retry
+  loop. Post-save preference events notify both windows; older revisions and
+  speculative plugin-store writes cannot replace committed subscriber state.
+  Different-field edits converge; conflicting same-field edits use commit order.
+- Bounds: 256 endpoints, 2,048 profiles, 64 evidence observations per profile,
+  and a 2 MiB native serialized-envelope limit. A full registry still resolves
+  existing bindings; it does not remove legacy source settings.
+
+Files: `src/modules/ai/lib/selfHostedProfiles.ts`,
+`src/modules/ai/lib/selfHostedMigration.ts`,
+`src/modules/ai/lib/selfHostedProfiles.test.ts`,
+`src/modules/settings/selfHostedPersistence.ts`,
+`src/modules/settings/selfHostedPersistence.test.ts`,
+`src/modules/settings/store.ts`,
+`src-tauri/src/modules/self_hosted_profiles.rs`,
+`src-tauri/src/modules/mod.rs`, `src-tauri/src/lib.rs`, this ledger and the
+program link in `docs/AI_MULTI_AGENT_BUILD_PLAN.md`.
+
+Verification performed on Windows:
+
+- Focused profile/migration/persistence tests: 58 passed in two files (44 + 14).
+  Covers identity, pins/reset/restart, evidence, migrations, credential exclusion,
+  old selections, deletion/captured identity, concurrent window edits, notifications,
+  corruption, failure, registry bounds and JSON-expanded tuple identities.
+- `npm.cmd run check-types`: passed.
+- `npm.cmd run lint`: passed; baseline unchanged at 71 warnings and two infos.
+- `npm.cmd test`: 937 passed in 107 files.
+- `npm.cmd run build`: passed; Vite reports plugin timing information.
+- `cargo fmt --check`: passed.
+- `cargo clippy --all-targets --locked -- -D warnings`: passed.
+- `cargo test --locked`: 251 passed (201 unit + 50 integration), including four
+  new native persistence tests; no ignored tests.
+- `git diff --check`: passed; staged documentation/code checked before commit.
+
+No GUI/hardware smoke, live server handshake, inference, OS-keyring exercise,
+NSIS build or Linux/macOS validation performed in A1. Cross-window/restart tests
+use mocked native storage/events plus native CAS unit tests, not a claimed GUI
+smoke. `autonomous_tracker/` was neither inspected nor changed nor staged.
+
+Deviation: two small native persistence commands were necessary for an atomic
+cross-webview update, instead of read-modify-write in JavaScript. They do not
+change network/transport behavior. No A2 work was started.
+
+Rollback: revert this checkpoint's code and ledger changes only. Retain the
+additive metadata on disk; older builds ignore it and all original legacy values
+remain available. Do not reset unrelated user work or rewrite chat history.
 
 ### A2: Safe backend handshake
 
@@ -873,12 +965,14 @@ multi-GPU server for multi-GPU claims; otherwise explicitly Not tested.
 
 ## Continuation Instructions and Verification Record
 
-Next implementation checkpoint: A1 only, after explicit implementation request.
+Next implementation checkpoint: A2 only, bounded authenticated backend handshakes,
+after explicit implementation request. A1 is complete; do not redo its migration
+or replace the additive identity model.
 Future sessions must read this plan, the current git log/status, CLACK.md,
 AI_MULTI_AGENT_BUILD_PLAN.md and AI_ATTACHMENTS.md. Confirm the model-switch
 baseline remains present; preserve changes made since this audit. Refresh API
 evidence when implementing, then record exact files/tests/commit and pending
-native checks in the ledger. Do not infer completion from this planning commit.
+native checks in the ledger. Do not infer later completion from A1's foundation.
 
 Planning-only verification: source audit and primary-source API review;
 git diff --check passed. The staged documentation must also pass
@@ -888,8 +982,9 @@ inference request, network scan or benchmark was run for this plan.
 
 ## Requirement Traceability
 
-Numbers correspond to the 44 requirements in the planning request. All
-implementation evidence remains pending unless explicitly marked audit/docs.
+Numbers correspond to the 44 requirements in the planning request. Only A1's
+persistent foundation has implementation evidence above; full runtime and UI
+acceptance remains pending for the owning checkpoints.
 
 | Requirement | Checkpoint / location | Acceptance evidence |
 | --- | --- | --- |

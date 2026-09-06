@@ -12,5 +12,6 @@ pub mod pdf;
 pub mod proc;
 pub mod pty;
 pub mod secrets;
+pub mod self_hosted_profiles;
 pub mod shell;
 pub mod workspace;
