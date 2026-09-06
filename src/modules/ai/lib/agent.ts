@@ -359,7 +359,7 @@ export function buildConfiguredLanguageModel(
 const PLAN_MODE_PROMPT = `## PLAN MODE — ACTIVE
 Mutating tools (write_file, edit, multi_edit, create_directory) will queue their changes for the user to review as a single diff. Do NOT execute bash_run or bash_background while plan mode is active — restrict yourself to reads (read_file, grep, glob, list_directory) and the queued mutations. After queueing the full set of edits, stop and return a brief summary; do not continue acting until the user has accepted/rejected.`;
 
-function buildStableSystem(
+export function buildStableSystem(
   modelId: string,
   persona: { name: string; instructions: string } | null,
   customInstructions: string | undefined,
@@ -377,6 +377,10 @@ function buildStableSystem(
       ? `\n\n## PROJECT MEMORY\n${projectMemory.trim()}`
       : "";
   return `${base}${memoryBlock}${personaBlock}${customBlock}`;
+}
+
+export function planModeSystemText(active: boolean): string {
+  return active ? PLAN_MODE_PROMPT : "";
 }
 
 // OpenAI / Gemini / DeepSeek apply prefix caching automatically; only

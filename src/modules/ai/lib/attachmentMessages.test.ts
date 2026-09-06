@@ -135,6 +135,77 @@ describe("attachment message references", () => {
     expect(loadContent).not.toHaveBeenCalled();
   });
 
+  it("re-materializes earlier text attachments without changing saved history", async () => {
+    const history: UIMessage[] = [
+      messageWith(toAttachmentMessagePart(record("text"))),
+      {
+        id: "reply",
+        role: "assistant",
+        parts: [{ type: "text", text: "I read the notes." }],
+      },
+      {
+        id: "follow-up",
+        role: "user",
+        parts: [{ type: "text", text: "Continue with the new model." }],
+      },
+    ];
+    const original = structuredClone(history);
+    const loadContent = vi.fn(async () => new TextEncoder().encode("hello"));
+    for (const image of ["supported", "unsupported"] as const) {
+      const outgoing = await materializeAttachmentMessages(
+        history,
+        { ...VISION_CAPABILITIES, image },
+        { loadContent, toDataUrl: vi.fn() },
+      );
+      expect(outgoing[0].parts[0]).toMatchObject({
+        type: "text",
+        text: expect.stringContaining("hello"),
+      });
+      expect(outgoing.slice(1)).toEqual(original.slice(1));
+    }
+    expect(loadContent).toHaveBeenCalledTimes(2);
+    expect(history).toEqual(original);
+  });
+
+  it("blocks incompatible historical images without losing them when switching back", async () => {
+    const history: UIMessage[] = [
+      messageWith(toAttachmentMessagePart(record("image"))),
+      {
+        id: "follow-up",
+        role: "user",
+        parts: [{ type: "text", text: "Continue with the new model." }],
+      },
+    ];
+    const original = structuredClone(history);
+    const toDataUrl = vi.fn(async () => "data:image/png;base64,aGVsbG8=");
+    const io = {
+      loadContent: vi.fn(async () => new TextEncoder().encode("hello")),
+      toDataUrl,
+    };
+    await expect(
+      materializeAttachmentMessages(
+        history,
+        { ...VISION_CAPABILITIES, image: "unsupported" },
+        io,
+      ),
+    ).rejects.toMatchObject({
+      code: "attachment_capability_blocked",
+      attachmentName: "screen.png",
+    });
+    expect(io.loadContent).not.toHaveBeenCalled();
+    const outgoing = await materializeAttachmentMessages(
+      history,
+      VISION_CAPABILITIES,
+      io,
+    );
+    expect(outgoing[0].parts[0]).toMatchObject({
+      type: "file",
+      url: "data:image/png;base64,aGVsbG8=",
+    });
+    expect(outgoing[1]).toEqual(original[1]);
+    expect(history).toEqual(original);
+  });
+
   it("blocks image delivery when freeform model support is unknown", async () => {
     const reference = toAttachmentMessagePart(record("image"));
     await expect(

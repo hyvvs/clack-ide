@@ -44,10 +44,14 @@ import {
   Settings01Icon,
   StarIcon,
   StopCircleIcon,
+  SquareLock01Icon,
   Tick01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useModelSelectionLock } from "@/modules/ai/hooks/useModelSelectionLock";
+import { useModelSwitch } from "@/modules/ai/hooks/useModelSwitch";
+import { ModelSwitchNotice } from "./ModelSwitchNotice";
 import {
   compatModelIdForEndpoint,
   getCompatModelInfo,
@@ -234,6 +238,19 @@ export function ModelDropdown({
   sessionId?: string;
   compact?: boolean;
 }) {
+  const targetId = useChatStore((s) => sessionId ?? s.activeSessionId);
+  const locked = useModelSelectionLock(sessionId);
+  const modelSwitch = useModelSwitch(targetId, sessionId === undefined);
+  const resetSwitch = modelSwitch.reset;
+  const [open, setOpen] = useState(false);
+  const previousTargetId = useRef(targetId);
+  useEffect(() => {
+    if (locked || previousTargetId.current !== targetId) {
+      setOpen(false);
+      resetSwitch();
+    }
+    previousTargetId.current = targetId;
+  }, [locked, targetId, resetSwitch]);
   const selected = useChatStore((s) =>
     sessionId
       ? (s.sessions.find((session) => session.id === sessionId)?.profile
@@ -241,11 +258,10 @@ export function ModelDropdown({
       : s.selectedModelId,
   );
   const apiKeys = useChatStore((s) => s.apiKeys);
-  const setSelectedModelId = useChatStore((s) => s.setSelectedModelId);
-  const setSessionModelId = useChatStore((s) => s.setSessionModelId);
-  const setSelected = (modelId: string) => {
-    if (sessionId) setSessionModelId(sessionId, modelId);
-    else setSelectedModelId(modelId);
+  const setSelected = async (modelId: string) => {
+    if (locked) return;
+    if (modelId === selected || (await modelSwitch.request(modelId)))
+      setOpen(false);
   };
   const favoriteIds = usePreferencesStore((s) => s.favoriteModelIds);
   const recentIds = usePreferencesStore((s) => s.recentModelIds);
@@ -280,6 +296,10 @@ export function ModelDropdown({
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("all");
   const inputRef = useRef<HTMLInputElement>(null);
+  const { checking, review, failure } = modelSwitch;
+  useEffect(() => {
+    if (open && !checking && !review && !failure) inputRef.current?.focus();
+  }, [open, checking, review, failure]);
   const currentProviderHasKey =
     currentState.valid &&
     (isCompatModelId(selected)
@@ -342,170 +362,233 @@ export function ModelDropdown({
   }, [activeProvider, allModels, favoriteIds, recentIds, search, tab]);
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className={cn(
-            "h-5.5 gap-1 rounded-md px-1.5 my-1 text-xs hover:bg-accent hover:text-foreground",
-            compact && "min-w-0 max-w-28",
-            currentProviderHasKey
-              ? "text-muted-foreground"
-              : "text-amber-600 dark:text-amber-400",
-          )}
-          title={
-            currentProviderHasKey
-              ? `${current.hint}: ${current.label}`
-              : `${current.hint}: ${current.label} — no key configured`
-          }
-        >
-          <HugeiconsIcon
-            icon={PROVIDER_ICON[current.provider]}
-            size={12}
-            strokeWidth={1.6}
-          />
-          <span className={cn(compact && "truncate")}>{current.label}</span>
-          <HugeiconsIcon
-            icon={ArrowDown01Icon}
-            size={11}
-            strokeWidth={2}
-            className="opacity-70"
-          />
-        </Button>
-      </DropdownMenuTrigger>
+    <DropdownMenu
+      open={open && !locked}
+      onOpenChange={(next) => {
+        if (!next) resetSwitch();
+        setOpen(next && !locked);
+      }}
+    >
+      <span
+        className="inline-flex min-w-0"
+        title={
+          locked
+            ? "Model locked until this run finishes or stops completely."
+            : undefined
+        }
+      >
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            disabled={locked}
+            aria-label={
+              locked
+                ? `Model: ${current.label}. Locked until this run finishes or stops completely.`
+                : `Change model: ${current.label}`
+            }
+            variant="ghost"
+            size="sm"
+            className={cn(
+              "h-5.5 gap-1 rounded-md px-1.5 my-1 text-xs hover:bg-accent hover:text-foreground",
+              compact && "min-w-0 max-w-28",
+              currentProviderHasKey
+                ? "text-muted-foreground"
+                : "text-amber-600 dark:text-amber-400",
+            )}
+            title={
+              locked
+                ? "Model locked until this run finishes or stops completely."
+                : currentProviderHasKey
+                  ? `${current.hint}: ${current.label}`
+                  : `${current.hint}: ${current.label} — no key configured`
+            }
+          >
+            <HugeiconsIcon
+              icon={PROVIDER_ICON[current.provider]}
+              size={12}
+              strokeWidth={1.6}
+            />
+            <span className={cn(compact && "truncate")}>{current.label}</span>
+            <HugeiconsIcon
+              icon={locked ? SquareLock01Icon : ArrowDown01Icon}
+              size={11}
+              strokeWidth={2}
+              className="opacity-70"
+            />
+          </Button>
+        </DropdownMenuTrigger>
+      </span>
 
       <DropdownMenuContent
         align="end"
-        className="w-[28rem] p-0 overflow-hidden rounded-xl border border-border/70 shadow-xl"
+        className="w-[28rem] max-w-[calc(100vw-1rem)] p-0 overflow-hidden rounded-xl border border-border/70 shadow-xl"
         onFocusCapture={(e) => {
-          if (e.target !== inputRef.current) inputRef.current?.focus();
+          if (
+            !modelSwitch.checking &&
+            !modelSwitch.review &&
+            !modelSwitch.failure &&
+            e.target !== inputRef.current
+          )
+            inputRef.current?.focus();
         }}
       >
-        {/* Search */}
-        <div className="flex items-center gap-2.5 border-b border-border/70 px-3 py-2.5">
-          <HugeiconsIcon
-            icon={Search01Icon}
-            size={16}
-            strokeWidth={1.75}
-            className="shrink-0 text-muted-foreground/70"
-          />
-          <input
-            ref={inputRef}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            onKeyDown={(e) => e.stopPropagation()}
-            placeholder="Search models, providers, capabilities…"
-            className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
-          />
-        </div>
-
-        {/* Tabs */}
-        <div className="flex items-center gap-0.5 border-b border-border/70 px-2 py-1.5">
-          <TabButton
-            label="All"
-            icon={AiBookIcon}
-            active={tab === "all"}
-            onClick={() => setTab("all")}
-          />
-          <TabButton
-            label="Favorites"
-            icon={FavouriteIcon}
-            active={tab === "favorites"}
-            onClick={() => setTab("favorites")}
-            count={favoriteIds.length || undefined}
-          />
-          <TabButton
-            label="Recent"
-            icon={Clock01Icon}
-            active={tab === "recent"}
-            onClick={() => setTab("recent")}
-            count={recentIds.length || undefined}
-          />
-        </div>
-
-        <div className="flex max-h-104 min-h-0">
-          {/* Provider sidebar — configured first, unconfigured muted, no dividers. */}
-          <div className="flex w-11 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border/70 bg-muted/20 py-1.5">
-            <ProviderPill
-              icon={AiBookIcon}
-              title="All providers"
-              active={activeProvider === null}
-              onClick={() => setActiveProvider(null)}
-            />
-            {[
-              ...sortedProviders.configured,
-              ...sortedProviders.unconfigured,
-            ].map((p) => (
-              <ProviderPill
-                key={p.id}
-                icon={PROVIDER_ICON[p.id]}
-                title={
-                  hasKeyFor(p.id) ? p.label : `${p.label} — not configured`
-                }
-                active={activeProvider === p.id}
-                muted={!hasKeyFor(p.id)}
-                onClick={() => setActiveProvider(p.id)}
-              />
-            ))}
-            {customEndpoints.length > 0 && (
-              <ProviderPill
-                icon={PlugIcon}
-                title="OpenAI Compatible"
-                active={activeProvider === COMPAT_PROVIDER_ID}
-                onClick={() => setActiveProvider(COMPAT_PROVIDER_ID)}
-              />
-            )}
+        {modelSwitch.checking ? (
+          <div role="status" className="p-4 text-xs text-muted-foreground">
+            Checking chat compatibility...
           </div>
+        ) : modelSwitch.review || modelSwitch.failure ? (
+          <ModelSwitchNotice
+            targetLabel={modelSwitch.review?.targetLabel ?? "Model change"}
+            assessment={
+              modelSwitch.review?.assessment ?? {
+                status: "blocked",
+                reasons: [modelSwitch.failure ?? "Choose the model again."],
+                estimatedTokens: 0,
+                contextLimit: null,
+              }
+            }
+            onBack={resetSwitch}
+            onConfirm={() => {
+              if (modelSwitch.confirm()) {
+                resetSwitch();
+                setOpen(false);
+              }
+            }}
+          />
+        ) : (
+          <>
+            {/* Search */}
+            <div className="flex items-center gap-2.5 border-b border-border/70 px-3 py-2.5">
+              <HugeiconsIcon
+                icon={Search01Icon}
+                size={16}
+                strokeWidth={1.75}
+                className="shrink-0 text-muted-foreground/70"
+              />
+              <input
+                ref={inputRef}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => e.stopPropagation()}
+                placeholder="Search models, providers, capabilities…"
+                className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
+              />
+            </div>
 
-          {/* Models list */}
-          <div className="min-h-0 flex-1 overflow-y-auto py-1">
-            {activeProvider === COMPAT_PROVIDER_ID && (
-              <div className="flex items-center gap-1.5 px-3 pt-1 pb-1.5 text-[11px] font-medium tracking-tight text-muted-foreground/90">
-                <HugeiconsIcon icon={PlugIcon} size={13} strokeWidth={1.75} />
-                <span>OpenAI Compatible</span>
-              </div>
-            )}
-            {activeProvider !== null &&
-            activeProvider !== COMPAT_PROVIDER_ID ? (
-              <ProviderHeader providerId={activeProvider as ProviderId} />
-            ) : null}
-            {activeProvider !== null &&
-            activeProvider !== COMPAT_PROVIDER_ID &&
-            !hasKeyFor(activeProvider as ProviderId) ? (
-              <ProviderConfigureCTA providerId={activeProvider as ProviderId} />
-            ) : null}
-            {filtered.length === 0 ? (
-              <div className="flex items-center justify-center px-4 py-10 text-xs text-muted-foreground/70">
-                {tab === "favorites"
-                  ? "No favorites yet — star a model to pin it here."
-                  : tab === "recent"
-                    ? "No recently-used models."
-                    : "No models match."}
-              </div>
-            ) : (
-              filtered.map((m) => (
-                <ModelRow
-                  key={m.id}
-                  model={m}
-                  selected={m.id === selected}
-                  hasKey={isCompatModelId(m.id) || hasKeyFor(m.provider)}
-                  favorite={favoriteIds.includes(m.id)}
-                  showProviderIcon={activeProvider === null}
-                  onPick={() => {
-                    if (!isCompatModelId(m.id) && !hasKeyFor(m.provider)) {
-                      void openSettingsWindow("models");
-                      return;
-                    }
-                    setSelected(m.id);
-                  }}
-                  onToggleFavorite={() => void toggleFavoriteModel(m.id)}
+            {/* Tabs */}
+            <div className="flex items-center gap-0.5 border-b border-border/70 px-2 py-1.5">
+              <TabButton
+                label="All"
+                icon={AiBookIcon}
+                active={tab === "all"}
+                onClick={() => setTab("all")}
+              />
+              <TabButton
+                label="Favorites"
+                icon={FavouriteIcon}
+                active={tab === "favorites"}
+                onClick={() => setTab("favorites")}
+                count={favoriteIds.length || undefined}
+              />
+              <TabButton
+                label="Recent"
+                icon={Clock01Icon}
+                active={tab === "recent"}
+                onClick={() => setTab("recent")}
+                count={recentIds.length || undefined}
+              />
+            </div>
+
+            <div className="flex max-h-104 min-h-0">
+              {/* Provider sidebar — configured first, unconfigured muted, no dividers. */}
+              <div className="flex w-11 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border/70 bg-muted/20 py-1.5">
+                <ProviderPill
+                  icon={AiBookIcon}
+                  title="All providers"
+                  active={activeProvider === null}
+                  onClick={() => setActiveProvider(null)}
                 />
-              ))
-            )}
-          </div>
-        </div>
+                {[
+                  ...sortedProviders.configured,
+                  ...sortedProviders.unconfigured,
+                ].map((p) => (
+                  <ProviderPill
+                    key={p.id}
+                    icon={PROVIDER_ICON[p.id]}
+                    title={
+                      hasKeyFor(p.id) ? p.label : `${p.label} — not configured`
+                    }
+                    active={activeProvider === p.id}
+                    muted={!hasKeyFor(p.id)}
+                    onClick={() => setActiveProvider(p.id)}
+                  />
+                ))}
+                {customEndpoints.length > 0 && (
+                  <ProviderPill
+                    icon={PlugIcon}
+                    title="OpenAI Compatible"
+                    active={activeProvider === COMPAT_PROVIDER_ID}
+                    onClick={() => setActiveProvider(COMPAT_PROVIDER_ID)}
+                  />
+                )}
+              </div>
+
+              {/* Models list */}
+              <div className="min-h-0 flex-1 overflow-y-auto py-1">
+                {activeProvider === COMPAT_PROVIDER_ID && (
+                  <div className="flex items-center gap-1.5 px-3 pt-1 pb-1.5 text-[11px] font-medium tracking-tight text-muted-foreground/90">
+                    <HugeiconsIcon
+                      icon={PlugIcon}
+                      size={13}
+                      strokeWidth={1.75}
+                    />
+                    <span>OpenAI Compatible</span>
+                  </div>
+                )}
+                {activeProvider !== null &&
+                activeProvider !== COMPAT_PROVIDER_ID ? (
+                  <ProviderHeader providerId={activeProvider as ProviderId} />
+                ) : null}
+                {activeProvider !== null &&
+                activeProvider !== COMPAT_PROVIDER_ID &&
+                !hasKeyFor(activeProvider as ProviderId) ? (
+                  <ProviderConfigureCTA
+                    providerId={activeProvider as ProviderId}
+                  />
+                ) : null}
+                {filtered.length === 0 ? (
+                  <div className="flex items-center justify-center px-4 py-10 text-xs text-muted-foreground/70">
+                    {tab === "favorites"
+                      ? "No favorites yet — star a model to pin it here."
+                      : tab === "recent"
+                        ? "No recently-used models."
+                        : "No models match."}
+                  </div>
+                ) : (
+                  filtered.map((m) => (
+                    <ModelRow
+                      key={m.id}
+                      model={m}
+                      selected={m.id === selected}
+                      disabled={locked}
+                      hasKey={isCompatModelId(m.id) || hasKeyFor(m.provider)}
+                      favorite={favoriteIds.includes(m.id)}
+                      showProviderIcon={activeProvider === null}
+                      onPick={() => {
+                        if (!isCompatModelId(m.id) && !hasKeyFor(m.provider)) {
+                          void openSettingsWindow("models");
+                          return;
+                        }
+                        void setSelected(m.id);
+                      }}
+                      onToggleFavorite={() => void toggleFavoriteModel(m.id)}
+                    />
+                  ))
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -612,6 +695,7 @@ function ProviderConfigureCTA({ providerId }: { providerId: ProviderId }) {
 function ModelRow({
   model,
   selected,
+  disabled,
   hasKey,
   favorite,
   showProviderIcon,
@@ -620,6 +704,7 @@ function ModelRow({
 }: {
   model: ModelInfo;
   selected: boolean;
+  disabled: boolean;
   hasKey: boolean;
   favorite: boolean;
   showProviderIcon: boolean;
@@ -628,6 +713,7 @@ function ModelRow({
 }) {
   return (
     <DropdownMenuItem
+      disabled={disabled}
       onSelect={(e) => {
         e.preventDefault();
         onPick();

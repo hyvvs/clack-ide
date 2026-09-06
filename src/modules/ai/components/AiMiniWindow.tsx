@@ -701,7 +701,7 @@ function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
-function ContextIndicator({
+export function ContextIndicator({
   sessionId,
   messages,
   compact = false,
@@ -712,9 +712,10 @@ function ContextIndicator({
 }) {
   const modelId = useChatStore((s) => {
     const session = s.sessions.find((item) => item.id === sessionId);
-    return (
-      session?.run?.modelId ?? session?.profile?.modelId ?? s.selectedModelId
-    );
+    if (session?.run?.state === "running" && session.run.modelId) {
+      return session.run.modelId;
+    }
+    return session?.profile?.modelId ?? s.selectedModelId;
   });
   const tokens = useChatStore(
     (s) => s.runtimeBySession[sessionId ?? ""]?.tokens ?? EMPTY_TOKEN_USAGE,

@@ -264,6 +264,21 @@ const NOOP_LIVE: Live = {
 const CHATS_LRU_CAP = 8;
 export const chats = new Map<string, Chat<UIMessage>>();
 
+export function isModelSelectionLocked(
+  sessionId: string | null,
+  state: Pick<StoreState, "sessions"> = useChatStore.getState(),
+): boolean {
+  if (!sessionId) return false;
+  const session = state.sessions.find((item) => item.id === sessionId);
+  const status = chats.get(sessionId)?.status;
+  return (
+    !session ||
+    session.run?.state === "running" ||
+    status === "submitted" ||
+    status === "streaming"
+  );
+}
+
 export function touchChat(id: string, c: Chat<UIMessage>) {
   if (chats.has(id)) chats.delete(id);
   chats.set(id, c);
@@ -274,7 +289,12 @@ export function touchChat(id: string, c: Chat<UIMessage>) {
       const run = useChatStore
         .getState()
         .sessions.find((session) => session.id === candidate)?.run;
-      return run?.state !== "running";
+      const status = chats.get(candidate)?.status;
+      return (
+        run?.state !== "running" &&
+        status !== "submitted" &&
+        status !== "streaming"
+      );
     });
     if (!oldest) break;
     flushPersistEntry(oldest);
@@ -356,6 +376,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
   selectedModelId: DEFAULT_MODEL_ID,
   setSelectedModelId: (id, persistSelection = true) => {
     const state = get();
+    if (isModelSelectionLocked(state.activeSessionId, state)) return;
     const active = state.sessions.find(
       (session) => session.id === state.activeSessionId,
     );
@@ -367,7 +388,6 @@ export const useChatStore = create<StoreState>((set, get) => ({
       set({ selectedModelId: active.profile.modelId });
       return;
     }
-    if (active?.run?.state === "running") return;
     const next = active
       ? state.sessions.map((session) =>
           session.id === active.id
@@ -394,7 +414,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
   setSessionModelId: (sessionId, modelId, persistSelection = true) => {
     const state = get();
     const session = state.sessions.find((item) => item.id === sessionId);
-    if (!session || session.run?.state === "running") return false;
+    if (!session || isModelSelectionLocked(sessionId, state)) return false;
     const next = state.sessions.map((item) =>
       item.id === sessionId
         ? {
@@ -547,7 +567,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
   beginRun: (id, commandName, options) => {
     const session = get().sessions.find((item) => item.id === id);
     if (!session) return { ok: false, reason: "Chat session not found." };
-    if (session.run?.state === "running") {
+    if (isModelSelectionLocked(id, get())) {
       return { ok: false, reason: "This chat is already running." };
     }
     const profile =

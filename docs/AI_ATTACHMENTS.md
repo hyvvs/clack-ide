@@ -82,6 +82,39 @@ never labeled ready merely because Clack recognized its signature.
 - Rejected and not-yet-supported files remain visible with a specific reason;
   they are not silently omitted or sent to a model.
 
+## Switching models in an existing chat
+
+Both the pane and status-bar model pickers use the same pre-switch assessment.
+Known-incompatible historical images/files and clearly oversized context block
+the change before selection is committed. Unknown capabilities or context sizes
+require a compact confirmation in the picker. Confirming unknown vision support
+does not bypass attachment delivery security: sending still requires confirmed
+vision support. Compatible text-only conversation switches need no confirmation.
+
+The assessment includes the actual agent/custom/project/plan instructions, live
+environment context, text/reasoning history, completed tool inputs/results, and
+stored text attachment sizes. For PDFs and archives it counts the derived text
+or manifest, not the original binary payload. Selected archive entries remain
+ordinary normalized attachments. Binary metadata is not treated as file content.
+
+Context is an estimate, using approximately four text characters (or stored text
+bytes) per token plus message/tool framing. Existing registry windows and
+configured endpoint limits are used; generic/freeform display defaults are not
+treated as known windows. No model-name capability inference is performed.
+Image/native-file token usage cannot currently be measured reliably and is
+explicitly flagged. Prompt tokenization, tool-schema overhead, provider framing,
+and the next reply still vary; this is not a guarantee of exact provider fit.
+
+Checks do not compact, delete, or rewrite the saved transcript. Existing outgoing
+compaction is unchanged, and a near-budget warning explains potential tool-result
+shortening. Provider-specific reasoning may not transfer identically. A pending
+confirmation expires after 30 seconds and is invalidated by a changed session,
+history, instructions, model configuration, live context, or an unsettled run.
+
+Model controls remain locked for the whole logical run, including retries,
+approvals, continuation and step-limit pauses. Stop does not unlock selection
+until the actual SDK request has also settled. Other idle panes remain editable.
+
 ## Current delivery
 
 Attachment bytes are stored once under Clack's app-data `ai-attachments`

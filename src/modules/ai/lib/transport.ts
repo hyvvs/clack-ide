@@ -18,7 +18,7 @@ const PROJECT_MEMORY_MAX_BYTES = 32 * 1024;
 type MemoryCacheEntry = { content: string | null; mtime: number };
 const projectMemoryCache = new Map<string, MemoryCacheEntry>();
 
-async function readProjectMemory(
+export async function readProjectMemory(
   workspaceRoot: string | null,
   workspace?: WorkspaceEnv,
 ): Promise<string | null> {
@@ -191,7 +191,7 @@ function injectEnvIntoLastUser(
   return messages;
 }
 
-function formatEnvBlock(live: LiveSnapshot): string | null {
+export function formatEnvBlock(live: LiveSnapshot): string | null {
   const lines: string[] = [];
   if (live.workspaceRoot) lines.push(`workspace_root: ${live.workspaceRoot}`);
   if (live.cwd) lines.push(`active_terminal_cwd: ${live.cwd}`);

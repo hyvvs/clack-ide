@@ -32,6 +32,20 @@ changes the scope.
 Allowed status values are `Pending`, `In progress`, `Blocked`, and `Complete`.
 A phase is complete only after its exit criteria and verification gate pass.
 
+### Focused model-switch safety checkpoint (2026-09-06)
+
+Complete outside the numbered roadmap: shared pre-switch compatibility and
+context checks, unsettled-run picker locks, truthful selected-model display,
+and intercepted-provider context/routing regression coverage. No provider,
+PeerTask, compaction, packaging, or attachment-storage redesign is included.
+
+Verified: focused switch/attachment/context tests, type check, full suite
+(105 files, 879 tests), production build, and whitespace checks. Lint remains at
+the existing 71 warnings and 2 informational diagnostics. An isolated browser
+check covered confirmation, keyboard/focus behavior, image/context blocking,
+and both selectors; native persistence/events were mocked. Live-provider and
+native Tauri GUI acceptance were not performed for this checkpoint.
+
 ## Fixed Product Decisions
 
 ### Provider and model scope
@@ -56,6 +70,10 @@ A phase is complete only after its exit criteria and verification gate pass.
 - A run captures an immutable identity snapshot. Later settings, agent, model,
   or workspace changes cannot mutate that run.
 - Changing Chat B never changes Chat A's configuration or active run.
+- Idle model changes use a shared pre-switch compatibility/context gate in both
+  selectors. Known incompatibilities block, unknown/risky transfers require
+  confirmation, and no transcript deletion is used to make a switch fit. See
+  `AI_ATTACHMENTS.md` for the model-switch safety contract and estimator limits.
 
 ### Collaboration scope
 
