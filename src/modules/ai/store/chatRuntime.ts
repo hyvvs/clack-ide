@@ -33,6 +33,7 @@ import {
   chats,
   getAgentMeta,
   hasKeyForModel,
+  capturedSelfHostedRuns,
   recordSelectedModelUse,
   seedMessages,
   touchChat,
@@ -120,7 +121,9 @@ function makeChat(sessionId: string): Chat<UIMessage> {
   };
 
   const transport = createContextAwareTransport({
-    getKeys: () => useChatStore.getState().apiKeys,
+    getKeys: () =>
+      capturedSelfHostedRuns.get(sessionId)?.keys ??
+      useChatStore.getState().apiKeys,
     toolContext,
     getModelId: () => {
       const state = useChatStore.getState();
@@ -176,6 +179,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       return {
         providerId: run.providerId,
         transportModelId: run.transportModelId,
+        ...(run.selfHosted ? { selfHosted: run.selfHosted } : {}),
         ...(run.endpointBaseURL
           ? { endpointBaseURL: run.endpointBaseURL }
           : {}),
@@ -185,7 +189,12 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       };
     },
     getCustomEndpoints: () => usePreferencesStore.getState().customEndpoints,
-    getCustomEndpointKeys: () => useChatStore.getState().customEndpointKeys,
+    getSelfHostedInference: () =>
+      capturedSelfHostedRuns.get(sessionId)?.profiles ??
+      usePreferencesStore.getState().selfHostedInference,
+    getCustomEndpointKeys: () =>
+      capturedSelfHostedRuns.get(sessionId)?.endpointKeys ??
+      useChatStore.getState().customEndpointKeys,
     onBatchStart: () => {
       pendingTerminalStreamError = undefined;
       return useChatStore.getState().startRunBatch(sessionId);

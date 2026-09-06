@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { runSubagent } from "../agents/runSubagent";
 import { SUBAGENTS, type SubagentType } from "../agents/registry";
-import { useChatStore } from "../store/chatStore";
+import { useChatStore, capturedSelfHostedRuns } from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { ToolContext } from "./context";
 
@@ -37,40 +37,41 @@ Auto-executes (no approval) — subagents are read-only by design.`,
           selectedModelId,
           patchAgentMeta,
           sessions,
-        } =
-          useChatStore.getState();
+        } = useChatStore.getState();
         const preferences = usePreferencesStore.getState();
-        const run = sessions.find(
-          (session) => session.id === sessionId,
-        )?.run;
+        const run = sessions.find((session) => session.id === sessionId)?.run;
         const runModelId = run?.modelId ?? selectedModelId;
+        const captured = sessionId
+          ? capturedSelfHostedRuns.get(sessionId)
+          : undefined;
         try {
           const r = await runSubagent({
             type,
             prompt,
-            keys: apiKeys,
+            keys: captured?.keys ?? apiKeys,
             modelId: runModelId,
             toolContext: ctx,
             providerConfig: {
+              selfHostedInference:
+                captured?.profiles ?? preferences.selfHostedInference,
               lmstudioBaseURL: preferences.lmstudioBaseURL,
               lmstudioModelId: preferences.lmstudioModelId,
               mlxBaseURL: preferences.mlxBaseURL,
               mlxModelId: preferences.mlxModelId,
               ollamaBaseURL: preferences.ollamaBaseURL,
               ollamaModelId: preferences.ollamaModelId,
-              openaiCompatibleBaseURL:
-                preferences.openaiCompatibleBaseURL,
-              openaiCompatibleModelId:
-                preferences.openaiCompatibleModelId,
+              openaiCompatibleBaseURL: preferences.openaiCompatibleBaseURL,
+              openaiCompatibleModelId: preferences.openaiCompatibleModelId,
               openrouterModelId: preferences.openrouterModelId,
               savedProviderModels: preferences.savedProviderModels,
               customEndpoints: preferences.customEndpoints,
-              customEndpointKeys,
+              customEndpointKeys: captured?.endpointKeys ?? customEndpointKeys,
               capturedModelIdentity:
                 run?.providerId && run.transportModelId
                   ? {
                       providerId: run.providerId,
                       transportModelId: run.transportModelId,
+                      ...(run.selfHosted ? { selfHosted: run.selfHosted } : {}),
                       ...(run.endpointBaseURL
                         ? { endpointBaseURL: run.endpointBaseURL }
                         : {}),

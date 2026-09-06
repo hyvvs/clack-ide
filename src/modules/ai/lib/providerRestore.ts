@@ -8,6 +8,9 @@ import {
   type ProviderId,
 } from "../config";
 import type { ProviderKeys } from "./keyring";
+import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import { resolveSelfHostedSelection } from "@/modules/ai/lib/selfHostedProfiles";
+import { savedSelfHostedModelInfos } from "@/modules/ai/lib/selfHostedModels";
 import {
   findSavedProviderModel,
   isSavedProviderModelSelectionId,
@@ -17,6 +20,7 @@ import {
 } from "./savedProviderModels";
 
 export type ProviderRestoreConfig = {
+  selfHostedInference?: SelfHostedState;
   apiKeys: ProviderKeys;
   defaultModelId: string;
   lastUsedProviderId: ProviderId | null;
@@ -125,6 +129,13 @@ export function resolveRestoredModel(
 ): string | null {
   const lastProvider = config.lastUsedProviderId;
   const lastModel = config.lastUsedModelId;
+  if (
+    lastModel &&
+    config.selfHostedInference &&
+    resolveSelfHostedSelection(config.selfHostedInference, lastModel).status !==
+      "not-managed"
+  )
+    return lastModel;
   if (lastProvider && isProviderConfigured(lastProvider, config)) {
     if (lastProvider === "openrouter" && lastModel === "openrouter-custom") {
       const migrated = config.savedProviderModels.find(
@@ -157,17 +168,23 @@ export function resolveRestoredModel(
     if (modelUsable(model.id, model.provider, config)) return model.id;
   }
   const endpoint = config.customEndpoints.find(endpointUsable);
-  return endpoint ? compatModelIdForEndpoint(endpoint.id) : null;
+  return endpoint
+    ? compatModelIdForEndpoint(endpoint.id)
+    : config.selfHostedInference
+      ? (savedSelfHostedModelInfos(config.selfHostedInference)[0]?.id ?? null)
+      : null;
 }
 
 export function providerForSelectedModel(
   modelId: string,
   customEndpoints: readonly CustomEndpoint[],
   savedProviderModels: readonly SavedProviderModel[],
+  selfHosted?: SelfHostedState,
 ): ProviderId | null {
   return providerForModelSelection(
     modelId,
     customEndpoints,
     savedProviderModels,
+    selfHosted,
   );
 }

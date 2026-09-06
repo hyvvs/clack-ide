@@ -39,6 +39,7 @@ import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
 import { cancelRun, useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
 import { resolveModelSelectionInfo } from "./savedProviderModels";
+import { useSelfHostedSnapshot } from "@/modules/ai/hooks/useSelfHostedSnapshot";
 
 type MessagePart = { type: "text"; text: string } | AttachmentMessagePart;
 
@@ -112,9 +113,10 @@ export function AiComposerProvider({
     );
     return session?.profile?.modelId ?? state.selectedModelId;
   });
+  const hosted = useSelfHostedSnapshot(modelId);
   const modelCapabilities = useMemo(
-    () => resolveModelInputCapabilities(modelId),
-    [modelId],
+    () => resolveModelInputCapabilities(modelId, hosted.state, hosted.snapshot),
+    [modelId, hosted.state, hosted.snapshot],
   );
   const customEndpoints = usePreferencesStore((state) => state.customEndpoints);
   const savedProviderModels = usePreferencesStore(
@@ -126,11 +128,12 @@ export function AiComposerProvider({
         modelId,
         customEndpoints,
         savedProviderModels,
+        hosted.state,
       ).label;
     } catch {
       return modelId || "Selected model";
     }
-  }, [customEndpoints, modelId, savedProviderModels]);
+  }, [customEndpoints, modelId, savedProviderModels, hosted.state]);
 
   const [value, setValue] = useState("");
   const [files, setFiles] = useState<AttachmentRecord[]>([]);

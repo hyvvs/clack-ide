@@ -166,7 +166,7 @@ export function getProvider(id: ProviderId): ProviderInfo {
 }
 
 /** 1 (lowest) – 5 (highest). For `cost`, higher = cheaper. */
-export type CapabilityScore = 1 | 2 | 3 | 4 | 5;
+export type CapabilityScore = 0 | 1 | 2 | 3 | 4 | 5;
 
 export type ModelCapabilities = {
   intelligence: CapabilityScore;

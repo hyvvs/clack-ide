@@ -1,6 +1,6 @@
 # Clack Self-Hosted Inference Plan
 
-Status: A1-A2 complete; A3 and all later implementation checkpoints pending
+Status: A1-A3 complete; D1 and all later implementation checkpoints pending
 Audit date: 2026-09-06
 Audited baseline: 5415e5d9d34ced7b32fe10095275b161ca6b4f2a
 Baseline checkpoint: fix(ai): harden in-chat model switching
@@ -587,7 +587,7 @@ roadmap deliverables, not silently excluded from completion.
 | --- | --- | --- | --- | --- |
 | 1 | A1 | Endpoint/profile identity, evidence and override persistence | Complete | `feat(ai): add self-hosted endpoint profiles`; [implementation record](#a1-implementation-record) |
 | 2 | A2 | Bounded authenticated backend handshakes | Complete | `feat(ai): probe self-hosted inference endpoints`; [implementation record](#a2-implementation-record) |
-| 3 | A3 | Add-server UX, endpoint-model bindings, capability routing | Pending | None |
+| 3 | A3 | Add-server UX, endpoint-model bindings, capability routing | Complete | `feat(ai): add self-hosted server setup`; [implementation record](#a3-implementation-record) |
 | 4 | D1 | Native cancellation, request lifecycle, truthful timed states | Pending | None |
 | 5 | E1 | Shared inference admission and PeerTask integration | Pending | None |
 | 6 | B1 | Actual context budgets and shared request preflight | Pending | None |
@@ -872,6 +872,134 @@ image/tool eligibility uses effective model+API evidence and still blocks
 unknown vision. Mock request payloads and do a native setup smoke. Revert only
 the new UI route while retaining backward-readable profiles.
 
+### A3 implementation record
+
+Status: Complete. Commit: the checkpoint containing this record, titled
+`feat(ai): add self-hosted server setup`, directly after `53a67d2` (A2).
+No D1 or later checkpoint is implemented by this commit.
+
+Actual UI and routing:
+
+- Settings -> Models & Providers -> Add self-hosted server -> name/address,
+  optional server type/credential, explicit private-network authorization ->
+  Connect -> search/check discovered models (or Manual model ID) -> Save models.
+  Existing Add Provider also links to this inline flow. No separate dashboard.
+- Server types: Ollama, LM Studio, vLLM, MLX and generic OpenAI-compatible.
+  The selected type is labeled as such; an ambiguous backend is not presented
+  as detected from its port, host or model name. Only A2 metadata routes run.
+- Inventory renders at most 60 rows in a 240px scrolling area; search covers
+  the bounded full A2 inventory. Several selected models save in one update.
+  Manual IDs remain Unverified with metadata unavailable, not invented scores.
+  Refresh retains cached inventory, including failed per-model refreshes, with
+  stale/error labels. Display-only retention never changes native routing trust.
+- A1 endpoint identity is reused; optional `saved` metadata on its existing
+  base model profile produces a `self-hosted:<profile identity>` selection.
+  No endpoint or credential is duplicated for each model. Equal model IDs on
+  different endpoints remain distinct. Existing CAS persistence survives reload.
+- The shared picker retains cloud/OpenRouter lists, provider icons, favorites,
+  recents and the existing model-switch preflight/commit path. Self-hosted rows
+  show the endpoint alias and omit fabricated cost/speed/intelligence ratings.
+  Search/arrow keys/Enter/Escape remain usable with bounded popover geometry.
+- Actual compatible chat requests resolve the saved endpoint URL, transport
+  model ID and only its referenced credential. Reverse-proxy prefixes and the
+  endpoint's private-network authorization are carried into the real adapter.
+  No fallback to an unrelated global compatible key. Existing cloud routing is
+  unchanged. Read-only built-in subagents inherit the captured selection.
+- Existing logical-run snapshots retain endpoint/profile/configuration IDs,
+  model and authorization. Required credentials/configuration are captured in
+  ephemeral runtime memory, never session JSON, and released on finish/delete.
+  Edits, key rotation, another chat's selection and endpoint deletion cannot
+  mutate the captured request. Deletion is a missing-model state, not cloud
+  fallback; between-reply switching retains chat identity/history and run locks.
+- Migrated local/custom settings surface as servers without re-entry. Legacy
+  selection IDs (including `compat-<id>`) still resolve. Their original fields
+  and keyring entries are retained; duplicate editable legacy cards are hidden.
+
+Capability, context and security rules:
+
+- Fresh A2 model evidence is intersected with the existing compatible adapter.
+  Vision true permits the existing normalized image payload; vision false
+  blocks it; absent, expired, stale or mismatched evidence remains unknown and
+  blocks image delivery. Text remains the manual compatible escape hatch,
+  unless fresh evidence identifies a non-chat model. Native document/audio
+  payloads are unsupported by this adapter; existing bounded text extraction
+  and attachment truthfulness/security are reused, not bypassed.
+- Negative tool-training evidence is unsupported. Positive training metadata
+  does not certify the deployed parser; tool reliability stays unknown. There
+  is no F1 tool optimization or generated capability catalog.
+- Details distinguish loaded/reported server context from an advertised model
+  maximum and Unknown. Loaded evidence expires after 30 seconds; inventory and
+  ordinary metadata expire after five minutes. Labels expire without network
+  polling. B1 budgeting is unchanged; displayed context is not a new budget.
+- Settings, picker and sends read the native cache; only explicit Connect,
+  Refresh or model Details performs the A2 bounded probe. No pull, load, chat
+  completion, benchmark or automatic LAN discovery occurs during setup.
+- Native cache reads reuse endpoint-wide inventory across saved models while
+  retaining each evidence item's real scope. No per-model evidence is copied
+  or invented; native single-flight, limits and private-authorization checks
+  remain authoritative. Failed refresh display data cannot enable vision.
+- Address/backend/private-access/credential changes invalidate configuration
+  evidence; alias-only changes do not. Stale cross-window edits are rejected.
+  Credentials use the existing OS keyring and profile references only. The
+  password field is cleared on Connect; errors never display raw key material.
+  Existing credentials are not destructively erased on metadata deletion.
+- HTTP is identified as unencrypted with an HTTPS/auth recommendation for
+  untrusted networks. Private access is endpoint-specific, never a global cloud
+  exception or a promise that the server processes data only on this machine.
+
+Implementation files:
+
+- New `selfHostedModels.ts`, `selfHostedCapabilities.ts`, `selfHostedSetup.ts`
+  and `useSelfHostedSnapshot.ts`; additive integration in `selfHostedProfiles`,
+  `savedProviderModels`, `modelCapabilities`, `modelSwitchEligibility`,
+  `providerRestore`, `keyring`, `sessions`, `agent`, `transport`, `composer`,
+  `chatStore`, `chatRuntime`, `modelSwitch`, `useAiBootstrap` and `tools/subagent`.
+- New `settings/components/SelfHostedServers.tsx` and `.css`; integrated into
+  `ModelsSection`, `AiStatusBarControls`, `AiMiniWindow` and the unknown-score
+  type in `ai/config.ts`. No global style or provider architecture replacement.
+- Native changes limited to `inference_probe/cache.rs` and its regression test.
+- New tests: `selfHostedModels.test.ts` (39), `selfHostedSetup.test.ts` (12),
+  `store/selfHostedRouting.test.ts` (4), plus one native cache regression.
+  `scripts/check-self-hosted-setup.mjs` is a repeatable isolated browser fixture.
+
+Verification on Windows, 2026-09-07:
+
+- Focused A3/profile/probe/model-switch/attachment suite: 199 tests, 11 files,
+  passed. Full `npm.cmd test`: 1003 tests, 111 files, passed.
+- `npm.cmd run check-types`, `npm.cmd run build`: passed. Build retains the
+  informational Vite plugin-timing notice, not a build failure.
+- `npm.cmd run lint`: passed at the unchanged 71-warning / 2-info baseline.
+- `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`:
+  passed. `cargo test --locked`: 302 passed (252 unit + 50 integration).
+- `git diff --check` and staged diff whitespace check: passed.
+- Intercepted real SDK/native-bridge requests prove cloud -> private server A
+  -> server B -> cloud URL/model/auth changes with one chat and retained
+  instructions/tool history. Active locks, captured credentials, deletion and
+  normalized image_url routing versus unknown-vision rejection are covered.
+- Browser fixture: 1500 discovered models, bounded search, multiple bindings,
+  auth/private options, stale refresh, manual fallback and keyboard picker
+  passed. Screenshots reviewed; 1100x950, 390x700, 320x480 and 640x320 viewport
+  overflow checks passed. Browser dependencies are externally supplied through
+  PLAYWRIGHT_MODULE; no runtime/package dependency was added.
+
+Not performed / limits:
+
+- Native GUI smoke was NOT performed. Browser fixtures are not native WebView,
+  keyring or live-engine verification. No real Ollama/LM Studio/vLLM/MLX server
+  was contacted; no hardware, Linux/macOS, TLS deployment or packaging smoke.
+- Unproven backend/parser/capabilities remain unknown. After cache expiry or
+  restart, vision requires fresh metadata; no persisted evidence is silently
+  promoted to fresh. Generic/manual models are not automatically vision-capable.
+- This is chat setup/routing, not a new autocomplete architecture, PeerTask
+  scheduler, adaptive budget, cancellation lifecycle or automatic model loading.
+  The separate delegation-modal files are intentionally not part of A3.
+- Delegation-modal TSX/CSS/script remained byte-for-byte unchanged and unstaged.
+  Both pre-existing safety stashes and `autonomous_tracker/` remained untouched.
+
+Rollback: revert only A3. Retain A1/A2 profiles and legacy settings/credentials,
+chat data and unrelated modal work. New saved-model references are not silently
+retargeted to a different endpoint. Next checkpoint is D1 only after a new request.
+
 ### D1: Request lifecycle and timeouts
 
 Own request IDs/cancellation/cleanup in net.rs, proxyFetch, transport and error
@@ -1110,16 +1238,16 @@ multi-GPU server for multi-GPU claims; otherwise explicitly Not tested.
 
 ## Continuation Instructions and Verification Record
 
-Next implementation checkpoint: A3 only, simple Add Self-Hosted Server UX,
-endpoint-model bindings and capability routing, after explicit implementation
-request. A1-A2 are complete; do not redo migration/probing or replace the additive
+Next implementation checkpoint: D1 only, native request cancellation, lifecycle
+and truthful timeout states, after explicit implementation request.
+A1-A3 are complete; do not redo migration/probing/setup or replace the additive
 identity model. Preserve A2's native ownership, bounded request policy, freshness
 checks, explicit private-network authorization, and no-inference handshake rule.
 Future sessions must read this plan, the current git log/status, CLACK.md,
 AI_MULTI_AGENT_BUILD_PLAN.md and AI_ATTACHMENTS.md. Confirm the model-switch
 baseline remains present; preserve changes made since this audit. Refresh API
 evidence when implementing, then record exact files/tests/commit and pending
-native checks in the ledger. Do not infer later completion from A1-A2's foundation.
+native checks in the ledger. Do not infer later completion from A1-A3's foundation.
 
 Planning-only verification: source audit and primary-source API review;
 git diff --check passed. The staged documentation must also pass

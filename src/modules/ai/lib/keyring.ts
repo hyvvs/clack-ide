@@ -5,7 +5,6 @@ import {
   LEGACY_KEYRING_SERVICE,
   PROVIDERS,
   providerSupportsKey,
-  type CustomEndpoint,
   type ProviderId,
 } from "../config";
 
@@ -162,7 +161,7 @@ export async function clearCustomEndpointKey(
 }
 
 export async function getAllCustomEndpointKeys(
-  endpoints: readonly CustomEndpoint[],
+  endpoints: readonly { id: string }[],
 ): Promise<CustomEndpointKeys> {
   if (endpoints.length === 0) return {};
   const out: CustomEndpointKeys = {};

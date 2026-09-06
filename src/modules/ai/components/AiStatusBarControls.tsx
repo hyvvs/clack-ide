@@ -75,6 +75,8 @@ import {
 import { useChatStore } from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
+import { savedSelfHostedModelInfos } from "@/modules/ai/lib/selfHostedModels";
+import { hasKeyForModel } from "@/modules/ai/store/chatStore";
 
 const PROVIDER_ICON = {
   openai: ChatGptIcon,
@@ -258,6 +260,7 @@ export function ModelDropdown({
       : s.selectedModelId,
   );
   const apiKeys = useChatStore((s) => s.apiKeys);
+  useChatStore((s) => s.customEndpointKeys);
   const setSelected = async (modelId: string) => {
     if (locked) return;
     if (modelId === selected || (await modelSwitch.request(modelId)))
@@ -266,6 +269,7 @@ export function ModelDropdown({
   const favoriteIds = usePreferencesStore((s) => s.favoriteModelIds);
   const recentIds = usePreferencesStore((s) => s.recentModelIds);
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
+  const selfHosted = usePreferencesStore((s) => s.selfHostedInference);
   const savedProviderModels = usePreferencesStore((s) => s.savedProviderModels);
   const currentState = useMemo(() => {
     try {
@@ -275,6 +279,7 @@ export function ModelDropdown({
           selected,
           customEndpoints,
           savedProviderModels,
+          selfHosted,
         ),
       };
     } catch {
@@ -283,14 +288,14 @@ export function ModelDropdown({
         info: {
           id: selected,
           provider: "openai-compatible" as const,
-          label: "Missing model",
+          label: "Model unavailable",
           hint: "Unavailable",
-          description: selected,
+          description: "Server or saved model unavailable",
           capabilities: { intelligence: 0, speed: 0, cost: 0 },
         },
       };
     }
-  }, [customEndpoints, savedProviderModels, selected]);
+  }, [customEndpoints, savedProviderModels, selected, selfHosted]);
   const current = currentState.info;
   const [search, setSearch] = useState("");
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
@@ -302,11 +307,13 @@ export function ModelDropdown({
   }, [open, checking, review, failure]);
   const currentProviderHasKey =
     currentState.valid &&
-    (isCompatModelId(selected)
-      ? true
-      : providerNeedsKey(current.provider)
-        ? !!apiKeys[current.provider]
-        : true);
+    (selected.startsWith("self-hosted:")
+      ? hasKeyForModel(selected)
+      : isCompatModelId(selected)
+        ? true
+        : providerNeedsKey(current.provider)
+          ? !!apiKeys[current.provider]
+          : true);
 
   const hasKeyFor = (id: ProviderId) =>
     providerNeedsKey(id) ? !!apiKeys[id] : true;
@@ -327,14 +334,21 @@ export function ModelDropdown({
     [apiKeys],
   );
 
-  const allModels = useMemo(
-    () => [
+  const allModels = useMemo(() => {
+    const hosted = savedSelfHostedModelInfos(selfHosted);
+    const managed = new Set(
+      selfHosted.endpoints.flatMap((e) =>
+        e.legacy ? [e.legacy.selectionId] : [],
+      ),
+    );
+    return [
       ...MODELS.filter((model) => model.id !== "openrouter-custom"),
       ...savedModelInfos,
       ...epModelInfos,
-    ],
-    [epModelInfos, savedModelInfos],
-  );
+    ]
+      .filter((m) => !managed.has(m.id))
+      .concat(hosted);
+  }, [epModelInfos, savedModelInfos, selfHosted]);
 
   const COMPAT_PROVIDER_ID = "__compat__";
 
@@ -351,7 +365,9 @@ export function ModelDropdown({
         .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
     }
     if (activeProvider === COMPAT_PROVIDER_ID) {
-      pool = pool.filter((m) => isCompatModelId(m.id));
+      pool = pool.filter(
+        (m) => isCompatModelId(m.id) || m.id.startsWith("self-hosted:"),
+      );
     } else if (activeProvider !== null) {
       pool = pool.filter((m) => m.provider === activeProvider);
     }
@@ -422,15 +438,6 @@ export function ModelDropdown({
       <DropdownMenuContent
         align="end"
         className="w-[28rem] max-w-[calc(100vw-1rem)] p-0 overflow-hidden rounded-xl border border-border/70 shadow-xl"
-        onFocusCapture={(e) => {
-          if (
-            !modelSwitch.checking &&
-            !modelSwitch.review &&
-            !modelSwitch.failure &&
-            e.target !== inputRef.current
-          )
-            inputRef.current?.focus();
-        }}
       >
         {modelSwitch.checking ? (
           <div role="status" className="p-4 text-xs text-muted-foreground">
@@ -469,7 +476,17 @@ export function ModelDropdown({
                 ref={inputRef}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                onKeyDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    e.currentTarget
+                      .closest('[role="menu"]')
+                      ?.querySelector<HTMLElement>('[role="menuitem"]')
+                      ?.focus();
+                  }
+                  if (e.key !== "Escape" && e.key !== "Tab")
+                    e.stopPropagation();
+                }}
                 placeholder="Search models, providers, capabilities…"
                 className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
               />
@@ -523,7 +540,10 @@ export function ModelDropdown({
                     onClick={() => setActiveProvider(p.id)}
                   />
                 ))}
-                {customEndpoints.length > 0 && (
+                {(customEndpoints.length > 0 ||
+                  selfHosted.endpoints.some(
+                    (e) => e.deletedAt === undefined,
+                  )) && (
                   <ProviderPill
                     icon={PlugIcon}
                     title="OpenAI Compatible"
@@ -571,11 +591,19 @@ export function ModelDropdown({
                       model={m}
                       selected={m.id === selected}
                       disabled={locked}
-                      hasKey={isCompatModelId(m.id) || hasKeyFor(m.provider)}
+                      hasKey={
+                        m.id.startsWith("self-hosted:")
+                          ? hasKeyForModel(m.id)
+                          : isCompatModelId(m.id) || hasKeyFor(m.provider)
+                      }
                       favorite={favoriteIds.includes(m.id)}
                       showProviderIcon={activeProvider === null}
                       onPick={() => {
-                        if (!isCompatModelId(m.id) && !hasKeyFor(m.provider)) {
+                        if (
+                          m.id.startsWith("self-hosted:")
+                            ? !hasKeyForModel(m.id)
+                            : !isCompatModelId(m.id) && !hasKeyFor(m.provider)
+                        ) {
                           void openSettingsWindow("models");
                           return;
                         }
@@ -757,7 +785,10 @@ function ModelRow({
       ) : null}
 
       <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
-        <span className="shrink-0 text-[12px] font-medium leading-none">
+        <span
+          className="min-w-0 truncate text-[12px] font-medium leading-none"
+          title={model.label}
+        >
           {model.label}
         </span>
         <span className="truncate text-[10.5px] leading-none text-muted-foreground">
@@ -765,7 +796,17 @@ function ModelRow({
         </span>
       </div>
 
-      <CapabilityBars caps={model.capabilities} />
+      {model.id.startsWith("self-hosted:") ||
+      Object.values(model.capabilities).every((v) => v === 0) ? (
+        <span
+          className="max-w-28 truncate text-[11px] text-muted-foreground"
+          title={model.hint}
+        >
+          {model.hint}
+        </span>
+      ) : (
+        <CapabilityBars caps={model.capabilities} />
+      )}
 
       {selected ? (
         <HugeiconsIcon

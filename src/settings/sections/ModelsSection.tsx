@@ -83,6 +83,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ProviderIcon } from "../components/ProviderIcon";
 import { ProviderKeyCard } from "../components/ProviderKeyCard";
 import { SectionHeader } from "../components/SectionHeader";
+import { SelfHostedServers } from "@/settings/components/SelfHostedServers";
 
 type KeysMap = Record<ProviderId, string | null>;
 
@@ -113,9 +114,7 @@ const LOCAL_META: Partial<Record<ProviderId, LocalMeta>> = {
     modelPlaceholder: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
     description:
       "Apple-silicon inference via mlx_lm.server (pip install mlx-lm).",
-    modelHint: (
-      <>The Hugging Face repo path you launched mlx_lm.server with.</>
-    ),
+    modelHint: <>The Hugging Face repo path you launched mlx_lm.server with.</>,
   },
   ollama: {
     urlPlaceholder: "http://localhost:11434/v1",
@@ -135,8 +134,7 @@ const LOCAL_META: Partial<Record<ProviderId, LocalMeta>> = {
     description: "Any model on OpenRouter — type its full provider/model id.",
     modelHint: (
       <>
-        Browse ids at{" "}
-        <span className="font-mono">openrouter.ai/models</span>.
+        Browse ids at <span className="font-mono">openrouter.ai/models</span>.
       </>
     ),
   },
@@ -146,6 +144,8 @@ export function ModelsSection() {
   const [keys, setKeys] = useState<KeysMap | null>(null);
   const [epKeys, setEpKeys] = useState<CustomEndpointKeys>({});
   const [adding, setAdding] = useState<Set<ProviderId>>(new Set());
+  const [serverAddRequest, setServerAddRequest] = useState(0);
+  const selfHosted = usePreferencesStore((s) => s.selfHostedInference);
 
   const defaultModel = usePreferencesStore((s) => s.defaultModelId);
   const lmstudioBaseURL = usePreferencesStore((s) => s.lmstudioBaseURL);
@@ -160,9 +160,7 @@ export function ModelsSection() {
     (s) => s.openaiCompatibleContextLimit,
   );
   const openrouterModelId = usePreferencesStore((s) => s.openrouterModelId);
-  const savedProviderModels = usePreferencesStore(
-    (s) => s.savedProviderModels,
-  );
+  const savedProviderModels = usePreferencesStore((s) => s.savedProviderModels);
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
   const openrouterModels = savedProviderModels.filter(
     (model) => model.providerId === "openrouter",
@@ -198,17 +196,6 @@ export function ModelsSection() {
     await clearCustomEndpointKey(endpointId);
     setEpKeys((prev) => ({ ...prev, [endpointId]: null }));
     await emitKeysChanged();
-  };
-
-  const addCustomEndpoint = async () => {
-    const ep: CustomEndpoint = {
-      id: crypto.randomUUID().slice(0, 8),
-      name: "",
-      baseURL: "",
-      modelId: "",
-      contextLimit: 128_000,
-    };
-    await setCustomEndpoints([...customEndpoints, ep]);
   };
 
   const updateCustomEndpoint = async (
@@ -248,7 +235,9 @@ export function ModelsSection() {
     const { selectedModelId, setSelectedModelId } = useChatStore.getState();
     if (selectedModelId === deadModelId) {
       setSelectedModelId(
-        remaining[0] ? compatModelIdForEndpoint(remaining[0].id) : DEFAULT_MODEL_ID,
+        remaining[0]
+          ? compatModelIdForEndpoint(remaining[0].id)
+          : DEFAULT_MODEL_ID,
       );
     }
 
@@ -298,9 +287,7 @@ export function ModelsSection() {
         ? {
             ...model,
             transportModelId,
-            ...(displayName
-              ? { displayName }
-              : { displayName: undefined }),
+            ...(displayName ? { displayName } : { displayName: undefined }),
             updatedAt: Date.now(),
           }
         : model,
@@ -404,10 +391,15 @@ export function ModelsSection() {
   const visibleIds = new Set<ProviderId>(configuredIds);
   for (const id of adding) visibleIds.add(id);
   const visibleProviders = PROVIDERS.filter(
-    (p) => p.id !== "openai-compatible" && visibleIds.has(p.id),
+    (p) =>
+      p.id !== "openai-compatible" &&
+      visibleIds.has(p.id) &&
+      !selfHosted.endpoints.some(
+        (e) => e.legacy?.selectionId === `${p.id}-local`,
+      ),
   );
   const addableProviders = PROVIDERS.filter(
-    (p) => p.id !== "openai-compatible" && !visibleIds.has(p.id),
+    (p) => providerNeedsKey(p.id) && !visibleIds.has(p.id),
   );
 
   const removeProvider = (id: ProviderId) => {
@@ -452,6 +444,7 @@ export function ModelsSection() {
       />
 
       <VoiceBlock />
+      <SelfHostedServers addRequest={serverAddRequest} />
 
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
@@ -459,7 +452,7 @@ export function ModelsSection() {
           <AddProviderMenu
             providers={addableProviders}
             onAdd={addProvider}
-            onAddCompat={addCustomEndpoint}
+            onAddCompat={() => setServerAddRequest((value) => value + 1)}
           />
         </div>
 
@@ -523,17 +516,25 @@ export function ModelsSection() {
                 />
               );
             })}
-            {customEndpoints.map((ep) => (
-              <CustomEndpointCard
-                key={ep.id}
-                endpoint={ep}
-                endpointKey={epKeys[ep.id] ?? null}
-                onSaveKey={(v) => onSaveEndpointKey(ep.id, v)}
-                onClearKey={() => onClearEndpointKey(ep.id)}
-                onUpdate={(patch) => updateCustomEndpoint(ep.id, patch)}
-                onRemove={() => removeCustomEndpoint(ep.id)}
-              />
-            ))}
+            {customEndpoints
+              .filter(
+                (ep) =>
+                  !selfHosted.endpoints.some(
+                    (e) =>
+                      e.legacy?.selectionId === compatModelIdForEndpoint(ep.id),
+                  ),
+              )
+              .map((ep) => (
+                <CustomEndpointCard
+                  key={ep.id}
+                  endpoint={ep}
+                  endpointKey={epKeys[ep.id] ?? null}
+                  onSaveKey={(v) => onSaveEndpointKey(ep.id, v)}
+                  onClearKey={() => onClearEndpointKey(ep.id)}
+                  onUpdate={(patch) => updateCustomEndpoint(ep.id, patch)}
+                  onRemove={() => removeCustomEndpoint(ep.id)}
+                />
+              ))}
           </div>
         )}
       </div>
@@ -609,7 +610,11 @@ function OpenRouterProviderCard({
             variant="outline"
             className="ml-1 h-4 gap-1 border-border/60 bg-muted/40 px-1.5 text-[10px] font-normal text-muted-foreground"
           >
-            <HugeiconsIcon icon={CheckmarkCircle02Icon} size={9} strokeWidth={2} />
+            <HugeiconsIcon
+              icon={CheckmarkCircle02Icon}
+              size={9}
+              strokeWidth={2}
+            />
             Connected
           </Badge>
         ) : null}
@@ -619,7 +624,11 @@ function OpenRouterProviderCard({
           className="ml-auto inline-flex items-center gap-0.5 text-[10.5px] text-muted-foreground transition-colors hover:text-foreground"
         >
           Models
-          <HugeiconsIcon icon={ArrowUpRight01Icon} size={11} strokeWidth={1.75} />
+          <HugeiconsIcon
+            icon={ArrowUpRight01Icon}
+            size={11}
+            strokeWidth={1.75}
+          />
         </button>
         <Button
           size="icon"
@@ -707,7 +716,11 @@ function OpenRouterProviderCard({
                 title="Remove key"
                 className="size-7 text-muted-foreground hover:text-destructive"
               >
-                <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
+                <HugeiconsIcon
+                  icon={Cancel01Icon}
+                  size={12}
+                  strokeWidth={1.75}
+                />
               </Button>
             </div>
           ) : (
@@ -763,7 +776,10 @@ function OpenRouterModelRow({
   const [labelDraft, setLabelDraft] = useState(model.displayName ?? "");
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => setModelDraft(model.transportModelId), [model.transportModelId]);
+  useEffect(
+    () => setModelDraft(model.transportModelId),
+    [model.transportModelId],
+  );
   useEffect(() => setLabelDraft(model.displayName ?? ""), [model.displayName]);
 
   const save = async () => {
@@ -816,7 +832,9 @@ function OpenRouterModelRow({
           <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
         </Button>
       </div>
-      {error ? <span className="text-[10.5px] text-destructive">{error}</span> : null}
+      {error ? (
+        <span className="text-[10.5px] text-destructive">{error}</span>
+      ) : null}
     </div>
   );
 }
@@ -831,7 +849,9 @@ function AddProviderMenu({
   onAddCompat: () => void;
 }) {
   const cloud = providers.filter((p) => !isLocalProvider(p.id));
-  const local = providers.filter((p) => isLocalProvider(p.id) && p.id !== "openai-compatible");
+  const local = providers.filter(
+    (p) => isLocalProvider(p.id) && p.id !== "openai-compatible",
+  );
 
   return (
     <DropdownMenu>
@@ -867,7 +887,7 @@ function AddProviderMenu({
           className="flex items-center gap-2 text-[12px]"
         >
           <ProviderIcon provider="openai-compatible" size={13} />
-          <span>OpenAI Compatible</span>
+          <span>Add self-hosted server</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -1189,7 +1209,11 @@ function LocalProviderCard({
             variant="outline"
             className="ml-1 h-4 gap-1 border-border/60 bg-muted/40 px-1.5 text-[10px] font-normal text-muted-foreground"
           >
-            <HugeiconsIcon icon={CheckmarkCircle02Icon} size={9} strokeWidth={2} />
+            <HugeiconsIcon
+              icon={CheckmarkCircle02Icon}
+              size={9}
+              strokeWidth={2}
+            />
             Connected
           </Badge>
         ) : null}
@@ -1199,7 +1223,11 @@ function LocalProviderCard({
           className="ml-auto inline-flex items-center gap-0.5 text-[10.5px] text-muted-foreground transition-colors hover:text-foreground"
         >
           Docs
-          <HugeiconsIcon icon={ArrowUpRight01Icon} size={11} strokeWidth={1.75} />
+          <HugeiconsIcon
+            icon={ArrowUpRight01Icon}
+            size={11}
+            strokeWidth={1.75}
+          />
         </button>
         <Button
           size="icon"
@@ -1273,7 +1301,9 @@ function LocalProviderCard({
                 spellCheck={false}
                 className="h-8 w-28 font-mono text-[11.5px]"
               />
-              <span className="text-[10.5px] text-muted-foreground">tokens</span>
+              <span className="text-[10.5px] text-muted-foreground">
+                tokens
+              </span>
             </div>
           </FieldRow>
         ) : null}
@@ -1292,7 +1322,11 @@ function LocalProviderCard({
                   title="Remove key"
                   className="size-7 text-muted-foreground hover:text-destructive"
                 >
-                  <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
+                  <HugeiconsIcon
+                    icon={Cancel01Icon}
+                    size={12}
+                    strokeWidth={1.75}
+                  />
                 </Button>
               </div>
             ) : (
@@ -1370,8 +1404,7 @@ function CustomEndpointCard({
     [endpoint.contextLimit],
   );
 
-  const configured =
-    !!endpoint.baseURL.trim() && !!endpoint.modelId.trim();
+  const configured = !!endpoint.baseURL.trim() && !!endpoint.modelId.trim();
 
   const test = async () => {
     setTestStatus("testing");
@@ -1413,7 +1446,11 @@ function CustomEndpointCard({
             variant="outline"
             className="ml-1 h-4 gap-1 border-border/60 bg-muted/40 px-1.5 text-[10px] font-normal text-muted-foreground"
           >
-            <HugeiconsIcon icon={CheckmarkCircle02Icon} size={9} strokeWidth={2} />
+            <HugeiconsIcon
+              icon={CheckmarkCircle02Icon}
+              size={9}
+              strokeWidth={2}
+            />
             Connected
           </Badge>
         ) : null}
@@ -1501,7 +1538,9 @@ function CustomEndpointCard({
                 spellCheck={false}
                 className="h-8 w-28 font-mono text-[11.5px]"
               />
-              <span className="text-[10.5px] text-muted-foreground">tokens</span>
+              <span className="text-[10.5px] text-muted-foreground">
+                tokens
+              </span>
             </div>
           </FieldRow>
 
@@ -1518,7 +1557,11 @@ function CustomEndpointCard({
                   title="Remove key"
                   className="size-7 text-muted-foreground hover:text-destructive"
                 >
-                  <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
+                  <HugeiconsIcon
+                    icon={Cancel01Icon}
+                    size={12}
+                    strokeWidth={1.75}
+                  />
                 </Button>
               </div>
             ) : (

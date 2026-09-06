@@ -72,6 +72,7 @@ const endpointSchema = z.object({
   baseURL: endpointUrl,
   backendHint: backend.optional(),
   credentialRef: credentialReference.nullable(),
+  allowPrivateNetwork: z.boolean().optional(),
   transportSecurity: z.enum(["http-unencrypted", "https-unverified"]),
   revision: z.number().int().positive(),
   configurationRevision: z.number().int().positive(),
@@ -132,6 +133,9 @@ const profileSchema = z.object({
   evidence: z.array(evidenceSchema).max(64),
   recommendations: z.partialRecord(field, evidenceSchema),
   overrides: z.partialRecord(field, manual),
+  saved: z
+    .object({ label: z.string().trim().min(1).max(1024).optional() })
+    .optional(),
 });
 export type SelfHostedProfile = z.infer<typeof profileSchema>;
 export type SelfHostedState = {
@@ -254,6 +258,7 @@ export function createSelfHostedEndpoint(
     baseURL: string;
     backendHint?: SelfHostedBackend;
     credentialRef?: EndpointCredentialReference | null;
+    allowPrivateNetwork?: boolean;
   },
   endpointId = `sh-${crypto.randomUUID()}`,
   now = Date.now(),
@@ -265,6 +270,7 @@ export function createSelfHostedEndpoint(
     baseURL,
     backendHint: input.backendHint,
     credentialRef: input.credentialRef ?? null,
+    allowPrivateNetwork: input.allowPrivateNetwork,
     transportSecurity: transportSecurity(baseURL),
     revision: 1,
     configurationRevision: 1,
@@ -295,6 +301,7 @@ export function editSelfHostedEndpoint(
     baseURL?: string;
     backendHint?: SelfHostedBackend;
     credentialRef?: EndpointCredentialReference | null;
+    allowPrivateNetwork?: boolean;
   },
   now = Date.now(),
 ): SelfHostedState {
@@ -303,6 +310,7 @@ export function editSelfHostedEndpoint(
   const configChanged =
     next.baseURL !== previous.baseURL ||
     next.backendHint !== previous.backendHint ||
+    next.allowPrivateNetwork !== previous.allowPrivateNetwork ||
     JSON.stringify(next.credentialRef) !==
       JSON.stringify(previous.credentialRef);
   next.revision = previous.revision + 1;
@@ -498,6 +506,15 @@ export function resolveSelfHostedSelection(
       endpoint: SelfHostedEndpoint;
       profile: SelfHostedProfile;
     } {
+  if (selectionId.startsWith("self-hosted:")) {
+    const profileId = selectionId.slice("self-hosted:".length);
+    const profile = state.profiles.find((p) => p.id === profileId && p.saved);
+    return resolveSelfHostedProfile(
+      state,
+      profile?.endpointId ?? "",
+      profile?.id ?? "",
+    );
+  }
   const endpoint = state.endpoints.find(
     (e) => e.legacy?.selectionId === selectionId,
   );

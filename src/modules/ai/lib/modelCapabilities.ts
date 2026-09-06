@@ -1,6 +1,12 @@
 import { isCompatModelId, MODELS, type ModelInfo } from "@/modules/ai/config";
 import type { AttachmentRecord } from "./attachments";
 import { isSavedProviderModelSelectionId } from "./savedProviderModels";
+import {
+  resolveSelfHostedSelection,
+  type SelfHostedState,
+} from "@/modules/ai/lib/selfHostedProfiles";
+import { selfHostedCapabilities } from "@/modules/ai/lib/selfHostedCapabilities";
+import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
 
 export type CapabilitySupport = "supported" | "unsupported" | "unknown";
 
@@ -10,7 +16,7 @@ export type ModelInputCapabilities = {
   document: CapabilitySupport;
   tools: CapabilitySupport;
   audio: CapabilitySupport;
-  evidence: "registry" | "freeform" | "unknown-model";
+  evidence: "registry" | "freeform" | "unknown-model" | "server";
 };
 
 export type AttachmentCapabilityStatus =
@@ -37,7 +43,25 @@ const FREEFORM_MODEL_IDS = new Set([
 
 export function resolveModelInputCapabilities(
   selectionId: string,
+  state?: SelfHostedState,
+  snapshot: ProbeSnapshot | null = null,
 ): ModelInputCapabilities {
+  const target = state && resolveSelfHostedSelection(state, selectionId);
+  if (target?.status === "available")
+    return selfHostedCapabilities(
+      target.endpoint,
+      target.profile.transportModelId,
+      snapshot,
+    );
+  if (target?.status === "missing")
+    return {
+      text: "unsupported",
+      image: "unsupported",
+      document: "unsupported",
+      tools: "unsupported",
+      audio: "unsupported",
+      evidence: "server",
+    };
   if (
     isSavedProviderModelSelectionId(selectionId) ||
     isCompatModelId(selectionId) ||

@@ -734,6 +734,7 @@ export function ContextIndicator({
   );
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
   const savedProviderModels = usePreferencesStore((s) => s.savedProviderModels);
+  const selfHosted = usePreferencesStore((s) => s.selfHostedInference);
   const max = getModelContextLimit(modelId, openaiCompatibleContextLimit);
   const modelLabel = useMemo(() => {
     try {
@@ -741,11 +742,12 @@ export function ContextIndicator({
         modelId,
         customEndpoints,
         savedProviderModels,
+        selfHosted,
       ).label;
     } catch {
-      return modelId;
+      return "Model unavailable";
     }
-  }, [customEndpoints, modelId, savedProviderModels]);
+  }, [customEndpoints, modelId, savedProviderModels, selfHosted]);
   const cost = estimateCost(modelId, tokens);
   const cacheRate =
     tokens.inputTokens > 0

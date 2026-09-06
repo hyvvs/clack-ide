@@ -13,6 +13,7 @@ import { useSnippetsStore } from "../store/snippetsStore";
 import { resolveRestoredModel } from "../lib/providerRestore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
 import { hasKeyForModel } from "../store/chatStore";
+import { savedSelfHostedModelInfos } from "@/modules/ai/lib/selfHostedModels";
 
 /**
  * Startup wiring for the AI subsystem: loads provider keys (and keeps them in
@@ -48,15 +49,13 @@ export function useAiBootstrap(): {
     (s) => s.openaiCompatibleBaseURL,
   );
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
+  const selfHostedInference = usePreferencesStore((s) => s.selfHostedInference);
   const openrouterModelId = usePreferencesStore((s) => s.openrouterModelId);
-  const savedProviderModels = usePreferencesStore(
-    (s) => s.savedProviderModels,
-  );
-  const lastUsedProviderId = usePreferencesStore(
-    (s) => s.lastUsedProviderId,
-  );
+  const savedProviderModels = usePreferencesStore((s) => s.savedProviderModels);
+  const lastUsedProviderId = usePreferencesStore((s) => s.lastUsedProviderId);
   const lastUsedModelId = usePreferencesStore((s) => s.lastUsedModelId);
   const hasLocalModel =
+    savedSelfHostedModelInfos(selfHostedInference).length > 0 ||
     (lmstudioBaseURL.trim().length > 0 && lmstudioModelId.trim().length > 0) ||
     (mlxBaseURL.trim().length > 0 && mlxModelId.trim().length > 0) ||
     (ollamaBaseURL.trim().length > 0 && ollamaModelId.trim().length > 0) ||
@@ -79,7 +78,19 @@ export function useAiBootstrap(): {
       });
       if (!prefsHydrated) return;
       void getAllCustomEndpointKeys(
-        usePreferencesStore.getState().customEndpoints,
+        [
+          ...new Set([
+            ...usePreferencesStore.getState().customEndpoints.map((e) => e.id),
+            ...usePreferencesStore
+              .getState()
+              .selfHostedInference.endpoints.flatMap((e) =>
+                e.deletedAt === undefined &&
+                e.credentialRef?.kind === "custom-endpoint"
+                  ? [e.credentialRef.endpointId]
+                  : [],
+              ),
+          ]),
+        ].map((id) => ({ id })),
       ).then((epKeys) => {
         if (!alive) return;
         setCustomEndpointKeys(epKeys);
@@ -102,6 +113,7 @@ export function useAiBootstrap(): {
   useEffect(() => {
     if (!prefsHydrated || !keysLoaded) return;
     const restored = resolveRestoredModel({
+      selfHostedInference,
       apiKeys,
       defaultModelId: prefDefaultModel,
       lastUsedProviderId,
@@ -137,6 +149,7 @@ export function useAiBootstrap(): {
     prefDefaultModel,
     prefsHydrated,
     savedProviderModels,
+    selfHostedInference,
     setSelectedModelId,
   ]);
 

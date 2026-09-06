@@ -954,6 +954,20 @@ fn cache_capacity_is_bounded() {
         .begin(&endpoint(Backend::Mlx), None, true, true, false, 100)
         .is_err());
 }
+
+#[test]
+fn reading_another_saved_binding_reuses_inventory_without_fabricating_evidence() {
+    let mut cache = Cache::default();
+    let e = endpoint(Backend::Mlx);
+    let (generation, _, _) = begin(&mut cache, &e, true, false);
+    let mut original = snapshot();
+    original.selected_model_id = Some("model-a".into());
+    cache.finish(&e, generation, Ok(original));
+    let another = cache.snapshot(&e, Some("model-b"), true, 100).unwrap();
+    assert_eq!(another.selected_model_id.as_deref(), Some("model-a"));
+    assert!(!another.models.iter().any(|model| model.id == "model-b"));
+    assert!(cache.snapshot(&e, Some("model-b"), false, 100).is_none());
+}
 #[test]
 fn profile_evidence_merge_preserves_manual_pins_and_existing_identity() {
     let mut value = json!({"version":1,"revision":1,"endpoints":[],"profiles":[]});

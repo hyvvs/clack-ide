@@ -1,0 +1,29 @@
+.self-hosted-servers { display: flex; flex-direction: column; gap: 10px; min-width: 0; font-size: 12px; }
+.server-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.server-heading h3, .server-heading h4 { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.server-heading > span { color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
+.server-row { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding: 10px 0; min-width: 0; }
+.server-identity { display: flex; flex: 1; flex-direction: column; gap: 3px; text-align: left; min-width: 0; }
+.server-identity strong, .server-identity small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-identity span, .server-identity small { color: var(--muted-foreground); }
+.server-editor { display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-width: 0; }
+.server-editor form { display: flex; flex-direction: column; gap: 12px; }
+.server-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; min-width: 0; }
+.server-fields label, .server-manual { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.server-fields input, .server-fields select, .server-manual input { min-width: 0; width: 100%; }
+.server-fields select { height: 32px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); padding: 0 8px; }
+.server-fields .server-check { display: flex; flex-direction: row; align-items: center; grid-column: 1 / -1; }
+.server-check input, .server-model input { width: 14px; height: 14px; flex-shrink: 0; accent-color: var(--primary); }
+.server-warning, .server-manual small, .server-model small { font-size: 11px; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.server-models { max-height: 240px; overflow: auto; min-width: 0; }
+.server-model { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 4px; border-bottom: 1px solid var(--border); }
+.server-model:hover { background: var(--accent); }
+.server-model label { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.server-model label > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.server-model strong, .server-model small { overflow-wrap: anywhere; }
+.server-model button { flex-shrink: 0; padding: 4px; color: var(--muted-foreground); }
+.self-hosted-servers button:focus-visible, .self-hosted-servers input:focus-visible, .self-hosted-servers select:focus-visible, .self-hosted-servers summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.server-details { overflow-wrap: anywhere; font-size: 11px; }
+.server-details summary { cursor: pointer; }
+.server-details dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 6px 10px; margin-top: 8px; }
+.server-details dt { color: var(--muted-foreground); }

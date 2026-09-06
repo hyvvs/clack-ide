@@ -12,7 +12,12 @@ import type {
 } from "./savedProviderModels";
 import type { WorkspaceEnv } from "@/modules/workspace/env";
 import { materializeAttachmentMessages } from "./attachmentMessages";
-import { resolveModelInputCapabilities } from "./modelCapabilities";
+import {
+  resolveModelInputCapabilities,
+  type ModelInputCapabilities,
+} from "./modelCapabilities";
+import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 
 const PROJECT_MEMORY_MAX_BYTES = 32 * 1024;
 type MemoryCacheEntry = { content: string | null; mtime: number };
@@ -55,6 +60,7 @@ type LiveSnapshot = {
 };
 
 type Deps = {
+  getSelfHostedInference?: () => SelfHostedState;
   getKeys: () => ProviderKeys;
   toolContext: ToolContext;
   getModelId: () => string;
@@ -98,6 +104,12 @@ type SendOptions = {
 };
 
 export function createContextAwareTransport(deps: Deps) {
+  let hostedCapabilities:
+    | {
+        identity: NonNullable<ModelTransportIdentity["selfHosted"]>;
+        capabilities: ModelInputCapabilities;
+      }
+    | undefined;
   const run = async (options: SendOptions) => {
     const batch = deps.onBatchStart?.() ?? { isLogicalContinuation: false };
     const live = deps.getLive();
@@ -106,14 +118,35 @@ export function createContextAwareTransport(deps: Deps) {
       deps.toolContext.getWorkspaceEnv?.(),
     );
     const envBlock = formatEnvBlock(live);
+    const hostedState = deps.getSelfHostedInference?.();
+    const identity = deps.getCapturedModelIdentity?.()?.selfHosted;
+    const snapshot =
+      hostedState && (!identity || hostedCapabilities?.identity !== identity)
+        ? await readSelfHostedSnapshot(hostedState, deps.getModelId())
+        : null;
+    const capabilities =
+      identity && hostedCapabilities?.identity === identity
+        ? hostedCapabilities.capabilities
+        : resolveModelInputCapabilities(
+            deps.getModelId(),
+            hostedState,
+            snapshot,
+          );
+    if (identity) hostedCapabilities = { identity, capabilities };
+    else hostedCapabilities = undefined;
+    if (capabilities.text === "unsupported")
+      throw new Error(
+        "Model unavailable or not a chat model. Choose a chat model in Models & Providers.",
+      );
     const messagesWithAttachments = await materializeAttachmentMessages(
       options.messages,
-      resolveModelInputCapabilities(deps.getModelId()),
+      capabilities,
     );
     const messagesForRun = envBlock
       ? injectEnvIntoLastUser(messagesWithAttachments, envBlock)
       : messagesWithAttachments;
     const result = await runAgentStream({
+      selfHostedInference: hostedState,
       keys: deps.getKeys(),
       modelId: deps.getModelId(),
       customInstructions: deps.getCustomInstructions(),

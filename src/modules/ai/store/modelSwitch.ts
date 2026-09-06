@@ -19,6 +19,8 @@ import {
   useChatStore,
 } from "./chatStore";
 import { usePlanStore } from "./planStore";
+import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
+import { resolveModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
 
 type CommitResult = { ok: true } | { ok: false; reason: string };
 export type PreparedModelSwitch = {
@@ -47,6 +49,7 @@ function contextPreferences() {
     p.customInstructions,
     p.savedProviderModels,
     p.customEndpoints,
+    p.selfHostedInference,
     p.openaiCompatibleContextLimit,
     p.openaiCompatibleBaseURL,
     p.openaiCompatibleModelId,
@@ -120,6 +123,7 @@ export async function prepareModelSwitch(
       targetModelId,
       preferences.customEndpoints,
       preferences.savedProviderModels,
+      preferences.selfHostedInference,
     );
     if (!hasKeyForModel(targetModelId))
       return unavailable("Configure this model's provider before switching.");
@@ -127,6 +131,10 @@ export async function prepareModelSwitch(
       originalMessages ??
       (sessionId ? await loadMessages(sessionId) : null) ??
       [];
+    const probe = await readSelfHostedSnapshot(
+      preferences.selfHostedInference,
+      targetModelId,
+    );
     const { readProjectMemory, formatEnvBlock } = await import(
       "../lib/transport"
     );
@@ -153,6 +161,7 @@ export async function prepareModelSwitch(
           sourceModelId,
           preferences.customEndpoints,
           preferences.savedProviderModels,
+          preferences.selfHostedInference,
         ).provider !== target.provider;
     } catch {
       /* A deleted source model must not prevent selecting a valid target. */
@@ -175,6 +184,11 @@ export async function prepareModelSwitch(
         planModeSystemText(usePlanStore.getState().active) +
         (formatEnvBlock(snapshot) ?? ""),
       providerChanged,
+      capabilities: resolveModelInputCapabilities(
+        targetModelId,
+        preferences.selfHostedInference,
+        probe,
+      ),
     });
     const checkedAt = Date.now();
     return {

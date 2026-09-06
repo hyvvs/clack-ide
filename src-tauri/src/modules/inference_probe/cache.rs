@@ -81,15 +81,14 @@ impl Cache {
     pub fn snapshot(
         &self,
         endpoint: &Endpoint,
-        selected: Option<&str>,
+        _selected: Option<&str>,
         private: bool,
         now: u64,
     ) -> Option<Snapshot> {
+        // Inventory is endpoint-wide. The snapshot retains its original selected
+        // model and scoped evidence; reading another binding adds no evidence.
         let entry = self.entries.get(&endpoint.id)?;
-        if entry.endpoint != *endpoint
-            || entry.selected.as_deref() != selected
-            || entry.allow_private != private
-        {
+        if entry.endpoint != *endpoint || entry.allow_private != private {
             return None;
         }
         let mut snapshot = entry.snapshot.clone()?;

@@ -8,6 +8,14 @@ import {
   type ModelInfo,
   type ProviderId,
 } from "@/modules/ai/config";
+import type {
+  SelfHostedState,
+  EndpointCredentialReference,
+} from "@/modules/ai/lib/selfHostedProfiles";
+import {
+  selfHostedModelInfo,
+  selfHostedTransportIdentity,
+} from "@/modules/ai/lib/selfHostedModels";
 
 export const SAVED_PROVIDER_MODELS_SCHEMA_VERSION = 1;
 export const SAVED_PROVIDER_MODEL_SELECTION_PREFIX = "saved-provider:";
@@ -33,6 +41,14 @@ export type ModelTransportIdentity = {
   transportModelId: string;
   endpointBaseURL?: string;
   customEndpointId?: string;
+  selfHosted?: {
+    endpointId: string;
+    profileId: string;
+    configurationRevision: number;
+    allowPrivateNetwork: boolean;
+    credentialRef: EndpointCredentialReference | null;
+    credentialRequired: boolean;
+  };
 };
 
 type CreateSavedProviderModelInput = {
@@ -83,7 +99,8 @@ export function normalizeSavedProviderModels(
     const normalized = normalizeSavedProviderModel(entry);
     if (!normalized) continue;
     const providerModelKey = `${normalized.providerId}\0${normalized.transportModelId}`;
-    if (ids.has(normalized.id) || providerModels.has(providerModelKey)) continue;
+    if (ids.has(normalized.id) || providerModels.has(providerModelKey))
+      continue;
     ids.add(normalized.id);
     providerModels.add(providerModelKey);
     result.push(normalized);
@@ -190,7 +207,10 @@ export function getEnabledSavedProviderModelInfos(
   return models
     .filter((model) => model.enabled)
     .map((model) =>
-      getSavedProviderModelInfo(savedProviderModelSelectionId(model.id), models),
+      getSavedProviderModelInfo(
+        savedProviderModelSelectionId(model.id),
+        models,
+      ),
     );
 }
 
@@ -213,7 +233,10 @@ export function resolveModelSelectionInfo(
   selectionId: string,
   customEndpoints: readonly CustomEndpoint[] = [],
   savedModels: readonly SavedProviderModel[] = [],
+  selfHosted?: SelfHostedState,
 ): ModelInfo {
+  const hosted = selfHostedModelInfo(selectionId, selfHosted);
+  if (hosted) return hosted;
   return isSavedProviderModelSelectionId(selectionId)
     ? getSavedProviderModelInfo(selectionId, savedModels)
     : resolveModel(selectionId, customEndpoints);
@@ -223,12 +246,14 @@ export function providerForModelSelection(
   selectionId: string,
   customEndpoints: readonly CustomEndpoint[],
   savedModels: readonly SavedProviderModel[],
+  selfHosted?: SelfHostedState,
 ): ProviderId | null {
   try {
     return resolveModelSelectionInfo(
       selectionId,
       customEndpoints,
       savedModels,
+      selfHosted,
     ).provider;
   } catch {
     return null;
@@ -240,6 +265,7 @@ export function resolveModelTransportIdentity(
   config: {
     customEndpoints?: readonly CustomEndpoint[];
     savedProviderModels?: readonly SavedProviderModel[];
+    selfHostedInference?: SelfHostedState;
     lmstudioModelId?: string;
     mlxModelId?: string;
     ollamaModelId?: string;
@@ -248,6 +274,11 @@ export function resolveModelTransportIdentity(
     openrouterModelId?: string;
   } = {},
 ): ModelTransportIdentity {
+  const hosted = selfHostedTransportIdentity(
+    selectionId,
+    config.selfHostedInference,
+  );
+  if (hosted) return hosted;
   const saved = resolveSavedProviderModelTarget(
     selectionId,
     config.savedProviderModels ?? [],
@@ -274,7 +305,10 @@ export function resolveModelTransportIdentity(
   let transportModelId = info.id;
   let endpointBaseURL: string | undefined;
   if (info.id === "lmstudio-local") {
-    transportModelId = requiredConfiguredId("LM Studio", config.lmstudioModelId);
+    transportModelId = requiredConfiguredId(
+      "LM Studio",
+      config.lmstudioModelId,
+    );
   } else if (info.id === "mlx-local") {
     transportModelId = requiredConfiguredId("MLX", config.mlxModelId);
   } else if (info.id === "ollama-local") {
@@ -301,13 +335,18 @@ export function resolveModelTransportIdentity(
   };
 }
 
-function requiredConfiguredId(label: string, value: string | undefined): string {
+function requiredConfiguredId(
+  label: string,
+  value: string | undefined,
+): string {
   const normalized = value?.trim();
   if (!normalized) throw new Error(`${label} is not configured.`);
   return normalized;
 }
 
-function normalizeSavedProviderModel(value: unknown): SavedProviderModel | null {
+function normalizeSavedProviderModel(
+  value: unknown,
+): SavedProviderModel | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<Record<keyof SavedProviderModel, unknown>>;
   const id = typeof candidate.id === "string" ? candidate.id.trim() : "";

@@ -27,6 +27,11 @@ import { buildTools, type ToolContext } from "../tools/tools";
 import { compactModelMessagesDetailed } from "./compact";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
+import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import {
+  selfHostedTransportIdentity,
+  selfHostedCredential,
+} from "@/modules/ai/lib/selfHostedModels";
 import { AGENT_SOFT_STEP_LIMIT, type RunStepObservation } from "./runBudget";
 import {
   AGENT_PROVIDER_MAX_RETRIES,
@@ -77,6 +82,8 @@ function ellipsize(s: string, max: number): string {
 }
 
 export type BuildModelOptions = {
+  selfHosted?: boolean;
+  allowPrivateNetwork?: boolean;
   modelIdOverride?: string;
   lmstudioBaseURL?: string;
   mlxBaseURL?: string;
@@ -104,7 +111,18 @@ export async function buildLanguageModel(
   const ollamaURL = options.ollamaBaseURL ?? OLLAMA_DEFAULT_BASE_URL;
   const compatURL = options.openaiCompatibleBaseURL ?? "";
   const epKey = customEndpointKey ?? "";
-  const cacheKey = `${provider} ${key} ${epKey} ${resolvedModelId} ${lmstudioURL} ${mlxURL} ${ollamaURL} ${compatURL}`;
+  const cacheKey = JSON.stringify([
+    provider,
+    key,
+    epKey,
+    resolvedModelId,
+    lmstudioURL,
+    mlxURL,
+    ollamaURL,
+    compatURL,
+    options.selfHosted,
+    options.allowPrivateNetwork,
+  ]);
   const hit = modelCache.get(cacheKey);
   if (hit) return hit;
 
@@ -189,8 +207,14 @@ export async function buildLanguageModel(
       built = createOpenAICompatible({
         name: "openai-compatible",
         baseURL: compatURL,
-        apiKey: epKey || key || undefined,
-        fetch: localProxyFetch,
+        apiKey: options.selfHosted
+          ? customEndpointKey || undefined
+          : epKey || key || undefined,
+        fetch: options.selfHosted
+          ? createProxyFetch({
+              allowPrivateNetwork: options.allowPrivateNetwork === true,
+            })
+          : localProxyFetch,
       })(resolvedModelId);
       break;
     }
@@ -237,6 +261,7 @@ export async function buildLanguageModel(
 }
 
 export type LocalProviderConfig = {
+  selfHostedInference?: SelfHostedState;
   lmstudioBaseURL?: string;
   lmstudioModelId?: string;
   mlxBaseURL?: string;
@@ -257,6 +282,22 @@ export function buildConfiguredLanguageModel(
   keys: ProviderKeys,
   local: LocalProviderConfig = {},
 ): Promise<LanguageModel> {
+  const hosted =
+    local.capturedModelIdentity ??
+    selfHostedTransportIdentity(modelId, local.selfHostedInference);
+  if (hosted?.selfHosted) {
+    return buildLanguageModel(
+      "openai-compatible",
+      keys,
+      hosted.transportModelId,
+      {
+        selfHosted: true,
+        openaiCompatibleBaseURL: hosted.endpointBaseURL,
+        allowPrivateNetwork: hosted.selfHosted.allowPrivateNetwork,
+      },
+      selfHostedCredential(hosted, keys, local.customEndpointKeys ?? {}),
+    );
+  }
   if (local.capturedModelIdentity) {
     const captured = local.capturedModelIdentity;
     return buildLanguageModel(
@@ -423,6 +464,7 @@ const EMPTY_USAGE: AgentUsage = {
 };
 
 export type RunAgentOptions = {
+  selfHostedInference?: SelfHostedState;
   keys: ProviderKeys;
   modelId?: string;
   customInstructions?: string;
@@ -463,6 +505,7 @@ export type RunAgentOptions = {
 export async function runAgentStream(opts: RunAgentOptions) {
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
   const baseModel = await buildConfiguredLanguageModel(modelId, opts.keys, {
+    selfHostedInference: opts.selfHostedInference,
     lmstudioBaseURL: opts.lmstudioBaseURL,
     lmstudioModelId: opts.lmstudioModelId,
     mlxBaseURL: opts.mlxBaseURL,
@@ -484,10 +527,12 @@ export async function runAgentStream(opts: RunAgentOptions) {
       modelId,
       endpoints,
       opts.savedProviderModels ?? [],
+      opts.selfHostedInference,
     );
   } catch {
     const captured = opts.capturedModelIdentity;
-    if (!captured) throw new Error(`Model selection is unavailable: ${modelId}`);
+    if (!captured)
+      throw new Error(`Model selection is unavailable: ${modelId}`);
     info = {
       id: modelId,
       provider: captured.providerId,

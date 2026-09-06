@@ -42,6 +42,10 @@ import { useAgentsStore } from "./agentsStore";
 import { pushRecentModel } from "../lib/modelPrefs";
 import { providerForSelectedModel } from "../lib/providerRestore";
 import {
+  selfHostedTransportIdentity,
+  selfHostedCredential,
+} from "@/modules/ai/lib/selfHostedModels";
+import {
   resolveModelTransportIdentity,
   type ModelTransportIdentity,
 } from "../lib/savedProviderModels";
@@ -263,6 +267,15 @@ const NOOP_LIVE: Live = {
 
 const CHATS_LRU_CAP = 8;
 export const chats = new Map<string, Chat<UIMessage>>();
+// Ephemeral request configuration only. Credentials must never enter SessionRun.
+export const capturedSelfHostedRuns = new Map<
+  string,
+  {
+    keys: ProviderKeys;
+    endpointKeys: CustomEndpointKeys;
+    profiles: import("@/modules/ai/lib/selfHostedProfiles").SelfHostedState;
+  }
+>();
 
 export function isModelSelectionLocked(
   sessionId: string | null,
@@ -610,6 +623,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     let transportIdentity: ModelTransportIdentity;
     try {
       transportIdentity = resolveModelTransportIdentity(modelId, {
+        selfHostedInference: preferences.selfHostedInference,
         customEndpoints: preferences.customEndpoints,
         savedProviderModels: preferences.savedProviderModels,
         lmstudioModelId: preferences.lmstudioModelId,
@@ -619,9 +633,22 @@ export const useChatStore = create<StoreState>((set, get) => ({
         openaiCompatibleModelId: preferences.openaiCompatibleModelId,
         openrouterModelId: preferences.openrouterModelId,
       });
+      if (transportIdentity.selfHosted)
+        selfHostedCredential(
+          transportIdentity,
+          get().apiKeys,
+          get().customEndpointKeys,
+        );
     } catch (error) {
       return { ok: false, reason: String(error) };
     }
+    if (transportIdentity.selfHosted)
+      capturedSelfHostedRuns.set(id, {
+        keys: { ...get().apiKeys },
+        endpointKeys: { ...get().customEndpointKeys },
+        profiles: preferences.selfHostedInference,
+      });
+    else capturedSelfHostedRuns.delete(id);
     const now = Date.now();
     const next = get().sessions.map((session) =>
       session.id === id
@@ -635,6 +662,9 @@ export const useChatStore = create<StoreState>((set, get) => ({
               modelId,
               providerId: transportIdentity.providerId,
               transportModelId: transportIdentity.transportModelId,
+              ...(transportIdentity.selfHosted
+                ? { selfHosted: transportIdentity.selfHosted }
+                : {}),
               ...(transportIdentity.endpointBaseURL
                 ? { endpointBaseURL: transportIdentity.endpointBaseURL }
                 : {}),
@@ -855,6 +885,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     const current = get().sessions.find((session) => session.id === id);
     const currentRun = current?.run;
     if (currentRun?.state !== "running") return;
+    capturedSelfHostedRuns.delete(id);
     const now = Date.now();
     const runError =
       state === "failed"
@@ -1091,6 +1122,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     chats.delete(id);
     seedMessages.delete(id);
     runLoopTrackers.delete(id);
+    capturedSelfHostedRuns.delete(id);
     releaseWorkspaceWriteLeasesForSession(id);
     const pend = pendingPersist.get(id);
     if (pend) {
@@ -1214,21 +1246,48 @@ export function useActiveAgentMeta(): AgentMeta {
 export function getActiveProviderKey(): string | null {
   const { selectedModelId, apiKeys, customEndpointKeys } =
     useChatStore.getState();
+  const preferences = usePreferencesStore.getState();
+  try {
+    const hosted = selfHostedTransportIdentity(
+      selectedModelId,
+      preferences.selfHostedInference,
+    );
+    if (hosted)
+      return selfHostedCredential(hosted, apiKeys, customEndpointKeys) ?? null;
+  } catch {
+    return null;
+  }
   if (isCompatModelId(selectedModelId)) {
     const eid = endpointIdFromCompatModel(selectedModelId);
     return customEndpointKeys[eid] ?? null;
   }
-  const preferences = usePreferencesStore.getState();
   const provider = providerForSelectedModel(
     selectedModelId,
     preferences.customEndpoints,
     preferences.savedProviderModels,
+    preferences.selfHostedInference,
   );
   return provider ? (apiKeys[provider] ?? null) : null;
 }
 
 export function hasKeyForModel(modelId: string): boolean {
   const { apiKeys } = useChatStore.getState();
+  try {
+    const hosted = selfHostedTransportIdentity(
+      modelId,
+      usePreferencesStore.getState().selfHostedInference,
+    );
+    if (hosted) {
+      selfHostedCredential(
+        hosted,
+        apiKeys,
+        useChatStore.getState().customEndpointKeys,
+      );
+      return true;
+    }
+  } catch {
+    return false;
+  }
   if (isCompatModelId(modelId)) {
     return true;
   }
@@ -1258,6 +1317,7 @@ export function recordSelectedModelUse(modelId: string): void {
     modelId,
     preferences.customEndpoints,
     preferences.savedProviderModels,
+    preferences.selfHostedInference,
   );
   if (!provider) return;
   void pushRecentModel(modelId);

@@ -60,6 +60,7 @@ export type SessionRun = {
   transportModelId?: string;
   endpointBaseURL?: string;
   customEndpointId?: string;
+  selfHosted?: import("@/modules/ai/lib/savedProviderModels").ModelTransportIdentity["selfHosted"];
   peerTaskId?: string;
   commandName?: string;
   startedAt: number;

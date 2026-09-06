@@ -14,6 +14,7 @@ import {
   attachmentCapabilityStatus,
   resolveModelInputCapabilities,
   type CapabilitySupport,
+  type ModelInputCapabilities,
 } from "./modelCapabilities";
 import { isSavedProviderModelSelectionId } from "./savedProviderModels";
 
@@ -54,15 +55,18 @@ export function assessModelSwitch({
   contextLimit,
   systemText = "",
   providerChanged = false,
+  capabilities = resolveModelInputCapabilities(targetModelId),
 }: {
   messages: readonly UIMessage[];
   targetModelId: string;
   contextLimit: number | null;
   systemText?: string;
   providerChanged?: boolean;
+  capabilities?: ModelInputCapabilities;
 }): ModelSwitchAssessment {
-  const capabilities = resolveModelInputCapabilities(targetModelId);
   const blocked = new Set<string>();
+  if (capabilities.text === "unsupported")
+    blocked.add("The selected model is unavailable or does not support chat.");
   const warnings = new Set<string>();
   let chars = systemText.length;
   let overhead = 0;
