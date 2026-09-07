@@ -34,6 +34,7 @@ import {
   getAgentMeta,
   hasKeyForModel,
   capturedSelfHostedRuns,
+  inferenceScopeForSession,
   recordSelectedModelUse,
   seedMessages,
   touchChat,
@@ -121,6 +122,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
   };
 
   const transport = createContextAwareTransport({
+    getInferenceScope: () => inferenceScopeForSession(sessionId),
     getKeys: () =>
       capturedSelfHostedRuns.get(sessionId)?.keys ??
       useChatStore.getState().apiKeys,
@@ -401,6 +403,10 @@ export function shouldAutomaticallySendSession(
   sessionId: string,
   messages: UIMessage[],
 ): boolean {
+  const state = useChatStore.getState().sessions.find((s) => s.id === sessionId)
+    ?.run?.state;
+  if (state === "cancelled" || state === "interrupted" || state === "failed")
+    return false;
   return (
     lastAssistantMessageIsCompleteWithApprovalResponses({ messages }) ||
     useChatStore.getState().consumeAutoContinuation(sessionId)

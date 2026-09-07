@@ -1,5 +1,9 @@
 import type { Chat, UIMessage } from "@ai-sdk/react";
 import { create } from "zustand";
+import {
+  cancelSessionInference,
+  sessionInference,
+} from "@/modules/ai/lib/inferenceLifecycle";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setLastUsedAiSelection } from "@/modules/settings/store";
 import {
@@ -277,6 +281,31 @@ export const capturedSelfHostedRuns = new Map<
   }
 >();
 
+export function inferenceScopeForSession(sessionId: string) {
+  const run = useChatStore
+    .getState()
+    .sessions.find((s) => s.id === sessionId)?.run;
+  if (!run) return undefined;
+  const endpoint = usePreferencesStore
+    .getState()
+    .selfHostedInference.endpoints.find(
+      (e) => e.id === run.selfHosted?.endpointId,
+    );
+  return {
+    sessionId,
+    runId: `${sessionId}:${run.startedAt}`,
+    label: endpoint
+      ? `${run.transportModelId} / ${endpoint.alias}`
+      : run.transportModelId,
+    isCurrent: () => {
+      const latest = useChatStore
+        .getState()
+        .sessions.find((s) => s.id === sessionId)?.run;
+      return latest?.state === "running" && latest.startedAt === run.startedAt;
+    },
+  };
+}
+
 export function isModelSelectionLocked(
   sessionId: string | null,
   state: Pick<StoreState, "sessions"> = useChatStore.getState(),
@@ -287,6 +316,7 @@ export function isModelSelectionLocked(
   return (
     !session ||
     session.run?.state === "running" ||
+    sessionInference(sessionId) !== null ||
     status === "submitted" ||
     status === "streaming"
   );
@@ -1117,6 +1147,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
   },
 
   deleteSession: (id) => {
+    void cancelSessionInference(id);
     const remaining = get().sessions.filter((s) => s.id !== id);
     chats.get(id)?.stop();
     chats.delete(id);
@@ -1355,12 +1386,18 @@ export async function cancelRun(id: string): Promise<void> {
     pending.length > 0
       ? pending.map((approval) => approval.id)
       : pendingApprovalIds(chat?.messages ?? []);
+  const draining = cancelSessionInference(id);
   state.finishRun(id, "cancelled");
+  const stoppedRun = useChatStore
+    .getState()
+    .sessions.find((s) => s.id === id)?.run;
   for (const approvalId of approvalIds) {
     state.respondToApproval(approvalId, false, id);
   }
   await chat?.stop();
+  await draining;
   const latest = useChatStore.getState();
+  if (latest.sessions.find((s) => s.id === id)?.run !== stoppedRun) return;
   if (latest.activeSessionId === id) usePlanStore.getState().disable();
   latest.patchAgentMeta(id, {
     status: "idle",
@@ -1391,7 +1428,9 @@ export async function interruptAllRunsForShutdown(): Promise<void> {
   }
   await Promise.allSettled(
     runningIds.map(async (id) => {
+      const draining = cancelSessionInference(id);
       await chats.get(id)?.stop();
+      await draining;
       flushPersist(id);
     }),
   );

@@ -162,6 +162,14 @@ pub fn run() {
         .manage(shell::ShellState::default())
         .manage(secrets::SecretsState::default())
         .manage(modules::inference_probe::ProbeState::default())
+        .manage(net::inference::InferenceState::default())
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window
+                    .state::<net::inference::InferenceState>()
+                    .close_owner(window.label());
+            }
+        })
         .manage(fs::watch::FsWatchState::default())
         .manage(history::HistoryState::default())
         .manage(fs::grep::ContentSearchState::default())
@@ -265,12 +273,19 @@ pub fn run() {
             modules::inference_probe::self_hosted_probe_cache,
             modules::inference_probe::self_hosted_probe_cancel,
             net::ai_http_request,
-            net::ai_http_stream,
+            net::inference::ai_http_open,
+            net::inference::ai_http_cancel,
+            net::inference::ai_http_stream,
             history::history_suggest,
             history::history_commands,
             history::history_record,
             history::history_list,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<net::inference::InferenceState>().shutdown();
+            }
+        });
 }

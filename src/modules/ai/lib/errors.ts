@@ -4,6 +4,7 @@ import {
   NoSuchModelError,
   RetryError,
 } from "ai";
+import { INFERENCE_ERRORS } from "@/modules/ai/lib/inferenceErrors";
 
 export type AiErrorKind =
   | "authentication"
@@ -138,6 +139,29 @@ export function normalizeAiError(
   context: AiErrorContext = {},
 ): NormalizedAiError {
   const chain = collectErrorChain(error);
+  const native = chain.find(
+    (node) => node.record?.inferenceTransport === true,
+  )?.record;
+  if (
+    native &&
+    typeof native.code === "string" &&
+    INFERENCE_ERRORS[native.code]
+  ) {
+    const detail = INFERENCE_ERRORS[native.code];
+    return {
+      ...detail,
+      title:
+        detail.kind === "timeout" ? "Inference timed out" : "Inference request",
+      disposition: "terminal",
+      retryable: false,
+      errorCode: native.code,
+      requestId:
+        typeof native.requestId === "string" ? native.requestId : undefined,
+      provider: optionalSafe(context.provider, 160),
+      model: optionalSafe(context.model, 300),
+      endpoint: sanitizeAiEndpoint(context.endpoint),
+    };
+  }
   const payload = extractProviderPayload(chain);
   const headers = collectHeaders(chain);
   const statusCode = firstStatusCode(chain) ?? payload.statusCode;

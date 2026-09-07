@@ -1,3 +1,5 @@
+import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
+import { inferenceLabel } from "@/modules/ai/lib/inferenceLifecycle";
 import {
   Conversation,
   ConversationContent,
@@ -248,6 +250,7 @@ export function AiChatView({
       ? lastMessage.id
       : null;
   const runtime = useChatStore((s) => s.runtimeBySession[sessionId]);
+  const inference = useInferenceLifecycle(sessionId);
   const step = runtime?.step ?? null;
   const compactionNotice = runtime?.compactionNotice ?? null;
   const storedError = runtime?.error ?? null;
@@ -317,13 +320,16 @@ export function AiChatView({
             }}
           />
         )}
-        {showSpinner && (
+        {(showSpinner || inference) && (
           <div className="flex items-center gap-2 text-xs text-[var(--clack-text-3)]">
             <Spinner />
-            <span className="truncate">{step ?? "Thinking..."}</span>
+            <span className="truncate" role="status">
+              {inference ? inferenceLabel(inference) : (step ?? "Thinking...")}
+            </span>
             <button
               type="button"
               onClick={() => void stop()}
+              disabled={inference?.phase === "stopping"}
               className="ml-auto inline-flex items-center gap-1 rounded-[var(--clack-radius-button)] px-1.5 py-0.5 text-[10.5px] hover:bg-[var(--clack-accent-soft)] hover:text-[var(--clack-text-1)]"
               aria-label="Stop active AI run"
             >
@@ -340,6 +346,7 @@ export function AiChatView({
           <ProviderRetryNotice retry={providerRetry} />
         ) : null}
         {run &&
+        !inference &&
         run.state !== "running" &&
         run.state !== "completed" &&
         !(run.state === "failed" && visibleError) ? (

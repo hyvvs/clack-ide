@@ -2,12 +2,10 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use bytes::Bytes;
-use futures_util::StreamExt;
+pub mod inference;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Method;
-use serde::{Deserialize, Serialize};
-use tauri::ipc::Channel;
+use serde::Serialize;
 
 const HEADER_BLOCKLIST: &[&str] = &[
     "host",
@@ -245,8 +243,10 @@ fn build_request(
 fn build_safe_client(
     allow_private: bool,
     pinned: &[(String, Vec<IpAddr>)],
+    connect_timeout: Option<Duration>,
 ) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(connect_timeout.unwrap_or(Duration::from_secs(10)));
     // Pin reqwest's resolver to the IPs we just classified. Without this,
     // reqwest's own DNS lookup could return a different (private/metadata) IP
     // for the same hostname between classify and connect — classic DNS
@@ -324,7 +324,7 @@ pub async fn ai_http_request(
         .to_string();
     let safe_ips = classify_and_collect_safe_ips(&host, allow_private).await?;
 
-    let client = build_safe_client(allow_private, &[(host, safe_ips)])?;
+    let client = build_safe_client(allow_private, &[(host, safe_ips)], None)?;
 
     let req = build_request(&client, &method, parsed, headers, body)?;
     let resp = req.send().await.map_err(|e| e.to_string())?;
@@ -337,100 +337,6 @@ pub async fn ai_http_request(
         headers,
         body,
     })
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum AiStreamEvent {
-    Headers {
-        status: u16,
-        headers: HashMap<String, String>,
-    },
-    Chunk {
-        bytes: Vec<u8>,
-    },
-    End,
-    Error {
-        message: String,
-    },
-}
-
-#[tauri::command]
-pub async fn ai_http_stream(
-    url: String,
-    method: String,
-    headers: Option<HashMap<String, String>>,
-    body: Option<Vec<u8>>,
-    allow_private_network: Option<bool>,
-    on_event: Channel<AiStreamEvent>,
-) -> Result<(), String> {
-    let allow_private = allow_private_network.unwrap_or(false);
-    let parsed = match validate_url(&url, allow_private) {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = on_event.send(AiStreamEvent::Error { message: e.clone() });
-            return Err(e);
-        }
-    };
-    let host = match parsed.host_str() {
-        Some(h) => h.to_string(),
-        None => {
-            let e = "missing host".to_string();
-            let _ = on_event.send(AiStreamEvent::Error { message: e.clone() });
-            return Err(e);
-        }
-    };
-    let safe_ips = match classify_and_collect_safe_ips(&host, allow_private).await {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = on_event.send(AiStreamEvent::Error { message: e.clone() });
-            return Err(e);
-        }
-    };
-
-    let client = build_safe_client(allow_private, &[(host, safe_ips)])?;
-
-    let req = build_request(&client, &method, parsed, headers, body)?;
-    let resp = match req.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = on_event.send(AiStreamEvent::Error {
-                message: e.to_string(),
-            });
-            return Err(e.to_string());
-        }
-    };
-
-    let status = resp.status().as_u16();
-    let headers = header_map_to_strings(resp.headers());
-    let _ = on_event.send(AiStreamEvent::Headers { status, headers });
-
-    let mut stream = resp.bytes_stream();
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(chunk) => {
-                let bytes: Bytes = chunk;
-                if on_event
-                    .send(AiStreamEvent::Chunk {
-                        bytes: bytes.to_vec(),
-                    })
-                    .is_err()
-                {
-                    // Channel dropped (frontend aborted) — stop streaming.
-                    return Ok(());
-                }
-            }
-            Err(e) => {
-                let _ = on_event.send(AiStreamEvent::Error {
-                    message: e.to_string(),
-                });
-                return Err(e.to_string());
-            }
-        }
-    }
-
-    let _ = on_event.send(AiStreamEvent::End);
-    Ok(())
 }
 
 #[cfg(test)]

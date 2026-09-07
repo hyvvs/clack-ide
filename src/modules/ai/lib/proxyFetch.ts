@@ -1,11 +1,18 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import {
+  beginInference,
+  type InferencePhase,
+  type InferenceScope,
+} from "@/modules/ai/lib/inferenceLifecycle";
+import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
 
 /** Streaming events emitted by the Rust `ai_http_stream` command. */
-type AiStreamEvent =
+type AiStreamEvent = { requestId: string } & (
   | { kind: "headers"; status: number; headers: Record<string, string> }
   | { kind: "chunk"; bytes: number[] }
-  | { kind: "end" }
-  | { kind: "error"; message: string };
+  | { kind: "phase"; phase: InferencePhase }
+  | { kind: "settled"; phase: InferencePhase; error?: { code: string } }
+);
 
 type RequestHeaders = Record<string, string>;
 
@@ -47,108 +54,182 @@ async function bodyToBytes(
   return Array.from(new TextEncoder().encode(text));
 }
 
-export function createProxyFetch(
-  opts: { allowPrivateNetwork?: boolean } = {},
-): typeof fetch {
-  const allowPrivate = opts.allowPrivateNetwork === true;
-  return async (input, init) => proxyFetchImpl(input, init, allowPrivate);
+export type ProxyOptions = {
+  allowPrivateNetwork?: boolean;
+  selfHosted?: boolean;
+  scope?: InferenceScope;
+};
+export function createProxyFetch(opts: ProxyOptions = {}): typeof fetch {
+  return (input, init) => proxyFetchImpl(input, init, opts);
 }
-
-/** Backwards-compatible default — refuses private networks unless the caller
- *  explicitly opts in via {@link createProxyFetch}. */
-export const proxyFetch: typeof fetch = (input, init) =>
-  proxyFetchImpl(input, init, false);
+export const proxyFetch: typeof fetch = createProxyFetch();
 
 async function proxyFetchImpl(
   input: RequestInfo | URL,
   init: RequestInit | undefined,
-  allowPrivateNetwork: boolean,
+  opts: ProxyOptions,
 ): Promise<Response> {
-  const url = input instanceof URL ? input.toString() : String(input);
-  const method = (init?.method ?? "GET").toUpperCase();
-  const headers = headerInitToRecord(init?.headers);
-  const body = await bodyToBytes(init?.body);
-
-  const signal = init?.signal;
-  if (signal?.aborted) {
-    throw makeAbortError();
-  }
-
-  return new Promise<Response>((resolve, reject) => {
-    let resolved = false;
-    let streamController: ReadableStreamDefaultController<Uint8Array> | null =
-      null;
-    let cancelled = false;
-
-    const onAbort = () => {
-      cancelled = true;
-      if (!resolved) {
-        reject(makeAbortError());
-      } else if (streamController) {
-        try {
-          streamController.error(makeAbortError());
-        } catch {
-          /* already closed */
+  const request = input instanceof Request ? input : null;
+  const signal = init?.signal ?? request?.signal;
+  if (signal?.aborted || (opts.scope && !opts.scope.isCurrent()))
+    throw new InferenceTransportError("cancelled");
+  let nativeId: string | undefined;
+  let nativeSettled = false;
+  let aborted = false;
+  let cancelPromise: Promise<unknown> | undefined;
+  let attempt: ReturnType<typeof beginInference> | undefined;
+  const cancel = () => {
+    aborted = true;
+    attempt?.update("stopping");
+    if (nativeId && !cancelPromise)
+      cancelPromise = invoke("ai_http_cancel", { requestId: nativeId }).catch(
+        () => undefined,
+      );
+  };
+  attempt = beginInference(opts.scope, cancel);
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
+  try {
+    const url =
+      request?.url ?? (input instanceof URL ? input.toString() : String(input));
+    const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
+    const headers = headerInitToRecord(init?.headers ?? request?.headers);
+    const body = await bodyToBytes(
+      init?.body ?? (request ? await request.arrayBuffer() : undefined),
+    );
+    if (aborted) throw new InferenceTransportError("cancelled");
+    nativeId = await invoke<string>("ai_http_open");
+    if (!nativeId) throw new InferenceTransportError("native-transport");
+    attempt.update(aborted ? "stopping" : "connecting", nativeId);
+    if (aborted || (opts.scope && !opts.scope.isCurrent())) {
+      cancel();
+      await cancelPromise;
+      throw new InferenceTransportError("cancelled", nativeId);
+    }
+    return await new Promise<Response>((resolve, reject) => {
+      let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+      let terminal: Extract<AiStreamEvent, { kind: "settled" }> | undefined;
+      let status = 0;
+      let finished = false;
+      let deliveryTimer: ReturnType<typeof setTimeout> | undefined;
+      const channel = new Channel<AiStreamEvent>();
+      channel.onmessage = (event) => {
+        if (finished || terminal || event.requestId !== nativeId) return;
+        if (event.kind === "settled") {
+          terminal = event;
+          if (nativeSettled) settle();
+          return;
         }
-      }
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-
-    const channel = new Channel<AiStreamEvent>();
-    channel.onmessage = (event) => {
-      if (cancelled) return;
-      switch (event.kind) {
-        case "headers": {
-          const stream = new ReadableStream<Uint8Array>({
-            start(controller) {
-              streamController = controller;
-            },
-            cancel() {
-              cancelled = true;
-            },
-          });
-          resolved = true;
-          resolve(
-            new Response(stream, {
-              status: event.status,
-              headers: new Headers(event.headers),
-            }),
-          );
-          break;
+        if (aborted || (opts.scope && !opts.scope.isCurrent())) {
+          cancel();
+          return;
         }
-        case "chunk": {
-          streamController?.enqueue(Uint8Array.from(event.bytes));
-          break;
-        }
-        case "end": {
-          streamController?.close();
-          break;
-        }
-        case "error": {
-          if (!resolved) {
-            reject(new Error(event.message));
-          } else {
-            streamController?.error(new Error(event.message));
+        switch (event.kind) {
+          case "phase":
+            attempt?.update(event.phase, nativeId);
+            break;
+          case "headers": {
+            if (status) return;
+            status = event.status;
+            const stream = new ReadableStream<Uint8Array>({
+              start(c) {
+                controller = c;
+              },
+              cancel() {
+                cancel();
+                return cancelPromise?.then(() => undefined);
+              },
+            });
+            try {
+              resolve(
+                new Response([204, 205, 304].includes(status) ? null : stream, {
+                  status,
+                  headers: event.headers,
+                }),
+              );
+            } catch {
+              cancel();
+            }
+            break;
           }
-          break;
+          case "chunk":
+            controller?.enqueue(Uint8Array.from(event.bytes));
+            break;
         }
-      }
-    };
-
-    invoke("ai_http_stream", {
-      url,
-      method,
-      headers,
-      body,
-      allowPrivateNetwork,
-      onEvent: channel,
-    }).catch((e) => {
-      if (resolved) return; // headers already arrived; chunk-side error wins
-      reject(e instanceof Error ? e : new Error(String(e)));
+      };
+      const settle = (failure?: unknown) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(deliveryTimer);
+        channel.onmessage = () => {};
+        const code = aborted
+          ? "cancelled"
+          : (terminal?.error?.code ??
+            (failure || !terminal ? "native-transport" : undefined));
+        // Keep non-2xx bodies intact for the SDK's existing provider diagnostics.
+        const error =
+          code && !(code === "provider-error" && status >= 400)
+            ? new InferenceTransportError(code, nativeId)
+            : undefined;
+        attempt?.update(terminal?.phase ?? (aborted ? "cancelled" : "failed"));
+        attempt?.settle();
+        signal?.removeEventListener("abort", cancel);
+        if (error) {
+          reject(error);
+          try {
+            controller?.error(error);
+          } catch {
+            /* consumer already closed */
+          }
+        } else if (controller) {
+          try {
+            controller.close();
+          } catch {
+            /* consumer already closed */
+          }
+        } else
+          reject(new InferenceTransportError("native-transport", nativeId));
+      };
+      void invoke("ai_http_stream", {
+        requestId: nativeId,
+        url,
+        method,
+        headers,
+        body,
+        allowPrivateNetwork: opts.allowPrivateNetwork === true,
+        timeoutPolicy: opts.selfHosted ? "self-hosted" : "legacy",
+        onEvent: channel,
+      }).then(
+        () => {
+          nativeSettled = true;
+          if (terminal) settle();
+          else
+            deliveryTimer = setTimeout(
+              () => settle(new Error("Missing terminal event")),
+              5000,
+            );
+        },
+        async (error) => {
+          // Invocation failure is not proof of a drained native request.
+          if (!cancelPromise)
+            cancelPromise = invoke("ai_http_cancel", {
+              requestId: nativeId,
+            }).catch(() => undefined);
+          await cancelPromise;
+          nativeSettled = true;
+          settle(error);
+        },
+      );
     });
-  });
-}
-
-function makeAbortError(): DOMException {
-  return new DOMException("Request aborted", "AbortError");
+  } catch (error) {
+    if (nativeId && !nativeSettled) {
+      cancel();
+      await cancelPromise;
+    }
+    attempt.settle();
+    signal?.removeEventListener("abort", cancel);
+    throw error instanceof InferenceTransportError
+      ? error
+      : new InferenceTransportError("native-transport", nativeId);
+  }
 }

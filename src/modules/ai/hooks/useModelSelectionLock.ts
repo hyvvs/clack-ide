@@ -1,4 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react";
+import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
 import {
   chats,
   isModelSelectionLocked,
@@ -7,6 +8,7 @@ import {
 
 export function useModelSelectionLock(sessionId?: string): boolean {
   const targetId = useChatStore((state) => sessionId ?? state.activeSessionId);
+  const inference = useInferenceLifecycle(targetId);
   const locked = useChatStore((state) =>
     isModelSelectionLocked(targetId, state),
   );
@@ -22,5 +24,5 @@ export function useModelSelectionLock(sessionId?: string): boolean {
   );
   // Stop marks the run cancelled before the SDK finishes draining its request.
   const requestBusy = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  return locked || requestBusy;
+  return locked || requestBusy || inference !== null;
 }

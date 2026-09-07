@@ -1,6 +1,6 @@
 # Clack Self-Hosted Inference Plan
 
-Status: A1-A3 complete; D1 and all later implementation checkpoints pending
+Status: A1-A3 and D1 complete; E1 and all later implementation checkpoints pending
 Audit date: 2026-09-06
 Audited baseline: 5415e5d9d34ced7b32fe10095275b161ca6b4f2a
 Baseline checkpoint: fix(ai): harden in-chat model switching
@@ -588,7 +588,7 @@ roadmap deliverables, not silently excluded from completion.
 | 1 | A1 | Endpoint/profile identity, evidence and override persistence | Complete | `feat(ai): add self-hosted endpoint profiles`; [implementation record](#a1-implementation-record) |
 | 2 | A2 | Bounded authenticated backend handshakes | Complete | `feat(ai): probe self-hosted inference endpoints`; [implementation record](#a2-implementation-record) |
 | 3 | A3 | Add-server UX, endpoint-model bindings, capability routing | Complete | `feat(ai): add self-hosted server setup`; [implementation record](#a3-implementation-record) |
-| 4 | D1 | Native cancellation, request lifecycle, truthful timed states | Pending | None |
+| 4 | D1 | Native cancellation, request lifecycle, truthful timed states | Complete | `fix(ai): harden inference request lifecycle`; [implementation record](#d1-implementation-record) |
 | 5 | E1 | Shared inference admission and PeerTask integration | Pending | None |
 | 6 | B1 | Actual context budgets and shared request preflight | Pending | None |
 | 7 | C1 | Structured rolling memory and automatic compaction | Pending | None |
@@ -1011,6 +1011,128 @@ Use fake timers and native local-server faults, including no chunks after
 headers. Verify Stop and model locks throughout drainage. Rollback must never
 leave an admission implementation depending on removed cancellation signals.
 
+### D1 implementation record
+
+Commit: the checkpoint commit containing this record, titled
+`fix(ai): harden inference request lifecycle`, after A3 `48cba84`. This avoids
+a self-referential commit hash. Only D1 is implemented here, not E1 or D2/D3.
+
+Request identity and cancellation:
+
+- Native `net/inference` owns the request registry. `ai_http_open` reserves a
+  monotonically unique process-local attempt ID; `ai_http_stream` starts its
+  single lease; `ai_http_cancel` signals that exact ID and waits for lease
+  destruction. Reservations close the cancel-before-registration race, expire
+  after 30 seconds if unused, and cannot be reused. Registry entries are scoped
+  to the invoking native window, not a chat name, model ID or component mount.
+- At most 128 native reservations/requests prevent unbounded registry growth.
+  This is a defensive cap, NOT endpoint capacity scheduling. E1 remains pending.
+- Cancellation selects against DNS waiting, HTTP send/header waiting and body
+  streaming. Lease destruction removes the registry entry and acknowledges
+  drainage before the single settled event. Cancel is idempotent, and stale
+  IDs cannot stop newer requests. Native window destruction cancels only its
+  requests; app exit/state destruction signals all remaining requests.
+- Frontend `inferenceLifecycle` is an ephemeral per-attempt observable registry,
+  not another persistent session ledger. It binds local/native attempt IDs to
+  the captured logical session/run. Proxy handlers guard identity and stopped
+  generations, ignore post-terminal events, and await both native completion
+  and ordered terminal delivery before releasing controls. A missing terminal
+  event after native completion becomes a transport error after five seconds.
+- Stop, AbortSignal and stream-consumer cancellation send native cancellation.
+  Model switching, new sends and automatic continuation remain blocked during
+  drainage. Late Stop cleanup cannot overwrite a newer run. Other idle chats
+  remain usable. Closing/minimizing an AI pane does not cancel background work.
+- Logical runs may span multiple attempts and tools. Completed HTTP attempts
+  do not remain active during local tool execution or approval waits. Read-only
+  built-in subagents inherit session ownership and the tool's abort signal.
+  Existing PeerTask orchestration and approval/permission semantics are retained.
+
+Timeout policy and truthful UI:
+
+- Self-hosted defaults: DNS/connect budget **10 seconds**, first meaningful
+  output **120 seconds** from attempt start (including header wait), stream
+  idle **60 seconds** from last meaningful progress, overall **600 seconds**.
+  The earliest applicable deadline wins; cancellation wins a simultaneous
+  ready timeout/completion race. There are no infinite waits in native HTTP.
+- The generic status is Connecting, Waiting for server, Generating or Stopping,
+  with captured model/endpoint labels where available. Terminal outcomes are
+  completed, request cancelled, timed out, disconnected or failed. Structured
+  errors distinguish connect/first-output/idle/overall timeouts, DNS, TLS,
+  connection failure, disconnect, cancellation and provider rejection.
+- No adapter currently proves an in-flight model-loading/prefill phase. Thus
+  **no 180-second loading allowance is activated**, and no Loading model or
+  Processing context claim is invented. A future evidence-backed adapter must
+  explicitly add that phase/deadline, rather than infer it from elapsed time.
+  A1 manual timeout pins are still metadata, not newly wired Advanced settings.
+- The bounded progress observer reads SSE/JSON without changing delivered bytes.
+  Text, reasoning and tool-call output count; whitespace, heartbeats, empty
+  deltas and usage/role metadata do not. Inspection buffers are capped at
+  256 KiB per line/event; larger unrecognized frames cannot keep an attempt
+  alive indefinitely. `[DONE]` closes the client body even if the peer keeps
+  its socket open. A self-hosted SSE EOF lacking a completion marker is a
+  disconnect, not successful generation.
+- Existing non-2xx bodies still reach SDK provider diagnostics. New native
+  lifecycle failures use fixed, non-secret error codes and do not initiate
+  retries or recovery. Cloud SDK adapters still using browser fetch keep
+  their existing transport/timeouts/retries. Legacy native-proxy callers keep
+  the ten-second connect timeout without the richer first/idle policy, plus
+  the new finite ten-minute request ceiling. A2 probing/cache remains separate.
+
+Files: new `src-tauri/src/modules/net/inference/{mod,registry,progress,tests}.rs`;
+native net helper/command and app lifecycle registration; frontend
+`inferenceLifecycle.ts`, `inferenceErrors.ts`, `useInferenceLifecycle.ts` and
+`proxyFetch.test.ts`; scoped integration in proxyFetch, agent, transport,
+chatStore/chatRuntime, composer, AiChat, model-selection lock and read-only
+subagent path; `selfHostedRouting.test.ts` and this ledger. No dependency,
+lockfile, Tauri permission, provider redesign, terminal or packaging change.
+
+Verification performed on Windows:
+
+- **26 new native lifecycle/progress tests passed.** Real loopback HTTP/TCP
+  faults exercise accepted connection/no headers, headers/no body, output then
+  stall, several chunks then disconnect, slow first output, ongoing progress,
+  endless heartbeat/empty events, normal completion, malformed TLS, provider
+  rejection and cancellation before headers/during body/after the final chunk.
+  Fixtures assert native completion, registry release and client socket closure.
+  Additional tests exercise resolver failure, guarded pending DNS/connect
+  cancellation, deadline races, scoped reservations, caps and shutdown cleanup.
+- **21 new proxy tests and five new runtime tests**, plus updated actual A3
+  routing fixtures; focused transport/routing/model-switch/error/retry run:
+  **75 passed in five files**. Tests cover delayed native acknowledgement and
+  channel delivery, pre-dispatch cancellation, unique attempts, late events,
+  per-chat isolation, Stop locks, background panes, real SDK tool/approval waits,
+  cleanup, error redaction and cloud/self-hosted history/model/auth routing.
+- `npm.cmd run check-types`: passed.
+- `npm.cmd run lint`: passed at the existing **71 warnings and two infos**.
+- `npm.cmd test`: **1,029 passed in 112 files**.
+- `npm.cmd run build`: passed; existing Vite plugin timing advisory only.
+- `cargo fmt --check`: passed.
+- `cargo clippy --all-targets --locked -- -D warnings`: passed.
+- `cargo test --locked`: **328 passed** (278 unit and 50 integration).
+- `git diff --check` and staged whitespace check: passed before commit.
+
+Limitations and protected work:
+
+- Request cancelled means Clack's controlled HTTP task/body has terminated;
+  it does **not** guarantee the remote GPU immediately stops. No backend
+  cancellation acknowledgement, remote administrative call or replay is added.
+- Portable OS DNS resolution cannot be forcibly killed. Initial inference
+  resolver work is bounded to four OS threads holding permits until return;
+  dropping the receiver stops waiting and cannot later start HTTP. These
+  detached OS calls do not hold a Tokio blocking worker/shutdown hostage.
+- No real Ollama, LM Studio, vLLM or MLX server/GPU, production TLS deployment,
+  Tailscale/LAN installation, native GUI or OS shutdown smoke was performed.
+  Local fault fixtures and existing A3 adapter tests are not hardware evidence.
+  No Linux/macOS or installer build was performed for D1.
+- The three unrelated delegation-modal TSX/CSS/script files remained
+  byte-for-byte unchanged and unstaged. Safety stashes and autonomous_tracker/
+  remained untouched. AI split panes/Dispatcher, attachments, permissions,
+  budgets and existing provider diagnostics retain their original ownership.
+
+Rollback: revert only this D1 commit before any later admission implementation
+depends on its lease/settlement boundary. Do not revert A1-A3 or unrelated work.
+Next is E1, only after a new explicit request.
+
 ### E1: Inference admission
 
 Own one per-endpoint capacity service and integration at both SDK generation
@@ -1238,16 +1360,16 @@ multi-GPU server for multi-GPU claims; otherwise explicitly Not tested.
 
 ## Continuation Instructions and Verification Record
 
-Next implementation checkpoint: D1 only, native request cancellation, lifecycle
-and truthful timeout states, after explicit implementation request.
-A1-A3 are complete; do not redo migration/probing/setup or replace the additive
+Next implementation checkpoint: E1 only, shared endpoint inference admission
+and multi-agent capacity, after explicit implementation request.
+A1-A3 and D1 are complete; do not redo migration/probing/setup/lifecycle or replace the additive
 identity model. Preserve A2's native ownership, bounded request policy, freshness
 checks, explicit private-network authorization, and no-inference handshake rule.
 Future sessions must read this plan, the current git log/status, CLACK.md,
 AI_MULTI_AGENT_BUILD_PLAN.md and AI_ATTACHMENTS.md. Confirm the model-switch
 baseline remains present; preserve changes made since this audit. Refresh API
 evidence when implementing, then record exact files/tests/commit and pending
-native checks in the ledger. Do not infer later completion from A1-A3's foundation.
+native checks in the ledger. Do not infer later completion from A1-A3/D1's foundation.
 
 Planning-only verification: source audit and primary-source API review;
 git diff --check passed. The staged documentation must also pass

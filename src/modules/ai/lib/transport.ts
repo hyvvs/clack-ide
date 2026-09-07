@@ -18,6 +18,7 @@ import {
 } from "./modelCapabilities";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
+import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 
 const PROJECT_MEMORY_MAX_BYTES = 32 * 1024;
 type MemoryCacheEntry = { content: string | null; mtime: number };
@@ -60,6 +61,7 @@ type LiveSnapshot = {
 };
 
 type Deps = {
+  getInferenceScope?: () => InferenceScope | undefined;
   getSelfHostedInference?: () => SelfHostedState;
   getKeys: () => ProviderKeys;
   toolContext: ToolContext;
@@ -146,6 +148,7 @@ export function createContextAwareTransport(deps: Deps) {
       ? injectEnvIntoLastUser(messagesWithAttachments, envBlock)
       : messagesWithAttachments;
     const result = await runAgentStream({
+      inferenceScope: deps.getInferenceScope?.(),
       selfHostedInference: hostedState,
       keys: deps.getKeys(),
       modelId: deps.getModelId(),

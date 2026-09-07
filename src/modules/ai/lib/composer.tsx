@@ -37,6 +37,7 @@ import {
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
 import { cancelRun, useChatStore } from "../store/chatStore";
+import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
 import { useSnippetsStore } from "../store/snippetsStore";
 import { resolveModelSelectionInfo } from "./savedProviderModels";
 import { useSelfHostedSnapshot } from "@/modules/ai/hooks/useSelfHostedSnapshot";
@@ -105,8 +106,12 @@ export function AiComposerProvider({
   const runState = useChatStore(
     (s) => s.sessions.find((session) => session.id === sessionId)?.run?.state,
   );
+  const inference = useInferenceLifecycle(sessionId);
   const isBusy =
-    status === "thinking" || status === "streaming" || runState === "running";
+    inference !== null ||
+    status === "thinking" ||
+    status === "streaming" ||
+    runState === "running";
   const modelId = useChatStore((state) => {
     const session = state.sessions.find(
       (candidate) => candidate.id === sessionId,

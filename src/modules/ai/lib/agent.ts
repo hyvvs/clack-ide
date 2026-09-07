@@ -27,6 +27,7 @@ import { buildTools, type ToolContext } from "../tools/tools";
 import { compactModelMessagesDetailed } from "./compact";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
+import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import {
   selfHostedTransportIdentity,
@@ -82,6 +83,7 @@ function ellipsize(s: string, max: number): string {
 }
 
 export type BuildModelOptions = {
+  inferenceScope?: InferenceScope;
   selfHosted?: boolean;
   allowPrivateNetwork?: boolean;
   modelIdOverride?: string;
@@ -123,10 +125,16 @@ export async function buildLanguageModel(
     options.selfHosted,
     options.allowPrivateNetwork,
   ]);
-  const hit = modelCache.get(cacheKey);
+  const hit = options.inferenceScope ? undefined : modelCache.get(cacheKey);
   if (hit) return hit;
 
   let built: LanguageModel;
+  const scopedLocalFetch = options.inferenceScope
+    ? createProxyFetch({
+        allowPrivateNetwork: true,
+        scope: options.inferenceScope,
+      })
+    : localProxyFetch;
   switch (provider) {
     case "openai": {
       const { createOpenAI } = await import("@ai-sdk/openai");
@@ -213,8 +221,10 @@ export async function buildLanguageModel(
         fetch: options.selfHosted
           ? createProxyFetch({
               allowPrivateNetwork: options.allowPrivateNetwork === true,
+              selfHosted: true,
+              scope: options.inferenceScope,
             })
-          : localProxyFetch,
+          : scopedLocalFetch,
       })(resolvedModelId);
       break;
     }
@@ -225,7 +235,7 @@ export async function buildLanguageModel(
       built = createOpenAICompatible({
         name: "lmstudio",
         baseURL: lmstudioURL,
-        fetch: localProxyFetch,
+        fetch: scopedLocalFetch,
       })(resolvedModelId);
       break;
     }
@@ -236,7 +246,7 @@ export async function buildLanguageModel(
       built = createOpenAICompatible({
         name: "mlx",
         baseURL: mlxURL,
-        fetch: localProxyFetch,
+        fetch: scopedLocalFetch,
       })(resolvedModelId);
       break;
     }
@@ -247,7 +257,7 @@ export async function buildLanguageModel(
       built = createOpenAICompatible({
         name: "ollama",
         baseURL: ollamaURL,
-        fetch: localProxyFetch,
+        fetch: scopedLocalFetch,
       })(resolvedModelId);
       break;
     }
@@ -256,11 +266,12 @@ export async function buildLanguageModel(
       throw new Error(`Unsupported provider: ${_exhaustive as ProviderId}`);
     }
   }
-  modelCache.set(cacheKey, built);
+  if (!options.inferenceScope) modelCache.set(cacheKey, built);
   return built;
 }
 
 export type LocalProviderConfig = {
+  inferenceScope?: InferenceScope;
   selfHostedInference?: SelfHostedState;
   lmstudioBaseURL?: string;
   lmstudioModelId?: string;
@@ -292,6 +303,7 @@ export function buildConfiguredLanguageModel(
       hosted.transportModelId,
       {
         selfHosted: true,
+        inferenceScope: local.inferenceScope,
         openaiCompatibleBaseURL: hosted.endpointBaseURL,
         allowPrivateNetwork: hosted.selfHosted.allowPrivateNetwork,
       },
@@ -306,6 +318,7 @@ export function buildConfiguredLanguageModel(
       captured.transportModelId,
       {
         lmstudioBaseURL: local.lmstudioBaseURL,
+        inferenceScope: local.inferenceScope,
         mlxBaseURL: local.mlxBaseURL,
         ollamaBaseURL: local.ollamaBaseURL,
         openaiCompatibleBaseURL:
@@ -330,6 +343,7 @@ export function buildConfiguredLanguageModel(
       target.transportModelId,
       {
         lmstudioBaseURL: local.lmstudioBaseURL,
+        inferenceScope: local.inferenceScope,
         mlxBaseURL: local.mlxBaseURL,
         ollamaBaseURL: local.ollamaBaseURL,
         openaiCompatibleBaseURL: local.openaiCompatibleBaseURL,
@@ -347,7 +361,10 @@ export function buildConfiguredLanguageModel(
       "openai-compatible",
       keys,
       ep.modelId.trim(),
-      { openaiCompatibleBaseURL: ep.baseURL },
+      {
+        openaiCompatibleBaseURL: ep.baseURL,
+        inferenceScope: local.inferenceScope,
+      },
       local.customEndpointKeys?.[eid],
     );
   }
@@ -390,6 +407,7 @@ export function buildConfiguredLanguageModel(
     resolvedId = local.openrouterModelId.trim();
   }
   return buildLanguageModel(m.provider, keys, resolvedId, {
+    inferenceScope: local.inferenceScope,
     lmstudioBaseURL: local.lmstudioBaseURL,
     mlxBaseURL: local.mlxBaseURL,
     ollamaBaseURL: local.ollamaBaseURL,
@@ -464,6 +482,7 @@ const EMPTY_USAGE: AgentUsage = {
 };
 
 export type RunAgentOptions = {
+  inferenceScope?: InferenceScope;
   selfHostedInference?: SelfHostedState;
   keys: ProviderKeys;
   modelId?: string;
@@ -505,6 +524,7 @@ export type RunAgentOptions = {
 export async function runAgentStream(opts: RunAgentOptions) {
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
   const baseModel = await buildConfiguredLanguageModel(modelId, opts.keys, {
+    inferenceScope: opts.inferenceScope,
     selfHostedInference: opts.selfHostedInference,
     lmstudioBaseURL: opts.lmstudioBaseURL,
     lmstudioModelId: opts.lmstudioModelId,

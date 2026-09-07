@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UIMessage } from "ai";
+import { tool } from "ai";
+import { z } from "zod";
+const toolFixture = vi.hoisted(() => ({ tools: {} as import("ai").ToolSet }));
 
 vi.mock("@/modules/settings/store", async (original) => ({
   ...(await original<typeof import("@/modules/settings/store")>()),
@@ -18,7 +21,9 @@ vi.mock("@/modules/ai/lib/todos", async (original) => ({
   loadTodos: vi.fn().mockResolvedValue([]),
   saveTodos: vi.fn(),
 }));
-vi.mock("@/modules/ai/tools/tools", () => ({ buildTools: () => ({}) }));
+vi.mock("@/modules/ai/tools/tools", () => ({
+  buildTools: () => toolFixture.tools,
+}));
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...(await original<typeof import("@tauri-apps/api/core")>()),
   invoke: vi.fn(),
@@ -52,16 +57,24 @@ import {
   seedMessages,
   useChatStore,
   hasKeyForModel,
+  cancelRun,
+  isModelSelectionLocked,
+  inferenceScopeForSession,
 } from "@/modules/ai/store/chatStore";
 import {
   getOrCreateChat,
   sendMessageToSession,
+  shouldAutomaticallySendSession,
 } from "@/modules/ai/store/chatRuntime";
 import { prepareModelSwitch } from "@/modules/ai/store/modelSwitch";
 import { buildConfiguredLanguageModel } from "@/modules/ai/lib/agent";
 import * as attachmentStore from "@/modules/ai/lib/attachmentStore";
 import { toAttachmentMessagePart } from "@/modules/ai/lib/attachmentMessages";
 import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
+import {
+  beginInference,
+  sessionInference,
+} from "@/modules/ai/lib/inferenceLifecycle";
 
 const initialChat = useChatStore.getState();
 const initialPrefs = usePreferencesStore.getState();
@@ -110,6 +123,7 @@ type Outgoing = {
 };
 const requests: Outgoing[] = [];
 let snapshot: ProbeSnapshot | null = null;
+let firstReply: string | null = null;
 
 function response(model: string) {
   return `data: ${JSON.stringify({ id: "reply", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta: { role: "assistant", content: `Reply from ${model}` }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
@@ -137,6 +151,8 @@ beforeEach(() => {
   capturedSelfHostedRuns.clear();
   requests.length = 0;
   snapshot = null;
+  firstReply = null;
+  toolFixture.tools = {};
   usePreferencesStore.setState({
     ...initialPrefs,
     selfHostedInference: hosted,
@@ -184,8 +200,10 @@ beforeEach(() => {
   );
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "self_hosted_probe_cache") return snapshot;
+    if (command === "ai_http_open") return crypto.randomUUID();
     if (command !== "ai_http_stream") return null;
     const a = args as {
+      requestId: string;
       url: string;
       body: number[];
       headers: Record<string, string>;
@@ -201,15 +219,27 @@ beforeEach(() => {
       private: a.allowPrivateNetwork,
     });
     a.onEvent.onmessage({
+      requestId: a.requestId,
       kind: "headers",
       status: 200,
       headers: { "content-type": "text/event-stream" },
     });
     a.onEvent.onmessage({
+      requestId: a.requestId,
       kind: "chunk",
-      bytes: [...new TextEncoder().encode(response(body.model))],
+      bytes: [
+        ...new TextEncoder().encode(
+          requests.length === 1 && firstReply
+            ? firstReply
+            : response(body.model),
+        ),
+      ],
     });
-    a.onEvent.onmessage({ kind: "end" });
+    a.onEvent.onmessage({
+      requestId: a.requestId,
+      kind: "settled",
+      phase: "completed",
+    });
     return null;
   });
 });
@@ -224,6 +254,111 @@ afterEach(() => {
 });
 
 describe("self-hosted actual chat routing", () => {
+  it("a settled Stop cannot overwrite a newer logical run's status", async () => {
+    useChatStore.getState().beginRun("a-chat");
+    const attempt = beginInference(inferenceScopeForSession("a-chat"), vi.fn());
+    const stopping = cancelRun("a-chat");
+    expect(useChatStore.getState().beginRun("a-chat").ok).toBe(false);
+    attempt.settle();
+    expect(useChatStore.getState().beginRun("a-chat").ok).toBe(true);
+    await stopping;
+    expect(useChatStore.getState().sessions[0].run?.state).toBe("running");
+    expect(useChatStore.getState().runtimeBySession["a-chat"].status).toBe(
+      "thinking",
+    );
+  });
+  it("Stop drains only its native attempt, keeps model switching locked, and blocks automatic continuation", async () => {
+    useChatStore.getState().setSessionModelId("a-chat", idA, false);
+    expect(useChatStore.getState().beginRun("a-chat").ok).toBe(true);
+    const scope = inferenceScopeForSession("a-chat");
+    const abort = vi.fn();
+    const attempt = beginInference(scope, abort);
+    attempt.update("generating", "native-a");
+    const stopping = cancelRun("a-chat");
+    expect(abort).toHaveBeenCalledOnce();
+    expect(sessionInference("a-chat")?.phase).toBe("stopping");
+    expect(isModelSelectionLocked("a-chat")).toBe(true);
+    expect(isModelSelectionLocked("b-chat")).toBe(false);
+    expect((await prepareModelSwitch("a-chat", idB)).commit(true).ok).toBe(
+      false,
+    );
+    expect((await prepareModelSwitch("b-chat", idB)).commit(true).ok).toBe(
+      true,
+    );
+    expect(scope?.isCurrent()).toBe(false);
+    const approval: UIMessage[] = [
+      {
+        id: "approval",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-read_file",
+            toolCallId: "read",
+            state: "approval-responded",
+            input: {},
+            approval: { id: "approval-id", approved: false },
+          },
+        ],
+      },
+    ];
+    expect(shouldAutomaticallySendSession("a-chat", approval)).toBe(false);
+    attempt.settle();
+    await stopping;
+    expect(isModelSelectionLocked("a-chat")).toBe(false);
+    expect((await prepareModelSwitch("a-chat", idB)).commit(true).ok).toBe(
+      true,
+    );
+  });
+  it("pane close and minimize leave background attempt ownership intact", async () => {
+    useChatStore.getState().beginRun("a-chat");
+    const abort = vi.fn();
+    const attempt = beginInference(inferenceScopeForSession("a-chat"), abort);
+    useChatStore.getState().closeMini();
+    useChatStore.getState().closePanel();
+    expect(abort).not.toHaveBeenCalled();
+    expect(sessionInference("a-chat")?.scope?.sessionId).toBe("a-chat");
+    expect(sessionInference("b-chat")).toBeNull();
+    attempt.settle();
+    expect(useChatStore.getState().sessions[0].run?.state).toBe("running");
+  });
+  it.each([
+    false,
+    true,
+  ])("releases the actual request before local tool/approval wait (approval=%s)", async (approval) => {
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const execute = vi.fn(async () => {
+      await waiting;
+      return "local result";
+    });
+    toolFixture.tools = {
+      read_file: tool({
+        inputSchema: z.object({}),
+        needsApproval: approval,
+        execute,
+      }),
+    };
+    firstReply = `data: ${JSON.stringify({ id: "tool-reply", object: "chat.completion.chunk", created: 1, model: "shared-model", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "read", type: "function", function: { name: "read_file", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`;
+    useChatStore.getState().setSessionModelId("a-chat", idA, false);
+    const sending = sendMessageToSession("a-chat", { text: "Read a file" });
+    if (approval) {
+      await vi.waitFor(() =>
+        expect(JSON.stringify(getOrCreateChat("a-chat").messages)).toContain(
+          "approval-requested",
+        ),
+      );
+      expect(execute).not.toHaveBeenCalled();
+    } else await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    expect(sessionInference("a-chat")).toBeNull();
+    expect(useChatStore.getState().sessions[0].run?.state).toBe("running");
+    expect(isModelSelectionLocked("a-chat")).toBe(true);
+    if (approval) await cancelRun("a-chat");
+    release();
+    await sending;
+    expect(sessionInference("a-chat")).toBeNull();
+  });
   it("switches cloud -> private server A -> server B -> cloud with the same chat and intact history", async () => {
     const original: UIMessage[] = [
       {

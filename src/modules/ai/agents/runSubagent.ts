@@ -13,6 +13,7 @@ import { SUBAGENTS, type SubagentType } from "./registry";
 const SUBAGENT_MAX_STEPS = 12;
 
 type Args = {
+  abortSignal?: AbortSignal;
   type: SubagentType;
   prompt: string;
   keys: ProviderKeys;
@@ -29,6 +30,7 @@ type RunResult = {
 };
 
 export async function runSubagent({
+  abortSignal,
   type,
   prompt,
   keys,
@@ -57,6 +59,7 @@ export async function runSubagent({
 
   const start = Date.now();
   const result = await generateText({
+    abortSignal,
     model,
     system: def.systemPrompt,
     prompt,

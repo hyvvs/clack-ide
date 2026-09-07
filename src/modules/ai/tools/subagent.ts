@@ -2,7 +2,11 @@ import { tool } from "ai";
 import { z } from "zod";
 import { runSubagent } from "../agents/runSubagent";
 import { SUBAGENTS, type SubagentType } from "../agents/registry";
-import { useChatStore, capturedSelfHostedRuns } from "../store/chatStore";
+import {
+  useChatStore,
+  capturedSelfHostedRuns,
+  inferenceScopeForSession,
+} from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { ToolContext } from "./context";
 
@@ -29,7 +33,7 @@ Auto-executes (no approval) — subagents are read-only by design.`,
           .optional()
           .describe("Short label shown in the chat UI for the spawn card."),
       }),
-      execute: async ({ type, prompt, description }) => {
+      execute: async ({ type, prompt, description }, { abortSignal }) => {
         const sessionId = ctx.getSessionId();
         const {
           apiKeys,
@@ -47,11 +51,15 @@ Auto-executes (no approval) — subagents are read-only by design.`,
         try {
           const r = await runSubagent({
             type,
+            abortSignal,
             prompt,
             keys: captured?.keys ?? apiKeys,
             modelId: runModelId,
             toolContext: ctx,
             providerConfig: {
+              inferenceScope: sessionId
+                ? inferenceScopeForSession(sessionId)
+                : undefined,
               selfHostedInference:
                 captured?.profiles ?? preferences.selfHostedInference,
               lmstudioBaseURL: preferences.lmstudioBaseURL,
