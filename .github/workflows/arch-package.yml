@@ -43,7 +43,7 @@ jobs:
           pacman -Syu --noconfirm git
 
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_sha }}
           fetch-depth: 0
@@ -245,7 +245,7 @@ jobs:
 
     steps:
       - name: Download native Arch package
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: clack-arch-package
           path: arch-artifact
@@ -380,7 +380,7 @@ jobs:
 
     steps:
       - name: Download validated Arch package
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: clack-arch-package
           path: arch-artifact
