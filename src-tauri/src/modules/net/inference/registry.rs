@@ -22,6 +22,7 @@ pub struct Entry {
 #[derive(Default)]
 pub struct InferenceState {
     inner: Arc<Mutex<Inner>>,
+    pub(super) admission: Arc<super::admission::AdmissionState>,
 }
 
 impl InferenceState {

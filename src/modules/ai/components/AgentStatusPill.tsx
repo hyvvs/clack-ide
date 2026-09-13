@@ -1,4 +1,6 @@
 import { Spinner } from "@/components/ui/spinner";
+import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
+import { inferenceLabel } from "@/modules/ai/lib/inferenceLifecycle";
 import { cn } from "@/lib/utils";
 import { AlertCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -15,6 +17,8 @@ type Props = {
 };
 
 export function AgentStatusPill({ onClick }: Props) {
+  const sessionId = useChatStore((s) => s.activeSessionId);
+  const inference = useInferenceLifecycle(sessionId);
   const meta = useActiveAgentMeta();
   const run = useChatStore((s) => {
     const id = s.activeSessionId;
@@ -47,7 +51,7 @@ export function AgentStatusPill({ onClick }: Props) {
       title="Open AI Chat"
     >
       {icon}
-      <span className="max-w-[180px] truncate">{label}</span>
+      <span className="max-w-[180px] truncate">{inference ? inferenceLabel(inference) : label}</span>
     </button>
   );
 }

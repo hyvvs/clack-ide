@@ -5,9 +5,14 @@ import {
   type InferenceScope,
 } from "@/modules/ai/lib/inferenceLifecycle";
 import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
+import type {
+  InferenceAdmission,
+  AdmissionObservation,
+} from "@/modules/ai/lib/inferenceAdmission";
 
 /** Streaming events emitted by the Rust `ai_http_stream` command. */
 type AiStreamEvent = { requestId: string } & (
+  | { kind: "admission"; observation: AdmissionObservation }
   | { kind: "headers"; status: number; headers: Record<string, string> }
   | { kind: "chunk"; bytes: number[] }
   | { kind: "phase"; phase: InferencePhase }
@@ -55,6 +60,7 @@ async function bodyToBytes(
 }
 
 export type ProxyOptions = {
+  admission?: InferenceAdmission;
   allowPrivateNetwork?: boolean;
   selfHosted?: boolean;
   scope?: InferenceScope;
@@ -86,7 +92,11 @@ async function proxyFetchImpl(
         () => undefined,
       );
   };
-  attempt = beginInference(opts.scope, cancel);
+  attempt = beginInference(
+    opts.scope,
+    cancel,
+    opts.admission ? "awaiting-admission" : "connecting",
+  );
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
   try {
@@ -100,7 +110,10 @@ async function proxyFetchImpl(
     if (aborted) throw new InferenceTransportError("cancelled");
     nativeId = await invoke<string>("ai_http_open");
     if (!nativeId) throw new InferenceTransportError("native-transport");
-    attempt.update(aborted ? "stopping" : "connecting", nativeId);
+    attempt.update(
+      aborted ? "stopping" : opts.admission ? "awaiting-admission" : "connecting",
+      nativeId,
+    );
     if (aborted || (opts.scope && !opts.scope.isCurrent())) {
       cancel();
       await cancelPromise;
@@ -125,6 +138,9 @@ async function proxyFetchImpl(
           return;
         }
         switch (event.kind) {
+          case "admission":
+            attempt?.observe(event.observation);
+            break;
           case "phase":
             attempt?.update(event.phase, nativeId);
             break;
@@ -198,6 +214,7 @@ async function proxyFetchImpl(
         body,
         allowPrivateNetwork: opts.allowPrivateNetwork === true,
         timeoutPolicy: opts.selfHosted ? "self-hosted" : "legacy",
+        admission: opts.admission,
         onEvent: channel,
       }).then(
         () => {

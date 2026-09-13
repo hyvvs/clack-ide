@@ -1,3 +1,4 @@
+mod admission;
 mod progress;
 mod registry;
 #[cfg(test)]
@@ -37,6 +38,7 @@ impl Failure {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Phase {
+    Queued,
     Connecting,
     WaitingFirstOutput,
     Generating,
@@ -49,6 +51,9 @@ pub enum Phase {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Payload {
+    Admission {
+        observation: admission::Observation,
+    },
     Phase {
         phase: Phase,
     },
@@ -308,6 +313,53 @@ fn terminal(result: &Result<(), Failure>) -> Phase {
     }
 }
 
+async fn execute_admitted(
+    state: &InferenceState,
+    lease: &Lease,
+    request: Request,
+    limits: Timeouts,
+    admission: Option<admission::Admission>,
+    emit: &impl Fn(Payload) -> bool,
+) -> Result<(), Failure> {
+    let mut permit = if let Some(spec) = admission {
+        Some(
+            state
+                .admission
+                .acquire(lease, spec, |observation| {
+                    emit(Payload::Admission {
+                        observation: observation.clone(),
+                    }) && emit(Payload::Phase {
+                        phase: Phase::Queued,
+                    })
+                })
+                .await?,
+        )
+    } else {
+        None
+    };
+    if lease.cancelled() {
+        return Err(Failure::new("cancelled"));
+    }
+    if let Some(permit) = &mut permit {
+        permit.observation.attempt_started_at = Some(admission::now());
+        if !emit(Payload::Admission {
+            observation: permit.observation.clone(),
+        }) {
+            return Err(Failure::new("cancelled"));
+        }
+    }
+    // execute owns the HTTP client/stream. Dropping its future precedes capacity release.
+    let result = execute(lease, request, limits, emit).await;
+    if let Some(permit) = &mut permit {
+        permit.observation.settled_at = Some(admission::now());
+        emit(Payload::Admission {
+            observation: permit.observation.clone(),
+        });
+    }
+    drop(permit);
+    result
+}
+
 #[tauri::command]
 pub fn ai_http_open(
     window: tauri::WebviewWindow,
@@ -355,10 +407,15 @@ pub async fn ai_http_stream(
     body: Option<Vec<u8>>,
     allow_private_network: Option<bool>,
     timeout_policy: Option<Policy>,
+    admission: Option<admission::Admission>,
     on_event: Channel<Event>,
 ) -> Result<(), Failure> {
     let lease = state.start(window.label(), &request_id)?;
-    let result = execute(
+    if matches!(timeout_policy, Some(Policy::SelfHosted)) && admission.is_none() {
+        return Err(Failure::new("invalid-capacity"));
+    }
+    let result = execute_admitted(
+        &state,
         &lease,
         Request {
             url,
@@ -368,6 +425,7 @@ pub async fn ai_http_stream(
             allow_private: allow_private_network.unwrap_or(false),
         },
         Timeouts::for_policy(timeout_policy.unwrap_or_default()),
+        admission,
         &|payload| {
             on_event
                 .send(Event {

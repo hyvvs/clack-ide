@@ -8,6 +8,7 @@ import {
 import { useChatStore } from "../store/chatStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
 import { buildPeerTaskLineage, PeerTaskCard } from "./PeerTaskFeed";
+import { beginInference } from "@/modules/ai/lib/inferenceLifecycle";
 
 afterEach(() => {
   usePeerTaskStore.setState({ tasks: [], hydrated: false });
@@ -15,6 +16,18 @@ afterEach(() => {
 });
 
 describe("PeerTaskFeed", () => {
+  it("shows native capacity waiting without changing the durable task ledger", () => {
+    const queued = task({ status: "running", result: undefined });
+    useChatStore.setState({ sessions: [session("source", "Planning"), session("target", "Reviewer")] });
+    usePeerTaskStore.setState({ tasks: [queued] });
+    const attempt = beginInference({ sessionId: "target", runId: "run", label: "AI Server", isCurrent: () => true }, () => {});
+    attempt.update("queued");
+    const html = renderToStaticMarkup(<PeerTaskCard task={queued} viewingSessionId="source" />);
+    expect(html).toContain("Queued: AI Server at capacity");
+    expect(html).toContain("Cancel task");
+    expect(usePeerTaskStore.getState().tasks[0].status).toBe("running");
+    attempt.settle();
+  });
   it("renders the same linked result with target provenance in the source chat", () => {
     useChatStore.setState({
       sessions: [session("source", "Planning"), session("target", "Reviewer")],

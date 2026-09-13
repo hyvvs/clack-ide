@@ -1,4 +1,7 @@
+import type { AdmissionObservation } from "@/modules/ai/lib/inferenceAdmission";
 export type InferencePhase =
+  | "queued"
+  | "awaiting-admission"
   | "connecting"
   | "waiting-first-output"
   | "generating"
@@ -15,6 +18,7 @@ export type InferenceScope = {
   isCurrent: () => boolean;
 };
 export type InferenceSnapshot = {
+  admission?: AdmissionObservation;
   id: string;
   nativeId?: string;
   scope?: InferenceScope;
@@ -53,6 +57,7 @@ export function sessionInference(
 export function beginInference(
   scope: InferenceScope | undefined,
   abort: () => void,
+  initialPhase: InferencePhase = "connecting",
 ) {
   const id = crypto.randomUUID();
   let resolve!: () => void;
@@ -60,13 +65,19 @@ export function beginInference(
     resolve = r;
   });
   attempts.set(id, {
-    snapshot: { id, scope, phase: "connecting" },
+    snapshot: { id, scope, phase: initialPhase },
     abort,
     done,
     resolve,
   });
   emit();
   return {
+    observe(admission: AdmissionObservation) {
+      const attempt = attempts.get(id);
+      if (!attempt) return;
+      attempt.snapshot = { ...attempt.snapshot, admission };
+      emit();
+    },
     update(phase: InferencePhase, nativeId?: string) {
       const attempt = attempts.get(id);
       if (!attempt) return;
@@ -103,9 +114,23 @@ export async function cancelSessionInference(sessionId: string): Promise<void> {
   emit();
   await Promise.all(owned.map((a) => a.done));
 }
+export async function waitForInferenceSettlement(
+  scope: InferenceScope,
+): Promise<boolean> {
+  const owned = [...attempts.values()].filter(
+    (a) => a.snapshot.scope?.sessionId === scope.sessionId &&
+      a.snapshot.scope?.runId === scope.runId,
+  );
+  await Promise.all(owned.map((a) => a.done));
+  return owned.every((a) => a.snapshot.phase === "completed");
+}
 export function inferenceLabel(snapshot: InferenceSnapshot): string {
   const label = snapshot.scope?.label ?? "server";
   switch (snapshot.phase) {
+    case "awaiting-admission":
+      return `Waiting for ${label}...`;
+    case "queued":
+      return `Queued: ${label} at capacity`;
     case "connecting":
       return `Connecting to ${label}...`;
     case "waiting-first-output":

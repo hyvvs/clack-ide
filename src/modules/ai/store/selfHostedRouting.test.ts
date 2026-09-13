@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UIMessage } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
+import { runSubagent } from "@/modules/ai/agents/runSubagent";
+import { requestCompletion } from "@/modules/editor/lib/autocomplete/provider";
+import type { InferenceAdmission } from "@/modules/ai/lib/inferenceAdmission";
 const toolFixture = vi.hoisted(() => ({ tools: {} as import("ai").ToolSet }));
 
 vi.mock("@/modules/settings/store", async (original) => ({
@@ -115,6 +118,7 @@ hosted = saveSelfHostedModel(
 const idA = selfHostedSelectionId(hosted.profiles[0]);
 const idB = selfHostedSelectionId(hosted.profiles[1]);
 type Outgoing = {
+  admission?: InferenceAdmission;
   url: string;
   model: string;
   headers: Headers;
@@ -124,6 +128,8 @@ type Outgoing = {
 const requests: Outgoing[] = [];
 let snapshot: ProbeSnapshot | null = null;
 let firstReply: string | null = null;
+let beforeNativeSettlement: (() => Promise<void>) | undefined;
+let beforeNativeReply: ((args: { requestId: string; admission?: InferenceAdmission; onEvent: { onmessage: (e: unknown) => void } }) => Promise<void>) | undefined;
 
 function response(model: string) {
   return `data: ${JSON.stringify({ id: "reply", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta: { role: "assistant", content: `Reply from ${model}` }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
@@ -152,6 +158,8 @@ beforeEach(() => {
   requests.length = 0;
   snapshot = null;
   firstReply = null;
+  beforeNativeSettlement = undefined;
+  beforeNativeReply = undefined;
   toolFixture.tools = {};
   usePreferencesStore.setState({
     ...initialPrefs,
@@ -203,6 +211,7 @@ beforeEach(() => {
     if (command === "ai_http_open") return crypto.randomUUID();
     if (command !== "ai_http_stream") return null;
     const a = args as {
+      admission?: InferenceAdmission;
       requestId: string;
       url: string;
       body: number[];
@@ -211,7 +220,9 @@ beforeEach(() => {
       onEvent: { onmessage: (e: unknown) => void };
     };
     const body = JSON.parse(new TextDecoder().decode(Uint8Array.from(a.body)));
+    await beforeNativeReply?.(a);
     requests.push({
+      admission: a.admission,
       url: a.url,
       model: body.model,
       messages: body.messages,
@@ -222,19 +233,20 @@ beforeEach(() => {
       requestId: a.requestId,
       kind: "headers",
       status: 200,
-      headers: { "content-type": "text/event-stream" },
+      headers: { "content-type": body.stream ? "text/event-stream" : "application/json" },
     });
     a.onEvent.onmessage({
       requestId: a.requestId,
       kind: "chunk",
       bytes: [
         ...new TextEncoder().encode(
-          requests.length === 1 && firstReply
+          !body.stream ? JSON.stringify({ id: "child", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, message: { role: "assistant", content: "child complete" }, finish_reason: "stop" }] }) : requests.length === 1 && firstReply
             ? firstReply
             : response(body.model),
         ),
       ],
     });
+    await beforeNativeSettlement?.();
     a.onEvent.onmessage({
       requestId: a.requestId,
       kind: "settled",
@@ -254,6 +266,90 @@ afterEach(() => {
 });
 
 describe("self-hosted actual chat routing", () => {
+  it.each([false, true])("actual streamed tools wait for delayed native settlement (approval=%s)", async (approval) => {
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    let reachedSettlement = false;
+    beforeNativeSettlement = async () => { reachedSettlement = true; await waiting; };
+    const execute = vi.fn(async () => "file read");
+    toolFixture.tools = { read_file: tool({ inputSchema: z.object({}), needsApproval: approval, execute }) };
+    firstReply = `data: ${JSON.stringify({ id: "tool", object: "chat.completion.chunk", created: 1, model: "shared-model", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "read", type: "function", function: { name: "read_file", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`;
+    useChatStore.getState().setSessionModelId("a-chat", idA, false);
+    const sending = sendMessageToSession("a-chat", { text: "Read" });
+    await vi.waitFor(() => expect(reachedSettlement).toBe(true));
+    expect(sessionInference("a-chat")).not.toBeNull();
+    expect(execute).not.toHaveBeenCalled();
+    expect(JSON.stringify(getOrCreateChat("a-chat").messages)).not.toContain("approval-requested");
+    release();
+    await sending;
+    if (approval) {
+      expect(JSON.stringify(getOrCreateChat("a-chat").messages)).toContain("approval-requested");
+      expect(execute).not.toHaveBeenCalled();
+    } else expect(execute).toHaveBeenCalledOnce();
+    expect(sessionInference("a-chat")).toBeNull();
+  });
+  it("two chats send one stable pool identity and queue without spending model steps", async () => {
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    const ids: string[] = [];
+    beforeNativeReply = async (args) => {
+      expect(args.admission).toMatchObject({ endpointId: "a", capacity: 1 });
+      ids.push(args.requestId);
+      args.onEvent.onmessage({ requestId: args.requestId, kind: "phase", phase: "queued" });
+      await waiting;
+    };
+    useChatStore.getState().setSessionModelId("a-chat", idA, false);
+    useChatStore.getState().setSessionModelId("b-chat", idA, false);
+    const first = sendMessageToSession("a-chat", { text: "First task" });
+    const second = sendMessageToSession("b-chat", { text: "Second task" });
+    await vi.waitFor(() => expect(ids).toHaveLength(2));
+    expect(new Set(ids).size).toBe(2);
+    for (const session of useChatStore.getState().sessions) {
+      expect(sessionInference(session.id)?.phase).toBe("queued");
+      expect(session.run?.budget?.totalSteps).toBe(0);
+      expect(session.run?.budget?.continuationCount).toBe(0);
+      expect(isModelSelectionLocked(session.id)).toBe(true);
+    }
+    useChatStore.getState().closePanel();
+    expect(sessionInference("a-chat")?.phase).toBe("queued");
+    release();
+    await Promise.all([first, second]);
+    expect(requests).toHaveLength(2);
+    expect(sessionInference("a-chat")).toBeNull();
+    expect(sessionInference("b-chat")).toBeNull();
+  });
+  it("actual streamText parent / generateText subagent / next step each enroll once after settlement", async () => {
+    const child = vi.fn(async () => {
+      expect(sessionInference("a-chat")).toBeNull();
+      return runSubagent({
+        type: "explore", prompt: "Inspect", keys: useChatStore.getState().apiKeys, modelId: idA,
+        providerConfig: { selfHostedInference: hosted, customEndpointKeys: { a: "a-key" }, inferenceScope: inferenceScopeForSession("a-chat") },
+        toolContext: {
+          getCwd: () => null, getWorkspaceRoot: () => null,
+          getTerminalContext: () => null, isActiveTerminalPrivate: () => true,
+          injectIntoActivePty: () => false, openPreview: () => false,
+          spawnAgent: () => null, readAgentOutput: () => null,
+          readCache: new Map(), getSessionId: () => "a-chat", getAgentId: () => "builtin:coder",
+        },
+      });
+    });
+    toolFixture.tools = { run_subagent: tool({ inputSchema: z.object({}), execute: child }) };
+    firstReply = `data: ${JSON.stringify({ id: "parent", object: "chat.completion.chunk", created: 1, model: "shared-model", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "child", type: "function", function: { name: "run_subagent", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`;
+    useChatStore.getState().setSessionModelId("a-chat", idA, false);
+    await sendMessageToSession("a-chat", { text: "Ask the explorer" });
+    expect(getOrCreateChat("a-chat").error).toBeUndefined();
+    expect(child).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(3);
+    for (const request of requests) expect(request.admission).toEqual({ endpointId: "a", profileId: hosted.profiles[0].id, capacity: 1 });
+    expect(sessionInference("a-chat")).toBeNull();
+  });
+  it("autocomplete's generateText helper shares the legacy endpoint identity", async () => {
+    const result = await requestCompletion({ prefix: "const x =", suffix: ";", language: "typescript", filename: "a.ts" }, {
+      provider: "lmstudio", modelId: "coder", apiKey: null, lmstudioBaseURL: "http://localhost:1234/v1",
+    }, new AbortController().signal);
+    expect(result).toBe("child complete");
+    expect(requests[0].admission).toEqual({ endpointId: "legacy:lmstudio", profileId: "coder", capacity: 1 });
+  });
   it("a settled Stop cannot overwrite a newer logical run's status", async () => {
     useChatStore.getState().beginRun("a-chat");
     const attempt = beginInference(inferenceScopeForSession("a-chat"), vi.fn());

@@ -64,6 +64,8 @@ import { usePeerTaskStore } from "../store/peerTaskStore";
 import { native } from "./native";
 import { clearWorkspaceWriteLeasesForTests } from "./workspaceWriteLease";
 import type { AttachmentMessageReference } from "./attachmentMessages";
+import { beginInference, sessionInference } from "@/modules/ai/lib/inferenceLifecycle";
+import { selectDispatchablePeerTaskIds, recoverPeerTaskLedger } from "@/modules/ai/lib/peerTaskDependencies";
 
 const SOURCE = "chat-source";
 const TARGET = "chat-target";
@@ -114,6 +116,59 @@ afterEach(() => {
 });
 
 describe("peer task coordination", () => {
+  it("dependency-ready tasks retain global limits while waiting for native admission", async () => {
+    const completed = task({ id: "prerequisite", status: "completed" });
+    const ready = task({ id: "ready", dependsOn: [completed.id] });
+    usePeerTaskStore.setState({ tasks: [completed, ready] });
+    let finish!: () => void;
+    const waiting = new Promise<void>((resolve) => { finish = resolve; });
+    vi.mocked(sendMessageToSession).mockImplementationOnce(async () => {
+      const attempt = beginInference({ sessionId: TARGET, runId: "peer-run", label: "AI Server", isCurrent: () => true }, () => {});
+      attempt.update("queued");
+      await waiting;
+      attempt.update("completed");
+      attempt.settle();
+    });
+    const dispatch = dispatchPeerTask(ready.id);
+    await vi.waitFor(() => expect(sessionInference(TARGET)?.phase).toBe("queued"));
+    expect(usePeerTaskStore.getState().tasks.find((t) => t.id === ready.id)?.status).toBe("running");
+    const otherRunning = Array.from({ length: 7 }, (_, i) => task({ id: `run-${i}`, targetSessionId: `target-${i}`, status: "running" }));
+    const candidate = task({ id: "candidate", targetSessionId: "fresh" });
+    expect(selectDispatchablePeerTaskIds([...usePeerTaskStore.getState().tasks, ...otherRunning, candidate], new Map())).toEqual([]);
+    finish();
+    await dispatch;
+    expect(usePeerTaskStore.getState().tasks.find((t) => t.id === ready.id)?.status).toBe("completed");
+    expect(selectDispatchablePeerTaskIds([...usePeerTaskStore.getState().tasks, ...otherRunning, candidate], new Map())).toEqual(["candidate"]);
+  });
+  it("cancelling a capacity-waiting PeerTask drains its attempt and never dispatches it again", async () => {
+    const running = task({ id: "native-queued", status: "running" });
+    usePeerTaskStore.setState({ tasks: [running] });
+    chats.set(TARGET, { stop: vi.fn().mockResolvedValue(undefined), messages: [] } as unknown as Chat<UIMessage>);
+    useChatStore.setState((state) => ({ sessions: state.sessions.map((s) => s.id === TARGET ? { ...s, run: { state: "running", startedAt: 1, peerTaskId: running.id } } : s) }));
+    const abort = vi.fn();
+    const attempt = beginInference({ sessionId: TARGET, runId: "peer-run", isCurrent: () => true }, abort);
+    attempt.update("queued");
+    const cancelling = cancelPeerTask(running.id);
+    await vi.waitFor(() => expect(abort).toHaveBeenCalledOnce());
+    expect(sessionInference(TARGET)?.phase).toBe("stopping");
+    attempt.update("cancelled");
+    attempt.settle();
+    expect((await cancelling).ok).toBe(true);
+    await dispatchPeerTask(running.id);
+    expect(sendMessageToSession).not.toHaveBeenCalled();
+    expect(sessionInference(TARGET)).toBeNull();
+  });
+  it("restart preserves durable eligible work, interrupts admitted logical runs and does not persist native slots", () => {
+    const recovered = recoverPeerTaskLedger([
+      task({ id: "running", status: "running" }),
+      task({ id: "completed", status: "completed" }),
+      task({ id: "eligible", status: "waiting", dependsOn: ["completed"], targetSessionId: "fresh" }),
+    ], 99);
+    expect(recovered.find((t) => t.id === "running")?.status).toBe("failed");
+    expect(selectDispatchablePeerTaskIds(recovered, new Map())).toEqual(["eligible"]);
+    expect(JSON.stringify(recovered)).not.toContain("admittedAt");
+    expect(JSON.stringify(recovered)).not.toContain("capacity");
+  });
   it("rejects new peer work until startup recovery is ready", async () => {
     usePeerTaskStore.setState({ recoveryReady: false });
 

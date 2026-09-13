@@ -1,6 +1,6 @@
 # Clack Self-Hosted Inference Plan
 
-Status: A1-A3 and D1 complete; E1 and all later implementation checkpoints pending
+Status: A1-A3, D1 and E1 complete; B1 and all later implementation checkpoints pending
 Audit date: 2026-09-06
 Audited baseline: 5415e5d9d34ced7b32fe10095275b161ca6b4f2a
 Baseline checkpoint: fix(ai): harden in-chat model switching
@@ -589,7 +589,7 @@ roadmap deliverables, not silently excluded from completion.
 | 2 | A2 | Bounded authenticated backend handshakes | Complete | `feat(ai): probe self-hosted inference endpoints`; [implementation record](#a2-implementation-record) |
 | 3 | A3 | Add-server UX, endpoint-model bindings, capability routing | Complete | `feat(ai): add self-hosted server setup`; [implementation record](#a3-implementation-record) |
 | 4 | D1 | Native cancellation, request lifecycle, truthful timed states | Complete | `fix(ai): harden inference request lifecycle`; [implementation record](#d1-implementation-record) |
-| 5 | E1 | Shared inference admission and PeerTask integration | Pending | None |
+| 5 | E1 | Shared inference admission and PeerTask integration | Complete | `feat(ai): add endpoint inference capacity`; [implementation record](#e1-implementation-record) |
 | 6 | B1 | Actual context budgets and shared request preflight | Pending | None |
 | 7 | C1 | Structured rolling memory and automatic compaction | Pending | None |
 | 8 | C2 | Optimize and switch integration | Pending | None |
@@ -1145,6 +1145,140 @@ simultaneous split panes/windows cannot race admission. Include write-lease
 ordering, restart and endpoint aliases. Revert E1 without changing task IDs or
 deleting ledger entries; dependent automation must first be disabled/reverted.
 
+### E1 Implementation Record
+
+Complete, 2026-09-13, based on `aa7e125`. Commit title:
+`feat(ai): add endpoint inference capacity`. This record is included in that
+commit; use the title and E1-only diff as its non-self-referential evidence.
+
+**Ownership and bounds**
+
+- One native `AdmissionState` belongs to D1's managed `InferenceState`, shared
+  by all webviews in this Clack process. No React queue, second PeerTask ledger,
+  background scheduler task, persistent slot ownership, or cross-process claim.
+- At most 128 registered entries, also subject to D1's existing total request
+  bound. FIFO order is native registration order within each stable endpoint
+  ID. Queue cancellation, dropped futures, errors and window closure remove
+  entries through owned RAII guards. Duplicate acquisition cannot free the
+  original owner's slot; unique D1 request IDs prevent stale release.
+- Self-hosted default is one. Effective A1 `concurrentGenerations` manual pins
+  win over valid, configuration-current recommendations; otherwise use one.
+  All models/instances of an endpoint share that ceiling. Multiple pins (or,
+  without pins, multiple recommendations) use their minimum, not their sum.
+  Missing model-specific values do not negate another profile's explicit value.
+- Valid capacity is an integer 1-8, consistent with the existing PeerTask
+  running limit. Oversized historical values remain stored but cannot be used
+  for admission. New oversized overrides/recommendations are rejected. No
+  calibration or capacity-control UI was added; the A1 setting APIs are used.
+- A run retains its captured configuration. Concurrent captured policies for
+  the same endpoint use the lower registered ceiling until those attempts
+  drain, rather than allowing one window to raise another's bound. Lowering a
+  ceiling does not terminate active requests; new work waits. No live retuning.
+- Alias or address changes retain the same stable pool ID. Address changes
+  invalidate automatic evidence through A1; manual pins survive. Distinct
+  configured IDs are not merged by URL, IP, DNS, model name or backend hint.
+  Legacy provider fields use their existing `legacy:<provider>` migration ID;
+  legacy custom endpoints use their custom endpoint ID.
+
+**Attempt boundaries and generation inventory**
+
+- `buildLanguageModel` / `buildConfiguredLanguageModel` capture admission
+  metadata in the model's native fetch adapter. Every `ai_http_stream` fetch
+  owns one D1 ID and one native queue entry, whether invoked by `streamText`
+  or `generateText`. Native self-hosted-policy requests require admission data.
+- Covered callers: normal chat transport, PeerTask `sendMessageToSession`,
+  `runSubagent`, the callable editor autocomplete helper, and Source Control
+  commit-message generation including its repair request. Future generation
+  helpers can use the same configured builder. Direct cloud SDK adapters remain
+  outside admission; no global cloud serialization or added retry loop.
+- Acquire inside native transport immediately before D1's HTTP execution,
+  after request preparation. D1 connect/first-output/idle/overall deadlines
+  begin only there, never while waiting in the queue. Queueing does not add a
+  model step, continuation or failed tool call. Existing logical limits remain.
+- Release after the HTTP execution future has returned or been dropped, with
+  its client/body stream gone. The permit drops before the D1 lease announces
+  settlement. Stop only signals cancellation; it cannot release an active
+  permit while native transport is draining. Each SDK retry is a new admitted
+  fetch; no slot is retained during backoff and retry budgets are unchanged.
+- Streamed tools' approval checks wait for their scoped native attempt's
+  successful settlement. Local tools, human approval waits, workspace-write
+  lease waits, and same-endpoint child/subagent waits hold no inference slot.
+  The next model step reacquires normally. Existing write-lease ownership and
+  permission checks were not changed or bypassed.
+
+**PeerTask, presentation and recovery**
+
+- Existing dependencies, eight running / 32 active task bounds, root/hop
+  limits, dispatch claims, cancellation and aggregation remain authoritative.
+  An already-dispatched PeerTask retains its durable logical `running` status
+  while the transient inference snapshot reports `Queued: <server> at capacity`.
+  This preserves task limits without claiming that logical running means GPU
+  inference. The task card and activity surfaces use the transient status;
+  the local-agent indicator reports waiting, not working, during admission.
+- Chat, status pill, session list and delegation activity share D1 snapshots.
+  Waiting for admission is distinct from Connecting/Waiting/Generating. Labels
+  are bounded/truncated with full titles. Closing a pane leaves its background
+  request owned by the native runtime; closing its webview uses D1 cleanup.
+- Durable tasks not yet dispatched survive/reconcile through existing startup
+  recovery and then re-enter admission. A process restart interrupts already
+  started logical runs, including ones awaiting native admission, rather than
+  replaying their requests. Fresh native state starts empty. No new schema.
+- Admission events expose endpoint/profile identity, effective capacity,
+  queue-enter/admission/attempt-start/settlement timestamps to the lifecycle
+  observer. No request bodies, prompts, URLs or credentials are added to these
+  observations. No performance samples are persisted and no tuning occurs.
+
+**Evidence and verification**
+
+- 19 new Rust tests; 45 focused native admission/lifecycle tests pass.
+  Real loopback HTTP servers received five requests from distinct native window
+  owners. Observed maximum simultaneous requests: exactly 1 at capacity 1,
+  exactly 2 at capacity 2. Remaining requests were queued and subsequently
+  completed. This exercises production `execute_admitted`, not UI counters.
+- Native coverage includes FIFO, shared models, independent endpoints,
+  cloud bypass, bounded/invalid admission, duplicate IDs, cancellation races,
+  dropped waiters, restart, conservative conflicting policies and timestamps.
+  A queued request waits longer than all fixture transport budgets and still
+  succeeds once admitted. Existing first/idle/overall/provider/disconnect
+  fault fixtures now run through admission and prove a successor can acquire.
+- 34 new frontend tests; focused admission, lifecycle, actual routing, PeerTask,
+  cancellation, aggregation, restart and write-lease selection: 194 tests in
+  11 files. Actual SDK tests exercise parent streamText -> child generateText
+  -> parent next step, autocomplete, same-endpoint chats, queue/run-budget
+  locks, delayed native settlement before approval/tool execution, and retries.
+  PeerTask presentation tests use rendered React markup, not GUI screenshots.
+- Full frontend suite: 1,063 tests in 114 files. Type check, production frontend
+  build, Rust formatting, strict Clippy, and working/staged whitespace checks
+  pass. Lint remains at 71 warnings and two informational diagnostics. Full
+  Rust suite: 347 tests (297 unit + 25 filesystem + 25 Git integration).
+- Protected delegation files are byte-for-byte unchanged and unstaged:
+  `PeerTaskDialog.tsx`, `PeerTaskDialog.css`, `scripts/check-delegation-dialog.mjs`.
+  Safety stashes and `autonomous_tracker/` were not modified.
+
+**Files and limitations**
+
+Native changes are under `src-tauri/src/modules/net/inference/`: admission
+core/tests plus registry, execution and lifecycle fixture integration.
+Frontend changes are the AI admission resolver, profile capacity validation,
+model builder, proxy/lifecycle, tool-start gate, compact activity labels and
+their tests; autocomplete and Source Control pass the existing profile settings
+into that shared builder. No dependency, provider protocol, packaging, terminal,
+workspace permission, task persistence or attachment format changes.
+
+This schedules only requests from this Clack process. It cannot account for
+other applications or guarantee that a server stopped GPU work after client
+cancellation. The hard limit is on Clack-owned in-flight HTTP attempts, not
+physical GPUs. Endpoint offline/error handling remains D1/A2's responsibility;
+there is no health polling, fallback, benchmark or automatic capacity increase.
+Native fixtures used loopback HTTP; real inference servers, GPU drainage,
+native GUI, packaging, Linux and macOS were not smoke-tested in E1.
+
+Rollback: revert this checkpoint after disabling any future dependents. Keep
+A1 profiles/pins and the existing PeerTask ledger intact; ephemeral admission
+has nothing to migrate or restore. Do not revert unrelated delegation work.
+Next is B1 only after a new explicit request. E2 calibration and all context/
+memory/continuation checkpoints remain pending.
+
 ### B1: Shared budget preflight
 
 Own a pure budget resolver and one fully assembled request-accounting path,
@@ -1360,9 +1494,9 @@ multi-GPU server for multi-GPU claims; otherwise explicitly Not tested.
 
 ## Continuation Instructions and Verification Record
 
-Next implementation checkpoint: E1 only, shared endpoint inference admission
-and multi-agent capacity, after explicit implementation request.
-A1-A3 and D1 are complete; do not redo migration/probing/setup/lifecycle or replace the additive
+Next implementation checkpoint: B1 only, actual context budgets and shared
+request preflight, after explicit implementation request.
+A1-A3, D1 and E1 are complete; do not redo migration/probing/setup/lifecycle/admission or replace the additive
 identity model. Preserve A2's native ownership, bounded request policy, freshness
 checks, explicit private-network authorization, and no-inference handshake rule.
 Future sessions must read this plan, the current git log/status, CLACK.md,

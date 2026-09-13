@@ -1,3 +1,4 @@
+import { InferenceActivityLabel } from "@/modules/ai/components/InferenceActivityLabel";
 import {
   Context,
   ContextContent,
@@ -919,6 +920,7 @@ function SessionChooser({
                     </span>
                   </span>
                   <SessionStatus
+                    sessionId={session.id}
                     state={session.run?.state}
                     approvals={approvals}
                     openElsewhere={openElsewhere}
@@ -934,10 +936,12 @@ function SessionChooser({
 }
 
 function SessionStatus({
+  sessionId,
   state,
   approvals,
   openElsewhere,
 }: {
+  sessionId: string;
   state?: SessionRunState;
   approvals: number;
   openElsewhere?: boolean;
@@ -955,7 +959,7 @@ function SessionStatus({
   if (state === "running") {
     return (
       <span className="flex items-center gap-1 text-[9.5px] text-[var(--clack-accent)]">
-        <Spinner className="size-2.5" /> Running
+        <Spinner className="size-2.5" /> <InferenceActivityLabel sessionId={sessionId} fallback="Running" />
       </span>
     );
   }
@@ -1270,7 +1274,7 @@ function DelegationActivity() {
                     {agentName}
                   </span>
                   <span className="shrink-0 text-[var(--clack-accent)]">
-                    {delegationActivityStatus(task, tasks, sessions, agents)}
+                    {task.status === "running" ? <InferenceActivityLabel sessionId={task.targetSessionId} fallback="Working" /> : delegationActivityStatus(task, tasks, sessions, agents)}
                   </span>
                 </div>
                 <div className="truncate text-[9.5px] text-[var(--clack-text-3)]">
@@ -1356,7 +1360,7 @@ function SessionRow({
       ) : session.run?.state === "running" ? (
         <span className="flex shrink-0 items-center gap-1 text-[10px] text-[var(--clack-accent)]">
           <Spinner className="size-2.5" />
-          Running
+          <InferenceActivityLabel sessionId={session.id} fallback="Running" />
         </span>
       ) : null}
       {onDelete ? (

@@ -28,6 +28,11 @@ import { compactModelMessagesDetailed } from "./compact";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
+import { gateInferenceTools } from "@/modules/ai/lib/inferenceToolGate";
+import {
+  endpointInferenceAdmission,
+  type InferenceAdmission,
+} from "@/modules/ai/lib/inferenceAdmission";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import {
   selfHostedTransportIdentity,
@@ -46,8 +51,6 @@ import {
   type ModelTransportIdentity,
   type SavedProviderModel,
 } from "./savedProviderModels";
-
-const localProxyFetch = createProxyFetch({ allowPrivateNetwork: true });
 
 const TOOL_LABELS: Record<string, (input: Record<string, unknown>) => string> =
   {
@@ -83,6 +86,8 @@ function ellipsize(s: string, max: number): string {
 }
 
 export type BuildModelOptions = {
+  admission?: InferenceAdmission;
+  selfHostedInference?: SelfHostedState;
   inferenceScope?: InferenceScope;
   selfHosted?: boolean;
   allowPrivateNetwork?: boolean;
@@ -113,6 +118,14 @@ export async function buildLanguageModel(
   const ollamaURL = options.ollamaBaseURL ?? OLLAMA_DEFAULT_BASE_URL;
   const compatURL = options.openaiCompatibleBaseURL ?? "";
   const epKey = customEndpointKey ?? "";
+  const localProvider = ["lmstudio", "mlx", "ollama", "openai-compatible"].includes(
+    provider,
+  );
+  const admission = options.admission ?? (localProvider
+    ? endpointInferenceAdmission(
+        `legacy:${provider}`, resolvedModelId, options.selfHostedInference,
+      )
+    : undefined);
   const cacheKey = JSON.stringify([
     provider,
     key,
@@ -124,17 +137,17 @@ export async function buildLanguageModel(
     compatURL,
     options.selfHosted,
     options.allowPrivateNetwork,
+    admission,
   ]);
   const hit = options.inferenceScope ? undefined : modelCache.get(cacheKey);
   if (hit) return hit;
 
   let built: LanguageModel;
-  const scopedLocalFetch = options.inferenceScope
-    ? createProxyFetch({
-        allowPrivateNetwork: true,
-        scope: options.inferenceScope,
-      })
-    : localProxyFetch;
+  const scopedLocalFetch = createProxyFetch({
+    allowPrivateNetwork: true,
+    scope: options.inferenceScope,
+    admission,
+  });
   switch (provider) {
     case "openai": {
       const { createOpenAI } = await import("@ai-sdk/openai");
@@ -223,6 +236,7 @@ export async function buildLanguageModel(
               allowPrivateNetwork: options.allowPrivateNetwork === true,
               selfHosted: true,
               scope: options.inferenceScope,
+              admission,
             })
           : scopedLocalFetch,
       })(resolvedModelId);
@@ -303,6 +317,11 @@ export function buildConfiguredLanguageModel(
       hosted.transportModelId,
       {
         selfHosted: true,
+        admission: endpointInferenceAdmission(
+          hosted.selfHosted.endpointId,
+          hosted.selfHosted.profileId,
+          local.selfHostedInference,
+        ),
         inferenceScope: local.inferenceScope,
         openaiCompatibleBaseURL: hosted.endpointBaseURL,
         allowPrivateNetwork: hosted.selfHosted.allowPrivateNetwork,
@@ -318,6 +337,14 @@ export function buildConfiguredLanguageModel(
       captured.transportModelId,
       {
         lmstudioBaseURL: local.lmstudioBaseURL,
+        admission: captured.customEndpointId
+          ? endpointInferenceAdmission(
+              captured.customEndpointId,
+              captured.transportModelId,
+              local.selfHostedInference,
+            )
+          : undefined,
+        selfHostedInference: local.selfHostedInference,
         inferenceScope: local.inferenceScope,
         mlxBaseURL: local.mlxBaseURL,
         ollamaBaseURL: local.ollamaBaseURL,
@@ -363,6 +390,9 @@ export function buildConfiguredLanguageModel(
       ep.modelId.trim(),
       {
         openaiCompatibleBaseURL: ep.baseURL,
+        admission: endpointInferenceAdmission(
+          eid, ep.modelId.trim(), local.selfHostedInference,
+        ),
         inferenceScope: local.inferenceScope,
       },
       local.customEndpointKeys?.[eid],
@@ -407,6 +437,7 @@ export function buildConfiguredLanguageModel(
     resolvedId = local.openrouterModelId.trim();
   }
   return buildLanguageModel(m.provider, keys, resolvedId, {
+    selfHostedInference: local.selfHostedInference,
     inferenceScope: local.inferenceScope,
     lmstudioBaseURL: local.lmstudioBaseURL,
     mlxBaseURL: local.mlxBaseURL,
@@ -522,9 +553,14 @@ export type RunAgentOptions = {
 };
 
 export async function runAgentStream(opts: RunAgentOptions) {
+  const inferenceScope = opts.inferenceScope ?? {
+    sessionId: crypto.randomUUID(),
+    runId: crypto.randomUUID(),
+    isCurrent: () => !opts.abortSignal?.aborted,
+  };
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
   const baseModel = await buildConfiguredLanguageModel(modelId, opts.keys, {
-    inferenceScope: opts.inferenceScope,
+    inferenceScope,
     selfHostedInference: opts.selfHostedInference,
     lmstudioBaseURL: opts.lmstudioBaseURL,
     lmstudioModelId: opts.lmstudioModelId,
@@ -621,7 +657,9 @@ export async function runAgentStream(opts: RunAgentOptions) {
   return streamText({
     model,
     messages: finalMessages,
-    tools: buildTools(opts.toolContext),
+    tools: gateInferenceTools(
+      buildTools(opts.toolContext), inferenceScope, opts.abortSignal,
+    ),
     includeRawChunks: provider === "openrouter",
     experimental_transform: openRouterErrorTransform,
     onError: provider === "openrouter" ? () => undefined : undefined,

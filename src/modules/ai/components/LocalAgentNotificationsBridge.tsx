@@ -3,6 +3,7 @@ import { useWindowFocus } from "@/modules/agents/lib/useWindowFocus";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
 import type { AgentStatus } from "@/modules/agents/lib/types";
 import { useEffect, useRef } from "react";
+import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
 import { useActiveAgentMeta, useChatStore } from "../store/chatStore";
 
 const AGENT = "Clack";
@@ -32,6 +33,10 @@ function liveStatus(s: RunStatus): AgentStatus | null {
 }
 
 export function LocalAgentNotificationsBridge() {
+  const sessionId = useChatStore((s) => s.activeSessionId);
+  const inference = useInferenceLifecycle(sessionId);
+  const capacityWaiting =
+    inference?.phase === "queued" || inference?.phase === "awaiting-admission";
   const activeRuntime = useActiveAgentMeta();
   const status = activeRuntime.status as RunStatus;
   const error = activeRuntime.error;
@@ -45,7 +50,7 @@ export function LocalAgentNotificationsBridge() {
   const prev = useRef<RunStatus>(status);
 
   useEffect(() => {
-    const nextStatus = liveStatus(status);
+    const nextStatus = capacityWaiting ? "waiting" : liveStatus(status);
     useAgentStore
       .getState()
       .setLocalAgent(nextStatus ? { agent: AGENT, status: nextStatus } : null);
@@ -78,7 +83,7 @@ export function LocalAgentNotificationsBridge() {
     } else if (status === "idle" && isBusy(was)) {
       fire("finished", "Clack finished", "Your task is ready");
     }
-  }, [status, error]);
+  }, [status, error, capacityWaiting]);
 
   return null;
 }

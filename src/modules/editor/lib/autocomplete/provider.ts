@@ -6,6 +6,7 @@ import {
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
 import { generateText } from "ai";
+import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import {
   buildUserPrompt,
   COMPLETION_SYSTEM_PROMPT,
@@ -13,6 +14,7 @@ import {
 } from "./prompt";
 
 export type CompletionDeps = {
+  selfHostedInference?: SelfHostedState;
   provider: AutocompleteProviderId;
   modelId: string;
   apiKey: string | null;
@@ -42,6 +44,7 @@ export async function requestCompletion(
   }
   const keys = { ...EMPTY_PROVIDER_KEYS, [deps.provider]: deps.apiKey };
   const model = await buildLanguageModel(deps.provider, keys, modelId, {
+    selfHostedInference: deps.selfHostedInference,
     lmstudioBaseURL: deps.lmstudioBaseURL || LMSTUDIO_DEFAULT_BASE_URL,
     mlxBaseURL: deps.mlxBaseURL,
     ollamaBaseURL: deps.ollamaBaseURL,

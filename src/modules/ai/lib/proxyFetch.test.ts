@@ -26,6 +26,7 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 type NativeArgs = {
+  admission?: { endpointId: string; profileId: string; capacity: number };
   requestId: string;
   url: string;
   method: string;
@@ -119,6 +120,52 @@ afterEach(async () => {
 });
 
 describe("native inference attempt transport", () => {
+  it("forwards admission once per attempt, shows native queue state and drains queued Stop", async () => {
+    const admission = { endpointId: "server", profileId: "model", capacity: 2 };
+    const request = createProxyFetch({ admission, scope: scope(), selfHosted: true });
+    const pending = request("http://localhost/v1/chat/completions").catch((e) => e);
+    const a = await untilAttempt();
+    expect(a.args.admission).toEqual(admission);
+    expect(current("a").phase).toBe("awaiting-admission");
+    const observation = { ...admission, queueEnteredAt: 1, admittedAt: null, attemptStartedAt: null, settledAt: null };
+    event(a, { kind: "admission", observation });
+    event(a, { kind: "phase", phase: "queued" });
+    expect(current("a").admission).toEqual(observation);
+    expect(inferenceLabel(current("a"))).toContain("at capacity");
+    const stopping = cancelSessionInference("a");
+    expect(current("a").phase).toBe("stopping");
+    a.cancel.resolve();
+    terminal(a, "cancelled");
+    expect(sessionInference("a")).not.toBeNull();
+    a.done.resolve();
+    await stopping;
+    expect((await pending).code).toBe("cancelled");
+    event(a, { kind: "phase", phase: "generating" });
+    expect(sessionInference("a")).toBeNull();
+    expect(attempts).toHaveLength(1);
+  });
+  it("HTTP retry requests enroll with distinct IDs and do not retain a slot through backoff", async () => {
+    const admission = { endpointId: "server", profileId: "model", capacity: 1 };
+    const request = createProxyFetch({ admission, scope: scope() });
+    const first = request("http://localhost/v1/chat/completions");
+    const a = await untilAttempt();
+    headers(a, 503);
+    chunk(a, '{"error":{"message":"busy"}}');
+    terminal(a, "provider-error");
+    a.done.resolve();
+    expect((await first).status).toBe(503);
+    await (await first).text();
+    expect(sessionInference("a")).toBeNull();
+    const retry = request("http://localhost/v1/chat/completions");
+    const b = await untilAttempt(1);
+    expect(b.args.requestId).not.toBe(a.args.requestId);
+    expect(b.args.admission).toEqual(admission);
+    event(a, { kind: "settled", phase: "cancelled" });
+    expect(current("a").nativeId).toBe(b.args.requestId);
+    headers(b); terminal(b); b.done.resolve();
+    await (await retry).text();
+    expect(sessionInference("a")).toBeNull();
+  });
   it("captures native identity, actual routing and lifecycle, then releases before response consumption finishes", async () => {
     const notifications = vi.fn();
     const unsubscribe = subscribeInference(notifications);

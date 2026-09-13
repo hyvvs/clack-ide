@@ -396,6 +396,7 @@ export function setProfileRecommendation(
   const parsed = evidenceSchema.parse(evidence);
   if (
     parsed.metric !== name ||
+    (name === "concurrentGenerations" && Number(parsed.value) > 8) ||
     !validSetting(name, parsed.value) ||
     !evidenceMatchesProfile(parsed, profile)
   )
@@ -414,7 +415,11 @@ export function setProfileOverride(
   value: number | boolean,
   now = Date.now(),
 ): SelfHostedState {
-  if (!validSetting(name, value)) throw new Error("Invalid profile setting");
+  if (
+    !validSetting(name, value) ||
+    (name === "concurrentGenerations" && Number(value) > 8)
+  )
+    throw new Error("Invalid profile setting");
   const profile = requireProfile(state, profileId);
   const evidence = profileEvidence(
     state,

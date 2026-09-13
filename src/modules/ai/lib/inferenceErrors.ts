@@ -5,6 +5,18 @@ export const INFERENCE_ERRORS: Record<
   string,
   { kind: AiErrorKind; message: string }
 > = {
+  "invalid-capacity": {
+    kind: "bad_request",
+    message: "Inference capacity must be an integer from 1 to 8.",
+  },
+  "admission-limit": {
+    kind: "internal",
+    message: "The inference queue is full. Wait for a request to finish.",
+  },
+  "duplicate-admission": {
+    kind: "internal",
+    message: "This inference attempt is already registered.",
+  },
   "connect-timeout": {
     kind: "timeout",
     message: "Timed out establishing the server connection (including DNS).",

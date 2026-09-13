@@ -1,4 +1,6 @@
 import { Spinner } from "@/components/ui/spinner";
+import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
+import { inferenceLabel } from "@/modules/ai/lib/inferenceLifecycle";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -157,7 +159,10 @@ export function PeerTaskCard({
   const peer = viewingSource ? target : source;
   const peerAgentName = viewingSource ? targetAgentName : sourceAgentName;
   const active = isPeerTaskActive(task);
-  const statusLabel = delegationStatusLabel(task);
+  const inference = useInferenceLifecycle(task.targetSessionId);
+  const statusLabel = task.status === "running" && inference
+    ? inferenceLabel(inference)
+    : delegationStatusLabel(task);
   const unavailableReturnedArtifactIds = new Set(
     task.recovery?.contentIssues
       ?.filter((issue) => issue.role === "returned")
@@ -240,7 +245,7 @@ export function PeerTaskCard({
         <span className="min-w-0 truncate text-[11.5px] font-semibold text-[var(--clack-text-1)]">
           {title}
         </span>
-        <span className={cn("shrink-0 text-[10px]", tone)}>{statusLabel}</span>
+        <span className={cn("min-w-0 max-w-[50%] truncate text-[10px]", tone)} title={statusLabel}>{statusLabel}</span>
         <button
           type="button"
           disabled={!peer}

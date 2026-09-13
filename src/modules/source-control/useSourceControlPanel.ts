@@ -895,6 +895,10 @@ export function useSourceControlPanel(
         chatState.apiKeys,
         {
           lmstudioBaseURL: prefs.lmstudioBaseURL,
+          selfHostedInference: prefs.selfHostedInference,
+          savedProviderModels: prefs.savedProviderModels,
+          customEndpoints: prefs.customEndpoints,
+          customEndpointKeys: chatState.customEndpointKeys,
           lmstudioModelId,
           mlxBaseURL: prefs.mlxBaseURL,
           mlxModelId,

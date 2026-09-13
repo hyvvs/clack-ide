@@ -144,26 +144,284 @@ async fn run_fault(
     let id = state.open("main").unwrap();
     let lease = state.start("main", &id).unwrap();
     let events = Mutex::new(Vec::new());
-    let result = execute(&lease, request(fixture.url), timeouts, &|p| {
-        let cancel = matches!(
-            (&p, cancel_at),
-            (Payload::Headers { .. }, Some("body")) | (Payload::Chunk { .. }, Some("chunk"))
-        );
-        events.lock().unwrap().push(p);
-        if cancel {
-            state.close_owner("main");
-        }
-        true
-    })
+    let result = execute_admitted(
+        &state,
+        &lease,
+        request(fixture.url),
+        timeouts,
+        Some(admission_spec(1)),
+        &|p| {
+            let cancel = matches!(
+                (&p, cancel_at),
+                (Payload::Headers { .. }, Some("body")) | (Payload::Chunk { .. }, Some("chunk"))
+            );
+            events.lock().unwrap().push(p);
+            if cancel {
+                state.close_owner("main");
+            }
+            true
+        },
+    )
     .await;
     drop(lease);
     assert_eq!(state.len(), 0);
+    let next_id = state.open("next-window").unwrap();
+    let next = state.start("next-window", &next_id).unwrap();
+    drop(
+        state
+            .admission
+            .acquire(&next, admission_spec(1), |_| {
+                panic!("settled attempt retained capacity")
+            })
+            .await
+            .unwrap(),
+    );
+    drop(next);
     tokio::time::timeout(Duration::from_secs(4), fixture.closed)
         .await
         .unwrap()
         .unwrap();
     fixture.thread.join().unwrap();
     (result, events.into_inner().unwrap())
+}
+
+fn admission_spec(capacity: usize) -> admission::Admission {
+    admission::Admission {
+        endpoint_id: "server".into(),
+        profile_id: "model".into(),
+        capacity,
+    }
+}
+
+async fn concurrency_fixture(capacity: usize) {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let received = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(AtomicBool::new(false));
+    let metrics = (
+        active.clone(),
+        peak.clone(),
+        received.clone(),
+        release.clone(),
+    );
+    let server = std::thread::spawn(move || {
+        let mut workers = Vec::new();
+        let end = std::time::Instant::now() + Duration::from_secs(10);
+        while workers.len() < 5 {
+            match listener.accept() {
+                Ok((mut socket, _)) => {
+                    socket.set_nonblocking(false).unwrap();
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    socket
+                        .set_write_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let (active, peak, received, release) = metrics.clone();
+                    workers.push(std::thread::spawn(move || {
+                        let mut buf = [0; 4096];
+                        let mut incoming = Vec::new();
+                        loop {
+                            let n = socket.read(&mut buf).unwrap();
+                            assert!(n > 0);
+                            incoming.extend_from_slice(&buf[..n]);
+                            assert!(incoming.len() < 65536);
+                            if incoming.windows(4).position(|w| w == b"\r\n\r\n")
+                                .is_some_and(|end| incoming.len() >= end + 6)
+                            {
+                                break;
+                            }
+                        }
+                        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(current, Ordering::SeqCst);
+                        received.fetch_add(1, Ordering::SeqCst);
+                        while !release.load(Ordering::SeqCst) {
+                            assert!(std::time::Instant::now() < end);
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+                    }));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < end);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    });
+    let state = Arc::new(InferenceState::default());
+    let mut tasks = Vec::new();
+    let queued = Arc::new(AtomicUsize::new(0));
+    for index in 0..5 {
+        let state = state.clone();
+        let url = url.clone();
+        let queued = queued.clone();
+        tasks.push(tokio::spawn(async move {
+            let owner = format!("window-{index}");
+            let id = state.open(&owner).unwrap();
+            let lease = state.start(&owner, &id).unwrap();
+            let mut timeouts = limits();
+            timeouts.first = Some(Duration::from_secs(3));
+            timeouts.overall = Duration::from_secs(5);
+            let result = execute_admitted(
+                &state,
+                &lease,
+                request(url),
+                timeouts,
+                Some(admission_spec(capacity)),
+                &|p| {
+                    if matches!(
+                        p,
+                        Payload::Phase {
+                            phase: Phase::Queued
+                        }
+                    ) {
+                        queued.fetch_add(1, Ordering::SeqCst);
+                    }
+                    true
+                },
+            )
+            .await;
+            drop(lease);
+            result.unwrap();
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while received.load(Ordering::SeqCst) < capacity
+            || queued.load(Ordering::SeqCst) < 5 - capacity
+        {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(received.load(Ordering::SeqCst), capacity);
+    assert_eq!(active.load(Ordering::SeqCst), capacity);
+    release.store(true, Ordering::SeqCst);
+    for task in tasks {
+        task.await.unwrap();
+    }
+    server.join().unwrap();
+    assert_eq!(received.load(Ordering::SeqCst), 5);
+    assert_eq!(peak.load(Ordering::SeqCst), capacity);
+    assert_eq!(state.len(), 0);
+}
+
+#[tokio::test]
+async fn native_server_observes_maximum_one_across_five_windows() {
+    concurrency_fixture(1).await;
+}
+
+#[tokio::test]
+async fn native_server_observes_maximum_two_across_five_windows() {
+    concurrency_fixture(2).await;
+}
+
+#[tokio::test]
+async fn queue_wait_does_not_spend_any_transport_deadline() {
+    let state = InferenceState::default();
+    let first = state.start("a", &state.open("a").unwrap()).unwrap();
+    let held = state
+        .admission
+        .acquire(&first, admission_spec(1), |_| panic!())
+        .await
+        .unwrap();
+    let queued = state.start("b", &state.open("b").unwrap()).unwrap();
+    let fixture = server(
+        vec![b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_vec()],
+        true,
+        false,
+    );
+    let events = Mutex::new(Vec::new());
+    let emit = |p| {
+        events.lock().unwrap().push(p);
+        true
+    };
+    let result = execute_admitted(
+        &state,
+        &queued,
+        request(fixture.url),
+        Timeouts {
+            connect: Duration::from_millis(100),
+            first: Some(Duration::from_millis(100)),
+            idle: Some(Duration::from_millis(100)),
+            overall: Duration::from_millis(150),
+        },
+        Some(admission_spec(1)),
+        &emit,
+    );
+    tokio::pin!(result);
+    assert!(futures_util::poll!(&mut result).is_pending());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(futures_util::poll!(&mut result).is_pending());
+    assert!(events.lock().unwrap().iter().all(|p| !matches!(
+        p,
+        Payload::Phase {
+            phase: Phase::Connecting | Phase::WaitingFirstOutput | Phase::Generating
+        }
+    )));
+    drop(held);
+    result.await.unwrap();
+    let observations: Vec<_> = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|p| {
+            if let Payload::Admission { observation } = p {
+                Some(observation.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let final_observation = observations.last().unwrap();
+    assert!(
+        final_observation.attempt_started_at.unwrap() >= final_observation.queue_entered_at + 150
+    );
+    assert!(final_observation.settled_at >= final_observation.attempt_started_at);
+    fixture.thread.join().unwrap();
+}
+
+#[tokio::test]
+async fn unenrolled_cloud_native_request_bypasses_busy_endpoint() {
+    let state = InferenceState::default();
+    let first = state.start("a", &state.open("a").unwrap()).unwrap();
+    let held = state
+        .admission
+        .acquire(&first, admission_spec(1), |_| panic!())
+        .await
+        .unwrap();
+    let cloud = state.start("b", &state.open("b").unwrap()).unwrap();
+    let fixture = server(
+        vec![b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_vec()],
+        true,
+        false,
+    );
+    execute_admitted(&state, &cloud, request(fixture.url), limits(), None, &|p| {
+        assert!(!matches!(
+            p,
+            Payload::Phase {
+                phase: Phase::Queued
+            }
+        ));
+        true
+    })
+    .await
+    .unwrap();
+    drop(held);
+    fixture.thread.join().unwrap();
 }
 
 #[tokio::test]
