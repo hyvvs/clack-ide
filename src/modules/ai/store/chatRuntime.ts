@@ -41,8 +41,7 @@ import {
   useChatStore,
 } from "./chatStore";
 
-function makeChat(sessionId: string): Chat<UIMessage> {
-  let pendingTerminalStreamError: unknown;
+export function sessionToolContext(sessionId: string) {
   const readCache = new Map<string, { size: number; hash: number }>();
   const owner = () =>
     useChatStore
@@ -120,6 +119,14 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       );
     },
   };
+
+  return { toolContext, owner, ownerWorkspaceRoot, foregroundMatchesOwner };
+}
+
+function makeChat(sessionId: string): Chat<UIMessage> {
+  let pendingTerminalStreamError: unknown;
+  const { toolContext, owner, ownerWorkspaceRoot, foregroundMatchesOwner } =
+    sessionToolContext(sessionId);
 
   const transport = createContextAwareTransport({
     getInferenceScope: () => inferenceScopeForSession(sessionId),
@@ -456,7 +463,10 @@ export async function sendMessageToSession(
     .sessions.find((session) => session.id === sessionId)?.run?.modelId;
   if (runModel) recordSelectedModelUse(runModel);
   try {
-    await getOrCreateChat(sessionId).sendMessage(message);
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage(message);
+    // SDK sendMessage settles after onError; a peer refusal must not become a completed task.
+    if (options?.peerTaskId && chat.error) throw chat.error;
   } catch (error) {
     recordTerminalAiFailure(sessionId, error);
     throw error;

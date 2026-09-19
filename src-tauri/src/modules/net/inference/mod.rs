@@ -51,6 +51,7 @@ pub enum Phase {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Payload {
+    Preflight {},
     Admission {
         observation: admission::Observation,
     },
@@ -340,6 +341,30 @@ async fn execute_admitted(
     if lease.cancelled() {
         return Err(Failure::new("cancelled"));
     }
+    if lease.require_preflight {
+        let mut verdict = lease.request_preflight();
+        if !emit(Payload::Preflight {}) {
+            return Err(Failure::new("cancelled"));
+        }
+        guarded(
+            lease,
+            (Instant::now() + Duration::from_secs(5), "preflight-timeout"),
+            async {
+                loop {
+                    match *verdict.borrow_and_update() {
+                        Some(true) => return Ok(()),
+                        Some(false) => return Err(Failure::new("context-preflight-rejected")),
+                        None => {}
+                    }
+                    verdict
+                        .changed()
+                        .await
+                        .map_err(|_| Failure::new("cancelled"))?;
+                }
+            },
+        )
+        .await?;
+    }
     if let Some(permit) = &mut permit {
         permit.observation.attempt_started_at = Some(admission::now());
         if !emit(Payload::Admission {
@@ -397,6 +422,16 @@ pub async fn ai_http_cancel(
 }
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
+pub fn ai_http_preflight(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, InferenceState>,
+    request_id: String,
+    approved: bool,
+) -> Result<(), Failure> {
+    state.approve_preflight(window.label(), &request_id, approved)
+}
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
 pub async fn ai_http_stream(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, InferenceState>,
@@ -408,9 +443,11 @@ pub async fn ai_http_stream(
     allow_private_network: Option<bool>,
     timeout_policy: Option<Policy>,
     admission: Option<admission::Admission>,
+    require_preflight: Option<bool>,
     on_event: Channel<Event>,
 ) -> Result<(), Failure> {
-    let lease = state.start(window.label(), &request_id)?;
+    let mut lease = state.start(window.label(), &request_id)?;
+    lease.require_preflight = require_preflight.unwrap_or(false);
     if matches!(timeout_policy, Some(Policy::SelfHosted)) && admission.is_none() {
         return Err(Failure::new("invalid-capacity"));
     }

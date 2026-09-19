@@ -258,7 +258,7 @@ describe("pre-switch context budget", () => {
   it("warns near compaction territory rather than deleting history to fit", () => {
     expect(
       check(
-        history({ type: "text", text: "x".repeat(20_000) }),
+        history({ type: "text", text: "x".repeat(15_000) }),
         "claude-sonnet-4-6",
         8000,
       ).status,

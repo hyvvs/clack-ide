@@ -10,7 +10,6 @@ import {
 import {
   DEFAULT_MODEL_ID,
   endpointIdFromCompatModel,
-  getModelContextLimit,
   isCompatModelId,
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
@@ -34,6 +33,16 @@ import {
   type InferenceAdmission,
 } from "@/modules/ai/lib/inferenceAdmission";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import {
+  createRequestPreflight,
+  preflightFetch,
+  modelBudgetLimits,
+  serializedToolSchemas,
+} from "@/modules/ai/lib/requestPreflight";
+import {
+  measureRequest,
+  resolveContextBudget,
+} from "@/modules/ai/lib/contextBudget";
 import {
   selfHostedTransportIdentity,
   selfHostedCredential,
@@ -86,6 +95,7 @@ function ellipsize(s: string, max: number): string {
 }
 
 export type BuildModelOptions = {
+  assertedContext?: number;
   admission?: InferenceAdmission;
   selfHostedInference?: SelfHostedState;
   inferenceScope?: InferenceScope;
@@ -118,14 +128,21 @@ export async function buildLanguageModel(
   const ollamaURL = options.ollamaBaseURL ?? OLLAMA_DEFAULT_BASE_URL;
   const compatURL = options.openaiCompatibleBaseURL ?? "";
   const epKey = customEndpointKey ?? "";
-  const localProvider = ["lmstudio", "mlx", "ollama", "openai-compatible"].includes(
-    provider,
-  );
-  const admission = options.admission ?? (localProvider
-    ? endpointInferenceAdmission(
-        `legacy:${provider}`, resolvedModelId, options.selfHostedInference,
-      )
-    : undefined);
+  const localProvider = [
+    "lmstudio",
+    "mlx",
+    "ollama",
+    "openai-compatible",
+  ].includes(provider);
+  const admission =
+    options.admission ??
+    (localProvider
+      ? endpointInferenceAdmission(
+          `legacy:${provider}`,
+          resolvedModelId,
+          options.selfHostedInference,
+        )
+      : undefined);
   const cacheKey = JSON.stringify([
     provider,
     key,
@@ -138,40 +155,60 @@ export async function buildLanguageModel(
     options.selfHosted,
     options.allowPrivateNetwork,
     admission,
+    options.selfHostedInference?.revision,
+    options.assertedContext,
   ]);
   const hit = options.inferenceScope ? undefined : modelCache.get(cacheKey);
   if (hit) return hit;
 
   let built: LanguageModel;
+  const preflight = createRequestPreflight({
+    modelId: resolvedModelId,
+    local: localProvider,
+    state: options.selfHostedInference,
+    admission,
+    assertedContext: options.assertedContext,
+  });
+  const cloudFetch = preflightFetch(
+    (input, init) => globalThis.fetch(input, init),
+    preflight,
+  );
   const scopedLocalFetch = createProxyFetch({
     allowPrivateNetwork: true,
     scope: options.inferenceScope,
     admission,
+    preflight,
   });
   switch (provider) {
     case "openai": {
       const { createOpenAI } = await import("@ai-sdk/openai");
-      built = createOpenAI({ apiKey: key })(resolvedModelId);
+      built = createOpenAI({ apiKey: key, fetch: cloudFetch })(resolvedModelId);
       break;
     }
     case "anthropic": {
       const { createAnthropic } = await import("@ai-sdk/anthropic");
-      built = createAnthropic({ apiKey: key })(resolvedModelId);
+      built = createAnthropic({ apiKey: key, fetch: cloudFetch })(
+        resolvedModelId,
+      );
       break;
     }
     case "google": {
       const { createGoogleGenerativeAI } = await import("@ai-sdk/google");
-      built = createGoogleGenerativeAI({ apiKey: key })(resolvedModelId);
+      built = createGoogleGenerativeAI({ apiKey: key, fetch: cloudFetch })(
+        resolvedModelId,
+      );
       break;
     }
     case "xai": {
       const { createXai } = await import("@ai-sdk/xai");
-      built = createXai({ apiKey: key })(resolvedModelId);
+      built = createXai({ apiKey: key, fetch: cloudFetch })(resolvedModelId);
       break;
     }
     case "cerebras": {
       const { createCerebras } = await import("@ai-sdk/cerebras");
-      built = createCerebras({ apiKey: key })(resolvedModelId);
+      built = createCerebras({ apiKey: key, fetch: cloudFetch })(
+        resolvedModelId,
+      );
       break;
     }
     case "deepseek": {
@@ -180,6 +217,7 @@ export async function buildLanguageModel(
       );
       built = createOpenAICompatible({
         name: "deepseek",
+        fetch: cloudFetch,
         baseURL: "https://api.deepseek.com",
         apiKey: key,
       })(resolvedModelId);
@@ -191,6 +229,7 @@ export async function buildLanguageModel(
       );
       built = createOpenAICompatible({
         name: "mistral",
+        fetch: cloudFetch,
         baseURL: "https://api.mistral.ai/v1",
         apiKey: key,
       })(resolvedModelId);
@@ -198,7 +237,7 @@ export async function buildLanguageModel(
     }
     case "groq": {
       const { createGroq } = await import("@ai-sdk/groq");
-      built = createGroq({ apiKey: key })(resolvedModelId);
+      built = createGroq({ apiKey: key, fetch: cloudFetch })(resolvedModelId);
       break;
     }
     case "openrouter": {
@@ -207,6 +246,7 @@ export async function buildLanguageModel(
       );
       built = createOpenAICompatible({
         name: "openrouter",
+        fetch: cloudFetch,
         baseURL: "https://openrouter.ai/api/v1",
         apiKey: key,
         headers: {
@@ -237,6 +277,7 @@ export async function buildLanguageModel(
               selfHosted: true,
               scope: options.inferenceScope,
               admission,
+              preflight,
             })
           : scopedLocalFetch,
       })(resolvedModelId);
@@ -280,6 +321,7 @@ export async function buildLanguageModel(
       throw new Error(`Unsupported provider: ${_exhaustive as ProviderId}`);
     }
   }
+  built = preflight.wrap(built);
   if (!options.inferenceScope) modelCache.set(cacheKey, built);
   return built;
 }
@@ -317,6 +359,7 @@ export function buildConfiguredLanguageModel(
       hosted.transportModelId,
       {
         selfHosted: true,
+        selfHostedInference: local.selfHostedInference,
         admission: endpointInferenceAdmission(
           hosted.selfHosted.endpointId,
           hosted.selfHosted.profileId,
@@ -336,6 +379,11 @@ export function buildConfiguredLanguageModel(
       keys,
       captured.transportModelId,
       {
+        assertedContext: captured.customEndpointId
+          ? local.customEndpoints?.find(
+              (ep) => ep.id === captured.customEndpointId,
+            )?.contextLimit
+          : undefined,
         lmstudioBaseURL: local.lmstudioBaseURL,
         admission: captured.customEndpointId
           ? endpointInferenceAdmission(
@@ -390,8 +438,12 @@ export function buildConfiguredLanguageModel(
       ep.modelId.trim(),
       {
         openaiCompatibleBaseURL: ep.baseURL,
+        selfHostedInference: local.selfHostedInference,
+        assertedContext: ep.contextLimit,
         admission: endpointInferenceAdmission(
-          eid, ep.modelId.trim(), local.selfHostedInference,
+          eid,
+          ep.modelId.trim(),
+          local.selfHostedInference,
         ),
         inferenceScope: local.inferenceScope,
       },
@@ -622,13 +674,21 @@ export async function runAgentStream(opts: RunAgentOptions) {
     reasoning: keepsReasoning ? "none" : "before-last-message",
     emptyMessages: "remove",
   });
-  const compatCtxOverride = isCompatModelId(modelId)
-    ? endpoints.find((e) => e.id === endpointIdFromCompatModel(modelId))
-        ?.contextLimit
-    : opts.openaiCompatibleContextLimit;
+  const tools = gateInferenceTools(
+    buildTools(opts.toolContext),
+    inferenceScope,
+    opts.abortSignal,
+  );
+  const preparationBudget = resolveContextBudget(
+    await modelBudgetLimits(baseModel),
+    measureRequest({
+      system: stableSystem + (opts.planMode ? PLAN_MODE_PROMPT : ""),
+      tools: await serializedToolSchemas(tools),
+    }),
+  );
   const compact = compactModelMessagesDetailed(
     prunedHistory,
-    getModelContextLimit(modelId, compatCtxOverride),
+    preparationBudget.working,
   );
   const compactedHistory = compact.messages;
   if (compact.compacted) {
@@ -657,9 +717,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
   return streamText({
     model,
     messages: finalMessages,
-    tools: gateInferenceTools(
-      buildTools(opts.toolContext), inferenceScope, opts.abortSignal,
-    ),
+    tools,
     includeRawChunks: provider === "openrouter",
     experimental_transform: openRouterErrorTransform,
     onError: provider === "openrouter" ? () => undefined : undefined,

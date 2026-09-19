@@ -1,6 +1,6 @@
 # Clack Self-Hosted Inference Plan
 
-Status: A1-A3, D1 and E1 complete; B1 and all later implementation checkpoints pending
+Status: A1-A3, D1, E1 and B1 complete; C1 and all later implementation checkpoints pending
 Audit date: 2026-09-06
 Audited baseline: 5415e5d9d34ced7b32fe10095275b161ca6b4f2a
 Baseline checkpoint: fix(ai): harden in-chat model switching
@@ -590,7 +590,7 @@ roadmap deliverables, not silently excluded from completion.
 | 3 | A3 | Add-server UX, endpoint-model bindings, capability routing | Complete | `feat(ai): add self-hosted server setup`; [implementation record](#a3-implementation-record) |
 | 4 | D1 | Native cancellation, request lifecycle, truthful timed states | Complete | `fix(ai): harden inference request lifecycle`; [implementation record](#d1-implementation-record) |
 | 5 | E1 | Shared inference admission and PeerTask integration | Complete | `feat(ai): add endpoint inference capacity`; [implementation record](#e1-implementation-record) |
-| 6 | B1 | Actual context budgets and shared request preflight | Pending | None |
+| 6 | B1 | Actual context budgets and shared request preflight | Complete | `feat(ai): add shared context budget preflight`; implementation record below |
 | 7 | C1 | Structured rolling memory and automatic compaction | Pending | None |
 | 8 | C2 | Optimize and switch integration | Pending | None |
 | 9 | D2 | Length continuation, stitching and tool repair safety | Pending | None |
@@ -1291,6 +1291,124 @@ content blocks before network; pinned invalid settings rejected. Test actual
 adapter max-output mapping and non-English/code estimates. Reversible runtime
 integration leaves persisted profile evidence intact.
 
+#### B1 Implementation Record (Complete)
+
+Commit: this checkpoint, `feat(ai): add shared context budget preflight`,
+following `6d7285e feat(ai): add endpoint inference capacity` on main.
+
+**Budget contract and evidence**
+
+- `contextBudget.ts` is the pure authority. `C` is fresh loaded/deployed context,
+  otherwise an explicit configured-context pin, otherwise reliable reported
+  model capacity, otherwise Clack's unverified 4096-token planning policy.
+  Known smaller advertised/theoretical/reported bounds further constrain C.
+  A2 advertised model maxima remain distinct from loaded/configured server
+  context; a 262144-token model maximum never increases a 32768-token deployment.
+- A1 per-field pins/recommendations supply working target, output reserve and
+  max output. Impossible context/working/output settings fail explicitly, not
+  by silently raising a server ceiling or rewriting a pin. Automatic configured
+  context recommendations are not promoted to deployed evidence. Old generic
+  display defaults are not reliable metadata. Manual assertions retain A1
+  semantics; stale automatic recommendations do not override current scope.
+- `O = max(actual serialized output limit, configured output reserve)`.
+  Default output is `min(2048, max(256, floor(C * 0.15)))`; caller caps and
+  valid profile max-output limits apply. A zero extra-reserve pin still gets
+  meaningful output space. API output caps applied by the installed adapter
+  are reflected in the final wire check. Separate input/output caps are distinct
+  resolver fields; the input cap does not become a combined context limit.
+- `M = max(128, ceil(0.10 * estimated input))` and
+  `B = max(0, min(workingTarget, min(C - O, inputCap) - S - T - M))`.
+  Without a separate input cap this is the roadmap formula. Negative available
+  space blocks even an empty conversation. The conversation must fit B.
+
+**Accounting and integration**
+
+- All adapters built by `buildLanguageModel` receive a per-step SDK middleware
+  output limit and a final serialized-JSON fetch preflight. This covers chat,
+  subsequent tool steps, SDK retries, logical continuation batches, actual
+  PeerTask targets and subagent `generateText`, autocomplete, and both Source
+  Control commit-message generation/repair calls. No inference path uses the
+  old generic `getModelContextLimit` to decide whether a request may be sent.
+- Measure delivered system/agent/custom/project/mode instructions, environment
+  blocks, permission-filtered tool schemas/descriptions, tool history, current
+  task/prerequisite context, and text attachment representations. PDF extraction,
+  archive manifests/selected entries and SVG source count as delivered text,
+  not as original PDF/archive/image byte sizes. Raw saved history is unchanged.
+- The deterministic text estimate uses three ASCII word characters per token,
+  punctuation individually, ASCII whitespace runs at four characters per token,
+  and conservative UTF-8 byte costs for non-ASCII characters. JSON/message
+  framing is included, plus M. This is not a matching tokenizer or a guarantee
+  of exact provider tokenization. No content is sent to a counting service.
+- Existing bounded elision now uses the shared estimator and working budget.
+  It preserves call/result IDs and the existing recent-tail policy. Only a
+  completed newer read can supersede a previous read, and an earlier mutation
+  cannot invalidate a later read. After the single existing preparation pass,
+  final wire accounting still blocks overflow; no recursive shrink/retry loop.
+- Model-switch assessment uses the same resolver/estimator, fresh cached A2
+  evidence and actual allowed tool schemas. Its notice distinguishes estimated
+  input, ceiling and working budget. Known too-small targets block; unknown
+  targets retain warning/confirmation. Attachment-reference previews use
+  delivered-representation byte upper bounds until materialization; this idle
+  preview is not an exact serialized request or a guarantee of fit. Actual send
+  always rechecks the fully materialized representation. No Optimize and switch.
+
+**Admission, errors and limits**
+
+- Optional A2 metadata refresh occurs before admission, with existing native
+  authorization/cache/freshness rules and no generation, benchmark or model load.
+  Failed metadata refresh uses only still-valid manual/reported evidence or the
+  conservative unknown policy; it does not blanket-disable local inference.
+- Native admitted attempts request a window/request-owned preflight verdict.
+  A bounded five-second gate precedes DNS/HTTP and D1 transport deadlines.
+  Revalidation compares captured endpoint configuration/model/profile/pins
+  against the authoritative native settings snapshot, rereads native cached
+  evidence, and reapplies the same arithmetic to the already-measured immutable
+  request. No metadata HTTP or repeated text transformation holds the slot.
+  Renames remain valid; changed/deleted targets or changed pins cannot send.
+  Expired loaded evidence falls back and can cause refusal after queue wait.
+- Refusal, missing acknowledgement, owner close and Stop release ownership
+  through D1/E1 cleanup. No slot remains held while tools/approvals run. PeerTask
+  dispatch propagates SDK-reported request errors instead of falsely completing.
+  Provider context-overflow diagnostics remain structured and nonretryable;
+  no E2 adjustment or automatic smaller-prompt resubmission is implemented.
+- Multimodal limitation: no reliable image/native-binary token counter is
+  implemented. These inputs are explicitly uncertain and blocked before
+  inference on all adapters, even with confirmed vision support. Base64 is never
+  counted as ordinary text or silently dropped. Use a text representation;
+  matching local/same-destination counters remain future work. Text estimates
+  and server reports can still differ from actual backend behavior.
+
+**Verification and preservation**
+
+- 81 new frontend tests; 1144 tests pass across 117 files. Focused budget,
+  request, model-switch, attachment, PeerTask, admission and write-lease run:
+  342 tests across 18 files. Actual intercepted SDK requests prove oversized
+  chat/subagent/PeerTask requests make zero inference calls, fitting requests
+  make one, and a grown tool step cannot send a second over-budget request.
+- Installed-adapter payload assertions cover all 13 provider routes: OpenAI
+  `max_output_tokens`, xAI `max_completion_tokens`, Google
+  `generationConfig.maxOutputTokens`, and Anthropic/OpenRouter/compatible/
+  Ollama/LM Studio/MLX/Groq/Cerebras/DeepSeek/Mistral `max_tokens`. Exactly one
+  output field is present. Anthropic's installed 128000-token output cap is
+  exercised against an excessive caller request before final wire accounting.
+- Three new Rust tests; 48 focused native lifecycle/admission tests and 350 full
+  Rust tests pass (300 unit, 25 filesystem, 25 git). Real loopback counters prove
+  refusal sends zero HTTP requests and an approved successor sends exactly one.
+  Wrong-window/duplicate/early verdicts, missing acknowledgements and owner
+  closure fail closed. Existing E1 concurrency/queue-deadline tests still pass.
+- `npm.cmd run check-types`, `npm.cmd run lint`, `npm.cmd test`,
+  `npm.cmd run build`, `git diff --check`, `cargo fmt --check`,
+  `cargo clippy --all-targets --locked -- -D warnings`, and
+  `cargo test --locked` pass. Lint remains 71 warnings and two infos.
+  Startup eager-import budget remains green. No new dependency or persistence
+  schema. No real GPU/server, native GUI, packaging, Linux or macOS smoke test
+  is claimed; provider mapping checks use installed adapters and fixtures.
+- Delegation-modal TSX/CSS/check script, both safety stashes and
+  `autonomous_tracker/` remain untouched and outside this commit.
+
+B1 is complete. Stop here. Next is C1 only after a new explicit request:
+structured rolling memory and automatic compaction. C1/C2/D2/E2 are not started.
+
 ### C1: Structured rolling memory
 
 Own derived session-memory revisions, bounded extraction/validation and
@@ -1494,9 +1612,9 @@ multi-GPU server for multi-GPU claims; otherwise explicitly Not tested.
 
 ## Continuation Instructions and Verification Record
 
-Next implementation checkpoint: B1 only, actual context budgets and shared
-request preflight, after explicit implementation request.
-A1-A3, D1 and E1 are complete; do not redo migration/probing/setup/lifecycle/admission or replace the additive
+Next implementation checkpoint: C1 only, structured rolling memory and automatic
+compaction, after explicit implementation request.
+A1-A3, D1, E1 and B1 are complete; do not redo migration/probing/setup/lifecycle/admission/budgeting or replace the additive
 identity model. Preserve A2's native ownership, bounded request policy, freshness
 checks, explicit private-network authorization, and no-inference handshake rule.
 Future sessions must read this plan, the current git log/status, CLACK.md,

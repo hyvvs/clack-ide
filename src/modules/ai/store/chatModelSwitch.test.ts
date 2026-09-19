@@ -51,12 +51,12 @@ const selectionA = savedProviderModelSelectionId("switch-a");
 const selectionB = savedProviderModelSelectionId("switch-b");
 const models = [
   createSavedProviderModel(
-    { providerId: "openrouter", transportModelId: "test-author/model-a" },
+    { providerId: "openrouter", transportModelId: "openai/gpt-oss-20b" },
     "switch-a",
     1,
   ),
   createSavedProviderModel(
-    { providerId: "openrouter", transportModelId: "test-author/model-b" },
+    { providerId: "openrouter", transportModelId: "claude-sonnet-4-6" },
     "switch-b",
     1,
   ),
@@ -283,9 +283,9 @@ describe("model switching in an existing chat", () => {
 
     expect(getOrCreateChat("chat-a")).toBe(chat);
     expect(outgoing.map(({ url, body }) => [url, body.model])).toEqual([
-      ["https://openrouter.ai/api/v1/chat/completions", "test-author/model-a"],
+      ["https://openrouter.ai/api/v1/chat/completions", "openai/gpt-oss-20b"],
       ["https://api.anthropic.com/v1/messages", "claude-sonnet-4-6"],
-      ["https://openrouter.ai/api/v1/chat/completions", "test-author/model-b"],
+      ["https://openrouter.ai/api/v1/chat/completions", "claude-sonnet-4-6"],
     ]);
     expect(outgoing[0].headers.get("authorization")).toBe(
       "Bearer test-key-model-switch",
@@ -368,7 +368,7 @@ describe("model switching in an existing chat", () => {
         expect.objectContaining({
           role: "assistant",
           content: expect.arrayContaining([
-            { type: "text", text: "Reply from test-author/model-a" },
+            { type: "text", text: "Reply from openai/gpt-oss-20b" },
           ]),
         }),
       ]),
@@ -392,7 +392,7 @@ describe("model switching in an existing chat", () => {
     );
   });
 
-  it("retains compatible historical image input through a confirmed model switch", async () => {
+  it("retains historical images across switching but blocks sending when their token cost is unknown", async () => {
     const png =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFf8AAAAASUVORK5CYII=";
     const bytes = new Uint8Array(Buffer.from(png, "base64"));
@@ -419,32 +419,14 @@ describe("model switching in an existing chat", () => {
     });
     const chat = getOrCreateChat("chat-a");
     await sendMessageToSession("chat-a", { text: "Inspect the earlier image" });
-    expect(chat.error).toBeUndefined();
+    expect(chat.error?.message).toContain("unknown token cost");
     useChatStore.getState().finishRun("chat-a", "completed");
     const change = await prepareModelSwitch("chat-a", "claude-opus-4-7");
     expect(change.assessment.status).toBe("warning");
     expect(change.commit(true)).toEqual({ ok: true });
     await sendMessageToSession("chat-a", { text: "Continue inspecting it" });
-    expect(chat.error).toBeUndefined();
-    expect(requests.map((r) => r.model)).toEqual([
-      "claude-sonnet-4-6",
-      "claude-opus-4-7",
-    ]);
-    for (const request of requests) {
-      expect(request.messages).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            role: "user",
-            content: expect.arrayContaining([
-              expect.objectContaining({
-                type: "image",
-                source: { type: "base64", media_type: "image/png", data: png },
-              }),
-            ]),
-          }),
-        ]),
-      );
-    }
+    expect(chat.error?.message).toContain("unknown token cost");
+    expect(requests).toHaveLength(0);
     expect(chat.messages[0]).toEqual(original[0]);
     expect(imageHistory).toEqual(original);
   });
@@ -540,7 +522,7 @@ describe("model switching in an existing chat", () => {
       useChatStore.getState().setSessionModelId("chat-a", selectionB),
     ).toBe(true);
     await sendMessageToSession("chat-a", { text: "Use the new model" });
-    expect(requests[requests.length - 1]?.model).toBe("test-author/model-b");
+    expect(requests[requests.length - 1]?.model).toBe("claude-sonnet-4-6");
   });
 
   it.each<Exclude<SessionRunState, "running">>([
@@ -562,15 +544,15 @@ describe("model switching in an existing chat", () => {
     expect(chat.error).toBeUndefined();
     expect(getOrCreateChat("chat-a")).toBe(chat);
     expect(requests.map((request) => request.model)).toEqual([
-      "test-author/model-a",
-      "test-author/model-b",
+      "openai/gpt-oss-20b",
+      "claude-sonnet-4-6",
     ]);
     expect(requests[1].messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ role: "user", content: "First message" }),
         expect.objectContaining({
           role: "assistant",
-          content: "Reply from test-author/model-a",
+          content: "Reply from openai/gpt-oss-20b",
         }),
         expect.objectContaining({ role: "user", content: "Follow-up message" }),
       ]),
@@ -579,7 +561,7 @@ describe("model switching in an existing chat", () => {
     useChatStore.getState().finishRun("chat-a", "completed");
     useChatStore.getState().setSessionModelId("chat-a", selectionA);
     await sendMessageToSession("chat-a", { text: "Back to the first model" });
-    expect(requests[2].model).toBe("test-author/model-a");
+    expect(requests[2].model).toBe("openai/gpt-oss-20b");
   });
 
   it("uses a background pane's new model instead of the foreground selection", async () => {
@@ -593,7 +575,7 @@ describe("model switching in an existing chat", () => {
 
     await sendMessageToSession("chat-a", { text: "Reply to pane A" });
 
-    expect(requests[1].model).toBe("test-author/model-b");
+    expect(requests[1].model).toBe("claude-sonnet-4-6");
     expect(useChatStore.getState().selectedModelId).toBe(selectionA);
   });
 
@@ -616,8 +598,8 @@ describe("model switching in an existing chat", () => {
     await getOrCreateChat("chat-a").sendMessage();
 
     expect(requests.map((request) => request.model)).toEqual([
-      "test-author/model-a",
-      "test-author/model-a",
+      "openai/gpt-oss-20b",
+      "openai/gpt-oss-20b",
     ]);
   });
 });

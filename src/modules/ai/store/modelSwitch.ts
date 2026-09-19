@@ -8,7 +8,10 @@ import {
   knownModelContextLimit,
   type ModelSwitchAssessment,
 } from "../lib/modelSwitchEligibility";
-import { resolveModelSelectionInfo } from "../lib/savedProviderModels";
+import {
+  resolveModelSelectionInfo,
+  resolveSavedProviderModelTarget,
+} from "../lib/savedProviderModels";
 import { loadMessages, workspaceEnvironmentFromId } from "../lib/sessions";
 import { useAgentsStore } from "./agentsStore";
 import {
@@ -21,6 +24,9 @@ import {
 import { usePlanStore } from "./planStore";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import { resolveModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
+import { resolveSelfHostedSelection } from "@/modules/ai/lib/selfHostedProfiles";
+import { profileBudgetLimits } from "@/modules/ai/lib/contextBudgetProfile";
+import { measureRequest } from "@/modules/ai/lib/contextBudget";
 
 type CommitResult = { ok: true } | { ok: false; reason: string };
 export type PreparedModelSwitch = {
@@ -166,7 +172,45 @@ export async function prepareModelSwitch(
     } catch {
       /* A deleted source model must not prevent selecting a valid target. */
     }
+    const hostedTarget = resolveSelfHostedSelection(
+      preferences.selfHostedInference,
+      targetModelId,
+    );
+    const { sessionToolContext } = await import(
+      "@/modules/ai/store/chatRuntime"
+    );
+    const { serializedToolSchemas, knownTransportContextLimit } = await import(
+      "@/modules/ai/lib/requestPreflight"
+    );
+    const { buildTools } = await import("@/modules/ai/tools/tools");
+    const savedTarget = resolveSavedProviderModelTarget(
+      targetModelId,
+      preferences.savedProviderModels,
+    );
+    const savedContext = savedTarget
+      ? knownTransportContextLimit(savedTarget.transportModelId)
+      : undefined;
+    const toolTokens = measureRequest({
+      tools: await serializedToolSchemas(
+        buildTools(sessionToolContext(sessionId ?? "").toolContext),
+      ),
+    }).tools;
+    if (!stillCurrent())
+      return unavailable(
+        "The chat or model settings changed during the check. Choose the model again.",
+      );
     const assessment = assessModelSwitch({
+      toolTokens,
+      budgetLimits:
+        hostedTarget.status === "available"
+          ? profileBudgetLimits(
+              preferences.selfHostedInference,
+              hostedTarget.profile.id,
+              probe,
+            )
+          : savedContext
+            ? { reported: savedContext }
+            : undefined,
       messages,
       targetModelId,
       contextLimit: knownModelContextLimit(

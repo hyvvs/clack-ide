@@ -17,6 +17,8 @@ pub struct Entry {
     running: std::sync::atomic::AtomicBool,
     pub cancel: watch::Sender<bool>,
     done: watch::Sender<bool>,
+    preflight: watch::Sender<Option<bool>>,
+    preflight_pending: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -51,6 +53,8 @@ impl InferenceState {
                 running: false.into(),
                 cancel: watch::channel(false).0,
                 done: watch::channel(false).0,
+                preflight: watch::channel(None).0,
+                preflight_pending: false.into(),
             }),
         );
         Ok(id)
@@ -73,7 +77,25 @@ impl InferenceState {
             id: id.into(),
             inner: self.inner.clone(),
             entry: entry.clone(),
+            require_preflight: false,
         })
+    }
+
+    pub fn approve_preflight(&self, owner: &str, id: &str, approved: bool) -> Result<(), Failure> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = inner
+            .entries
+            .get(id)
+            .filter(|e| e.owner == owner)
+            .ok_or_else(|| Failure::new("cancelled"))?;
+        if !entry
+            .preflight_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(Failure::new("invalid-request"));
+        }
+        entry.preflight.send_replace(Some(approved));
+        Ok(())
     }
 
     pub async fn cancel(&self, owner: &str, id: &str) {
@@ -144,8 +166,15 @@ pub struct Lease {
     pub id: String,
     inner: Arc<Mutex<Inner>>,
     entry: Arc<Entry>,
+    pub require_preflight: bool,
 }
 impl Lease {
+    pub fn request_preflight(&self) -> watch::Receiver<Option<bool>> {
+        self.entry
+            .preflight_pending
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.entry.preflight.subscribe()
+    }
     pub fn cancelled(&self) -> bool {
         *self.entry.cancel.borrow()
     }

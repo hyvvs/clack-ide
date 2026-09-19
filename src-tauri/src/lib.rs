@@ -275,6 +275,7 @@ pub fn run() {
             net::ai_http_request,
             net::inference::ai_http_open,
             net::inference::ai_http_cancel,
+            net::inference::ai_http_preflight,
             net::inference::ai_http_stream,
             history::history_suggest,
             history::history_commands,

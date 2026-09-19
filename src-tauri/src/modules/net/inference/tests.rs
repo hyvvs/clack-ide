@@ -836,3 +836,147 @@ fn oversized_progress_frame_is_ignored_without_unbounded_allocation() {
     assert!(!parser.feed(b"\n\n"));
     assert!(parser.feed(&delta()));
 }
+
+#[tokio::test]
+async fn preflight_refusal_makes_zero_http_calls_and_successor_sends_once() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let state = InferenceState::default();
+    let spec = || {
+        Some(admission::Admission {
+            endpoint_id: "server".into(),
+            profile_id: "model".into(),
+            capacity: 1,
+        })
+    };
+    let id = state.open("main").unwrap();
+    let mut lease = state.start("main", &id).unwrap();
+    lease.require_preflight = true;
+    let result = execute_admitted(
+        &state,
+        &lease,
+        request(url.clone()),
+        limits(),
+        spec(),
+        &|payload| {
+            if matches!(payload, Payload::Preflight {}) {
+                assert!(state.approve_preflight("other-window", &id, true).is_err());
+                state.approve_preflight("main", &id, false).unwrap();
+                assert!(state.approve_preflight("main", &id, true).is_err());
+            }
+            true
+        },
+    )
+    .await;
+    assert_eq!(result.unwrap_err().code, "context-preflight-rejected");
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    drop(lease);
+    let received = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = received.clone();
+    let worker = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut socket = loop {
+            if let Ok((socket, _)) = listener.accept() {
+                break socket;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        socket.set_nonblocking(false).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut bytes = [0; 4096];
+        assert!(socket.read(&mut bytes).unwrap() > 0);
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+            .unwrap();
+    });
+    let id = state.open("main").unwrap();
+    let mut lease = state.start("main", &id).unwrap();
+    lease.require_preflight = true;
+    execute_admitted(&state, &lease, request(url), limits(), spec(), &|payload| {
+        if matches!(payload, Payload::Preflight {}) {
+            state.approve_preflight("main", &id, true).unwrap();
+        }
+        true
+    })
+    .await
+    .unwrap();
+    worker.join().unwrap();
+    assert_eq!(received.load(std::sync::atomic::Ordering::SeqCst), 1);
+    drop(lease);
+    assert_eq!(state.len(), 0);
+}
+
+#[tokio::test]
+async fn preflight_missing_ack_times_out_without_http_and_releases_lease() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let state = InferenceState::default();
+    let id = state.open("main").unwrap();
+    let mut lease = state.start("main", &id).unwrap();
+    lease.require_preflight = true;
+    let result = execute_admitted(
+        &state,
+        &lease,
+        request(format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        )),
+        limits(),
+        None,
+        &|_| true,
+    )
+    .await;
+    assert_eq!(result.unwrap_err().code, "preflight-timeout");
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    drop(lease);
+    assert_eq!(state.len(), 0);
+}
+
+#[tokio::test]
+async fn preflight_owner_close_cancels_before_http() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let state = InferenceState::default();
+    let id = state.open("main").unwrap();
+    assert!(state.approve_preflight("main", &id, true).is_err());
+    let mut lease = state.start("main", &id).unwrap();
+    lease.require_preflight = true;
+    let result = execute_admitted(
+        &state,
+        &lease,
+        request(format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        )),
+        limits(),
+        None,
+        &|payload| {
+            if matches!(payload, Payload::Preflight {}) {
+                state.close_owner("main");
+            }
+            true
+        },
+    )
+    .await;
+    assert_eq!(result.unwrap_err().code, "cancelled");
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    drop(lease);
+    assert_eq!(state.len(), 0);
+}

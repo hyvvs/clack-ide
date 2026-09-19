@@ -46,7 +46,9 @@ export function ModelSwitchNotice({
         <p className="text-muted-foreground tabular-nums">
           Estimated text/tool context:{" "}
           {assessment.estimatedTokens.toLocaleString()} tokens /{" "}
-          {assessment.contextLimit.toLocaleString()} capacity
+          {assessment.contextLimit.toLocaleString()} ceiling
+          {assessment.workingBudget !== undefined &&
+            ` (${assessment.workingBudget.toLocaleString()} working)`}
         </p>
       )}
       <div className="flex flex-wrap justify-end gap-2">

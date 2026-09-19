@@ -139,6 +139,18 @@ export function normalizeAiError(
   context: AiErrorContext = {},
 ): NormalizedAiError {
   const chain = collectErrorChain(error);
+  const budget = chain.find(
+    (node) => node.record?.contextPreflight === true,
+  )?.record;
+  if (budget)
+    return {
+      kind: "bad_request",
+      disposition: "terminal",
+      title: "Context preflight",
+      message: sanitizeAiErrorText(budget.message),
+      errorCode: String(budget.code),
+      retryable: false,
+    };
   const native = chain.find(
     (node) => node.record?.inferenceTransport === true,
   )?.record;
@@ -199,6 +211,26 @@ export function normalizeAiError(
     300,
   );
   const cause = safeChainCause(chain, safeMessage);
+  if (
+    /context[_ -]?(length|window|limit).*?(exceed|overflow|large)|maximum context length|too many (input )?tokens|prompt (is )?too long/i.test(
+      `${errorCode ?? ""} ${safeMessage}`,
+    )
+  )
+    return {
+      kind: "bad_request",
+      disposition: "terminal",
+      title: "Provider context limit",
+      message:
+        safeMessage ||
+        "The provider rejected the request context despite its preflight estimate.",
+      errorCode: errorCode ?? "provider-context-overflow",
+      provider,
+      model,
+      endpoint,
+      statusCode,
+      requestId,
+      retryable: false,
+    };
   const kind = classifyError({
     requested: context.kind,
     statusCode,

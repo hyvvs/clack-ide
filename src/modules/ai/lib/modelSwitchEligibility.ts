@@ -17,12 +17,18 @@ import {
   type ModelInputCapabilities,
 } from "./modelCapabilities";
 import { isSavedProviderModelSelectionId } from "./savedProviderModels";
+import {
+  estimateTextTokens,
+  resolveContextBudget,
+  type BudgetLimits,
+} from "@/modules/ai/lib/contextBudget";
 
 export type ModelSwitchAssessment = {
   status: "compatible" | "blocked" | "warning";
   reasons: string[];
   estimatedTokens: number;
   contextLimit: number | null;
+  workingBudget?: number;
 };
 
 export function knownModelContextLimit(
@@ -56,6 +62,8 @@ export function assessModelSwitch({
   systemText = "",
   providerChanged = false,
   capabilities = resolveModelInputCapabilities(targetModelId),
+  budgetLimits,
+  toolTokens = 0,
 }: {
   messages: readonly UIMessage[];
   targetModelId: string;
@@ -63,12 +71,14 @@ export function assessModelSwitch({
   systemText?: string;
   providerChanged?: boolean;
   capabilities?: ModelInputCapabilities;
+  budgetLimits?: BudgetLimits;
+  toolTokens?: number;
 }): ModelSwitchAssessment {
   const blocked = new Set<string>();
   if (capabilities.text === "unsupported")
     blocked.add("The selected model is unavailable or does not support chat.");
   const warnings = new Set<string>();
-  let chars = systemText.length;
+  let tokens = 0;
   let overhead = 0;
   const check = (
     support: CapabilitySupport,
@@ -93,7 +103,7 @@ export function assessModelSwitch({
     overhead += 8;
     for (const part of message.parts) {
       if (part.type === "text" || part.type === "reasoning") {
-        chars += part.text.length;
+        tokens += estimateTextTokens(part.text);
         if (part.type === "reasoning" && providerChanged)
           warnings.add(
             "Provider-specific reasoning may not transfer identically. Your saved transcript will remain intact.",
@@ -107,10 +117,10 @@ export function assessModelSwitch({
           output?: unknown;
           errorText?: string;
         };
-        chars +=
-          (JSON.stringify(tool.input) ?? "").length +
-          (JSON.stringify(tool.output) ?? "").length +
-          (tool.errorText?.length ?? 0);
+        tokens +=
+          estimateTextTokens(JSON.stringify(tool.input) ?? "") +
+          estimateTextTokens(JSON.stringify(tool.output) ?? "") +
+          estimateTextTokens(tool.errorText ?? "");
         overhead += 64;
         check(
           capabilities.tools,
@@ -141,8 +151,9 @@ export function assessModelSwitch({
                   ? 0
                   : ref.byteSize;
           // Count delivered text/manifest bytes, never the original PDF/ZIP payload.
-          chars += textBytes ?? 0;
-          chars += ref.displayName.length + 256;
+          // Reference-only preview uses an upper bound until delivery materializes text.
+          tokens += textBytes ?? 0;
+          tokens += estimateTextTokens(ref.displayName) + 256;
         }
       } else if (part.type === CLACK_ATTACHMENT_PART_TYPE) {
         blocked.add(
@@ -164,8 +175,29 @@ export function assessModelSwitch({
       }
     }
   }
-  const estimatedTokens = Math.ceil(chars / 4) + overhead;
-  if (contextLimit !== null && estimatedTokens > contextLimit)
+  const system = estimateTextTokens(systemText);
+  const estimatedTokens = tokens + overhead + system + toolTokens;
+  let budget: ReturnType<typeof resolveContextBudget> | undefined;
+  try {
+    budget = resolveContextBudget(
+      budgetLimits ?? { reported: contextLimit ?? undefined },
+      {
+        system,
+        tools: toolTokens,
+        conversation: tokens + overhead,
+        uncertainMedia: false,
+      },
+    );
+    contextLimit =
+      budget.source === "unknown-policy" && budget.ceiling >= 4096
+        ? null
+        : budget.ceiling;
+  } catch (error) {
+    blocked.add(
+      error instanceof Error ? error.message : "Invalid context settings.",
+    );
+  }
+  if (contextLimit !== null && budget && !budget.fits)
     blocked.add(
       "This conversation is too large for this model's context window.",
     );
@@ -184,5 +216,6 @@ export function assessModelSwitch({
     reasons: [...blocked, ...warnings],
     estimatedTokens,
     contextLimit,
+    workingBudget: budget?.working,
   };
 }

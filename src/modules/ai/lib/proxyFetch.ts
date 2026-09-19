@@ -9,9 +9,12 @@ import type {
   InferenceAdmission,
   AdmissionObservation,
 } from "@/modules/ai/lib/inferenceAdmission";
+import { ContextBudgetError } from "@/modules/ai/lib/contextBudget";
+import type { createRequestPreflight } from "@/modules/ai/lib/requestPreflight";
 
 /** Streaming events emitted by the Rust `ai_http_stream` command. */
 type AiStreamEvent = { requestId: string } & (
+  | { kind: "preflight" }
   | { kind: "admission"; observation: AdmissionObservation }
   | { kind: "headers"; status: number; headers: Record<string, string> }
   | { kind: "chunk"; bytes: number[] }
@@ -60,6 +63,7 @@ async function bodyToBytes(
 }
 
 export type ProxyOptions = {
+  preflight?: ReturnType<typeof createRequestPreflight>;
   admission?: InferenceAdmission;
   allowPrivateNetwork?: boolean;
   selfHosted?: boolean;
@@ -107,11 +111,20 @@ async function proxyFetchImpl(
     const body = await bodyToBytes(
       init?.body ?? (request ? await request.arrayBuffer() : undefined),
     );
+    const revalidate = opts.preflight
+      ? await opts.preflight.prepare(
+          JSON.parse(new TextDecoder().decode(Uint8Array.from(body ?? []))),
+        )
+      : undefined;
     if (aborted) throw new InferenceTransportError("cancelled");
     nativeId = await invoke<string>("ai_http_open");
     if (!nativeId) throw new InferenceTransportError("native-transport");
     attempt.update(
-      aborted ? "stopping" : opts.admission ? "awaiting-admission" : "connecting",
+      aborted
+        ? "stopping"
+        : opts.admission
+          ? "awaiting-admission"
+          : "connecting",
       nativeId,
     );
     if (aborted || (opts.scope && !opts.scope.isCurrent())) {
@@ -125,6 +138,8 @@ async function proxyFetchImpl(
       let status = 0;
       let finished = false;
       let deliveryTimer: ReturnType<typeof setTimeout> | undefined;
+      let preflightError: unknown;
+      let validating = false;
       const channel = new Channel<AiStreamEvent>();
       channel.onmessage = (event) => {
         if (finished || terminal || event.requestId !== nativeId) return;
@@ -138,6 +153,32 @@ async function proxyFetchImpl(
           return;
         }
         switch (event.kind) {
+          case "preflight":
+            if (validating) break;
+            validating = true;
+            void (async () => {
+              try {
+                if (!revalidate)
+                  throw new ContextBudgetError(
+                    "context-preflight-missing",
+                    "Request preflight is unavailable.",
+                  );
+                await revalidate();
+                if (aborted || (opts.scope && !opts.scope.isCurrent()))
+                  throw new InferenceTransportError("cancelled");
+                await invoke("ai_http_preflight", {
+                  requestId: nativeId,
+                  approved: true,
+                });
+              } catch (error) {
+                preflightError = error;
+                await invoke("ai_http_preflight", {
+                  requestId: nativeId,
+                  approved: false,
+                }).catch(() => cancel());
+              }
+            })();
+            break;
           case "admission":
             attempt?.observe(event.observation);
             break;
@@ -184,9 +225,10 @@ async function proxyFetchImpl(
             (failure || !terminal ? "native-transport" : undefined));
         // Keep non-2xx bodies intact for the SDK's existing provider diagnostics.
         const error =
-          code && !(code === "provider-error" && status >= 400)
+          preflightError ??
+          (code && !(code === "provider-error" && status >= 400)
             ? new InferenceTransportError(code, nativeId)
-            : undefined;
+            : undefined);
         attempt?.update(terminal?.phase ?? (aborted ? "cancelled" : "failed"));
         attempt?.settle();
         signal?.removeEventListener("abort", cancel);
@@ -215,6 +257,7 @@ async function proxyFetchImpl(
         allowPrivateNetwork: opts.allowPrivateNetwork === true,
         timeoutPolicy: opts.selfHosted ? "self-hosted" : "legacy",
         admission: opts.admission,
+        requirePreflight: Boolean(revalidate),
         onEvent: channel,
       }).then(
         () => {
@@ -245,7 +288,8 @@ async function proxyFetchImpl(
     }
     attempt.settle();
     signal?.removeEventListener("abort", cancel);
-    throw error instanceof InferenceTransportError
+    throw error instanceof InferenceTransportError ||
+      error instanceof ContextBudgetError
       ? error
       : new InferenceTransportError("native-transport", nativeId);
   }

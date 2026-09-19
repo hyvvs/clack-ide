@@ -5,6 +5,16 @@ export const INFERENCE_ERRORS: Record<
   string,
   { kind: AiErrorKind; message: string }
 > = {
+  "preflight-timeout": {
+    kind: "timeout",
+    message:
+      "Request preflight did not finish before admission expired. No inference was sent.",
+  },
+  "context-preflight-rejected": {
+    kind: "bad_request",
+    message:
+      "Request context/settings changed or no longer fit. No inference was sent.",
+  },
   "invalid-capacity": {
     kind: "bad_request",
     message: "Inference capacity must be an integer from 1 to 8.",

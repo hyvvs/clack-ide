@@ -1,7 +1,9 @@
 import type { ModelMessage } from "ai";
+import { measureRequest } from "@/modules/ai/lib/contextBudget";
 
 const KEEP_TAIL = 24;
-const ELISION_TEXT = "[elided to save context — see prior tool call in history]";
+const ELISION_TEXT =
+  "[elided to save context — see prior tool call in history]";
 
 type ToolPart = {
   type: string;
@@ -12,23 +14,9 @@ type ToolPart = {
   [k: string]: unknown;
 };
 
-function approxBytes(messages: ModelMessage[]): number {
-  let n = 0;
-  for (const m of messages) {
-    if (typeof m.content === "string") n += m.content.length;
-    else if (Array.isArray(m.content)) {
-      for (const part of m.content as ToolPart[]) {
-        if (part.type === "text" && typeof part.text === "string")
-          n += (part.text as string).length;
-        else if (part.type === "tool-result")
-          n += JSON.stringify(part.output ?? "").length;
-        else if (part.type === "tool-call")
-          n += JSON.stringify(part.input ?? "").length;
-        else n += 64;
-      }
-    }
-  }
-  return n;
+function estimatedTokens(messages: ModelMessage[]): number {
+  const cost = measureRequest({ messages });
+  return cost.system + cost.conversation;
 }
 
 function elideToolResult(part: ToolPart): { changed: boolean; part: ToolPart } {
@@ -55,12 +43,29 @@ function pathOfInput(input: unknown): string | null {
   return typeof p === "string" && p.length > 0 ? p : null;
 }
 
-function collectMutationPaths(messages: ModelMessage[]): Set<string> {
-  const paths = new Set<string>();
-  for (const m of messages) {
+function completedToolCalls(messages: ModelMessage[]): Set<string> {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) continue;
+    for (const part of message.content as ToolPart[])
+      if (part.type === "tool-result" && part.toolCallId)
+        ids.add(part.toolCallId);
+  }
+  return ids;
+}
+
+function collectMutationPaths(messages: ModelMessage[]): Map<string, number> {
+  const completed = completedToolCalls(messages);
+  const paths = new Map<string, number>();
+  for (const [index, m] of messages.entries()) {
     if (!Array.isArray(m.content)) continue;
     for (const part of m.content as ToolPart[]) {
-      if (part.type !== "tool-call") continue;
+      if (
+        part.type !== "tool-call" ||
+        !part.toolCallId ||
+        !completed.has(part.toolCallId)
+      )
+        continue;
       const name = part.toolName;
       if (
         name === "edit" ||
@@ -69,7 +74,7 @@ function collectMutationPaths(messages: ModelMessage[]): Set<string> {
         name === "create_directory"
       ) {
         const p = pathOfInput(part.input);
-        if (p) paths.add(p);
+        if (p) paths.set(p, index);
       }
     }
   }
@@ -80,11 +85,17 @@ function collectLastReadIdxPerPath(
   messages: ModelMessage[],
 ): Map<string, number> {
   const lastIdx = new Map<string, number>();
+  const completed = completedToolCalls(messages);
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
     if (!Array.isArray(m.content)) continue;
     for (const part of m.content as ToolPart[]) {
-      if (part.type !== "tool-call") continue;
+      if (
+        part.type !== "tool-call" ||
+        !part.toolCallId ||
+        !completed.has(part.toolCallId)
+      )
+        continue;
       if (part.toolName !== "read_file") continue;
       const p = pathOfInput(part.input);
       if (p) lastIdx.set(p, i);
@@ -123,7 +134,7 @@ function dropSupersededReads(messages: ModelMessage[]): {
       const path = callIdxToPath.get(id);
       if (!path) return part;
       const isStale =
-        mutated.has(path) ||
+        (mutated.get(path) ?? -1) > i ||
         (lastReadIdx.has(path) && (lastReadIdx.get(path) as number) > i);
       if (!isStale) return part;
       const r = elideToolResult(part);
@@ -156,14 +167,14 @@ export function compactModelMessagesDetailed(
 ): CompactResult {
   let dropped = 0;
   let working = messages;
-  let approxTokens = approxBytes(working) / 4;
+  let approxTokens = estimatedTokens(working);
 
   if (approxTokens >= 0.55 * contextLimit) {
     const r = dropSupersededReads(working);
     if (r.touched) {
       working = r.out;
       dropped++;
-      approxTokens = approxBytes(working) / 4;
+      approxTokens = estimatedTokens(working);
     }
   }
 
@@ -189,7 +200,7 @@ export function compactModelMessagesDetailed(
     if (local) {
       out[i] = { ...out[i], content: next } as ModelMessage;
       dropped++;
-      if (approxBytes(out) / 4 < 0.6 * contextLimit) break;
+      if (estimatedTokens(out) < 0.6 * contextLimit) break;
     }
   }
 
