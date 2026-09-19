@@ -1,5 +1,5 @@
 import type { UIMessage } from "@ai-sdk/react";
-import { LazyStore } from "@tauri-apps/plugin-store";
+import { invoke } from "@tauri-apps/api/core";
 import type { NormalizedAiError } from "@/modules/ai/lib/errors";
 import type { RunBudgetState } from "@/modules/ai/lib/runBudget";
 import type { ProviderId } from "@/modules/ai/config";
@@ -69,12 +69,23 @@ export type SessionRun = {
   error?: NormalizedAiError;
 };
 
-const STORE_PATH = "terax-ai-sessions.json";
 const KEY_SESSIONS = "sessions";
 const KEY_ACTIVE = "activeId";
 const messagesKey = (id: string) => `messages:${id}`;
 
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
+const sourceWrites = new Map<string, Promise<void>>();
+
+function writeSource(key: string, write: () => Promise<void>): Promise<void> {
+  const previous = sourceWrites.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(write);
+  sourceWrites.set(key, next);
+  void next
+    .finally(() => {
+      if (sourceWrites.get(key) === next) sourceWrites.delete(key);
+    })
+    .catch(() => undefined);
+  return next;
+}
 
 export type LoadedSessions = {
   sessions: SessionMeta[];
@@ -206,7 +217,9 @@ export async function loadAll(): Promise<LoadedSessions> {
   // One IPC roundtrip via entries() rather than two parallel get()s. Per-
   // session messages are loaded lazily via `loadMessages` only when a
   // session is opened, so cold boot stays at a single store call.
-  const entries = await store.entries();
+  const entries = await invoke<[string, unknown][]>(
+    "conversation_session_entries",
+  );
   let sessions: SessionMeta[] | undefined;
   let activeId: string | null | undefined;
   const attachmentContentIds = new Set<string>();
@@ -243,7 +256,10 @@ export function recoverInterruptedSessions(
 }
 
 export async function loadMessages(id: string): Promise<UIMessage[] | null> {
-  const messages = (await store.get<UIMessage[]>(messagesKey(id))) ?? null;
+  const messages = await invoke<UIMessage[] | null>(
+    "conversation_session_get",
+    { key: messagesKey(id) },
+  );
   if (!messages) return null;
   const migrated = await migrateLegacyDataUrlAttachments(messages);
   if (migrated.changed) await saveMessages(id, migrated.messages);
@@ -251,29 +267,42 @@ export async function loadMessages(id: string): Promise<UIMessage[] | null> {
 }
 
 export async function saveSessionsList(sessions: SessionMeta[]): Promise<void> {
-  await store.set(KEY_SESSIONS, sessions);
+  await writeSource(KEY_SESSIONS, () =>
+    invoke("conversation_source_set", { key: KEY_SESSIONS, value: sessions }),
+  );
 }
 
 export async function saveActiveId(id: string | null): Promise<void> {
-  await store.set(KEY_ACTIVE, id);
+  await writeSource(KEY_ACTIVE, () =>
+    invoke("conversation_session_active", { id }),
+  );
 }
 
 export async function saveMessages(
   id: string,
   messages: UIMessage[],
 ): Promise<void> {
-  await store.set(messagesKey(id), messages);
+  await writeSource(messagesKey(id), () =>
+    invoke("conversation_source_set", {
+      key: messagesKey(id),
+      value: messages,
+    }),
+  );
 }
 
 export async function deleteSessionData(id: string): Promise<void> {
-  await store.delete(messagesKey(id));
+  await writeSource(messagesKey(id), () =>
+    invoke("conversation_source_delete", { sessionId: id }),
+  );
   await reconcilePersistedAttachmentContent();
 }
 
 export async function reconcilePersistedAttachmentContent(
   additionalRetainIds?: readonly string[],
 ): Promise<AttachmentReconcileResult> {
-  const entries = await store.entries();
+  const entries = await invoke<[string, unknown][]>(
+    "conversation_session_entries",
+  );
   const retained = new Set<string>();
   for (const [key, value] of entries) {
     if (!key.startsWith("messages:")) continue;

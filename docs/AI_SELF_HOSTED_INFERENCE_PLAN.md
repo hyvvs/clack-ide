@@ -1197,7 +1197,7 @@ This order does not authorize any pending implementation in this planning task.
 | 4 | D1 | Native cancellation, request lifecycle, truthful timed states | Complete | `fix(ai): harden inference request lifecycle`; [implementation record](#d1-implementation-record) |
 | 5 | E1 | Shared inference admission and PeerTask integration | Complete | `feat(ai): add endpoint inference capacity`; [implementation record](#e1-implementation-record) |
 | 6 | B1 | Actual context budgets and shared request preflight | Complete | `feat(ai): add shared context budget preflight`; implementation record below |
-| 7 | C1a | Session source identity and transactional memory foundation | Pending | None |
+| 7 | C1a | Session source identity and transactional memory foundation | Complete | `feat(ai): add durable conversation memory foundations`; [implementation record](#c1a-implementation-record) |
 | 8 | C1b | Bounded structured extraction and automatic compaction | Pending | None |
 | 9 | G1a | Automatic same-conversation evidence retrieval | Pending | None |
 | 10 | M1 | Project memory ownership, promotion policy and inspection | Pending | None |
@@ -2053,6 +2053,149 @@ deletion. Test full disk, interrupted migration, old-reader behavior, malformed
 data and source branch edits. A/B/L storage assertions are the minimum gate.
 Rollback disables derived reads/commits and retains additive data/originals.
 Commit `feat(ai): add durable context memory revisions`, update ledger, STOP.
+
+##### C1a implementation record
+
+Implemented 2026-09-19, scoped to durable state, evidence and transactions.
+No automatic memory generation, request-context changes or later checkpoint
+implementation is included. The separately requested window-close correction
+is not part of this checkpoint's commit or verification claims.
+
+**Integration audit and ownership**
+
+- `sessions.ts` remains the frontend session persistence boundary used by
+  `chatStore.ts`, background message persistence, selection/run updates,
+  attachment migration and restart recovery. Conversation identity remains the
+  existing session ID; titles, panes, agents and models are not memory owners.
+- The existing `terax-ai-sessions.json` file, `sessions`, `activeId` and
+  `messages:<id>` keys are preserved. Original arrays, tool parts, IDs, attachment
+  references, profiles and unknown legacy metadata retain their existing shape.
+  There is no second chat database or transcript migration/replacement.
+- Audit of tauri-plugin-store 2.4.3 found truncate-and-write saves and no public
+  multi-key/CAS transaction API. Only this session file now uses a native cached
+  adapter with staged, synced, atomic replacement, rather than LazyStore
+  autosave. Failed writes keep the cache on the last valid old-or-new disk state. Other plugin stores are
+  unchanged. The native adapter refuses malformed legacy JSON instead of
+  replacing it with empty defaults. Legacy readers can still read the file.
+- Native source writes and memory operations share per-session locks across
+  windows. Frontend per-key queues preserve message-write order. The existing
+  shared session-list key and physical session-file write have short exclusive
+  ownership; unrelated memory publications do not share a global commit lock.
+- Current B1 preparation/elision/preflight, captured active runs, switch locks,
+  SDK messages, PeerTask scheduling/permissions and attachment processors are
+  unchanged. PeerTask evidence comes from the existing task ledger, not a new
+  communication store. These APIs are internal application persistence APIs,
+  not new agent tools or permission grants.
+
+**Schema and bounded records**
+
+- Schema 1 manifests live under app-data
+  `ai-conversation-memory/<sha256(sessionId)>/manifest.json`. They contain the
+  session ID, monotonic transcript/profile revisions and canonical JSON hashes,
+  cancellation generation, memory revision sequence, up to 128 selection/run
+  observations, up to 32 committed revision hashes and an explicit deletion
+  tombstone. Selection/run provenance uses allowlisted identity, actual
+  provider/model/endpoint-profile revision and workspace/checkout fields;
+  credentials and credential-bearing endpoint URLs are not copied.
+- Each immutable `<sha256(record)>.json` revision contains schema version,
+  preparation owner (`sessionId`, nullable environment-aware `workspaceId`),
+  source revisions/hashes, process-generation ID, expected predecessor,
+  cancellation generation, revision number, creation time, producer provenance,
+  policy version, original coverage, evidence and typed claims.
+- Claim sections cover objective, requirements, constraints, decisions,
+  completed work, active tasks, files/artifacts, unresolved issues, errors,
+  findings, project state and uncertainty. Status distinguishes user
+  requirement, verified observation, inference, unresolved, superseded and
+  stale. Claims carry source IDs, observation time and contradiction links;
+  this checkpoint validates structure/provenance, not semantic truth.
+- Bounds: 256 KiB per manifest/revision or archived evidence item, 128 evidence
+  references per revision, 64 claims, 8 KiB per claim text, and 32 source or
+  contradiction links per claim. Old revision metadata rolls out after 32
+  committed revisions; evidence carried into a retained revision remains rooted.
+
+**Provenance, coverage and lifecycle**
+
+- Deterministic evidence IDs hash owner, original locator and content digest.
+  Locators identify messages, exact message parts (including complete tool-call
+  input/output parts), directly related PeerTask results and immutable artifacts.
+  Evidence records retain their original transcript revision. Retained evidence
+  can be carried forward without changing its original identity after a branch
+  edit; it is never retargeted to a changed message or filesystem path.
+- Coverage is a bounded half-open original-message range, range digest, latest
+  covered message ID and original source message count. Appended messages remain
+  uncovered. A changed/deleted covered branch is reported as `sourceChanged`,
+  while archived evidence stays independently inspectable.
+- Exact referenced evidence is archived in the existing hash-verified
+  `ai-attachments` store. Binary attachment bytes are not copied into records.
+  Attachment, PDF/archive representation and artifact roots join existing
+  reconciliation. Referenced PeerTask result/artifact evidence survives ordinary
+  ledger pruning; explicit source-session deletion revokes dependent memory.
+- Owner/workspace mismatches, unrelated tasks, missing evidence, unsupported
+  versions, invalid sizes/hashes/lineage, duplicate identities and malformed
+  records fail closed. Workspace reads require the existing native workspace
+  registry authorization; workspace files are represented only through existing
+  captured artifacts. No arbitrary file-path resolver or project sharing exists.
+- A shared collection barrier protects evidence from write through manifest
+  publication. Collection also unions current native session/task roots to avoid
+  using another window's stale frontend retention snapshot. Uncommitted/expired
+  revision files and unreferenced content are collected through existing GC.
+  Corrupt memory pauses deletion, but still validates ordinary attachments, so
+  unrelated PeerTask restart recovery is not disabled by a damaged memory index.
+
+**Transactions, restart and rollback**
+
+- Native worker operations serialize by stable owner. Commit compares source
+  revision/hashes, current owner, process generation, cancellation generation and
+  predecessor, and requires the original session state to be durable first.
+  Evidence is stored/validated, the immutable revision is synced, and only then
+  is the manifest atomically published. Pending records are not active memory.
+- Failure before manifest publication leaves the previous committed revision
+  active. An interruption after publication may have committed successfully;
+  callers reload to determine the durable outcome. Abort before publication
+  invalidates the captured generation; an already completed atomic publication
+  is not misreported as rolled back. Prior-process preparation tokens cannot
+  publish after restart.
+- Migration is additive and lazy/idempotent. Chats without memory remain valid.
+  Recovery loads committed records or returns an explicit unavailable/corrupt
+  error without overwriting originals. Existing run/PeerTask recovery still
+  marks interrupted work rather than resuming dead requests.
+- Rollback: disable derived memory load/source-inspection/evidence/commit command
+  registration while retaining the atomic session adapter, additive source data
+  and retention-root protection. Do not delete memory directories or rewrite
+  original transcripts to remove this feature.
+
+**Verification and remaining boundaries**
+
+- New focused coverage: 52 native memory/session-file tests, one attachment-GC
+  regression, and 16 frontend API/session integration-boundary tests. Native
+  tests exercise real temporary files, the existing attachment collector and
+  competing publisher threads. Frontend IPC/events are mocked, not native GUI.
+- Focused frontend command selecting conversationMemory, sessions,
+  restartRecovery, attachmentMessages, attachments, peerTaskArtifacts, peerTasks,
+  contextBudget, requestPreflight, modelSwitch, chatModelSwitch and runLifecycle:
+  207 tests across 12 files passed.
+- Full `npm.cmd test`: 1,160 tests across 118 files passed. `npm.cmd run
+  check-types`, `npm.cmd run lint`, `npm.cmd run build`, `git diff --check`,
+  `cargo fmt --check` and `cargo clippy --all-targets --locked -- -D warnings`
+  passed. Lint remains at the existing 71 warnings and two informational
+  diagnostics. Build reports plugin-timing information. Cargo emits the existing
+  environment warning about canonicalizing `C:\Users\Hayden`.
+- Full `cargo test --locked`: 403 passed (353 unit, 25 filesystem integration,
+  25 Git integration); no failures or ignored tests. Crash-boundary injection
+  covers before/after evidence, immutable revision and manifest writes. Full-disk
+  behavior is fault-injected, not an actual filled disk. A/B/L storage assertions
+  include unchanged originals, ten revision cycles, 35-cycle retention,
+  competing windows' backend publishers, source edits and repeated recovery.
+- No native GUI close/relaunch, hardware power-loss, live-provider or separate
+  application-process concurrency acceptance is claimed. Shared-window safety
+  assumes one native application persistence owner; simultaneous old/new app
+  binaries writing the same app-data directory are not supported. Errors remain
+  available to internal callers; this foundation adds no placeholder UI.
+- Source inspection is explicit, not automatic historical retrieval. Automatic
+  extraction/compaction is deferred to **C1b: Bounded automatic compaction**.
+  Retrieval, project promotion/sharing, Optimize and switch, reasoning controls,
+  custom tools and new agent communication remain at their later checkpoints.
+  No subsequent checkpoint has been started.
 
 #### C1b: Bounded automatic compaction
 

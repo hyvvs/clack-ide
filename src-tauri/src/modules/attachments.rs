@@ -4,18 +4,23 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 use tauri::Manager;
 use tempfile::NamedTempFile;
 
 const ATTACHMENT_STORE_DIR: &str = "ai-attachments";
 const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 
+// Publication may run concurrently across conversations; collection must not
+// remove evidence between its write and the durable memory manifest commit.
+pub(crate) static CONTENT_COLLECTION: RwLock<()> = RwLock::new(());
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredAttachmentContent {
-    id: String,
-    content_hash: String,
-    byte_size: u64,
+    pub(crate) id: String,
+    pub(crate) content_hash: String,
+    pub(crate) byte_size: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,7 +56,7 @@ fn store_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("Could not locate Clack attachment storage: {error}"))
 }
 
-fn read_content_from(store: &Path, id: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn read_content_from(store: &Path, id: &str) -> Result<Vec<u8>, String> {
     if !valid_content_id(id) {
         return Err("Attachment content ID is invalid.".into());
     }
@@ -78,7 +83,10 @@ fn inspect_content_from(store: &Path, id: &str) -> Result<StoredAttachmentConten
     })
 }
 
-fn put_content_in(store: &Path, bytes: &[u8]) -> Result<StoredAttachmentContent, String> {
+pub(crate) fn put_content_in(
+    store: &Path,
+    bytes: &[u8],
+) -> Result<StoredAttachmentContent, String> {
     if bytes.is_empty() {
         return Err("Empty attachment content cannot be stored.".into());
     }
@@ -126,9 +134,17 @@ fn put_content_in(store: &Path, bytes: &[u8]) -> Result<StoredAttachmentContent,
     })
 }
 
-fn reconcile_store(
+pub(crate) fn reconcile_store(
     store: &Path,
     retain_ids: &[String],
+) -> Result<AttachmentReconcileResult, String> {
+    reconcile_store_with_collection(store, retain_ids, true)
+}
+
+fn reconcile_store_with_collection(
+    store: &Path,
+    retain_ids: &[String],
+    collect: bool,
 ) -> Result<AttachmentReconcileResult, String> {
     let mut retained_ids = retain_ids.to_vec();
     retained_ids.sort();
@@ -163,6 +179,9 @@ fn reconcile_store(
     for entry in fs::read_dir(store)
         .map_err(|error| format!("Could not inspect Clack attachment storage: {error}"))?
     {
+        if !collect {
+            continue;
+        }
         let entry = entry
             .map_err(|error| format!("Could not inspect stored attachment content: {error}"))?;
         let file_type = entry
@@ -245,7 +264,18 @@ pub fn attachment_store_reconcile(
     app: tauri::AppHandle,
     retain_ids: Vec<String>,
 ) -> Result<AttachmentReconcileResult, String> {
-    reconcile_store(&store_dir(&app)?, &retain_ids)
+    let _collection = CONTENT_COLLECTION.write().map_err(|e| e.to_string())?;
+    let mut retained = retain_ids;
+    match super::conversation_memory::retention_roots(&app) {
+        Ok(roots) => {
+            retained.extend(roots);
+            reconcile_store(&store_dir(&app)?, &retained)
+        }
+        Err(error) => {
+            log::warn!("Attachment collection paused; conversation memory needs recovery: {error}");
+            reconcile_store_with_collection(&store_dir(&app)?, &retained, false)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -330,5 +360,16 @@ mod tests {
         let bytes = vec![0_u8; MAX_ATTACHMENT_BYTES + 1];
         let error = put_content_in(store.path(), &bytes).unwrap_err();
         assert!(error.contains("storage limit"));
+    }
+
+    #[test]
+    fn paused_collection_still_checks_existing_attachments_without_deleting_unknown_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let keep = put_content_in(directory.path(), b"memory-only evidence").unwrap();
+        let result =
+            reconcile_store_with_collection(directory.path(), &["a".repeat(64)], false).unwrap();
+        assert_eq!(result.removed_count, 0);
+        assert_eq!(result.issues.len(), 1);
+        assert!(directory.path().join(keep.id).exists());
     }
 }

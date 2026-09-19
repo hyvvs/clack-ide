@@ -163,6 +163,7 @@ pub fn run() {
         .manage(secrets::SecretsState::default())
         .manage(modules::inference_probe::ProbeState::default())
         .manage(net::inference::InferenceState::default())
+        .manage(modules::conversation_memory::MemoryState::default())
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window
@@ -195,6 +196,16 @@ pub fn run() {
             attachments::attachment_store_get,
             attachments::attachment_store_inspect,
             attachments::attachment_store_reconcile,
+            modules::conversation_memory::conversation_memory_load,
+            modules::conversation_memory::conversation_memory_sources,
+            modules::conversation_memory::conversation_memory_evidence,
+            modules::conversation_memory::conversation_memory_commit,
+            modules::conversation_memory::conversation_memory_cancel,
+            modules::conversation_memory::conversation_source_set,
+            modules::conversation_memory::conversation_source_delete,
+            modules::conversation_memory::conversation_session_entries,
+            modules::conversation_memory::conversation_session_get,
+            modules::conversation_memory::conversation_session_active,
             archive::attachment_archive_inspect,
             archive::attachment_archive_read_entry,
             pdf::attachment_pdf_extract,

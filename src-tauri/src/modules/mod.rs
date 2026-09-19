@@ -3,6 +3,7 @@ pub mod agent;
 pub mod archive;
 pub mod attachments;
 pub mod clipboard;
+pub mod conversation_memory;
 pub mod fs;
 pub mod git;
 pub mod history;
