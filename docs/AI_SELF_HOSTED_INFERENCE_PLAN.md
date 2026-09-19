@@ -5,12 +5,36 @@ Audit date: 2026-09-06
 Audited baseline: 5415e5d9d34ced7b32fe10095275b161ca6b4f2a
 Baseline checkpoint: fix(ai): harden in-chat model switching
 
+Advanced intelligence planning revision: 2026-09-19, audited at `460465a` on
+`main`. This revision is documentation only. B1 is complete; no C1 work has
+started. The original audit and completed implementation records below are
+historical evidence, not a description of today's missing features.
+
 This is the durable product and engineering plan for self-hosted inference.
 It complements [the multi-agent build plan](AI_MULTI_AGENT_BUILD_PLAN.md) and
 preserves [the attachment safety contract](AI_ATTACHMENTS.md). Those programs
 are not to be repeated or replaced. All implementation checkpoints below are
 tracked in the checkpoint ledger. The original planning commit implemented no
 inference features; implementation records below describe subsequent checkpoints.
+This document also owns the advanced context, memory, tools and multi-agent
+intelligence program. The older multi-agent plan remains the completed-program
+record; its old next-A2 pointer and the attachment document's older context
+estimator description are superseded by this ledger and B1's record. Attachment
+security/format limits and AI_RUNTIME.md permission semantics remain binding.
+
+Planning navigation: [current audit](#advanced-current-state-audit),
+[upstream study](#upstream-reference-study),
+[ownership](#advanced-ownership-and-integrity),
+[memory](#conversation-memory-and-compaction),
+[project freshness](#project-memory-and-freshness),
+[retrieval](#automatic-evidence-retrieval),
+[switching](#target-context-preparation),
+[collaboration](#peer-communication-and-handoffs),
+[reasoning](#reasoning-activity-and-effort),
+[custom tools](#custom-tools-and-security),
+[checkpoint order](#checkpoint-order-and-gates),
+[A-L scenarios](#advanced-acceptance-scenarios), and
+[expanded traceability](#advanced-requirement-traceability).
 
 ## Purpose and Product Principles
 
@@ -574,6 +598,574 @@ replacement inference-engine configuration. No new dependencies merely to
 write this plan. Future tokenizer/discovery dependencies require a scoped
 license, binary-size, security and platform review in their own checkpoint.
 
+## Advanced Current-State Audit
+
+Source audit at `460465a`, not a new runtime verification. Classifications mean
+ALREADY IMPLEMENTED for the named existing primitive, NEEDS EXTENSION where
+that primitive does not meet the new end-to-end requirement, and NOT IMPLEMENTED
+for an absent capability. A completed primitive does not imply completed
+advanced intelligence. Paths below are relative to the repository root.
+
+| Area | Classification | Inspected implementation and remaining work |
+| --- | --- | --- |
+| Conversation identity and transcript persistence | NEEDS EXTENSION | `src/modules/ai/lib/sessions.ts` stores session IDs, UIMessage arrays, profile and latest run in `terax-ai-sessions.json`; `store/chatStore.ts` owns session-keyed Chat/runtime maps. Existing IDs and saved messages are reusable, but no source-coverage ledger, immutable revision history, durable model-selection history or transactional memory pointer exists. LazyStore autosave alone is not a multi-record transaction. |
+| Per-chat model/agent/workspace, isolated runs | ALREADY IMPLEMENTED | `sessions.ts`, `store/chatStore.ts`, `store/chatRuntime.ts` capture identity, checkout/mutation mode and environment; background sessions, Stop and approvals are session-owned. Never replace these with a global agent configuration. |
+| Actual model-switch routing and locks | NEEDS EXTENSION | `store/modelSwitch.ts`, `lib/modelSwitchEligibility.ts`, `hooks/useModelSwitch.ts` already prepare/revalidate/commit idle switches, expire confirmation and preserve history. Target-sized semantic preparation and reusable context snapshots are absent. |
+| B1 request accounting | ALREADY IMPLEMENTED | `lib/contextBudget.ts`, `contextBudgetProfile.ts`, `requestPreflight.ts` account for serialized requests and output reserve across the shared builder. Exact tokenizer fit is not guaranteed. Raster/native-binary cost uncertainty currently blocks final send, even with confirmed vision; future memory work must not hide this limitation or drop images. |
+| Compaction | NEEDS EXTENSION | `lib/compact.ts` only elides superseded reads/old tool output in outgoing context, using B1. It does not create semantic memory, validate requirement retention, retrieve evidence or rewrite saved history. |
+| Existing project instructions | NEEDS EXTENSION | `lib/transport.ts:readProjectMemory` loads CLACK.md then TERAX.md, truncates at 32,768 string units and caches for 30 seconds. Its `mtime` is cache insertion time, not a file hash or filesystem modification proof. This is instruction loading, not verified project knowledge. |
+| Structured conversation memory, freshness and automatic retrieval | NOT IMPLEMENTED | No durable source-linked memory revisions, claim supersession, task-aware history index or incremental project-evidence invalidation was found in the AI runtime. Reuse transcript/artifact owners rather than creating a replacement chat database. |
+| Attachment and immutable content pipeline | ALREADY IMPLEMENTED | `attachmentMessages.ts`, `attachmentStore.ts`, `peerTaskArtifacts.ts` and native processors supply hash-checked representations, PDF/archive provenance and retention/recovery. Memory references must join their retention roots; no second attachment store or new parser. |
+| PeerTask identity, DAG, queue, cancellation and results | ALREADY IMPLEMENTED | `peerTasks.ts`, `peerTaskDependencies.ts`, `peerTaskCancellation.ts`, `peerTaskAggregation.ts`, `peerTaskCoordinator.ts` and `store/peerTaskStore.ts`: schema v5, explicit agents/sessions/workspace/root/parent, 3 hops, 8 tasks/root, 8 dependencies/task, 8 dependency levels, 8 running, 32 active. Stored-history target is 256 with protected active roots. |
+| Peer communication and context transfer | NEEDS EXTENSION | `tools/peer.ts` exposes delegate/review/question and cancellation. Coordinator sends bounded explicit prompt, snapshotted attachments and declared prerequisite aggregates; it does not copy source history. Aggregation bounds are 8 results, 800 chars/result, 8,000 total chars and 16 artifact references. Durable in-task clarification/reply acknowledgements, automatic source wake-up and recipient-sized evidence packaging are not implemented. |
+| Ephemeral subagents | ALREADY IMPLEMENTED | `agents/runSubagent.ts` is a bounded read/search helper, distinct from persistent PeerTasks. It is not a replacement collaboration runtime or durable conversation. |
+| Permissions, approvals and budgets | ALREADY IMPLEMENTED | `lib/permissions.ts`, `tools/context.ts`, native workspace/secret guards and `lib/runBudget.ts` enforce existing profiles, scoped grants and finite execution. New retrieval, sharing, tool registration and execution must intersect these policies. A model or tool definition never grants authority. |
+| Concurrent writes and review | NEEDS EXTENSION | `lib/workspaceWriteLease.ts`, coordinator worktree/apply paths and read-before-edit snapshots serialize shared writers or isolate local Git worktrees. Stale edits/patch bases are rejected. Semantic finding freshness and post-review invalidation need extension; the frontend lease is not proof of exclusion against external editors or other processes. WSL/non-Git retain serialized shared edits. |
+| Restart and interrupted work | NEEDS EXTENSION | `sessions.ts` interrupts dead runs; PeerTask recovery validates identities, dependencies, content and worktrees before dispatch. New memory transactions, communication delivery cursors and tool versions need explicit crash reconciliation, not stream resumption. |
+| Tool registry and custom creation | NEEDS EXTENSION | `tools/tools.ts` composes static filesystem/edit/search/shell/subagent/terminal/todo/managed-agent/peer tools then applies permissions. No end-user executable-tool registry, definition editor, assigned version lifecycle or MCP client was found. Rendering an SDK `dynamic-tool` part in AiChat is not custom-tool creation support. |
+| Reasoning and activity display | NEEDS EXTENSION | `components/AiChat.tsx:RenderedPart` already renders SDK reasoning parts, text and tool parts; approvals expire on restart. PeerTaskFeed, status controls and inference activity labels show real work. Unified chronological provenance, raw-versus-summary discrimination and durable activity correlation need extension. |
+| Functional user reasoning effort | NOT IMPLEMENTED | AI runtime has reasoning tags and pruning behavior, but no per-chat supported-effort selector/mapping. `src/modules/editor/lib/autocomplete/provider.ts` hardcodes low for selected adapters only; this is not a chat effort feature. |
+| Self-hosted evidence, cancellation and capacity | ALREADY IMPLEMENTED | A1-A3 profile/probe/setup modules, D1 native `src-tauri/src/modules/net/inference/` lifecycle and E1 FIFO admission already exist. Their immutable request scope, cancellation, deadlines, capacity and B1 gates remain authoritative for all new inference. Calibration/output continuation are still pending. |
+| Persisted inference preferences versus runtime support | NEEDS EXTENSION | `selfHostedProfiles.ts` already persists fields such as autoCompaction, autoContinuation and continuationCount. Persistability is not implementation: semantic compaction, output-length continuation and functional chat effort remain owned by their pending checkpoints. |
+| Collaboration surfaces | NEEDS EXTENSION | Split AI panes, Dispatcher, session actions, task cards and pane-owned composers already exist. Extend those views; no giant dashboard, new task store or command-palette-first workspace workflow. Uncommitted delegation-dialog work is excluded from this audit/edit. |
+
+Completed checkpoint identities verified in history: A1 `1884e3b`, A2
+`53a67d2`, A3 `48cba84`, D1 `aa7e125`, E1 `6d7285e`, B1 `460465a`.
+Preserve all six detailed implementation records. Their earlier test results
+are historical; this planning task does not rerun or upgrade those claims.
+
+## Upstream Reference Study
+
+Read-only source study on 2026-09-19. GitHub HEADs were resolved once and the
+files below read at those immutable revisions: Hermes
+`00570550f37e9082676955d50f65c7d9ba846cc9`; Codex
+`c9d13e8c757cd330a572e9a39e365866069aef07`. These are references, not Clack
+dependencies or guarantees about installed/provider versions. Refresh evidence
+in the implementing checkpoint; no upstream code was imported or executed.
+
+| Reference inspected | Mechanism observed | Clack adaptation or rejection |
+| --- | --- | --- |
+| Hermes [context_compressor.py](https://github.com/NousResearch/hermes-agent/blob/00570550f37e9082676955d50f65c7d9ba846cc9/agent/context_compressor.py) | Head/tail protection, token-budgeted compression, output pruning and auxiliary summary routing. | Adopt bounded preparation and protected tail. Do not inherit an auxiliary provider choice or repeated summary-of-summary as evidence; use authorized captured routing and original-source coverage. |
+| Hermes [memory_manager.py](https://github.com/NousResearch/hermes-agent/blob/00570550f37e9082676955d50f65c7d9ba846cc9/agent/memory_manager.py) | Provider lifecycle hooks, pre-compression checkpoint contract, bounded external prefetch and schema normalization. | Keep a validation/commit boundary and bounded hooks. No external memory provider or data export by default; Clack's session/project owners remain authoritative. |
+| Hermes [session_search_tool.py](https://github.com/NousResearch/hermes-agent/blob/00570550f37e9082676955d50f65c7d9ba846cc9/tools/session_search_tool.py) | SQLite/FTS discovery, lineage deduplication, anchored message windows and bounded original-message returns without LLM calls. | Start with local bounded lexical/source lookup and anchored expansion. Do not copy global cross-session search permissions or require SQLite merely to match the reference. |
+| Hermes [registry.py](https://github.com/NousResearch/hermes-agent/blob/00570550f37e9082676955d50f65c7d9ba846cc9/tools/registry.py) and [mcp_tool.py](https://github.com/NousResearch/hermes-agent/blob/00570550f37e9082676955d50f65c7d9ba846cc9/tools/mcp_tool.py) | Registry owns schema/handler/toolset/availability; MCP discovers configured-server tools with lifecycle handling. | Adapt one validated registration boundary. Reject arbitrary import-time execution, automatic package installation and any fail-open behavior as a sandbox substitute. MCP annotations/descriptions are untrusted. |
+| Hermes [delegate_tool.py](https://github.com/NousResearch/hermes-agent/blob/00570550f37e9082676955d50f65c7d9ba846cc9/tools/delegate_tool.py) | Focused child goal/context, separate task identity, bounded child settings and summary returns. | Useful handoff separation, but Clack extends durable PeerTasks instead of adopting a second child-agent system or transferring unrestricted parent authority. |
+| Hermes [reasoning_effort.py](https://github.com/NousResearch/hermes-agent/blob/00570550f37e9082676955d50f65c7d9ba846cc9/agent/reasoning_effort.py) and [reasoning_params.py](https://github.com/NousResearch/hermes-agent/blob/00570550f37e9082676955d50f65c7d9ba846cc9/agent/reasoning_params.py) | Central effort vocabulary plus transport-specific parameter policy, probes and fallback rules. | Centralize mapping, but do not copy model-name heuristics, permanent capability assumptions or silent effort clamping. Clack exposes only evidenced support and shows effective values. |
+| Codex [compact.rs](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/codex-rs/core/src/compact.rs) and [context/memory.rs](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/codex-rs/core/src/context/memory.rs) | Explicit compaction lifecycle/strategy events; typed bounded memory fragments separate instructions from extraction evidence. | Adopt typed trust levels, bounded fragments and observable compaction. Do not treat provider-native/opaque compacted state as portable memory across cloud and self-hosted adapters. |
+| Codex [rollout.rs](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/codex-rs/core/src/rollout.rs) | Core delegates persistence/listing to rollout ownership using thread identity and recording APIs. | Reinforces separation of durable history and derived working context. Keep Clack's sessions owner; do not import Codex rollout storage as a parallel transcript. This inspected facade alone does not establish Codex's crash guarantees. |
+| Codex [tools/registry.rs](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/codex-rs/core/src/tools/registry.rs), [handlers/dynamic.rs](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/codex-rs/core/src/tools/handlers/dynamic.rs) and [app-server dynamic_tools.rs](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/codex-rs/app-server/src/dynamic_tools.rs) | Typed exposure/execution, namespaced specs, call IDs, lifecycle events and decoded external results. | Separate definition, authorization, execution and result validation. Dynamic tool plumbing is not proof that arbitrary scripts are sandboxed; Clack must enforce its own native boundary. |
+| Codex [send_message.rs](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs) and [message_tool.rs](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs) | Resolved recipient identity, common messaging path and distinct queued-message versus follow-up wake semantics. | Extend PeerTask events with addressed, acknowledged delivery at safe boundaries, not arbitrary writes into another chat or unconditional wake-up. |
+| Codex [reasoning_effort.rs](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/codex-rs/protocol/src/openai_models/reasoning_effort.rs) | Model-owned normalization shared by requests and configuration updates. | Use one resolver for UI choices and actual serialized run parameters; capture selected and effective effort separately. Codex aliases are not a universal API enum. |
+| Codex [reasoning summary delta](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/codex-rs/app-server-protocol/schema/typescript/v2/ReasoningSummaryTextDeltaNotification.ts) and [reasoning text delta](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/codex-rs/app-server-protocol/schema/typescript/v2/ReasoningTextDeltaNotification.ts) | Distinct event shapes carry thread, turn, item and part indexes. | Normalize only provider-exposed content into distinct display types and correlate it to the owning run. No inferred hidden chain of thought. |
+
+Licensing/dependency decision: Clack declares Apache-2.0 in package.json.
+Hermes' pinned [LICENSE](https://github.com/NousResearch/hermes-agent/blob/00570550f37e9082676955d50f65c7d9ba846cc9/LICENSE)
+is MIT; Codex's pinned [LICENSE](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/LICENSE)
+is Apache-2.0. These top-level licenses permit consideration of reuse with
+applicable attribution/notice obligations; they do not clear every bundled
+asset, dependency, patent issue or external service. No copied implementation
+is proposed here. Hermes' [pyproject.toml](https://github.com/NousResearch/hermes-agent/blob/00570550f37e9082676955d50f65c7d9ba846cc9/pyproject.toml)
+requires Python >=3.11,<3.14 and a substantial Python dependency graph; Codex's
+[Cargo workspace](https://github.com/openai/codex/blob/c9d13e8c757cd330a572e9a39e365866069aef07/codex-rs/Cargo.toml)
+contains many internal crates and shared Tokio/Serde/HTTP dependencies. Neither
+runtime is a drop-in dependency for Clack's thin Tauri/AI SDK architecture.
+Any later copied file or new MCP/sandbox/index package needs a version-pinned
+transitive license, notices, security, binary-size and Windows/Linux/macOS review
+in its owning checkpoint. No Python daemon, Codex server, embedding service or
+new package is authorized by this plan.
+
+## Advanced Ownership and Integrity
+
+The durable conversation is the primary record; a model sees a bounded derived
+view. Long-lived conversations must survive many model/agent changes, multiple
+days, restarts and project edits. Retaining long durable history does not mean
+unlimited model context, unbounded RAM or guaranteed recall.
+
+| Entity | Owner and stable key | Required revision/provenance and boundary |
+| --- | --- | --- |
+| Conversation and original transcript | Existing sessions store, `sessionId` | Ordered message IDs and part/tool-call IDs; monotonic transcript revision. Preserve original text, tool inputs/results and attachment references. If a user edits/regenerates a branch, preserve referenced prior revisions rather than silently retargeting a source ID. |
+| Selection and run history | Existing session profile/run ownership | Add bounded indexed selection/run events with agent, model selection, actual route, effort and workspace/checkout IDs; credentials never serialized. Current SessionMeta.run alone is not a full run-history ledger. |
+| Conversation memory revision | Session-owned derived metadata | Version, revision ID, predecessor, source coverage/digests, claims, contradictions, producer run/model, policy version, size and validation outcome. Independent of currently selected model. |
+| Working context snapshot | Derived session/task preparation | References memory/source revisions, protected tail, retrieval set, target profile/capabilities/output reserve/tools/policy/workspace evidence. A cache, never a new transcript. |
+| Project knowledge | Canonical environment-aware workspace ID | Verified claims/requirements with source revisions, promotion authorization, visibility scope and supersession. Checkout-specific evidence includes checkout/base SHA; equal folder names and Local/WSL identities never merge. |
+| Agent/task working context | Existing session run plus PeerTask/root ID | Bounded mission, authorized evidence and dependency versions; not another agent's private chat or global mutable persona memory. |
+| Collaboration communication | Existing PeerTask ledger | Task event ID, reply-to, source/target session and agent, root/parent, workspace, policy revision, payload references, sequence and delivery acknowledgement. Models provide intent; runtime supplies authenticated routing identities. |
+| Attachments/artifacts | Existing content-addressed store | Immutable hash/size/representation and original provenance, with memory/task references added to retention accounting. Missing originals stay explicitly unavailable. |
+| Custom tool | Scoped registry metadata, not a second run engine | Stable tool ID, immutable version/content hash, schemas, execution kind, assigned scopes/agents, authorization revision and credential references. Runs capture versions; calls/results stay in existing run history. |
+
+C1a must first prove a durable transaction mechanism within existing session
+ownership. Add validated immutable derived records and a committed manifest
+pointer with expected transcript/profile revision; use native atomic storage
+if LazyStore cannot guarantee compare-and-swap across windows/crashes. Do not
+assume several `set()` calls are atomic. A prepare record is never the active
+revision until content, references and checksum validate and commit is durable.
+Serialize commits per owner; late async work checks owner, generation, abort
+state and expected revision before publication. Recover the last valid pointer
+or expose corruption; do not silently accept partial memory. No whole-store
+replacement or migration that overwrites the only legacy transcript copy.
+
+Indexes are rebuildable and bounded/pageable; originals remain under existing
+session retention/deletion policy. Memory GC roots retain referenced messages,
+artifact representations and task-result evidence. PeerTask terminal-record
+compaction must not strand a still-live memory reference: retain a referenced
+result or its immutable evidence snapshot with provenance before ledger pruning.
+User deletion/revocation invalidates dependent memory/indexes; retention is not
+permission to undo deletion or promote private data. Quota/full-disk failures
+preserve originals and block new derived commits with actionable status.
+
+## Conversation Memory and Compaction
+
+C1 is deliberately two checkpoints: C1a owns persistence/integrity and source
+identity; C1b owns semantic extraction and automatic use. Neither owns project
+sharing, retrieval, model-switch UI, agent messaging or custom tools.
+
+Structured memory fields include objective, explicit user requirements,
+constraints, architecture decisions, relevant files/components/interfaces,
+completed work, current task state, pending work, unresolved errors, important
+tool results, attachment/artifact refs, agent findings/reviews, uncertainties,
+open questions, contradictions and recent state. Every important claim has
+source IDs/ranges and source digests, scope, observed time and a typed status:
+user requirement, verified observation, agent/model inference, unresolved,
+superseded or stale. Preserve who asserted a claim and what verified it.
+An agent saying tests passed is an assertion until tied to the actual test
+result. Citations alone are not proof of semantic correctness.
+
+Do not merge instructions, tool text and model interpretation into a single
+authoritative paragraph. User requirements retain exact quoted source spans
+where meaning is fragile (negation, numeric limits, filenames, prohibitions).
+Only an explicit later user instruction can supersede a user requirement;
+code drift or another agent's opinion cannot. Conflicting evidence remains
+linked and unresolved until reconciled or explicitly escalated.
+
+The protected set is assembled before optional summarization: latest user
+instructions, active task/acceptance constraints, applicable architecture and
+project requirements, unresolved failures/questions, necessary source refs and
+a recent verbatim tail with complete tool-call/result groups. Tail selection
+is token-budgeted and extends boundaries to avoid orphan calls. An unresolved
+tool call or approval cannot be summarized away. Keep active tool schema and
+exact approved arguments. If the protected set plus system/tools/output reserve
+cannot fit B1, pause before HTTP with an honest reason. Never drop requirements,
+attachments or permissions silently to make the request pass.
+
+Automatic algorithm, all bounds provisional until checkpoint tests:
+
+1. Before each next request, use B1 on assembled context. Prepare proactively
+   when history reaches 70% of the available working-history budget or the
+   expected next tool result would overflow; target at most 55% for headroom.
+   These are initial policy thresholds, not replacements for final wire checks.
+2. Select uncovered original message spans, not merely the prior summary.
+   Carry forward verified claim IDs unchanged; re-read their original evidence
+   when reconciling contradictions or regenerating a size-specific view.
+   Coverage is a set of original ranges/digests with explicit gaps, not a
+   misleading single high-water mark. Never mark truncated sources fully read.
+3. Chunk only at valid message/tool boundaries. Each extraction request fits
+   B1 on the authorized captured route, has no tools, and uses D1/E1. Initial
+   preparation cap: 4 chunks, one validation retry total, 120 seconds wall time
+   and 4,096 aggregate generated tokens, further reduced by target limits and
+   the remaining logical run budget. No per-chunk reset of the cap.
+4. Validate schema, source existence/hash/scope, requirement coverage, artifact
+   references, supersession graph, contradiction preservation and B1 size.
+   Untrusted text cannot modify policy or create tools. A schema-valid summary
+   can still be wrong: deterministic checks and Q1 evidence probes are needed.
+5. Commit a new revision transactionally against the captured source revision;
+   expose the retained/summarized/omitted coverage and actual cost. Raw history
+   and prior valid revision remain intact on failure, cancellation or restart.
+6. Use memory plus recent original tail and, once G1 ships, retrieved originals.
+   Retry at most within the preparation cap; if a huge legacy conversation
+   needs more work, checkpoint coverage and offer a bounded next preparation
+   batch. Do not secretly run hundreds of summary calls or send 239K to a 32K
+   target. Routine fitting conversations require no manual message selection.
+
+Large memory is paged by claim/source relevance; retained durable records do
+not all enter every prompt. Never recursively compress the sole semantic copy.
+Periodic quality checks regenerate selected claims from originals, not endless
+summary rewording. Compaction is lossy; original recovery, honest coverage gaps
+and measured task continuation quality are the product contract.
+
+## Project Memory and Freshness
+
+M1 establishes workspace ownership and promotion security before M2 shares
+knowledge. Conversation memory remains private by default, project memory is
+explicitly scoped shared knowledge, and agent/task memory is a temporary view.
+CLACK.md/TERAX.md remain user-maintained project instructions, not files an
+automatic extractor may rewrite to publish memory.
+
+Promotable project records include architecture, verified interfaces and file
+ownership, conventions, known bugs, completed milestones, test state and
+user-approved requirements/decisions. Promotion must record specific claim and
+evidence refs, sharing scope, author/agent, verifier, policy revision and consent.
+Default is preview and authorization; a user may grant a bounded workspace
+policy for verified findings, not blanket access to all private conversations.
+Do not promote secrets, hidden reasoning, personal chat context or unsupported
+agent assertions. Recipients receive only authorized evidence slices, never a
+source-session browsing grant. A cross-workspace promotion is separately
+authorized or refused; renaming/moving a folder cannot implicitly create one.
+Users can inspect sources, correct, revoke or supersede a record. Corrections
+create revisions; they do not falsify old evidence.
+
+Freshness is a dependency problem, not a repository-wide reread on every turn:
+
+- Index claim -> source dependencies: workspace/checkout/path, content hash,
+  source span, Git base where relevant, artifact/task-result revision and test
+  environment. Watcher/Git/tool-write events mark possible staleness; hashes
+  of the relevant current content establish change. Mtime, filename and clean
+  Git status alone are insufficient, including for untracked files.
+- At use, reauthorize and compare relevant evidence with the correct checkout.
+  Coalesce events and hash only the affected/dependency closure; after restart
+  or missed events, lazily revalidate before trusting a claim. For non-Git use
+  canonical paths plus content hashes. Deleted/renamed sources get explicit
+  invalidation or validated relocation, not automatic filename matching.
+- If a file/decision changes, preserve old evidence as historical, invalidate
+  derived summaries/review/test claims, retrieve current content and produce a
+  replacement or contradiction. Hash equality proves content identity, not
+  that a test still applies to a changed dependency or environment.
+- Another agent's edit updates only its actual checkout until reviewed/applied.
+  A review carries reviewed hashes/base; after overlapping change, its approval
+  is stale and must be refreshed. Existing leases, read-before-edit checks and
+  explicit patch apply stay authoritative; project memory cannot authorize a
+  stale overwrite or call an unmerged worktree change current main state.
+- Bound invalidation batches and inference; unresolved external edits surface
+  uncertainty and block unsafe mutation. Never overwrite an explicit user
+  constraint because a summary or current file disagrees.
+
+## Automatic Evidence Retrieval
+
+G1a retrieves from the owning conversation and its authorized immutable
+artifacts. G1b adds authorized project documents/current files, promoted project
+knowledge, related PeerTask results and other agents' explicitly shared evidence
+after M1/M2. No arbitrary private chat search, hidden cloud embeddings or new
+vector database. First use source-ID lookup plus local lexical/metadata ranking;
+indexes accelerate access but are not authoritative evidence.
+
+Trigger retrieval automatically for uncovered history, missing citations,
+stale/conflicting claims, references to earlier decisions/files, unresolved
+task dependencies, a model's bounded request for detail, or failed context
+sufficiency checks. Do not require the user to say 'read the old messages'.
+Sufficiency is an imperfect heuristic, not a proof of understanding; an agent
+can ask for a bounded expansion, and uncertain conclusions must stay qualified.
+
+Filter authorization, workspace/checkout, session/task relation and secret
+policy before ranking and again before reading/delivery. Rank exact source
+refs, task/file relevance, verified current evidence and original user
+requirements above generic semantic similarity. A recent summary is not better
+evidence than the cited original. Search requests and excerpts are untrusted
+data, never higher-priority instructions.
+
+Initial hard limits: two retrieval/expansion rounds per preparation, at most
+12 evidence chunks, 64 KiB decoded excerpt bytes and 10 seconds local work;
+the smaller B1 remaining budget always wins. Preserve context around negations,
+file revisions and complete tool groups. Deduplicate by content hash plus
+source identity, record ranking reason, range, omitted counts and stale state.
+Cache only with policy/source revisions; changing permission invalidates hits.
+If evidence is missing, corrupted, deleted, unauthorized or cannot fit, return
+that state rather than a fabricated answer. Mandatory evidence absence blocks
+unsafe continuation; optional missing evidence is visible and qualified.
+
+Retrieval results join the same working-context builder and final B1 check.
+They never append synthetic user messages to the saved transcript or duplicate
+whole artifacts. View source opens the original message/result or immutable
+file revision; current-file navigation is labeled separately from historical
+evidence. Deleting an index loses speed, not the original record.
+
+## Target Context Preparation
+
+C2 extends the existing switch coordinator; no second model picker, new chat
+or direct set-model bypass. Required predecessors are C1a/C1b, G1a, M1/M2 and
+G1b so an apparently fitting stale summary does not become the switch contract.
+
+For a roughly 239K-token conversation moving to a smaller self-hosted model:
+resolve the target's actual context/output/tools/modalities and effort policy;
+capture conversation/profile/policy/workspace/source revisions; load validated
+memory and relevant current evidence; reconcile important stale facts; build a
+target-sized snapshot with protected instructions and recent paired history;
+recheck B1, capabilities and run locks; then commit selection and context pointer
+atomically. Preparation inference uses an already authorized route with its
+own B1/D1/E1 checks; choosing a target is not consent for an unrelated cloud
+summarizer. Any required transfer consent precedes target inference.
+
+Reuse validated snapshots only when conversation revision/coverage, referenced
+artifact hashes, memory revision, project evidence, policy/permissions, tool
+versions, target model/deployment/configuration, effort/output reserve and
+capabilities still match. Snapshot reuse is application-derived context reuse,
+not a promise of portable KV cache, prompt-cache hits or hidden reasoning.
+Changed metadata invalidates the affected view; untouched source extraction
+can remain reusable if independently valid.
+
+Before R2 and T1-T3 exist, C2 captures the current provider-default effort and
+static permitted-tool schema fingerprint. Those later checkpoints extend the
+same versioned snapshot key and rerun C2's invalidation tests; C2 must not
+invent future controls or depend on an unimplemented custom-tool registry.
+
+User flow: choose model in either existing selector -> 'Preparing this
+conversation for Qwen...' -> switch when safe, or 'Optimize and switch' if
+cost/privacy/unknown-capability confirmation is required. Advanced details show
+retained requirements, summarized ranges, retrieved sources, omissions, output
+reserve, estimated cost and nontransferable provider state. Routine preparation
+is automatic; never require selecting 100 old messages by hand.
+
+Cancellation, endpoint failure, missing evidence, unsupported modalities,
+stale async completion or inability to fit leave the old selection, committed
+memory pointer, task, transcript and attachment ownership unchanged. Candidate
+records are uncommitted and recoverable/collectable, not partially active.
+Revalidate after every await and immediately before durable commit; rollback
+must restore the matching selection/context pair after restart. Actual next
+adapter request, not the label alone, proves success. Unknown image accounting
+remains a B1 blocker until separately supported and tested.
+
+## Peer Communication and Handoffs
+
+H1/H2 extend PeerTask schema/events, coordinator, permission checks and existing
+queue. They do not introduce a second mailbox service, scheduler or agent run
+engine. Independent conversations retain their own model, context and policy.
+
+Supported intents: question, delegation, review request, clarification request
+and reply, finding/artifact return, blocked status, completion notification and
+authorized follow-up work. Every interaction carries runtime-verified source
+and target agents/sessions, workspace, task/event ID, parent/root, reply-to,
+context/artifact refs and authorization revision. Routing by display name alone
+is forbidden. A task reply is attached to its owner, not injected as an unrelated
+message in the currently visible conversation.
+
+Task-specific handoff contains exact mission and acceptance criteria, relevant
+user requirements/constraints, necessary architecture and files, authorized
+attachments, prior findings with evidence status, prerequisite results, immutable
+artifacts, source-linked memory and explicit missing/uncertain information.
+Intersect sender's transfer authorization with recipient's read/tool/workspace
+policy. No source transcript dump, credentials, private unrelated context or
+hidden reasoning. An artifact reference is not blanket permission to browse
+its originating chat. Delegation to another endpoint must respect data-transfer
+policy and disclose the destination, including local-to-cloud changes.
+
+H2 packages for recipient model/context, actual capabilities, allowed tools,
+task type, output reserve, current project revisions and B1 budget. A cloud
+Coder can send a small local Reviewer a precise requirement, immutable diff,
+reviewed base and relevant evidence, with authorized retrieval/clarification
+for omitted detail. No invented vision conversion or implicit archive expansion.
+
+Communication lifecycle within the task ledger:
+
+1. Validate intent, relation, payload, policy and finite root budget; persist
+   an event with an idempotency key before dispatch. A completion notification
+   does not by itself authorize another billed run.
+2. If recipient is busy, queue for its next safe settled boundary. Never mutate
+   active provider input or interrupt unrelated work. A waiting clarification
+   must not reserve an E1 slot. Existing write leases cannot be casually dropped;
+   a source holding a conflicting lease may answer a read-only clarification
+   at a safe boundary, otherwise report blocked instead of deadlocking.
+3. Clarification references the exact task, question and needed source/revision.
+   Route to the source/coordinator or authorized evidence owner. Initial limit:
+   two clarification round trips/task, four/root and 10 minutes unattended wait,
+   all within existing task/run ceilings; count inference and follow-up work.
+   Persist the deadline across restarts. Repeated no-progress questions block
+   visibly; user escalation occurs when authority/evidence cannot resolve them.
+4. Deliver each event once to the logical recipient using a durable receipt and
+   payload digest. Distinguish queued, delivered, acknowledged and answered;
+   acknowledgement is not task completion. Validate reply-to/owner/version
+   before resuming the waiting task with fresh context and permissions.
+5. Results and review artifacts update the existing durable result/aggregate
+   path. Source notification and permitted continuation are visible and bounded.
+   Dependency failures block downstream only; independent siblings continue.
+   Existing cycle/hop/root/global limits also govern new follow-up edges.
+
+Persist causal ordering and dedupe before continuation. Crash between receipt
+and a tool effect leaves an ambiguous execution record requiring reconciliation,
+not replay. Exactly-once external shell/API effects cannot be guaranteed. On
+restart, dead runs remain interrupted/failed under current recovery rules;
+pending communication is revalidated before a new explicitly authorized run.
+Missing/deleted source/target, changed agent/model, revoked permission, offline
+endpoint or missing artifact creates a durable actionable state, not rerouting
+to a similar-looking chat. Cancelled/terminal task transitions win late replies.
+
+H2 also enforces review freshness using M2. Shared edits keep workspace leases;
+parallel local Git edits keep isolated worktrees and explicit review/apply.
+Detect changed reviewed hashes, dirty/stale patch bases and overlapping edits.
+Do not merge semantic conflicts automatically. Programmatic follow-up may ask
+for correction; applying returned changes still uses the established approval
+and native patch checks.
+
+## Reasoning Activity and Effort
+
+R1 extends existing message/tool/PeerTask/status views with a chronological
+activity projection, not another execution log that competes with those owners.
+Correlate session, agent/model, run, attempt, tool call, PeerTask/event and file
+revision. Persist necessary event refs through existing owners and derive the
+view; show ordering uncertainty honestly if a provider gives no timestamps.
+
+Four separate content kinds are mandatory: provider-exposed displayable
+reasoning, provider-supplied reasoning summary, normal assistant progress text,
+and runtime/tool events. Hidden chain of thought is never reconstructed,
+fabricated, requested for UI completeness or labeled as available when absent.
+Do not parse arbitrary assistant prose into 'reasoning'. Opaque provider state
+is not displayed or transferred as portable knowledge.
+
+Compact expandable groups show objective/current progress, tool calls and
+results, reads/searches/edits/commands, files, delegation/messages/dependencies,
+approval state, actual retry attempts, recoverable/final failures and completion.
+Source links and redacted effective parameters are inspectable. Sanitize secrets
+before persistence/display/export; tool output remains untrusted even when
+rendered beside reasoning. No full-prompt diagnostic logging. Preserve Clack
+theme, custom backgrounds, blur, density, keyboard/focus and pane ownership.
+
+R2 owns functional effort, separately from reasoning visibility. Default
+Automatic preserves the provider/model's evidenced default without inventing
+an effort value. Offer Low/Medium/High or other levels only when the exact
+model, deployed API and installed adapter support them. Unknown support is
+honestly unavailable; unsupported models have no decorative selector. A display
+reasoning toggle cannot promise deeper inference.
+
+One pure capability resolver returns supported levels, selected/effective
+value, request mapping and evidence revision. Store idle choices per conversation
+and model selection, capture them in immutable runs and keep controls locked
+through retries/approvals/continuations/cancel drainage. Chat B cannot alter A.
+On model change, revalidate a saved choice; never silently send an unsupported
+level or claim that a label took effect. Do not mutate an active run's request.
+
+Provider adapters own wire translation: Responses reasoning object versus
+Chat Completions reasoning_effort, or an explicitly supported provider-specific
+thinking budget/level. These are mapping candidates to verify against the
+installed SDK and official contract, not universally supported fields. Self-hosted
+thinking/effort requires route/deployment evidence, not a model-name substring.
+No extra field is sent to strict APIs by guesswork. Intercept actual requests
+for every supported mapping; show selected and effective parameters in Advanced.
+
+Reasoning tokens may consume output/context without visible text. R2 feeds
+actual output limits and evidenced reasoning reservations into B1, reports
+unknown accounting, and uses E1/D1 for latency/capacity. Effort changes invalidate
+prepared context if reserves change. Do not count reasoning twice or assume
+high effort has a universal token multiplier. Usage-only hidden token counts
+are metrics, not displayable reasoning content.
+
+## Custom Tools and Security
+
+T1/T2/T3 add user-created tools through visible agent/settings controls while
+reusing the existing tool builder, permissions, approvals, run budgets,
+execution history and native OS boundary. Skills/instructions are prompt
+material, not executable tools and never permission grants.
+
+Definition: stable ID/name/description, version/hash, bounded input/output JSON
+schemas, execution kind, explicit executable/argument or API/MCP binding,
+workspace/environment scope, allowed agents/conversations, required filesystem,
+shell/network privileges, credential references, timeout/output limits and
+enabled state. Reject reserved/built-in name collisions, recursive/unbounded
+schemas, remote schema references, huge descriptions, unknown execution kinds
+and hidden defaults that broaden access. JSON parsing/schema validation uses
+structured libraries already present where suitable, not eval or string-built
+shell commands. Output is bounded, validated and labeled untrusted.
+
+Normal lifecycle: create draft -> validate -> review exact definition/permissions
+-> authorize scoped registration -> safe test -> enable/assign -> execute through
+the ordinary approval/runtime path. Test is a real potentially effectful run:
+preview exact inputs and boundaries, require appropriate approval, and never
+claim a dry-run for a script/API that cannot provide one. User can edit as a new
+version, disable, remove, inspect calls/errors and restore after restart without
+modifying Clack internals. No automatic package downloads or server startup.
+
+Agents may propose definitions and test inputs but cannot authorize, enable,
+assign broader scopes, install dependencies or elevate permissions themselves.
+Registration approval and invocation approval are distinct. UI labels clearly
+separate a proposal, validated definition, authorized registration and successful
+test. Scope is explicit agent/conversation/workspace or separately user-approved
+global availability; global availability never means global filesystem/network
+authority. Defaults select the current agent and conversation/workspace only.
+
+Security intersection on every call: definition grants, assigned agent/session,
+captured workspace/checkout, current revocations, existing permission profile,
+native workspace/secret policy, OS/Tauri capabilities and execution-kind limits.
+Full Access skips eligible Clack prompts, not platform restrictions or tool
+scope. Sender permissions never override recipient policy. Registry/schema/MCP
+descriptions are untrusted data; instructions inside results cannot enable tools.
+
+T2 initially supports declarative calls composed from existing guarded native
+operations and explicitly configured bounded HTTP bindings where those guards
+are sufficient. Generic local functions/scripts and local MCP servers cannot
+be confined by a JSON permission declaration or a cwd alone: their child process
+can read files and make network calls outside Clack's wrappers. T3 must provide
+and verify an appropriate OS sandbox/process-tree/egress boundary on each
+supported platform before enabling those execution kinds. If unavailable, show
+unsupported/blocked, including in Full Access; never silently launch an
+unconfined script. Remote MCP/API services also cannot be claimed to share the
+local sandbox: consent names the external destination and transmitted data.
+
+Native execution uses explicit argv/stdin, no argument interpolation into shell
+source; explicit workspace-root/path validation including symlinks, minimal
+environment, keyring-scoped secret injection, bounded time/output/process tree,
+cancellation and egress restrictions. Filesystem mutations retain write leases,
+read-before-edit and review/apply requirements. MCP sampling/elicitation, if
+supported later, cannot bypass inference admission, provider consent or user
+approval; unsupported requests are refused. Disabling/removing/revoking a tool
+blocks new calls immediately; in-flight cancellation is attempted with truthful
+unknown-effect reporting. Frozen run versions do not override revocation.
+
+Active runs capture immutable tool definitions and schemas. Edits cannot change
+already-approved arguments or executable bytes; changed bytes/hash require new
+review. Old version metadata remains for history even after removal, but is
+not executable by default. Restart never replays a completed or ambiguous tool
+effect. Pending approvals expire under existing rules. Registry persistence
+stores no raw credentials or automatically executed startup hooks. Chat links
+to versioned proposals/results instead of becoming the executable registry.
+
+F1 chooses task-relevant schemas only after assignment and permission filtering,
+including custom tools. Keep the required active/unresolved tools and result
+pairing, plus a bounded authorized discovery path for newly relevant tools.
+Omission from the prompt is not authorization; executor rechecks the same
+allowlist. Recompute B1 when schema versions/exposure change. No proliferation
+of tools just because a large model can accept them.
+
+## Integrated UX and Resource Policy
+
+Normal workspace actions remain visible through the workspace chip, breadcrumb
+and explorer folder context menu. The command palette is a backup/power-user
+route. This program does not repurpose it as the primary workspace UI.
+
+Use existing split panes, Dispatcher, chat headers, task cards and delegation
+entry points. Actions include 'Ask another agent', 'Send for review' and a
+scoped Tools entry. States include 'Waiting for Reviewer', 'Reviewer requested
+more information', 'Coder received Reviewer's findings' and 'Changes ready for
+review'. Show real agent names plus model/workspace when needed for ambiguity.
+Inspect who owns work, transferred context/artifacts, approvals, dependency or
+clarification waits, results, affected files and patch review without a new
+dashboard. Context details show sources/coverage; effort uses supported options;
+tools show version/scope/test status. Keep normal workflows automatic and
+advanced details optional. Visible controls must do real work.
+
+Bound dialogs to viewport with stable header/footer and independently scrolling
+body; long names, JSON and paths wrap or scroll in their own region. No nested
+floating cards or horizontal page overflow. Validate narrow split panes, 320px
+viewport, 200% zoom, keyboard-only focus, screen-reader labels, backgrounds and
+blur. Do not overwrite the unrelated delegation-dialog working-tree edits.
+
+All extraction, repair, switch preparation, agent clarifications and tool-driven
+inference share B1 accounting, E1 native admission and D1 cancellation/deadlines.
+No inference permit while waiting for a human, tool, write lease or child.
+Respect existing logical PeerTask/run ceilings in addition to endpoint slots.
+E1 currently marks a dispatched PeerTask running even if its HTTP attempt waits
+for capacity; do not present queued native inference as a new durable task state
+or silently rewrite E1 semantics. Lock-order tests must cover capacity-one
+parent/child/clarification and shared-write combinations.
+
+Optimize by incremental coverage, hash-validated evidence caches, coalesced
+project invalidation, source-ID retrieval before lexical expansion, deduplicated
+artifacts and stable prompt sections. Avoid repeated transcript serialization,
+full-repo scans, per-pane polling and every-turn summary calls. Measure cold and
+warm preparation, bytes read/hashed, estimate/actual tokens, summary calls,
+retrieval hits/misses, queue time and invalidation counts with redacted metadata.
+Initial resource bounds in this plan are testable caps, not performance claims.
+No optimization may change provider destination, drop protected context, weaken
+permissions or rely on a provider cache for correctness.
+
+## Advanced Recovery Contract
+
+| Interruption | Recovery invariant and owning checkpoint |
+| --- | --- |
+| During transcript/memory persistence | C1a/C1b recover committed original revision and last valid memory; incomplete candidate stays inactive. Verify fault injection before and after each durable write. |
+| During switch preparation/commit | C2 restores matching selection/context pair or old pair, never half a switch; stale async preparation cannot publish into another session/workspace. |
+| During project promotion/invalidation | M1/M2 recheck authorization and source digests; pending proposal is not shared, unverifiable record is stale, correction never silently replaces user intent. |
+| During queued/busy/clarifying PeerTask | H1/H2 replay no model stream; reconcile events/receipts/dependencies and expired waits before dispatch. Deleted identities/artifacts block with retained provenance. |
+| After command/API may have executed | T2/T3 and existing runtime preserve call/effect IDs and partial result; unknown effect requires reconciliation, not an automatic retry or exactly-once claim. |
+| During tool proposal, test, update or revoke | T1-T3 restore immutable versions and committed authorizations; no startup execution, no approval resurrection and no silent re-enable. |
+| Workspace/model/agent changes while work is pending | Captured identity remains authoritative. Revalidate pending operations at safe boundaries; current visible pane cannot redirect another conversation's work. |
+| Window close, disconnect or process crash | D1/D3 and existing sessions/PeerTask recovery retain partial output, stop client work and mark dead runs interrupted/failed. No claim that a dead provider stream resumed or remote GPU work certainly stopped. |
+
 ## Checkpoint Order and Gates
 
 Checkpoint letters preserve the requested domains; execution order moves D1
@@ -583,6 +1175,20 @@ split into small additive commits. Advanced pin semantics begin with profiles,
 not a last-minute UI retrofit. G items are optional at runtime, but tracked
 roadmap deliverables, not silently excluded from completion.
 
+2026-09-19 ordering revision: C1 is an umbrella with two separately committed
+gates so storage integrity precedes automatic lossy extraction. G1 moves from
+late polish to the context-critical path and splits into same-conversation and
+authorized-project retrieval. M1 establishes security/ownership before M2
+shared knowledge and G1b retrieval. C2 follows these so small-target preparation
+can recover original/current evidence rather than merely fit a stale summary.
+H1/H2 build collaboration on those owners. R1 and R2 separate truthful activity
+from functional effort. T1/T2 separate definition/consent and guarded execution;
+T3a/T3b/T3c separate confinement, scripts/functions and MCP. F1 follows tool
+versions/effort so efficiency cannot
+invalidate their safety/accounting. Original D2/D3/E2/F2/G2/G3 obligations remain;
+U1 and Q1 add integrated UX and quality gates before final Z hardware acceptance.
+This order does not authorize any pending implementation in this planning task.
+
 | Order | Checkpoint | Scope | Status | Commit / evidence |
 | --- | --- | --- | --- | --- |
 | 1 | A1 | Endpoint/profile identity, evidence and override persistence | Complete | `feat(ai): add self-hosted endpoint profiles`; [implementation record](#a1-implementation-record) |
@@ -591,17 +1197,32 @@ roadmap deliverables, not silently excluded from completion.
 | 4 | D1 | Native cancellation, request lifecycle, truthful timed states | Complete | `fix(ai): harden inference request lifecycle`; [implementation record](#d1-implementation-record) |
 | 5 | E1 | Shared inference admission and PeerTask integration | Complete | `feat(ai): add endpoint inference capacity`; [implementation record](#e1-implementation-record) |
 | 6 | B1 | Actual context budgets and shared request preflight | Complete | `feat(ai): add shared context budget preflight`; implementation record below |
-| 7 | C1 | Structured rolling memory and automatic compaction | Pending | None |
-| 8 | C2 | Optimize and switch integration | Pending | None |
-| 9 | D2 | Length continuation, stitching and tool repair safety | Pending | None |
-| 10 | D3 | Partial-stream/offline recovery | Pending | None |
-| 11 | E2 | Passive calibration and optional bounded optimization | Pending | None |
-| 12 | F1 | Relevant tools, compact prompt parity and cache awareness | Pending | None |
-| 13 | F2 | Watchdogs, compact health UX and advanced polish | Pending | None |
-| 14 | G1 | Bounded session-context retrieval | Pending | None |
-| 15 | G2 | Explicit optional network discovery | Pending | None |
-| 16 | G3 | Consent-bound fallback routing | Pending | None |
-| 17 | Z | Integrated native/hardware validation and documentation | Pending | None |
+| 7 | C1a | Session source identity and transactional memory foundation | Pending | None |
+| 8 | C1b | Bounded structured extraction and automatic compaction | Pending | None |
+| 9 | G1a | Automatic same-conversation evidence retrieval | Pending | None |
+| 10 | M1 | Project memory ownership, promotion policy and inspection | Pending | None |
+| 11 | M2 | Verified project knowledge and incremental freshness | Pending | None |
+| 12 | G1b | Authorized project/task evidence retrieval | Pending | None |
+| 13 | C2 | Target-sized preparation and atomic Optimize and switch | Pending | None |
+| 14 | H1 | Durable task-scoped communication and clarification | Pending | None |
+| 15 | H2 | Recipient-aware handoffs and coordinated review | Pending | None |
+| 16 | R1 | Truthful reasoning and chronological activity | Pending | None |
+| 17 | R2 | Supported effort controls and actual request mapping | Pending | None |
+| 18 | T1 | Custom-tool definitions, validation and scoped authorization | Pending | None |
+| 19 | T2 | Guarded tool execution, testing and lifecycle | Pending | None |
+| 20 | T3a | Native confinement contract and tested platform support | Pending | None |
+| 21 | T3b | Authorized confined scripts/functions | Pending | None |
+| 22 | T3c | Explicit scoped MCP connections and tools | Pending | None |
+| 23 | F1 | Relevant schemas, compact prompt parity and cache awareness | Pending | None |
+| 24 | D2 | Length continuation, stitching and tool repair safety | Pending | None |
+| 25 | D3 | Partial-stream/offline recovery | Pending | None |
+| 26 | E2 | Passive calibration and optional bounded optimization | Pending | None |
+| 27 | F2 | Watchdogs, compact health UX and advanced polish | Pending | None |
+| 28 | U1 | Integrated collaboration/context/tool UX polish | Pending | None |
+| 29 | G2 | Explicit optional network discovery | Pending | None |
+| 30 | G3 | Consent-bound fallback routing | Pending | None |
+| 31 | Q1 | Context fidelity, freshness and collaboration quality suite | Pending | None |
+| 32 | Z | Integrated native/hardware validation and documentation | Pending | None |
 
 ### A1: Profiles and migration
 
@@ -1411,22 +2032,236 @@ structured rolling memory and automatic compaction. C1/C2/D2/E2 are not started.
 
 ### C1: Structured rolling memory
 
-Own derived session-memory revisions, bounded extraction/validation and
-transactional compaction. Use E1/D1 for all extraction requests and B1 to fit
-them. Acceptance: long chats retain requirements/decisions/open issues and
-recent verbatim tail, raw transcript hashes remain unchanged, no orphan calls,
-lost artifact refs or unbounded recursive summaries. Test crash/cancel,
-malicious source instructions, malformed memory, superseded decisions and
-missing content. Rollback discards only derived memory use, never raw history.
+Umbrella only, complete only when C1a and C1b have separate verified commits.
+Implement neither as part of this planning revision. Contract:
+[Conversation Memory and Compaction](#conversation-memory-and-compaction).
+
+#### C1a: Durable memory foundation
+
+Depends on completed B1/D1/E1. Scope: additive session/message source revisions,
+selection/run provenance, derived-memory schema/validation, original-coverage
+references, retention roots and transactional commit/recovery. Own no automatic
+summary calls, retrieval, project sharing, switch UX or agent communication.
+Migration must be idempotent and preserve old transcripts and current profiles.
+
+Acceptance: unchanged original-message hashes across migration; deterministic
+source IDs; rejected cross-session/stale/missing refs; pending or corrupt
+candidate never becomes active; crash before/after each write yields a valid
+old or new committed revision, including two windows racing to commit. Preserve
+referenced artifact/task-result evidence through GC and invalidate on explicit
+deletion. Test full disk, interrupted migration, old-reader behavior, malformed
+data and source branch edits. A/B/L storage assertions are the minimum gate.
+Rollback disables derived reads/commits and retains additive data/originals.
+Commit `feat(ai): add durable context memory revisions`, update ledger, STOP.
+
+#### C1b: Bounded automatic compaction
+
+Depends on C1a. Scope: protected-set assembly, incremental original-source
+extraction, typed claims/contradictions, coverage validation and automatic
+working-memory use through the existing agent preparation path. All summary
+calls use captured authorized identity and B1/D1/E1. No hidden cloud route.
+
+Acceptance: A/B fixtures retain all mandatory requirements, decisions, unresolved
+issues and paired recent history; transcript hashes unchanged; missing evidence
+reported; source text cannot promote itself into instructions. Repeated cycles
+read original uncovered spans and preserve claim/source identity. Enforce
+aggregate calls/tokens/time limits and block when protected content cannot fit.
+Test invalid JSON, invented citations, contradicted requirements, 239K legacy
+history, Unicode, cancellation, capacity-one operation and restart. No claim of
+semantic perfection from schema validation. G1 retrieval and C2 remain deferred.
+Rollback returns to existing elision/preflight and keeps valid memory/history.
+Commit `feat(ai): add bounded automatic context compaction`, update ledger, STOP.
+
+### M1: Project memory ownership
+
+Depends on C1a/C1b/G1a. Scope: canonical workspace/checkout keys, promotion
+proposal/authorization schema, visibility policy, provenance, revoke/correct
+actions and bounded source inspection. Reuse existing workspace/permission and
+content-store owners; do not create a global private-chat index.
+
+Acceptance: equal names/different roots and Local/WSL remain distinct; an
+unauthorized private claim never reaches another chat or index result; explicit
+promotion shares only selected evidence; corrected/revoked records invalidate
+derived views; restart does not publish a pending proposal. Test agent/user
+authority distinction, malicious citations, deleted sources and changed grants.
+E/K/L scope assertions apply. Automated knowledge extraction is deferred to M2.
+Rollback disables sharing, preserves private originals and promotion history.
+Commit `feat(ai): add scoped project memory ownership`, update ledger, STOP.
+
+### M2: Project knowledge and freshness
+
+Depends on M1. Scope: authorized verified project knowledge, source dependency
+map, event-driven dirty marking, hash revalidation, contradiction/supersession
+and incremental refresh. Do not rewrite CLACK.md/TERAX.md automatically.
+
+Acceptance: D/H changed-file and changed-decision scenarios mark stale claims,
+retrieve/reconcile current evidence and preserve explicit user constraints.
+Tests cover same-mtime changed bytes, untracked/renamed/deleted files, branch and
+checkout changes, test-environment dependencies, missed watcher events/restart
+and another agent's unapplied worktree. Count reads/hashes to prove unchanged
+unrelated files are not scanned each turn. No automatic semantic conflict merge.
+Rollback disables derived shared knowledge; keep revisions/provenance and demand
+fresh direct evidence when required. Commit `feat(ai): track project evidence
+freshness`, update ledger, STOP.
 
 ### C2: Optimize and switch
 
-Extend the shared modelSwitch coordinator and existing notice UI. Acceptance:
-prepare smaller target safely, prove real next-request routing and full
-capability gate; abort/message/settings/run changes invalidate preparation;
-no premature selection, no transcript rewrite, no unsupported images hidden.
-Test both pane and status-bar selectors and active-run locks. Rollback restores
-the existing block/warn preflight and ignores derived target memory.
+Depends on C1a/C1b, G1a/G1b and M1/M2. Extend the shared modelSwitch coordinator
+and notice UI with [Target Context Preparation](#target-context-preparation).
+Acceptance: C plus A/D shows a large conversation prepared for a smaller target
+without manual history reconstruction; real next-request routing, source-aware
+context and full capability gates pass. Test cache hit and invalidation for
+every snapshot key, cancellation at each await, partial durable commit/restart,
+unsupported images, no-fit mandatory content and stale project evidence.
+Both pane/status-bar selectors stay locked through active runs and drainage.
+No failed switch changes committed selection, memory, task or attachments;
+transcript hashes remain unchanged. No automatic fallback/provider-cache transfer.
+Rollback restores existing block/warn preflight and ignores target snapshots.
+Commit `feat(ai): prepare context for safe model switching`, update ledger, STOP.
+
+### H1: Task-scoped communication
+
+Depends on C2 and existing PeerTask lifecycle. Scope: additive typed communication
+events, authenticated explicit routing, reply-to/receipt/dedupe, safe-boundary
+delivery, clarification waits and permitted result follow-up in the same ledger.
+Do not implement a second scheduler or mutate another Chat directly.
+
+Acceptance: E/G/L route a question and reply to the right task/session, queue
+busy recipients, resume authorized work once and stop bounded no-progress loops.
+Test spoofed source IDs, cross-workspace roots, target deletion/profile change,
+source busy, cancellation races, expired waits, offline endpoints, corrupt
+artifacts and restart between receipt and continuation. Side-effect ambiguity
+must pause. Verify capacity-one and lease-holder clarification cannot deadlock.
+Recipient-sized semantic handoffs are H2, not hidden extra work in H1.
+Rollback disables new sends/automatic wake-up, keeps readable events and existing
+task results. Commit `feat(ai): add scoped peer clarification`, update ledger, STOP.
+
+### H2: Recipient-aware collaboration
+
+Depends on H1 and M2/G1b/C2. Scope: task-specific target-budget packaging,
+authorized evidence retrieval, verified findings promotion, dependency/result
+delivery and hash-bound review/correction flow. Reuse immutable artifacts and
+existing shared-write/worktree/review-apply lanes.
+
+Acceptance: E/F/H cloud Coder, small local Investigator/Reviewer and returned
+correction retain identities, critical requirements and immutable provenance;
+no full private transcript leaks. Missing context triggers bounded retrieval
+or clarification. Changed reviewed files invalidate findings/apply eligibility;
+dependent failures block downstream, siblings continue, completed tools are
+not repeated. Test unavailable small targets and refusal of unauthorized
+tool/artifact access. U1 owns final visual polish, not a new orchestration engine.
+Rollback uses explicit task prompt/artifact packaging and preserves all events.
+Commit `feat(ai): prepare evidence-aware peer handoffs`, update ledger, STOP.
+
+### R1: Truthful activity presentation
+
+Depends on H2. Scope: correlated chronological view over existing message/tool,
+inference and task events; distinct provider reasoning/summary/progress/runtime
+kinds and compact source-aware details. No synthetic reasoning or new run owner.
+
+Acceptance: I fixtures for exposed reasoning, summary-only and none render the
+correct labels and ordering; inspect files, tools, attempts, approvals, messages,
+errors and completion live and after restart. Test cross-chat isolation,
+redaction, provider event duplication, missing timestamps, long content and
+collapsed/narrow views. Effort changes remain R2. Rollback restores existing
+message/tool rendering without deleting history. Commit `feat(ai): clarify
+reasoning and agent activity`, update ledger, STOP.
+
+### R2: Functional reasoning effort
+
+Depends on R1 and B1. Scope: evidenced supported-level resolver, per-chat/model
+selection, immutable run capture, actual adapter mapping, output accounting
+and Advanced effective parameters. Automatic is the default, not a fake level.
+
+Acceptance: J intercepts each supported provider's serialized request for each
+exposed option and asserts exact wire fields plus B1 reserves. Unsupported or
+unknown models cannot submit guessed parameters. Test two chats, model switch,
+retry/continuation, old preferences, revocation/config changes, capacity-one
+latency and no active-run mutation. Display visibility is independent of effort.
+Do not promise levels across all self-hosted engines. Rollback ignores idle
+effort overrides, preserves their history and uses evidenced provider defaults.
+Commit `feat(ai): map supported reasoning effort`, update ledger, STOP.
+
+### T1: Tool definitions and authorization
+
+Depends on R2 and M1. Scope: bounded versioned definitions, schema validation,
+visible create/propose/review/assign/disable/remove controls, authorization and
+persistence within the existing tool ownership boundary. No executable kind
+becomes active until its T2/T3 runtime exists; unsupported controls are truthful.
+
+Acceptance: K creates a draft without editing app internals; validation rejects
+unsafe schemas/collisions; one agent can be assigned, another cannot; agent
+proposals require user authorization; scope cannot expand through a description.
+Test migration, edit-as-new-version, active-run version freeze, revocation,
+restart and secret-free storage. Executing a safe test is T2, not simulated
+success. Rollback disables custom registrations, retains definitions/history.
+Commit `feat(ai): add scoped custom tool definitions`, update ledger, STOP.
+
+### T2: Guarded tool execution
+
+Depends on T1. Scope: reviewed declarative native-operation/HTTP bindings,
+approval-aware safe testing, bounded output/schema validation, execution records
+and lifecycle through existing tool/native/run controls. No arbitrary script,
+function plugin or MCP process is launched without T3 confinement.
+
+Acceptance: K/L run a scoped tool, show real result, deny another agent, reject
+secret/outside-workspace/unauthorized-network access and prevent changes to
+approved version/arguments. Test actual timeout/cancel, output floods, denied
+approval, native error, symlink/path traversal, environment/credential leakage,
+disable mid-run and crash with unknown effect. No automatic effect replay.
+Rollback disables execution while preserving results/definitions and marking
+unfinished calls interrupted. Commit `feat(ai): execute authorized custom tools`,
+update ledger, STOP.
+
+### T3: Confined scripts and MCP
+
+Umbrella only. T3a/T3b/T3c are separate commits and stop boundaries; no bundled
+agent runtime, automatic package installer or marketplace. Preserve existing
+shell behavior; these are new custom-execution boundaries, not an unrelated
+rewrite of Clack's ordinary terminal or shell tools.
+
+#### T3a: Native confinement boundary
+
+Depends on T2. Scope: version-pinned dependency/license review, execution policy
+contract, native process/filesystem/secret/egress enforcement and a truthful
+platform support matrix. Implement/test the available host first; other hosts
+remain blocked unless independently verified in explicit platform subcommits.
+No user script registration or MCP transport in this checkpoint.
+Acceptance: native adversarial fixtures cannot escape declared roots, read
+denied secrets, inherit unsafe environment, bypass egress or leave descendants
+after cancellation. OS limits and unavailable capabilities are explicit, not
+mocked support or Full Access bypasses. K/L confinement assertions are required.
+Rollback disables the new boundary/unsupported execution kinds, preserves
+records, and does not weaken existing shell policy. Commit `feat(ai): enforce
+custom execution confinement`, update ledger, STOP.
+
+#### T3b: Confined scripts and functions
+
+Depends on T3a. Scope: explicit interpreter/executable selection, immutable
+reviewed code/argv/schema versions, scoped registration, approved testing and
+bounded execution through T3a and existing run history. No in-process arbitrary
+plugin evaluation, dependency installation or MCP connection.
+Acceptance: K/L real scripts use only authorized resources; changed code/hash
+requires renewed review; output flooding, child processes, timeout, cancellation,
+revocation and crash produce truthful bounded states with no effect replay.
+Unsupported platforms cannot enable the tool. Rollback disables these bindings
+and preserves definitions/results/unknown-effect records. Commit `feat(ai): run
+authorized confined scripts`, update ledger, STOP.
+
+#### T3c: Scoped MCP tools
+
+Depends on T3a/T3b. Scope: explicitly configured local/remote MCP transports,
+bounded discovery/schema registration, credential references, lifecycle and
+external-data consent through T1/T2. Local processes require T3a confinement;
+remote services are not described as locally sandboxed.
+Acceptance: K/L test lying annotations, malicious descriptions/results, schema
+changes, scoped agent assignment, reconnect duplicates, revoked credentials,
+response size/time limits and process cleanup. No automatic server installation,
+sampling inference, elicitation approval or startup tool execution. Unsupported
+protocol actions fail explicitly. Rollback disconnects owned connections,
+disables bindings and preserves definitions/history; ambiguous remote effects
+remain unresolved. Commit `feat(ai): connect scoped MCP tools`, update ledger,
+STOP. T3 is complete only with separate supported-kind/platform evidence.
 
 ### D2: Safe length continuation
 
@@ -1460,6 +2295,15 @@ Rollback freezes recommendations and disables sampling without losing pins.
 
 ### F1: Efficiency with policy parity
 
+Depends on R2 and T1-T3, as well as context/handoff preparation. Relevant
+schema exposure includes versioned custom tools; a bounded authorized discovery
+path may supply additional permitted tools only at safe request boundaries.
+Never omit an active/unresolved call's required schema or silently invalidate
+an approval. Repeat B1 after exposure changes, test deterministic selection and
+measure small-target schema cost/quality before and after selection. Cache keys
+include source, target, policy and tool revisions; privacy/permission scopes
+never widen for cache reuse.
+
 Own permission-intersected tool selection, prompt variant experiments and
 stable-prefix composition. Acceptance: same security rules and required user
 constraints; denied tools remain denied; no omitted unresolved tool results;
@@ -1480,11 +2324,69 @@ new detectors/UI without clearing profiles or altering existing run ceilings.
 
 ### G1: Relevant history retrieval
 
-Own local bounded retrieval over authorized session/artifact references with
-B1 accounting. Acceptance: long-history query finds original evidence, follows
-source links, respects deletion/security/scope, does not rewrite transcript or
-leak another workspace. No new external embedding service. Rollback removes
-only rebuildable indexes and falls back to structured memory/recent tail.
+Umbrella, complete only after separately verified G1a/G1b. Both implement
+[Automatic Evidence Retrieval](#automatic-evidence-retrieval), not a global
+search grant or extra transcript store.
+
+#### G1a: Same-conversation evidence
+
+Depends on C1b. Scope: bounded source-ID/lexical lookup over original owning-chat
+messages/tool results and authorized immutable attachments, automatic missing-
+evidence triggers, anchored expansion and B1 integration. Acceptance: A/B query
+historical facts absent from memory and recover the correct original evidence
+with valid links; never return invented, deleted or another chat's private
+content. Test relevance/negation, call pairing, corrupt blobs, huge results,
+permission changes, byte/time/round caps and index rebuild after restart.
+No shared project search yet. Rollback removes rebuildable indexes and uses
+memory/tail with an explicit insufficiency state, not guessed recall.
+Commit `feat(ai): retrieve original conversation evidence`, update ledger, STOP.
+
+#### G1b: Project and task evidence
+
+Depends on G1a/M1/M2. Scope: add current project files/documents, authorized
+promoted knowledge and related PeerTask results/artifacts to the same retrieval
+path with freshness and recipient-specific scopes. Acceptance: D/E/F retrieve
+current relevant evidence, retain historical provenance and reject private or
+cross-workspace content. Test checkout confusion, revoked promotion, dependency
+revision changes, stale indexes and automatic insufficiency recovery without a
+user reread command. No external embedding service. Rollback disables additional
+sources while retaining G1a and all originals. Commit `feat(ai): retrieve scoped
+project and task evidence`, update ledger, STOP.
+
+### U1: Collaboration UX integration
+
+Depends on H1/H2, R1/R2, T1-T3 and F1/F2. Scope: integrated context/source detail,
+model preparation, collaboration/task status, scoped tool management and effort
+controls in existing surfaces. No dashboard or command-palette workspace rewrite.
+
+Acceptance: E-L native Tauri GUI flows are discoverable through visible actions,
+status is truthful, approvals/results stay with their pane, and large content
+does not overflow at narrow split widths/320px/200% zoom. Verify keyboard focus,
+screen-reader names, Stop/minimize/restore, theme/background/blur and the normal
+workspace chip/breadcrumb/explorer flow. Browser fixtures are supplementary,
+not native evidence. Preserve terminal, Source Control and unrelated dialog
+work. Rollback switches to existing views without deleting runtime records.
+Commit `feat(ai): integrate collaboration and context controls`, update ledger,
+STOP.
+
+### Q1: Integrated intelligence quality
+
+Depends on all functional checkpoints above and G2/G3. Scope: reproducible
+quality corpus, adversarial A-L suites, metrics and evidence report, not a late
+unscoped feature rewrite. Tests are built in each owning checkpoint; Q1 combines
+them and measures cross-feature behavior. Gate details are in Advanced Quality
+and Verification below.
+
+Acceptance: critical retention/source/scope/no-duplicate-effect assertions pass;
+repeated compaction, freshness and target switching are compared with original
+evidence, not only compression ratio. Agent investigation -> implementation ->
+review -> correction succeeds in bounded deterministic fixtures; injected
+contradictions, missing sources and provider/tool failure yield honest blocking.
+Record actual small-model results where available separately from unit/mock
+results; failures or missing hardware are explicit, never 'flawless'. Rollback
+retains corpus/results and disables the failing optimization at its owner;
+do not relax correctness thresholds to mark Q1 green. Commit `test(ai): verify
+context and collaboration quality`, update ledger, STOP.
 
 ### G2: Optional server discovery
 
@@ -1505,6 +2407,10 @@ block unsafe reroute. Test traffic captures containing private fixture data
 and revocation/restart. Rollback defaults to Never without deleting history.
 
 ### Z: Final integration and handoff
+
+Depends on Q1 and every preceding ledger item. Include advanced A-L as well as
+original S1-S13, with separate unit/integration/native GUI/real-provider/manual
+evidence. No completed old checkpoint is relabeled as advanced acceptance.
 
 Run the scenarios below on real localhost, LAN and compatible hardware where
 available; record backend/version/model/context/OS and observed limitations,
@@ -1552,6 +2458,76 @@ before coding, preserving its acceptance contract and ordering.
 | S12 | Invoke discovery and configure Never/Ask/trusted fallback policies with private fixtures. | No discovery before opt-in; no credential leakage; no external fallback traffic without correct consent; revocation works. Packet/request logs are redacted. |
 | S13 | Restart with queued PeerTasks, dependency failures, artifacts and partially generated replies; use Dispatcher/split panes. | Existing recovery, dependency/cancel/aggregate behavior, write leases/worktrees and input/focus behavior remain correct; no automatic duplicate execution. |
 
+## Advanced Acceptance Scenarios
+
+These A-L scenarios are mandatory in addition to S1-S13, not replacements.
+All are Pending for advanced behavior. Each owning checkpoint supplies focused
+tests; Q1 composes them and Z supplies native/real-server evidence. U = unit,
+I = integration with real serialization/storage and controlled fixtures,
+N = native Tauri GUI, P = real provider/server. N/P must not be inferred from I.
+
+| ID | Setup and actions | Required observable acceptance and fault variant | Owners / evidence |
+| --- | --- | --- | --- |
+| A | A very long original conversation has early prohibitions/numeric requirements, architecture decisions, failed tools, attachments, current unfinished work and a recent tool exchange. Prepare for a small context. | All critical requirements/decisions/current task and paired recent history survive; valid citations reopen original evidence; final B1 fits or blocks before HTTP. Compare raw transcript hashes before/after. Missing mandatory source or oversized protected set must block, not drop it. | C1a/C1b, G1a, Q1; U source/coverage oracle, I intercepted body, N source inspection, P small-model task continuation. |
+| B | Run at least ten compaction cycles, introduce new facts/corrections each cycle, then ask for facts omitted from the latest summary. | Recover correct original messages through automatic retrieval; no summary-of-summary lineage replacing originals, no lost unresolved requirement. Track retention/source validity after every cycle; injected misleading summary is rejected or corrected from evidence. | C1b/G1a, Q1; U/I repeated-cycle traces and corpus scorecard, P repeated-compaction answers. |
+| C | Switch roughly 239K of large-cloud history to a smaller authorized self-hosted target; repeat to cloud, then cancel/change settings during preparation. | Same conversation ID and durable originals; actual next provider/model routing changes only on successful commit; target-specific budget/tools/attachments validated. Snapshot cache invalidates correctly. Failure/cancel preserves old committed model/context/task/artifacts. | C2/R2, Q1; I adapter interception/transaction fault points, N both selectors, P actual small target. |
+| D | Create memory from files/decisions; another agent changes a relevant file, a user supersedes a decision, and an unrelated file changes. | Relevant claim/review/test evidence becomes stale, current source is compared and memory reconciled; superseded decision not presented as current. Unrelated file does not trigger a full-repo reread. Same-mtime byte change and missed watcher/restart are detected at use. | M1/M2/G1b; U/I hashes and invalidation/read counts, N inspect old/current sources, P continuation using changed state. |
+| E | Coder delegates research to Investigator, receives verified findings, implements, requests Reviewer review, then corrects a reported defect. Give each an independent chat/model. | Explicit source/target/root identity, dependencies, immutable artifacts, verified shared knowledge and inspectable status throughout. Private unrelated chat data never appears in intercepted payloads. Correction returns to proper owner; failed prerequisite blocks only downstream. | H1/H2/M2/U1; I three-session causal trace and privacy canaries, N complete workflow, P mixed cloud/local team. |
+| F | A large-context cloud source delegates a focused review to a small local target with relevant and irrelevant artifacts. | Target-sized handoff preserves mission/critical requirements and authorized evidence; excludes unrelated source history. Missing detail triggers bounded retrieval/clarification. Unsupported image or mandatory no-fit context blocks with explanation. | H2/G1b/B1/F1; I target body/cost/scope assertions, P small-model reviewer with known deployed limit. |
+| G | Delegate an ambiguous API-contract task whose source has the answer; make source busy, then available. Also create an unanswerable question. | Target asks appropriate source/coordinator, receives task-linked answer and continues once at a safe boundary, without needless user intervention. Unanswerable/repeated questions hit wait/round caps and show blocked; no chatter loop or lease/capacity deadlock. | H1/H2; U/I receipt, routing, fake-clock caps and capacity-one faults, N clarification views, P resolved task. |
+| H | Two agents edit related files in shared mode, then in isolated Git worktrees; user edits reviewed content before apply. | Shared writes serialize; isolated checkout identity stays distinct; existing read-snapshot and explicit patch checks prevent overwrites. Stale review invalidated, worktree artifacts remain immutable, dirty/conflicting patch stays unapplied. | M2/H2; I/native filesystem and Git tests, N review/conflict flow, P bounded collaboration; WSL/non-Git serialized-lane checks. |
+| I | Exercise provider-exposed reasoning, explicit summary-only and no-reasoning fixtures alongside tools, delegation, approvals and errors. | Distinct truthful labels/order/provenance; no fabricated hidden reasoning. File access, tool result, attempt, agent/task and terminal error can be inspected live and after restart. Secret canaries never reach display/export. | R1/U1; U/I event fixtures/redaction, N narrow/expanded activity, P supported providers with observed content kinds. |
+| J | Change each supported effort level in two chats, run, retry, continue and switch model; also use unknown/unsupported endpoint. | Actual outgoing backend field/value matches selected effective policy and B1 reserve; no fake unsupported control/parameter; active run pinned, other chat isolated. Reasoning visibility toggle does not alter effort. | R2; I installed SDK/wire assertions for every supported mapping, N controls/locks, P provider acceptance and usage where exposed. |
+| K | Create, validate, authorize, test and assign a tool to one agent; execute and inspect result; another agent attempts it. Repeat with agent-proposed tool, definition update and denial. | Only authorized agent/version/scope executes through native guards; registration/test/invocation approval semantics are real. Secret/network/outside-workspace attacks fail; no startup execution or silent self-authorization. Unsupported sandbox blocks scripts/MCP honestly. | T1-T3/F1/U1; U schemas/policy, I version/routing, native confinement fault tests, N authoring/assignment, real bounded tool/MCP fixture. |
+| L | Restart at memory commit, switch commit, queued clarification, dependency completion, artifact capture and tool-effect boundaries. Change workspace and revoke a grant before recovery. | Last valid originals/memory and consistent selection recover; correct IDs/receipts/versions/artifacts survive; dead runs stay interrupted/failed. No completed effect replay, stale async publication, approval resurrection or cross-workspace delivery. Unknown external effects explicitly await reconciliation. | C1a/C2/M1/H1/T2-T3/D3; I crash-point matrix, N process restart and durable state inspection, P disconnect/restart where available. |
+
+## Advanced Quality and Verification
+
+The fidelity corpus has original-source oracles, not just expected summaries.
+Include code, prose, non-English text, numeric constraints and negation, similar
+filenames in different workspaces, misleading tool output, fabricated citations,
+stale agent findings, reversed decisions, missing artifacts and edits by another
+agent. For A/B/C record requirements/decision retention, file/source correctness,
+unresolved-task continuation and unsupported claims after each preparation.
+For D/H measure stale-evidence detection and correct supersession. For E-G
+measure scope leakage, useful handoff content, bounded clarification and
+completed dependency/correction work. Compression ratio is secondary.
+
+Deterministic gates: 100% critical fixture requirements retained or explicitly
+blocked, 100% emitted source references valid and authorized, zero orphan tool
+pairs, zero unauthorized data/tool delivery, zero replay of a known completed
+effect, and all injected stale critical evidence reconciled or blocked. A test
+cannot pass merely by refusing every request: fitting healthy scenarios must
+complete and source-retrieval fixtures must retrieve their expected evidence.
+Include a separately scored noncritical recall/relevance/task-success corpus;
+record per-model results and regression deltas against uncompressed original
+context and current B1 elision, including where the full baseline cannot fit.
+Do not set a universal model-intelligence guarantee or hide failures behind an
+average score. A critical loss or unsafe action blocks its checkpoint.
+
+| Verification layer | Required evidence |
+| --- | --- |
+| Unit | Pure ownership/coverage/provenance/schema/permission/effort/budget functions, contradiction and invalidation graphs, retrieval ranking/scope, tool pairing, loop/round caps and migration/recovery state machines. Deterministic clocks and adversarial fixtures. |
+| Integration | Real installed SDK serialization; intercepted provider bodies and selected route/effort; actual session/content persistence and fault points; native request lifecycle/capacity; queue/receipt/dedupe/dependency/cancel races; filesystem/hash/worktree conflicts; bounded tool processes and API/MCP fixtures. No unapproved real provider billing. |
+| Native GUI | Actual Tauri windows, split panes, workspace chip/breadcrumb/explorer actions, both model selectors, context sources, scoped tools, reasoning/activity, approvals, Stop/minimize/restore and restart. Screenshots/interaction assertions at normal and narrow sizes/zoom with theme/backgrounds. Browser mocks do not establish native behavior. |
+| Real provider/server | Small self-hosted model with recorded deployed limit, cloud-to-local switch, reasoning shapes/effort acceptance, capacity-one handoff/clarification, cancel/disconnect and bounded quality corpus. Record endpoint trust without exposing credentials. Hardware absence is Not tested, not passed. |
+| Manual/platform outstanding | Explicit named owner/checkpoint, missing hardware/credentials/platform, scenario IDs and required next action. Preserve Windows NSIS, Linux/Arch/NVIDIA Wayland and macOS packaging gates; no inferred cross-platform success. |
+
+Each result records commit, scenario/fixture version, OS, backend/version, model
+ID/revision/quantization, deployed context, tool/permission versions, manual
+pins, source coverage, estimate/usage, preparation calls/time, actual result,
+limitations and sanitized evidence paths. Mock/native/real evidence columns
+are separate. Do not store prompts/secrets in general diagnostics. Use user-
+authorized test fixtures for real model evaluations, not private project export.
+
+Rollback is checkpoint-local: stop new automatic work, retain original records,
+show unavailable derived features, revert dependent code newest-first without
+deleting additive data. Migrations require old-reader tests and a safe disabled
+state. Never repair a failure by resetting user changes, weakening policy,
+silently routing to cloud or deleting the sole source evidence. Q1/Z cannot
+mark a failed or untested mandatory scenario complete without an explicit
+recorded user-approved deferral; report that deferral as a limitation.
+
 ## Testing and Evidence Strategy
 
 Unit: evidence precedence, idempotent profile migration, pins/reset, URL base
@@ -1586,6 +2562,30 @@ multi-GPU server for multi-GPU claims; otherwise explicitly Not tested.
 
 ## Risks, Limits and Deferred Decisions
 
+- Derived memory can preserve source links while misunderstanding the source.
+  Protected exact requirements, evidence retrieval and quality gates mitigate,
+  not eliminate, semantic loss. Do not claim lossless compression or perfect
+  multi-day recall; weak-model extraction may need to block rather than guess.
+- Project knowledge can race external editors, Git operations and other agent
+  worktrees. Hash checks detect content changes, not every semantic dependency;
+  missing dependency evidence stays uncertain. Preserve user requirements when
+  facts and instructions disagree.
+- Cross-agent communication adds permission, routing, chatter and deadlock risks.
+  One ledger, bounded causal events, safe-boundary delivery and explicit wait
+  limits reduce them; no promise of autonomous conflict-free coordination.
+- Custom tools enlarge the native attack surface. Schema validation and approval
+  are not a sandbox; platform confinement/egress differences may block some
+  execution kinds. Do not weaken boundaries to claim universal tool support.
+- Reasoning content and effort APIs vary by model, adapter and deployment.
+  Displayable summaries are not hidden reasoning, and identical effort labels
+  do not imply identical behavior, quality or token consumption across models.
+- Durable history and derived evidence consume disk and need paging, reference
+  retention, corruption handling and explicit deletion semantics. Existing
+  autosave is not sufficient evidence of atomic multi-record commits. Full disk
+  or crash may block progress; original evidence must not be silently replaced.
+- Upstream patterns are architectural references, not audited Clack dependencies.
+  Their current contracts/licenses must be rechecked before implementation or
+  copying. Do not transplant a broad external runtime into this product.
 - Context accuracy is limited without the matching tokenizer, chat template,
   multimodal accounting and deployed configuration. Unknown must stay visible;
   fail safely rather than equate a UI estimate with a hard guarantee.
@@ -1612,8 +2612,11 @@ multi-GPU server for multi-GPU claims; otherwise explicitly Not tested.
 
 ## Continuation Instructions and Verification Record
 
-Next implementation checkpoint: C1 only, structured rolling memory and automatic
-compaction, after explicit implementation request.
+Next implementation checkpoint: C1a only, durable memory/source identity and
+transactional revision foundation, after an explicit implementation request.
+This is the narrowed first half of the former C1, not permission to implement
+the full advanced program. C1b semantic extraction and all later work remain
+Pending. The 2026-09-19 task expands this plan only and stops after its docs commit.
 A1-A3, D1, E1 and B1 are complete; do not redo migration/probing/setup/lifecycle/admission/budgeting or replace the additive
 identity model. Preserve A2's native ownership, bounded request policy, freshness
 checks, explicit private-network authorization, and no-inference handshake rule.
@@ -1622,6 +2625,37 @@ AI_MULTI_AGENT_BUILD_PLAN.md and AI_ATTACHMENTS.md. Confirm the model-switch
 baseline remains present; preserve changes made since this audit. Refresh API
 evidence when implementing, then record exact files/tests/commit and pending
 native checks in the ledger. Do not infer later completion from A1-A3/D1's foundation.
+
+Next-task instructions:
+
+1. Read this plan's advanced audit, ownership, memory, C1a and A/B/L gates plus
+   CLACK.md, AI_RUNTIME.md, the completed multi-agent plan and attachment contract.
+   Run git status and git log --oneline --decorate -12; confirm B1 `460465a`
+   and this planning commit are present. Do not repeat completed checkpoints.
+2. Preserve the unrelated PeerTaskDialog.tsx/CSS, delegation-check script,
+   safety stashes and autonomous_tracker/ exactly. Implement only the C1a
+   source/revision/transaction foundation in its owning session modules.
+3. Resolve actual persistence/atomicity constraints with focused fault tests
+   before connecting derived records. No model calls, automatic compaction,
+   retrieval, project promotion, communication or custom-tool runtime in C1a.
+4. Run its focused tests and the normal checkpoint gates; record exact changed
+   files, migration/rollback evidence and native tests still pending. Commit
+   only C1a and its plan record, then stop. Do not proceed to C1b automatically.
+
+Advanced planning verification scope: only this roadmap is edited. Public
+Hermes/Codex source was read at pinned revisions without code imports or new
+dependencies. Verify the complete documentation diff, internal links, checkpoint
+IDs, both traceability matrices and preserved completion records before staging.
+Run git diff --check and git diff --cached --check. Runtime test suites, native
+GUI, provider calls, sandbox execution and hardware scenarios are not run for
+documentation-only changes and cannot be claimed as newly verified.
+
+2026-09-19 documentation checks: complete diff reviewed; all 49 numbered request
+headings, 24 persistent outputs, 12 A-L scenarios and 32 ledger specifications
+accounted for; internal anchors and checkpoint dependency order checked. The
+entire A1-through-B1 specification/record section and original 44-row traceability
+matrix are unchanged after newline normalization. The three protected delegation
+file hashes match the pre-edit baseline. Working-tree whitespace check passed.
 
 Planning-only verification: source audit and primary-source API review;
 git diff --check passed. The staged documentation must also pass
@@ -1681,3 +2715,105 @@ acceptance remains pending for the owning checkpoints.
 | 42 Model-switch relationship | Audit contract, C2 | Existing routing tests plus S9 |
 | 43 Traceability | This matrix | No unmapped requirement |
 | 44 Planning output only | This documentation commit | Whitespace check; no runtime edits |
+
+## Advanced Requirement Traceability
+
+This matrix covers the 2026-09-19 advanced-intelligence request independently
+of the original 44-row matrix, which is preserved above. Classifications refer
+to runtime at `460465a`; planning/process rows explicitly say so. 'NEEDS
+EXTENSION' preserves existing primitives but does not claim the full requirement
+works. Each row names an authoritative design location, owning gate and concrete
+acceptance. A-L are specified in [Advanced Acceptance Scenarios](#advanced-acceptance-scenarios).
+
+| Request | Current classification | Roadmap location / checkpoints | Acceptance |
+| --- | --- | --- | --- |
+| 0 Repository safeguards and authoritative plan | ALREADY IMPLEMENTED (verified process baseline) | Advanced Current-State Audit; Continuation Instructions and Verification Record | B1 SHA/log/status checked; only roadmap staged; protected fingerprints/stashes unchanged; completed records retained. |
+| 1 Cohesive automatic long-lived agent environment | NEEDS EXTENSION | Advanced Ownership and Integrity; Integrated UX and Resource Policy; C1a through Q1/Z | A-L complete with per-layer evidence; healthy fitting workflows need no manual context reconstruction or infrastructure management. |
+| 2 Existing-system audit and reuse | ALREADY IMPLEMENTED (planning audit in this revision) | Advanced Current-State Audit | Every audited area has actual source evidence and gap classification; no duplicate session, provider, PeerTask or attachment owner. |
+| 3 Hermes/Codex source, licenses and compatibility | ALREADY IMPLEMENTED (read-only study in this revision) | Upstream Reference Study | Pinned files/licenses/dependency manifests, observed mechanisms and adaptation/rejection decisions; no imported code/dependencies. |
+| 4 Context and conversation memory overall | NEEDS EXTENSION | Conversation Memory and Compaction; C1a/C1b/G1a | A/B: useful small-context continuation, original transcript intact, missing evidence not guessed. |
+| 4.1 Stable conversation, full history and memory identities | NEEDS EXTENSION | Advanced Ownership and Integrity; C1a | A/C/L: stable session/message/tool/source IDs, complete durable originals and selection/run provenance, additive crash-safe revision recovery. |
+| 4.2 Structured source-linked working memory | NOT IMPLEMENTED | Conversation Memory and Compaction; C1b | A/B: objective/requirements/decisions/files/work/errors/results/artifacts/reviews/questions/uncertainty fields retained with typed evidence and valid refs. |
+| 4.3 Critical information and paired recent context | NEEDS EXTENSION | Conversation Memory and Compaction; C1b/B1 | A: exact critical constraints and recent call/result groups retained; protected-set overflow blocks before HTTP, no silent omission. |
+| 4.4 Proactive bounded incremental compaction | NEEDS EXTENSION | Conversation Memory and Compaction; C1b | B/L: ten cycles track original coverage, bounded calls/tokens/time, validated atomic revision, cancel/crash leaves previous memory/originals. |
+| 4.5 Automatic insufficiency-driven original retrieval | NOT IMPLEMENTED | Automatic Evidence Retrieval; G1a/G1b | A/B/D: automatic scoped original/history/tool/attachment/project/task lookup, relevant source links and truthful missing/no-fit results. |
+| 5 Separate conversation/project/task memory | NEEDS EXTENSION | Advanced Ownership and Integrity; Project Memory and Freshness; M1/M2 | D/E/L: stable workspace/checkout identity, authorized verified shared architecture/requirements/tests, inspection/correction, no private-chat promotion leak. |
+| 6 Project comparison and incremental updates | NOT IMPLEMENTED | Project Memory and Freshness; M2/G1b | D/H: changed bytes/superseded decisions detected, current evidence reconciled, stale reviews blocked, no every-turn full-repo scan. |
+| 7 Small-target switching with preserved conversation | NEEDS EXTENSION | Target Context Preparation; C2 | C: roughly 239K source prepares bounded target context, current requirements/evidence/recent tail retained, actual route changes only after validation. |
+| 7.1 Validated context reuse and cache invalidation | NOT IMPLEMENTED | Target Context Preparation; C2/F1 | C/D: source/artifact/policy/project/target changes invalidate snapshots; reusable extraction remains source-valid; no cross-provider hidden-state/cache claim. |
+| 7.2 Automatic switch UX and advanced inspection | NEEDS EXTENSION | Target Context Preparation; C2/U1 | C/N: both selectors show preparation/Optimize and switch when required, source/cost/omission details, no 100-message manual selection. |
+| 7.3 Cancel/failure preserves old state | NEEDS EXTENSION | Advanced Recovery Contract; C2 | C/L: every await/commit fault leaves consistent old pair and intact transcript/task/attachments; unsupported target cannot partially switch. |
+| 8 Fidelity over compression ratio | NOT IMPLEMENTED | Advanced Quality and Verification; Q1/Z | A-D: critical requirements/decisions/files/original facts/unresolved work retained or blocked, adversarial and real-small-model results recorded without perfect-recall claims. |
+| 9 Coordinated agents on existing PeerTasks | NEEDS EXTENSION | Peer Communication and Handoffs; H1/H2 | E-H/L: coordinated research/code/review/correction, independent conversations, one ledger/scheduler and bounded work. |
+| 9.1 Questions, delegation, review, findings, blocked/completion and follow-up | NEEDS EXTENSION | Peer Communication and Handoffs; H1 | E/G: task-linked intents delivered and acknowledged without manual copy/paste; new billed work still authorized. |
+| 9.2 Explicit authenticated identity/routing | NEEDS EXTENSION | Advanced Ownership and Integrity; H1 | E/G/L: source/target agent/session/workspace/root/task/reply-to/policy recorded and validated; spoofed/cross-chat delivery rejected. |
+| 9.3 Bounded evidence-rich handoffs | NEEDS EXTENSION | Peer Communication and Handoffs; H2 | E/F: exact mission, relevant constraints/files/dependencies/artifacts/findings/source memory and uncertainty arrive; entire source history does not. |
+| 9.4 Recipient model/context/capability adaptation | NOT IMPLEMENTED | Peer Communication and Handoffs; H2/B1 | F: cloud coder to small local reviewer fits target budget/tools/modalities or blocks; missing evidence retrieved/clarified within scope. |
+| 9.5 Verified shared project knowledge | NOT IMPLEMENTED | Project Memory and Freshness; M1/M2/H2 | D/E: authorized source-linked promotion and current evidence, no all-agents-read-all-chats access. |
+| 9.6 Task-scoped bounded clarification | NOT IMPLEMENTED | Peer Communication and Handoffs; H1 | G: ambiguous API/revision resolved through appropriate source; bounded no-progress/wait handling, no needless user intervention for answerable questions. |
+| 9.7 Dependencies and orchestration | NEEDS EXTENSION | Existing PeerTask audit; H1/H2 | E/G/L: existing DAG/limits respected, independent tasks continue, prereq failure blocks descendants, results return to parent and authorized follow-up runs once. |
+| 9.8 Concurrent edits and stale review handling | NEEDS EXTENSION | Project Memory and Freshness; H2/M2 | H: leases/worktrees/read snapshots/explicit patch review prevent overwrites, changed review evidence invalidates approval, no auto-merge. |
+| 9.9 Busy/offline/cancel/deleted identity/restart behavior | NEEDS EXTENSION | Advanced Recovery Contract; H1/H2/D3 | G/L: durable receipts and statuses, no duplicate completed effects, unavailable source/target/artifact blocks instead of rerouting; ambiguous effects reconciled. |
+| 9.10 Integrated collaboration UX | NEEDS EXTENSION | Integrated UX and Resource Policy; U1 | E-L/N: visible actor/task/context/artifacts/waits/approvals/results/files/review through splits/Dispatcher/task cards, no new dashboard. |
+| 10 Chronological reasoning and execution visibility | NEEDS EXTENSION | Reasoning Activity and Effort; R1 | I: objective/progress/tool/file/command/delegation/dependency/approval/retry/error/completion events correlated and inspectable. |
+| 10.1 Reasoning truthfulness | NEEDS EXTENSION | Reasoning Activity and Effort; R1 | I: exposed reasoning, explicit provider summary, normal progress and runtime events distinct; none means none, never fabricated hidden thought. |
+| 10.2 Compact expandable controls and styling | NEEDS EXTENSION | Integrated UX and Resource Policy; R1/U1 | I/N: collapsed/expanded/narrow/zoom behavior works with background/blur/theme, focus and pane ownership preserved. |
+| 10.3 Activity provenance and redaction | NEEDS EXTENSION | Reasoning Activity and Effort; R1 | I/L: agent/model/run/task/file/tool/attempt/result/approval/failure links survive restart; secret canaries absent from UI/log/export. |
+| 11 Functional supported reasoning effort | NOT IMPLEMENTED | Reasoning Activity and Effort; R2/B1 | J: supported-only options, Automatic default, exact wire mappings, effective parameters, immutable per-chat/model/run isolation and reasoning reserve accounting. |
+| 12 Custom tool management overall | NOT IMPLEMENTED | Custom Tools and Security; T1-T3 | K: visible authoring and actual authorized execution, no app-internal edits, no self-granted authority. |
+| 12.1 Tools versus skills, functions/scripts/APIs/MCP | NOT IMPLEMENTED | Custom Tools and Security; T1-T3 | K: execution kinds distinguishable from prompt skills; each supported kind validated/guarded, missing confinement explicitly blocked. |
+| 12.2 Creation/validation/test/error UX | NOT IMPLEMENTED | Custom Tools and Security; T1/T2/U1 | K/N: define name/description/input/output/kind/scope/permissions/agents, validate, approve a real safe test and inspect success/failure. |
+| 12.3 Agent proposals require user authorization | NOT IMPLEMENTED | Custom Tools and Security; T1/T2 | K: proposed definition cannot register/enable/execute itself; registration and invocation policy independently enforced. |
+| 12.4 Explicit agent/chat/workspace/global scope | NOT IMPLEMENTED | Advanced Ownership and Integrity; T1/T2/M1 | K: assigned agent succeeds, another denied; global availability does not grant global access or transfer sender permissions. |
+| 12.5 Native security, sandboxing and untrusted content | NEEDS EXTENSION | Custom Tools and Security; T2/T3 | K/L: native filesystem/secret/network/process guards hold, malicious schemas/results cannot elevate, unsupported sandbox fails closed even in Full Access. |
+| 12.6 Versioned lifecycle and durable history | NOT IMPLEMENTED | Advanced Recovery Contract; T1-T3 | K/L: create/test/enable/assign/update/disable/remove/restart/error records, immutable active-run versions, revocation honored, no startup or effect replay. |
+| 12.7 Relevant schemas for small models | NEEDS EXTENSION | Custom Tools and Security; F1 | F/K: only permitted task-relevant schemas exposed, active/unresolved tool requirements preserved, B1 recounts version/exposure changes. |
+| 13 Automatic defaults and bounded efficient inference | NEEDS EXTENSION | Integrated UX and Resource Policy; C1b/G1/C2/H2/R2/F1/E2 | A-G/J: no manual reconstruction, incremental caches/reads, bounded summary/retrieval/chatter, B1/D1/E1 authoritative, no provider/privacy/security optimization changes. |
+| 14 Durability and stale-async isolation | NEEDS EXTENSION | Advanced Recovery Contract; C1a/C2/M1/H1/T2/D3 | L: restart/window close/disconnect/workspace/model/agent changes recover owners and valid revisions, no cross-chat mutation/dead-stream resumption/duplicate effects. |
+| 15 Ordered small reversible checkpoints | NEEDS EXTENSION (plan expanded here) | Checkpoint Order and Gates; individual specifications | C1/G1 split, M security before sharing, strengthened C2/F1, dedicated H/R/T/U/Q gates; separate commits/rollback/STOP, no pending item marked complete. |
+| 16 Mandatory A-L scenarios | NOT IMPLEMENTED (advanced acceptance pending) | Advanced Acceptance Scenarios; Q1/Z | Each A-L row has setup, observable invariants/faults, owners and distinct U/I/N/P evidence. |
+| 17 Unit/integration/native/provider/manual quality gates | NEEDS EXTENSION | Advanced Quality and Verification; Gate for every implementation checkpoint | Provenance/retention/freshness/scope/effort/tools/recovery suites plus actual native/real-model evidence; mocks never relabeled, missing verification explicit. |
+| 18 Preserve architecture and all existing surfaces | ALREADY IMPLEMENTED (preservation baseline; regression duty continues) | Protected Systems and Non-Goals; Advanced Current-State Audit; all gates | Existing provider/OpenRouter/A1-A3/D1/E1/B1/switch/attachments/PeerTask/permission/lease/worktree/runtime/UX/packaging regression suites stay green, no duplicate owners. |
+| 19 Persistent complete integrated plan | ALREADY IMPLEMENTED (documentation deliverable in this revision) | Deliverable location index below | All 24 deliverables mapped, completed records unchanged, pending runtime claims explicit and source audit verifiable. |
+| 20 Docs-only verification/commit/stop | ALREADY IMPLEMENTED only when planning commit succeeds | Continuation Instructions and Verification Record | Complete doc diff and whitespace reviewed, only roadmap staged/committed; runtime files/stashes/untracked work preserved; no C1 started. |
+
+### Deliverable Location Index
+
+The numbered entries below correspond to section 19's 24 persistent outputs.
+Acceptance for each is the mapped checkpoint/specification/scenario rather
+than an untestable statement of intent.
+
+| Output | Explicit location | Acceptance link |
+| --- | --- | --- |
+| 19.1 Current architecture audit | Advanced Current-State Audit | Source evidence/classifications at verified B1 SHA. |
+| 19.2 Consolidated product requirements | Advanced design sections and Advanced Requirement Traceability | Request sections 0-20 and numbered subrequirements mapped above; A-L below original S scenarios. |
+| 19.3 Existing systems to reuse | Advanced Current-State Audit | No duplicate owners; baseline regressions in all gates. |
+| 19.4 Ownership/memory identities | Advanced Ownership and Integrity | C1a/M1/H1/T1 identity and atomicity tests, L. |
+| 19.5 Conversation memory | Conversation Memory and Compaction | C1a/C1b; A/B. |
+| 19.6 Project memory | Project Memory and Freshness | M1/M2; D/E. |
+| 19.7 Project comparison/freshness | Project Memory and Freshness | M2/G1b; D/H. |
+| 19.8 Automatic retrieval | Automatic Evidence Retrieval | G1a/G1b; A/B/D/F. |
+| 19.9 Model-specific switch preparation | Target Context Preparation | C2; C. |
+| 19.10 Agent communication/collaboration | Peer Communication and Handoffs | H1/H2; E/G/L. |
+| 19.11 Agent-specific context handoff | Peer Communication and Handoffs | H2; E/F. |
+| 19.12 Reasoning/activity display | Reasoning Activity and Effort | R1; I. |
+| 19.13 Effort/API mapping | Reasoning Activity and Effort | R2; J. |
+| 19.14 Custom tools/security | Custom Tools and Security | T1-T3; K/L. |
+| 19.15 UX | Integrated UX and Resource Policy | U1 and owning UI checkpoints; E-L native GUI. |
+| 19.16 Performance/inference integration | Integrated UX and Resource Policy | B1/D1/E1 regressions, bounded-call/read metrics, F1/E2. |
+| 19.17 Failure/restart | Advanced Recovery Contract | Per-owner crash matrix; L. |
+| 19.18 Ordered checkpoints | Checkpoint Order and Gates | Dependency/order audit; no circular prerequisites. |
+| 19.19 Per-checkpoint acceptance | Individual C1a through Z specifications | Explicit acceptance and owning A-L/S1-S13 scenarios. |
+| 19.20 Testing/rollback | Advanced Quality and Verification; individual specs | Focused/full/native gates, additive-data-preserving rollback evidence. |
+| 19.21 End-to-end scenarios | Advanced Acceptance Scenarios; End-State Acceptance Scenarios | A-L plus original S1-S13, separate verification layers. |
+| 19.22 Traceability | Both requirement matrices | No unmapped main/subrequirement or persistent output. |
+| 19.23 Risks/non-goals | Risks, Limits and Deferred Decisions; Protected Systems and Non-Goals | Honest fidelity/freshness/model/security/coordination/recovery limits, no scope expansion. |
+| 19.24 Next checkpoint/continuation | Continuation Instructions and Verification Record | Explicit-request C1a only, own commit and STOP; this task remains docs-only. |
+
+Additional exclusions for this advanced program: no universal unlimited-context
+abstraction, hidden cloud summarizer/embedding service, automatic private-chat
+sharing, implicit cross-workspace access, second PeerTask ledger/session store,
+external agent-runtime replacement, provider-account redesign, fabricated
+reasoning, universal effort enum, unconfined custom-code fallback or promised
+exactly-once arbitrary effects. Advanced configuration remains optional, but
+security, source fidelity and truthful incomplete states are never optional.
