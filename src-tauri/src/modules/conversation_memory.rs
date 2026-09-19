@@ -1124,6 +1124,66 @@ pub async fn conversation_memory_sources(
     .await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractionSource {
+    evidence: Evidence,
+    value: Value,
+}
+
+fn extraction_sources(
+    root: &Path,
+    content: &Path,
+    originals: &Originals,
+    expected: &Preparation,
+    sources: Vec<SourceLocator>,
+) -> Result<Vec<ExtractionSource>> {
+    check_owner(originals, &expected.owner)?;
+    let manifest = synchronize(root, originals)?;
+    if preparation(&manifest, &expected.owner) != *expected {
+        return Err("memory_stale_preparation".into());
+    }
+    if sources.is_empty() || sources.len() > MAX_SOURCES {
+        return Err("memory_metadata_quota".into());
+    }
+    let mut size = 0;
+    sources
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|locator| {
+            let (evidence, bytes) =
+                evidence_for(root, content, originals, &expected.owner, locator)?;
+            size += bytes.len();
+            if size > MAX_RECORD {
+                return Err("memory_evidence_quota".into());
+            }
+            let value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            Ok(ExtractionSource { evidence, value })
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn conversation_memory_extract_sources(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, MemoryState>,
+    preparation: Preparation,
+    sources: Vec<SourceLocator>,
+) -> Result<Vec<ExtractionSource>> {
+    let state = state.inner().clone();
+    blocking(move || {
+        let lock = state.owner(&preparation.owner.session_id)?;
+        let _owner = lock.lock().map_err(|e| e.to_string())?;
+        let mut originals = originals(&app, &preparation.owner.session_id)?;
+        load_tasks(&app, &mut originals)?;
+        authorize(&app, &originals, &preparation.owner)?;
+        let (root, content) = paths(&app)?;
+        extraction_sources(&root, &content, &originals, &preparation, sources)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn conversation_memory_evidence(
     app: tauri::AppHandle,

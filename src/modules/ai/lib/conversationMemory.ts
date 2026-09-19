@@ -89,7 +89,17 @@ export type MemoryView = {
   sourceChanged: boolean;
 };
 
-// Internal persistence API only. C1a does not add memory to model requests.
+// All source content is read under native ownership and revision checks.
+export function readCompactionSources(
+  preparation: MemoryPreparation,
+  sources: MemorySourceLocator[],
+): Promise<Array<{ evidence: MemoryEvidence; value: unknown }>> {
+  return invoke("conversation_memory_extract_sources", {
+    preparation,
+    sources,
+  });
+}
+
 export function loadConversationMemory(
   owner: MemoryOwner,
 ): Promise<MemoryView> {

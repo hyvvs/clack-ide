@@ -10,6 +10,7 @@ vi.mock("@/modules/settings/store", async (importOriginal) => ({
 vi.mock("@/modules/ai/lib/sessions", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/modules/ai/lib/sessions")>()),
   saveSessionsList: vi.fn(),
+  saveMessages: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/modules/ai/lib/todos", async (importOriginal) => ({

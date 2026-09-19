@@ -1,6 +1,144 @@
 use super::*;
 use std::sync::Barrier;
 
+#[test]
+fn extraction_reads_exact_originals_with_matching_evidence_without_publishing() {
+    let fixture = Fixture::new();
+    let prep = fixture.view().unwrap().preparation;
+    let before = hash(&fixture.originals.messages).unwrap();
+    let locators = vec![
+        SourceLocator::Message {
+            message_id: "u1".into(),
+        },
+        SourceLocator::Message {
+            message_id: "u1".into(),
+        },
+    ];
+    let values = extraction_sources(
+        &fixture.root,
+        &fixture.content,
+        &fixture.originals,
+        &prep,
+        locators,
+    )
+    .unwrap();
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0].value, fixture.originals.messages[0]);
+    assert_eq!(values[0].evidence.digest, hash(&values[0].value).unwrap());
+    assert_eq!(before, hash(&fixture.originals.messages).unwrap());
+    assert!(fixture.view().unwrap().revision.is_none());
+}
+
+#[test]
+fn extraction_rejects_append_and_profile_changes_and_old_process_epoch() {
+    let mut fixture = Fixture::new();
+    let prep = fixture.view().unwrap().preparation;
+    let locator = || {
+        vec![SourceLocator::Message {
+            message_id: "u1".into(),
+        }]
+    };
+    let mut stale = prep.clone();
+    stale.runtime_id = "old-process".into();
+    assert!(extraction_sources(
+        &fixture.root,
+        &fixture.content,
+        &fixture.originals,
+        &stale,
+        locator()
+    )
+    .is_err());
+    fixture
+        .originals
+        .messages
+        .push(json!({"id":"later","role":"user","parts":[]}));
+    assert!(extraction_sources(
+        &fixture.root,
+        &fixture.content,
+        &fixture.originals,
+        &prep,
+        locator()
+    )
+    .is_err());
+    let current = fixture.view().unwrap().preparation;
+    fixture.originals.meta["profile"]["modelId"] = json!("different");
+    assert!(extraction_sources(
+        &fixture.root,
+        &fixture.content,
+        &fixture.originals,
+        &current,
+        locator()
+    )
+    .is_err());
+}
+
+#[test]
+fn extraction_rejects_other_workspace_and_fabricated_messages() {
+    let fixture = Fixture::new();
+    let mut prep = fixture.view().unwrap().preparation;
+    let locator = vec![SourceLocator::Message {
+        message_id: "invented".into(),
+    }];
+    assert!(extraction_sources(
+        &fixture.root,
+        &fixture.content,
+        &fixture.originals,
+        &prep,
+        locator.clone()
+    )
+    .is_err());
+    prep.owner.workspace_id = Some("local:/other".into());
+    assert!(extraction_sources(
+        &fixture.root,
+        &fixture.content,
+        &fixture.originals,
+        &prep,
+        locator
+    )
+    .is_err());
+}
+
+#[test]
+fn extraction_has_an_aggregate_byte_bound() {
+    let mut fixture = Fixture::new();
+    fixture.originals.messages[0]["parts"][0]["text"] = json!("x".repeat(150_000));
+    fixture.originals.messages[1]["parts"][0]["output"] = json!("x".repeat(150_000));
+    let prep = fixture.view().unwrap().preparation;
+    let result = extraction_sources(
+        &fixture.root,
+        &fixture.content,
+        &fixture.originals,
+        &prep,
+        vec![
+            SourceLocator::Message {
+                message_id: "u1".into(),
+            },
+            SourceLocator::Message {
+                message_id: "a1".into(),
+            },
+        ],
+    );
+    assert!(matches!(result, Err(error) if error == "memory_evidence_quota"));
+}
+
+#[test]
+fn extraction_rejects_a_preparation_superseded_by_commit() {
+    let fixture = Fixture::new();
+    let candidate = fixture.candidate();
+    let prep = candidate.preparation.clone();
+    fixture.commit(candidate).unwrap();
+    let result = extraction_sources(
+        &fixture.root,
+        &fixture.content,
+        &fixture.originals,
+        &prep,
+        vec![SourceLocator::Message {
+            message_id: "u1".into(),
+        }],
+    );
+    assert!(matches!(result, Err(error) if error == "memory_stale_preparation"));
+}
+
 struct Fixture {
     directory: tempfile::TempDir,
     root: PathBuf,

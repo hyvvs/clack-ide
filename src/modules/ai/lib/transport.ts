@@ -19,6 +19,10 @@ import {
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
+import type {
+  ConversationCompactionContext,
+  CompactionNotice,
+} from "@/modules/ai/lib/conversationCompaction";
 
 const PROJECT_MEMORY_MAX_BYTES = 32 * 1024;
 type MemoryCacheEntry = { content: string | null; mtime: number };
@@ -61,6 +65,10 @@ type LiveSnapshot = {
 };
 
 type Deps = {
+  prepareCompactionContext?: (
+    originals: UIMessage[],
+  ) => Promise<ConversationCompactionContext>;
+  onOptimized?: (notice: CompactionNotice) => void;
   getInferenceScope?: () => InferenceScope | undefined;
   getSelfHostedInference?: () => SelfHostedState;
   getKeys: () => ProviderKeys;
@@ -114,6 +122,7 @@ export function createContextAwareTransport(deps: Deps) {
     | undefined;
   const run = async (options: SendOptions) => {
     const batch = deps.onBatchStart?.() ?? { isLogicalContinuation: false };
+    const compaction = await deps.prepareCompactionContext?.(options.messages);
     const live = deps.getLive();
     const projectMemory = await readProjectMemory(
       live.workspaceRoot,
@@ -148,6 +157,8 @@ export function createContextAwareTransport(deps: Deps) {
       ? injectEnvIntoLastUser(messagesWithAttachments, envBlock)
       : messagesWithAttachments;
     const result = await runAgentStream({
+      compaction,
+      onOptimized: deps.onOptimized,
       inferenceScope: deps.getInferenceScope?.(),
       selfHostedInference: hostedState,
       keys: deps.getKeys(),

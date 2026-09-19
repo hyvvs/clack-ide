@@ -113,7 +113,11 @@ export type AgentMeta = {
   lastInputTokens: number;
   lastCachedTokens: number;
   hitStepCap: boolean;
-  compactionNotice: { droppedCount: number; at: number } | null;
+  compactionNotice: {
+    droppedCount: number;
+    at: number;
+    optimized?: import("@/modules/ai/lib/conversationCompaction").CompactionNotice;
+  } | null;
 };
 
 const ZERO_USAGE: AgentUsage = {
@@ -380,6 +384,55 @@ export function flushPersist(id?: string): void {
     return;
   }
   for (const key of Array.from(pendingPersist.keys())) flushPersistEntry(key);
+}
+
+export async function persistCompactionSource(
+  id: string,
+  messages: UIMessage[],
+): Promise<void> {
+  const current = chats.get(id)?.messages;
+  if (current && JSON.stringify(current) !== JSON.stringify(messages))
+    throw new Error(
+      "Conversation changed before context preparation; retry the request.",
+    );
+  const entry = pendingPersist.get(id);
+  if (entry) {
+    clearTimeout(entry.timer);
+    pendingPersist.delete(id);
+  }
+  // Called before this transport starts streaming, never from a later tool step.
+  await saveMessages(id, messages);
+}
+
+export async function chargeCompactionCall(
+  id: string,
+  startedAt: number,
+): Promise<void> {
+  const state = useChatStore.getState();
+  const run = state.sessions.find((session) => session.id === id)?.run;
+  const budget = run?.budget;
+  if (
+    run?.state !== "running" ||
+    run.startedAt !== startedAt ||
+    !budget ||
+    budget.totalSteps >= budget.hardStepLimit
+  )
+    throw new Error(
+      "The logical run has no remaining context-preparation budget.",
+    );
+  const next = state.sessions.map((session) =>
+    session.id === id
+      ? {
+          ...session,
+          run: {
+            ...run,
+            budget: { ...budget, totalSteps: budget.totalSteps + 1 },
+          },
+        }
+      : session,
+  );
+  useChatStore.setState({ sessions: next });
+  await saveSessionsList(next);
 }
 
 export const useChatStore = create<StoreState>((set, get) => ({

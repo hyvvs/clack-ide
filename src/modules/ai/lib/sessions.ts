@@ -75,6 +75,11 @@ const messagesKey = (id: string) => `messages:${id}`;
 
 const sourceWrites = new Map<string, Promise<void>>();
 
+export async function awaitSessionWrites(id: string): Promise<void> {
+  await sourceWrites.get(KEY_SESSIONS);
+  await sourceWrites.get(messagesKey(id));
+}
+
 function writeSource(key: string, write: () => Promise<void>): Promise<void> {
   const previous = sourceWrites.get(key) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(write);

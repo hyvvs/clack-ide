@@ -315,6 +315,7 @@ export function AiChatView({
         {compactionNotice && (
           <CompactionNotice
             droppedCount={compactionNotice.droppedCount}
+            optimized={compactionNotice.optimized}
             onDismiss={() => {
               patchAgentMeta(sessionId, { compactionNotice: null });
             }}
@@ -427,17 +428,20 @@ function RunTerminalStatus({
 
 const CompactionNotice = memo(function CompactionNotice({
   droppedCount,
+  optimized,
   onDismiss,
 }: {
   droppedCount: number;
+  optimized?: import("@/modules/ai/lib/conversationCompaction").CompactionNotice;
   onDismiss: () => void;
 }) {
   return (
     <div className="clack-ai-block flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-[var(--clack-text-3)]">
       <span className="size-1.5 shrink-0 rounded-full bg-[var(--clack-warning)]" />
-      <span className="flex-1 truncate">
-        Context compacted. {droppedCount} older tool result
-        {droppedCount === 1 ? "" : "s"} elided to save tokens.
+      <span className="min-w-0 flex-1 break-words">
+        {optimized
+          ? `Context optimized. ${optimized.coveredMessages} original messages covered; ${optimized.retainedMessages} retained verbatim. ${optimized.omittedCompletedClaims} completed claims outside the working context. Preparation: ${optimized.generatedTokens} tokens (conservative accounting).`
+          : `Context compacted. ${droppedCount} older tool result${droppedCount === 1 ? "" : "s"} elided to save tokens.`}
       </span>
       <button
         type="button"

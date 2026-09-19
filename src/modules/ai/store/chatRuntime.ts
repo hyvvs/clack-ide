@@ -27,7 +27,11 @@ import {
 } from "../lib/errors";
 import type { ProviderRetryEvent } from "../lib/providerRetry";
 import { findSavedProviderModel } from "../lib/savedProviderModels";
-import { loadMessages, workspaceEnvironmentFromId } from "../lib/sessions";
+import {
+  loadMessages,
+  workspaceEnvironmentFromId,
+  awaitSessionWrites,
+} from "../lib/sessions";
 import type { ToolContext } from "../tools/tools";
 import {
   chats,
@@ -39,6 +43,8 @@ import {
   seedMessages,
   touchChat,
   useChatStore,
+  persistCompactionSource,
+  chargeCompactionCall,
 } from "./chatStore";
 
 export function sessionToolContext(sessionId: string) {
@@ -129,6 +135,38 @@ function makeChat(sessionId: string): Chat<UIMessage> {
     sessionToolContext(sessionId);
 
   const transport = createContextAwareTransport({
+    prepareCompactionContext: async (messages) => {
+      const session = owner();
+      const run = session?.run;
+      if (!session || !run || run.state !== "running")
+        throw new Error("No active conversation run for context preparation.");
+      const originals = JSON.parse(JSON.stringify(messages)) as UIMessage[];
+      await persistCompactionSource(sessionId, originals);
+      return {
+        owner: { sessionId, workspaceId: session.profile?.workspaceId ?? null },
+        originals,
+        ready: () => awaitSessionWrites(sessionId),
+        remainingCalls: () => {
+          const current = owner()?.run;
+          return current?.state === "running" &&
+            current.startedAt === run.startedAt &&
+            current.budget
+            ? Math.max(
+                0,
+                current.budget.hardStepLimit - current.budget.totalSteps,
+              )
+            : 0;
+        },
+        chargeCall: () => chargeCompactionCall(sessionId, run.startedAt),
+      };
+    },
+    onOptimized: (optimized) => {
+      useChatStore
+        .getState()
+        .patchAgentMeta(sessionId, {
+          compactionNotice: { droppedCount: 0, optimized, at: Date.now() },
+        });
+    },
     getInferenceScope: () => inferenceScopeForSession(sessionId),
     getKeys: () =>
       capturedSelfHostedRuns.get(sessionId)?.keys ??

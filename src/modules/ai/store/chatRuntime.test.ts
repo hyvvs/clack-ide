@@ -19,6 +19,7 @@ vi.mock("../lib/sessions", async (importOriginal) => {
     ...original,
     saveActiveId: vi.fn(),
     saveSessionsList: vi.fn(),
+    saveMessages: vi.fn().mockResolvedValue(undefined),
   };
 });
 vi.mock("../lib/todos", async (importOriginal) => {
@@ -38,7 +39,11 @@ import {
   interruptAllRunsForShutdown,
   touchChat,
   useChatStore,
+  persistCompactionSource,
+  chargeCompactionCall,
 } from "./chatStore";
+import { saveMessages } from "../lib/sessions";
+import { createRunBudget } from "../lib/runBudget";
 import {
   continueActiveRun,
   sendMessageToSession,
@@ -74,6 +79,82 @@ afterEach(() => {
     runtimeBySession: {},
     approvalRespondersBySession: {},
     pendingApprovalsBySession: {},
+  });
+});
+
+describe("durable compaction runtime boundary", () => {
+  it("flushes the latest source and removes a stale debounce without modifying messages", async () => {
+    const latest: UIMessage[] = [
+      {
+        id: "user",
+        role: "user",
+        parts: [{ type: "text", text: "Exact current request" }],
+      },
+    ];
+    chats.set(SESSION_ID, { messages: latest } as Chat<UIMessage>);
+    useChatStore.getState().persistMessages(SESSION_ID, []);
+    vi.mocked(saveMessages).mockClear();
+    await persistCompactionSource(SESSION_ID, latest);
+    expect(saveMessages).toHaveBeenCalledExactlyOnceWith(SESSION_ID, latest);
+    expect(chats.get(SESSION_ID)?.messages).toBe(latest);
+  });
+  it("refuses a stale frontend source instead of overwriting the current chat", async () => {
+    chats.set(SESSION_ID, {
+      messages: [{ id: "new", role: "user", parts: [] }],
+    } as unknown as Chat<UIMessage>);
+    vi.mocked(saveMessages).mockClear();
+    await expect(persistCompactionSource(SESSION_ID, [])).rejects.toThrow(
+      "Conversation changed",
+    );
+    expect(saveMessages).not.toHaveBeenCalled();
+  });
+  it("charges hidden extraction calls to only their captured logical run", async () => {
+    const budget = createRunBudget("ask");
+    useChatStore.setState({
+      sessions: [
+        {
+          id: SESSION_ID,
+          title: "A",
+          createdAt: 1,
+          updatedAt: 1,
+          run: { state: "running", startedAt: 1, budget },
+        },
+        {
+          id: "other",
+          title: "B",
+          createdAt: 1,
+          updatedAt: 1,
+          run: { state: "running", startedAt: 2, budget },
+        },
+      ],
+    });
+    await chargeCompactionCall(SESSION_ID, 1);
+    expect(useChatStore.getState().sessions[0].run?.budget?.totalSteps).toBe(1);
+    expect(useChatStore.getState().sessions[1].run?.budget?.totalSteps).toBe(0);
+    await expect(chargeCompactionCall(SESSION_ID, 2)).rejects.toThrow(
+      "no remaining",
+    );
+  });
+  it("blocks preparation after the logical budget is exhausted", async () => {
+    const budget = createRunBudget("ask");
+    useChatStore.setState({
+      sessions: [
+        {
+          id: SESSION_ID,
+          title: "A",
+          createdAt: 1,
+          updatedAt: 1,
+          run: {
+            state: "running",
+            startedAt: 1,
+            budget: { ...budget, totalSteps: budget.hardStepLimit },
+          },
+        },
+      ],
+    });
+    await expect(chargeCompactionCall(SESSION_ID, 1)).rejects.toThrow(
+      "no remaining",
+    );
   });
 });
 

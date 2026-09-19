@@ -1198,7 +1198,7 @@ This order does not authorize any pending implementation in this planning task.
 | 5 | E1 | Shared inference admission and PeerTask integration | Complete | `feat(ai): add endpoint inference capacity`; [implementation record](#e1-implementation-record) |
 | 6 | B1 | Actual context budgets and shared request preflight | Complete | `feat(ai): add shared context budget preflight`; implementation record below |
 | 7 | C1a | Session source identity and transactional memory foundation | Complete | `feat(ai): add durable conversation memory foundations`; [implementation record](#c1a-implementation-record) |
-| 8 | C1b | Bounded structured extraction and automatic compaction | Pending | None |
+| 8 | C1b | Bounded structured extraction and automatic compaction | Complete | Bounded captured-route extraction, native source validation/CAS, protected working context; implementation record below |
 | 9 | G1a | Automatic same-conversation evidence retrieval | Pending | None |
 | 10 | M1 | Project memory ownership, promotion policy and inspection | Pending | None |
 | 11 | M2 | Verified project knowledge and incremental freshness | Pending | None |
@@ -2222,6 +2222,153 @@ history, Unicode, cancellation, capacity-one operation and restart. No claim of
 semantic perfection from schema validation. G1 retrieval and C2 remain deferred.
 Rollback returns to existing elision/preflight and keeps valid memory/history.
 Commit `feat(ai): add bounded automatic context compaction`, update ledger, STOP.
+
+#### C1b implementation record (2026-09-20)
+
+- Baseline: `main` at `7371f7c80c601f6d93954cee3459ad51af2e50d6`;
+  recovery ref `codex/c1b-safety-7371f7c` retains that committed state. The
+  unrelated delegation TSX/CSS/check script remain unchanged and excluded.
+  Safety stashes and `autonomous_tracker/` were not touched. This record
+  supersedes the temporary partial-implementation handoff.
+- Integration: `chatRuntime` captures the conversation/run owner and original
+  UI messages before transport attachment/environment materialization.
+  `persistCompactionSource` flushes the current raw transcript through the
+  existing awaited session writer, clears its old debounce and rejects stale
+  frontend sources. `awaitSessionWrites` settles metadata/message writes before
+  native preparation. No derived messages are written to transcript history;
+  IDs, tool relationships, attachment and PeerTask content refs stay intact.
+- `conversationCompaction` joins the existing `agent.ts` SDK `prepareStep`
+  path for each conversation response and subsequent tool step. Original and
+  materialized message IDs must agree. System/agent/plan instructions, actual
+  tool schemas, attachment expansion and live tool suffixes use existing
+  provider conversion, reasoning pruning, cache breakpoints and final B1 wire
+  preflight. Ephemeral non-conversation subagents keep existing elision/B1.
+  Model switching, PeerTask scheduling/permissions and background-pane lifetime
+  are unchanged; memory remains private to the stable session/workspace owner.
+- Policy `c1b-extraction-v1` uses the newer detailed algorithm's 70% trigger
+  and 55% target, rather than the older general 80%/60% guidance. B1 remains
+  the only budget resolver, including output reserve and safety margin.
+  Small fitting chats make no memory-read or extraction-model calls. After
+  successful extraction, target convergence stops at 55% or when only fitting
+  protected/recent content remains; the target never licenses dropping it.
+- Protected context includes every original user/system message, selected
+  attachment/data-reference message, unresolved or failed tool group and
+  approval. A contiguous recent tail uses approximately 20% of B1's working
+  history budget, always retaining its final group and extending across tool
+  pairs. Duplicate/orphan tool identities fail closed. Current in-flight
+  response/tool messages remain verbatim outside durable coverage. Oversized
+  protected content blocks the next request with an actionable preflight error.
+- Durable schema is unchanged C1a schema 1: immutable `MemoryRevision` with
+  preparation/producer identity, revision/time, policyVersion, coverage,
+  evidence and typed claims. C1b extends one gap-free original prefix `[0,end)`
+  at whole message/tool boundaries. Its digest, latestMessageId and
+  sourceMessageCount identify exactly the processed range; all later messages
+  remain explicitly uncovered. This is the single-range subset of the roadmap
+  coverage design, not a sparse high-water mark that hides unprocessed gaps.
+- New native `conversation_memory_extract_sources` returns decoded original
+  JSON together with native evidence IDs/digests under existing owner,
+  workspace authorization, source/profile revision, generation and process
+  checks. It deduplicates locators and enforces an aggregate 256 KiB read cap.
+  The coordinator also compares native originals with its captured raw source
+  before extraction. It never reconstructs evidence from a filename or a
+  materialized attachment, or reads unrelated workspace paths.
+- Extraction reads newly uncovered originals, not just the previous summary.
+  User passages become exact deterministic `user-requirement` claims without
+  model rewriting. Strict JSON output must cite supplied evidence with exact
+  contiguous source quotes and represent every nonempty non-user source.
+  Generated claims can only be `inference` or `unresolved`; contradictions link
+  unchanged prior claim IDs and remain unresolved. The model cannot mark an
+  assertion verified or supersede user requirements. Claim identities hash
+  evidence/text/quote/section/contradictions; duplicates preserve timestamps.
+- Existing claims and retained original evidence are carried forward, never
+  recursively rewritten as the only semantic copy. The working view omits
+  duplicate user-requirement claims because their originals remain verbatim.
+  Only completed, non-conflicting claims unrelated to significant current
+  request terms are optional: newest-first lexical paging gives these a 20%
+  working-budget allowance. Decisions, constraints, unresolved and linked
+  contradictory claims are not silently evicted. Durable records are unchanged
+  by paging. No embeddings or historical retrieval are introduced.
+- Per preparation batch: at most four chunks, normally up to four original
+  messages per chunk (larger indivisible tool groups only when bounded), one
+  validation retry total, 120 seconds and 4,096 aggregate generated tokens.
+  Per-call output is at most 1,024 tokens, reduced by B1 and remaining tokens.
+  Generated-token accounting takes the larger of provider usage and B1's text
+  estimate. Calls use the captured authorized configured model/endpoint with
+  no tools, no provider retries and no cloud fallback, through existing B1/D1/E1
+  admission and cancellation. Internal calls charge the captured logical run
+  before HTTP and reserve room for its response; usage joins existing counters.
+  Preparation and response requests settle sequentially, avoiding a nested
+  capacity-one lease. No global conversation lock was added.
+- Each candidate validates coverage, exact evidence, record size and protected
+  context fit before existing native C1a transactional commit. Native CAS
+  rechecks source/profile/generation/previous revision and cancellation;
+  reloading the committed revision must return the expected ID. Failed/stale
+  candidates cannot replace the prior valid revision. Earlier valid chunks
+  in a bounded legacy batch may remain committed when a later chunk fails;
+  the uncovered suffix is explicit and the user can retry another bounded
+  batch. A failed final B1 check sends no next response request.
+- Cancellation, deadline and current-run checks surround asynchronous work;
+  abort is passed to extraction and native publication, and stale adapter
+  completions are unusable. Pane closure still does not cancel an independent
+  background run. Restart reuses only committed native revisions; no model
+  operation pretends to resume. Existing C1a atomic activation, original
+  evidence CAS, reference roots, reconciliation and bounded revision retention
+  remain the storage/recovery authority. No new database, raw attachment blobs
+  or destructive migration were added.
+- The existing malformed-memory report is covered by the prior `7371f7c`
+  strict early source-only manifest compatibility fix. C1b neither edits app
+  data nor broadens that exception. Corrupt, unsupported, changed-source or
+  inaccessible memory blocks preparation for its owner, preserves history and
+  presents a recoverable context-preflight error; other conversations remain
+  independent. Unknown extraction policies require explicit migration.
+- Presentation stays in the current chat: preparation activity and a compact,
+  dismissible success notice report processed original coverage, retained
+  originals, optional omitted completed claims and conservative token cost.
+  Failed preparation never displays successful optimization. No memory
+  dashboard, synthetic chat messages or fake controls were added.
+- Verification: `npm.cmd exec vitest run compaction Compaction conversationMemory
+  contextBudget requestPreflight chatRuntime modelSwitch attachment peerTask
+  inferenceLifecycle inferenceAdmission runBudget` passes **492 tests across
+  29 files**. `npm.cmd test` passes **1,268 tests across 126 files**. The five
+  compaction-specific files contain **94 passing tests**; chat runtime adds
+  four persistence/run-budget boundary regressions. Coverage includes A/B
+  ASCII/Unicode fixtures, exact requirements/decisions/unresolved evidence,
+  original immutability, repeated original-source extension, invalid JSON,
+  invented quotes/citations, contradictions, aggregate bounds, cancellation,
+  stale CAS, restart, unknown policy, malformed native reads/publication,
+  protected attachment overflow and a roughly 239K estimated-token legacy
+  fixture that checkpoints four chunks without sending an oversized request.
+- Actual installed SDK/model/proxy integration exercises extraction followed
+  by a two-step tool response, final preflight, captured private route,
+  sequential capacity-one-shaped requests, zero response HTTP after stale
+  extraction, and blocking oversized subsequent tool output. Native IPC and
+  provider responses are mocked in frontend integration tests; they do not
+  establish real-model semantic fidelity or a live server's behavior.
+- Native `cargo test --locked conversation_memory` passes **61 tests**,
+  including five new extraction source/integrity/quota/staleness regressions.
+  Full `cargo test --locked` passes **412 tests** (362 unit, 25 filesystem and
+  25 git integration). `cargo fmt --check` and
+  `cargo clippy --all-targets --locked -- -D warnings` pass using isolated
+  `$env:TEMP\clack-c1a-final-target`; no user processes were stopped.
+  `npm.cmd run check-types`, `npm.cmd run lint`, `npm.cmd run build` and
+  whitespace checks pass. Lint stays at **71 warnings and 2 infos**; Cargo
+  retains the nonfatal home-path canonicalization warning, and Vite reports
+  its plugin-timing advisory. No native GUI or live-provider smoke is claimed.
+- Limits: compaction is lossy and exact citations/schema checks cannot prove
+  semantic completeness. C1a's 64 claims, 128 evidence records, 256 KiB record,
+  8 KiB claim and 32 retained revisions remain bounded. An indivisible source,
+  exact user passage or mandatory retained record exceeding those limits
+  pauses safely instead of truncating it; a larger verified context or new
+  conversation may be necessary. The 239K test proves bounded partial progress,
+  not unrestricted completion of arbitrarily large histories. Current tool
+  suffixes are not compacted until they become persisted originals in another
+  batch. Routine small histories still use the original context unchanged.
+- Rollback: disconnect the conversation compactor from agent preparation to
+  restore legacy elision/B1; keep original sessions and valid native memory.
+  Deferred: G1 retrieval, M1/M2 project memory/sharing/freshness, C2 Optimize and
+  switch, reasoning controls, custom tools and new agent communication. Next
+  is **G1a: Automatic same-conversation evidence retrieval**. No subsequent
+  checkpoint has been started.
 
 ### M1: Project memory ownership
 

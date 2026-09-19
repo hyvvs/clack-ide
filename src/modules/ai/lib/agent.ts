@@ -42,7 +42,13 @@ import {
 import {
   measureRequest,
   resolveContextBudget,
+  ContextBudgetError,
 } from "@/modules/ai/lib/contextBudget";
+import {
+  createConversationCompactor,
+  type ConversationCompactionContext,
+  type CompactionNotice,
+} from "@/modules/ai/lib/conversationCompaction";
 import {
   selfHostedTransportIdentity,
   selfHostedCredential,
@@ -565,6 +571,8 @@ const EMPTY_USAGE: AgentUsage = {
 };
 
 export type RunAgentOptions = {
+  compaction?: ConversationCompactionContext;
+  onOptimized?: (notice: CompactionNotice) => void;
   inferenceScope?: InferenceScope;
   selfHostedInference?: SelfHostedState;
   keys: ProviderKeys;
@@ -686,10 +694,9 @@ export async function runAgentStream(opts: RunAgentOptions) {
       tools: await serializedToolSchemas(tools),
     }),
   );
-  const compact = compactModelMessagesDetailed(
-    prunedHistory,
-    preparationBudget.working,
-  );
+  const compact = opts.compaction
+    ? { messages: prunedHistory, compacted: false, droppedCount: 0 }
+    : compactModelMessagesDetailed(prunedHistory, preparationBudget.working);
   const compactedHistory = compact.messages;
   if (compact.compacted) {
     opts.onCompact?.({ droppedCount: compact.droppedCount });
@@ -704,6 +711,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
   if (opts.planMode) {
     messages.push({ role: "system", content: PLAN_MODE_PROMPT });
   }
+  const systemMessages = messages.slice();
   messages.push(...compactedHistory);
 
   const finalMessages = applyCacheBreakpoints(messages, provider);
@@ -714,13 +722,72 @@ export async function runAgentStream(opts: RunAgentOptions) {
       : undefined;
 
   let stepsSeen = 0;
+  const compactor = opts.compaction
+    ? await createConversationCompactor({
+        context: {
+          ...opts.compaction,
+          remainingCalls: () =>
+            Math.max(
+              0,
+              (opts.compaction?.remainingCalls() ?? 0) - stepsSeen - 1,
+            ),
+          chargeCall: async () => {
+            if ((opts.compaction?.remainingCalls() ?? 0) <= stepsSeen + 1)
+              throw new ContextBudgetError(
+                "compaction-run-budget",
+                "The logical run has insufficient remaining budget for preparation and a response.",
+              );
+            await opts.compaction?.chargeCall();
+          },
+        },
+        materialized: opts.uiMessages,
+        system: systemMessages,
+        keepReasoning: keepsReasoning,
+        tools: await serializedToolSchemas(tools),
+        model: baseModel,
+        scope: inferenceScope,
+        limits: () => modelBudgetLimits(baseModel),
+        signal: opts.abortSignal,
+        onStep: opts.onStep,
+        onOptimized: opts.onOptimized,
+        onUsage: (usage) =>
+          opts.onUsage?.({
+            ...usage,
+            lastInputTokens: usage.inputTokens,
+            lastCachedTokens: usage.cachedInputTokens,
+          }),
+      })
+    : undefined;
   return streamText({
     model,
     messages: finalMessages,
     tools,
     includeRawChunks: provider === "openrouter",
     experimental_transform: openRouterErrorTransform,
-    onError: provider === "openrouter" ? () => undefined : undefined,
+    onError: compactor
+      ? () => {
+          compactor.dispose();
+          opts.onStep?.(null);
+        }
+      : provider === "openrouter"
+        ? () => undefined
+        : undefined,
+    onAbort: () => compactor?.dispose(),
+    prepareStep: compactor
+      ? async ({ messages: stepMessages, stepNumber }) => {
+          if ((opts.compaction?.remainingCalls() ?? 0) <= stepNumber)
+            throw new ContextBudgetError(
+              "compaction-run-budget",
+              "The logical run reached its request limit.",
+            );
+          return {
+            messages: applyCacheBreakpoints(
+              await compactor.prepare(stepMessages.slice(finalMessages.length)),
+              provider,
+            ),
+          };
+        }
+      : undefined,
     maxRetries: AGENT_PROVIDER_MAX_RETRIES,
     stopWhen: stepCountIs(AGENT_SOFT_STEP_LIMIT),
     abortSignal: opts.abortSignal,
@@ -755,6 +822,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
       if (observation) opts.onRunStep?.(observation);
     },
     onFinish: (result) => {
+      compactor?.dispose();
       opts.onStep?.(null);
       const finishReason =
         (result as { finishReason?: string } | undefined)?.finishReason ?? "";

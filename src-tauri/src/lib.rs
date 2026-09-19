@@ -198,6 +198,7 @@ pub fn run() {
             attachments::attachment_store_reconcile,
             modules::conversation_memory::conversation_memory_load,
             modules::conversation_memory::conversation_memory_sources,
+            modules::conversation_memory::conversation_memory_extract_sources,
             modules::conversation_memory::conversation_memory_evidence,
             modules::conversation_memory::conversation_memory_commit,
             modules::conversation_memory::conversation_memory_cancel,
