@@ -111,6 +111,96 @@ fn committed_memory_survives_fresh_reader_and_preserves_transcript() {
 }
 
 #[test]
+fn early_source_only_manifest_restores_without_changing_originals_or_disk_on_read() {
+    let fixture = Fixture::new();
+    fixture.view().unwrap();
+    let path = manifest_path(&fixture.root, "chat-a");
+    let mut legacy: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    legacy.as_object_mut().unwrap().remove("revision");
+    let bytes = serde_json::to_vec(&legacy).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    let originals = hash(&fixture.originals.messages).unwrap();
+    for _ in 0..2 {
+        let view = fixture.view().unwrap();
+        assert!(view.revision.is_none());
+        assert!(collect_roots(&fixture.root, &fixture.originals.session_ids)
+            .unwrap()
+            .is_empty());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(hash(&fixture.originals.messages).unwrap(), originals);
+    }
+    fixture.initial();
+    assert_eq!(fixture.view().unwrap().revision.unwrap().revision, 1);
+    assert_eq!(
+        read_manifest(&fixture.root, "chat-a")
+            .unwrap()
+            .unwrap()
+            .revision,
+        1
+    );
+}
+
+#[test]
+fn missing_counter_with_committed_history_still_fails_closed() {
+    let fixture = Fixture::new();
+    fixture.initial();
+    let path = manifest_path(&fixture.root, "chat-a");
+    let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    value.as_object_mut().unwrap().remove("revision");
+    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(fixture.view().is_err());
+    assert!(collect_roots(&fixture.root, &fixture.originals.session_ids).is_err());
+    value["revisions"] = json!([]);
+    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(fixture.view().is_err());
+    assert!(collect_roots(&fixture.root, &fixture.originals.session_ids).is_err());
+}
+
+#[test]
+fn early_manifest_compatibility_does_not_relax_other_validation() {
+    let fixture = Fixture::new();
+    fixture.view().unwrap();
+    let path = manifest_path(&fixture.root, "chat-a");
+    let mut legacy: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    legacy.as_object_mut().unwrap().remove("revision");
+    for (key, invalid) in [
+        ("schemaVersion", json!(999)),
+        ("sessionId", json!("another-chat")),
+        ("unexpected", json!(true)),
+        ("revisions", Value::Null),
+        ("revision", Value::Null),
+    ] {
+        let mut value = legacy.clone();
+        value[key] = invalid;
+        let bytes = serde_json::to_vec(&value).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(fixture.view().is_err(), "accepted {key}");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn manifest_compatibility_still_rejects_duplicate_json_fields() {
+    let fixture = Fixture::new();
+    fixture.view().unwrap();
+    let path = manifest_path(&fixture.root, "chat-a");
+    let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for legacy in [false, true] {
+        if legacy {
+            value.as_object_mut().unwrap().remove("revision");
+        }
+        let duplicate =
+            serde_json::to_string(&value)
+                .unwrap()
+                .replacen('{', "{\"generation\":0,", 1);
+        fs::write(&path, duplicate.as_bytes()).unwrap();
+        assert!(fixture.view().err().unwrap().contains("duplicate field"));
+        assert!(collect_roots(&fixture.root, &fixture.originals.session_ids).is_err());
+        assert_eq!(fs::read(&path).unwrap(), duplicate.as_bytes());
+    }
+}
+
+#[test]
 fn rename_and_pane_reopen_preserve_identity_and_revision() {
     let mut fixture = Fixture::new();
     let id = fixture.initial();

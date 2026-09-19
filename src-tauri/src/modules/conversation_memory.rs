@@ -75,6 +75,7 @@ struct Manifest {
     session_id: String,
     source: SourceVersion,
     generation: u64,
+    #[serde(default)]
     revision: u64,
     events: Vec<SelectionEvent>,
     revisions: Vec<String>,
@@ -282,13 +283,45 @@ fn bounded_read(path: &Path) -> Result<Vec<u8>> {
 fn manifest_path(root: &Path, id: &str) -> PathBuf {
     root.join(digest(id.as_bytes())).join("manifest.json")
 }
+
+fn decode_manifest(path: &Path) -> Result<Manifest> {
+    let bytes = bounded_read(path)?;
+    let value: Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("memory_corrupt: {e}"))?;
+    // Early source-only manifests predate the memory revision counter. Never
+    // infer a counter for committed or interrupted immutable revision history.
+    if value.get("revision").is_none() {
+        if value["schemaVersion"].as_u64() != Some(SCHEMA.into()) {
+            return Err("memory_unsupported_schema".into());
+        }
+        let empty = value["revisions"].as_array().is_some_and(Vec::is_empty);
+        let parent = path.parent().ok_or("memory_invalid_path")?;
+        let mut has_revision_files = false;
+        for entry in fs::read_dir(parent).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .strip_suffix(".json")
+                .is_some_and(valid_hash)
+            {
+                has_revision_files = true;
+                break;
+            }
+        }
+        if !empty || has_revision_files {
+            return Err("memory_corrupt: missing revision counter with revision history".into());
+        }
+    }
+    serde_json::from_slice(&bytes).map_err(|e| format!("memory_corrupt: {e}"))
+}
+
 fn read_manifest(root: &Path, id: &str) -> Result<Option<Manifest>> {
     let path = manifest_path(root, id);
     if !path.try_exists().map_err(|e| e.to_string())? {
         return Ok(None);
     }
-    let manifest: Manifest = serde_json::from_slice(&bounded_read(&path)?)
-        .map_err(|e| format!("memory_corrupt: {e}"))?;
+    let manifest = decode_manifest(&path)?;
     if manifest.schema_version != SCHEMA {
         return Err("memory_unsupported_schema".into());
     }
@@ -1328,8 +1361,7 @@ fn collect_roots(root: &Path, live_sessions: &BTreeSet<String>) -> Result<Vec<St
         if !path.exists() {
             continue;
         }
-        let raw: Manifest = serde_json::from_slice(&bounded_read(&path)?)
-            .map_err(|e| format!("memory_gc_blocked: {e}"))?;
+        let raw = decode_manifest(&path)?;
         let manifest = read_manifest(root, &raw.session_id)?.ok_or("memory_gc_missing_manifest")?;
         if directory.file_name().to_string_lossy() != digest(manifest.session_id.as_bytes()) {
             return Err("memory_gc_invalid_owner".into());

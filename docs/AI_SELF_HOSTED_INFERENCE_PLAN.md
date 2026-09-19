@@ -2193,6 +2193,14 @@ is not part of this checkpoint's commit or verification claims.
   available to internal callers; this foundation adds no placeholder UI.
 - Source inspection is explicit, not automatic historical retrieval. Automatic
   extraction/compaction is deferred to **C1b: Bounded automatic compaction**.
+- Startup compatibility follow-up: an early schema-1 source-only manifest may
+  omit `revision`. The reader accepts revision zero only when its revision list
+  is empty and no immutable revision files exist. Reads do not rewrite legacy
+  bytes; the next ordinary atomic write persists the counter. Committed history,
+  duplicate fields, invalid owners, unsupported versions and malformed records
+  still fail closed. Original chat data is unchanged. Four additional native
+  regressions cover this boundary; the follow-up full Rust suite passes 407
+  tests (357 unit and 50 integration). No later checkpoint is implemented.
   Retrieval, project promotion/sharing, Optimize and switch, reasoning controls,
   custom tools and new agent communication remain at their later checkpoints.
   No subsequent checkpoint has been started.

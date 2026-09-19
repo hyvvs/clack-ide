@@ -4,6 +4,7 @@ import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import path from "path";
 import { defineConfig, type PluginOption, type UserConfig } from "vite";
 import Inspect from "vite-plugin-inspect";
+import { createDevWatchIgnore } from "./scripts/dev-watch.mjs";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -145,7 +146,7 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
         }
       : undefined,
     watch: {
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/src-tauri/**", createDevWatchIgnore(__dirname)],
     },
   },
 }));
