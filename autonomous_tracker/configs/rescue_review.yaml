@@ -1,0 +1,16 @@
+# These general COCO weights do not detect fire, smoke, floodwater, or debris.
+# Every enabled class is checked against its model's actual label names at startup.
+models:
+  - name: general
+    weights: yolo26n.pt
+    classes: [person, boat, car, truck, bus]
+    confidence: 0.35
+    image_size: 640
+    tracker: botsort.yaml
+    device: null
+
+confirmation_frames: 3
+lost_after_s: 1.0
+history_length: 30
+freeze_warning_s: 2.0
+review_classes: [person, fire, smoke, floodwater, debris]

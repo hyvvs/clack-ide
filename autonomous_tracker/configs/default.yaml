@@ -1,0 +1,162 @@
+# Safe defaults for the educational tracker. Projectile behavior is simulation-only.
+system:
+  mode: simulation
+  loop_hz: 60
+  solver_rate_hz: 15
+  bounded_queue_size: 2
+
+camera:
+  backend: simulated
+  device: 0
+  width: 1280
+  height: 720
+  fps: 30
+  exposure: null
+  intrinsics_path: null
+  distortion_coefficients: []
+  camera_to_platform:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+
+target:
+  detector: color_blob
+  width_m: 0.15
+  height_m: 0.15
+  class_dimensions_m: {}
+  minimum_confidence: 0.6
+  association_gate_m: 1.5
+  hue_min: 35
+  hue_max: 85
+  yolo_model: yolo26n.pt
+  yolo_device: null
+  yolo_image_size: 640
+  yolo_iou_threshold: 0.7
+  yolo_max_detections: 100
+  yolo_class_ids: []
+  yolo_class_names: []
+
+estimator:
+  model: constant_acceleration
+  process_noise: 0.5
+  measurement_noise: 0.05
+  maximum_prediction_horizon_s: 2.0
+  track_timeout_s: 0.5
+  max_missed_frames: 10
+  maximum_covariance_trace: 25.0
+
+environment:
+  gravity_mps2: [0.0, 0.0, -9.80665]
+  wind_mps: [0.0, 0.0, 0.0]
+  air_density_kgpm3: 1.225
+
+projectile:
+  muzzle_velocity_mps: 18.0
+  mass_kg: 0.002
+  diameter_m: 0.013
+  drag_coefficient: 0.45
+  drag_model: constant
+  speed_of_sound_mps: 343.0
+  aerodynamic_lift_coefficient: 0.0
+  lift_axis: [0.0, 0.0, 1.0]
+  enable_drag: true
+  integration_timestep_s: 0.005
+  maximum_integration_time_s: 3.0
+  maximum_solver_iterations: 80
+
+pan_tilt:
+  backend: simulated
+  update_rate_hz: 60
+  serial_port: null
+  serial_baud: 115200
+  safe_behavior: hold
+  pan:
+    minimum_rad: -3.14159265
+    maximum_rad: 3.14159265
+    home_rad: 0.0
+    zero_offset_rad: 0.0
+    direction: 1
+    scale: 1.0
+    maximum_velocity_radps: 2.0
+    maximum_acceleration_radps2: 8.0
+    maximum_jerk_radps3: 40.0
+    deadband_rad: 0.002
+    backlash_rad: 0.004
+    pid:
+      kp: 5.0
+      ki: 0.2
+      kd: 0.4
+      derivative_filter_hz: 12.0
+      output_limit_radps: 2.0
+      integral_limit: 0.5
+      velocity_feedforward: 1.0
+      acceleration_feedforward: 0.0
+  tilt:
+    minimum_rad: -0.34906585
+    maximum_rad: 1.3962634
+    home_rad: 0.0
+    zero_offset_rad: 0.0
+    direction: 1
+    scale: 1.0
+    maximum_velocity_radps: 2.0
+    maximum_acceleration_radps2: 8.0
+    maximum_jerk_radps3: 40.0
+    deadband_rad: 0.002
+    backlash_rad: 0.004
+    pid:
+      kp: 5.0
+      ki: 0.2
+      kd: 0.4
+      derivative_filter_hz: 12.0
+      output_limit_radps: 2.0
+      integral_limit: 0.5
+      velocity_feedforward: 1.0
+      acceleration_feedforward: 0.0
+
+simulated_fire:
+  alignment_tolerance_rad: 0.01745329
+  alignment_radius_fraction: 0.5
+  minimum_tracking_confidence: 0.75
+  minimum_alignment_confidence: 0.75
+  minimum_stability: 0.6
+  maximum_target_age_s: 0.2
+  cooldown_s: 1.0
+  burst_interval_s: 0.25
+  max_burst_count: 3
+  hit_tolerance_m: 0.1
+  adaptive:
+    minimum_interval_s: 0.15
+    maximum_interval_s: 1.0
+    angular_velocity_gain: 0.2
+    uncertainty_gain: 0.4
+    miss_distance_gain: 0.4
+    instability_gain: 0.3
+
+simulation:
+  duration_s: 8.0
+  random_seed: 7
+  measurement_noise_m: 0.02
+  dropped_frame_probability: 0.0
+  camera_latency_s: 0.02
+  camera_latency_jitter_s: 0.0
+  capture_timestamp_jitter_s: 0.0
+  exposure_time_s: 0.001
+  target_occlusion_probability: 0.0
+  targets:
+    - trajectory: circular
+      initial_position_m: [8.0, 0.0, 1.0]
+      velocity_mps: [0.0, 1.5, 0.0]
+      acceleration_mps2: [0.0, 0.0, 0.0]
+      radius_m: 3.0
+      speed_mps: 1.5
+
+telemetry:
+  enabled: false
+  host: 127.0.0.1
+  port: 8765
+  publish_rate_hz: 10.0
+
+logging:
+  enabled: true
+  path: logs/session.jsonl

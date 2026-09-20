@@ -1,0 +1,43 @@
+{
+  "speed_kmh": 200.0,
+  "speed_mps": 55.55555555555556,
+  "accuracy_gates": {
+    "tracking_rms_error_m_max": 0.1,
+    "post_alignment_prediction_rms_error_m_max": 0.3,
+    "solver_success_rate_min": 0.99,
+    "ballistic_miss_rms_m_max": 0.05,
+    "truth_impact_rms_m_max": 0.3,
+    "post_alignment_pan_rms_error_rad_max": 0.017453292519943295,
+    "alignment_time_fraction_max": 0.75,
+    "track_loss_count_max": 0,
+    "simulated_hit_rate_min": 0.99
+  },
+  "ranges": {
+    "50m": {
+      "distance_m": 50.0,
+      "duration_s": 0.8099999999999999,
+      "peak_angular_rate_radps": 1.1111111111111112,
+      "peak_angular_rate_degps": 63.66197723675814,
+      "passed": true,
+      "failures": [],
+      "solution_method": "numerical",
+      "tracking_rms_error_m": 0.04623505952711703,
+      "velocity_rms_error_mps": 7.475569347206384,
+      "prediction_rms_error_m": 1.6038660190550245,
+      "solver_success_rate": 1.0,
+      "ballistic_miss_rms_m": 5.848798356660315e-13,
+      "truth_impact_rms_m": 0.17325858181224507,
+      "pan_rms_error_rad": 0.08273179001021885,
+      "tilt_rms_error_rad": 0.00996914339381548,
+      "post_alignment_prediction_rms_error_m": 0.18605252851344184,
+      "post_alignment_pan_rms_error_rad": 0.0040694744094318756,
+      "post_alignment_tilt_rms_error_rad": 0.00045178249523195507,
+      "alignment_time_s": 0.323307687,
+      "simulated_hit_rate": 1.0,
+      "track_loss_count": 0,
+      "state_machine_faults": 0,
+      "simulated_shots": 8
+    }
+  },
+  "passed": true
+}

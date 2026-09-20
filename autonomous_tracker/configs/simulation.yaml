@@ -1,0 +1,36 @@
+# Runnable simulation scenario with noisy observations, drag, and a circular target.
+system:
+  mode: simulation
+  loop_hz: 60
+  solver_rate_hz: 15
+camera:
+  backend: simulated
+  width: 1280
+  height: 720
+  fps: 30
+estimator:
+  model: constant_acceleration
+  max_missed_frames: 10
+simulation:
+  duration_s: 8.0
+  random_seed: 11
+  measurement_noise_m: 0.02
+  dropped_frame_probability: 0.02
+  camera_latency_s: 0.025
+  camera_latency_jitter_s: 0.002
+  capture_timestamp_jitter_s: 0.0001
+  exposure_time_s: 0.001
+  target_occlusion_probability: 0.01
+  targets:
+    - trajectory: circular
+      initial_position_m: [8.0, 0.0, 1.0]
+      radius_m: 3.0
+      speed_mps: 1.5
+projectile:
+  muzzle_velocity_mps: 18.0
+  mass_kg: 0.002
+  diameter_m: 0.013
+  drag_coefficient: 0.45
+  drag_model: constant
+  enable_drag: true
+  integration_timestep_s: 0.005

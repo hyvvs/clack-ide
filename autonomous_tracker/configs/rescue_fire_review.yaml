@@ -1,0 +1,21 @@
+# Experimental external fire/smoke model, separate from the general COCO model.
+# Source revision, licensing and validation limits are in docs/RESCUE_SOURCES.md.
+models:
+  - name: general
+    weights: yolo26n.pt
+    classes: [person, boat, car, truck, bus]
+    confidence: 0.35
+    image_size: 640
+    tracker: botsort.yaml
+  - name: hazards
+    weights: models/rescue-fire-smoke/best.pt
+    weights_sha256: b91633799ceb052c814b4f8b77a37efc9a40f002d528df97d74463585fa4f28f
+    classes: [smoke, fire]
+    confidence: 0.35
+    image_size: 640
+    tracker: botsort.yaml
+confirmation_frames: 3
+lost_after_s: 1.0
+history_length: 30
+freeze_warning_s: 2.0
+review_classes: [person, fire, smoke, floodwater, debris]

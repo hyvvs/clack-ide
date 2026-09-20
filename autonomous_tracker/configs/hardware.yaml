@@ -1,0 +1,27 @@
+# Real camera and motor mode. SimulatedLauncher remains the only launcher implementation.
+system:
+  mode: hardware
+  loop_hz: 60
+camera:
+  backend: opencv
+  device: 0
+  width: 1280
+  height: 720
+  fps: 30
+  exposure: null
+  intrinsics_path: calibrations/camera.json
+target:
+  detector: aruco
+  width_m: 0.15
+  minimum_confidence: 0.7
+pan_tilt:
+  backend: serial
+  serial_port: COM3
+  serial_baud: 115200
+  safe_behavior: hold
+logging:
+  enabled: true
+  path: logs/hardware-session.jsonl
+telemetry:
+  enabled: false
+

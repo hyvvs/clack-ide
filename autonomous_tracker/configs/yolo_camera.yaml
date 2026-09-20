@@ -1,0 +1,62 @@
+# Real camera, YOLO detection, and software-only interception calculations.
+# Pan/tilt is simulated by default. No physical projectile interface exists.
+system:
+  mode: hardware
+  loop_hz: 60
+  solver_rate_hz: 15
+
+camera:
+  backend: opencv
+  device: 0
+  width: 1280
+  height: 720
+  fps: 60
+  exposure: null
+  intrinsics_path: calibrations/camera.json
+
+target:
+  detector: yolo
+  yolo_model: yolo26n.pt
+  yolo_device: null
+  yolo_image_size: 640
+  yolo_iou_threshold: 0.7
+  yolo_max_detections: 20
+  yolo_class_names: [sports ball]
+  yolo_class_ids: []
+  minimum_confidence: 0.45
+  width_m: 0.22
+  height_m: 0.22
+  class_dimensions_m:
+    sports ball: [0.22, 0.22]
+  association_gate_m: 3.0
+
+estimator:
+  model: constant_acceleration
+  process_noise: 1.0
+  measurement_noise: 0.05
+  maximum_prediction_horizon_s: 2.0
+  track_timeout_s: 0.4
+  max_missed_frames: 8
+  maximum_covariance_trace: 25.0
+
+pan_tilt:
+  backend: simulated
+  update_rate_hz: 60
+  safe_behavior: hold
+
+simulated_fire:
+  alignment_tolerance_rad: 0.01745329
+  alignment_radius_fraction: 0.5
+  minimum_tracking_confidence: 0.75
+  minimum_alignment_confidence: 0.75
+  minimum_stability: 0.6
+  maximum_target_age_s: 0.2
+  cooldown_s: 1.0
+  hit_tolerance_m: 0.1
+
+logging:
+  enabled: true
+  path: logs/yolo-camera-session.jsonl
+
+telemetry:
+  enabled: false
