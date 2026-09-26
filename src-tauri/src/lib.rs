@@ -172,6 +172,7 @@ pub fn run() {
             }
         })
         .manage(fs::watch::FsWatchState::default())
+        .manage(modules::conversation_memory::project::freshness::FreshnessState::default())
         .manage(history::HistoryState::default())
         .manage(fs::grep::ContentSearchState::default())
         .manage({
@@ -204,6 +205,8 @@ pub fn run() {
             modules::conversation_memory::project::project_memory_propose,
             modules::conversation_memory::project::project_memory_decide,
             modules::conversation_memory::project::project_memory_inspect,
+            modules::conversation_memory::project::freshness::project_memory_verify,
+            modules::conversation_memory::project::freshness::project_memory_revalidate,
             modules::conversation_memory::conversation_memory_evidence,
             modules::conversation_memory::conversation_memory_commit,
             modules::conversation_memory::conversation_memory_cancel,

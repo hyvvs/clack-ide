@@ -30,6 +30,34 @@ pub fn resolve_repo(
     resolve_repo_in_authorized(registry, &cwd)
 }
 
+pub(crate) fn project_evidence_revision(cwd: &str, workspace: &WorkspaceEnv) -> Result<String> {
+    let root = run_git(workspace, Some(cwd), ["rev-parse", "--show-toplevel"], 2)?;
+    if root.timed_out {
+        return Err(GitError::Spawn("project Git check timed out".into()));
+    }
+    if root.exit_code != Some(0) {
+        if String::from_utf8_lossy(&root.stderr).contains("not a git repository") {
+            return Ok("non-git".into());
+        }
+        return Err(GitError::Spawn("project Git identity unavailable".into()));
+    }
+    let head = run_git(workspace, Some(cwd), ["rev-parse", "--verify", "HEAD"], 2)?;
+    let branch = run_git(workspace, Some(cwd), ["symbolic-ref", "-q", "HEAD"], 2)?;
+    if head.timed_out
+        || branch.timed_out
+        || head.exit_code != Some(0)
+        || !matches!(branch.exit_code, Some(0 | 1))
+    {
+        return Err(GitError::Spawn("project Git revision unavailable".into()));
+    }
+    serde_json::to_string(&(
+        String::from_utf8_lossy(&root.stdout).trim(),
+        String::from_utf8_lossy(&head.stdout).trim(),
+        String::from_utf8_lossy(&branch.stdout).trim(),
+    ))
+    .map_err(|_| GitError::Spawn("project Git identity unavailable".into()))
+}
+
 fn resolve_repo_in_authorized(
     registry: &WorkspaceRegistry,
     cwd: &ResolvedGitDirectory,

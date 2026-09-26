@@ -176,10 +176,26 @@ pub async fn git_pull_ff_only(
     app: AppHandle,
 ) -> Result<(), String> {
     let workspace = WorkspaceEnv::from_option(workspace);
+    let notify = app.clone();
     blocking(app, move |r| {
-        operations::pull_ff_only(r, &repo_root, &workspace).map_err(Into::into)
+        let result = operations::pull_ff_only(r, &repo_root, &workspace).map_err(Into::into);
+        if result.is_ok() {
+            changed_project(&notify, &repo_root, &workspace);
+        }
+        result
     })
     .await
+}
+
+fn changed_project(app: &AppHandle, root: &str, workspace: &WorkspaceEnv) {
+    if let Ok(path) =
+        std::fs::canonicalize(crate::modules::workspace::resolve_path(root, workspace))
+    {
+        crate::modules::conversation_memory::project::freshness::changed(
+            app,
+            &[crate::modules::fs::to_canon(path)],
+        );
+    }
 }
 
 #[tauri::command]

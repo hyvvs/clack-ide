@@ -142,13 +142,21 @@ fn drain_loop(rx: mpsc::Receiver<notify::Result<Event>>, app: AppHandle) {
         };
 
         let mut paths: HashSet<String> = HashSet::new();
+        let mut uncertain = first.as_ref().map_or(true, |e| {
+            matches!(e.kind, EventKind::Any | EventKind::Other)
+        });
         collect(&mut paths, first);
 
         let deadline = Instant::now() + MAX_WINDOW;
         loop {
             let timeout = DEBOUNCE.min(deadline.saturating_duration_since(Instant::now()));
             match rx.recv_timeout(timeout) {
-                Ok(ev) => collect(&mut paths, ev),
+                Ok(ev) => {
+                    uncertain |= ev.as_ref().map_or(true, |e| {
+                        matches!(e.kind, EventKind::Any | EventKind::Other)
+                    });
+                    collect(&mut paths, ev);
+                }
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -157,15 +165,15 @@ fn drain_loop(rx: mpsc::Receiver<notify::Result<Event>>, app: AppHandle) {
             }
         }
 
-        if paths.is_empty() {
+        if paths.is_empty() && !uncertain {
             continue;
         }
-        let _ = app.emit(
-            "fs:changed",
-            ChangedPayload {
-                paths: paths.into_iter().collect(),
-            },
+        let paths: Vec<_> = paths.into_iter().collect();
+        crate::modules::conversation_memory::project::freshness::changed(
+            &app,
+            if uncertain { &[] } else { &paths },
         );
+        let _ = app.emit("fs:changed", ChangedPayload { paths });
     }
 }
 

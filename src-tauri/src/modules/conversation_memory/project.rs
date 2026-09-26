@@ -2,6 +2,7 @@
 use super::*;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
+pub mod freshness;
 #[cfg(test)]
 mod integration_tests;
 mod storage;
@@ -92,6 +93,8 @@ struct Entry {
     consent: Vec<Consent>,
     supersedes: Option<String>,
     conflicts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    knowledge: Option<freshness::Knowledge>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -285,6 +288,18 @@ fn sensitive(value: &Value) -> bool {
     }
 }
 
+fn possible_secret(text: &str) -> bool {
+    text.contains("-----BEGIN")
+        || text.contains("AKIA")
+        || text.match_indices("sk-").any(|(index, _)| {
+            index == 0
+                || !text[..index]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric())
+        })
+}
+
 fn selected_source(
     originals: &Originals,
     owner: &Owner,
@@ -352,7 +367,7 @@ fn selected_source(
         }
         _ => return Err("project_select_bounded_source_part".into()),
     };
-    if text.contains("-----BEGIN") || text.contains("sk-") || text.contains("AKIA") {
+    if possible_secret(&text) {
         return Err("project_possible_secret_denied".into());
     }
     Ok((text, hash(&value)?, qualification))
@@ -454,6 +469,7 @@ fn propose(
         consent: vec![],
         supersedes: None,
         conflicts: proposal.conflicts,
+        knowledge: None,
     });
     Ok(())
 }
@@ -502,12 +518,7 @@ fn decide(
             entry.consent.push(consent);
         }
         Decision::Correct { text } if entry.status == Publication::Approved => {
-            if text.trim().is_empty()
-                || text.len() > MAX_SLICE
-                || text.contains("-----BEGIN")
-                || text.contains("sk-")
-                || text.contains("AKIA")
-            {
+            if text.trim().is_empty() || text.len() > MAX_SLICE || possible_secret(text) {
                 return Err("project_invalid_correction".into());
             }
             let mut replacement = entry.clone();
@@ -519,6 +530,7 @@ fn decide(
             replacement.created_at = now();
             replacement.updated_at = now();
             replacement.consent = vec![consent.clone()];
+            replacement.knowledge = None;
             entry.status = Publication::Superseded;
             entry.updated_at = now();
             entry.consent.push(consent);
@@ -597,9 +609,10 @@ pub async fn project_memory_load(app: tauri::AppHandle, session_id: String) -> R
         let snapshot = load(&root(&app)?, &access.scope.workspace)?;
         let (_, content) = paths(&app)?;
         let mut cache = SourceCache::new();
-        let result = view(&snapshot, &access, |entry| {
+        let mut result = view(&snapshot, &access, |entry| {
             source_state(&app, &content, entry, &mut cache)
         });
+        freshness::decorate(&app, &snapshot, &mut result)?;
         if self::access(&app, &session_id)?.0 != access {
             return Err("project_authorization_changed".into());
         }

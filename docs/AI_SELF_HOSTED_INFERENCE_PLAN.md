@@ -1201,7 +1201,7 @@ This order does not authorize any pending implementation in this planning task.
 | 8 | C1b | Bounded structured extraction and automatic compaction | Complete | Bounded captured-route extraction, native source validation/CAS, protected working context; implementation record below |
 | 9 | G1a | Automatic same-conversation evidence retrieval | Complete | `feat(ai): retrieve original conversation evidence`; [implementation record](#g1a-implementation-record-2026-09-26) |
 | 10 | M1 | Project memory ownership, promotion policy and inspection | Complete | `feat(ai): add scoped project memory ownership`; [implementation record](#m1-implementation-record-2026-09-26) |
-| 11 | M2 | Verified project knowledge and incremental freshness | Pending | None |
+| 11 | M2 | Verified project knowledge and incremental freshness | Complete | `feat(ai): track project evidence freshness`; [implementation record](#m2-implementation-record-2026-09-26) |
 | 12 | G1b | Authorized project/task evidence retrieval | Pending | None |
 | 13 | C2 | Target-sized preparation and atomic Optimize and switch | Pending | None |
 | 14 | H1 | Durable task-scoped communication and clarification | Pending | None |
@@ -2497,6 +2497,118 @@ unrelated files are not scanned each turn. No automatic semantic conflict merge.
 Rollback disables derived shared knowledge; keep revisions/provenance and demand
 fresh direct evidence when required. Commit `feat(ai): track project evidence
 freshness`, update ledger, STOP.
+
+#### M2 implementation record (2026-09-26)
+
+- Representation: additive project snapshot schema v2, retaining M1's workspace,
+  checkout, qualification, source, consent, revision and supersession ownership.
+  Optional knowledge schema v1 holds declared relative file dependencies with
+  canonical identity, full-content SHA-256, bounded immutable excerpt hash/span,
+  test-environment role, related project-record IDs, Git root/HEAD/branch evidence,
+  host OS/architecture, verifying session/time, creation revision and
+  `m2-user-evidence-v1` policy. No duplicate session store or private-chat index.
+  A correction clears inherited verification instead of blessing changed prose.
+- Creation: an approved M1 record can be validated against explicitly selected
+  current files/environment inputs and related approved records. The existing
+  project-memory panel provides evidence review; native confirmation shows exactly
+  the excerpt bytes to be retained/shared. Capture is deterministic and bounded,
+  not an LLM repository/conversation summary. Confirmation attests to the claim
+  and dependency set; hashes prove evidence identity, not semantic truth or test
+  execution. Unsupported agent assertions do not acquire verified authority by
+  running a hash check. M1's original claim/evidence remain intact; a user-reviewed
+  replacement gets a new ID, verifier and supersedes link through the existing
+  native consent/CAS path. No CLACK.md/TERAX.md editing or silent promotion.
+- Freshness: explicit current, potentially-stale, invalidated, source-missing,
+  needs-revalidation, conflicting and superseded states. Revalidation hashes
+  declared current content, including untracked files and same-mtime edits, and
+  compares canonical identity, checkout/branch, declared environment and source
+  provenance. HEAD is retained as provenance; an unrelated commit on the same
+  branch does not invalidate unchanged dependencies. Detached-HEAD movement and
+  branch changes remain conservative invalidations. Renames/deletions do not
+  retarget evidence by filename. Changed current excerpts are returned separately
+  from retained historical evidence; no automatic semantic reconciliation occurs.
+  User correction/review, rather than a model guess, resolves changed claims.
+- Incremental behavior: existing debounced native filesystem events and explicit
+  file writes mark only indexed affected dependency closures; a successful Git
+  pull conservatively dirties known evidence under that checkout. Unknown watcher
+  errors invalidate advisory cache state. The panel leases existing directory
+  watchers while open and automatically rechecks a bounded dirty group. No idle
+  repository scan, per-message file read, model call, embedding index or new watcher
+  implementation. Reopening/explicit use hashes the selected dependencies even
+  after missed events. A batch memoizes file reads and record-closure evaluation;
+  unchanged/unrelated event refreshes do not repeatedly hash current records.
+- Dependencies/conflicts: linked approved requirements and knowledge records
+  propagate invalidation through a bounded graph; superseding/revoking a source
+  cannot leave dependent knowledge silently current. Conflicts are symmetric,
+  explicit and unresolved until an authorized user action, not overwritten or
+  semantically merged. Unknown/inaccessible dependency provenance fails closed.
+  Different workspaces/checkouts remain independent, including unmerged PeerTask
+  worktrees. Existing write leases, task permissions, artifact identities and
+  patch-apply authority are unchanged; freshness never authorizes an overwrite.
+- Authorization: existing session-derived M1 access is checked before reading
+  and again before publishing/delivering. Paths must be relative, contained in
+  the canonical authorized checkout and pass secret-path checks at both spellings.
+  Source parts, task results and artifact content retain M1's provenance checks.
+  Known credential markers are rejected; token-boundary checking avoids falsely
+  rejecting ordinary `task-scoped` prose. This remains conservative filtering,
+  not exhaustive secret detection. Native human review is still mandatory.
+  No model-facing tool or cross-conversation browsing permission was introduced.
+- Persistence/recovery: schema v1 reads without mutation and upgrades only on an
+  explicit atomic write. Unknown versions, invalid dependencies and malformed
+  knowledge fail closed, preserving original chats and prior revisions. New
+  immutable excerpts reuse the attachment CAS and join current/previous revision
+  retention; orphan writes remain collectible. Freshness cache is advisory and
+  process-local: restart requires revalidation, never resumes approval. Per-owner
+  M1 locks/revision checks preserve failed-write rollback; monotonic cache tickets
+  reject overlapping late checks, events and eviction/recreation ABA races.
+  Cancelling native consent does not publish. Closing the panel discards late UI
+  delivery; bounded read-only native work can finish without a durable mutation.
+- Runtime limits: eight file dependencies and eight related record IDs per
+  knowledge record; eight requested records per revalidation, sixteen graph
+  nodes, 128 advisory cache entries. UTF-8 regular files only, 256 KiB/file and
+  4 MiB actual read bytes per batch. Each distinct file is read twice to detect
+  in-flight mutation; shared dependencies reuse that observation within a batch.
+  Excerpts are at most 256 UTF-8 bytes from offset zero and are separately hashed.
+  Existing M1 bounds remain 64 entries, 256 KiB metadata and reserved revocation
+  capacity. File batches check a cooperative ten-second deadline. Git uses the
+  existing process owner with two seconds per command, up to three commands per
+  stamp and two stamps around a check/approval. Native user wait is outside these
+  budgets; synchronous OS file I/O is not forcibly preempted by the soft deadline.
+- Compatibility/scope: G1a stays same-conversation-only; C1a/C1b original history,
+  model switching, B1 and PeerTask scheduling/cancellation are unchanged. M2 adds
+  no outgoing model context; G1b owns authorized project/task retrieval and must
+  use fresh scoped evidence plus B1. No new agent communication protocol.
+- Tests on Windows: 22 new native M2 tests (plus a Unix-only symlink test not run
+  on Windows), 11 new frontend tests. Native project group: 48 passed, including
+  existing M1 privacy/authorization/worktree/concurrency tests. Focused frontend
+  project/memory/compaction/retrieval/model-switch/attachment/PeerTask/budget group:
+  487 passed / 28 files. Actual temporary filesystem and Git fixtures cover
+  same-mtime changes, unchanged shared read counts, untracked/renamed sources,
+  environment changes, branch movement versus unrelated commits, missing grants,
+  source mutation, cyclic dependencies, stale callbacks/eviction, v1 disk loading,
+  CAS retention, native-consent cancellation and injected atomic-write failure.
+- Final gates passed: `npm.cmd run check-types`; `npm.cmd run lint` (unchanged
+  71 warnings / 2 infos); `npm.cmd test` (1,342 tests / 129 files);
+  `npm.cmd run build`; `cargo fmt --check`;
+  `cargo clippy --all-targets --locked -- -D warnings`; `cargo test --locked`
+  (471: 421 library + 25 filesystem + 25 Git); `git diff --check`. The isolated
+  temporary Cargo target was reused without stopping user processes. Existing
+  user-profile canonicalization warning and Vite plugin-timing advisory remain.
+- Limitations/manual: freshness covers declared dependencies, not proof that the
+  dependency set or claim is complete. Whole-file hashes conservatively invalidate
+  even edits outside the retained prefix. Environment evidence is declared files
+  and host identity, not automatic detection of every tool/runtime variable; tests
+  are not rerun. Verification records without an environment input stay qualified.
+  Missing Git, inaccessible/unborn repositories and unsupported file types fail
+  closed rather than inventing currentness. Automatic UI work stops at eight
+  records; other records can be checked explicitly. Native GUI/dialog interactions,
+  visual layout checks, live WSL/providers and Unix symlink execution were not
+  performed. They remain manual/platform verification, not inferred passes.
+- Rollback: disable M2 verification/revalidation and derived freshness views;
+  preserve v2 metadata, historical sources and CAS retention. A pre-M2 reader
+  rejects v2 safely rather than silently dropping knowledge; do not downgrade
+  records or resurrect old consent automatically. No subsequent checkpoint was
+  started. Next by the authoritative ledger is **G1b: Project and task evidence**.
 
 ### C2: Optimize and switch
 

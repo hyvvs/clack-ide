@@ -382,7 +382,7 @@ fn retention_keeps_only_committed_selected_content_and_previous_revision() {
 fn metadata_bounds_and_unsupported_versions_fail_safely() {
     let f = Fixture::new();
     let mut snapshot = f.pending();
-    snapshot.schema_version = 2;
+    snapshot.schema_version = 3;
     assert!(publish(&f.root, snapshot.clone(), 1, |_| Ok(())).is_err());
     snapshot.schema_version = 1;
     snapshot.entries[0].text = "x".repeat(MAX_SLICE + 1);

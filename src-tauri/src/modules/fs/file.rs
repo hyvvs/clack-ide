@@ -192,6 +192,12 @@ pub fn fs_write_file(
     if let Some(perms) = original_permissions {
         let _ = fs::set_permissions(&target, perms);
     }
+    crate::modules::conversation_memory::project::freshness::changed(
+        &app,
+        &[super::to_canon(
+            fs::canonicalize(&target).unwrap_or_else(|_| target.clone()),
+        )],
+    );
     let _ = app.emit(
         "fs:file-written",
         FileWrittenEvent {

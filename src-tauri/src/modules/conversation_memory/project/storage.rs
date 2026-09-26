@@ -28,7 +28,7 @@ fn pointer(root: &Path, workspace: &str) -> Result<Option<Pointer>> {
 }
 
 fn validate(snapshot: &Snapshot) -> Result<()> {
-    if snapshot.schema_version != 1 {
+    if !matches!(snapshot.schema_version, 1 | 2) {
         return Err("project_unsupported_schema".into());
     }
     if snapshot.workspace.is_empty() || snapshot.entries.len() > MAX_ENTRIES {
@@ -39,6 +39,13 @@ fn validate(snapshot: &Snapshot) -> Result<()> {
         return Err("project_duplicate_identity".into());
     }
     for (index, entry) in snapshot.entries.iter().enumerate() {
+        if let Some(knowledge) = &entry.knowledge {
+            if snapshot.schema_version < 2 {
+                return Err("project_unsupported_schema".into());
+            }
+            super::freshness::validate(knowledge)?;
+            super::freshness::validate_links(knowledge, entry, snapshot)?;
+        }
         if !valid_hash(&entry.id)
             || entry.scope.workspace != snapshot.workspace
             || entry.scope.checkout.is_empty()
@@ -191,12 +198,16 @@ pub(super) fn publish(
     expected: u64,
     fault: impl Fn(&str) -> Result<()>,
 ) -> Result<()> {
+    if !matches!(snapshot.schema_version, 1 | 2) {
+        return Err("project_unsupported_schema".into());
+    }
     let current = load(root, &snapshot.workspace)?;
     expect_revision(&current, expected)?;
     let previous = pointer(root, &snapshot.workspace)?.map(|p| p.current);
     snapshot.revision = expected
         .checked_add(1)
         .ok_or("project_revision_exhausted")?;
+    snapshot.schema_version = 2;
     snapshot.previous = previous.clone();
     validate(&snapshot)?;
     let bytes = serde_json::to_vec(&snapshot).map_err(|e| e.to_string())?;
@@ -262,6 +273,9 @@ pub(super) fn retention_roots(root: &Path) -> Result<Vec<String>> {
             }
             for entry in snapshot.entries {
                 roots.insert(entry.source.slice_digest);
+                if let Some(knowledge) = entry.knowledge {
+                    roots.extend(knowledge.dependencies.into_iter().map(|d| d.slice_hash));
+                }
             }
         }
         cleanup(&dir, &pointer.current, pointer.previous.as_deref());

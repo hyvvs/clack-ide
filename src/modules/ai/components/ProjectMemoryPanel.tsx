@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { ProjectEvidenceEditor } from "@/modules/ai/components/ProjectEvidenceEditor";
 import type { UIMessage } from "ai";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -14,6 +16,9 @@ import {
   projectMemoryClient,
   projectSources,
   type ProjectMemoryView,
+  type ProjectFreshness,
+  freshnessTargets,
+  applyFreshness,
 } from "@/modules/ai/lib/projectMemory";
 
 export function ProjectMemoryPanel({
@@ -32,6 +37,7 @@ export function ProjectMemoryPanel({
   const [view, setView] = useState<ProjectMemoryView | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [evidence, setEvidence] = useState<ProjectFreshness["entries"]>([]);
   const [sourceKey, setSourceKey] = useState("");
   const [excerpt, setExcerpt] = useState("");
   const [section, setSection] = useState<string>("requirements");
@@ -49,20 +55,32 @@ export function ProjectMemoryPanel({
     [messages, open],
   );
   const source = sources.find((item) => item.key === sourceKey);
-  const refresh = useCallback(async () => {
-    const ticket = ++generation.current;
-    setInspection(null);
-    setView(null);
-    try {
-      const next = await client.load();
-      if (ticket === generation.current) {
-        setView(next);
-        setError("");
+  const refresh = useCallback(
+    async (force = true) => {
+      const ticket = ++generation.current;
+      setInspection(null);
+      setView(null);
+      setEvidence([]);
+      try {
+        const next = await client.load();
+        if (ticket === generation.current) {
+          setView(next);
+          setError("");
+          const ids = freshnessTargets(next, force);
+          if (ids.length) {
+            const result = await client.revalidate(next, ids);
+            if (ticket === generation.current) {
+              setView(applyFreshness(next, result));
+              setEvidence(result.entries);
+            }
+          }
+        }
+      } catch (error) {
+        if (ticket === generation.current) setError(String(error));
       }
-    } catch (error) {
-      if (ticket === generation.current) setError(String(error));
-    }
-  }, [client]);
+    },
+    [client],
+  );
   useEffect(() => {
     setView(null);
     setInspection(null);
@@ -73,7 +91,7 @@ export function ProjectMemoryPanel({
     let alive = true;
     void refresh();
     const listener = listen("clack:project-memory-changed", () => {
-      if (alive) void refresh();
+      if (alive) void refresh(false);
     });
     void listener.catch((error) => {
       if (alive) setError(String(error));
@@ -84,6 +102,32 @@ export function ProjectMemoryPanel({
       void listener.then((unlisten) => unlisten()).catch(() => {});
     };
   }, [open, workspace, refresh]);
+  const watchPaths = JSON.stringify([
+    ...new Set(
+      view?.entries.flatMap(
+        (e) =>
+          e.knowledge?.dependencies.map((d) =>
+            d.canonical.replace(/\\/g, "/").replace(/\/[^/]+$/, ""),
+          ) ?? [],
+      ) ?? [],
+    ),
+  ]);
+  useEffect(() => {
+    if (!open) return;
+    const paths: string[] = JSON.parse(watchPaths);
+    if (!paths.length) return;
+    let alive = true;
+    const watching = invoke("fs_watch_add", { paths });
+    void watching.catch((error) => {
+      if (alive) setError(String(error));
+    });
+    return () => {
+      alive = false;
+      void watching
+        .then(() => invoke("fs_watch_remove", { paths }))
+        .catch(() => {});
+    };
+  }, [open, watchPaths]);
   const act = async (operation: () => Promise<unknown>) => {
     const ticket = generation.current;
     setBusy(true);
@@ -93,6 +137,22 @@ export function ProjectMemoryPanel({
       if (ticket === generation.current) {
         setEdit(null);
         await refresh();
+      }
+    } catch (error) {
+      if (ticket === generation.current) setError(String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const recheck = async (current: ProjectMemoryView, id: string) => {
+    const ticket = generation.current;
+    setBusy(true);
+    try {
+      const result = await client.revalidate(current, [id]);
+      if (ticket === generation.current) {
+        setView(applyFreshness(current, result));
+        setEvidence(result.entries);
+        setError("");
       }
     } catch (error) {
       if (ticket === generation.current) setError(String(error));
@@ -289,6 +349,51 @@ export function ProjectMemoryPanel({
                     <p className="whitespace-pre-wrap break-words">
                       {entry.text}
                     </p>
+                    <p className="break-words text-[var(--clack-text-3)]">
+                      Last evidence check:{" "}
+                      {entry.freshness ?? "needs-revalidation"}
+                    </p>
+                    {entry.status === "approved" && (
+                      <ProjectEvidenceEditor
+                        entry={entry}
+                        view={view}
+                        busy={busy}
+                        onVerify={(files, environment, records) =>
+                          void act(() =>
+                            client.verify(
+                              view,
+                              entry.id,
+                              files,
+                              environment,
+                              records,
+                            ),
+                          )
+                        }
+                      />
+                    )}
+                    {entry.knowledge && entry.status === "approved" && (
+                      <button
+                        type="button"
+                        className={control}
+                        disabled={busy}
+                        onClick={() => void recheck(view, entry.id)}
+                      >
+                        Recheck evidence
+                      </button>
+                    )}
+                    {evidence
+                      .find((e) => e.id === entry.id)
+                      ?.evidence.map((source) => (
+                        <details key={source.path} className="mt-1 min-w-0">
+                          <summary className="cursor-pointer break-all">
+                            {source.path}
+                            {source.changed ? " (changed)" : ""}
+                          </summary>
+                          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words border p-2">
+                            {source.error ?? source.excerpt}
+                          </pre>
+                        </details>
+                      ))}
                     <p className="break-words text-[10px] text-[var(--clack-text-3)]">
                       {entry.sourceState} | {entry.authorAgent} |{" "}
                       {entry.sourceSessionId}
