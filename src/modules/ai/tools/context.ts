@@ -1,6 +1,11 @@
 import type { WorkspaceEnv } from "@/modules/workspace/env";
 
 export type ToolContext = {
+  requestConversationEvidence?: (
+    query: string,
+    anchor?: string,
+    expand?: boolean,
+  ) => { status: string; message: string };
   /** Active terminal tab cwd, used to resolve relative paths. Null = home. */
   getCwd: () => string | null;
   /** Workspace root (explorer root). Used by tools that operate over the project. */

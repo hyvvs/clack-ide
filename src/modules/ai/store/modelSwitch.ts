@@ -192,7 +192,13 @@ export async function prepareModelSwitch(
       : undefined;
     const toolTokens = measureRequest({
       tools: await serializedToolSchemas(
-        buildTools(sessionToolContext(sessionId ?? "").toolContext),
+        buildTools({
+          ...sessionToolContext(sessionId ?? "").toolContext,
+          requestConversationEvidence: () => ({
+            status: "preflight",
+            message: "Schema sizing only.",
+          }),
+        }),
       ),
     }).tools;
     if (!stillCurrent())

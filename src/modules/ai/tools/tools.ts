@@ -7,6 +7,7 @@ import { buildShellTools } from "./shell";
 import { buildSubagentTools } from "./subagent";
 import { buildTerminalTools } from "./terminal";
 import { buildTodoTools } from "./todo";
+import { buildEvidenceTools } from "@/modules/ai/tools/evidence";
 import { applyAgentPermissionPolicy } from "@/modules/ai/lib/permissions";
 
 export { resolvePath, type ToolContext } from "./context";
@@ -39,6 +40,7 @@ export function buildTools(ctx: import("./context").ToolContext) {
     ...buildSubagentTools(ctx),
     ...buildTerminalTools(ctx),
     ...buildTodoTools(ctx),
+    ...buildEvidenceTools(ctx),
     ...buildManagedAgentTools(ctx),
     ...buildPeerTaskTools(ctx),
   } as const, ctx);

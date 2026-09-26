@@ -1,5 +1,6 @@
 import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
 import { inferenceLabel } from "@/modules/ai/lib/inferenceLifecycle";
+import { retrievalSourceMatches } from "@/modules/ai/lib/conversationRetrieval";
 import {
   Conversation,
   ConversationContent,
@@ -321,6 +322,50 @@ export function AiChatView({
             }}
           />
         )}
+        {runtime?.retrievalNotice && (
+          <details className="min-w-0 text-[11px] text-[var(--clack-text-3)]">
+            <summary className="cursor-pointer">
+              Original evidence: {runtime.retrievalNotice.sources.length}{" "}
+              sources
+            </summary>
+            <p className="break-words">
+              {runtime.retrievalNotice.status}.{" "}
+              {runtime.retrievalNotice.omitted} groups omitted.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {[
+                ...new Map(
+                  runtime.retrievalNotice.sources.map(
+                    (source) => [source.messageId, source] as const,
+                  ),
+                ).values(),
+              ].map((source) => {
+                const id = source.messageId;
+                const current = retrievalSourceMatches(
+                  source.original,
+                  messages.find((message) => message.id === id),
+                );
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    className="max-w-full truncate underline disabled:opacity-50"
+                    title={`View original message ${id}`}
+                    disabled={!current}
+                    onClick={() =>
+                      document
+                        .getElementById(`evidence-${sessionId}-${id}`)
+                        ?.scrollIntoView({ block: "center" })
+                    }
+                  >
+                    {current ? "View source" : "Source changed or unavailable"}:{" "}
+                    {id}
+                  </button>
+                );
+              })}
+            </div>
+          </details>
+        )}
         {(showSpinner || inference) && (
           <div className="flex items-center gap-2 text-xs text-[var(--clack-text-3)]">
             <Spinner />
@@ -517,7 +562,7 @@ export const RenderedMessage = memo(function RenderedMessage({
     const attachments = message.parts.filter(isAttachmentMessagePart);
 
     return (
-      <Message from="user">
+      <Message from="user" id={`evidence-${sessionId}-${message.id}`}>
         <MessageContent>
           {commandName ? <CommandSnippet name={commandName} /> : null}
           {stripped.chips.length > 0 ? (
@@ -551,7 +596,7 @@ export const RenderedMessage = memo(function RenderedMessage({
   }
 
   return (
-    <Message from={message.role}>
+    <Message from={message.role} id={`evidence-${sessionId}-${message.id}`}>
       <MessageContent>
         <div className="flex flex-col gap-3">
           {groups.map((g) => {

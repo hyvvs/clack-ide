@@ -350,7 +350,7 @@ fn is_nested_archive(path: &str) -> bool {
     )
 }
 
-fn is_sensitive_archive_path(path: &str) -> bool {
+pub(crate) fn is_sensitive_archive_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     let components = lower.split('/').collect::<Vec<_>>();
     if components.iter().any(|component| {

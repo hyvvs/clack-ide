@@ -199,6 +199,7 @@ pub fn run() {
             modules::conversation_memory::conversation_memory_load,
             modules::conversation_memory::conversation_memory_sources,
             modules::conversation_memory::conversation_memory_extract_sources,
+            modules::conversation_memory::retrieval::conversation_memory_retrieve,
             modules::conversation_memory::conversation_memory_evidence,
             modules::conversation_memory::conversation_memory_commit,
             modules::conversation_memory::conversation_memory_cancel,

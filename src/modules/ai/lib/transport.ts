@@ -65,6 +65,7 @@ type LiveSnapshot = {
 };
 
 type Deps = {
+  onRetrieved?: import("@/modules/ai/lib/agent").RunAgentOptions["onRetrieved"];
   prepareCompactionContext?: (
     originals: UIMessage[],
   ) => Promise<ConversationCompactionContext>;
@@ -158,6 +159,7 @@ export function createContextAwareTransport(deps: Deps) {
       : messagesWithAttachments;
     const result = await runAgentStream({
       compaction,
+      onRetrieved: deps.onRetrieved,
       onOptimized: deps.onOptimized,
       inferenceScope: deps.getInferenceScope?.(),
       selfHostedInference: hostedState,

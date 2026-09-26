@@ -104,6 +104,7 @@ export type ProviderRetryState = {
 };
 
 export type AgentMeta = {
+  retrievalNotice?: import("@/modules/ai/lib/conversationRetrieval").RetrievalNotice;
   status: AgentRunStatus;
   step: string | null;
   approvalsPending: number;
@@ -790,6 +791,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
           approvalsPending: 0,
           error: null,
           providerRetry: null,
+          retrievalNotice: undefined,
         },
       },
     }));

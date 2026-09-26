@@ -1199,7 +1199,7 @@ This order does not authorize any pending implementation in this planning task.
 | 6 | B1 | Actual context budgets and shared request preflight | Complete | `feat(ai): add shared context budget preflight`; implementation record below |
 | 7 | C1a | Session source identity and transactional memory foundation | Complete | `feat(ai): add durable conversation memory foundations`; [implementation record](#c1a-implementation-record) |
 | 8 | C1b | Bounded structured extraction and automatic compaction | Complete | Bounded captured-route extraction, native source validation/CAS, protected working context; implementation record below |
-| 9 | G1a | Automatic same-conversation evidence retrieval | Pending | None |
+| 9 | G1a | Automatic same-conversation evidence retrieval | Complete | `feat(ai): retrieve original conversation evidence`; [implementation record](#g1a-implementation-record-2026-09-26) |
 | 10 | M1 | Project memory ownership, promotion policy and inspection | Pending | None |
 | 11 | M2 | Verified project knowledge and incremental freshness | Pending | None |
 | 12 | G1b | Authorized project/task evidence retrieval | Pending | None |
@@ -2638,6 +2638,119 @@ permission changes, byte/time/round caps and index rebuild after restart.
 No shared project search yet. Rollback removes rebuildable indexes and uses
 memory/tail with an explicit insufficiency state, not guessed recall.
 Commit `feat(ai): retrieve original conversation evidence`, update ledger, STOP.
+
+##### G1a implementation record (2026-09-26)
+
+- Baseline: clean `main` at `3b451e4`, after C1b `a90221f`. The delegation
+  dialog files and `autonomous_tracker/` were already committed in the baseline;
+  they remain unchanged. No safety stash was applied, modified or removed.
+- Architecture: `conversationRetrieval.ts` builds a lazy, bounded in-memory
+  lexical/metadata index over captured original UI messages, using C1b's intact
+  message/tool groups and covered-prefix boundary. Explicit message/evidence,
+  tool-call and owned content-reference IDs bypass lexical indexing. No second
+  conversation store, persistent search database, embeddings or new provider.
+- Automatic use: when C1b omits covered original groups, the latest user request
+  ranks relevant originals before the response. Relevant unresolved claims boost
+  source ranking; stale claims and linked contradictions require their original
+  citations. Explicit source references are mandatory. Already-visible originals
+  are not re-fetched unless explicitly anchored. Small, uncompacted chats keep
+  the existing no-memory-read fast path.
+- `request_conversation_evidence` is an existing-runtime, read-only tool for a
+  bounded follow-up query or adjacent-group expansion. It returns a small queue
+  receipt, not a duplicate artifact in the saved transcript. The next SDK
+  `prepareStep` reads and validates the evidence before the next model response.
+  It is only offered with conversation-owned preparation and passes through the
+  existing permission and D1 tool gates. Automatic lexical retrieval does not
+  depend on an additional model call or tool-call capability.
+- Native ownership: `conversation_memory_retrieve` uses C1a's session store,
+  per-owner lock, preparation token and existing workspace authorization. It
+  verifies owner/profile/source/generation before reading and re-reads original
+  state and authorization before delivery. It resolves only message IDs in the
+  owning transcript, never arbitrary paths, another chat or a PeerTask lookup.
+  Existing frontend secret-path policy filters before ranking and delivery;
+  the native archive secret-path guard also filters structured source paths.
+- Provenance: complete original JSON messages retain role, order, tool call IDs
+  and paired results. Each chunk carries its C1a evidence ID, source revision,
+  digest, original message ID/index, immutable content ID where applicable,
+  ranking reason and end-exclusive intact message-group range. Source identity
+  plus content hash deduplicates results. Negations and revisions are not
+  excerpted away. Historical assistant assertions remain assertions, not
+  independently verified project facts.
+- Content: selected text/selection attachments, existing extracted document text
+  and archive manifests resolve through the existing hash-verified CAS, with
+  content-hash/size/UTF-8 validation. No filesystem-path fallback, new extraction,
+  image interpretation, binary-to-JSON copy or blob write is introduced. Existing
+  transcript/memory leases and reconciliation retain ownership; retrieval creates
+  no additional durable roots requiring cleanup.
+- Context: source-linked evidence is an untrusted assistant data envelope in
+  the temporary working context, never a synthetic persisted user message.
+  Every intact candidate group and the complete cached/delivered request are
+  measured with B1, including current tool schemas. Final wire preflight remains
+  authoritative. Model-switch preflight includes the new tool schema and keeps
+  all existing selection locks and captured route/model/agent behavior.
+- Bounds per preparation batch: two total retrieval/expansion rounds across
+  SDK steps, twelve returned chunks and 65,536 decoded UTF-8 excerpt bytes
+  cumulatively, ten seconds cumulative local work/wait, and the smaller B1
+  allowance. At most six intact groups are selected per round. Lexical index
+  input is capped at 16 MiB; query/anchor inputs at 4,096/256 code units. Native
+  calls independently enforce twelve requested messages/chunks, 64 KiB output,
+  twelve content references per message and a ten-second checked deadline.
+  Oversized sources are reported, not truncated into incomplete tool groups.
+- Failure/recovery: missing, corrupt, unauthorized, stale, malformed and oversized
+  evidence cannot masquerade as successful recall. Mandatory missing/no-fit
+  sources stop preparation; optional failures expose omission/insufficiency and
+  request clarification. Cache keys include policy and C1a preparation revisions.
+  Revision changes invalidate hits; exhausted rounds require retry rather than
+  reuse of stale evidence. Abort/run changes discard late results, and teardown
+  clears the transient index/cache. Native reads are bounded/cooperatively timed;
+  frontend cancellation stops waiting but cannot interrupt an in-flight OS read.
+- Persistence: no schema migration is required. Original sessions, attachments,
+  valid C1a revisions and C1b coverage remain untouched. Normal C1a source-version
+  synchronization is reused. After restart, the index is rebuilt from originals;
+  no pending search/model request is treated as resumed. Repeated retrieval does
+  not publish a memory revision or alter the transcript.
+- Source inspection: an expandable status in the existing chat shows selected
+  sources and omissions. View source scrolls to the original message/tool result
+  and its existing immutable attachment card. A changed/deleted message disables
+  the link explicitly. Notices are transient and clear on a new run; current
+  filesystem navigation is never presented as historical evidence.
+- Verification: focused frontend command
+  `npm.cmd exec vitest run conversationRetrieval conversationMemory conversationCompaction compactionExtraction compactionPlan agentCompaction chatRuntime modelSwitch attachment peerTask`
+  passed **438 tests / 25 files**. This includes **48 retrieval tests** and
+  **5 real-SDK-path compaction/retrieval integration tests**. The latter use a
+  mocked native/provider boundary: an exact early numeric decision absent from
+  committed claims reaches the response request automatically; a model-issued
+  anchored request also supplies it on the next step. No cloud fallback occurs.
+  Ten transient-index/revision cycles preserve original evidence. Additional
+  coverage includes negation, contradictions, paired groups, source IDs, secret
+  paths, missing/corrupt/foreign evidence, profile changes, byte/chunk/time/round
+  and B1 caps, abort/late delivery, independent chats, direct lookup beyond the
+  indexing bound and changed-source navigation.
+- Native focused `cargo test --locked conversation_memory::retrieval` passed
+  **11 tests**, using actual temporary C1a metadata and immutable content files.
+  Full `cargo test --locked --quiet` passed **423 tests**: 373 library, 25 file
+  search and 25 Git integration tests; zero failures/ignored tests. The isolated
+  `%TEMP%/clack-c1a-final-target` avoided interfering with any running executable.
+- Full frontend `npm.cmd test` passed **1,318 tests / 127 files**.
+  `npm.cmd run check-types`, `npm.cmd run build`, `cargo fmt --check`, strict
+  `cargo clippy --all-targets --locked -- -D warnings` and `git diff --check`
+  passed. Lint passed at the existing **71 warnings / 2 infos**, no new warnings.
+  Existing environment/build notices remain: Cargo could not canonicalize the
+  user-profile path, Git LF-to-CRLF notices and Vite plugin-timing diagnostics.
+- Limitations: lexical sufficiency is heuristic, not semantic understanding.
+  Attachment selection uses source IDs/metadata, not exhaustive full-blob search.
+  Whole-source selection can honestly decline evidence that a later bounded
+  passage index could fit. Repeated source changes can exhaust the two-round
+  batch allowance and require retry. No native GUI interaction, live-provider
+  small-model run or semantic-quality/hardware acceptance is claimed. Those
+  remain distinct from deterministic integration evidence.
+- Rollback: remove G1a runtime/tool/native/UI wiring and discard ephemeral indexes;
+  preserve C1a/C1b originals and revisions, with explicit insufficiency rather
+  than guessed historical recall. No database migration or blob deletion needed.
+- Deferred: cross-chat/agent/project search, promoted knowledge, current-file
+  freshness, PeerTask evidence expansion, semantic search, model-switch
+  optimization and broader collaboration UI. The exact next checkpoint is
+  **M1: Project memory ownership**, followed by M2 before G1b. None was started.
 
 #### G1b: Project and task evidence
 

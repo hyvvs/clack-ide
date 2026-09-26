@@ -18,6 +18,7 @@ const MAX_SOURCES: usize = 128;
 const SESSION_STORE: &str = "terax-ai-sessions.json";
 static MEMORY_EPOCH: LazyLock<String> =
     LazyLock::new(|| format!("{}:{}", std::process::id(), now()));
+pub mod retrieval;
 mod session_file;
 
 type Result<T> = std::result::Result<T, String>;

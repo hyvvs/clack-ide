@@ -14,6 +14,7 @@ import { sessionInference } from "@/modules/ai/lib/inferenceLifecycle";
 const fixture = vi.hoisted(() => ({
   toolOutput: "Latest exact tool output",
   execute: vi.fn(),
+  requestEvidence: false,
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -24,8 +25,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@/modules/ai/tools/tools", async () => {
   const { tool } = await import("ai");
   const { z } = await import("zod");
+  const { buildEvidenceTools } = await import("@/modules/ai/tools/evidence");
   return {
-    buildTools: () => ({
+    buildTools: (ctx: ToolContext) => ({
+      ...buildEvidenceTools(ctx),
       read_fixture: tool({
         description: "Read test evidence",
         inputSchema: z.object({}),
@@ -76,7 +79,7 @@ function complete(text: string) {
     usage: { prompt_tokens: 200, completion_tokens: 700, total_tokens: 900 },
   };
 }
-function sse(first: boolean) {
+function sse(first: boolean, recovered = false) {
   const event = (delta: unknown, finish_reason: string | null) =>
     `data: ${JSON.stringify({ id: "response", object: "chat.completion.chunk", created: 1, model: "private-model", choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
   return first
@@ -88,7 +91,16 @@ function sse(first: boolean) {
               index: 0,
               id: "new-call",
               type: "function",
-              function: { name: "read_fixture", arguments: "{}" },
+              function: fixture.requestEvidence
+                ? {
+                    name: "request_conversation_evidence",
+                    arguments: JSON.stringify({
+                      query: "socket_timeout_ms",
+                      anchor: "a0",
+                      expand: true,
+                    }),
+                  }
+                : { name: "read_fixture", arguments: "{}" },
             },
           ],
         },
@@ -99,7 +111,9 @@ function sse(first: boolean) {
     : event(
         {
           role: "assistant",
-          content: "Continued with the original constraints.",
+          content: recovered
+            ? "The original socket_timeout_ms decision was 7351, not 5000, due to the deployed proxy."
+            : "Continued with the original constraints.",
         },
         null,
       ) +
@@ -116,6 +130,7 @@ beforeEach(() => {
   maxActive = 0;
   changedDuringExtraction = false;
   fixture.toolOutput = "Latest exact tool output";
+  fixture.requestEvidence = false;
   originals = [
     {
       id: "u",
@@ -174,6 +189,43 @@ beforeEach(() => {
     if (command === "conversation_memory_load") {
       expect(args).toEqual({ owner });
       return structuredClone(view);
+    }
+    if (command === "conversation_memory_retrieve") {
+      const a = args as {
+        preparation: unknown;
+        messageIds: string[];
+        maxBytes: number;
+        maxChunks: number;
+      };
+      expect(a.preparation).toEqual(view.preparation);
+      let bytes = 0;
+      const chunks: unknown[] = [];
+      const issues: unknown[] = [];
+      for (const id of a.messageIds) {
+        const index = originals.findIndex((m) => m.id === id);
+        const text = JSON.stringify(originals[index]);
+        const size = new TextEncoder().encode(text).byteLength;
+        if (bytes + size > a.maxBytes || chunks.length >= a.maxChunks) {
+          issues.push({ messageId: id, status: "oversized" });
+          continue;
+        }
+        bytes += size;
+        chunks.push({
+          messageId: id,
+          messageIndex: index,
+          contentId: null,
+          text,
+          evidence: {
+            id: evidenceId(id),
+            digest: "d".repeat(64),
+            sourceRevision: 1,
+            locator: { kind: "message", messageId: id },
+            contentIds: [],
+            relatedSessions: [owner.sessionId],
+          },
+        });
+      }
+      return { chunks, issues };
     }
     if (command === "conversation_memory_extract_sources") {
       const a = args as {
@@ -272,7 +324,10 @@ beforeEach(() => {
     let payload: string;
     if (body.stream) {
       streams.push(body);
-      payload = sse(streams.length === 1);
+      payload = sse(
+        streams.length === 1,
+        JSON.stringify(body).includes("socket_timeout_ms = 7351"),
+      );
     } else {
       extracts.push(body);
       expect(body.tools).toBeUndefined();
@@ -359,6 +414,50 @@ async function run() {
   return { errors, chunks, chargeCall, optimized };
 }
 describe("automatic compaction in the real agent request path", () => {
+  it("prepares model-requested anchored evidence before the next SDK step", async () => {
+    fixture.requestEvidence = true;
+    const early = originals[1].parts[0];
+    if (early.type !== "text") throw new Error("fixture");
+    early.text += "\nOriginal socket_timeout_ms = 7351, not 5000.";
+    originals[originals.length - 1].parts = [
+      { type: "text", text: "Continue with the next milestone." },
+    ];
+    const outcome = await run();
+    expect(outcome.errors).toEqual([]);
+    expect(streams).toHaveLength(2);
+    expect(JSON.stringify(streams[0])).not.toContain(
+      "socket_timeout_ms = 7351",
+    );
+    expect(JSON.stringify(streams[1])).toContain("socket_timeout_ms = 7351");
+    expect(JSON.stringify(outcome.chunks)).toContain("7351, not 5000");
+    expect(fixture.execute).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+  it("answers from original evidence absent from the committed compacted claims", async () => {
+    const early = originals[1].parts[0];
+    if (early.type !== "text") throw new Error("fixture");
+    early.text +=
+      "\nHistorical decision: socket_timeout_ms = 7351, NOT 5000, because the deployed proxy requires it.";
+    originals[originals.length - 1].parts = [
+      {
+        type: "text",
+        text: "What socket_timeout_ms did we choose earlier, and why?",
+      },
+    ];
+    const before = JSON.stringify(originals);
+    const outcome = await run();
+    expect(outcome.errors).toEqual([]);
+    expect(JSON.stringify(view.revision?.claims)).not.toContain(
+      "socket_timeout_ms",
+    );
+    expect(JSON.stringify(streams[0])).toContain(
+      "Retrieved original conversation evidence",
+    );
+    expect(JSON.stringify(streams[0])).toContain("socket_timeout_ms = 7351");
+    expect(JSON.stringify(outcome.chunks)).toContain("7351, not 5000");
+    expect(JSON.stringify(originals)).toBe(before);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
   it("extracts and publishes before the response, then preserves subsequent paired tool history", async () => {
     const before = JSON.stringify(originals);
     const outcome = await run();

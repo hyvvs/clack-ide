@@ -50,6 +50,10 @@ import {
   type CompactionNotice,
 } from "@/modules/ai/lib/conversationCompaction";
 import {
+  retrieveConversationEvidence,
+  type RetrievalNotice,
+} from "@/modules/ai/lib/conversationRetrieval";
+import {
   selfHostedTransportIdentity,
   selfHostedCredential,
 } from "@/modules/ai/lib/selfHostedModels";
@@ -571,6 +575,7 @@ const EMPTY_USAGE: AgentUsage = {
 };
 
 export type RunAgentOptions = {
+  onRetrieved?: (notice: RetrievalNotice) => void;
   compaction?: ConversationCompactionContext;
   onOptimized?: (notice: CompactionNotice) => void;
   inferenceScope?: InferenceScope;
@@ -682,8 +687,22 @@ export async function runAgentStream(opts: RunAgentOptions) {
     reasoning: keepsReasoning ? "none" : "before-last-message",
     emptyMessages: "remove",
   });
+  let compactor:
+    | Awaited<ReturnType<typeof createConversationCompactor>>
+    | undefined;
   const tools = gateInferenceTools(
-    buildTools(opts.toolContext),
+    buildTools(
+      opts.compaction
+        ? {
+            ...opts.toolContext,
+            requestConversationEvidence: (query, anchor, expand) =>
+              compactor?.requestEvidence(query, anchor, expand) ?? {
+                status: "unavailable",
+                message: "Context preparation has not started.",
+              },
+          }
+        : opts.toolContext,
+    ),
     inferenceScope,
     opts.abortSignal,
   );
@@ -722,7 +741,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
       : undefined;
 
   let stepsSeen = 0;
-  const compactor = opts.compaction
+  compactor = opts.compaction
     ? await createConversationCompactor({
         context: {
           ...opts.compaction,
@@ -750,6 +769,8 @@ export async function runAgentStream(opts: RunAgentOptions) {
         signal: opts.abortSignal,
         onStep: opts.onStep,
         onOptimized: opts.onOptimized,
+        retrieve: retrieveConversationEvidence,
+        onRetrieved: opts.onRetrieved,
         onUsage: (usage) =>
           opts.onUsage?.({
             ...usage,
@@ -758,6 +779,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
           }),
       })
     : undefined;
+  const preparedContext = compactor;
   return streamText({
     model,
     messages: finalMessages,
@@ -766,14 +788,14 @@ export async function runAgentStream(opts: RunAgentOptions) {
     experimental_transform: openRouterErrorTransform,
     onError: compactor
       ? () => {
-          compactor.dispose();
+          compactor?.dispose();
           opts.onStep?.(null);
         }
       : provider === "openrouter"
         ? () => undefined
         : undefined,
     onAbort: () => compactor?.dispose(),
-    prepareStep: compactor
+    prepareStep: preparedContext
       ? async ({ messages: stepMessages, stepNumber }) => {
           if ((opts.compaction?.remainingCalls() ?? 0) <= stepNumber)
             throw new ContextBudgetError(
@@ -782,7 +804,9 @@ export async function runAgentStream(opts: RunAgentOptions) {
             );
           return {
             messages: applyCacheBreakpoints(
-              await compactor.prepare(stepMessages.slice(finalMessages.length)),
+              await preparedContext.prepare(
+                stepMessages.slice(finalMessages.length),
+              ),
               provider,
             ),
           };

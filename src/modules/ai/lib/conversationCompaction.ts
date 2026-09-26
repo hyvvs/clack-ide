@@ -32,6 +32,11 @@ import {
   type MemoryView,
 } from "@/modules/ai/lib/conversationMemory";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
+import {
+  createConversationRetriever,
+  type retrieveConversationEvidence,
+  type RetrievalNotice,
+} from "@/modules/ai/lib/conversationRetrieval";
 
 export type CompactionNotice = {
   coveredMessages: number;
@@ -130,6 +135,8 @@ export async function createConversationCompactor(options: {
   onOptimized?: (notice: CompactionNotice) => void;
   memory?: typeof nativeMemory;
   call?: ExtractionCall;
+  retrieve?: typeof retrieveConversationEvidence;
+  onRetrieved?: (notice: RetrievalNotice) => void;
 }) {
   const { context } = options;
   const memory = options.memory ?? nativeMemory;
@@ -173,6 +180,15 @@ export async function createConversationCompactor(options: {
   let prepared = false;
   let published = 0;
   let initialReady = false;
+  const retriever = options.retrieve
+    ? createConversationRetriever({
+        originals: context.originals,
+        scope: options.scope,
+        signal: options.signal,
+        read: options.retrieve,
+        onNotice: options.onRetrieved,
+      })
+    : undefined;
   const load = async () => {
     check();
     if (!initialReady) {
@@ -206,7 +222,15 @@ export async function createConversationCompactor(options: {
     return extractor;
   };
   return {
-    dispose: () => extractor?.dispose(),
+    dispose: () => {
+      extractor?.dispose();
+      retriever?.dispose();
+    },
+    requestEvidence: (query: string, anchor?: string, expand?: boolean) =>
+      retriever?.request(query, anchor, expand) ?? {
+        status: "unavailable",
+        message: "Conversation retrieval is unavailable.",
+      },
     async prepare(extra: ModelMessage[] = []): Promise<ModelMessage[]> {
       check();
       let limits = await options.limits();
@@ -227,10 +251,21 @@ export async function createConversationCompactor(options: {
         });
       // Small conversations require neither disk reads nor model-assisted preparation.
       let current = plan();
-      if (!current.needed && !view) return current.messages;
+      if (!current.needed && !view && !retriever?.hasPending())
+        return current.messages;
       await load();
       current = plan();
-      if (!current.needed) return current.messages;
+      const finish = () =>
+        view && retriever
+          ? retriever.prepare(
+              view,
+              current.groups,
+              current.messages,
+              limits,
+              options.tools,
+            )
+          : Promise.resolve(current.messages);
+      if (!current.needed) return finish();
       const batch = summarize();
       options.onStep?.("Preparing conversation context...");
       try {
@@ -397,7 +432,7 @@ export async function createConversationCompactor(options: {
             generatedTokens: batch.snapshot().generatedTokens,
             omittedCompletedClaims: current.omittedCompletedClaims,
           });
-        return current.messages;
+        return await finish();
       } finally {
         options.onStep?.(null);
       }
