@@ -18,6 +18,7 @@ const MAX_SOURCES: usize = 128;
 const SESSION_STORE: &str = "terax-ai-sessions.json";
 static MEMORY_EPOCH: LazyLock<String> =
     LazyLock::new(|| format!("{}:{}", std::process::id(), now()));
+pub mod project;
 pub mod retrieval;
 mod session_file;
 
@@ -1483,6 +1484,7 @@ pub(crate) fn retention_roots(app: &tauri::AppHandle) -> Result<Vec<String>> {
     }
     let mut retained: BTreeSet<String> =
         collect_roots(&root, &live_sessions)?.into_iter().collect();
+    retained.extend(project::retention_roots(&project::root(app)?)?);
     // A caller's frontend snapshot may predate another window's completed save.
     for (key, value) in app
         .state::<MemoryState>()

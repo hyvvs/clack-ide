@@ -1200,7 +1200,7 @@ This order does not authorize any pending implementation in this planning task.
 | 7 | C1a | Session source identity and transactional memory foundation | Complete | `feat(ai): add durable conversation memory foundations`; [implementation record](#c1a-implementation-record) |
 | 8 | C1b | Bounded structured extraction and automatic compaction | Complete | Bounded captured-route extraction, native source validation/CAS, protected working context; implementation record below |
 | 9 | G1a | Automatic same-conversation evidence retrieval | Complete | `feat(ai): retrieve original conversation evidence`; [implementation record](#g1a-implementation-record-2026-09-26) |
-| 10 | M1 | Project memory ownership, promotion policy and inspection | Pending | None |
+| 10 | M1 | Project memory ownership, promotion policy and inspection | Complete | `feat(ai): add scoped project memory ownership`; [implementation record](#m1-implementation-record-2026-09-26) |
 | 11 | M2 | Verified project knowledge and incremental freshness | Pending | None |
 | 12 | G1b | Authorized project/task evidence retrieval | Pending | None |
 | 13 | C2 | Target-sized preparation and atomic Optimize and switch | Pending | None |
@@ -2385,6 +2385,102 @@ authority distinction, malicious citations, deleted sources and changed grants.
 E/K/L scope assertions apply. Automated knowledge extraction is deferred to M2.
 Rollback disables sharing, preserves private originals and promotion history.
 Commit `feat(ai): add scoped project memory ownership`, update ledger, STOP.
+
+#### M1 implementation record (2026-09-26)
+
+- Ownership: native `conversation_memory::project` derives canonical workspace
+  and checkout keys from existing persisted session profiles, WorkspaceRegistry
+  authorization and PeerTask worktree provenance. Local and each WSL distro are
+  distinct; labels, model, agent, chat title and pane position are not owners.
+  Separate checkouts require matching task checkout/base SHA and never become
+  main-checkout facts implicitly. Aliases resolving to the same authorized root
+  retain identity. Missing/deleted/moved roots fail closed; no implicit relocation
+  or cross-workspace transfer is implemented. Main checkout has no asserted Git
+  freshness stamp; M2 owns current project-state validation.
+- Privacy/authority: project metadata is separate from private C1 memory, not a
+  second transcript database or a global conversation index. Native load,
+  propose, decide and inspect commands bind to an existing session/workspace and
+  recheck authorization; knowing a record ID is insufficient. Pending proposals
+  are visible only to their source conversation. Publishing, correcting and
+  revoking require an actual native user confirmation, never an agent-supplied
+  approval Boolean. No agent tool or automatic context injection was added.
+  Published slices are available to authorized sessions in the exact checkout;
+  source-session browsing permissions are not granted. Revoked/superseded entries
+  disappear from recipient views while the source owner retains history.
+- Schema v1: workspace snapshot has revision, predecessor hash and at most 64
+  entries. Each entry carries stable ID, workspace/checkout/base scope, category,
+  bounded statement, author agent, publication status, timestamps, provenance,
+  policy-stamped consent actions, optional supersedes and up to eight conflict
+  IDs. Categories cover requirements, architecture, interfaces, bugs, milestones,
+  constraints, findings, verification and uncertainty. Qualifications distinguish
+  user requirement, tool observation, agent finding, user correction and dispute;
+  unsupported assistant assertions and private reasoning cannot be proposed.
+  Source status separately distinguishes verified historical evidence, changed
+  evidence/scope and unavailable evidence/content. Historical integrity is not
+  a claim of present project freshness or independent verification of task prose.
+- Provenance: source session/workspace, exact message part or related PeerTask
+  result/artifact locator, private original-value checksum, UTF-8 byte span and
+  selected-slice hash. Original user text, completed tool outputs and completed
+  related task summaries/immutable text artifacts are validated through existing
+  C1 source resolvers and artifact hashes. Worktree metadata is rechecked before
+  consent publication. Secret-path rules and conservative credential markers
+  reject known unsafe sources; these are not exhaustive secret detection, so the
+  native confirmation also requires review for secrets/personal context. Missing
+  originals remain explicitly unavailable; there is no changed-path reread or
+  fabricated citation. Original transcripts, tool relationships and blobs remain
+  untouched. Only the selected slice, not adjacent private context, is shared.
+- Storage: bounded 256 KiB native metadata under app-data `ai-project-memory`,
+  SHA-256 workspace directory, immutable hashed revisions and atomic manifest.
+  Statements/slices are at most 4 KiB each; slices reuse the existing attachment
+  CAS. Current and previous revisions survive, entry history remains bounded,
+  orphan revisions are cleaned, and CAS reconciliation retains only referenced
+  selected evidence. Quotas fail closed and reserve consent space so capacity
+  exhaustion cannot prevent approval/revocation. Unreferenced failed-write blobs
+  remain collectible. No binary/base64 attachment payload is added to metadata.
+- Transactions/recovery: existing per-owner native mutexes and expected-revision
+  CAS serialize one project without locking unrelated projects. Immutable write
+  precedes atomic pointer publication; failed/stale/cancelled consent leaves the
+  current revision active. Confirmation occurs outside locks, then session/scope,
+  revision and source are revalidated. Window events refresh projected views;
+  stale UI responses and revision-bound inspection cannot restore old views.
+  Absent stores load as empty without writes; repeated loading is idempotent and
+  pending proposals never auto-publish on restart. Invalid schema, hash, consent,
+  identity or predecessor fails closed for that workspace, preserving originals
+  and previous files. Corruption never silently restores revoked consent; it
+  pauses CAS collection rather than risking deletion of unknown retained roots.
+  Recovery does not offer automatic repair or resume an interrupted approval.
+- UI: a collapsed Project memory section in existing chat supports exact excerpt
+  proposals, native approval, correction/revocation and bounded slice inspection.
+  The picker offers the latest 128 eligible user/string-tool parts; native task,
+  artifact and structured-tool provenance primitives are tested but have no new
+  dedicated picker. No placeholders imply automatic extraction or retrieval.
+- Compatibility: C1a/C1b, G1a's same-conversation boundary, model-switch locks,
+  B1 preflight and PeerTask scheduling/cancellation/permissions remain unchanged.
+  The only existing memory lifecycle change adds project CAS retention roots.
+  Future authorized agent consumers can use these scoped records without copying
+  histories, but still need their own permissions, task routing and B1 budget.
+- Tests: 13 new frontend client tests; 26 new Rust tests, including real temporary
+  workspace authorization, CAS/artifact integrity, restart storage, competing
+  writers, injected write failures and quota-safe revocation. Focused frontend
+  `vitest run projectMemory conversationMemory compaction retrieval modelSwitch
+  attachment peerTask contextBudget`: 476 passed / 27 files. Focused native memory
+  regression: 97 passed before the final quota test; final M1 group: 26 passed.
+  Full `npm.cmd test`: 1,331 passed / 128 files. Final `cargo test --locked`:
+  449 passed (399 library, 25 filesystem, 25 Git; other targets have zero tests).
+- Gates: `npm.cmd run check-types`, `npm.cmd run lint`, `npm.cmd run build`,
+  `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` and
+  `git diff --check` passed. Lint remains at 71 warnings / 2 infos; new frontend
+  files lint clean. Existing Cargo user-profile canonicalization warning and
+  Vite plugin-timing advisory remain. Native checks used isolated temporary
+  `clack-c1a-final-target`, without terminating a user process. Native GUI/native
+  dialog clicks, browser visual checks, live WSL and live-provider tests were not
+  performed; automated persistence/authorization tests are not GUI verification.
+- Rollback: disconnect the M1 commands/panel to disable sharing, retaining private
+  originals and promotion history; keep project CAS retention until an explicit
+  data-retirement policy exists. Deferred: automated extraction, semantic/project
+  retrieval, project-state watchers, automatic contradiction resolution, implicit
+  promotion, Optimize and switch, and agent communication. Next checkpoint is
+  **M2: Project knowledge and freshness**. No subsequent checkpoint was started.
 
 ### M2: Project knowledge and freshness
 

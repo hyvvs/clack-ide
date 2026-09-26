@@ -1,6 +1,7 @@
 import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
 import { inferenceLabel } from "@/modules/ai/lib/inferenceLifecycle";
 import { retrievalSourceMatches } from "@/modules/ai/lib/conversationRetrieval";
+import { ProjectMemoryPanel } from "@/modules/ai/components/ProjectMemoryPanel";
 import {
   Conversation,
   ConversationContent,
@@ -289,6 +290,7 @@ export function AiChatView({
     return (
       <Conversation>
         <ConversationContent className="gap-5 p-3">
+          <ProjectMemoryPanel sessionId={sessionId} messages={messages} />
           <ConversationEmptyState
             title="Ask Clack anything"
             description="Explain command output, fix errors, generate snippets, or run a task."
@@ -302,6 +304,7 @@ export function AiChatView({
   return (
     <Conversation>
       <ConversationContent className="gap-5 p-3">
+        <ProjectMemoryPanel sessionId={sessionId} messages={messages} />
         {messages.map((m) => (
           <RenderedMessage
             key={m.id}
