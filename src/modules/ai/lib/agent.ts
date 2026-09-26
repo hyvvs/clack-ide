@@ -28,6 +28,9 @@ import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import { gateInferenceTools } from "@/modules/ai/lib/inferenceToolGate";
+import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
+import { retrieveScopedEvidence } from "@/modules/ai/lib/scopedEvidence";
+import { runRetrievalAllowance } from "@/modules/ai/lib/retrievalAllowance";
 import {
   endpointInferenceAdmission,
   type InferenceAdmission,
@@ -178,6 +181,8 @@ export async function buildLanguageModel(
     state: options.selfHostedInference,
     admission,
     assertedContext: options.assertedContext,
+    validateEvidence: () =>
+      options.inferenceScope?.validateEvidence?.() ?? Promise.resolve(),
   });
   const cloudFetch = preflightFetch(
     (input, init) => globalThis.fetch(input, init),
@@ -618,11 +623,13 @@ export type RunAgentOptions = {
 };
 
 export async function runAgentStream(opts: RunAgentOptions) {
-  const inferenceScope = opts.inferenceScope ?? {
-    sessionId: crypto.randomUUID(),
-    runId: crypto.randomUUID(),
-    isCurrent: () => !opts.abortSignal?.aborted,
-  };
+  const inferenceScope: InferenceScope = opts.inferenceScope
+    ? { ...opts.inferenceScope }
+    : {
+        sessionId: crypto.randomUUID(),
+        runId: crypto.randomUUID(),
+        isCurrent: () => !opts.abortSignal?.aborted,
+      };
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
   const baseModel = await buildConfiguredLanguageModel(modelId, opts.keys, {
     inferenceScope,
@@ -770,6 +777,15 @@ export async function runAgentStream(opts: RunAgentOptions) {
         onStep: opts.onStep,
         onOptimized: opts.onOptimized,
         retrieve: retrieveConversationEvidence,
+        allowance: runRetrievalAllowance(inferenceScope),
+        scopedEvidence: opts.toolContext.getWorkspaceId?.()
+          ? {
+              read: retrieveScopedEvidence,
+              allowed: () =>
+                resolveCurrentAgentPermission("read_file", {}, opts.toolContext)
+                  .outcome === "allow",
+            }
+          : undefined,
         onRetrieved: opts.onRetrieved,
         onUsage: (usage) =>
           opts.onUsage?.({
@@ -780,6 +796,8 @@ export async function runAgentStream(opts: RunAgentOptions) {
       })
     : undefined;
   const preparedContext = compactor;
+  inferenceScope.validateEvidence = () =>
+    preparedContext?.validateEvidence() ?? Promise.resolve();
   return streamText({
     model,
     messages: finalMessages,

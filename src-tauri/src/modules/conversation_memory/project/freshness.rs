@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 mod commands;
 pub use commands::*;
+pub mod retrieval;
 #[cfg(test)]
 mod tests;
 
@@ -57,6 +58,7 @@ pub struct DependencyInput {
 struct Observation {
     dependency: Dependency,
     excerpt: String,
+    text: String,
 }
 
 #[derive(Default)]
@@ -422,6 +424,7 @@ impl<'a> Batch<'a> {
                 environment: input.environment,
             },
             excerpt: text[..end].into(),
+            text: text.into(),
         })
     }
 }

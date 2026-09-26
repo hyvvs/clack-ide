@@ -71,6 +71,7 @@ export function createRequestPreflight(options: {
   state?: SelfHostedState;
   admission?: InferenceAdmission;
   assertedContext?: number;
+  validateEvidence?: () => Promise<void>;
 }) {
   const state = options.state;
   const profile =
@@ -183,6 +184,7 @@ export function createRequestPreflight(options: {
           }
         }
         assertMeasuredRequestBudget(limits(), measured.cost, measured.output);
+        await options.validateEvidence?.();
       };
     },
   };
@@ -199,7 +201,7 @@ export function preflightFetch(
         "Cannot account for this request body before inference.",
       );
     const body = JSON.parse(init.body) as Record<string, unknown>;
-    await preflight.prepare(body);
+    await (await preflight.prepare(body))();
     return fetcher(input, init);
   };
 }

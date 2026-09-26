@@ -10,11 +10,18 @@ import type {
   MemoryView,
 } from "@/modules/ai/lib/conversationMemory";
 import { sessionInference } from "@/modules/ai/lib/inferenceLifecycle";
+import {
+  measureRequest,
+  resolveContextBudget,
+} from "@/modules/ai/lib/contextBudget";
 
 const fixture = vi.hoisted(() => ({
   toolOutput: "Latest exact tool output",
   execute: vi.fn(),
   requestEvidence: false,
+  shared: false,
+  revokeAtAdmission: false,
+  revoked: false,
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -131,6 +138,9 @@ beforeEach(() => {
   changedDuringExtraction = false;
   fixture.toolOutput = "Latest exact tool output";
   fixture.requestEvidence = false;
+  fixture.shared = false;
+  fixture.revokeAtAdmission = false;
+  fixture.revoked = false;
   originals = [
     {
       id: "u",
@@ -296,6 +306,65 @@ beforeEach(() => {
       };
       return revisionId;
     }
+    if (command === "scoped_evidence_retrieve") {
+      if (fixture.revoked) throw new Error("scoped_evidence_stale_receipt");
+      const text =
+        "socket_timeout_ms = 7351, NOT 5000, required by the deployed proxy.";
+      const chunks = [
+        {
+          id: "e".repeat(64),
+          kind: "project",
+          workspaceId: owner.workspaceId,
+          checkout: owner.workspaceId,
+          source: {
+            recordId: "approved-decision",
+            sessionId: "source-large-chat",
+            locator: {
+              kind: "part",
+              messageId: "approved-source",
+              partIndex: 0,
+            },
+          },
+          revision: 3,
+          contentHash: "f".repeat(64),
+          text,
+          start: 0,
+          end: text.length,
+          required: true,
+          freshness: "current",
+          qualification: "user-requirement",
+          reason: "project-lexical-relevance",
+        },
+        {
+          id: "a".repeat(64),
+          kind: "task-result",
+          workspaceId: owner.workspaceId,
+          checkout: owner.workspaceId,
+          source: { taskId: "declared-review-dependency" },
+          revision: "b".repeat(64),
+          contentHash: "c".repeat(64),
+          text: "The proxy requires 7351.",
+          start: 0,
+          end: 24,
+          required: true,
+          freshness: "historical-task-evidence-not-current-project-state",
+          qualification: "agent-finding",
+          reason: "declared-task-dependency",
+        },
+      ];
+      chunks[1].end = chunks[1].text.length;
+      return {
+        chunks,
+        issues: [],
+        omitted: 0,
+        stamp: "d".repeat(64),
+        reads: 2,
+        bytes: chunks.reduce(
+          (n, c) => n + new TextEncoder().encode(JSON.stringify(c)).byteLength,
+          0,
+        ),
+      };
+    }
     if (command === "ai_http_open") return crypto.randomUUID();
     if (command === "ai_http_preflight") {
       const a = args as { requestId: string; approved: boolean };
@@ -310,11 +379,20 @@ beforeEach(() => {
       onEvent: { onmessage: (value: unknown) => void };
     };
     expect(a.admission.endpointId).toBe("compaction-fixture");
+    if (fixture.revokeAtAdmission) fixture.revoked = true;
     const approved = await new Promise<boolean>((resolve) => {
       approvals.set(a.requestId, resolve);
       a.onEvent.onmessage({ kind: "preflight", requestId: a.requestId });
     });
-    expect(approved).toBe(true);
+    if (!approved) {
+      expect(fixture.revokeAtAdmission).toBe(true);
+      a.onEvent.onmessage({
+        kind: "settled",
+        requestId: a.requestId,
+        phase: "failed",
+      });
+      return null;
+    }
     active++;
     maxActive = Math.max(maxActive, active);
     const body = JSON.parse(
@@ -374,7 +452,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-async function run() {
+async function run(contextLimit = 20000) {
   const chargeCall = vi.fn(async () => {});
   const optimized = vi.fn();
   const result = await runAgentStream({
@@ -386,12 +464,12 @@ async function run() {
         name: "Private model",
         modelId: "private-model",
         baseURL: "http://localhost:1234/v1",
-        contextLimit: 20000,
+        contextLimit,
       },
     ],
     inferenceScope: {
       sessionId: owner.sessionId,
-      runId: "captured-run",
+      runId: crypto.randomUUID(),
       isCurrent: () => true,
     },
     compaction: {
@@ -402,7 +480,15 @@ async function run() {
       chargeCall,
     },
     onOptimized: optimized,
-    toolContext: {} as ToolContext,
+    toolContext: (fixture.shared
+      ? {
+          getWorkspaceId: () => owner.workspaceId,
+          getWorkspaceRoot: () => "/integration",
+          getCwd: () => "/integration",
+          getSessionId: () => owner.sessionId,
+          getAgentId: () => "reviewer",
+        }
+      : {}) as ToolContext,
     uiMessages: structuredClone(originals),
   });
   const errors: unknown[] = [];
@@ -414,6 +500,46 @@ async function run() {
   return { errors, chunks, chargeCall, optimized };
 }
 describe("automatic compaction in the real agent request path", () => {
+  it("answers in a small target from project and task evidence absent from its own transcript", async () => {
+    fixture.shared = true;
+    originals = [
+      {
+        id: "target-mission",
+        role: "user",
+        parts: [{ type: "text", text: "Which socket_timeout_ms is required?" }],
+      },
+    ];
+    const before = JSON.stringify(originals);
+    const outcome = await run(8192);
+    expect(outcome.errors).toEqual([]);
+    expect(extracts).toHaveLength(0);
+    expect(streams).toHaveLength(2);
+    expect(JSON.stringify(streams[0])).toContain("approved-decision");
+    expect(JSON.stringify(streams[0])).toContain("declared-review-dependency");
+    expect(JSON.stringify(streams[0])).not.toContain("Private introduction");
+    expect(JSON.stringify(outcome.chunks)).toContain("7351, not 5000");
+    expect(
+      resolveContextBudget({ deployed: 8192 }, measureRequest(streams[0])).fits,
+    ).toBe(true);
+    expect(JSON.stringify(originals)).toBe(before);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+  it("blocks shared evidence revoked while waiting for native inference admission", async () => {
+    fixture.shared = true;
+    fixture.revokeAtAdmission = true;
+    originals = [
+      {
+        id: "mission",
+        role: "user",
+        parts: [{ type: "text", text: "Review the proxy." }],
+      },
+    ];
+    const outcome = await run(8192);
+    expect(outcome.errors).toHaveLength(1);
+    expect(streams).toHaveLength(0);
+    expect(extracts).toHaveLength(0);
+    expect(String(outcome.errors[0])).toContain("stale_receipt");
+  });
   it("prepares model-requested anchored evidence before the next SDK step", async () => {
     fixture.requestEvidence = true;
     const early = originals[1].parts[0];

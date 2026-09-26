@@ -37,6 +37,15 @@ import {
   type retrieveConversationEvidence,
   type RetrievalNotice,
 } from "@/modules/ai/lib/conversationRetrieval";
+import {
+  createScopedRetriever,
+  isScopedAnchor,
+  type retrieveScopedEvidence,
+} from "@/modules/ai/lib/scopedEvidence";
+import {
+  newRetrievalAllowance,
+  type RetrievalAllowance,
+} from "@/modules/ai/lib/retrievalAllowance";
 
 export type CompactionNotice = {
   coveredMessages: number;
@@ -137,6 +146,11 @@ export async function createConversationCompactor(options: {
   call?: ExtractionCall;
   retrieve?: typeof retrieveConversationEvidence;
   onRetrieved?: (notice: RetrievalNotice) => void;
+  scopedEvidence?: {
+    read: typeof retrieveScopedEvidence;
+    allowed: () => boolean;
+  };
+  allowance?: RetrievalAllowance;
 }) {
   const { context } = options;
   const memory = options.memory ?? nativeMemory;
@@ -180,6 +194,19 @@ export async function createConversationCompactor(options: {
   let prepared = false;
   let published = 0;
   let initialReady = false;
+  const allowance = options.allowance ?? newRetrievalAllowance();
+  const scoped =
+    options.scopedEvidence && context.owner.workspaceId
+      ? createScopedRetriever({
+          scope: options.scope,
+          originals: context.originals,
+          workspaceId: context.owner.workspaceId,
+          allowance,
+          managedRound: true,
+          signal: options.signal,
+          ...options.scopedEvidence,
+        })
+      : undefined;
   const retriever = options.retrieve
     ? createConversationRetriever({
         originals: context.originals,
@@ -187,6 +214,8 @@ export async function createConversationCompactor(options: {
         signal: options.signal,
         read: options.retrieve,
         onNotice: options.onRetrieved,
+        allowance,
+        managedRound: true,
       })
     : undefined;
   const load = async () => {
@@ -222,17 +251,22 @@ export async function createConversationCompactor(options: {
     return extractor;
   };
   return {
+    validateEvidence: () => scoped?.validate() ?? Promise.resolve(),
     dispose: () => {
       extractor?.dispose();
       retriever?.dispose();
+      scoped?.dispose();
     },
     requestEvidence: (query: string, anchor?: string, expand?: boolean) =>
-      retriever?.request(query, anchor, expand) ?? {
+      (isScopedAnchor(anchor)
+        ? scoped?.request(query, anchor)
+        : retriever?.request(query, anchor, expand)) ?? {
         status: "unavailable",
         message: "Conversation retrieval is unavailable.",
       },
     async prepare(extra: ModelMessage[] = []): Promise<ModelMessage[]> {
       check();
+      allowance.epoch++;
       let limits = await options.limits();
       check();
       const plan = () =>
@@ -249,22 +283,27 @@ export async function createConversationCompactor(options: {
             ? { end: view.revision.coverage.end, claims: view.revision.claims }
             : undefined,
         });
-      // Small conversations require neither disk reads nor model-assisted preparation.
+      // Without shared evidence, small conversations retain the no-disk fast path.
       let current = plan();
-      if (!current.needed && !view && !retriever?.hasPending())
+      if (!current.needed && !view && !retriever?.hasPending() && !scoped)
         return current.messages;
       await load();
       current = plan();
-      const finish = () =>
-        view && retriever
-          ? retriever.prepare(
-              view,
-              current.groups,
-              current.messages,
-              limits,
-              options.tools,
-            )
-          : Promise.resolve(current.messages);
+      const finish = async () => {
+        const messages =
+          view && retriever
+            ? await retriever.prepare(
+                view,
+                current.groups,
+                current.messages,
+                limits,
+                options.tools,
+              )
+            : current.messages;
+        return scoped
+          ? scoped.prepare(messages, limits, options.tools)
+          : messages;
+      };
       if (!current.needed) return finish();
       const batch = summarize();
       options.onStep?.("Preparing conversation context...");

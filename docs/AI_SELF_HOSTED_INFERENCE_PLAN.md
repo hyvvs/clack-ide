@@ -1202,7 +1202,7 @@ This order does not authorize any pending implementation in this planning task.
 | 9 | G1a | Automatic same-conversation evidence retrieval | Complete | `feat(ai): retrieve original conversation evidence`; [implementation record](#g1a-implementation-record-2026-09-26) |
 | 10 | M1 | Project memory ownership, promotion policy and inspection | Complete | `feat(ai): add scoped project memory ownership`; [implementation record](#m1-implementation-record-2026-09-26) |
 | 11 | M2 | Verified project knowledge and incremental freshness | Complete | `feat(ai): track project evidence freshness`; [implementation record](#m2-implementation-record-2026-09-26) |
-| 12 | G1b | Authorized project/task evidence retrieval | Pending | None |
+| 12 | G1b | Authorized project/task evidence retrieval | Complete | `feat(ai): retrieve scoped project and task evidence`; [implementation record](#g1b-implementation-record-2026-09-27) |
 | 13 | C2 | Target-sized preparation and atomic Optimize and switch | Pending | None |
 | 14 | H1 | Durable task-scoped communication and clarification | Pending | None |
 | 15 | H2 | Recipient-aware handoffs and coordinated review | Pending | None |
@@ -2971,6 +2971,111 @@ revision changes, stale indexes and automatic insufficiency recovery without a
 user reread command. No external embedding service. Rollback disables additional
 sources while retaining G1a and all originals. Commit `feat(ai): retrieve scoped
 project and task evidence`, update ledger, STOP.
+
+##### G1b implementation record (2026-09-27)
+
+- Implemented automatic, recipient-scoped evidence preparation through the
+  existing conversation compactor and real agent `prepareStep` path. The native
+  `scoped_evidence_retrieve` boundary reads the existing project store, M2 file
+  observations, PeerTask ledger and immutable attachment content. No database,
+  transcript migration, extraction model, embedding service or durable retrieval
+  index was added. Normal small chats can receive shared evidence without first
+  compacting or issuing a user reread command.
+- Ownership/security: approved records must match the bound canonical workspace
+  and checkout/base identity; pending, revoked, superseded and other-workspace
+  records never enter shared ranking. Only already-consented slices and their
+  source locators are returned, never the source chat's surrounding history or
+  reasoning. G1a remains an independent same-conversation source lane. Native
+  session binding, workspace registry, canonical containment and secret-path
+  checks remain authoritative. Recipient Chat Only policy is checked in both
+  frontend and native settings. Knowing a record/task ID does not widen scope.
+- Project evidence includes record/revision, qualification, source session and
+  message/tool/artifact locator, original approved slice hash/range, supersession
+  and conflict links, and current file comparisons. M2 dependency closure is
+  revalidated at consumption, not trusted from watcher/cache labels. Unchanged
+  hashes can establish current declared evidence; changed bytes, missing sources,
+  conflicting decisions and revoked dependencies remain explicitly qualified.
+  User requirements are distinct from verified implementation facts. File hints
+  in the request resolve only inside the recipient's authorized checkout; no
+  recursive repository or global search occurs.
+- Task evidence is limited to tasks involving the recipient session and the
+  actual running target task's direct, completed, same-root dependencies. Active
+  target agent/session identity, workspace, task state, live session ownership and
+  bounded dependency membership are checked. Immutable text/selection artifacts
+  retain content hashes, byte ranges and task/worktree provenance. Worktree
+  findings remain historical task evidence, never main-checkout current truth.
+  Missing/corrupt blobs have no filesystem-path fallback. Task scheduling,
+  delegation approval, write leases, worktree application and cancellation
+  coordination were not changed.
+- Recovery requests reuse the existing evidence tool: unscoped anchors still
+  address only private conversation evidence; `workspace` requests bounded shared
+  lexical lookup, and `project:`, `task:`, `artifact:` and `file:` select scoped
+  sources. This is a model insufficiency escape hatch, not a required user flow.
+- Bounds: G1a/G1b share two lookup rounds, 12 returned chunks, 64 KiB of evidence
+  (G1b charges serialized chunk metadata too), and ten seconds of local work per
+  logical run. Both lanes may participate in one preparation round. Internal SDK
+  batches retain the allowance and shared receipt. Native ranking examines at
+  most the existing 64 project records/256 tasks, selects eight project records,
+  twelve task/artifact candidates and eight explicit file hints. M2's sixteen-node
+  dependency closure and eight dependencies/record remain in force. Passages are
+  at most 4 KiB of complete UTF-8 lines, files at most 256 KiB, artifact input text
+  at most 64 KiB. Each M2 read batch remains at most 4 MiB; final selected-file
+  rechecking is a second bounded batch. No full-repository reread.
+- Required anchors/dependencies are selected before optional matches. Duplicate
+  source identities are suppressed; conflicting artifact identities fail closed.
+  Already-present source/hash/text evidence is not injected again. Every assembled
+  request, including provenance/omission reporting and tools, is measured by B1;
+  required no-fit evidence blocks rather than dropping a constraint. No model
+  switch, routing change or context-budget bypass was introduced.
+- Stale delivery: each result carries a fingerprint of recipient/run/profile,
+  project revision, scoped task ledger, Git revision and selected evidence. Native
+  reads recheck authorization, files and revision state before returning. Cached
+  evidence is revalidated for every reuse and again at transport preflight,
+  including after local capacity admission. Revocation, source changes, cancelled
+  tasks, stale runs, permission loss and late callbacks block delivery. Read-only
+  validation does not consume another lookup round or duplicate byte allowance,
+  but does consume the same local-time allowance. Receipts are process-local,
+  never resurrected after restart; existing interrupted-run recovery is unchanged.
+- Tests: 18 new frontend scoped-evidence/allowance tests, two added real-SDK
+  integration scenarios, and 18 new native retrieval tests. Focused frontend:
+  `scopedEvidence`, `conversationRetrieval`, `agentCompaction.integration` and
+  `requestPreflight`: **92 tests / 4 files passed**. Focused native
+  `conversation_memory::project`: **66 passed**, including all M1/M2 regressions.
+  Native cases exercise real filesystem hashes/CAS and project persistence,
+  publication/reload, missed-watcher same-mtime changes, dependency revocation,
+  conflicts, consent boundaries, task identities, corruption and bounded reads.
+- Integration evidence: installed AI SDK/provider serialization with intercepted
+  native transport, simulated `private-model` at an asserted 8192-token context.
+  A target receives approved project and dependency evidence absent from its own
+  transcript and returns the fixture's original numeric requirement/negation;
+  originals remain unchanged and final B1 fits. A second scenario revokes sharing
+  during inference admission and confirms zero response bodies are delivered.
+  This is deterministic integration evidence, not live-model intelligence scoring
+  or completion of the full multi-agent D/E/F provider/GUI scenarios.
+- Full gates on Windows: `npm.cmd run check-types`, `npm.cmd run lint` (**71
+  existing warnings, 2 infos, 0 errors**), `npm.cmd test` (**1362 tests / 130
+  files**), `npm.cmd run build`, `cargo fmt --check`,
+  `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`
+  (**489: 439 library + 25 filesystem + 25 Git**) and `git diff --check` passed.
+  Rust used `%TEMP%/clack-c1a-final-target`; no user process was terminated.
+  Existing Cargo home canonicalization, Vite plugin-timing and Git CRLF notices
+  remain. No dependency/lockfile or protected delegation-file changes.
+- Limitations: bounded lexical matching is not semantic recall; large indivisible
+  lines, binary/media artifacts and unsupported document representations require
+  the existing attachment/tool path or an explicit unavailable result. Truncated
+  passages retain ranges but cannot guarantee all surrounding semantic context.
+  M2 hashes prove identity of declared dependencies, not completeness or semantic
+  truth; no tests are automatically rerun. Synchronous filesystem work is
+  cooperatively bounded, not hard-preempted; cancellation discards late results.
+  Receipt changes conservatively require retry, not automatic conflict resolution.
+  Native GUI, live provider, real small-model quality scoring, WSL, Linux and macOS
+  were **not tested**; those D/E/F manual/provider checks remain with Q1/Z and
+  require the relevant platform/server and explicit fixture execution.
+- Rollback: remove/disable the scoped retrieval wiring and preflight guard while
+  keeping G1a, M1/M2 records, private transcripts and attachment retention intact.
+  There is no G1b durable format to downgrade or delete. Only this implementation
+  record and G1b ledger row were updated. Next checkpoint is **C2: Optimize and
+  switch**. No subsequent checkpoint was started.
 
 ### U1: Collaboration UX integration
 

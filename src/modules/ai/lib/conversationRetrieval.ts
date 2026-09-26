@@ -14,6 +14,11 @@ import type {
 import type { CompactionGroup } from "@/modules/ai/lib/compactionPlan";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import { checkReadable } from "@/modules/ai/lib/security";
+import {
+  newRetrievalAllowance,
+  claimRetrievalRound,
+  type RetrievalAllowance,
+} from "@/modules/ai/lib/retrievalAllowance";
 
 export const RETRIEVAL_POLICY = Object.freeze({
   version: "g1a-lexical-v1",
@@ -176,12 +181,11 @@ export function createConversationRetriever(options: {
   read?: typeof retrieveConversationEvidence;
   onNotice?: (notice: RetrievalNotice) => void;
   now?: () => number;
+  allowance?: RetrievalAllowance;
+  managedRound?: boolean;
 }) {
   const now = options.now ?? Date.now;
-  let elapsed = 0;
-  let rounds = 0;
-  let bytes = 0;
-  let chunksUsed = 0;
+  const allowance = options.allowance ?? newRetrievalAllowance();
   let index: Index | undefined;
   let pending: { query: string; anchor?: string; expand: boolean } | undefined;
   let busy = false;
@@ -234,7 +238,7 @@ export function createConversationRetriever(options: {
           message:
             "Use a bounded query and an original message or evidence ID.",
         };
-      if (rounds >= RETRIEVAL_POLICY.rounds || pending || busy)
+      if (allowance.rounds >= RETRIEVAL_POLICY.rounds || pending || busy)
         return {
           status: "limit",
           message:
@@ -269,7 +273,7 @@ export function createConversationRetriever(options: {
           "concurrent",
           "Overlapping retrieval is not permitted for one preparation.",
         );
-      if (rounds >= RETRIEVAL_POLICY.rounds)
+      if (allowance.conversationRounds >= RETRIEVAL_POLICY.rounds)
         throw new RetrievalError(
           "round-limit",
           "Conversation sources changed after the retrieval allowance was used. Retry with current state.",
@@ -277,7 +281,7 @@ export function createConversationRetriever(options: {
       const started = now();
       const timeCheck = () => {
         check();
-        if (elapsed + now() - started >= RETRIEVAL_POLICY.timeoutMs)
+        if (allowance.elapsed + now() - started >= RETRIEVAL_POLICY.timeoutMs)
           throw new RetrievalError(
             "timeout",
             "Historical evidence lookup exceeded ten seconds. Retry a narrower question.",
@@ -426,7 +430,8 @@ export function createConversationRetriever(options: {
           );
           if (
             selected.length >= 6 ||
-            ids.length + next.length > RETRIEVAL_POLICY.chunks - chunksUsed
+            ids.length + next.length >
+              RETRIEVAL_POLICY.chunks - allowance.chunks
           ) {
             if (candidate.anchored)
               throw new RetrievalError(
@@ -448,20 +453,22 @@ export function createConversationRetriever(options: {
           selected.push(candidate);
           ids.push(...next.map((m) => m.id));
         }
-        rounds++;
+        if (!options.managedRound) allowance.epoch++;
+        claimRetrievalRound(allowance);
+        allowance.conversationRounds++;
         const chunks: Array<EvidenceChunk & { reason: string }> = [];
         const statuses: string[] = [];
         if (ids.length) {
           const remainingMs =
-            RETRIEVAL_POLICY.timeoutMs - elapsed - (now() - started);
+            RETRIEVAL_POLICY.timeoutMs - allowance.elapsed - (now() - started);
           let timer: ReturnType<typeof setTimeout> | undefined;
           let abort: (() => void) | undefined;
           const result = await Promise.race([
             (options.read ?? retrieveConversationEvidence)({
               preparation: view.preparation,
               messageIds: ids,
-              maxBytes: RETRIEVAL_POLICY.bytes - bytes,
-              maxChunks: RETRIEVAL_POLICY.chunks - chunksUsed,
+              maxBytes: RETRIEVAL_POLICY.bytes - allowance.bytes,
+              maxChunks: RETRIEVAL_POLICY.chunks - allowance.chunks,
               attachments: true,
             }),
             new Promise<never>((_, reject) => {
@@ -501,15 +508,15 @@ export function createConversationRetriever(options: {
             0,
           );
           if (
-            received + bytes > RETRIEVAL_POLICY.bytes ||
-            result.chunks.length + chunksUsed > RETRIEVAL_POLICY.chunks
+            received + allowance.bytes > RETRIEVAL_POLICY.bytes ||
+            result.chunks.length + allowance.chunks > RETRIEVAL_POLICY.chunks
           )
             throw new RetrievalError(
               "bounds",
               "Native evidence exceeded the bounded result contract.",
             );
-          bytes += received;
-          chunksUsed += result.chunks.length;
+          allowance.bytes += received;
+          allowance.chunks += result.chunks.length;
           const seen = new Set<string>();
           for (const candidate of selected) {
             const originals = options.originals.slice(
@@ -647,8 +654,8 @@ export function createConversationRetriever(options: {
             original: canonical(options.originals[c.messageIndex]),
           })),
           omitted,
-          rounds,
-          bytes,
+          rounds: allowance.conversationRounds,
+          bytes: allowance.bytes,
           status: cache.status,
         });
         return output;
@@ -664,7 +671,7 @@ export function createConversationRetriever(options: {
           "Historical evidence could not be validated. Retry after checking conversation integrity and workspace access.",
         );
       } finally {
-        elapsed += now() - started;
+        allowance.elapsed += now() - started;
         busy = false;
       }
     },

@@ -207,6 +207,7 @@ pub fn run() {
             modules::conversation_memory::project::project_memory_inspect,
             modules::conversation_memory::project::freshness::project_memory_verify,
             modules::conversation_memory::project::freshness::project_memory_revalidate,
+            modules::conversation_memory::project::freshness::retrieval::scoped_evidence_retrieve,
             modules::conversation_memory::conversation_memory_evidence,
             modules::conversation_memory::conversation_memory_commit,
             modules::conversation_memory::conversation_memory_cancel,

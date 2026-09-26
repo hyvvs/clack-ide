@@ -16,6 +16,7 @@ export type InferenceScope = {
   runId: string;
   label?: string;
   isCurrent: () => boolean;
+  validateEvidence?: () => Promise<void>;
 };
 export type InferenceSnapshot = {
   admission?: AdmissionObservation;

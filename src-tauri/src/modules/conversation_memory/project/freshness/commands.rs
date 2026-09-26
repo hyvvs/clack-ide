@@ -1,6 +1,6 @@
 use super::*;
 
-fn environment() -> String {
+pub(super) fn environment() -> String {
     format!("{}:{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 

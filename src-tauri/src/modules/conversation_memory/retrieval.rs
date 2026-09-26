@@ -34,12 +34,12 @@ pub struct Retrieved {
     issues: Vec<Issue>,
 }
 
-fn sensitive(value: &Value) -> bool {
+pub(super) fn sensitive(value: &Value) -> bool {
     match value {
         Value::Object(object) => object.iter().any(|(key, value)| {
             (matches!(
                 key.as_str(),
-                "path" | "filePath" | "canonicalPath" | "displayName" | "entryPath"
+                "path" | "filePath" | "sourcePath" | "canonicalPath" | "displayName" | "entryPath"
             ) && value.as_str().is_some_and(|path| {
                 super::super::archive::is_sensitive_archive_path(&path.replace('\\', "/"))
             })) || sensitive(value)
