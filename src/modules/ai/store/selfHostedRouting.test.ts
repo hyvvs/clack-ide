@@ -5,6 +5,7 @@ import { z } from "zod";
 import { runSubagent } from "@/modules/ai/agents/runSubagent";
 import { requestCompletion } from "@/modules/editor/lib/autocomplete/provider";
 import type { InferenceAdmission } from "@/modules/ai/lib/inferenceAdmission";
+import { targetContextFixture } from "@/modules/ai/store/targetContext.fixture";
 const toolFixture = vi.hoisted(() => ({ tools: {} as import("ai").ToolSet }));
 
 vi.mock("@/modules/settings/store", async (original) => ({
@@ -222,6 +223,11 @@ beforeEach(() => {
     }),
   );
   vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (
+      command.startsWith("target_context_") ||
+      command === "scoped_evidence_retrieve"
+    )
+      return targetContextFixture(command, args);
     if (command === "self_hosted_probe_cache") return snapshot;
     if (command === "self_hosted_profiles_snapshot")
       return [
@@ -655,12 +661,12 @@ describe("self-hosted actual chat routing", () => {
     expect(sessionInference("a-chat")?.phase).toBe("stopping");
     expect(isModelSelectionLocked("a-chat")).toBe(true);
     expect(isModelSelectionLocked("b-chat")).toBe(false);
-    expect((await prepareModelSwitch("a-chat", idB)).commit(true).ok).toBe(
-      false,
-    );
-    expect((await prepareModelSwitch("b-chat", idB)).commit(true).ok).toBe(
-      true,
-    );
+    expect(
+      (await (await prepareModelSwitch("a-chat", idB)).commit(true)).ok,
+    ).toBe(false);
+    expect(
+      (await (await prepareModelSwitch("b-chat", idB)).commit(true)).ok,
+    ).toBe(true);
     expect(scope?.isCurrent()).toBe(false);
     const approval: UIMessage[] = [
       {
@@ -681,9 +687,9 @@ describe("self-hosted actual chat routing", () => {
     attempt.settle();
     await stopping;
     expect(isModelSelectionLocked("a-chat")).toBe(false);
-    expect((await prepareModelSwitch("a-chat", idB)).commit(true).ok).toBe(
-      true,
-    );
+    expect(
+      (await (await prepareModelSwitch("a-chat", idB)).commit(true)).ok,
+    ).toBe(true);
   });
   it("pane close and minimize leave background attempt ownership intact", async () => {
     useChatStore.getState().beginRun("a-chat");
@@ -764,7 +770,7 @@ describe("self-hosted actual chat routing", () => {
       useChatStore.getState().finishRun("a-chat", "completed");
       const change = await prepareModelSwitch("a-chat", selection);
       expect(change.assessment.status).not.toBe("blocked");
-      expect(change.commit(true)).toEqual({ ok: true });
+      expect(await change.commit(true)).toEqual({ ok: true });
       await sendMessageToSession("a-chat", { text: "Continue the task" });
       expect(chat.error).toBeUndefined();
     }
@@ -819,12 +825,12 @@ describe("self-hosted actual chat routing", () => {
     expect(useChatStore.getState().beginRun("a-chat")).toEqual({ ok: true });
     const capturedRun = useChatStore.getState().sessions[0].run;
     const credentials = capturedSelfHostedRuns.get("a-chat");
-    expect((await prepareModelSwitch("a-chat", idB)).commit(true).ok).toBe(
-      false,
-    );
-    expect((await prepareModelSwitch("b-chat", idB)).commit(true).ok).toBe(
-      true,
-    );
+    expect(
+      (await (await prepareModelSwitch("a-chat", idB)).commit(true)).ok,
+    ).toBe(false);
+    expect(
+      (await (await prepareModelSwitch("b-chat", idB)).commit(true)).ok,
+    ).toBe(true);
     usePreferencesStore.setState({
       selfHostedInference: deleteSelfHostedEndpoint(
         editSelfHostedEndpoint(hosted, "a", {

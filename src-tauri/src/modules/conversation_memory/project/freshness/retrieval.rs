@@ -104,7 +104,9 @@ fn tasks_for<'a>(originals: &'a Originals, access: &Access) -> Result<Vec<&'a Va
     if originals.tasks.len() > 256 {
         return Err("scoped_evidence_task_bound".into());
     }
-    let active_id = originals.meta["run"]["peerTaskId"].as_str();
+    let active_id = (originals.meta["run"]["state"] == "running")
+        .then(|| originals.meta["run"]["peerTaskId"].as_str())
+        .flatten();
     let active = active_id
         .map(|id| {
             originals
@@ -188,6 +190,15 @@ fn recipient(originals: &Originals, request: &Request, profiles: &Value) -> Resu
         .ok_or("scoped_evidence_missing_agent")?;
     if profiles[agent]["mode"] == "chat-only" {
         return Err("scoped_evidence_permission_denied".into());
+    }
+    if request.run_id.starts_with("switch:") {
+        if !request.run_id.starts_with(&format!(
+            "{}:",
+            crate::modules::conversation_memory::target_context::idle_token(&originals.meta)?
+        )) {
+            return Err("scoped_evidence_stale_run".into());
+        }
+        return hash(&json!([profile, request.run_id, profiles[agent]]));
     }
     let started = run["startedAt"]
         .as_u64()
@@ -586,6 +597,13 @@ pub async fn scoped_evidence_retrieve(
 ) -> Result<Retrieved> {
     blocking(move || {
         validate_request(&request)?;
+        if request.run_id.starts_with("switch:") {
+            crate::modules::conversation_memory::target_context::check_switch(
+                &app,
+                &request.session_id,
+                &request.run_id,
+            )?;
+        }
         let started = Instant::now();
         let _collection = CONTENT_COLLECTION.read().map_err(|e| e.to_string())?;
         let profiles = || {
@@ -630,6 +648,13 @@ pub async fn scoped_evidence_retrieve(
         }
         result.reads += final_batch.reads;
         let (current, latest) = access(&app, &request.session_id)?;
+        if request.run_id.starts_with("switch:") {
+            crate::modules::conversation_memory::target_context::check_switch(
+                &app,
+                &request.session_id,
+                &request.run_id,
+            )?;
+        }
         if current != captured
             || recipient(&latest, &request, &profiles()?)? != recipient_stamp
             || hash(&json!(tasks_for(&latest, &current)?))?

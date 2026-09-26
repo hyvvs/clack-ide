@@ -30,6 +30,7 @@ import {
   type MemoryOwner,
   type MemorySourceLocator,
   type MemoryView,
+  type MemoryRevision,
 } from "@/modules/ai/lib/conversationMemory";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import {
@@ -54,6 +55,7 @@ export type CompactionNotice = {
   omittedCompletedClaims: number;
 };
 export type ConversationCompactionContext = {
+  hasTargetContext?: boolean;
   owner: MemoryOwner;
   originals: UIMessage[];
   ready: () => Promise<void>;
@@ -149,8 +151,15 @@ export async function createConversationCompactor(options: {
   scopedEvidence?: {
     read: typeof retrieveScopedEvidence;
     allowed: () => boolean;
+    onPrepared?: (sources: string[], omitted: number, issues: number) => void;
   };
   allowance?: RetrievalAllowance;
+  targetSeed?: MemoryRevision;
+  alwaysLoad?: boolean;
+  extractionRoute?: () => Promise<{
+    model: LanguageModel;
+    limits: () => Promise<BudgetLimits>;
+  }>;
 }) {
   const { context } = options;
   const memory = options.memory ?? nativeMemory;
@@ -194,6 +203,7 @@ export async function createConversationCompactor(options: {
   let prepared = false;
   let published = 0;
   let initialReady = false;
+  let targetSeed = options.targetSeed;
   const allowance = options.allowance ?? newRetrievalAllowance();
   const scoped =
     options.scopedEvidence && context.owner.workspaceId
@@ -234,14 +244,19 @@ export async function createConversationCompactor(options: {
         "The conversation model, agent or workspace changed during preparation.",
       );
     profileHash = next.preparation.source.profileHash;
-    view = next;
-    return next;
+    view = targetSeed
+      ? { ...next, revision: targetSeed, revisionId: null }
+      : next;
+    return view;
   };
-  const summarize = () => {
+  const summarize = (route: {
+    model: LanguageModel;
+    limits: () => Promise<BudgetLimits>;
+  }) => {
     extractor ??= createBoundedExtractor({
-      model: options.model,
+      model: route.model,
       scope: options.scope,
-      limits: options.limits,
+      limits: route.limits,
       signal: options.signal,
       remainingCalls: context.remainingCalls(),
       onCall: context.chargeCall,
@@ -285,7 +300,14 @@ export async function createConversationCompactor(options: {
         });
       // Without shared evidence, small conversations retain the no-disk fast path.
       let current = plan();
-      if (!current.needed && !view && !retriever?.hasPending() && !scoped)
+      if (
+        !current.needed &&
+        !view &&
+        !retriever?.hasPending() &&
+        !scoped &&
+        !targetSeed &&
+        !options.alwaysLoad
+      )
         return current.messages;
       await load();
       current = plan();
@@ -305,7 +327,17 @@ export async function createConversationCompactor(options: {
           : messages;
       };
       if (!current.needed) return finish();
-      const batch = summarize();
+      if (targetSeed) {
+        targetSeed = undefined;
+        await load();
+        current = plan();
+        if (!current.needed) return finish();
+      }
+      const route = options.extractionRoute
+        ? await options.extractionRoute()
+        : { model: options.model, limits: options.limits };
+      check();
+      const batch = summarize(route);
       options.onStep?.("Preparing conversation context...");
       try {
         for (;;) {
@@ -317,6 +349,8 @@ export async function createConversationCompactor(options: {
               "Conversation memory is unavailable.",
             );
           const start = captured.revision?.coverage.end ?? 0;
+          const extractionLimits = await route.limits();
+          check();
           const prior = captured.revision?.claims ?? [];
           batch.assertCurrent();
           if (published >= COMPACTION_POLICY.maxChunks)
@@ -381,9 +415,9 @@ export async function createConversationCompactor(options: {
             if (
               size > COMPACTION_POLICY.maxSourceBytes ||
               !resolveContextBudget(
-                limits,
+                extractionLimits,
                 measureRequest({ messages: request }),
-                Math.min(1024, resolveContextBudget(limits).output),
+                Math.min(1024, resolveContextBudget(extractionLimits).output),
               ).fits
             )
               break;

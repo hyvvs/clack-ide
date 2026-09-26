@@ -158,6 +158,7 @@ export function createContextAwareTransport(deps: Deps) {
       ? injectEnvIntoLastUser(messagesWithAttachments, envBlock)
       : messagesWithAttachments;
     const result = await runAgentStream({
+      inputCapabilities: capabilities,
       compaction,
       onRetrieved: deps.onRetrieved,
       onOptimized: deps.onOptimized,

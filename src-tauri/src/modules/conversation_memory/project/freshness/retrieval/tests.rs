@@ -1,6 +1,25 @@
 use super::super::super::tests::Fixture;
 use super::*;
 
+#[test]
+fn idle_switch_recipient_preserves_authorization_and_rejects_new_runs() {
+    let mut f = Fixture::new();
+    let token = format!(
+        "{}:issued",
+        crate::modules::conversation_memory::target_context::idle_token(&f.originals.meta).unwrap()
+    );
+    let mut req = request();
+    req.run_id = token;
+    assert!(recipient(&f.originals, &req, &json!({})).is_ok());
+    let agent = f.originals.meta["profile"]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(recipient(&f.originals, &req, &json!({agent:{"mode":"chat-only"}})).is_err());
+    f.originals.meta["run"] = json!({"state":"running","startedAt":10});
+    assert!(recipient(&f.originals, &req, &json!({})).is_err());
+}
+
 fn request() -> Request {
     Request {
         session_id: "a".into(),
@@ -89,7 +108,7 @@ fn dependency_results_follow_actual_task_identity_not_workspace_neighbors() {
     let mut active = task("active", "b", "a");
     active["status"] = json!("running");
     active["dependsOn"] = json!(["dep"]);
-    f.originals.meta["run"] = json!({"peerTaskId":"active"});
+    f.originals.meta["run"] = json!({"peerTaskId":"active","state":"running"});
     f.originals.tasks = vec![active, task("dep", "b", "c"), task("private", "b", "c")];
     let tasks = tasks_for(&f.originals, &f.access).unwrap();
     assert_eq!(tasks.len(), 2);
@@ -445,7 +464,7 @@ fn candidate_cap_cannot_silently_drop_mandatory_dependency_artifacts() {
     let artifacts: Vec<_> = (0..16).map(|n| json!({"id":format!("artifact-{n}"),"workspaceId":"local:/one/project","sourceSessionId":"b","accessPolicy":"model-input","contentKind":"text"})).collect();
     dependency["artifactRefs"] = json!(&artifacts[..8]);
     dependency["result"]["artifacts"] = json!(&artifacts[8..]);
-    f.originals.meta["run"] = json!({"peerTaskId":"active"});
+    f.originals.meta["run"] = json!({"peerTaskId":"active","state":"running"});
     f.originals.tasks = vec![active, dependency];
     let registry = WorkspaceRegistry::default();
     let dir = tempfile::tempdir().unwrap();

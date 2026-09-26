@@ -96,6 +96,36 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn target_selection_and_context_are_old_or_new_even_on_interrupted_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sessions.json");
+        let old = json!([{"id":"a","profile":{"modelId":"old"},"targetContext":{"modelId":"old"},"modelRevision":1}]);
+        let next = json!([{"id":"a","profile":{"modelId":"new"},"targetContext":{"modelId":"new"},"modelRevision":2}]);
+        let store = SessionFile::default();
+        store.set(&path, "sessions", Some(old.clone())).unwrap();
+        assert!(store
+            .update(&path, "sessions", Some(next.clone()), |_, _| Err(
+                "disk full".into()
+            ))
+            .is_err());
+        assert_eq!(
+            SessionFile::default().get(&path, "sessions").unwrap(),
+            Some(old)
+        );
+        assert!(store
+            .update(&path, "sessions", Some(next.clone()), |path, bytes| {
+                atomic_write(path, bytes)?;
+                Err("directory sync error after atomic replacement".into())
+            })
+            .is_err());
+        assert_eq!(store.get(&path, "sessions").unwrap(), Some(next.clone()));
+        assert_eq!(
+            SessionFile::default().get(&path, "sessions").unwrap(),
+            Some(next)
+        );
+    }
+
+    #[test]
     fn legacy_keys_survive_additive_atomic_updates_and_restart() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("terax-ai-sessions.json");

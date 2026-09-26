@@ -145,6 +145,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       const originals = JSON.parse(JSON.stringify(messages)) as UIMessage[];
       await persistCompactionSource(sessionId, originals);
       return {
+        hasTargetContext: !!session.targetContext,
         owner: { sessionId, workspaceId: session.profile?.workspaceId ?? null },
         originals,
         ready: () => awaitSessionWrites(sessionId),
@@ -163,11 +164,9 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       };
     },
     onOptimized: (optimized) => {
-      useChatStore
-        .getState()
-        .patchAgentMeta(sessionId, {
-          compactionNotice: { droppedCount: 0, optimized, at: Date.now() },
-        });
+      useChatStore.getState().patchAgentMeta(sessionId, {
+        compactionNotice: { droppedCount: 0, optimized, at: Date.now() },
+      });
     },
     getInferenceScope: () => inferenceScopeForSession(sessionId),
     getKeys: () =>

@@ -32,6 +32,12 @@ import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
 import { retrieveScopedEvidence } from "@/modules/ai/lib/scopedEvidence";
 import { runRetrievalAllowance } from "@/modules/ai/lib/retrievalAllowance";
 import {
+  loadTargetContext,
+  targetContextKey,
+} from "@/modules/ai/lib/targetContext";
+import type { ModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
   endpointInferenceAdmission,
   type InferenceAdmission,
 } from "@/modules/ai/lib/inferenceAdmission";
@@ -580,6 +586,7 @@ const EMPTY_USAGE: AgentUsage = {
 };
 
 export type RunAgentOptions = {
+  inputCapabilities?: ModelInputCapabilities;
   onRetrieved?: (notice: RetrievalNotice) => void;
   compaction?: ConversationCompactionContext;
   onOptimized?: (notice: CompactionNotice) => void;
@@ -748,8 +755,46 @@ export async function runAgentStream(opts: RunAgentOptions) {
       : undefined;
 
   let stepsSeen = 0;
+  let targetSeed:
+    | import("@/modules/ai/lib/conversationMemory").MemoryRevision
+    | undefined;
+  if (opts.compaction?.hasTargetContext && opts.inputCapabilities) {
+    await opts.compaction.ready();
+    const preferences = usePreferencesStore.getState();
+    const key = await targetContextKey({
+      modelId,
+      configuration: opts,
+      system: [
+        { role: "system", content: stableSystem },
+        ...(opts.planMode
+          ? [{ role: "system" as const, content: PLAN_MODE_PROMPT }]
+          : []),
+      ],
+      tools: await serializedToolSchemas(tools),
+      limits: await modelBudgetLimits(baseModel),
+      capabilities: opts.inputCapabilities,
+      permissions: [
+        preferences.agentPermissionProfiles,
+        preferences.agentWorkspacePermissions,
+      ],
+      workspace: [
+        opts.compaction.owner.workspaceId,
+        opts.toolContext.getAgentId(),
+      ],
+      credentials: [opts.keys, opts.customEndpointKeys ?? {}],
+    });
+    opts.abortSignal?.throwIfAborted();
+    targetSeed =
+      (await loadTargetContext(opts.compaction.owner, key)) ?? undefined;
+    opts.abortSignal?.throwIfAborted();
+    if (!inferenceScope.isCurrent())
+      throw new Error(
+        "The captured conversation run changed during target context loading.",
+      );
+  }
   compactor = opts.compaction
     ? await createConversationCompactor({
+        targetSeed,
         context: {
           ...opts.compaction,
           remainingCalls: () =>

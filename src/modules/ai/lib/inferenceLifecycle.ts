@@ -55,6 +55,15 @@ export function sessionInference(
   }
   return last;
 }
+export function hasOtherSessionInference(
+  sessionId: string,
+  runId: string,
+): boolean {
+  return [...attempts.values()].some(
+    ({ snapshot }) =>
+      snapshot.scope?.sessionId === sessionId && snapshot.scope.runId !== runId,
+  );
+}
 export function beginInference(
   scope: InferenceScope | undefined,
   abort: () => void,
@@ -119,7 +128,8 @@ export async function waitForInferenceSettlement(
   scope: InferenceScope,
 ): Promise<boolean> {
   const owned = [...attempts.values()].filter(
-    (a) => a.snapshot.scope?.sessionId === scope.sessionId &&
+    (a) =>
+      a.snapshot.scope?.sessionId === scope.sessionId &&
       a.snapshot.scope?.runId === scope.runId,
   );
   await Promise.all(owned.map((a) => a.done));

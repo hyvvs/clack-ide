@@ -21,6 +21,7 @@ static MEMORY_EPOCH: LazyLock<String> =
 pub mod project;
 pub mod retrieval;
 mod session_file;
+pub mod target_context;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -29,6 +30,7 @@ pub struct MemoryState {
     owners: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     metadata: Arc<Mutex<()>>,
     sessions: Arc<session_file::SessionFile>,
+    switches: Arc<Mutex<HashMap<String, (String, u64)>>>,
 }
 
 impl MemoryState {
@@ -812,13 +814,14 @@ fn evidence_for(
     ))
 }
 
-fn commit(
+fn prepare_revision(
     root: &Path,
     content: &Path,
     originals: &Originals,
     candidate: Candidate,
+    retain: bool,
     fault: impl Fn(&str) -> Result<()>,
-) -> Result<String> {
+) -> Result<(Manifest, Revision)> {
     if serde_json::to_vec(&candidate)
         .map_err(|e| e.to_string())?
         .len()
@@ -827,7 +830,7 @@ fn commit(
         return Err("memory_metadata_quota".into());
     }
     check_owner(originals, &candidate.preparation.owner)?;
-    let mut manifest = synchronize(root, originals)?;
+    let manifest = synchronize(root, originals)?;
     if preparation(&manifest, &candidate.preparation.owner) != candidate.preparation {
         return Err("memory_stale_preparation".into());
     }
@@ -857,7 +860,9 @@ fn commit(
             continue;
         }
         fault("before-evidence")?;
-        put_content_in(content, &bytes)?;
+        if retain {
+            put_content_in(content, &bytes)?;
+        }
         fault("after-evidence")?;
         evidence.push(source);
     }
@@ -886,6 +891,19 @@ fn commit(
     if bytes.len() > MAX_RECORD {
         return Err("memory_metadata_quota".into());
     }
+    Ok((manifest, revision))
+}
+
+fn commit(
+    root: &Path,
+    content: &Path,
+    originals: &Originals,
+    candidate: Candidate,
+    fault: impl Fn(&str) -> Result<()>,
+) -> Result<String> {
+    let (mut manifest, revision) =
+        prepare_revision(root, content, originals, candidate, true, &fault)?;
+    let bytes = serde_json::to_vec(&revision).map_err(|e| e.to_string())?;
     let id = digest(&bytes);
     fault("before-revision")?;
     atomic_write(
@@ -1311,6 +1329,7 @@ pub async fn conversation_source_set(
             let old = state.sessions.get(&path, "sessions")?.unwrap_or(json!([]));
             let old = old.as_array().ok_or("memory_invalid_sessions")?;
             let next = value.as_array().ok_or("memory_invalid_sessions")?;
+            target_context::guard_session_updates(old, next)?;
             old.iter()
                 .chain(next)
                 .filter(|meta| !old.contains(meta) || !next.contains(meta))

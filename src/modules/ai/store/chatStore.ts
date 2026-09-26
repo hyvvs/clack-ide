@@ -1020,6 +1020,10 @@ export const useChatStore = create<StoreState>((set, get) => ({
 
   hydrateSessions: async () => {
     if (get().sessionsHydrated) return;
+    const { synchronizeModelSwitches } = await import(
+      "@/modules/ai/store/modelSwitchSync"
+    );
+    await synchronizeModelSwitches();
     const loaded = await loadAll();
     const profiled = migrateSessionProfiles(loaded.sessions, {
       agentId: useAgentsStore.getState().activeId,

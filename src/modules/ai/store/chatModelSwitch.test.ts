@@ -1,5 +1,8 @@
 import type { UIMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { targetContextFixture } from "@/modules/ai/store/targetContext.fixture";
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 vi.mock("@/modules/settings/store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/modules/settings/store")>()),
@@ -147,6 +150,7 @@ function session(id: string, modelId: string): SessionMeta {
 }
 
 beforeEach(() => {
+  vi.mocked(invoke).mockImplementation(targetContextFixture);
   chats.clear();
   seedMessages.clear();
   requests.length = 0;
@@ -268,7 +272,7 @@ describe("model switching in an existing chat", () => {
     useChatStore.getState().finishRun("chat-a", "completed");
     const toAnthropic = await prepareModelSwitch("chat-a", "claude-sonnet-4-6");
     expect(toAnthropic.assessment.status).toBe("compatible");
-    expect(toAnthropic.commit()).toEqual({ ok: true });
+    expect(await toAnthropic.commit()).toEqual({ ok: true });
     await sendMessageToSession("chat-a", { text: "Continue with Anthropic" });
     expect(chat.error).toBeUndefined();
     expect(useChatStore.getState().sessions[0].run).toMatchObject({
@@ -278,7 +282,7 @@ describe("model switching in an existing chat", () => {
     useChatStore.getState().finishRun("chat-a", "completed");
     const toOpenRouter = await prepareModelSwitch("chat-a", selectionB);
     expect(toOpenRouter.assessment.status).toBe("warning");
-    expect(toOpenRouter.commit(true)).toEqual({ ok: true });
+    expect(await toOpenRouter.commit(true)).toEqual({ ok: true });
     await sendMessageToSession("chat-a", { text: "Return to OpenRouter" });
     expect(chat.error).toBeUndefined();
 
@@ -423,8 +427,8 @@ describe("model switching in an existing chat", () => {
     expect(chat.error?.message).toContain("unknown token cost");
     useChatStore.getState().finishRun("chat-a", "completed");
     const change = await prepareModelSwitch("chat-a", "claude-opus-4-7");
-    expect(change.assessment.status).toBe("warning");
-    expect(change.commit(true)).toEqual({ ok: true });
+    expect(change.assessment.status).toBe("blocked");
+    expect((await change.commit(true)).ok).toBe(false);
     await sendMessageToSession("chat-a", { text: "Continue inspecting it" });
     expect(chat.error?.message).toContain("unknown token cost");
     expect(requests).toHaveLength(0);

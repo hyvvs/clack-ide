@@ -39,7 +39,7 @@ describe("model compatibility notice", () => {
         onConfirm={() => {}}
       />,
     );
-    expect(html).toContain("Switch anyway");
+    expect(html).toContain("Optimize and switch");
     expect(html).toContain("Context window is unknown.");
     expect(html).not.toContain("capacity");
     expect(html).toContain('role="alert"');
@@ -60,7 +60,7 @@ describe("model compatibility notice", () => {
         onConfirm={() => {}}
       />,
     );
-    expect(html).not.toContain("Switch anyway");
+    expect(html).not.toContain("Optimize and switch");
     expect(html).toContain("Choose another model");
     expect(html).toContain("Cannot switch model");
   });

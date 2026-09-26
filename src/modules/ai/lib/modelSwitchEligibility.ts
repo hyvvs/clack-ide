@@ -26,6 +26,8 @@ import {
 export type ModelSwitchAssessment = {
   status: "compatible" | "blocked" | "warning";
   reasons: string[];
+  blockingReasons?: string[];
+  details?: string[];
   estimatedTokens: number;
   contextLimit: number | null;
   workingBudget?: number;
@@ -214,6 +216,7 @@ export function assessModelSwitch({
   return {
     status: blocked.size ? "blocked" : warnings.size ? "warning" : "compatible",
     reasons: [...blocked, ...warnings],
+    blockingReasons: [...blocked],
     estimatedTokens,
     contextLimit,
     workingBudget: budget?.working,

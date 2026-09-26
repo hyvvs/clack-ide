@@ -93,6 +93,7 @@ export function createScopedRetriever(options: {
   read?: typeof retrieveScopedEvidence;
   now?: () => number;
   managedRound?: boolean;
+  onPrepared?: (sources: string[], omitted: number, issues: number) => void;
 }) {
   const now = options.now ?? Date.now;
   const allowance = options.allowance;
@@ -310,6 +311,11 @@ export function createScopedRetriever(options: {
           }
           selected.push(chunk);
         }
+        options.onPrepared?.(
+          selected.map((chunk) => chunk.id),
+          omitted,
+          result.issues.length,
+        );
         if (!selected.length && !result.issues.length && !omitted)
           return messages;
         const output = [

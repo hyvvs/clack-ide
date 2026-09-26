@@ -1203,7 +1203,7 @@ This order does not authorize any pending implementation in this planning task.
 | 10 | M1 | Project memory ownership, promotion policy and inspection | Complete | `feat(ai): add scoped project memory ownership`; [implementation record](#m1-implementation-record-2026-09-26) |
 | 11 | M2 | Verified project knowledge and incremental freshness | Complete | `feat(ai): track project evidence freshness`; [implementation record](#m2-implementation-record-2026-09-26) |
 | 12 | G1b | Authorized project/task evidence retrieval | Complete | `feat(ai): retrieve scoped project and task evidence`; [implementation record](#g1b-implementation-record-2026-09-27) |
-| 13 | C2 | Target-sized preparation and atomic Optimize and switch | Pending | None |
+| 13 | C2 | Target-sized preparation and atomic Optimize and switch | Complete | `feat(ai): prepare context for safe model switching`; [implementation record](#c2-implementation-record-2026-09-27) |
 | 14 | H1 | Durable task-scoped communication and clarification | Pending | None |
 | 15 | H2 | Recipient-aware handoffs and coordinated review | Pending | None |
 | 16 | R1 | Truthful reasoning and chronological activity | Pending | None |
@@ -2624,6 +2624,109 @@ No failed switch changes committed selection, memory, task or attachments;
 transcript hashes remain unchanged. No automatic fallback/provider-cache transfer.
 Rollback restores existing block/warn preflight and ignores target snapshots.
 Commit `feat(ai): prepare context for safe model switching`, update ledger, STOP.
+
+#### C2 implementation record (2026-09-27)
+
+- Lifecycle: the existing shared model-switch coordinator captures conversation,
+  selection, original messages, agent/workspace, settings, credentials and live
+  context. It resolves target capabilities and B1 limits, materializes authorized
+  attachments, prepares/revalidates context, then atomically commits the model
+  and matching target view. Both existing selectors use the same hook and gate.
+  Preparation remains lazy-loaded, shows the target and Cancel, and does not
+  unlock another selector or an active/draining run. A bounded details disclosure
+  reports retained user messages, memory coverage, retrieved source identities,
+  omissions/qualifications, reserve, call count and unavailable monetary cost.
+- Context: reuses C1b's protected-message/tool-pair planner and structured source
+  extraction, G1a original evidence and G1b authorized project/task evidence with
+  M2 freshness. No private-chat search, whole-project dump or new compaction
+  engine. User messages, system instructions, current task/recent tail and
+  required tool relationships stay protected. Deterministic fitting runs first.
+  When new extraction is necessary, explicit Optimize-and-switch confirmation
+  authorizes the conversation's current configured model, not an unrelated
+  summarizer or implicit target transfer. Its SDK/adapter retains B1/D1/E1 and
+  normal credentials; target working-context limits are checked independently.
+- Durable representation: additive optional SessionMeta `modelRevision` and
+  `targetContext` in the existing atomic session file. Snapshot schema 1 contains
+  modelId, SHA-256 key, sourceCount/sourceHash, memoryId, optional validated C1
+  Revision and integrity hash. The Revision retains original evidence locators,
+  claims, coverage and source/target selection provenance. One current target
+  snapshot per conversation, at most 256 KiB, never a duplicate transcript or
+  attachment payload. Conversation memory's committed revision remains untouched.
+  Staged C1 validation has a non-retaining mode; no new revision/evidence blobs
+  or GC roots are created. Original transcript/attachment/PeerTask owners retain
+  content as before; missing or changed evidence fails closed without path fallback.
+  Session deletion naturally removes the embedded target view.
+- Transactions: native begin/preview/commit/load/cancel commands reuse existing
+  session/workspace authorization, per-session locks and atomic SessionFile.
+  Commit compares captured session metadata, source preparation/generation,
+  previous memory revision, persisted settings and the issued idle preparation
+  receipt. Model and snapshot are replaced together. Failure before replacement
+  preserves the old pair; a write error after successful replacement recognizes
+  the committed pair rather than claiming rollback. Ordinary stale session saves
+  cannot erase/forge the revision or snapshot. Monotonic native events and commit
+  responses converge other windows without older responses reverting new state.
+  Original message keys and attachment ownership are not rewritten.
+- Cancellation/recovery: disposable frontend preparation and D1 cancellation
+  invalidate the issued native receipt. Native receipts are per conversation,
+  superseded by a newer preparation, bounded to 128 live entries and expire in
+  180 seconds. Review expires after 30 seconds. Restart drops all candidates and
+  loads only the old or new atomic committed pair; it never resumes extraction.
+  Corrupt/unsupported snapshots or changed evidence cannot become trusted context.
+  Existing sessions with no target fields need no migration or eager rewrite.
+- Reuse: the actual next agent request recomputes a canonical key over target
+  route/profile/endpoint configuration, limits/reserve, provider-default effort,
+  instructions, static permitted tools, capabilities, agent/workspace, permissions
+  and credential digests. Native load independently validates original prefix,
+  committed memory pointer and evidence identities. New messages remain outside
+  coverage and are budgeted normally; changed covered messages invalidate reuse.
+  Source-valid extraction is reused without another model call. Project/task
+  context is not persisted as timeless snapshot text: G1b revalidates it before
+  commit and each request, including permission/revision/freshness changes.
+  No provider KV/prompt-cache or hidden-reasoning transfer is claimed.
+- Limits: existing C1b four source chunks, 256 KiB per chunk, one validation retry
+  per batch, 4,096 generated tokens, 120-second extraction deadline, 64 claims and
+  128 evidence references. Source requests and final target requests each pass
+  their actual B1 checks. Existing G1 shared retrieval allowance/byte/chunk/time
+  limits remain authoritative. Required unfit context, unsupported required tools,
+  inaccessible evidence and unknown image token accounting block the switch;
+  tool uncertainty remains a warning, not a false overflow blocker. No silent
+  fallback, mandatory-source truncation or completed tool execution replay.
+- Tests: focused frontend C2/routing/notice/startup group passed 118 tests in
+  eight files (`targetContext`, `modelSwitch`, `modelSwitchSync`, `chatModelSwitch`,
+  `selfHostedRouting`, `agentCompaction.integration`, `AiStatusBarControls`,
+  `eager-budget`). Native conversation-memory group passed 149 tests. New tests
+  cover canonical keys and invalidations, staged preservation, cancellation and
+  stale settings/credentials/history, monotonic window delivery, idle retrieval
+  authorization, atomic write faults/restart and invalid/corrupt source views.
+  The intercepted SDK integration prepares roughly 239K estimated source tokens
+  on the current cloud route after consent, then sends a smaller fitting request
+  to the actual selected 20K private endpoint/model. It asserts preserved user
+  requirements/transcript/memory and no repeated extraction on the next request.
+- Final Windows gates passed: `npm.cmd run check-types`; `npm.cmd run lint`
+  (unchanged 71 warnings / 2 infos / zero errors); `npm.cmd test` (1,391 tests /
+  132 files); `npm.cmd run build`; `git diff --check`; `cargo fmt --check`;
+  `cargo clippy --all-targets --locked -- -D warnings`; `cargo test --locked`
+  (500: 450 library + 25 filesystem + 25 Git). Isolated Cargo target reused;
+  no user process terminated. Existing Cargo user-directory canonicalization,
+  Git CRLF notices and Vite plugin-timing advisory remain. Initial frontend gates
+  caught and fixed eager SDK loading and the old confirmation-label assertion;
+  the large lazy-loaded integration has a 15-second test allowance for full-suite
+  contention, with unchanged production timeouts.
+- Browser verification: `scripts/check-model-switch.mjs` passed using the real
+  selector/hook with an isolated coordinator fixture at 1100x900 and 390x900.
+  Preparation-owned lock, Cancel, consent, keyboard details access, commit,
+  blocked state and horizontal overflow were checked; screenshots inspected.
+  Native Tauri GUI and live providers/WSL/Unix were not exercised. SDK requests
+  were intercepted and native durability used real temporary filesystem tests.
+- Limitations/rollback: monetary estimates are unavailable, not fabricated.
+  Snapshot invalidation is conservative for unrelated configuration/credential
+  collection changes. Oversized intact sources or mandatory context still fail;
+  the source model must remain available when new extraction is required. Disable
+  target preparation/consumption to restore the prior block/warn switch gate,
+  preserving session fields and original history. No reasoning controls, adaptive
+  tool selection or communication/handoff feature was added. Protected delegation
+  files, safety stashes and autonomous_tracker were untouched. Next checkpoint is
+  **H1: Task-scoped communication**; it has not been started.
 
 ### H1: Task-scoped communication
 

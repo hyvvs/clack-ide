@@ -25,6 +25,8 @@ export type ConversationProfile = {
 };
 
 export type SessionMeta = {
+  modelRevision?: number;
+  targetContext?: unknown;
   id: string;
   title: string;
   createdAt: number;

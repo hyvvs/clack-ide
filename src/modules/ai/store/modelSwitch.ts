@@ -20,19 +20,32 @@ import {
   isModelSelectionLocked,
   seedMessages,
   useChatStore,
+  recordSelectedModelUse,
 } from "./chatStore";
 import { usePlanStore } from "./planStore";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import { resolveModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
 import { resolveSelfHostedSelection } from "@/modules/ai/lib/selfHostedProfiles";
 import { profileBudgetLimits } from "@/modules/ai/lib/contextBudgetProfile";
-import { measureRequest } from "@/modules/ai/lib/contextBudget";
+import {
+  ContextBudgetError,
+  measureRequest,
+} from "@/modules/ai/lib/contextBudget";
+import {
+  beginInference,
+  hasOtherSessionInference,
+  type InferenceScope,
+} from "@/modules/ai/lib/inferenceLifecycle";
+import type { prepareTarget } from "@/modules/ai/store/targetPreparation";
+import { SwitchConsentRequired } from "@/modules/ai/lib/targetContext";
+import { applyCommittedModelSwitch } from "@/modules/ai/store/modelSwitchSync";
 
 type CommitResult = { ok: true } | { ok: false; reason: string };
 export type PreparedModelSwitch = {
   targetLabel: string;
   assessment: ModelSwitchAssessment;
-  commit: (confirmed?: boolean) => CommitResult;
+  commit: (confirmed?: boolean) => Promise<CommitResult>;
+  dispose?: () => void;
 };
 
 function unavailable(reason: string): PreparedModelSwitch {
@@ -44,8 +57,22 @@ function unavailable(reason: string): PreparedModelSwitch {
       estimatedTokens: 0,
       contextLimit: null,
     },
-    commit: () => ({ ok: false, reason }),
+    commit: async () => ({ ok: false, reason }),
   };
+}
+
+function switchFailure(error: unknown): string {
+  if (
+    error instanceof ContextBudgetError ||
+    error instanceof SwitchConsentRequired
+  )
+    return error.message;
+  if (error instanceof Error && error.name === "AbortError")
+    return "Model preparation cancelled. Nothing was changed.";
+  const code = String(error).match(
+    /\b(?:target_context|memory|scoped_evidence)_[a-z_]+\b/,
+  )?.[0];
+  return `Could not prepare the conversation or target model${code ? ` (${code})` : ""}. Nothing was changed; recheck the model settings and source evidence.`;
 }
 
 function contextPreferences() {
@@ -53,6 +80,8 @@ function contextPreferences() {
   const a = useAgentsStore.getState();
   return [
     p.customInstructions,
+    p.agentPermissionProfiles,
+    p.agentWorkspacePermissions,
     p.savedProviderModels,
     p.customEndpoints,
     p.selfHostedInference,
@@ -76,7 +105,12 @@ export async function prepareModelSwitch(
   sessionId: string | null,
   targetModelId: string,
   followActiveSession = false,
+  externalSignal?: AbortSignal,
 ): Promise<PreparedModelSwitch> {
+  const controller = new AbortController();
+  const signal = externalSignal
+    ? AbortSignal.any([controller.signal, externalSignal])
+    : controller.signal;
   if (isModelSelectionLocked(sessionId))
     return unavailable(
       "Model locked until this run finishes or stops completely.",
@@ -91,6 +125,12 @@ export async function prepareModelSwitch(
       ? (chats.get(sessionId)?.messages ?? seedMessages.get(sessionId))
       : undefined;
   const originalMessages = memoryMessages();
+  const originalJson = JSON.stringify(originalMessages);
+  const scope: InferenceScope = {
+    sessionId: sessionId ?? "new-chat",
+    runId: crypto.randomUUID(),
+    isCurrent: () => stillCurrent(),
+  };
   const environment = currentWorkspaceEnv();
   const workspaceRoot = session?.profile?.workspaceRoot ?? null;
   const liveSnapshot = () => {
@@ -111,13 +151,24 @@ export async function prepareModelSwitch(
     const now = useChatStore.getState();
     const nextPreferences = contextPreferences();
     return (
-      !isModelSelectionLocked(sessionId, now) &&
+      !signal.aborted &&
+      (sessionId
+        ? !hasOtherSessionInference(sessionId, scope.runId) &&
+          now.sessions.find((item) => item.id === sessionId)?.run?.state !==
+            "running" &&
+          !["submitted", "streaming"].includes(
+            chats.get(sessionId)?.status ?? "",
+          )
+        : true) &&
       (!followActiveSession || now.activeSessionId === sessionId) &&
       (sessionId
         ? now.sessions.find((item) => item.id === sessionId) === session
         : now.activeSessionId === null &&
           now.selectedModelId === sourceModelId) &&
       memoryMessages() === originalMessages &&
+      JSON.stringify(memoryMessages()) === originalJson &&
+      now.apiKeys === state.apiKeys &&
+      now.customEndpointKeys === state.customEndpointKeys &&
       JSON.stringify(liveSnapshot()) === JSON.stringify(snapshot) &&
       capturedPreferences.every(
         (value, index) => value === nextPreferences[index],
@@ -190,17 +241,17 @@ export async function prepareModelSwitch(
     const savedContext = savedTarget
       ? knownTransportContextLimit(savedTarget.transportModelId)
       : undefined;
-    const toolTokens = measureRequest({
-      tools: await serializedToolSchemas(
-        buildTools({
-          ...sessionToolContext(sessionId ?? "").toolContext,
-          requestConversationEvidence: () => ({
-            status: "preflight",
-            message: "Schema sizing only.",
-          }),
+    const toolSchemas = await serializedToolSchemas(
+      buildTools({
+        ...sessionToolContext(sessionId ?? "").toolContext,
+        requestConversationEvidence: () => ({
+          status: "preflight",
+          message: "Schema sizing only.",
         }),
-      ),
-    }).tools;
+      }),
+    );
+    const toolTokens = measureRequest({ tools: toolSchemas }).tools;
+    const requiresTools = toolSchemas.length > 0;
     if (!stillCurrent())
       return unavailable(
         "The chat or model settings changed during the check. Choose the model again.",
@@ -240,11 +291,135 @@ export async function prepareModelSwitch(
         probe,
       ),
     });
+    const capabilities = resolveModelInputCapabilities(
+      targetModelId,
+      preferences.selfHostedInference,
+      probe,
+    );
+    const system = [
+      {
+        role: "system" as const,
+        content: buildStableSystem(
+          targetModelId,
+          persona,
+          preferences.customInstructions,
+          memory,
+        ),
+      },
+      ...(usePlanStore.getState().active
+        ? [{ role: "system" as const, content: planModeSystemText(true) }]
+        : []),
+    ];
+    const check = () => {
+      signal.throwIfAborted();
+      if (!stillCurrent() || !hasKeyForModel(targetModelId))
+        throw new Error(
+          "The chat, credentials or model settings changed. Choose the model again.",
+        );
+    };
+    let prepared: Awaited<ReturnType<typeof prepareTarget>> | undefined;
+    let needsConsent = false;
+    const optimize = async (allowInference: boolean) => {
+      if (!session) return;
+      check();
+      const lease = beginInference(scope, () => controller.abort());
+      try {
+        const { prepareTarget } = await import(
+          "@/modules/ai/store/targetPreparation"
+        );
+        check();
+        prepared = await prepareTarget({
+          session,
+          modelId: targetModelId,
+          originals: messages,
+          system,
+          environment: formatEnvBlock(snapshot) ?? "",
+          capabilities,
+          scope,
+          signal,
+          allowInference,
+          check,
+        });
+        check();
+        assessment.estimatedTokens =
+          prepared.budget.cost.system +
+          prepared.budget.cost.tools +
+          prepared.budget.cost.conversation;
+        assessment.contextLimit = prepared.budget.ceiling;
+        assessment.workingBudget = prepared.budget.working;
+        assessment.details = prepared.details;
+      } finally {
+        lease.settle();
+      }
+    };
+    const sizeReason =
+      "This conversation is too large for this model's context window.";
+    assessment.reasons = assessment.reasons.filter(
+      (reason) =>
+        reason !== sizeReason &&
+        !reason.startsWith("This conversation approaches"),
+    );
+    if (requiresTools && capabilities.tools === "unsupported")
+      assessment.reasons.unshift(
+        "The selected model cannot use this agent's required tools.",
+      );
+    if (
+      messages.some((m) =>
+        m.parts.some(
+          (p) =>
+            (p.type === "file" && p.mediaType.startsWith("image/")) ||
+            (p.type === "data-clack-attachment" &&
+              (p.data as { contentKind?: string })?.contentKind === "image"),
+        ),
+      )
+    )
+      return unavailable(
+        "Image context accounting is not verified for model switching. The transcript and selected model are unchanged.",
+      );
+    const otherBlocked = assessment.blockingReasons?.some(
+      (reason) => reason !== sizeReason,
+    );
+    if (session && requiresTools && capabilities.tools === "unknown")
+      assessment.reasons.push(
+        "Tool support is unconfirmed for this endpoint. Preparation cannot verify server-side tool execution.",
+      );
+    if (
+      !otherBlocked &&
+      !(requiresTools && capabilities.tools === "unsupported")
+    ) {
+      try {
+        await optimize(false);
+      } catch (error) {
+        prepared?.dispose();
+        if (!(error instanceof SwitchConsentRequired))
+          return {
+            targetLabel: target.label,
+            assessment: {
+              ...assessment,
+              status: "blocked",
+              reasons: [switchFailure(error)],
+            },
+            commit: async () => ({ ok: false, reason: switchFailure(error) }),
+          };
+        needsConsent = true;
+        assessment.reasons.push(error.message);
+        assessment.details = [
+          "Original user requirements, recent turns and required tool pairs remain protected.",
+          "Preparation is bounded to four source chunks, 256 KiB per source chunk, 4,096 generated tokens and 120 seconds, including validation retries.",
+          "Cost is unknown until provider usage is reported. Provider caches and hidden reasoning do not transfer.",
+        ];
+      }
+      assessment.status = assessment.reasons.length ? "warning" : "compatible";
+    } else assessment.status = "blocked";
     const checkedAt = Date.now();
     return {
       targetLabel: target.label,
       assessment,
-      commit: (confirmed = false) => {
+      dispose: () => {
+        controller.abort();
+        prepared?.dispose();
+      },
+      commit: async (confirmed = false) => {
         if (Date.now() - checkedAt >= 30_000)
           return {
             ok: false,
@@ -262,21 +437,28 @@ export async function prepareModelSwitch(
           (assessment.status === "warning" && !confirmed)
         )
           return { ok: false, reason: assessment.reasons[0] };
-        if (sessionId) {
-          if (
-            !useChatStore.getState().setSessionModelId(sessionId, targetModelId)
-          )
-            return {
-              ok: false,
-              reason: "The chat is no longer available for a model change.",
-            };
-        } else useChatStore.getState().setSelectedModelId(targetModelId);
-        return { ok: true };
+        let lease: ReturnType<typeof beginInference> | undefined;
+        try {
+          if (needsConsent) await optimize(true);
+          check();
+          if (sessionId) {
+            lease = beginInference(scope, () => controller.abort());
+            if (!prepared)
+              throw new Error("Target context preparation is unavailable.");
+            const saved = await prepared.commit();
+            applyCommittedModelSwitch(saved);
+            recordSelectedModelUse(targetModelId);
+          } else useChatStore.getState().setSelectedModelId(targetModelId);
+          return { ok: true };
+        } catch (error) {
+          return { ok: false, reason: switchFailure(error) };
+        } finally {
+          lease?.settle();
+          prepared?.dispose();
+        }
       },
     };
-  } catch {
-    return unavailable(
-      "Could not inspect the chat or target model. Nothing was changed; try again.",
-    );
+  } catch (error) {
+    return unavailable(switchFailure(error));
   }
 }

@@ -139,16 +139,16 @@ fn extraction_rejects_a_preparation_superseded_by_commit() {
     assert!(matches!(result, Err(error) if error == "memory_stale_preparation"));
 }
 
-struct Fixture {
-    directory: tempfile::TempDir,
-    root: PathBuf,
-    content: PathBuf,
-    originals: Originals,
-    owner: Owner,
+pub(super) struct Fixture {
+    pub(super) directory: tempfile::TempDir,
+    pub(super) root: PathBuf,
+    pub(super) content: PathBuf,
+    pub(super) originals: Originals,
+    pub(super) owner: Owner,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("memory");
         let content = directory.path().join("ai-attachments");
@@ -173,10 +173,10 @@ impl Fixture {
         }
     }
 
-    fn view(&self) -> Result<MemoryView> {
+    pub(super) fn view(&self) -> Result<MemoryView> {
         load(&self.root, &self.content, &self.originals, &self.owner)
     }
-    fn candidate(&self) -> Candidate {
+    pub(super) fn candidate(&self) -> Candidate {
         let preparation = self.view().unwrap().preparation;
         let locator = SourceLocator::Message {
             message_id: "u1".into(),

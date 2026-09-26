@@ -2,6 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UIMessage } from "ai";
 import { invoke } from "@tauri-apps/api/core";
 import { runAgentStream } from "@/modules/ai/lib/agent";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { useChatStore, seedMessages } from "@/modules/ai/store/chatStore";
+import { prepareModelSwitch } from "@/modules/ai/store/modelSwitch";
+import { contextDigest } from "@/modules/ai/lib/targetContext";
+import { BUILTIN_AGENTS } from "@/modules/ai/lib/agents";
+import { resolveModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
+import type { MemoryRevision } from "@/modules/ai/lib/conversationMemory";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
 import type { ToolContext } from "@/modules/ai/tools/tools";
 import type {
@@ -16,12 +23,18 @@ import {
 } from "@/modules/ai/lib/contextBudget";
 
 const fixture = vi.hoisted(() => ({
+  switching: false,
   toolOutput: "Latest exact tool output",
   execute: vi.fn(),
   requestEvidence: false,
   shared: false,
   revokeAtAdmission: false,
   revoked: false,
+}));
+vi.mock("@/modules/settings/store", async (original) => ({
+  ...(await original<typeof import("@/modules/settings/store")>()),
+  setLastUsedAiSelection: vi.fn(),
+  setRecentModelIds: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -66,6 +79,11 @@ let extracts: Body[];
 let maxActive: number;
 let active: number;
 let changedDuringExtraction: boolean;
+let targetSnapshot:
+  | { key: string; revision: MemoryRevision | null }
+  | undefined;
+const originalPreferences = usePreferencesStore.getState();
+const originalChatState = useChatStore.getState();
 const approvals = new Map<string, (approved: boolean) => void>();
 const records = new Map<string, MemoryEvidence>();
 const evidenceId = (id: string) =>
@@ -137,6 +155,8 @@ beforeEach(() => {
   maxActive = 0;
   changedDuringExtraction = false;
   fixture.toolOutput = "Latest exact tool output";
+  fixture.switching = false;
+  targetSnapshot = undefined;
   fixture.requestEvidence = false;
   fixture.shared = false;
   fixture.revokeAtAdmission = false;
@@ -196,6 +216,46 @@ beforeEach(() => {
     }),
   );
   vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "target_context_begin")
+      return {
+        token: `switch:${"1".repeat(64)}`,
+        settingsHash: "s",
+        view: structuredClone(view),
+        session: structuredClone(
+          useChatStore
+            .getState()
+            .sessions.find((s) => s.id === owner.sessionId),
+        ),
+      };
+    if (command === "target_context_commit") {
+      const { request } = args as {
+        request: {
+          key: string;
+          candidate: MemoryCandidate | null;
+          modelId: string;
+          expectedSession: import("@/modules/ai/lib/sessions").SessionMeta;
+        };
+      };
+      const revision = request.candidate
+        ? await invoke<MemoryRevision>("target_context_preview", {
+            candidate: request.candidate,
+          })
+        : null;
+      targetSnapshot = { key: request.key, revision };
+      return {
+        ...request.expectedSession,
+        profile: {
+          ...request.expectedSession.profile,
+          modelId: request.modelId,
+        },
+        modelRevision: 1,
+        targetContext: targetSnapshot,
+      };
+    }
+    if (command === "target_context_load") {
+      expect((args as { key: string }).key).toBe(targetSnapshot?.key);
+      return structuredClone(targetSnapshot?.revision ?? null);
+    }
     if (command === "conversation_memory_load") {
       expect(args).toEqual({ owner });
       return structuredClone(view);
@@ -261,7 +321,10 @@ beforeEach(() => {
         };
       });
     }
-    if (command === "conversation_memory_commit") {
+    if (
+      command === "conversation_memory_commit" ||
+      command === "target_context_preview"
+    ) {
       const { candidate } = args as { candidate: MemoryCandidate };
       if (
         JSON.stringify(candidate.preparation) !==
@@ -270,7 +333,7 @@ beforeEach(() => {
         throw new Error("memory_stale_preparation");
       const number = (view.revision?.revision ?? 0) + 1;
       const revisionId = number.toString(16).padStart(64, "0");
-      view = {
+      const next: MemoryView = {
         ...view,
         revisionId,
         preparation: {
@@ -304,6 +367,8 @@ beforeEach(() => {
           ),
         },
       };
+      if (command === "target_context_preview") return next.revision;
+      view = next;
       return revisionId;
     }
     if (command === "scoped_evidence_retrieve") {
@@ -450,13 +515,30 @@ beforeEach(() => {
     return null;
   });
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  usePreferencesStore.setState(originalPreferences);
+  useChatStore.setState(originalChatState);
+  seedMessages.delete(owner.sessionId);
+});
 
 async function run(contextLimit = 20000) {
   const chargeCall = vi.fn(async () => {});
   const optimized = vi.fn();
   const result = await runAgentStream({
-    keys: EMPTY_PROVIDER_KEYS,
+    ...(fixture.switching
+      ? {
+          ...usePreferencesStore.getState(),
+          customEndpointKeys: useChatStore.getState().customEndpointKeys,
+          inputCapabilities: resolveModelInputCapabilities(
+            "compat-compaction-fixture",
+          ),
+          agentPersona: BUILTIN_AGENTS.find((a) => a.id === "builtin:coder"),
+        }
+      : {}),
+    keys: fixture.switching
+      ? useChatStore.getState().apiKeys
+      : EMPTY_PROVIDER_KEYS,
     modelId: "compat-compaction-fixture",
     customEndpoints: [
       {
@@ -473,6 +555,7 @@ async function run(contextLimit = 20000) {
       isCurrent: () => true,
     },
     compaction: {
+      hasTargetContext: fixture.switching,
       owner,
       originals: structuredClone(originals),
       ready: async () => {},
@@ -486,7 +569,7 @@ async function run(contextLimit = 20000) {
           getWorkspaceRoot: () => "/integration",
           getCwd: () => "/integration",
           getSessionId: () => owner.sessionId,
-          getAgentId: () => "reviewer",
+          getAgentId: () => (fixture.switching ? "builtin:coder" : "reviewer"),
         }
       : {}) as ToolContext,
     uiMessages: structuredClone(originals),
@@ -500,6 +583,107 @@ async function run(contextLimit = 20000) {
   return { errors, chunks, chargeCall, optimized };
 }
 describe("automatic compaction in the real agent request path", () => {
+  it("switches a large cloud conversation to a smaller endpoint and actually sends the staged target context", async () => {
+    fixture.switching = true;
+    fixture.shared = true;
+    for (const message of originals) {
+      if (message.role === "assistant" && message.parts[0].type === "text") {
+        message.parts[0].text = `${message.parts[0].text.split("\n")[0]}\n${"old observation ".repeat(4270)}`;
+      }
+    }
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      expect(String(url)).toBe("https://api.deepseek.com/chat/completions");
+      const body = JSON.parse(String(init?.body)) as Body;
+      expect(body.model).toBe("deepseek-v4-flash");
+      expect(body.stream).toBeFalsy();
+      extracts.push(body);
+      const source = JSON.parse(body.messages[1].content) as {
+        sources: Array<{ id: string; passages: string[] }>;
+      };
+      return new Response(
+        JSON.stringify(
+          complete(
+            JSON.stringify({
+              claims: source.sources.map((s) => ({
+                source: s.id,
+                section: "decisions",
+                text: s.passages[0].split("\n")[0],
+                quote: s.passages[0].split("\n")[0],
+                status: "unresolved",
+                contradicts: [],
+              })),
+            }),
+          ),
+        ),
+        { headers: { "content-type": "application/json" } },
+      );
+    });
+    const target = "compat-compaction-fixture";
+    usePreferencesStore.setState({
+      customInstructions: "",
+      customEndpoints: [
+        {
+          id: "compaction-fixture",
+          name: "Private model",
+          modelId: "private-model",
+          baseURL: "http://localhost:1234/v1",
+          contextLimit: 20000,
+        },
+      ],
+    });
+    useChatStore.setState({
+      activeSessionId: owner.sessionId,
+      selectedModelId: "deepseek-v4-flash",
+      apiKeys: { ...EMPTY_PROVIDER_KEYS, deepseek: "fixture-current-model" },
+      customEndpointKeys: { "compaction-fixture": "fixture-key" },
+      sessions: [
+        {
+          id: owner.sessionId,
+          title: "Keep this conversation",
+          createdAt: 1,
+          updatedAt: 1,
+          profile: {
+            agentId: "builtin:coder",
+            modelId: "deepseek-v4-flash",
+            workspaceId: owner.workspaceId,
+            workspaceRoot: "/integration",
+          },
+        },
+      ],
+    });
+    seedMessages.set(owner.sessionId, originals);
+    view.preparation.source.transcriptHash = await contextDigest(originals);
+    const transcript = JSON.stringify(originals);
+    const durableMemory = JSON.stringify(view);
+    const change = await prepareModelSwitch(owner.sessionId, target);
+    expect(change.assessment.status, change.assessment.reasons.join(" ")).toBe(
+      "warning",
+    );
+    expect(extracts).toHaveLength(0);
+    expect(useChatStore.getState().selectedModelId).toBe("deepseek-v4-flash");
+    expect(await change.commit(true)).toEqual({ ok: true });
+    expect(useChatStore.getState().selectedModelId).toBe(target);
+    expect(targetSnapshot?.revision?.coverage.end).toBeGreaterThan(0);
+    expect(JSON.stringify(view)).toBe(durableMemory);
+    expect(JSON.stringify(originals)).toBe(transcript);
+    const preparationCalls = extracts.length;
+    expect(preparationCalls).toBeGreaterThan(0);
+    const result = await run();
+    expect(result.errors).toEqual([]);
+    expect(extracts).toHaveLength(preparationCalls);
+    expect(streams[0].model).toBe("private-model");
+    expect(JSON.stringify(streams[0])).toContain(
+      "Never remove workspace authorization. Keep port 1420.",
+    );
+    expect(JSON.stringify(streams[0]).length).toBeLessThan(transcript.length);
+    expect(
+      resolveContextBudget({ asserted: 20000 }, measureRequest(streams[0]))
+        .fits,
+    ).toBe(true);
+    expect(JSON.stringify(originals)).toBe(transcript);
+    expect(JSON.stringify(view)).toBe(durableMemory);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(preparationCalls);
+  }, 15000);
   it("answers in a small target from project and task evidence absent from its own transcript", async () => {
     fixture.shared = true;
     originals = [

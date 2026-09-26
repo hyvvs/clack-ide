@@ -247,12 +247,15 @@ export function ModelDropdown({
   const [open, setOpen] = useState(false);
   const previousTargetId = useRef(targetId);
   useEffect(() => {
-    if (locked || previousTargetId.current !== targetId) {
+    if (
+      (locked && !modelSwitch.checking) ||
+      previousTargetId.current !== targetId
+    ) {
       setOpen(false);
       resetSwitch();
     }
     previousTargetId.current = targetId;
-  }, [locked, targetId, resetSwitch]);
+  }, [locked, targetId, resetSwitch, modelSwitch.checking]);
   const selected = useChatStore((s) =>
     sessionId
       ? (s.sessions.find((session) => session.id === sessionId)?.profile
@@ -263,7 +266,13 @@ export function ModelDropdown({
   useChatStore((s) => s.customEndpointKeys);
   const setSelected = async (modelId: string) => {
     if (locked) return;
-    if (modelId === selected || (await modelSwitch.request(modelId)))
+    if (
+      modelId === selected ||
+      (await modelSwitch.request(
+        modelId,
+        allModels.find((model) => model.id === modelId)?.label,
+      ))
+    )
       setOpen(false);
   };
   const favoriteIds = usePreferencesStore((s) => s.favoriteModelIds);
@@ -379,10 +388,10 @@ export function ModelDropdown({
 
   return (
     <DropdownMenu
-      open={open && !locked}
+      open={open && (!locked || modelSwitch.checking)}
       onOpenChange={(next) => {
         if (!next) resetSwitch();
-        setOpen(next && !locked);
+        setOpen(next && (!locked || modelSwitch.checking));
       }}
     >
       <span
@@ -440,8 +449,23 @@ export function ModelDropdown({
         className="w-[28rem] max-w-[calc(100vw-1rem)] p-0 overflow-hidden rounded-xl border border-border/70 shadow-xl"
       >
         {modelSwitch.checking ? (
-          <div role="status" className="p-4 text-xs text-muted-foreground">
-            Checking chat compatibility...
+          <div
+            role="status"
+            className="space-y-3 p-4 text-xs text-muted-foreground break-words"
+          >
+            <p>
+              Preparing this conversation for {modelSwitch.preparingLabel}...
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                resetSwitch();
+                setOpen(false);
+              }}
+            >
+              Cancel
+            </Button>
           </div>
         ) : modelSwitch.review || modelSwitch.failure ? (
           <ModelSwitchNotice
@@ -455,8 +479,8 @@ export function ModelDropdown({
               }
             }
             onBack={resetSwitch}
-            onConfirm={() => {
-              if (modelSwitch.confirm()) {
+            onConfirm={async () => {
+              if (await modelSwitch.confirm()) {
                 resetSwitch();
                 setOpen(false);
               }
