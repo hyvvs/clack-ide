@@ -1,4 +1,12 @@
 import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
+import { AgentActivity } from "@/modules/ai/components/AgentActivity";
+import {
+  ACTIVITY_ENABLED,
+  activityText,
+  readActivity,
+  reasoningLabel,
+} from "@/modules/ai/lib/activity";
+import { ProviderOutput } from "@/modules/ai/components/ProviderOutput";
 import { inferenceLabel } from "@/modules/ai/lib/inferenceLifecycle";
 import { retrievalSourceMatches } from "@/modules/ai/lib/conversationRetrieval";
 import { ProjectMemoryPanel } from "@/modules/ai/components/ProjectMemoryPanel";
@@ -252,6 +260,9 @@ export function AiChatView({
       ? lastMessage.id
       : null;
   const runtime = useChatStore((s) => s.runtimeBySession[sessionId]);
+  const workspaceId = useChatStore(
+    s => s.sessions.find(session => session.id === sessionId)?.profile?.workspaceId ?? null,
+  );
   const inference = useInferenceLifecycle(sessionId);
   const step = runtime?.step ?? null;
   const compactionNotice = runtime?.compactionNotice ?? null;
@@ -305,6 +316,9 @@ export function AiChatView({
     <Conversation>
       <ConversationContent className="gap-5 p-3">
         <ProjectMemoryPanel sessionId={sessionId} messages={messages} />
+        {ACTIVITY_ENABLED ? (
+          <AgentActivity sessionId={sessionId} messages={messages} />
+        ) : null}
         {messages.map((m) => (
           <RenderedMessage
             key={m.id}
@@ -313,6 +327,8 @@ export function AiChatView({
             onApproval={onApproval}
             approvalActive={run?.state === "running"}
             streaming={m.id === streamingMessageId}
+            activityPresented={ACTIVITY_ENABLED}
+            workspaceId={workspaceId}
           />
         ))}
         <PeerTaskFeed sessionId={sessionId} onOpenSession={onOpenSession} />
@@ -373,7 +389,7 @@ export function AiChatView({
           <div className="flex items-center gap-2 text-xs text-[var(--clack-text-3)]">
             <Spinner />
             <span className="truncate" role="status">
-              {inference ? inferenceLabel(inference) : (step ?? "Thinking...")}
+              {inference ? inferenceLabel(inference) : (step ?? "Working...")}
             </span>
             <button
               type="button"
@@ -529,12 +545,16 @@ export const RenderedMessage = memo(function RenderedMessage({
   onApproval,
   approvalActive = true,
   streaming,
+  activityPresented = false,
+  workspaceId = null,
 }: {
   sessionId: string;
   message: UIMessage;
   onApproval: (id: string, approved: boolean) => void;
   approvalActive?: boolean;
   streaming: boolean;
+  activityPresented?: boolean;
+  workspaceId?: string | null;
 }) {
   // Index of the trailing text part. Only that one is live mid-stream.
   // Earlier text parts (separated by tool calls) are already finalized.
@@ -548,6 +568,10 @@ export const RenderedMessage = memo(function RenderedMessage({
   const groups = useMemo(
     () => buildPartGroups(message.parts as AnyPart[]),
     [message.parts],
+  );
+  const activity = useMemo(
+    () => activityPresented ? readActivity(message, sessionId, workspaceId) : null,
+    [activityPresented, message, sessionId, workspaceId],
   );
 
   if (message.role === "user") {
@@ -603,6 +627,14 @@ export const RenderedMessage = memo(function RenderedMessage({
       <MessageContent>
         <div className="flex flex-col gap-3">
           {groups.map((g) => {
+            if (
+              activityPresented && g.kind === "single" && g.part.type === "reasoning"
+            ) {
+              const label = reasoningLabel(g.part, activity?.receipts.find(r => r.part === g.idx)?.format);
+              return label ? (
+                <ProviderOutput key={`${message.id}-${g.key}`} label={label} text={g.part.text} />
+              ) : null;
+            }
             if (g.kind === "reads") {
               return (
                 <PartAppear key={`${message.id}-${g.key}`}>
@@ -849,9 +881,11 @@ const RenderedPart = memo(function RenderedPart({
   if (part.type === "reasoning") {
     return (
       <Reasoning>
-        <ReasoningTrigger />
+        <ReasoningTrigger>
+          Provider reasoning (format unspecified)
+        </ReasoningTrigger>
         <ReasoningContent>
-          {(part as unknown as { text: string }).text}
+          {activityText((part as unknown as { text: string }).text)}
         </ReasoningContent>
       </Reasoning>
     );

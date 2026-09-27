@@ -268,6 +268,20 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       });
     },
     getInferenceScope: () => inferenceScopeForSession(sessionId),
+    getActivityOwner: () => {
+      const run = owner()?.run;
+      return run
+        ? {
+            sessionId,
+            runId: `${sessionId}:${run.startedAt}`,
+            workspaceId: run.workspaceId ?? null,
+            agentId: run.agentId,
+            modelId: run.modelId,
+            providerId: run.providerId,
+            taskId: run.peerTaskId,
+          }
+        : undefined;
+    },
     getKeys: () =>
       capturedSelfHostedRuns.get(sessionId)?.keys ??
       useChatStore.getState().apiKeys,

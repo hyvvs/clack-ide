@@ -1206,7 +1206,7 @@ This order does not authorize any pending implementation in this planning task.
 | 13 | C2 | Target-sized preparation and atomic Optimize and switch | Complete | `feat(ai): prepare context for safe model switching`; [implementation record](#c2-implementation-record-2026-09-27) |
 | 14 | H1 | Durable task-scoped communication and clarification | Complete | PeerTask v6 events, atomic receipts, bounded clarification and guarded continuation; 1,437 frontend / 504 Rust tests pass |
 | 15 | H2 | Recipient-aware handoffs and coordinated review | Complete | Recipient-sized PeerTask v7 handoffs, hash-bound review/correction and consent-gated promotion; 1,492 frontend tests pass |
-| 16 | R1 | Truthful reasoning and chronological activity | Pending | None |
+| 16 | R1 | Truthful reasoning and chronological activity | Complete | Source-linked message activity receipts, provider distinctions and bounded timeline; 1,558 frontend tests pass; implementation record below |
 | 17 | R2 | Supported effort controls and actual request mapping | Pending | None |
 | 18 | T1 | Custom-tool definitions, validation and scoped authorization | Pending | None |
 | 19 | T2 | Guarded tool execution, testing and lifecycle | Pending | None |
@@ -2947,6 +2947,102 @@ redaction, provider event duplication, missing timestamps, long content and
 collapsed/narrow views. Effort changes remain R2. Rollback restores existing
 message/tool rendering without deleting history. Commit `feat(ai): clarify
 reasoning and agent activity`, update ledger, STOP.
+
+#### R1 implementation record (2026-09-27)
+
+- **Architecture and ownership:** `activity.ts` derives presentation events from
+  the original UI messages, existing `SessionRun`, and authorized PeerTask v7
+  records. No new execution owner, activity database, model call, prompt text or
+  provider stack. `activityStream.ts` observes the existing SDK UI stream, D1
+  phase callbacks and retry callbacks. Session-owned transport captures session,
+  workspace, agent, model, provider, optional task and run-start identity before
+  asynchronous preparation. Later UI selections never relabel existing receipts.
+- **Durable representation:** Additive `UIMessage.metadata.clackActivity` v1 has
+  `{version, owner, receipts, omitted}`. Receipts contain stable boundary IDs,
+  observation timestamps, kind/label, optional source part index and reasoning
+  format; an optional receipt owner preserves an older run when a later run
+  appends to the same assistant message. Validation rejects unsupported versions,
+  duplicate IDs, nonexistent parts, foreign ownership and oversized metadata.
+  Bounds are 512 receipts and 128 KiB of UTF-8 JSON per assistant message. Extra
+  boundaries are explicitly counted, not silently presented as retained history;
+  original tool/message content is not truncated or replaced. Repeated phase
+  observations do not produce token-by-token persistence updates, including at
+  the retention cap. SDK source/file parts preserve subsequent part correlation.
+- **Provider truthfulness:** Actual SDK reasoning parts alone qualify. The APIs
+  selected by the installed adapters are audited: OpenAI Responses summary deltas
+  and Google thought text receive `Provider reasoning summary`; xAI Chat, Groq,
+  Cerebras and DeepSeek returned reasoning fields receive `Provider reasoning
+  content`. This does not claim access to complete internal chain-of-thought.
+  Anthropic thinking blocks, arbitrary compatible/self-hosted endpoints and
+  legacy unqualified parts use `Provider reasoning (format unspecified)` because
+  these adapter outputs do not unambiguously distinguish full from summarized
+  text. No model-name support guesses, no enabling reasoning settings, no
+  extraction from ordinary prose or token counts. Encrypted/redacted Anthropic
+  blocks and provider signatures are not displayed. Primary semantic references:
+  [Google thinking](https://ai.google.dev/gemini-api/docs/thinking) and
+  [Anthropic extended thinking](https://platform.claude.com/docs/en/docs/build-with-claude/extended-thinking),
+  alongside the installed adapter source. Real adapter HTTP fixtures verify
+  OpenAI, Google, Groq and compatible routes; this is not live-provider approval
+  or an assertion that every model/backend supports reasoning output.
+- **Runtime and collaboration:** Distinct reasoning, summary, assistant progress
+  and runtime categories. Actual tool selection, input, approval request,
+  approval decision, returned result/failure/denial, file references, command
+  requests, provider artifacts, retries/recovery, cancellation and response/run
+  terminal state are inspectable. Requested execution is never described as a
+  successful write or command. H1/H2 events reuse task creation, dependency
+  satisfaction, handoff receipts, directed communication/delivery/acknowledgment,
+  review results, artifact hashes and interruption/cancellation/block state.
+  Task prompts and private peer conversation bodies are not copied. Native
+  execution and PeerTask scheduling, authorization and handoff contents remain
+  unchanged. Unpersisted resume moments or missing approval timestamps are not
+  invented.
+- **Streaming, recovery and privacy:** Incremental text uses the SDK's existing
+  part assembly rather than an additional text buffer; receipts are emitted at
+  boundaries, not per token. Original start IDs and submitted/streaming timing
+  remain intact, including Stop/model-switch locks until requests settle.
+  Cancellation forwards stream cancellation and stale phase callbacks cannot
+  update another run. Existing session persistence stores message metadata with
+  the transcript; restart reconstruction is deterministic and interrupted states
+  remain interrupted. Invalid activity metadata leaves the original transcript
+  readable with unqualified provenance. Activity-only failed responses and
+  metadata add no model messages/tokens in SDK conversion tests. Credential-like
+  values, URL credentials, private keys and protected paths are redacted in
+  activity; raw command arguments/tool payloads and signatures are withheld.
+  Session and workspace ownership are checked before rendering shared events.
+- **UI:** A compact collapsed timeline is composed into the existing chat. Only
+  an open timeline builds rows; deferred message updates and 40-event pages keep
+  long runs bounded without dropping the transcript. Event details show agent,
+  model, run, workspace, task/tool IDs, evidence and original-message anchors.
+  Timeline previews are bounded to 4,000 characters, with scrollable full returned
+  provider text available in a separate collapsed transcript disclosure. Final
+  answers and existing actionable approval/tool cards remain visible. Missing
+  times stay explicitly unavailable in transcript order after timed events.
+- **Verification:** Focused activity, installed adapters, real SDK stream,
+  session persistence/recovery, chat presentation, transport errors and model
+  switching: **130 tests / 9 files passed**. Full `npm.cmd test`: **1,558 tests /
+  142 files passed**. `npm.cmd run check-types`, `npm.cmd run lint`,
+  `npm.cmd run build` and `git diff --check` pass. Lint remains at the established
+  **71 warnings / 2 informational notices / 0 errors**. Build retains the existing
+  mixed static/dynamic import and plugin-timing notices; Git reports normal CRLF
+  conversion notices. No Rust implementation changed, so Rust gates were not
+  rerun. `scripts/check-agent-activity.mjs` passes real browser interaction at
+  **1100px, 390px and 280px**: keyboard disclosure, 122-event pagination, source
+  navigation, redacted full provider output, bounded scrolling, final-answer
+  visibility, no horizontal overflow or page errors; screenshots inspected.
+  Native persistence is mocked at IPC in the integration fixture. No native GUI,
+  real restart of Clack or live-provider inference was performed.
+- **Limitations and rollback:** Older history has no retroactively invented run
+  identity, attempt timestamps or reasoning format. Current logical-run terminal
+  state comes from the existing latest `SessionRun`; prior response-end receipts
+  are not assertions of whole-run success. Pre-output request observations are
+  buffered until output or failure so UI metadata cannot advance SDK lifecycle;
+  a crash before that boundary retains the existing interrupted run, not a
+  fabricated attempt history. Free-form sensitive text cannot be classified
+  perfectly; the activity view redacts known patterns and withholds raw execution
+  payloads. `ACTIVITY_ENABLED = false` restores the existing message/tool route
+  without deleting stored receipts. Delegation-file hashes remain unchanged;
+  safety stashes and `autonomous_tracker/` were untouched. **R2: Functional
+  reasoning effort** is the exact next checkpoint and remains unstarted.
 
 ### R2: Functional reasoning effort
 

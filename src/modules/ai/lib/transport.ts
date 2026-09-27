@@ -1,4 +1,9 @@
 import type { UIMessage } from "@ai-sdk/react";
+import { ACTIVITY_ENABLED, type ActivityOwner } from "@/modules/ai/lib/activity";
+import {
+  activityStream,
+  type ActivityStreamContext,
+} from "@/modules/ai/lib/activityStream";
 import type { CustomEndpoint } from "../config";
 import { runAgentStream, type AgentUsageDelta } from "./agent";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
@@ -65,6 +70,7 @@ type LiveSnapshot = {
 };
 
 type Deps = {
+  getActivityOwner?: () => ActivityOwner | undefined;
   onRetrieved?: import("@/modules/ai/lib/agent").RunAgentOptions["onRetrieved"];
   prepareCompactionContext?: (
     originals: UIMessage[],
@@ -121,7 +127,7 @@ export function createContextAwareTransport(deps: Deps) {
         capabilities: ModelInputCapabilities;
       }
     | undefined;
-  const run = async (options: SendOptions) => {
+  const run = async (options: SendOptions, activity?: ActivityStreamContext) => {
     const batch = deps.onBatchStart?.() ?? { isLogicalContinuation: false };
     const compaction = await deps.prepareCompactionContext?.(options.messages);
     const live = deps.getLive();
@@ -162,7 +168,7 @@ export function createContextAwareTransport(deps: Deps) {
       compaction,
       onRetrieved: deps.onRetrieved,
       onOptimized: deps.onOptimized,
-      inferenceScope: deps.getInferenceScope?.(),
+      inferenceScope: activity?.scope ?? deps.getInferenceScope?.(),
       selfHostedInference: hostedState,
       keys: deps.getKeys(),
       modelId: deps.getModelId(),
@@ -173,8 +179,14 @@ export function createContextAwareTransport(deps: Deps) {
       onUsage: deps.onUsage,
       onCompact: deps.onCompact,
       onRunStep: deps.onRunStep,
-      onProviderRetry: deps.onProviderRetry,
-      onProviderRecovered: deps.onProviderRecovered,
+      onProviderRetry: (event) => {
+        deps.onProviderRetry?.(event);
+        activity?.retry(event);
+      },
+      onProviderRecovered: () => {
+        deps.onProviderRecovered?.();
+        activity?.recovered();
+      },
       onFinishMeta: deps.onFinishMeta,
       lmstudioBaseURL: deps.getLmstudioBaseURL?.(),
       lmstudioModelId: deps.getLmstudioModelId?.(),
@@ -204,7 +216,17 @@ export function createContextAwareTransport(deps: Deps) {
   };
 
   return {
-    sendMessages: run,
+    sendMessages: (options: SendOptions) => {
+      const owner = ACTIVITY_ENABLED ? deps.getActivityOwner?.() : undefined;
+      if (!owner) return run(options);
+      return Promise.resolve(activityStream(
+        options.messages,
+        owner,
+        deps.getInferenceScope?.(),
+        context => run(options, context),
+        error => deps.onError?.(error) ?? "The AI run failed for an unexpected reason.",
+      ));
+    },
     async reconnectToStream(): Promise<null> {
       return null;
     },

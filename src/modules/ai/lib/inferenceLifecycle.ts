@@ -17,6 +17,7 @@ export type InferenceScope = {
   label?: string;
   isCurrent: () => boolean;
   validateEvidence?: () => Promise<void>;
+  onPhase?: (snapshot: InferenceSnapshot) => void;
 };
 export type InferenceSnapshot = {
   admission?: AdmissionObservation;
@@ -80,6 +81,7 @@ export function beginInference(
     done,
     resolve,
   });
+  scope?.onPhase?.({ id, scope, phase: initialPhase });
   emit();
   return {
     observe(admission: AdmissionObservation) {
@@ -102,6 +104,7 @@ export function beginInference(
         phase,
         ...(nativeId ? { nativeId } : {}),
       };
+      scope?.onPhase?.(attempt.snapshot);
       emit();
     },
     settle() {
@@ -119,6 +122,7 @@ export async function cancelSessionInference(sessionId: string): Promise<void> {
   );
   for (const a of owned) {
     a.snapshot = { ...a.snapshot, phase: "stopping" };
+    a.snapshot.scope?.onPhase?.(a.snapshot);
     a.abort();
   }
   emit();

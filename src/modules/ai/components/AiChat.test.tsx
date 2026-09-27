@@ -86,6 +86,13 @@ describe("RenderedMessage", () => {
       "A normal response",
     );
   });
+  it("keeps returned summary collapsible and final text primary in the R1 transcript", () => {
+    const html = renderToStaticMarkup(<RenderedMessage sessionId="chat" workspaceId="workspace" activityPresented message={{ id: "m", role: "assistant", parts: [{ type: "reasoning", text: "Private provider body", state: "done" }, { type: "text", text: "Final answer remains visible" }], metadata: { clackActivity: { version: 1, owner: { sessionId: "chat", runId: "chat:1", workspaceId: "workspace" }, receipts: [{ id: "r", at: 1, kind: "part", label: "reasoning-start", part: 0, format: "summary" }], omitted: 0 } } }} onApproval={onApproval} streaming={false} />);
+    expect(html).toContain("Provider reasoning summary");
+    expect(html).not.toContain("Private provider body");
+    expect(html).toContain("Final answer remains visible");
+    expect(html).toContain('id="evidence-chat-m"');
+  });
 
   it("renders normalized legacy attachment blocks without internal delimiters", () => {
     const html = renderMessage(
