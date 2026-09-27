@@ -841,8 +841,10 @@ export async function runAgentStream(opts: RunAgentOptions) {
       })
     : undefined;
   const preparedContext = compactor;
-  inferenceScope.validateEvidence = () =>
-    preparedContext?.validateEvidence() ?? Promise.resolve();
+  inferenceScope.validateEvidence = async () => {
+    await preparedContext?.validateEvidence();
+    await opts.toolContext.validatePeerReview?.();
+  };
   return streamText({
     model,
     messages: finalMessages,

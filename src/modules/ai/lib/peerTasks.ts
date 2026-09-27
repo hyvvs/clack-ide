@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
+  peerHandoffReceipt,
+  peerReviewBinding,
+  type PeerHandoffReceipt,
+  type PeerReviewBinding,
+} from "@/modules/ai/lib/peerHandoff";
+import {
   communicationDigest,
   communicationPayload,
   parsePeerCommunication,
@@ -19,7 +25,7 @@ import {
 } from "./attachmentMessages";
 import { workspaceEnvironmentFromId } from "./sessions";
 
-export const PEER_TASK_SCHEMA_VERSION = 6;
+export const PEER_TASK_SCHEMA_VERSION = 7;
 export const PEER_TASK_MAX_HOPS = 3;
 export const PEER_TASK_MAX_PER_ROOT = 8;
 export const PEER_TASK_MAX_ACTIVE = 32;
@@ -208,6 +214,8 @@ export type PeerTask = {
   worktree?: { checkoutRoot: string; baseSha: string };
   changeSet?: PeerTaskChangeSet;
   communication?: PeerCommunicationEvent[];
+  handoff?: PeerHandoffReceipt;
+  review?: PeerReviewBinding;
 };
 
 let ledgerRevision = 0;
@@ -367,6 +375,7 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
       task.schemaVersion !== 3 &&
       task.schemaVersion !== 4 &&
       task.schemaVersion !== 5 &&
+      task.schemaVersion !== 6 &&
       task.schemaVersion !== PEER_TASK_SCHEMA_VERSION) ||
     !nonEmpty(task.id) ||
     !nonEmpty(task.sourceSessionId) ||
@@ -398,6 +407,14 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
     dependsOn: normalizeDependencyIds(task.dependsOn),
     cancellation: normalizeCancellation(task.cancellation),
     recovery: normalizeRecovery(task.recovery),
+    handoff:
+      task.handoff === undefined
+        ? undefined
+        : peerHandoffReceipt.parse(task.handoff),
+    review:
+      task.review === undefined
+        ? undefined
+        : peerReviewBinding.parse(task.review),
     communication:
       task.communication === undefined
         ? undefined

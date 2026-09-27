@@ -9,6 +9,8 @@ import {
   usePeerTaskStore,
 } from "@/modules/ai/store/peerTaskStore";
 import { sendPeerCommunicationToSession } from "@/modules/ai/store/chatRuntime";
+import { preparePeerReply } from "@/modules/ai/lib/peerHandoffRuntime";
+import { PEER_HANDOFF_ENABLED } from "@/modules/ai/lib/peerHandoff";
 import { sessionInference } from "@/modules/ai/lib/inferenceLifecycle";
 import { inspectAttachmentContent } from "@/modules/ai/lib/attachmentStore";
 import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
@@ -38,7 +40,7 @@ import {
   type PeerCommunicationInput,
 } from "@/modules/ai/lib/peerCommunication";
 
-async function endpoint(sessionId: string, workspaceId: string) {
+export async function peerEndpoint(sessionId: string, workspaceId: string) {
   const session = useChatStore
     .getState()
     .sessions.find((item) => item.id === sessionId);
@@ -73,6 +75,8 @@ async function endpoint(sessionId: string, workspaceId: string) {
     }),
   };
 }
+
+const endpoint = peerEndpoint;
 
 function mayWake(sessionId: string) {
   const session = useChatStore
@@ -452,10 +456,12 @@ export async function awaitPeerClarification(
         );
         if (!reply) return;
         await validateDelivery(reply);
+        const prepared = PEER_HANDOFF_ENABLED ? await preparePeerReply(reply) : formatPeerCommunication(reply);
+        await validateDelivery(reply);
         await receipt(taskId, reply.id, "delivered");
         await receipt(taskId, reply.id, "acknowledged");
         cleanup();
-        resolve(formatPeerCommunication(reply));
+        resolve(prepared);
       } catch (error) {
         cleanup();
         reject(error);

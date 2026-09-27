@@ -223,6 +223,7 @@ beforeEach(() => {
     }),
   );
   vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "project_memory_load") return { workspace: "local:c:/workspace", checkout: "C:/workspace", baseSha: null, revision: 0, entries: [] };
     if (
       command.startsWith("target_context_") ||
       command === "scoped_evidence_retrieve"
@@ -410,7 +411,7 @@ describe("self-hosted actual chat routing", () => {
       await dispatchPeerTask("budget-peer");
       expect(requests).toHaveLength(0);
       expect(usePeerTaskStore.getState().tasks[0].status).toBe("failed");
-      expect(getOrCreateChat("b-chat").error?.message).toContain("exceeds");
+      expect(usePeerTaskStore.getState().tasks[0].error?.message).toContain("cannot fit");
       expect(JSON.stringify(getOrCreateChat("b-chat").messages)).not.toContain(
         "never implicitly deliver source transcript",
       );

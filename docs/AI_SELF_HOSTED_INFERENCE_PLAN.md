@@ -1205,7 +1205,7 @@ This order does not authorize any pending implementation in this planning task.
 | 12 | G1b | Authorized project/task evidence retrieval | Complete | `feat(ai): retrieve scoped project and task evidence`; [implementation record](#g1b-implementation-record-2026-09-27) |
 | 13 | C2 | Target-sized preparation and atomic Optimize and switch | Complete | `feat(ai): prepare context for safe model switching`; [implementation record](#c2-implementation-record-2026-09-27) |
 | 14 | H1 | Durable task-scoped communication and clarification | Complete | PeerTask v6 events, atomic receipts, bounded clarification and guarded continuation; 1,437 frontend / 504 Rust tests pass |
-| 15 | H2 | Recipient-aware handoffs and coordinated review | Pending | None |
+| 15 | H2 | Recipient-aware handoffs and coordinated review | Complete | Recipient-sized PeerTask v7 handoffs, hash-bound review/correction and consent-gated promotion; 1,492 frontend tests pass |
 | 16 | R1 | Truthful reasoning and chronological activity | Pending | None |
 | 17 | R2 | Supported effort controls and actual request mapping | Pending | None |
 | 18 | T1 | Custom-tool definitions, validation and scoped authorization | Pending | None |
@@ -2846,6 +2846,93 @@ not repeated. Test unavailable small targets and refusal of unauthorized
 tool/artifact access. U1 owns final visual polish, not a new orchestration engine.
 Rollback uses explicit task prompt/artifact packaging and preserves all events.
 Commit `feat(ai): prepare evidence-aware peer handoffs`, update ledger, STOP.
+
+Implementation record (2026-09-27):
+
+- **Architecture:** Existing PeerTask schema 7 adds optional version-1 `handoff`
+  and `review` metadata. Versions 1-6 remain loadable; malformed new metadata
+  fails validation. No new database, scheduler, conversation owner or model
+  route was introduced. H1's native atomic ledger persists receipts before
+  dispatch. Interrupted running tasks still recover as failed, never replayed.
+- **Recipient preparation:** `peerHandoff` selects deterministic structured
+  context for the captured receiving session, agent, model and workspace.
+  `peerHandoffRuntime` resolves the real model adapter, endpoint policy, input
+  capabilities, system instructions, tool schemas, existing recipient history
+  and materialized attachments through the established B1 helpers. The complete
+  explicit objective/requirements/constraints, clarification text and required
+  project requirements survive. Review results used for corrections are required
+  evidence. Optional dependency findings are selected only while B1 fits, with
+  fresh evidence prioritized and omitted source identities retained. Oversized
+  required context fails without truncation, model substitution or hidden
+  summarization. Final serialized transport preflight remains authoritative.
+- **Evidence and privacy:** Only explicit task payloads, immutable attachments,
+  authorized prerequisite results and approved project records enter the package.
+  M2 revalidation preserves source state, revision, checkout, conflicts and current
+  evidence; historical agent findings never become current verified facts.
+  Worktree-bound packages qualify project observations as needing checkout
+  revalidation. G1b's existing bounded evidence tool and normal request-time
+  retrieval remain available for missing details. Duplicate evidence/content
+  delivery is removed without dropping artifact identities. Receiver read
+  permissions, secret paths, content hashes and workspace boundaries are checked.
+  An empty peer response no longer substitutes an older private assistant message.
+- **Lifecycle and reuse:** A receipt records policy version, preparation key,
+  payload digest, recipient session, timestamp, selected source IDs and omission
+  count, not a second transcript. Preparation rechecks task/dependency identity,
+  model/profile/permission fingerprints, source generation, cancellation,
+  recipient history and project revision/freshness before delivery. Unrelated
+  task graphs remain independent. An ephemeral cache holds at most 32 prepared
+  packages / 524,288 text characters and requires freshly validated inputs before
+  reuse; nothing is replayed from it after restart. Preparation has a 15-second
+  deadline. Up to 16 evidence records include at most eight selected project
+  records. Too many required project records fail explicitly.
+- **H1 integration:** Clarification answers receive recipient-budget checks before
+  acknowledgement. Previously acknowledged immutable evidence references are not
+  repeated, while the original event/digest remains durable. H1's one outstanding
+  question, two rounds/task, four/root, ten-minute lifetime and existing run/graph
+  ceilings are unchanged. Ordinary findings do not create new independent paid
+  wake-ups; dependency dispatch and explicit bounded follow-ups consume them.
+- **Review/correction:** `request_peer_task.followUpTo` permits only an endpoint
+  owner of a completed same-workspace task to create a review or correction in
+  that existing graph. It adds a prerequisite edge and retains hop/task budgets.
+  Reviews capture hashes of original prerequisite results, patches and readable
+  text-file observations. Canonical paths and receiver permissions are checked;
+  current files must match any supplied immutable text snapshot. Review inputs
+  are rechecked at provider preflight, completion, correction packaging and the
+  existing lease-protected apply path. Changed inputs invalidate findings/apply;
+  a newer completed review supersedes older apply gating. File verification is
+  bounded to 32 files / 1 MiB. Existing worktree creation/capture, shared-write
+  leases, dependency failure propagation and cancellation remain the owners.
+- **Project promotion:** `promote_peer_finding` selects a bounded excerpt from an
+  endpoint-owned completed task, preserving its task-result locator. It reuses
+  M1 proposal/publication and M2 verification, including mandatory native user
+  sharing consent and evidence confirmation even in Full Access. Declined or
+  failed verification cannot report a verified result. A separately approved
+  publication may remain an explicitly qualified agent finding if verification
+  is declined; no automatic private-memory promotion or truth assertion exists.
+- **Verification:** Focused handoff/runtime/review/promotion, H1 communication,
+  task/dependency/persistence, G1b, project-memory and B1 tests: **200 passed /
+  11 files**. New H2 files contain **55 tests**, including mocked large-source to
+  small-target dispatch and Coder -> Reviewer -> returned correction without
+  manual transfer. Actual installed-adapter routing plus compaction integration:
+  **27 passed / 2 files**. Final full `npm.cmd test`: **1,492 passed / 138 files**.
+  `npm.cmd run check-types`, `npm.cmd run lint`, `npm.cmd run build` and
+  `git diff --check` passed. Lint remains **71 warnings / 2 infos / 0 errors**.
+  Vite reports mixed static/dynamic import and plugin-timing notices; Git reports
+  normal CRLF conversion notices. No Rust implementation changed, so Rust gates
+  were not rerun. No native GUI, native consent interaction or live-provider
+  verification was performed; native/provider boundaries in tests are mocked.
+- **Limitations and rollback:** Preparation conservatively includes the receiving
+  conversation's existing history and mandatory attachments; it can refuse a
+  large existing conversation instead of generating another summary. Unsupported,
+  missing, binary or oversized review-file evidence blocks rather than fabricating
+  a current observation. Hashes prove identity, not semantic correctness, and
+  do not claim transactional protection against arbitrary external filesystem
+  edits after validation. Rich activity/visual polish is deferred to R1/U1.
+  `PEER_HANDOFF_ENABLED = false` restores explicit prompt/artifact packaging and
+  ordinary H1 reply formatting, preserving receipts, review records and events.
+  Protected delegation files retain their original hashes; safety stashes and
+  `autonomous_tracker/` were untouched. **R1: Truthful activity presentation**
+  remains unstarted.
 
 ### R1: Truthful activity presentation
 

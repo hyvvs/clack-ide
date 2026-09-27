@@ -146,6 +146,13 @@ export function sessionToolContext(sessionId: string) {
       ownerWorkspaceRoot(),
     );
   const toolContext: ToolContext = {
+    validatePeerReview: async () => {
+      const taskId = owner()?.run?.peerTaskId;
+      if (!taskId) return;
+      const { usePeerTaskStore } = await import("@/modules/ai/store/peerTaskStore");
+      const task = usePeerTaskStore.getState().tasks.find((item) => item.id === taskId && item.status === "running");
+      if (task?.review) await (await import("@/modules/ai/lib/peerReview")).validatePeerReview(task);
+    },
     peerRemainingSteps: () => {
       const run = owner()?.run;
       return run &&

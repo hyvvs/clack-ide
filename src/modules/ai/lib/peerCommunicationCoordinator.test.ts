@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Chat, UIMessage } from "@ai-sdk/react";
+vi.mock("@/modules/ai/lib/peerHandoffRuntime", () => ({
+  preparePeerTaskHandoff: vi.fn().mockResolvedValue(null),
+  preparePeerReply: vi.fn(async (event) => JSON.stringify(event)),
+}));
 vi.mock("@/modules/ai/store/chatRuntime", () => ({
   sendMessageToSession: vi.fn(),
   sendPeerCommunicationToSession: vi.fn(),

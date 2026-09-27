@@ -11,6 +11,7 @@ import {
   sendPeerCommunication,
 } from "@/modules/ai/lib/peerCommunicationCoordinator";
 import { peerWaitingSessions } from "@/modules/ai/lib/peerCommunicationRuntime";
+import { promotePeerFinding } from "@/modules/ai/lib/peerKnowledge";
 
 export function buildPeerTaskTools(ctx: ToolContext) {
   const sourceSessionId = ctx.getSessionId();
@@ -47,6 +48,31 @@ export function buildPeerTaskTools(ctx: ToolContext) {
     : [];
 
   return {
+    promote_peer_finding: tool({
+      description:
+        "Propose a bounded excerpt of a completed task result as shared project knowledge. Only your own task endpoints are eligible. Native user approval and evidence verification are always required, including in Full Access. This does not run tests or turn an assumption into a fact automatically.",
+      inputSchema: z.object({
+        taskId: z.string().min(1),
+        excerpt: z.string().min(1).max(2000),
+        files: z.array(z.string().min(1).max(1000)).min(1).max(8),
+      }),
+      execute: async ({ taskId, excerpt, files }) => {
+        try {
+          if (!sourceSessionId) throw new Error("No source conversation.");
+          return await promotePeerFinding(
+            sourceSessionId,
+            taskId,
+            excerpt,
+            files,
+          );
+        } catch (error) {
+          return {
+            error: String(error),
+            code: "peer_finding_promotion_denied",
+          };
+        }
+      },
+    }),
     communicate_peer_task: tool({
       description: `Send a bounded task-scoped note or ask the source to clarify your current task. Clarification yields your run until the source answers; do not repeat the question. Only explicit task endpoints, parent/child edges and dependency producer-to-consumer edges are allowed. No full transcripts, secrets or hidden reasoning. Evidence must already belong to the addressed task. Current task: ${currentTaskId ?? "none"}.`,
       inputSchema: z.object({
@@ -100,6 +126,13 @@ Tasks in this collaboration that may be used as prerequisites:
 ${dependencyCandidates.length > 0 ? dependencyCandidates.join("\n") : "- No dependency candidates are available. Create a normal peer task without dependencies."}`,
       inputSchema: z.object({
         targetSessionId: z.string().describe("Exact target conversation ID."),
+        followUpTo: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Completed task ID you own or performed. Use kind review to review its immutable results, or delegate to return corrections. Preserves graph limits and creates a prerequisite edge; no private transcript transfer.",
+          ),
         kind: z.enum(["delegate", "review", "question"]),
         executionMode: z
           .enum(["read-only", "shared-write", "isolated-worktree"])
@@ -141,6 +174,7 @@ ${dependencyCandidates.length > 0 ? dependencyCandidates.join("\n") : "- No depe
         prompt,
         artifactRefs,
         dependsOn,
+        followUpTo,
       }) => {
         const currentSessionId = ctx.getSessionId();
         if (!currentSessionId) {
@@ -157,6 +191,7 @@ ${dependencyCandidates.length > 0 ? dependencyCandidates.join("\n") : "- No depe
           prompt,
           artifactRefs,
           dependsOn,
+          followUpTo,
           awaitCompletion: false,
         });
         if (!result.ok) return { error: result.message, code: result.code };

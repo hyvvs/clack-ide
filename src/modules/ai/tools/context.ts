@@ -1,6 +1,7 @@
 import type { WorkspaceEnv } from "@/modules/workspace/env";
 
 export type ToolContext = {
+  validatePeerReview?: () => Promise<void>;
   shouldYieldPeerRun?: () => boolean;
   isPeerReplyOnly?: () => boolean;
   peerRemainingSteps?: () => number | undefined;

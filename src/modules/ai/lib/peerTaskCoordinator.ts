@@ -52,6 +52,13 @@ import {
   receiveQueuedPeerNotes,
 } from "@/modules/ai/lib/peerCommunicationCoordinator";
 import { peerWaitingSessions } from "@/modules/ai/lib/peerCommunicationRuntime";
+import { PEER_HANDOFF_ENABLED } from "@/modules/ai/lib/peerHandoff";
+import { preparePeerTaskHandoff } from "@/modules/ai/lib/peerHandoffRuntime";
+import {
+  capturePeerReview,
+  validatePeerReview,
+  validatePeerApplyReview,
+} from "@/modules/ai/lib/peerReview";
 
 export type PeerTaskRequest = {
   sourceSessionId: string;
@@ -64,6 +71,7 @@ export type PeerTaskRequest = {
   executionMode?: PeerTaskExecutionMode;
   dependsOn?: string[];
   awaitCompletion?: boolean;
+  followUpTo?: string;
 };
 
 export type PeerTaskRequestResult =
@@ -88,6 +96,7 @@ export async function requestPeerTask(
   if (!validation.ok) return validation;
   const { source, target, parent, rootTaskId, hopCount, dependsOn } =
     validation;
+  const capturedProfiles = JSON.stringify([source.profile, target.profile]);
   let artifacts: PeerTaskArtifact[];
   try {
     artifacts = await packagePeerTaskArtifacts(
@@ -121,6 +130,22 @@ export async function requestPeerTask(
     artifactRefs: artifacts,
     dependsOn,
   });
+  const currentValidation = validateRequest(request, id);
+  if (!currentValidation.ok) return currentValidation;
+  if (
+    capturedProfiles !==
+      JSON.stringify([
+        currentValidation.source.profile,
+        currentValidation.target.profile,
+      ]) ||
+    currentValidation.rootTaskId !== rootTaskId ||
+    currentValidation.parent !== parent
+  )
+    return {
+      ok: false,
+      code: "peer_request_stale",
+      message: "Task identities changed during artifact preparation.",
+    };
   if (hasRepeatedTask(fingerprint, parent ? rootTaskId : null)) {
     return {
       ok: false,
@@ -296,6 +321,46 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
         ? formatPeerTaskAggregateForModel(dependencyAggregate).text
         : undefined;
     const communicationContext = await receiveQueuedPeerNotes(claimed.id);
+    if (PEER_HANDOFF_ENABLED && claimed.kind === "review") {
+      const review = await capturePeerReview(
+        claimed,
+        usePeerTaskStore.getState().tasks,
+      );
+      await usePeerTaskStore
+        .getState()
+        .updateCommunication((tasks) =>
+          tasks.map((item) =>
+            item.id === claimed.id && item.status === "running"
+              ? { ...item, review }
+              : item,
+          ),
+        );
+    }
+    const preparationTask = usePeerTaskStore
+      .getState()
+      .tasks.find((item) => item.id === claimed.id);
+    if (preparationTask?.status !== "running") return;
+    const prepared = PEER_HANDOFF_ENABLED
+      ? await preparePeerTaskHandoff(preparationTask, communicationContext)
+      : null;
+    if (prepared) {
+      await prepared.validate();
+      await usePeerTaskStore
+        .getState()
+        .updateCommunication((tasks) =>
+          tasks.map((item) =>
+            item.id === claimed.id && item.status === "running"
+              ? { ...item, handoff: prepared.receipt }
+              : item,
+          ),
+        );
+      await prepared.validate();
+    }
+    const priorMessageIds = new Set(
+      prepared?.previousMessageIds ?? (getChat(claimed.targetSessionId)?.messages ?? []).map(
+        (message) => message.id,
+      ),
+    );
     await sendMessageToSession(
       claimed.targetSessionId,
       {
@@ -304,10 +369,13 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
           {
             type: "text",
             text:
+              prepared?.text ??
               peerTaskPrompt(claimed, dependencyContext) +
-              (communicationContext ? `\n${communicationContext}` : ""),
+                (communicationContext ? `\n${communicationContext}` : ""),
           },
-          ...claimed.artifactRefs.map(peerTaskArtifactToMessagePart),
+          ...(prepared?.artifacts ?? claimed.artifactRefs).map(
+            peerTaskArtifactToMessagePart,
+          ),
         ],
       },
       {
@@ -347,11 +415,14 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
       .getState()
       .tasks.find((item) => item.id === claimed.id);
     if (afterRun?.status !== "running") return;
+    await validatePeerReview(afterRun);
     const currentTarget = useChatStore
       .getState()
       .sessions.find((session) => session.id === claimed.targetSessionId);
     const summary = latestVisibleAssistantText(
-      getChat(claimed.targetSessionId)?.messages ?? [],
+      (getChat(claimed.targetSessionId)?.messages ?? []).filter(
+        (message) => !priorMessageIds.has(message.id),
+      ),
     );
     let returnedArtifacts: PeerTaskArtifact[] = [];
     if (claimed.executionMode === "isolated-worktree") {
@@ -557,6 +628,7 @@ export async function applyPeerTaskChangeSet(
   });
   if (!lease.ok) return { ok: false, message: lease.message };
   try {
+    await validatePeerApplyReview(task);
     await native.gitAgentPatchApply(
       task.workspaceRoot,
       task.changeSet.baseSha,
@@ -661,7 +733,22 @@ function validateRequest(
       message: `Clack supports up to ${PEER_TASK_MAX_ACTIVE} active peer tasks at once.`,
     };
   }
-  const parentId = source.run?.peerTaskId ?? null;
+  const followUp = request.followUpTo
+    ? tasks.find((task) => task.id === request.followUpTo)
+    : null;
+  if (
+    request.followUpTo &&
+    (followUp?.status !== "completed" ||
+      followUp.workspaceId !== sourceProfile.workspaceId ||
+      ![followUp.sourceSessionId, followUp.targetSessionId].includes(source.id))
+  )
+    return {
+      ok: false,
+      code: "peer_follow_up_denied",
+      message:
+        "Review/correction must follow your own completed task in this workspace.",
+    };
+  const parentId = followUp?.id ?? source.run?.peerTaskId ?? null;
   const parent = parentId
     ? (tasks.find((task) => task.id === parentId) ?? null)
     : null;
@@ -685,7 +772,13 @@ function validateRequest(
     };
   }
   const dependencyValidation = validatePeerTaskDependencies(
-    { taskId, rootTaskId, dependsOn: request.dependsOn },
+    {
+      taskId,
+      rootTaskId,
+      dependsOn: followUp
+        ? [...new Set([followUp.id, ...(request.dependsOn ?? [])])]
+        : request.dependsOn,
+    },
     tasks,
   );
   if (!dependencyValidation.ok) return dependencyValidation;

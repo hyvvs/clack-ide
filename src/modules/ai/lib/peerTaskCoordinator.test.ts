@@ -1,6 +1,8 @@
 import type { Chat, UIMessage } from "@ai-sdk/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/ai/lib/peerHandoffRuntime", () => ({ preparePeerTaskHandoff: vi.fn().mockResolvedValue(null) }));
+
 vi.mock("../store/chatRuntime", () => ({
   sendMessageToSession: vi.fn().mockResolvedValue(undefined),
 }));
@@ -72,6 +74,10 @@ const TARGET = "chat-target";
 
 beforeEach(() => {
   vi.mocked(sendMessageToSession).mockClear();
+  vi.mocked(sendMessageToSession).mockImplementation(async () => {
+    const chat = chats.get(TARGET);
+    if (chat) chat.messages = chat.messages.map((message) => ({ ...message, id: crypto.randomUUID() }));
+  });
   chats.clear();
   chats.set(TARGET, {
     messages: [
