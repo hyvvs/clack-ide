@@ -96,6 +96,7 @@ const TOOL_CATEGORIES: Readonly<Record<string, PermissionCategory>> = {
   bash_background: "run-commands",
   request_peer_task: "delegate-runs",
   cancel_peer_task: "delegate-runs",
+  communicate_peer_task: "delegate-runs",
 };
 
 const chatGrants = new Map<string, Set<PermissionCategory>>();

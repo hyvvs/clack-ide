@@ -1,6 +1,9 @@
 import type { WorkspaceEnv } from "@/modules/workspace/env";
 
 export type ToolContext = {
+  shouldYieldPeerRun?: () => boolean;
+  isPeerReplyOnly?: () => boolean;
+  peerRemainingSteps?: () => number | undefined;
   requestConversationEvidence?: (
     query: string,
     anchor?: string,

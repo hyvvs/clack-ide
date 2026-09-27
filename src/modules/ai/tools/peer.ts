@@ -5,6 +5,12 @@ import { PEER_TASK_MAX_DEPENDENCIES } from "../lib/peerTasks";
 import { useChatStore } from "../store/chatStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
 import type { ToolContext } from "./context";
+import { peerMessageKinds } from "@/modules/ai/lib/peerCommunication";
+import {
+  blockPeerCommunication,
+  sendPeerCommunication,
+} from "@/modules/ai/lib/peerCommunicationCoordinator";
+import { peerWaitingSessions } from "@/modules/ai/lib/peerCommunicationRuntime";
 
 export function buildPeerTaskTools(ctx: ToolContext) {
   const sourceSessionId = ctx.getSessionId();
@@ -26,6 +32,7 @@ export function buildPeerTaskTools(ctx: ToolContext) {
         })`,
     );
   const currentTaskId = source?.run?.peerTaskId;
+  const capturedRunStartedAt = source?.run?.startedAt;
   const currentTask = usePeerTaskStore
     .getState()
     .tasks.find((task) => task.id === currentTaskId);
@@ -40,6 +47,49 @@ export function buildPeerTaskTools(ctx: ToolContext) {
     : [];
 
   return {
+    communicate_peer_task: tool({
+      description: `Send a bounded task-scoped note or ask the source to clarify your current task. Clarification yields your run until the source answers; do not repeat the question. Only explicit task endpoints, parent/child edges and dependency producer-to-consumer edges are allowed. No full transcripts, secrets or hidden reasoning. Evidence must already belong to the addressed task. Current task: ${currentTaskId ?? "none"}.`,
+      inputSchema: z.object({
+        taskId: z.string().min(1),
+        recipientTaskId: z.string().min(1).optional(),
+        kind: z.enum(peerMessageKinds),
+        text: z.string().min(1).max(4096),
+        replyTo: z.string().optional(),
+        evidence: z
+          .array(
+            z.object({
+              taskId: z.string(),
+              artifactId: z.string(),
+              contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+            }),
+          )
+          .max(8)
+          .default([]),
+      }),
+      execute: async (input, options) => {
+        try {
+          if (!sourceSessionId || capturedRunStartedAt === undefined)
+            throw new Error("No active communication run.");
+          return await sendPeerCommunication(
+            sourceSessionId,
+            capturedRunStartedAt,
+            options.toolCallId,
+            input,
+          );
+        } catch (error) {
+          const message = String(error);
+          if (
+            sourceSessionId &&
+            input.taskId === currentTaskId &&
+            /round_limit|no_progress|event_limit/.test(message)
+          ) {
+            peerWaitingSessions.add(sourceSessionId);
+            await blockPeerCommunication(input.taskId, message);
+          }
+          return { code: "peer_communication_denied", error: message };
+        }
+      },
+    }),
     request_peer_task: tool({
       description: `Ask another persistent Clack conversation to perform a bounded task in the same workspace. Use this for an independent review, a focused question, or delegated work that benefits from the target chat's own agent and model. The task and result are visible in both conversations. Starting another provider run may require user approval. Do not use this for a quick read-only subagent investigation.
 
@@ -107,6 +157,7 @@ ${dependencyCandidates.length > 0 ? dependencyCandidates.join("\n") : "- No depe
           prompt,
           artifactRefs,
           dependsOn,
+          awaitCompletion: false,
         });
         if (!result.ok) return { error: result.message, code: result.code };
         return {

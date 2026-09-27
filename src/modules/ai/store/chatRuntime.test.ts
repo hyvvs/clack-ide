@@ -48,7 +48,10 @@ import {
   continueActiveRun,
   sendMessageToSession,
   shouldAutomaticallySendSession,
+  sendPeerCommunicationToSession,
+  sessionToolContext,
 } from "./chatRuntime";
+import { peerReplySessions, peerWaitingSessions } from "@/modules/ai/lib/peerCommunicationRuntime";
 import {
   normalizeAiError,
   normalizeAiStreamPartError,
@@ -66,6 +69,8 @@ const ORIGINAL_API_KEYS = useChatStore.getState().apiKeys;
 const ORIGINAL_SELECTED_MODEL = useChatStore.getState().selectedModelId;
 
 afterEach(() => {
+  peerReplySessions.clear();
+  peerWaitingSessions.clear();
   chats.clear();
   usePreferencesStore.setState({ agentPermissionProfiles: {} });
   useWorkspaceEnvStore.setState({ env: { kind: "local" } });
@@ -785,6 +790,113 @@ describe("active todo lifecycle", () => {
     expect(useTodosStore.getState().bySession[SESSION_ID]).toEqual([
       { id: "new", title: "New", status: "in_progress" },
     ]);
+  });
+});
+
+describe("peer communication continuation", () => {
+  function prepare() {
+    const session = sessionMeta();
+    const budget = {
+      ...createRunBudget("full-access"),
+      totalSteps: 17,
+      continuationCount: 2,
+    };
+    useChatStore.setState({
+      sessions: [
+        {
+          ...session,
+          run: {
+            state: "running",
+            startedAt: 12,
+            agentId: session.profile.agentId,
+            modelId: session.profile.modelId,
+            peerTaskId: "peer",
+            budget,
+          },
+        },
+      ],
+    });
+    return budget;
+  }
+  it("resumes the original child generation without resetting used steps", async () => {
+    const budget = prepare();
+    const send = vi.fn().mockResolvedValue(undefined);
+    chats.set(SESSION_ID, {
+      status: "ready",
+      sendMessage: send,
+    } as unknown as Chat<UIMessage>);
+    peerWaitingSessions.add(SESSION_ID);
+    await sendPeerCommunicationToSession(SESSION_ID, "Bounded answer");
+    expect(useChatStore.getState().sessions[0].run).toMatchObject({
+      startedAt: 12,
+      peerTaskId: "peer",
+      budget: { totalSteps: budget.totalSteps, continuationCount: 3 },
+    });
+    expect(peerWaitingSessions.has(SESSION_ID)).toBe(false);
+    expect(send).toHaveBeenCalledOnce();
+  });
+  it("makes source clarification tool-free and prevents automatic extra turns", async () => {
+    prepare();
+    const send = vi.fn(async () => {
+      expect(
+        sessionToolContext(SESSION_ID).toolContext.isPeerReplyOnly?.(),
+      ).toBe(true);
+      expect(shouldAutomaticallySendSession(SESSION_ID, [])).toBe(false);
+    });
+    chats.set(SESSION_ID, {
+      status: "ready",
+      sendMessage: send,
+    } as unknown as Chat<UIMessage>);
+    await sendPeerCommunicationToSession(SESSION_ID, "Question", true);
+    expect(peerReplySessions.has(SESSION_ID)).toBe(false);
+  });
+  it.each([
+    "cancelled",
+    "failed",
+    "interrupted",
+  ] as const)("cannot revive a %s child", async (state) => {
+    prepare();
+    useChatStore.setState((current) => ({
+      sessions: current.sessions.map((session) => ({
+        ...session,
+        run: session.run ? { ...session.run, state } : undefined,
+      })),
+    }));
+    await expect(
+      sendPeerCommunicationToSession(SESSION_ID, "Answer"),
+    ).rejects.toThrow("no authorized");
+  });
+  it("rejects exhausted budgets, busy chats and changed recipient identity", async () => {
+    prepare();
+    chats.set(SESSION_ID, {
+      status: "streaming",
+    } as unknown as Chat<UIMessage>);
+    await expect(
+      sendPeerCommunicationToSession(SESSION_ID, "Answer"),
+    ).rejects.toThrow("busy");
+    await expect(
+      sendPeerCommunicationToSession(SESSION_ID, "Answer", false, {
+        agentId: "other",
+        modelId: "other",
+        workspaceId: "other",
+        startedAt: 12,
+      }),
+    ).rejects.toThrow("recipient changed");
+    const budget = createRunBudget("full-access");
+    useChatStore.setState((current) => ({
+      sessions: current.sessions.map((session) => ({
+        ...session,
+        run: session.run
+          ? {
+              ...session.run,
+              budget: { ...budget, totalSteps: budget.hardStepLimit },
+            }
+          : undefined,
+      })),
+    }));
+    await expect(
+      sendPeerCommunicationToSession(SESSION_ID, "Answer"),
+    ).rejects.toThrow("no authorized");
   });
 });
 

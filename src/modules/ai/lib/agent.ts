@@ -705,7 +705,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     | Awaited<ReturnType<typeof createConversationCompactor>>
     | undefined;
   const tools = gateInferenceTools(
-    buildTools(
+    opts.toolContext.isPeerReplyOnly?.() ? {} : buildTools(
       opts.compaction
         ? {
             ...opts.toolContext,
@@ -876,7 +876,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
         }
       : undefined,
     maxRetries: AGENT_PROVIDER_MAX_RETRIES,
-    stopWhen: stepCountIs(AGENT_SOFT_STEP_LIMIT),
+    stopWhen: [stepCountIs(opts.toolContext.isPeerReplyOnly?.() ? 1 : Math.max(1, Math.min(AGENT_SOFT_STEP_LIMIT, opts.toolContext.peerRemainingSteps?.() ?? AGENT_SOFT_STEP_LIMIT))), () => opts.toolContext.shouldYieldPeerRun?.() ?? false],
     abortSignal: opts.abortSignal,
     onStepFinish: (step) => {
       stepsSeen++;

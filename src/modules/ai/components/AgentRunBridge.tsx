@@ -11,6 +11,7 @@ import {
   type PendingToolApproval,
 } from "../store/chatStore";
 import { getOrCreateChat } from "../store/chatRuntime";
+import { peerWaitingSessions } from "@/modules/ai/lib/peerCommunicationRuntime";
 
 /**
  * Headless bridge that mirrors chat lifecycle into the store, so the status
@@ -221,7 +222,7 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
         beginRun(sessionId, session?.run?.commandName);
       }
     } else {
-      finishRun(sessionId, "completed");
+      if (!peerWaitingSessions.has(sessionId)) finishRun(sessionId, "completed");
     }
   }, [
     status,

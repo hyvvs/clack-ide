@@ -1,4 +1,6 @@
 import { Spinner } from "@/components/ui/spinner";
+import { PeerCommunicationFeed } from "@/modules/ai/components/PeerCommunicationFeed";
+import { pendingPeerQuestion } from "@/modules/ai/lib/peerCommunication";
 import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
 import { inferenceLabel } from "@/modules/ai/lib/inferenceLifecycle";
 import {
@@ -160,7 +162,7 @@ export function PeerTaskCard({
   const peerAgentName = viewingSource ? targetAgentName : sourceAgentName;
   const active = isPeerTaskActive(task);
   const inference = useInferenceLifecycle(task.targetSessionId);
-  const statusLabel = task.status === "running" && inference
+  const statusLabel = pendingPeerQuestion(task) ? "Waiting for clarification" : task.status === "running" && inference
     ? inferenceLabel(inference)
     : delegationStatusLabel(task);
   const unavailableReturnedArtifactIds = new Set(
@@ -267,6 +269,7 @@ export function PeerTaskCard({
         </button>
       </div>
       <div className="space-y-2 px-2.5 py-2 text-[11px]">
+        <PeerCommunicationFeed events={task.communication} />
         <div>
           <div className="mb-0.5 text-[9.5px] font-medium uppercase text-[var(--clack-text-3)]">
             Task

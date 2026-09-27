@@ -26,6 +26,10 @@ export function currentWorkspaceWriteLease(
   return leases.get(workspaceId) ?? null;
 }
 
+export function isWaitingForWorkspaceWriteLease(workspaceId: string, sessionId: string): boolean {
+  return waiters.get(workspaceId)?.some((waiter) => waiter.sessionId === sessionId) ?? false;
+}
+
 export function acquireWorkspaceWriteLease(input: {
   workspaceId: string;
   sessionId: string;

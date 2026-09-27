@@ -1204,7 +1204,7 @@ This order does not authorize any pending implementation in this planning task.
 | 11 | M2 | Verified project knowledge and incremental freshness | Complete | `feat(ai): track project evidence freshness`; [implementation record](#m2-implementation-record-2026-09-26) |
 | 12 | G1b | Authorized project/task evidence retrieval | Complete | `feat(ai): retrieve scoped project and task evidence`; [implementation record](#g1b-implementation-record-2026-09-27) |
 | 13 | C2 | Target-sized preparation and atomic Optimize and switch | Complete | `feat(ai): prepare context for safe model switching`; [implementation record](#c2-implementation-record-2026-09-27) |
-| 14 | H1 | Durable task-scoped communication and clarification | Pending | None |
+| 14 | H1 | Durable task-scoped communication and clarification | Complete | PeerTask v6 events, atomic receipts, bounded clarification and guarded continuation; 1,437 frontend / 504 Rust tests pass |
 | 15 | H2 | Recipient-aware handoffs and coordinated review | Pending | None |
 | 16 | R1 | Truthful reasoning and chronological activity | Pending | None |
 | 17 | R2 | Supported effort controls and actual request mapping | Pending | None |
@@ -2744,6 +2744,91 @@ must pause. Verify capacity-one and lease-holder clarification cannot deadlock.
 Recipient-sized semantic handoffs are H2, not hidden extra work in H1.
 Rollback disables new sends/automatic wake-up, keeps readable events and existing
 task results. Commit `feat(ai): add scoped peer clarification`, update ledger, STOP.
+
+Implementation record (2026-09-27):
+
+- **Ownership and representation:** PeerTask schema 6 adds an optional bounded
+  `communication` array to the existing task record. There is no separate task,
+  conversation or message database. The eight kinds are clarification request /
+  response, finding, blocker, review request / response, dependency update and
+  note. Each event carries a UUID, task/recipient-task/root/parent/workspace IDs,
+  captured session/agent/model endpoints and policy fingerprints, sender run
+  generation, tool-call identity, sequence, SHA-256 payload digest, creation and
+  deadline timestamps, reply-to and delivery state. Automatic replies also retain
+  the actual new source message ID after flushing the original session history.
+- **Routing and privacy:** Runtime-owned session/run/tool-call IDs authenticate
+  sends; the model cannot select its sender. Only assigned task endpoints,
+  parent/child target edges and producer-to-dependent target edges are accepted.
+  Same-workspace membership alone is insufficient. Endpoint identities, agent
+  definitions, model transports, workspace and permission fingerprints are
+  revalidated. Explicit evidence references identify existing task artifacts by
+  ID and content hash; native inspection verifies bytes without path fallback.
+  No transcript dump, project-memory promotion or cross-conversation retrieval
+  was added. Earlier private assistant text cannot substitute for an empty reply.
+- **Execution:** `communicate_peer_task` uses the existing delegation permission
+  category. Provider delegation now queues without awaiting its child inside a
+  provider tool call. A clarification yields at a tool boundary, retaining the
+  child run and write lease while releasing its inference request. The existing
+  queue bridge waits for the source's settled boundary, validates authorization,
+  commits delivery/acknowledgement, and requests one tool-free source answer.
+  The reply is persisted before the original child resumes. Used steps and
+  continuation counts carry forward; cancelled, replaced, busy, approval-paused
+  or exhausted runs cannot resume. B1 and existing context preparation remain
+  on the normal transport path. Source task result capture precedes a reply run.
+- **Bounds and visibility:** Payload text is at most 4,096 UTF-8 bytes, eight
+  existing artifact references and 32 events/task; clarification is limited to
+  one outstanding question, two rounds/task and four/root, with a persisted
+  ten-minute deadline. Existing graph, active-task and run ceilings still apply.
+  Duplicate tool calls are idempotent; conflicting reuse, repeated questions and
+  exhausted rounds fail closed. Deadlines and unsafe source/write-lease cycles
+  block visibly. The existing task card shows clarification waiting and an
+  expandable, height-bounded communication/provenance disclosure.
+- **Durability and recovery:** The existing `clack-ai-peer-tasks.json` now has a
+  native atomic owner reusing `SessionFile`, with a root revision CAS and the
+  existing `tasks` key. Writes preserve legacy keys, serialize through the same
+  owner and reject stale windows. Dispatch and receipts await durable writes;
+  errors pause dispatch. Other windows receive invalidation and must reload,
+  rather than overwriting an unseen revision. Task evidence and content retention
+  read this same owner. Version 1-5 tasks migrate additively; malformed event
+  metadata/digests pause loading without rewriting the source file. Interrupted
+  requests/receipts remain readable but are blocked, not replayed; existing dead
+  runs still recover as interrupted/failed. Cancellation wins late replies.
+  Communication failure preserves an isolated worktree for reconciliation.
+  No new content blobs or leases were introduced. The native ledger is bounded
+  to 256 tasks / 32 MiB; original sessions and artifact content remain separate.
+- **Verification:** Focused frontend command covering `peerCommunication`,
+  `peerCommunicationCoordinator`, `peerTasks`, `peerTaskCoordinator`,
+  `peerTaskDependencies`, `restartRecovery`, `chatRuntime` and
+  `workspaceWriteLease`: **163 tests / 8 files passed**. This includes mocked
+  dispatch -> child question -> source answer -> same-child continuation,
+  route spoofing, ownership, receipts, duplicate/round/deadline bounds, busy
+  source, inference drainage, lease-cycle refusal, missing source, changed
+  profile/generation, offline endpoint, corrupt evidence, storage failure,
+  worktree preservation and empty-response privacy. Four new native atomic
+  ledger tests cover legacy migration, competing windows, failed writes and
+  post-replacement ambiguity; focused `cargo test --locked peer_` passed 10 tests.
+  Full `npm.cmd test`: **1,437 tests / 134 files passed**. Full
+  `cargo test --locked`: **504 passed** (454 library, 25 filesystem, 25 Git).
+  `npm.cmd run check-types`, `npm.cmd run lint`, `npm.cmd run build`,
+  `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` and
+  `git diff --check` passed. Lint remains at **71 warnings / 2 infos / 0 errors**.
+  Existing Cargo home canonicalization, Vite plugin-timing and Git CRLF notices
+  remain. Rust used the isolated `clack-c1a-final-target` temporary target.
+  `scripts/check-peer-communication.mjs` passed real-component browser checks
+  for keyboard disclosure, provenance, bounded scrolling and long-text overflow
+  at **1100px / 390px**; screenshot output was inspected. Native GUI and live
+  provider runs were **not** performed.
+- **Limits and rollback:** Automatic answers require a configured, authorized
+  source with an available safe run boundary and remaining budget; other cases
+  block for user reconciliation. Plain findings/review/dependency notes remain
+  source-linked task activity and can accompany queued task dispatch; they do
+  not independently authorize a billed wake-up. H2 owns richer recipient-sized
+  delivery and hash-bound review/correction. No exactly-once shell/API effects
+  are claimed; crash ambiguity never auto-replays. Setting
+  `PEER_COMMUNICATION_ENABLED` false disables sends and automatic reply dispatch
+  while keeping persisted events/results readable. Protected delegation files
+  retain their pre-checkpoint hashes; safety stashes and `autonomous_tracker/`
+  were not touched. **H2: Recipient-aware collaboration** remains unstarted.
 
 ### H2: Recipient-aware collaboration
 

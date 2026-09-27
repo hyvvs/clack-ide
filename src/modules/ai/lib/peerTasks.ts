@@ -1,4 +1,11 @@
-import { LazyStore } from "@tauri-apps/plugin-store";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  communicationDigest,
+  communicationPayload,
+  parsePeerCommunication,
+  reconcilePeerCommunication,
+  type PeerCommunicationEvent,
+} from "@/modules/ai/lib/peerCommunication";
 import type { WorkspaceEnv } from "@/modules/workspace/env";
 import type {
   ArchiveRepresentation,
@@ -12,7 +19,7 @@ import {
 } from "./attachmentMessages";
 import { workspaceEnvironmentFromId } from "./sessions";
 
-export const PEER_TASK_SCHEMA_VERSION = 5;
+export const PEER_TASK_SCHEMA_VERSION = 6;
 export const PEER_TASK_MAX_HOPS = 3;
 export const PEER_TASK_MAX_PER_ROOT = 8;
 export const PEER_TASK_MAX_ACTIVE = 32;
@@ -200,26 +207,57 @@ export type PeerTask = {
   recovery?: PeerTaskRecovery;
   worktree?: { checkoutRoot: string; baseSha: string };
   changeSet?: PeerTaskChangeSet;
+  communication?: PeerCommunicationEvent[];
 };
 
-const STORE_PATH = "clack-ai-peer-tasks.json";
-const TASKS_KEY = "tasks";
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
+let ledgerRevision = 0;
+let ledgerWrites: Promise<void> = Promise.resolve();
 
 export function newPeerTaskId(): string {
   return `pt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 export async function loadPeerTasks(): Promise<PeerTask[]> {
-  const raw = (await store.get<unknown[]>(TASKS_KEY)) ?? [];
-  return raw.flatMap((value) => {
+  const ledger = await invoke<{ revision: number; tasks: unknown[] }>(
+    "peer_ledger_read",
+  );
+  ledgerRevision = ledger.revision;
+  ledgerWrites = Promise.resolve();
+  const tasks = ledger.tasks.flatMap((value) => {
     const task = normalizePeerTask(value);
+    if (!task && value && typeof value === "object" && "communication" in value)
+      throw new Error("peer_communication_schema_unsupported");
     return task ? [task] : [];
   });
+  for (const task of tasks) {
+    for (const event of task.communication ?? []) {
+      if (
+        event.taskId !== task.id ||
+        event.workspaceId !== task.workspaceId ||
+        event.rootTaskId !== task.rootTaskId ||
+        event.digest !==
+          (await communicationDigest(communicationPayload(event)))
+      ) {
+        throw new Error("peer_communication_integrity_failed");
+      }
+    }
+  }
+  return tasks;
+}
+
+export function peerLedgerRevision(): number {
+  return ledgerRevision;
 }
 
 export async function savePeerTasks(tasks: readonly PeerTask[]): Promise<void> {
-  await store.set(TASKS_KEY, compactPeerTasks(tasks));
+  const snapshot = compactPeerTasks(tasks);
+  ledgerWrites = ledgerWrites.then(async () => {
+    ledgerRevision = await invoke<number>("peer_ledger_commit", {
+      expected: ledgerRevision,
+      tasks: snapshot,
+    });
+  });
+  return ledgerWrites;
 }
 
 export function compactPeerTasks(tasks: readonly PeerTask[]): PeerTask[] {
@@ -256,28 +294,32 @@ export function recoverInterruptedPeerTasks(
   tasks: readonly PeerTask[],
   now = Date.now(),
 ): PeerTask[] {
-  return tasks.map((task) =>
-    task.status === "running"
-      ? {
-          ...task,
-          status: "failed",
-          updatedAt: now,
-          endedAt: now,
-          error: {
-            code: "peer_task_interrupted",
-            message: task.worktree
-              ? `Interrupted when Clack closed. Changes remain in the preserved worktree at ${task.worktree.checkoutRoot}.`
-              : "Interrupted when Clack closed.",
-          },
-          recovery: {
-            ...task.recovery,
-            interruption: {
-              cause: "app-restart",
-              detectedAt: now,
+  return reconcilePeerCommunication(
+    tasks.map((task) =>
+      task.status === "running"
+        ? {
+            ...task,
+            status: "failed",
+            updatedAt: now,
+            endedAt: now,
+            error: {
+              code: "peer_task_interrupted",
+              message: task.worktree
+                ? `Interrupted when Clack closed. Changes remain in the preserved worktree at ${task.worktree.checkoutRoot}.`
+                : "Interrupted when Clack closed.",
             },
-          },
-        }
-      : task,
+            recovery: {
+              ...task.recovery,
+              interruption: {
+                cause: "app-restart",
+                detectedAt: now,
+              },
+            },
+          }
+        : task,
+    ),
+    now,
+    true,
   );
 }
 
@@ -324,6 +366,7 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
       task.schemaVersion !== 2 &&
       task.schemaVersion !== 3 &&
       task.schemaVersion !== 4 &&
+      task.schemaVersion !== 5 &&
       task.schemaVersion !== PEER_TASK_SCHEMA_VERSION) ||
     !nonEmpty(task.id) ||
     !nonEmpty(task.sourceSessionId) ||
@@ -355,6 +398,10 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
     dependsOn: normalizeDependencyIds(task.dependsOn),
     cancellation: normalizeCancellation(task.cancellation),
     recovery: normalizeRecovery(task.recovery),
+    communication:
+      task.communication === undefined
+        ? undefined
+        : parsePeerCommunication(task.communication),
   };
 }
 

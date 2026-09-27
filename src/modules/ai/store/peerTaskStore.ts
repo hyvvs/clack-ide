@@ -20,12 +20,16 @@ import { reconcilePersistedAttachmentContent } from "../lib/sessions";
 import type { SessionMeta } from "../lib/sessions";
 import { native } from "../lib/native";
 import { recoverPeerTasks } from "../lib/restartRecovery";
+import { reconcilePeerCommunication } from "@/modules/ai/lib/peerCommunication";
 
 type PeerTaskStore = {
   hydrated: boolean;
   recoveryReady: boolean;
   recoveryError: string | null;
   tasks: PeerTask[];
+  updateCommunication: (
+    update: (tasks: PeerTask[]) => PeerTask[],
+  ) => Promise<void>;
   hydrate: (context: {
     sessions: readonly SessionMeta[];
     isAgentConfigured: (agentId: string) => boolean;
@@ -48,8 +52,21 @@ type PeerTaskStore = {
   ) => PeerTaskCancellationTarget[];
 };
 
+let pendingPersistence: Promise<void> = Promise.resolve();
+export async function flushPeerTasks(): Promise<void> {
+  await pendingPersistence;
+  if (!usePeerTaskStore.getState().recoveryReady)
+    throw new Error("Peer task persistence requires recovery.");
+}
+
 function persist(tasks: PeerTask[]): void {
-  void savePeerTasks(tasks);
+  pendingPersistence = savePeerTasks(tasks);
+  void pendingPersistence.catch((error) =>
+    usePeerTaskStore.setState({
+      recoveryReady: false,
+      recoveryError: String(error),
+    }),
+  );
 }
 
 function bounded(tasks: PeerTask[]): PeerTask[] {
@@ -57,7 +74,9 @@ function bounded(tasks: PeerTask[]): PeerTask[] {
 }
 
 function reconciled(tasks: PeerTask[]): PeerTask[] {
-  return bounded(reconcilePeerTaskDependencies(tasks));
+  return bounded(
+    reconcilePeerCommunication(reconcilePeerTaskDependencies(tasks)),
+  );
 }
 
 export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
@@ -65,6 +84,14 @@ export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
   recoveryReady: false,
   recoveryError: null,
   tasks: [],
+  updateCommunication: async (update) => {
+    if (!get().recoveryReady)
+      throw new Error("Peer task recovery is not ready.");
+    const tasks = reconciled(update(get().tasks));
+    set({ tasks });
+    persist(tasks);
+    await flushPeerTasks();
+  },
   hydrate: async (context) => {
     if (get().hydrated) return;
     let recoveredWithoutStorage: PeerTask[] | null = null;

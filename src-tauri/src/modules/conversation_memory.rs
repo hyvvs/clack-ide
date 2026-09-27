@@ -18,6 +18,7 @@ const MAX_SOURCES: usize = 128;
 const SESSION_STORE: &str = "terax-ai-sessions.json";
 static MEMORY_EPOCH: LazyLock<String> =
     LazyLock::new(|| format!("{}:{}", std::process::id(), now()));
+pub mod peer_ledger;
 pub mod project;
 pub mod retrieval;
 mod session_file;
@@ -30,6 +31,7 @@ pub struct MemoryState {
     owners: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     metadata: Arc<Mutex<()>>,
     sessions: Arc<session_file::SessionFile>,
+    peers: Arc<session_file::SessionFile>,
     switches: Arc<Mutex<HashMap<String, (String, u64)>>>,
 }
 
@@ -1003,10 +1005,7 @@ fn originals(app: &tauri::AppHandle, id: &str) -> Result<Originals> {
 }
 
 fn load_tasks(app: &tauri::AppHandle, originals: &mut Originals) -> Result<()> {
-    let peers = app
-        .store("clack-ai-peer-tasks.json")
-        .map_err(|e| e.to_string())?;
-    let tasks = peers.get("tasks").unwrap_or(json!([]));
+    let tasks = peer_ledger::read(app)?["tasks"].clone();
     originals.tasks = tasks.as_array().ok_or("memory_invalid_tasks")?.clone();
     Ok(())
 }
@@ -1514,12 +1513,7 @@ pub(crate) fn retention_roots(app: &tauri::AppHandle) -> Result<Vec<String>> {
             persisted_content_refs(&value, &mut retained);
         }
     }
-    let peers = app
-        .store("clack-ai-peer-tasks.json")
-        .map_err(|e| e.to_string())?;
-    if let Some(tasks) = peers.get("tasks") {
-        persisted_content_refs(&tasks, &mut retained);
-    }
+    persisted_content_refs(&peer_ledger::read(app)?["tasks"], &mut retained);
     Ok(retained.into_iter().collect())
 }
 

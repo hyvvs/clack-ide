@@ -47,6 +47,88 @@ import {
   chargeCompactionCall,
 } from "./chatStore";
 
+import {
+  peerReplySessions,
+  peerWaitingSessions,
+} from "@/modules/ai/lib/peerCommunicationRuntime";
+
+export async function sendPeerCommunicationToSession(
+  sessionId: string,
+  text: string,
+  replyOnly = false,
+  expected?: {
+    agentId: string;
+    modelId: string;
+    workspaceId: string;
+    startedAt?: number;
+  },
+): Promise<void> {
+  const state = useChatStore.getState();
+  const session = state.sessions.find((item) => item.id === sessionId);
+  const previous = session?.run;
+  const budget = previous?.budget;
+  if (
+    expected &&
+    (session?.profile?.agentId !== expected.agentId ||
+      session.profile.modelId !== expected.modelId ||
+      session.profile.workspaceId !== expected.workspaceId ||
+      (expected.startedAt !== undefined &&
+        previous?.startedAt !== expected.startedAt))
+  )
+    throw new Error("The communication recipient changed.");
+  if (
+    !previous ||
+    !budget ||
+    budget.totalSteps >= budget.hardStepLimit ||
+    budget.continuationCount >= budget.maxAutoContinuations ||
+    previous.state === "cancelled" ||
+    previous.state === "failed" ||
+    previous.state === "interrupted"
+  ) {
+    throw new Error("The existing run has no authorized continuation budget.");
+  }
+  const chat = getOrCreateChat(sessionId);
+  if (chat.status === "submitted" || chat.status === "streaming")
+    throw new Error("The receiving chat is busy.");
+  if (state.pendingApprovalsBySession[sessionId]?.length)
+    throw new Error(
+      "Resolve pending tool approvals before continuing this task.",
+    );
+  if (previous.state !== "running") {
+    if (!replyOnly) throw new Error("The child run is no longer active.");
+    const started = state.beginRun(sessionId, undefined, {
+      mutationMode: "read-only",
+    });
+    if (!started.ok) throw new Error(started.reason);
+  }
+  useChatStore.setState((current) => ({
+    sessions: current.sessions.map((item) =>
+      item.id === sessionId && item.run
+        ? {
+            ...item,
+            run: {
+              ...item.run,
+              budget: {
+                ...budget,
+                phase: "running",
+                continuationCount: budget.continuationCount + 1,
+                continuationPromptPending: false,
+              },
+            },
+          }
+        : item,
+    ),
+  }));
+  if (replyOnly) peerReplySessions.add(sessionId);
+  peerWaitingSessions.delete(sessionId);
+  try {
+    await chat.sendMessage({ role: "user", parts: [{ type: "text", text }] });
+    if (chat.error) throw chat.error;
+  } finally {
+    if (replyOnly) peerReplySessions.delete(sessionId);
+  }
+}
+
 export function sessionToolContext(sessionId: string) {
   const readCache = new Map<string, { size: number; hash: number }>();
   const owner = () =>
@@ -64,6 +146,16 @@ export function sessionToolContext(sessionId: string) {
       ownerWorkspaceRoot(),
     );
   const toolContext: ToolContext = {
+    peerRemainingSteps: () => {
+      const run = owner()?.run;
+      return run &&
+        (run.peerTaskId || peerReplySessions.has(sessionId)) &&
+        run.budget
+        ? Math.max(0, run.budget.hardStepLimit - run.budget.totalSteps)
+        : undefined;
+    },
+    shouldYieldPeerRun: () => peerWaitingSessions.has(sessionId),
+    isPeerReplyOnly: () => peerReplySessions.has(sessionId),
     getCwd: () =>
       foregroundMatchesOwner()
         ? useChatStore.getState().live.getCwd()
@@ -449,6 +541,8 @@ export function shouldAutomaticallySendSession(
   sessionId: string,
   messages: UIMessage[],
 ): boolean {
+  if (peerWaitingSessions.has(sessionId) || peerReplySessions.has(sessionId))
+    return false;
   const state = useChatStore.getState().sessions.find((s) => s.id === sessionId)
     ?.run?.state;
   if (state === "cancelled" || state === "interrupted" || state === "failed")

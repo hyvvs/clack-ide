@@ -4,11 +4,65 @@ use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
-/// Owns the existing session JSON format. Other plugin stores are unchanged.
+/// Atomic ownership of the existing session and PeerTask JSON formats.
 #[derive(Default)]
 pub(super) struct SessionFile(Mutex<Option<Map<String, Value>>>);
 
 impl SessionFile {
+    pub(super) fn revisioned(&self, path: &Path) -> Result<Value> {
+        self.with_cache(path, |cache| {
+            let revision = match cache.get("revision") {
+                None => 0,
+                Some(value) => value
+                    .as_u64()
+                    .filter(|value| *value < 9_007_199_254_740_991)
+                    .ok_or("peer_revision_invalid")?,
+            };
+            if cache.get("tasks").is_some_and(|tasks| !tasks.is_array()) {
+                return Err("peer_tasks_invalid".into());
+            }
+            Ok(serde_json::json!({
+                "revision": revision,
+                "tasks": cache.get("tasks").cloned().unwrap_or(serde_json::json!([]))
+            }))
+        })
+    }
+
+    pub(super) fn compare_tasks(&self, path: &Path, expected: u64, tasks: Value) -> Result<u64> {
+        self.compare_tasks_with(path, expected, tasks, atomic_write)
+    }
+
+    fn compare_tasks_with(
+        &self,
+        path: &Path,
+        expected: u64,
+        tasks: Value,
+        persist: impl FnOnce(&Path, &[u8]) -> Result<()>,
+    ) -> Result<u64> {
+        self.with_cache(path, |cache| {
+            let revision = cache.get("revision").and_then(Value::as_u64).unwrap_or(0);
+            if revision != expected {
+                return Err("peer_ledger_stale: reload before dispatching work".into());
+            }
+            let next_revision = revision.checked_add(1).ok_or("peer_revision_exhausted")?;
+            let mut next = cache.clone();
+            next.insert("tasks".into(), tasks);
+            next.insert("revision".into(), next_revision.into());
+            let bytes = serde_json::to_vec(&next).map_err(|e| e.to_string())?;
+            if let Err(error) = persist(path, &bytes) {
+                if let Some(disk) = fs::read(path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                {
+                    *cache = disk;
+                }
+                return Err(error);
+            }
+            *cache = next;
+            Ok(next_revision)
+        })
+    }
+
     fn with_cache<T>(
         &self,
         path: &Path,
@@ -94,6 +148,95 @@ impl SessionFile {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn peer_ledger_migrates_existing_file_without_losing_legacy_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clack-ai-peer-tasks.json");
+        fs::write(&path, br#"{"tasks":[{"id":"old"}],"legacy":"keep"}"#).unwrap();
+        let store = SessionFile::default();
+        assert_eq!(
+            store.revisioned(&path).unwrap(),
+            json!({"revision":0,"tasks":[{"id":"old"}]})
+        );
+        assert_eq!(
+            store
+                .compare_tasks(&path, 0, json!([{"id":"old","communication":[]}]))
+                .unwrap(),
+            1
+        );
+        let reopened = SessionFile::default();
+        assert_eq!(reopened.get(&path, "legacy").unwrap(), Some(json!("keep")));
+        assert_eq!(reopened.revisioned(&path).unwrap()["revision"], 1);
+    }
+
+    #[test]
+    fn peer_receipt_cas_rejects_second_window_without_overwriting_the_winner() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("peers.json");
+        let store = SessionFile::default();
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| store.compare_tasks(&path, 0, json!([{"id":"a"}])));
+            let second = scope.spawn(|| store.compare_tasks(&path, 0, json!([{"id":"b"}])));
+            let results = [first.join().unwrap(), second.join().unwrap()];
+            assert_eq!(results.iter().filter(|value| value.is_ok()).count(), 1);
+            assert!(results.iter().any(|value| value
+                .as_ref()
+                .is_err_and(|error| error.contains("peer_ledger_stale"))));
+        });
+        assert_eq!(
+            SessionFile::default().revisioned(&path).unwrap()["revision"],
+            1
+        );
+    }
+
+    #[test]
+    fn peer_receipt_failed_write_keeps_previous_revision_and_allows_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("peers.json");
+        let store = SessionFile::default();
+        store
+            .compare_tasks(&path, 0, json!([{"state":"queued"}]))
+            .unwrap();
+        let before = store.revisioned(&path).unwrap();
+        assert!(store
+            .compare_tasks_with(&path, 1, json!([{"state":"acknowledged"}]), |_, _| Err(
+                "disk full".into()
+            ))
+            .is_err());
+        assert_eq!(store.revisioned(&path).unwrap(), before);
+        assert_eq!(SessionFile::default().revisioned(&path).unwrap(), before);
+        store
+            .compare_tasks(&path, 1, json!([{"state":"acknowledged"}]))
+            .unwrap();
+        assert_eq!(
+            SessionFile::default().revisioned(&path).unwrap()["tasks"][0]["state"],
+            "acknowledged"
+        );
+    }
+
+    #[test]
+    fn peer_receipt_post_replace_failure_forces_reconciliation_not_duplicate_commit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("peers.json");
+        let store = SessionFile::default();
+        assert!(store
+            .compare_tasks_with(
+                &path,
+                0,
+                json!([{"state":"acknowledged"}]),
+                |path, bytes| {
+                    atomic_write(path, bytes)?;
+                    Err("directory sync failed".into())
+                }
+            )
+            .is_err());
+        assert!(store
+            .compare_tasks(&path, 0, json!([]))
+            .unwrap_err()
+            .contains("stale"));
+        assert_eq!(store.revisioned(&path).unwrap()["revision"], 1);
+    }
 
     #[test]
     fn target_selection_and_context_are_old_or_new_even_on_interrupted_write() {

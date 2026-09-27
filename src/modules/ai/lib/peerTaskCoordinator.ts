@@ -42,8 +42,16 @@ import {
   releaseWorkspaceWriteLeasesForSession,
 } from "./workspaceWriteLease";
 import { cancelRun, getChat, useChatStore } from "../store/chatStore";
-import { sendMessageToSession } from "../store/chatRuntime";
-import { usePeerTaskStore } from "../store/peerTaskStore";
+import {
+  sendMessageToSession,
+  sendPeerCommunicationToSession,
+} from "../store/chatRuntime";
+import { flushPeerTasks, usePeerTaskStore } from "../store/peerTaskStore";
+import {
+  awaitPeerClarification,
+  receiveQueuedPeerNotes,
+} from "@/modules/ai/lib/peerCommunicationCoordinator";
+import { peerWaitingSessions } from "@/modules/ai/lib/peerCommunicationRuntime";
 
 export type PeerTaskRequest = {
   sourceSessionId: string;
@@ -232,6 +240,7 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
   let worktreeCreated = false;
   let captureStarted = false;
   try {
+    await flushPeerTasks();
     let checkout: { checkoutId: string; checkoutRoot: string } | undefined;
     if (claimed.executionMode === "isolated-worktree") {
       if (!claimed.workspaceId.startsWith("local:")) {
@@ -286,6 +295,7 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
       dependencyAggregate.entries.length > 0
         ? formatPeerTaskAggregateForModel(dependencyAggregate).text
         : undefined;
+    const communicationContext = await receiveQueuedPeerNotes(claimed.id);
     await sendMessageToSession(
       claimed.targetSessionId,
       {
@@ -293,7 +303,9 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
         parts: [
           {
             type: "text",
-            text: peerTaskPrompt(claimed, dependencyContext),
+            text:
+              peerTaskPrompt(claimed, dependencyContext) +
+              (communicationContext ? `\n${communicationContext}` : ""),
           },
           ...claimed.artifactRefs.map(peerTaskArtifactToMessagePart),
         ],
@@ -305,10 +317,36 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
         ...checkout,
       },
     );
+    for (;;) {
+      if (!usePeerTaskStore.getState().recoveryReady)
+        throw new Error("Peer task persistence requires recovery.");
+      const generation = useChatStore
+        .getState()
+        .sessions.find((session) => session.id === claimed.targetSessionId)
+        ?.run?.startedAt;
+      const clarification = await awaitPeerClarification(claimed.id);
+      if (!clarification) break;
+      if (
+        usePeerTaskStore.getState().tasks.find((item) => item.id === claimed.id)
+          ?.status !== "running"
+      )
+        return;
+      await sendPeerCommunicationToSession(
+        claimed.targetSessionId,
+        clarification,
+        false,
+        {
+          agentId: claimed.targetAgentId,
+          modelId: claimed.targetModelId,
+          workspaceId: claimed.workspaceId,
+          startedAt: generation,
+        },
+      );
+    }
     const afterRun = usePeerTaskStore
       .getState()
       .tasks.find((item) => item.id === claimed.id);
-    if (afterRun?.status === "cancelled") return;
+    if (afterRun?.status !== "running") return;
     const currentTarget = useChatStore
       .getState()
       .sessions.find((session) => session.id === claimed.targetSessionId);
@@ -374,7 +412,16 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
     const cancelled =
       usePeerTaskStore.getState().tasks.find((item) => item.id === claimed.id)
         ?.status === "cancelled";
-    if (worktreeCreated && !captureStarted && !cancelled) {
+    const communicationNeedsRecovery = usePeerTaskStore
+      .getState()
+      .tasks.find((item) => item.id === claimed.id)
+      ?.communication?.some((event) => event.kind === "clarification-request");
+    if (
+      worktreeCreated &&
+      !captureStarted &&
+      !cancelled &&
+      !communicationNeedsRecovery
+    ) {
       try {
         await native.gitAgentWorktreeRemove(claimed.workspaceRoot, claimed.id);
       } catch {
@@ -388,6 +435,10 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
       code: peerArtifactFailureCode(error),
       message: normalized.message,
     });
+  } finally {
+    if (peerWaitingSessions.delete(claimed.targetSessionId)) {
+      useChatStore.getState().finishRun(claimed.targetSessionId, "failed");
+    }
   }
 }
 

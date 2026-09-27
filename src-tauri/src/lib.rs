@@ -219,6 +219,8 @@ pub fn run() {
             modules::conversation_memory::conversation_source_set,
             modules::conversation_memory::conversation_source_delete,
             modules::conversation_memory::conversation_session_entries,
+            modules::conversation_memory::peer_ledger::peer_ledger_read,
+            modules::conversation_memory::peer_ledger::peer_ledger_commit,
             modules::conversation_memory::conversation_session_get,
             modules::conversation_memory::conversation_session_active,
             archive::attachment_archive_inspect,
