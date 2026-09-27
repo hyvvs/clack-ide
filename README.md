@@ -17,6 +17,17 @@ Built with Tauri 2, Rust, React 19, TypeScript, Vite, xterm.js, CodeMirror 6, Ta
 
 No telemetry is collected from users. There is no need to create an account. Your workspace stays with you.
 
+## Development Progress
+
+The advanced inference and agent program is complete through **R1: Truthful
+Activity Presentation**: 16 of 32 ordered checkpoints are complete. The earlier
+multi-model/multi-agent foundation has all eight phases complete. **R2: Functional
+Reasoning Effort** is next; integrated quality and final hardware acceptance are
+still pending.
+
+- [Detailed progress and achievements, September 27, 2026](docs/CLACK_PROGRESS_REPORT_2026-09-27.md)
+- [Implementation plan: completed work and remaining checkpoints](docs/AI_SELF_HOSTED_INFERENCE_PLAN.md#implementation-status-2026-09-27)
+
 Screenshots
 
 <table>

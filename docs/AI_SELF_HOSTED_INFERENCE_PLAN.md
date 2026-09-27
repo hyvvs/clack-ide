@@ -1,13 +1,15 @@
 # Clack Self-Hosted Inference Plan
 
-Status: A1-A3, D1, E1 and B1 complete; C1 and all later implementation checkpoints pending
+Status: Complete through R1; 16 of 32 ordered checkpoints complete. R2 is next and unstarted.
+Status updated: 2026-09-27, implementation HEAD `ffd874d`
 Audit date: 2026-09-06
 Audited baseline: 5415e5d9d34ced7b32fe10095275b161ca6b4f2a
 Baseline checkpoint: fix(ai): harden in-chat model switching
 
 Advanced intelligence planning revision: 2026-09-19, audited at `460465a` on
-`main`. This revision is documentation only. B1 is complete; no C1 work has
-started. The original audit and completed implementation records below are
+`main`. That planning revision was documentation only: B1 was complete and C1
+had not started at that time. Subsequent implementation is recorded in the
+current status overview and checkpoint ledger below. The original audit remains
 historical evidence, not a description of today's missing features.
 
 This is the durable product and engineering plan for self-hosted inference.
@@ -35,6 +37,65 @@ Planning navigation: [current audit](#advanced-current-state-audit),
 [checkpoint order](#checkpoint-order-and-gates),
 [A-L scenarios](#advanced-acceptance-scenarios), and
 [expanded traceability](#advanced-requirement-traceability).
+
+## Implementation Status: 2026-09-27
+
+The latest completed implementation is `ffd874d feat(ai): clarify reasoning and
+agent activity`. See the [detailed progress report](CLACK_PROGRESS_REPORT_2026-09-27.md)
+for achievements, commit references, verification evidence and limitations.
+The [checkpoint ledger](#checkpoint-order-and-gates) and individual implementation
+records remain authoritative for scope, acceptance, dependencies and rollback.
+
+### Completed
+
+| Area | Completed checkpoints | Delivered capability |
+| --- | --- | --- |
+| Self-hosted inference | A1, A2, A3 | Endpoint profiles, bounded authenticated handshakes, setup and capability-aware routing |
+| Request safety | D1, E1, B1 | Request lifecycle/cancellation, shared endpoint admission and actual request-budget preflight |
+| Conversation context | C1a, C1b, G1a | Durable source-linked memory, bounded automatic compaction and same-conversation evidence retrieval |
+| Project knowledge | M1, M2, G1b | Explicit authorized sharing, evidence freshness and scoped project/task retrieval |
+| Model switching | C2 | Target-sized context preparation and atomic Optimize and switch |
+| Collaboration | H1, H2 | Durable task-scoped clarification, recipient-aware handoffs and evidence-bound review |
+| Activity presentation | R1 | Truthful provider-output distinctions and source-linked chronological activity |
+
+The earlier multi-agent plan's phases 0-7 are complete separately. They are not
+extra completed checkpoints in this plan's 16/32 count. Checkpoint counts are
+not an estimate of remaining effort or a claim of final release readiness.
+
+### Remaining, in Execution Order
+
+| Order | Checkpoint | Still to implement and verify |
+| --- | --- | --- |
+| 17 | R2 | Evidenced reasoning-effort options mapped to actual provider requests and B1 reserves |
+| 18 | T1 | Versioned custom-tool definitions, visible management and scoped authorization |
+| 19 | T2 | Guarded native/HTTP tool execution, real safe testing and bounded lifecycle |
+| 20 | T3a | Native execution confinement with adversarial tests and explicit platform support |
+| 21 | T3b | Reviewed scripts/functions through the verified confinement boundary |
+| 22 | T3c | Explicit scoped MCP connections, tool registration and lifecycle |
+| 23 | F1 | Relevant tool schemas, compact prompt parity and scope-safe cache awareness |
+| 24 | D2 | Safe length continuation, answer stitching and incomplete tool-call repair |
+| 25 | D3 | Extended partial-stream/offline recovery without duplicate execution |
+| 26 | E2 | Passive calibration and optional bounded optimization |
+| 27 | F2 | Pathological-output watchdogs and polished health/Advanced controls |
+| 28 | U1 | Integrated collaboration/context/tool UX with native accessibility and narrow-pane checks |
+| 29 | G2 | Explicit opt-in bounded server discovery |
+| 30 | G3 | Destination-specific consent and trusted fallback routing |
+| 31 | Q1 | Integrated context-fidelity, freshness and collaboration quality corpus |
+| 32 | Z | Final native, real-provider, hardware and platform acceptance/handoff |
+
+**Next: R2, Functional reasoning effort.** R1 displays returned provider output;
+it does not enable or configure reasoning effort. No R2 or later implementation
+is included in this documentation update.
+
+### Latest Verification Evidence
+
+R1 recorded 130 focused tests in 9 files and 1,558 full-suite tests in 142 files,
+passing types, lint, production build and whitespace checks. Lint remains at
+71 warnings, 2 informational notices and 0 errors. Browser activity checks passed
+at 1100px, 390px and 280px. These are recorded R1 results, not new runs for this
+documentation update. R1 did not change Rust or rerun Rust gates; H1 recorded
+504 passing Rust tests. Browser and mocked-provider checks do not establish
+native restart, live-provider or final hardware acceptance. Q1 and Z remain pending.
 
 ## Purpose and Product Principles
 

@@ -19,8 +19,11 @@ changes the scope.
 The separately scoped next program is
 [Self-Hosted Inference](AI_SELF_HOSTED_INFERENCE_PLAN.md). It extends local and
 self-hosted endpoint runtime support without redesigning cloud providers or
-replacing this program. A1 (persistent endpoint/profile foundation) is complete;
-A2 (bounded authenticated backend handshakes) is next. See its own ledger.
+replacing this program. As of 2026-09-27, its implementation is complete through
+R1 (truthful activity presentation); R2 (functional reasoning effort) is next.
+See that plan's current status and ledger, and the
+[detailed progress report](CLACK_PROGRESS_REPORT_2026-09-27.md). The completed
+phase records below remain historical evidence for this earlier program.
 
 ## Status Ledger
 
