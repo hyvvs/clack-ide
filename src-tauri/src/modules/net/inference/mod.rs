@@ -9,7 +9,7 @@ use super::{
 use futures_util::StreamExt;
 use progress::Progress;
 pub use registry::InferenceState;
-use registry::Lease;
+pub(crate) use registry::Lease;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,

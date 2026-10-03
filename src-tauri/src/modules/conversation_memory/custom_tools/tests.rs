@@ -9,7 +9,7 @@ fn access() -> Access {
     }
 }
 fn definition() -> Definition {
-    serde_json::from_value(json!({"name":"custom_read","description":"Read selected project input","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"outputSchema":{"type":"string","maxLength":8192},"outputDescription":"Untrusted file content","binding":{"kind":"native","operation":"read_file"},"scope":"conversation","agents":["builtin:coder"],"conversations":["chat-a"],"permissions":["read-files"],"credentialRef":null,"timeoutMs":30000,"outputBytes":65536})).unwrap()
+    serde_json::from_value(json!({"name":"custom_read","description":"Read selected project input","inputSchema":{"type":"object","properties":{"path":{"type":"string","maxLength":1024}},"required":["path"],"additionalProperties":false},"outputSchema":{"type":"string","maxLength":8192},"outputDescription":"Untrusted file content","binding":{"kind":"native","operation":"read_file"},"scope":"conversation","agents":["builtin:coder"],"conversations":["chat-a"],"permissions":["read-files"],"credentialRef":null,"timeoutMs":30000,"outputBytes":65536})).unwrap()
 }
 fn create() -> Registry {
     apply(
@@ -42,7 +42,10 @@ fn registration_assignment_and_execution_are_distinct() {
     assert!(!eligible(&authorized.entries[0], &access()));
     let enabled = change(&authorized, "enable");
     assert!(eligible(&enabled.entries[0], &access()));
-    assert_eq!(view(&enabled, &access())["entries"][0]["executable"], false);
+    assert_eq!(
+        view(&enabled, &access())["entries"][0]["executable"],
+        cfg!(any(windows, target_os = "linux"))
+    );
     let mut other = access();
     other.agent = "builtin:reviewer".into();
     assert!(!eligible(&enabled.entries[0], &other));
@@ -470,7 +473,10 @@ fn capture_omits_inactive_definitions_and_history() {
     let captured = registry_view(&enabled, &access(), true);
     assert_eq!(captured["entries"].as_array().unwrap().len(), 1);
     assert_eq!(captured["entries"][0]["versions"], json!([]));
-    assert_eq!(captured["entries"][0]["executable"], false);
+    assert_eq!(
+        captured["entries"][0]["executable"],
+        cfg!(any(windows, target_os = "linux"))
+    );
     let mut unassigned = access();
     unassigned.agent = "builtin:reviewer".into();
     assert_eq!(

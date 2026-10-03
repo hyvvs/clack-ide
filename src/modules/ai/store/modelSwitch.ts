@@ -235,7 +235,7 @@ export async function prepareModelSwitch(
     const { serializedToolSchemas, knownTransportContextLimit } = await import(
       "@/modules/ai/lib/requestPreflight"
     );
-    const { buildTools } = await import("@/modules/ai/tools/tools");
+    const { buildRuntimeTools: buildTools } = await import("@/modules/ai/tools/customExecution");
     const savedTarget = resolveSavedProviderModelTarget(
       targetModelId,
       preferences.savedProviderModels,
@@ -244,7 +244,7 @@ export async function prepareModelSwitch(
       ? knownTransportContextLimit(savedTarget.transportModelId)
       : undefined;
     const toolSchemas = await serializedToolSchemas(
-      buildTools({
+      await buildTools({
         ...sessionToolContext(sessionId ?? "").toolContext,
         requestConversationEvidence: () => ({
           status: "preflight",

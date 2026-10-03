@@ -2,6 +2,7 @@
 use super::*;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
+pub mod execution;
 #[cfg(test)]
 mod tests;
 
@@ -686,7 +687,7 @@ fn load(app: &tauri::AppHandle) -> Result<Registry> {
     Ok(registry)
 }
 fn access(app: &tauri::AppHandle, session_id: &str) -> Result<Access> {
-    let mut originals = originals(app, session_id)?;
+    let mut originals = original_owner(app, session_id)?;
     load_tasks(app, &mut originals)?;
     let profile = &originals.meta["profile"];
     let workspace = project::authorized_workspace(app, &originals)?;
@@ -718,8 +719,8 @@ fn registry_view(registry: &Registry, access: &Access, eligible_only: bool) -> V
         .map(|entry| json!({
             "id": entry.id, "workspaceId": entry.workspace_id, "current": latest(entry),
             "versions": if eligible_only { vec![] } else if entry.workspace_id == access.workspace { entry.versions.clone() } else { vec![latest(entry).clone()] },
-            "eligible": eligible(entry, access), "executable": false,
-            "runtime": "Execution support pending T2/T3"
+            "eligible": eligible(entry, access), "executable": eligible(entry, access) && execution::runtime_supported(entry, access),
+            "runtime": if execution::runtime_supported(entry, access) { "Guarded execution; invocation approval required" } else { "Execution unavailable: operation, argument contract, credential scope or platform" }
         })).collect();
     json!({"schemaVersion": 1, "revision": registry.revision, "entries": entries})
 }
@@ -773,6 +774,9 @@ fn publish(app: &tauri::AppHandle, registry: &Registry) -> Result<()> {
             return Err(error);
         }
     }
+    state
+        .tool_registry_revision
+        .store(registry.revision, std::sync::atomic::Ordering::Release);
     let _ = app.emit("clack:custom-tools-changed", registry.revision);
     Ok(())
 }

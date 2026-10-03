@@ -214,6 +214,12 @@ export function sessionToolContext(sessionId: string) {
       useChatStore.getState().live.readLeafBuffer(leafId),
     readCache,
     getSessionId: () => sessionId,
+    getRunId: () =>
+      owner()?.run?.state === "running" ? owner()?.run?.startedAt : undefined,
+    getCapturedToolVersions: () =>
+      owner()?.run?.state === "running"
+        ? owner()?.run?.customTools?.versions
+        : undefined,
     getAgentId: () => {
       const state = useChatStore.getState();
       return (

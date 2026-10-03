@@ -19,6 +19,10 @@ import {
 import { loadAll, type SessionMeta } from "@/modules/ai/lib/sessions";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 import {
+  CustomToolHistory,
+  CustomToolTest,
+} from "@/modules/ai/components/CustomToolExecution";
+import {
   customToolsClient,
   newToolDefinition,
   type ToolDefinition,
@@ -82,6 +86,7 @@ export function CustomToolsManager() {
 }
 
 export function ToolList({ session }: { session: SessionMeta }) {
+  const [testEntry, setTestEntry] = useState<ToolEntry>();
   const [view, setView] = useState<ToolRegistryView>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -196,7 +201,7 @@ export function ToolList({ session }: { session: SessionMeta }) {
             <p className="break-words text-xs text-muted-foreground">
               {entry.current.definition.description}
             </p>
-            <p className="text-xs">Execution support pending T2/T3</p>
+            <p className="text-xs">{entry.runtime}</p>
             <p className="break-words text-xs">
               Agents:{" "}
               {entry.current.definition.agents
@@ -210,6 +215,17 @@ export function ToolList({ session }: { session: SessionMeta }) {
                 .join(", ")}
             </p>
             <div className="flex flex-wrap gap-2">
+              {entry.executable && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  aria-label={`Test ${entry.current.definition.name}`}
+                  disabled={busy}
+                  onClick={() => setTestEntry(entry)}
+                >
+                  Test
+                </Button>
+              )}
               {entry.current.status !== "removed" &&
                 entry.workspaceId === session.profile?.workspaceId && (
                   <>
@@ -268,6 +284,14 @@ export function ToolList({ session }: { session: SessionMeta }) {
           </li>
         ))}
       </ul>
+      <CustomToolHistory sessionId={session.id} />
+      {testEntry && (
+        <CustomToolTest
+          sessionId={session.id}
+          entry={testEntry}
+          onClose={() => setTestEntry(undefined)}
+        />
+      )}
       {editor && (
         <ToolEditor
           key={`${editor.entry?.id ?? "new"}:${editor.entry?.current.version ?? 0}`}
@@ -385,14 +409,16 @@ function ToolEditor({
       <DialogContent className="flex max-h-[90vh] w-[calc(100vw-24px)] max-w-2xl flex-col overflow-hidden p-4">
         <DialogHeader>
           <DialogTitle>{entry ? "Tool definition" : "New tool"}</DialogTitle>
-          <DialogDescription>Execution support pending T2/T3</DialogDescription>
+          <DialogDescription>
+            {entry?.runtime ?? "Unregistered definition"}
+          </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto pr-1">
           <p className="text-xs">
             {entry
               ? `${entry.current.status} · v${entry.current.version} · ${entry.current.source}`
               : "Unregistered draft"}{" "}
-            · Execution support pending T2/T3
+            · {entry?.runtime ?? "Authorization and runtime support required"}
           </p>
           <fieldset
             disabled={busy || validating || readOnly}

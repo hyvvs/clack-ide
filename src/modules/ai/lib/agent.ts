@@ -22,7 +22,8 @@ import {
   type ModelInfo,
   type ProviderId,
 } from "../config";
-import { buildTools, type ToolContext } from "../tools/tools";
+import { buildRuntimeTools as buildTools } from "@/modules/ai/tools/customExecution";
+import type { ToolContext } from "@/modules/ai/tools/context";
 import { compactModelMessagesDetailed } from "./compact";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
@@ -775,7 +776,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     | Awaited<ReturnType<typeof createConversationCompactor>>
     | undefined;
   const tools = gateInferenceTools(
-    opts.toolContext.isPeerReplyOnly?.() ? {} : buildTools(
+    opts.toolContext.isPeerReplyOnly?.() ? {} : await buildTools(
       opts.compaction
         ? {
             ...opts.toolContext,

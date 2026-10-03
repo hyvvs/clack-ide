@@ -35,6 +35,8 @@ pub struct MemoryState {
     sessions: Arc<session_file::SessionFile>,
     peers: Arc<session_file::SessionFile>,
     custom_tools: Arc<session_file::SessionFile>,
+    tool_calls: Arc<Mutex<HashMap<String, Arc<custom_tools::execution::Prepared>>>>,
+    tool_registry_revision: Arc<std::sync::atomic::AtomicU64>,
     switches: Arc<Mutex<HashMap<String, (String, u64)>>>,
 }
 
@@ -971,6 +973,14 @@ fn paths(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf)> {
 }
 
 fn originals(app: &tauri::AppHandle, id: &str) -> Result<Originals> {
+    read_originals(app, id, true)
+}
+
+fn original_owner(app: &tauri::AppHandle, id: &str) -> Result<Originals> {
+    read_originals(app, id, false)
+}
+
+fn read_originals(app: &tauri::AppHandle, id: &str, with_messages: bool) -> Result<Originals> {
     let state = app.state::<MemoryState>();
     let path = session_path(app)?;
     let sessions = state.sessions.get(&path, "sessions")?.unwrap_or(json!([]));
@@ -988,10 +998,14 @@ fn originals(app: &tauri::AppHandle, id: &str) -> Result<Originals> {
         .find(|meta| meta["id"].as_str() == Some(id))
         .ok_or("memory_missing_session")?
         .clone();
-    let messages = state
-        .sessions
-        .get(&path, &format!("messages:{id}"))?
-        .unwrap_or(json!([]));
+    let messages = if with_messages {
+        state
+            .sessions
+            .get(&path, &format!("messages:{id}"))?
+            .unwrap_or(json!([]))
+    } else {
+        json!([])
+    };
     let messages = messages
         .as_array()
         .ok_or("memory_invalid_messages")?

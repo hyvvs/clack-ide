@@ -24,7 +24,7 @@ import type { ModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities"
 import { resolveModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
-import { buildTools } from "@/modules/ai/tools/tools";
+import { buildRuntimeTools as buildTools } from "@/modules/ai/tools/customExecution";
 import {
   beginTargetContext,
   commitTargetContext,
@@ -112,7 +112,7 @@ export async function prepareTarget(options: {
       getWorkspaceRoot: () => session.profile?.workspaceRoot ?? null,
     };
     const tools = await serializedToolSchemas(
-      buildTools({
+      await buildTools({
         ...toolContext,
         requestConversationEvidence: () => ({
           status: "preparing",

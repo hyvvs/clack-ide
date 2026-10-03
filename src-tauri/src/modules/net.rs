@@ -51,6 +51,9 @@ pub(super) fn ip_kind(ip: IpAddr) -> IpKind {
             IpKind::Public
         }
         IpAddr::V6(v) => {
+            if let Some(mapped) = v.to_ipv4_mapped() {
+                return ip_kind(IpAddr::V4(mapped));
+            }
             if v.is_loopback() || v.is_unspecified() || v.is_multicast() {
                 return IpKind::Loopback;
             }
@@ -296,6 +299,33 @@ fn build_safe_client(
         }))
         .build()
         .map_err(|e| e.to_string())
+}
+
+pub(crate) fn custom_tool_transport() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .no_proxy()
+        .retry(reqwest::retry::never())
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+}
+
+pub(crate) async fn custom_tool_client(
+    url: &str,
+) -> Result<(reqwest::Client, reqwest::Url), String> {
+    let parsed = validate_url(url, false).map_err(|_| "network-denied")?;
+    if parsed.scheme() != "https" || parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("network-denied".into());
+    }
+    let host = parsed.host_str().ok_or("network-denied")?.to_string();
+    let ips = classify_and_collect_safe_ips(&host, false)
+        .await
+        .map_err(|_| "network-denied")?;
+    let addrs: Vec<_> = ips.into_iter().map(|ip| SocketAddr::new(ip, 0)).collect();
+    let client = custom_tool_transport()
+        .resolve_to_addrs(&host, &addrs)
+        .build()
+        .map_err(|_| "network-failed")?;
+    Ok((client, parsed))
 }
 
 fn header_map_to_strings(headers: &HeaderMap) -> HashMap<String, String> {

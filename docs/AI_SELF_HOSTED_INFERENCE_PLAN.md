@@ -3401,6 +3401,125 @@ Rollback disables execution while preserving results/definitions and marking
 unfinished calls interrupted. Commit `feat(ai): execute authorized custom tools`,
 update ledger, STOP.
 
+**T2 implementation ledger (2026-10-03): completed**
+
+- **Runtime and ownership:** T1 remains the only definition registry. The native
+  `custom_tools::execution` module supplies prepare/execute/cancel/history commands
+  through the existing MemoryState/SessionFile owner and D1 InferenceState leases.
+  The normal AI SDK tool builder, real test dialog, B1 preflight, C2 target sizing
+  and H2 recipient sizing consume the same executable schemas. Built-in tools and
+  ordinary terminal/shell execution are unchanged. No inference or second registry
+  was introduced to interpret permissions or results.
+- **Supported subset:** Local `read_file` on Windows/Linux, with exactly
+  `{path: string}` using a workspace-relative path, and fixed HTTPS `GET` with `{}`
+  or `POST` with `{body: <declared JSON schema>}`. Native directory listing/writes,
+  WSL native operations, macOS native reads, scripts, functions and MCP remain
+  unavailable. Only usable operation/schema/credential/platform combinations are
+  advertised as executable; unavailable definitions retain T1 history. Native
+  writes were deliberately excluded rather than bypassing write reviews/leases.
+- **Immutable admission and approval:** Native preparation resolves the persisted
+  conversation, current captured run/agent, canonical workspace/checkout and T1
+  assignment, enabled/authorized status, exact version/hash and declared permissions.
+  Agent invocation must match `run.customTools.versions`; manual tests require an
+  idle conversation and have no weaker capability path. Chat Only and read-only
+  task boundaries are enforced natively. Every invocation, including Full Access
+  and tests, additionally requires the existing native dialog consent mechanism.
+  Consent shows binding, full material arguments, version/hash, workspace, agent,
+  permissions and credential reference, never a resolved credential. The complete
+  review is capped at 2,048 characters and oversized reviews fail explicitly, never
+  truncate material arguments. Execute accepts only an owned native execution ID,
+  not replacement arguments or a frontend approval boolean. Consumed IDs cannot
+  execute again; duplicate dispatch does not cancel the first consumer. Receipts
+  bind execution identity, definition hash and normalized argument hash.
+- **Filesystem and network boundary:** M1 workspace/PeerTask checkout authorization
+  is reused. Reads reject absolute/traversal/secret paths, symlink/reparse traversal,
+  non-files, invalid UTF-8/NUL content and oversized data; canonical and opened-handle
+  paths must remain inside the captured root. Windows UNC/network drives are
+  unavailable. Windows uses final-handle paths; Linux uses `/proc/self/fd`.
+  HTTP reuses native URL/IP classification and pins validated DNS answers. Public
+  HTTPS only: no private/metadata destinations, userinfo, query/fragment, redirects,
+  proxy inheritance, arbitrary headers, model-selected URLs or automatic retries
+  (including reqwest's default protocol retries). IPv4-mapped IPv6 is classified by
+  its embedded address. GET/POST response bodies must be bounded JSON; redirects,
+  authentication/status failures, binary/malformed data and floods fail explicitly.
+- **Credentials and untrusted data:** Optional bearer injection resolves only
+  `keyring:custom-tool:<this-tool-id>` through the existing native secret backend
+  (`terax-ai` / `custom-tool:<id>`). Provider and other-tool accounts are rejected.
+  No custom process/environment is spawned or forwarded. Definitions retain only
+  references; argument bytes and resolved secrets are not persisted. Returned JSON
+  redacts the selected literal secret in values/keys and sensitive credential fields;
+  error receipts use a bounded classification allowlist, not raw HTTP/OS errors.
+  This is not a claim that arbitrary server encodings of a credential can be detected.
+  Existing secret provisioning is reused; no credential-import/sharing system was added.
+- **Limits and lifecycle:** 16 KiB serialized arguments/body, additionally constrained
+  by the complete native-review cap; effective output is `min(declared cap, 16 KiB)`.
+  Schemas use T1's bounded subset and are validated again at execution/output time.
+  Four concurrent executions, four physical I/O workers and four outstanding native
+  dialogs; capacity fails explicitly without an unbounded queue. Approval expires
+  after 60 seconds. The declared 100-120,000 ms operation deadline starts after
+  approval; HTTP connect timeout is at most 10 seconds within that deadline. D1
+  cancellation/window shutdown, 100 ms active authorization checks and post-result
+  checks prevent stale consumption. Disable/version/policy/run changes cancel active
+  consumption. Native reads check cancellation between 4 KiB reads; an OS-blocked
+  file call cannot be forcibly interrupted and retains its physical worker slot.
+  An already displayed native dialog may require manual dismissal after cancellation;
+  its slot stays reserved and a late approval cannot execute the cancelled request.
+- **Durability, recovery and activity:** Additive `executions: {version: 1, records}`
+  in the existing `clack-ai-tools.json`, separate from its T1 `registry` key. At most
+  128 records retain execution/epoch/window/session/workspace/agent/run/task identity,
+  tool ID/version/hash/name/kind, argument hash, permissions, test flag, approval
+  receipt, timestamps/transitions, native lease identity, bounded result/error and
+  effect status. Atomic SessionFile writes precede effect dispatch. Transitions are
+  awaiting-approval, approved, running, succeeded/failed/denied/cancelled/timed-out/
+  interrupted; effects are none/possible/reported/unknown. HTTP is marked possible
+  before send; ambiguous cancellation, timeout, disconnect or recovery stays unknown,
+  never "rolled back". New-process or abandoned (>300 seconds) records recover lazily
+  on history/admission, idempotently, without replay. Malformed ledgers fail closed
+  without changing T1/session data. Retention never evicts active-run deduplication
+  receipts or unfinished work; old terminal tests/ended runs/process epochs can be
+  reclaimed, otherwise admission reports capacity. UI shows the most recent 16
+  records, with all retained records available through the scoped history command.
+  Native events invalidate history rather than trusting webview event payloads.
+  R1 records real transitions and unknown effects, discarding stale run callbacks.
+  B1 measures actual exposed schemas/results through existing request preparation;
+  private conversation memory and PeerTask authority are not transferred by tools.
+- **Verification:** Focused frontend **110 tests / 8 files passed**, including
+  **21 new T2 tests** (execution client/builder and R1 stream) plus T1 capture, B1
+  compaction, C2 and H2 regression coverage. Focused native **35 passed** (19 T2,
+  16 T1). Real temporary file/junction and loopback HTTP fixtures exercise scope,
+  immutable approvals, denied/reused receipts, output bounds/chunk floods, redacted
+  credentials and child-test-process environment canaries, D1 cancellation, timeout,
+  revocation checks, independent owners and durable restart. The crash integration
+  commits a running/possible record, performs a real remote fixture effect, loses
+  its result, reconstructs SessionFile from disk with a new epoch and proves
+  interrupted/unknown without another request. Full frontend **1,724 tests / 150
+  files passed**; full Rust **545 passed** (495 library, 25 filesystem, 25 Git).
+  `check-types`, lint, production build, `cargo fmt --check`, strict all-targets
+  locked Clippy, locked Rust tests and `git diff --check` pass. Lint stays at
+  **71 warnings, 2 informational notices, 0 errors**. Mixed static/dynamic import
+  notices (including the new runtime builder), plugin timing, Cargo home
+  canonicalization and Git CRLF notices remain. New lint/Clippy findings were fixed
+  and affected gates rerun.
+- **UI/platform evidence and limits:** `scripts/check-custom-tool-execution.mjs`
+  passes at **1100/390/280px**, exercising real React/client code under StrictMode,
+  keyboard activation, malformed input, pending approval/running states, success,
+  denial, long errors, cancel, timeout, interrupted/unknown outcomes and history.
+  Desktop/narrow screenshots were inspected; long titles avoid the close control.
+  Native IPC/consent is mocked in this browser fixture. Native Rust tests ran on
+  **Windows only**; local network fixtures bypass the public-destination gate only
+  in test construction, while production destination denial is separately tested.
+  No native GUI dialog click, running-app crash, live external HTTPS/provider or
+  Linux/macOS execution was verified. Scenario K's T2 subset is covered, not all K
+  or T3 confinement. Remote effects cannot be rolled back or inferred from timeout.
+- **Rollback/stop:** Disable definitions using T1, cancel owned D1 executions and
+  retain the registry and execution ledger; do not replay unresolved effects.
+  Removing runtime exposure/command registration must not delete receipts or
+  historical definitions. Reopening this runtime recovers unfinished records as
+  interrupted/unknown. Only this T2 implementation ledger was updated. Protected
+  delegation files, safety stashes and `autonomous_tracker/` were untouched.
+  **T2 is complete. Next: T3a: Native confinement boundary. No subsequent
+  checkpoint was started.**
+
 ### T3: Confined scripts and MCP
 
 Umbrella only. T3a/T3b/T3c are separate commits and stop boundaries; no bundled

@@ -107,7 +107,7 @@ export async function preparePeerReply(
   const { buildConfiguredLanguageModel, buildStableSystem } = await import(
     "@/modules/ai/lib/agent"
   );
-  const { buildTools } = await import("@/modules/ai/tools/tools");
+  const { buildRuntimeTools: buildTools } = await import("@/modules/ai/tools/customExecution");
   const { sessionToolContext } = await import("@/modules/ai/store/chatRuntime");
   const { readProjectMemory } = await import("@/modules/ai/lib/transport");
   const context = sessionToolContext(event.recipient.sessionId).toolContext;
@@ -144,7 +144,7 @@ export async function preparePeerReply(
     [];
   const cost = measureRequest({
     system,
-    tools: await serializedToolSchemas(buildTools(context)),
+    tools: await serializedToolSchemas(await buildTools(context)),
     messages: [
       await convertToModelMessages(
         await materializeAttachmentMessages(recipientHistory, capabilities),
@@ -387,7 +387,7 @@ async function prepareTask(
   const { buildConfiguredLanguageModel, buildStableSystem } = await import(
     "@/modules/ai/lib/agent"
   );
-  const { buildTools } = await import("@/modules/ai/tools/tools");
+  const { buildRuntimeTools: buildTools } = await import("@/modules/ai/tools/customExecution");
   const { readProjectMemory } = await import("@/modules/ai/lib/transport");
   const capabilities = resolveModelInputCapabilities(
     task.targetModelId,
@@ -422,7 +422,7 @@ async function prepareTask(
     preferences.customInstructions,
     await readProjectMemory(task.workspaceRoot, task.workspaceEnvironment),
   );
-  const tools = await serializedToolSchemas(buildTools(context));
+  const tools = await serializedToolSchemas(await buildTools(context));
   const materialized = await materializeAttachmentMessages(
     artifacts.length
       ? [

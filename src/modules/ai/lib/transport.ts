@@ -182,7 +182,7 @@ export function createContextAwareTransport(deps: Deps) {
       modelId: deps.getModelId(),
       customInstructions: deps.getCustomInstructions(),
       agentPersona: deps.getAgentPersona(),
-      toolContext: deps.toolContext,
+      toolContext: { ...deps.toolContext, onCustomToolActivity: (id, state, effect) => activity?.customTool(id, state, effect) },
       onStep: deps.onStep,
       onUsage: deps.onUsage,
       onCompact: deps.onCompact,

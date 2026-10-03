@@ -196,6 +196,22 @@ pub(super) fn authorized_workspace(
     .workspace)
 }
 
+pub(super) fn authorized_tool_root(
+    app: &tauri::AppHandle,
+    originals: &Originals,
+    root: &Path,
+) -> Result<PathBuf> {
+    let access = bind(
+        &app.state::<super::super::workspace::WorkspaceRegistry>(),
+        originals,
+    )?;
+    let canonical = fs::canonicalize(root).map_err(|_| "workspace-violation")?;
+    if identity("local", &super::super::fs::to_canon(&canonical)) != access.scope.checkout {
+        return Err("workspace-violation".into());
+    }
+    Ok(canonical)
+}
+
 fn bind(
     registry: &super::super::workspace::WorkspaceRegistry,
     originals: &Originals,

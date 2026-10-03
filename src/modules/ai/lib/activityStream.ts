@@ -11,6 +11,7 @@ import {
 import type { ProviderRetryEvent } from "@/modules/ai/lib/providerRetry";
 
 export type ActivityStreamContext = {
+  customTool: (id: string, state: string, effect: string) => void;
   scope?: InferenceScope;
   retry: (event: ProviderRetryEvent) => void;
   recovered: () => void;
@@ -58,7 +59,7 @@ export function activityStream(
       };
       const add = (
         id: string,
-        kind: "request" | "retry" | "recovered",
+        kind: "request" | "retry" | "recovered" | "tool",
         label: string,
       ) => {
         if (!active || (scope && !scope.isCurrent())) return;
@@ -66,6 +67,25 @@ export function activityStream(
       };
       try {
         const stream = await execute({
+          customTool: (id, state, effect) => {
+            const labels: Record<string, string> = {
+              "awaiting-approval": "Custom tool: approval required",
+              approved: "Custom tool: approved",
+              running: "Custom tool: running",
+              succeeded: "Custom tool: succeeded",
+              failed: "Custom tool: failed",
+              denied: "Custom tool: denied",
+              cancelled: "Custom tool: cancelled",
+              "timed-out": "Custom tool: timed out",
+              interrupted: "Custom tool: interrupted",
+            };
+            if (labels[state])
+              add(
+                `custom-tool:${id}:${state}:${effect}`,
+                "tool",
+                `${labels[state]}${effect === "unknown" ? "; effect unknown" : ""}`,
+              );
+          },
           scope: scope
             ? {
                 ...scope,

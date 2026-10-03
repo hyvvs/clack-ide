@@ -42,7 +42,7 @@ export type ToolEntry = {
   current: ToolVersion;
   versions: ToolVersion[];
   eligible: boolean;
-  executable: false;
+  executable: boolean;
   runtime: string;
 };
 export type ToolRegistryView = {
@@ -71,7 +71,11 @@ export function newToolDefinition(
   return {
     name: "custom_tool",
     description: "",
-    inputSchema: structuredClone(EMPTY_TOOL_SCHEMA),
+    inputSchema: {
+      ...structuredClone(EMPTY_TOOL_SCHEMA),
+      properties: { path: { type: "string", maxLength: 1024 } },
+      required: ["path"],
+    },
     outputSchema: { type: "string", maxLength: 8192 },
     outputDescription: "Tool result",
     binding: { kind: "native", operation: "read_file" },
