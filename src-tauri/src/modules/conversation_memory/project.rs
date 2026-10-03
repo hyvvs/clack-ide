@@ -184,6 +184,18 @@ fn access(app: &tauri::AppHandle, session_id: &str) -> Result<(Access, Originals
     Ok((access, originals))
 }
 
+pub(super) fn authorized_workspace(
+    app: &tauri::AppHandle,
+    originals: &Originals,
+) -> Result<String> {
+    Ok(bind(
+        &app.state::<super::super::workspace::WorkspaceRegistry>(),
+        originals,
+    )?
+    .scope
+    .workspace)
+}
+
 fn bind(
     registry: &super::super::workspace::WorkspaceRegistry,
     originals: &Originals,

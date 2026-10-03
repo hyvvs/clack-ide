@@ -1,4 +1,5 @@
 import { Chat, type UIMessage } from "@ai-sdk/react";
+import { captureSessionTools } from "@/modules/ai/store/customToolCapture";
 import {
   type ChatTransport,
   lastAssistantMessageIsCompleteWithApprovalResponses,
@@ -243,6 +244,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       if (!session || !run || run.state !== "running")
         throw new Error("No active conversation run for context preparation.");
       const originals = JSON.parse(JSON.stringify(messages)) as UIMessage[];
+      await captureSessionTools(sessionId, toolContext);
       await persistCompactionSource(sessionId, originals);
       return {
         hasTargetContext: !!session.targetContext,

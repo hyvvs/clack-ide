@@ -50,6 +50,11 @@ export type RunMutationMode =
   | "isolated-worktree";
 
 export type SessionRun = {
+  customTools?: {
+    revision: number | null;
+    versions: import("@/modules/ai/lib/customTools").CapturedToolVersion[];
+    unavailable: boolean;
+  };
   reasoning?: import("@/modules/ai/lib/reasoningEffort").EffortCapture;
   state: SessionRunState;
   agentId?: string;

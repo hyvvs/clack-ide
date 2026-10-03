@@ -1,4 +1,5 @@
 import { buildManagedAgentTools } from "./agent";
+import { buildCustomToolProposals } from "@/modules/ai/tools/custom";
 import { buildPeerTaskTools } from "./peer";
 import { buildEditTools } from "./edit";
 import { buildFsTools } from "./fs";
@@ -43,6 +44,7 @@ export function buildTools(ctx: import("./context").ToolContext) {
     ...buildEvidenceTools(ctx),
     ...buildManagedAgentTools(ctx),
     ...buildPeerTaskTools(ctx),
+    ...buildCustomToolProposals(ctx),
   } as const, ctx);
 }
 

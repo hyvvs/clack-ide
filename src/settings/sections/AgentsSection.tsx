@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { CustomToolsManager } from "@/modules/ai/components/CustomToolsManager";
 import {
   Dialog,
   DialogContent,
@@ -92,6 +93,7 @@ export function AgentsSection() {
       />
 
       <CustomInstructionsBlock value={customInstructions} />
+      <CustomToolsManager />
 
       <PermissionSettings
         rules={workspacePermissions}

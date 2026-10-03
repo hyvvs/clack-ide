@@ -1269,7 +1269,7 @@ This order does not authorize any pending implementation in this planning task.
 | 15 | H2 | Recipient-aware handoffs and coordinated review | Complete | Recipient-sized PeerTask v7 handoffs, hash-bound review/correction and consent-gated promotion; 1,492 frontend tests pass |
 | 16 | R1 | Truthful reasoning and chronological activity | Complete | Source-linked message activity receipts, provider distinctions and bounded timeline; 1,558 frontend tests pass; implementation record below |
 | 17 | R2 | Supported effort controls and actual request mapping | Complete | `feat(ai): add functional reasoning effort controls`; [implementation record](#r2-implementation-record-2026-10-03) |
-| 18 | T1 | Custom-tool definitions, validation and scoped authorization | Pending | None |
+| 18 | T1 | Custom-tool definitions, validation and scoped authorization | Complete | `feat(ai): add scoped custom tool definitions`; [implementation record](#t1-implementation-record-2026-10-03) |
 | 19 | T2 | Guarded tool execution, testing and lifecycle | Pending | None |
 | 20 | T3a | Native confinement contract and tested platform support | Pending | None |
 | 21 | T3b | Authorized confined scripts/functions | Pending | None |
@@ -3258,6 +3258,132 @@ Test migration, edit-as-new-version, active-run version freeze, revocation,
 restart and secret-free storage. Executing a safe test is T2, not simulated
 success. Rollback disables custom registrations, retains definitions/history.
 Commit `feat(ai): add scoped custom tool definitions`, update ledger, STOP.
+
+#### T1 implementation record (2026-10-03)
+
+- **Architecture and identity:** `conversation_memory/custom_tools.rs` owns
+  `clack-ai-tools.json`, using the existing native `MemoryState`/`SessionFile`
+  atomic persistence architecture, not a parallel chat database. Schema version
+  1 contains a monotonic registry revision and entries with stable generated IDs,
+  canonical workspace/environment ownership and append-only versions. Each
+  version stores its definition SHA-256, definition, draft/proposed/authorized/
+  revoked/removed status, enabled flag, native-user/agent-proposal source,
+  conversation, agent, optional captured run and timestamp. Rename, assignments,
+  authorization and enable/disable create versions; editing resets authorization
+  and disables the new version. Removal is a tombstone, not erased provenance.
+- **Definition contract:** Native-operation, HTTPS, script, function and MCP
+  bindings are representable but **all remain non-executable**. Definitions
+  include bounded input/output schemas, output contract, explicit binding,
+  scope, assigned agents/conversations, required capabilities, opaque keyring
+  reference, timeout and output cap. No inline plugin evaluation, executable
+  bytes, installation, MCP discovery, server startup or safe-test simulation.
+  Native bindings currently name read_file/list_directory/write_file/
+  create_directory; HTTPS bindings allow GET/POST with no URL credentials,
+  query or fragment. Script/function bindings require an absolute non-secret
+  path and declared 64-hex content hash. These are declarations, not verified
+  executable bytes; T3 must verify bytes and confinement before use.
+- **Scope and authorization:** Existing M1 canonical workspace binding and
+  workspace registry authorization are reused, with PeerTask provenance loaded
+  for isolated checkouts. Agent/conversation/workspace scopes remain owned by
+  that workspace and require assigned agents; conversation scope additionally
+  requires listed same-workspace sessions. Separately native-authorized global
+  definitions can be inspected across authorized workspaces without exposing
+  their private historical versions. Only the owning workspace can mutate them.
+  Global availability does not grant filesystem, network or recipient authority.
+  Unknown agents and foreign conversation assignments fail before broadening
+  authorization. Restrictive disable/revoke/remove operations do not depend on
+  an assigned agent still existing.
+- **Native consent and proposals:** Every user mutation goes through a native
+  Ok/Cancel dialog identifying the action, owner, name, scope, assignments,
+  permissions, version and exact reviewed definition hash. The dialog does not
+  hold the mutation lock. Ownership/run, assignments and expected revision are
+  rechecked after consent before publishing the captured preview. Strict IPC
+  types accept no frontend `approved` field. The existing permission-wrapped
+  tool builder exposes only `propose_custom_tool` in bound conversations;
+  proposals require a persisted active run and can create only disabled,
+  conversation-scoped proposals for that run's agent. Missing scope/assignment
+  fields default to that owner, never global access. The proposal path cannot
+  authorize, enable, edit or broaden a registration. Native review preserves
+  the original proposal version/source. No pending consent resumes at restart.
+- **Eligibility and capture:** Existing permission profiles are intersected
+  with status, assignment, scope and read-only PeerTask restrictions. Chat Only
+  denies availability; Full Access does not manufacture execution support.
+  Network remains explicitly approval-requiring, conservatively intersected
+  with existing command permission until T2 provides actual network guards.
+  Once per run, existing session metadata captures immutable ID/version/hash
+  references, with a stale-run check after IPC and an explicit unavailable state
+  on registry failure. Captures fetch only eligible current definitions, not
+  inactive definitions or histories. Edits never rewrite captured references;
+  revocation removes future eligibility. No call can execute in T1; T2 must
+  recheck current revocation before using a frozen version.
+- **Persistence and concurrency:** Additive empty-store loading is idempotent
+  and does not alter original sessions, memory, attachments or PeerTasks.
+  A brief native registry-owner lock plus compare-and-swap rejects concurrent
+  stale mutations across windows; unrelated memory/run locks are unchanged.
+  Atomic replace and existing disk/cache reconciliation retain the old or new
+  complete registry on write failure. Validation rejects unknown versions,
+  malformed definitions, bad hashes/version sequences, duplicate IDs, colliding
+  names and invalid source/status relationships. Corrupt custom state fails
+  closed independently of built-in chat tools; it is not silently rewritten.
+  Native change events reload open managers; editor revisions remain captured
+  at opening so an external refresh cannot make a stale edit appear current.
+  This follows the existing single native app owner, not independent-process
+  multi-writer synchronization. No execution is replayed on startup.
+- **Exact bounds:** At most 128 entries including tombstones, 32 versions per
+  entry and 8 MiB serialized registry metadata. Ordinary growth reserves two
+  terminal history slots and storage headroom for restrictive actions; capacity
+  exhaustion is explicit, without deleting history. Definitions are at most
+  32 KiB; names 64 bytes in reserved `custom_` namespace, descriptions 2,048 bytes,
+  output contracts 1,024 bytes; assignments/capabilities at most 16 unique values
+  each, IDs 256 bytes. Each schema is at most 8 KiB, depth 6, 128 nodes, 32 object
+  properties, 32 scalar enum values; objects require additionalProperties:false,
+  strings maxLength <= 8,192, arrays maxItems <= 64. Remote/recursive references,
+  defaults, patterns, unions, prototype keys and unsupported keywords fail.
+  Declared timeouts are 100-120,000 ms and outputs 1,024-262,144 bytes, not a claim
+  of runtime enforcement before T2. Binding URLs <= 2,048 bytes, file paths <=
+  1,024, argv <= 16 entries of 512 bytes, function export <= 64, MCP server/tool
+  IDs <= 128, keyring refs <= 128. Proposal JSON <= 24,576 characters, still
+  subject to the native byte limits. No credential value fields are accepted;
+  URL credentials and recognized secret literals are rejected. Arbitrary secrets
+  pasted into free text cannot be universally detected; user review is required.
+- **B1 and compatibility:** No unavailable custom executable schema or management
+  history is injected into model requests. B1 counts the actual bounded proposal
+  tool schema through the unchanged shared preflight. No F1 selection/ranking,
+  hidden inference, provider route, reasoning-effort, C2 switch, H1/H2 protocol,
+  PeerTask scheduling or project-memory consent changes. Skills remain prompt
+  material, not executable definitions or permission grants.
+- **UI and verification:** Settings > Agents > Custom tools provides workspace
+  conversation selection, create, inspect/edit, validation, assigned-agent and
+  capability checkboxes, explicit scope, version/source inspection, registration
+  review, enable/disable, revoke and remove. Scroll-bounded dialogs retain their
+  footer at narrow widths. Execution-pending status is explicit; no Run/Test
+  controls exist. `scripts/check-custom-tools.mjs` passes complete lifecycle,
+  agent proposal review, stale editor rejection, keyboard and long-content
+  overflow checks at **1100/390/280px**; desktop/narrow screenshots inspected.
+  This uses real React/client code with mocked native consent/persistence,
+  not native GUI verification. Focused frontend: **48 tests / 4 files**, including
+  **21 new T1 tests / 2 files** plus self-hosted routing and compaction integration.
+  Focused native: **16 tests**, including actual SessionFile disk/restart/fault
+  injection, concurrent CAS, schema corruption, scope and draft-only authority.
+  Full `npm.cmd test`: **1,703 tests / 148 files passed**. Full `cargo test --locked`:
+  **526 passed** (476 library, 25 filesystem, 25 Git), rerun after the PeerTask
+  provenance integration correction. Typecheck, lint, production build,
+  `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` and
+  `git diff --check` pass. Lint: **71 warnings, 2 informational notices, 0 errors**,
+  unchanged baseline. Existing mixed-import/plugin-timing build notices, Cargo
+  home canonicalization warning and Git CRLF notices remain. Initial strict
+  Clippy boolean-style findings and browser close-selector ambiguity were fixed;
+  affected gates passed again.
+- **Limitations and rollback:** No actual native dialog interaction, running-app
+  restart, live provider or custom execution was tested or claimed. Persistence
+  restart is tested on disk with a fresh native store. Keyring references are
+  opaque identifiers only; injection, URL/egress enforcement, code-byte checking,
+  safe tests, invocation approval, cancellation and execution receipts belong to
+  T2/T3. Retention is bounded and does not silently reclaim historical IDs.
+  Rollback removes proposal/manager registrations and run capture while retaining
+  registry/history and preserving built-in tools. Only T1's ledger was updated;
+  delegation files, safety stashes and `autonomous_tracker/` were untouched.
+  **T1 is complete. T2: Guarded tool execution is next and has not been started.**
 
 ### T2: Guarded tool execution
 

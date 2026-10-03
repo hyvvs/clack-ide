@@ -18,6 +18,7 @@ const MAX_SOURCES: usize = 128;
 const SESSION_STORE: &str = "terax-ai-sessions.json";
 static MEMORY_EPOCH: LazyLock<String> =
     LazyLock::new(|| format!("{}:{}", std::process::id(), now()));
+pub mod custom_tools;
 pub mod peer_ledger;
 pub mod project;
 pub mod reasoning_effort;
@@ -33,6 +34,7 @@ pub struct MemoryState {
     metadata: Arc<Mutex<()>>,
     sessions: Arc<session_file::SessionFile>,
     peers: Arc<session_file::SessionFile>,
+    custom_tools: Arc<session_file::SessionFile>,
     switches: Arc<Mutex<HashMap<String, (String, u64)>>>,
 }
 
