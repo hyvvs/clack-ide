@@ -96,6 +96,9 @@ type Deps = {
   getOpenrouterModelId?: () => string | undefined;
   getSavedProviderModels?: () => readonly SavedProviderModel[];
   getCapturedModelIdentity?: () => ModelTransportIdentity | undefined;
+  getReasoning?: () =>
+    | import("@/modules/ai/lib/reasoningEffort").EffortCapture
+    | undefined;
   getCustomEndpoints?: () => readonly CustomEndpoint[];
   getCustomEndpointKeys?: () => CustomEndpointKeys;
   onStep?: (step: string | null) => void;
@@ -127,7 +130,11 @@ export function createContextAwareTransport(deps: Deps) {
         capabilities: ModelInputCapabilities;
       }
     | undefined;
-  const run = async (options: SendOptions, activity?: ActivityStreamContext) => {
+  const run = async (
+    options: SendOptions,
+    activity?: ActivityStreamContext,
+  ) => {
+    const reasoning = deps.getReasoning?.();
     const batch = deps.onBatchStart?.() ?? { isLogicalContinuation: false };
     const compaction = await deps.prepareCompactionContext?.(options.messages);
     const live = deps.getLive();
@@ -164,6 +171,7 @@ export function createContextAwareTransport(deps: Deps) {
       ? injectEnvIntoLastUser(messagesWithAttachments, envBlock)
       : messagesWithAttachments;
     const result = await runAgentStream({
+      reasoning,
       inputCapabilities: capabilities,
       compaction,
       onRetrieved: deps.onRetrieved,

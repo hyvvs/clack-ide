@@ -1,5 +1,7 @@
 import type { ModelMessage, UIMessage } from "ai";
 import { generateText } from "ai";
+import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
+import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   buildConfiguredLanguageModel,
@@ -88,6 +90,12 @@ export async function prepareTarget(options: {
       ...preferences,
       customEndpointKeys: state.customEndpointKeys,
       inferenceScope: options.scope,
+      reasoning: captureEffort(
+        options.modelId,
+        resolveModelTransportIdentity(options.modelId, preferences),
+        session.effortPreferences,
+        preferences.selfHostedInference,
+      ),
     };
     const model = await buildConfiguredLanguageModel(
       options.modelId,
@@ -188,7 +196,15 @@ export async function prepareTarget(options: {
         const extractionModel = await buildConfiguredLanguageModel(
           sourceModel,
           state.apiKeys,
-          configuration,
+          {
+            ...configuration,
+            reasoning: captureEffort(
+              sourceModel,
+              resolveModelTransportIdentity(sourceModel, preferences),
+              session.effortPreferences,
+              preferences.selfHostedInference,
+            ),
+          },
         );
         check();
         return {

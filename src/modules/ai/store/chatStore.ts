@@ -1,4 +1,5 @@
 import type { Chat, UIMessage } from "@ai-sdk/react";
+import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
 import { create } from "zustand";
 import {
   cancelSessionInference,
@@ -311,6 +312,8 @@ export function inferenceScopeForSession(sessionId: string) {
   };
 }
 
+export const pendingEffortWrites = new Set<string>();
+
 export function isModelSelectionLocked(
   sessionId: string | null,
   state: Pick<StoreState, "sessions"> = useChatStore.getState(),
@@ -320,6 +323,7 @@ export function isModelSelectionLocked(
   const status = chats.get(sessionId)?.status;
   return (
     !session ||
+    pendingEffortWrites.has(sessionId) ||
     session.run?.state === "running" ||
     sessionInference(sessionId) !== null ||
     status === "submitted" ||
@@ -746,6 +750,12 @@ export const useChatStore = create<StoreState>((set, get) => ({
               modelId,
               providerId: transportIdentity.providerId,
               transportModelId: transportIdentity.transportModelId,
+              reasoning: captureEffort(
+                modelId,
+                transportIdentity,
+                session.effortPreferences,
+                preferences.selfHostedInference,
+              ),
               ...(transportIdentity.selfHosted
                 ? { selfHosted: transportIdentity.selfHosted }
                 : {}),

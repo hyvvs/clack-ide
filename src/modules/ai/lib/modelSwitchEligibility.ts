@@ -66,6 +66,7 @@ export function assessModelSwitch({
   capabilities = resolveModelInputCapabilities(targetModelId),
   budgetLimits,
   toolTokens = 0,
+  reasoningBudget,
 }: {
   messages: readonly UIMessage[];
   targetModelId: string;
@@ -75,6 +76,7 @@ export function assessModelSwitch({
   capabilities?: ModelInputCapabilities;
   budgetLimits?: BudgetLimits;
   toolTokens?: number;
+  reasoningBudget?: number;
 }): ModelSwitchAssessment {
   const blocked = new Set<string>();
   if (capabilities.text === "unsupported")
@@ -182,7 +184,10 @@ export function assessModelSwitch({
   let budget: ReturnType<typeof resolveContextBudget> | undefined;
   try {
     budget = resolveContextBudget(
-      budgetLimits ?? { reported: contextLimit ?? undefined },
+      {
+        ...(budgetLimits ?? { reported: contextLimit ?? undefined }),
+        ...(reasoningBudget ? { reasoningBudget } : {}),
+      },
       {
         system,
         tools: toolTokens,

@@ -25,6 +25,7 @@ export type ConversationProfile = {
 };
 
 export type SessionMeta = {
+  effortPreferences?: import("@/modules/ai/lib/reasoningEffort").EffortPreferences;
   modelRevision?: number;
   targetContext?: unknown;
   id: string;
@@ -49,6 +50,7 @@ export type RunMutationMode =
   | "isolated-worktree";
 
 export type SessionRun = {
+  reasoning?: import("@/modules/ai/lib/reasoningEffort").EffortCapture;
   state: SessionRunState;
   agentId?: string;
   modelId?: string;

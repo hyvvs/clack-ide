@@ -97,7 +97,7 @@ impl SessionFile {
         self.update(path, key, value, atomic_write)
     }
 
-    fn update(
+    pub(super) fn update(
         &self,
         path: &Path,
         key: &str,

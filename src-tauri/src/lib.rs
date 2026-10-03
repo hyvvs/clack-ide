@@ -203,6 +203,7 @@ pub fn run() {
             modules::conversation_memory::target_context::target_context_preview,
             modules::conversation_memory::target_context::target_context_commit,
             modules::conversation_memory::target_context::target_context_load,
+            modules::conversation_memory::reasoning_effort::conversation_effort_set,
             modules::conversation_memory::conversation_memory_sources,
             modules::conversation_memory::conversation_memory_extract_sources,
             modules::conversation_memory::retrieval::conversation_memory_retrieve,

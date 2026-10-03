@@ -1,4 +1,6 @@
 import type { UIMessage } from "ai";
+import { captureEffort, effortBudget } from "@/modules/ai/lib/reasoningEffort";
+import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { workspacePathsEqual } from "@/modules/workspace";
 import { currentWorkspaceEnv } from "@/modules/workspace/env";
@@ -257,6 +259,14 @@ export async function prepareModelSwitch(
         "The chat or model settings changed during the check. Choose the model again.",
       );
     const assessment = assessModelSwitch({
+      reasoningBudget: effortBudget(
+        captureEffort(
+          targetModelId,
+          resolveModelTransportIdentity(targetModelId, preferences),
+          session?.effortPreferences,
+          preferences.selfHostedInference,
+        ),
+      ),
       toolTokens,
       budgetLimits:
         hostedTarget.status === "available"

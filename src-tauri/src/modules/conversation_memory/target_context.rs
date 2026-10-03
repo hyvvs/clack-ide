@@ -346,11 +346,15 @@ pub(super) fn guard_session_updates(old: &[Value], next: &[Value]) -> Result<()>
     for entry in next {
         if let Some(previous) = old.iter().find(|p| p["id"] == entry["id"]) {
             if previous["modelRevision"] != entry["modelRevision"]
+                || previous["effortPreferences"] != entry["effortPreferences"]
                 || previous["targetContext"] != entry["targetContext"]
             {
                 return Err("target_context_stale_session".into());
             }
-        } else if entry.get("targetContext").is_some() || entry.get("modelRevision").is_some() {
+        } else if entry.get("targetContext").is_some()
+            || entry.get("modelRevision").is_some()
+            || entry.get("effortPreferences").is_some()
+        {
             return Err("target_context_invalid_session".into());
         }
     }

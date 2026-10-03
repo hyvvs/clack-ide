@@ -11,6 +11,7 @@ export type BudgetLimits = {
   workingTarget?: number;
   outputReserve?: number;
   maxOutput?: number;
+  reasoningBudget?: number;
   manualWorking?: boolean;
 };
 export type RequestCost = {
@@ -117,13 +118,19 @@ export function resolveContextBudget(
       invalid(
         "Output pin/reserve exceeds the usable context or API output limit.",
       );
-  const fallback = Math.min(2048, Math.max(256, Math.floor(ceiling * 0.15)));
+  const fallback =
+    Math.min(2048, Math.max(256, Math.floor(ceiling * 0.15))) +
+    (limits.reasoningBudget ?? 0);
   const output = Math.min(
     requestedOutput ?? limits.maxOutput ?? (limits.outputReserve || fallback),
     limits.maxOutput ?? Infinity,
     limits.outputCap ?? Infinity,
   );
   const reserve = Math.max(output, limits.outputReserve ?? 0);
+  if (limits.reasoningBudget && output <= limits.reasoningBudget)
+    invalid(
+      "The total output limit must leave room for an answer after the requested thinking budget. Lower effort or increase the output limit.",
+    );
   const input = cost.system + cost.tools + cost.conversation;
   const margin = marginOverride ?? Math.max(128, Math.ceil(input * 0.1));
   const available =

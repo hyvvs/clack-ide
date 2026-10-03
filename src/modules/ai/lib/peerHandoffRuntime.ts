@@ -1,4 +1,6 @@
 import { convertToModelMessages } from "ai";
+import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
+import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 import {
@@ -45,6 +47,21 @@ import {
 
 const cache = new Map<string, Awaited<ReturnType<typeof prepareHandoff>>>();
 const MAX_CACHED_CHARS = 512 * 1024;
+
+function recipientEffort(sessionId: string, modelId: string) {
+  const session = useChatStore
+    .getState()
+    .sessions.find((s) => s.id === sessionId);
+  if (session?.run?.state === "running" && session.run.reasoning)
+    return session.run.reasoning;
+  const preferences = usePreferencesStore.getState();
+  return captureEffort(
+    modelId,
+    resolveModelTransportIdentity(modelId, preferences),
+    session?.effortPreferences,
+    preferences.selfHostedInference,
+  );
+}
 
 export async function preparePeerReply(
   event: PeerCommunicationEvent,
@@ -94,10 +111,14 @@ export async function preparePeerReply(
   const { sessionToolContext } = await import("@/modules/ai/store/chatRuntime");
   const { readProjectMemory } = await import("@/modules/ai/lib/transport");
   const context = sessionToolContext(event.recipient.sessionId).toolContext;
+  const reasoning = recipientEffort(
+    event.recipient.sessionId,
+    endpoint.modelId,
+  );
   const model = await buildConfiguredLanguageModel(
     endpoint.modelId,
     state.apiKeys,
-    { ...preferences, customEndpointKeys: state.customEndpointKeys },
+    { ...preferences, customEndpointKeys: state.customEndpointKeys, reasoning },
   );
   const system = buildStableSystem(
     endpoint.modelId,
@@ -139,7 +160,10 @@ export async function preparePeerReply(
   if (
     JSON.stringify(
       await peerEndpoint(event.recipient.sessionId, event.workspaceId),
-    ) !== JSON.stringify(endpoint)
+    ) !== JSON.stringify(endpoint) ||
+    JSON.stringify(
+      recipientEffort(event.recipient.sessionId, endpoint.modelId),
+    ) !== JSON.stringify(reasoning)
   )
     throw new Error("peer_handoff_reply_policy_changed");
   return text;
@@ -381,6 +405,7 @@ async function prepareTask(
   const configuration = {
     ...preferences,
     customEndpointKeys: useChatStore.getState().customEndpointKeys,
+    reasoning: recipientEffort(sessionId, task.targetModelId),
   };
   const model = await buildConfiguredLanguageModel(
     task.targetModelId,
@@ -423,6 +448,7 @@ async function prepareTask(
     artifacts: task.artifactRefs,
     configuration: {
       capabilities,
+      reasoning: configuration.reasoning,
       policy: endpoint.policyRevision,
       sourcePolicy: source.policyRevision,
       projectRevision,

@@ -94,6 +94,7 @@ import { PeerTaskDialog } from "./PeerTaskDialog";
 import { AiComposerInput } from "./AiComposerInput";
 import { ChipsRow } from "./ChipsRow";
 import { ModelDropdown } from "./AiStatusBarControls";
+import { EffortControl } from "@/modules/ai/components/EffortControl";
 import { BUILTIN_AGENTS } from "../lib/agents";
 
 const SUGGESTIONS = [
@@ -649,7 +650,7 @@ function Header({
           </Button>
         ) : null}
       </div>
-      <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
         <AgentSwitcher
           isMiniWindow
           agentId={displayedAgentId}
@@ -657,6 +658,7 @@ function Header({
           disabled={runState === "running"}
         />
         <ModelDropdown sessionId={sessionId} compact />
+        <EffortControl sessionId={sessionId} />
         <AgentPermissionControl agentId={displayedAgentId} compact />
         {messages !== undefined ? (
           <ContextIndicator sessionId={sessionId} messages={messages} compact />

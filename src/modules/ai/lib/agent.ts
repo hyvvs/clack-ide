@@ -43,6 +43,11 @@ import {
 } from "@/modules/ai/lib/inferenceAdmission";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import {
+  captureEffort,
+  effortCapability,
+  type EffortCapture,
+} from "@/modules/ai/lib/reasoningEffort";
+import {
   createRequestPreflight,
   preflightFetch,
   modelBudgetLimits,
@@ -114,6 +119,7 @@ function ellipsize(s: string, max: number): string {
 }
 
 export type BuildModelOptions = {
+  reasoning?: EffortCapture;
   assertedContext?: number;
   admission?: InferenceAdmission;
   selfHostedInference?: SelfHostedState;
@@ -162,6 +168,52 @@ export async function buildLanguageModel(
           options.selfHostedInference,
         )
       : undefined);
+  const reasoning = options.reasoning
+    ? structuredClone(options.reasoning)
+    : undefined;
+  if (
+    reasoning &&
+    (reasoning.adapter !== provider || reasoning.model !== resolvedModelId)
+  )
+    throw new Error(
+      "Captured reasoning effort belongs to another model route.",
+    );
+  if (reasoning && reasoning.choice !== "automatic") {
+    const endpoint = options.selfHostedInference?.endpoints.find(
+      (e) => e.id === admission?.endpointId,
+    );
+    const current = effortCapability(
+      {
+        providerId: provider,
+        transportModelId: resolvedModelId,
+        ...(provider === "openai-compatible"
+          ? { endpointBaseURL: compatURL }
+          : {}),
+        ...(options.selfHosted && endpoint && admission
+          ? {
+              selfHosted: {
+                endpointId: endpoint.id,
+                profileId: admission.profileId,
+                configurationRevision: endpoint.configurationRevision,
+                allowPrivateNetwork: options.allowPrivateNetwork === true,
+                credentialRef: endpoint.credentialRef,
+                credentialRequired: false,
+              },
+            }
+          : {}),
+      },
+      options.selfHostedInference,
+    );
+    if (
+      current.status !== "supported" ||
+      current.revision !== reasoning.capability.revision ||
+      current.mapping !== reasoning.capability.mapping ||
+      !current.levels.includes(reasoning.choice)
+    )
+      throw new Error(
+        "Captured reasoning effort evidence is no longer valid. Start a new request.",
+      );
+  }
   const cacheKey = JSON.stringify([
     provider,
     key,
@@ -176,12 +228,22 @@ export async function buildLanguageModel(
     admission,
     options.selfHostedInference?.revision,
     options.assertedContext,
+    reasoning,
   ]);
   const hit = options.inferenceScope ? undefined : modelCache.get(cacheKey);
   if (hit) return hit;
 
   let built: LanguageModel;
   const preflight = createRequestPreflight({
+    reasoning:
+      reasoning ??
+      captureEffort(resolvedModelId, {
+        providerId: provider,
+        transportModelId: resolvedModelId,
+        ...(provider === "openai-compatible"
+          ? { endpointBaseURL: compatURL }
+          : {}),
+      }),
     modelId: resolvedModelId,
     local: localProvider,
     state: options.selfHostedInference,
@@ -348,6 +410,7 @@ export async function buildLanguageModel(
 }
 
 export type LocalProviderConfig = {
+  reasoning?: EffortCapture;
   inferenceScope?: InferenceScope;
   selfHostedInference?: SelfHostedState;
   lmstudioBaseURL?: string;
@@ -380,6 +443,7 @@ export function buildConfiguredLanguageModel(
       hosted.transportModelId,
       {
         selfHosted: true,
+        reasoning: local.reasoning,
         selfHostedInference: local.selfHostedInference,
         admission: endpointInferenceAdmission(
           hosted.selfHosted.endpointId,
@@ -405,6 +469,7 @@ export function buildConfiguredLanguageModel(
               (ep) => ep.id === captured.customEndpointId,
             )?.contextLimit
           : undefined,
+        reasoning: local.reasoning,
         lmstudioBaseURL: local.lmstudioBaseURL,
         admission: captured.customEndpointId
           ? endpointInferenceAdmission(
@@ -438,6 +503,7 @@ export function buildConfiguredLanguageModel(
       keys,
       target.transportModelId,
       {
+        reasoning: local.reasoning,
         lmstudioBaseURL: local.lmstudioBaseURL,
         inferenceScope: local.inferenceScope,
         mlxBaseURL: local.mlxBaseURL,
@@ -458,6 +524,7 @@ export function buildConfiguredLanguageModel(
       keys,
       ep.modelId.trim(),
       {
+        reasoning: local.reasoning,
         openaiCompatibleBaseURL: ep.baseURL,
         selfHostedInference: local.selfHostedInference,
         assertedContext: ep.contextLimit,
@@ -510,6 +577,7 @@ export function buildConfiguredLanguageModel(
     resolvedId = local.openrouterModelId.trim();
   }
   return buildLanguageModel(m.provider, keys, resolvedId, {
+    reasoning: local.reasoning,
     selfHostedInference: local.selfHostedInference,
     inferenceScope: local.inferenceScope,
     lmstudioBaseURL: local.lmstudioBaseURL,
@@ -586,6 +654,7 @@ const EMPTY_USAGE: AgentUsage = {
 };
 
 export type RunAgentOptions = {
+  reasoning?: EffortCapture;
   inputCapabilities?: ModelInputCapabilities;
   onRetrieved?: (notice: RetrievalNotice) => void;
   compaction?: ConversationCompactionContext;
@@ -639,6 +708,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
       };
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
   const baseModel = await buildConfiguredLanguageModel(modelId, opts.keys, {
+    reasoning: opts.reasoning,
     inferenceScope,
     selfHostedInference: opts.selfHostedInference,
     lmstudioBaseURL: opts.lmstudioBaseURL,

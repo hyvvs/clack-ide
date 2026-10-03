@@ -51,6 +51,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useModelSelectionLock } from "@/modules/ai/hooks/useModelSelectionLock";
 import { useModelSwitch } from "@/modules/ai/hooks/useModelSwitch";
+import { EffortControl } from "@/modules/ai/components/EffortControl";
 import { ModelSwitchNotice } from "./ModelSwitchNotice";
 import {
   compatModelIdForEndpoint,
@@ -184,6 +185,7 @@ export function AiStatusBarControls() {
       )}
 
       <ModelDropdown />
+      <EffortControl />
 
       <span className="mx-1 h-8 w-px bg-border" aria-hidden />
       <Button

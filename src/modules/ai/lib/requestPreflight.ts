@@ -28,6 +28,11 @@ import {
 } from "@/modules/ai/lib/selfHostedProfiles";
 import type { InferenceAdmission } from "@/modules/ai/lib/inferenceAdmission";
 import { endpointAllowsPrivate } from "@/modules/ai/lib/selfHostedModels";
+import {
+  effortBudget,
+  effortProviderOptions,
+  type EffortCapture,
+} from "@/modules/ai/lib/reasoningEffort";
 
 const modelBudgets = new WeakMap<object, () => Promise<BudgetLimits>>();
 export function knownTransportContextLimit(
@@ -71,6 +76,7 @@ export function createRequestPreflight(options: {
   state?: SelfHostedState;
   admission?: InferenceAdmission;
   assertedContext?: number;
+  reasoning?: EffortCapture;
   validateEvidence?: () => Promise<void>;
 }) {
   const state = options.state;
@@ -86,12 +92,16 @@ export function createRequestPreflight(options: {
     state && profile ? budgetIdentity(state, profile.id) : undefined;
   let snapshot: ProbeSnapshot | null = null;
   let refreshAttemptedAt = 0;
-  const limits = (): BudgetLimits =>
-    profile && state
+  const limits = (): BudgetLimits => ({
+    ...(profile && state
       ? profileBudgetLimits(state, profile.id, snapshot)
       : options.local
         ? { asserted: options.assertedContext }
-        : { reported: knownTransportContextLimit(options.modelId) };
+        : { reported: knownTransportContextLimit(options.modelId) }),
+    ...(effortBudget(options.reasoning)
+      ? { reasoningBudget: effortBudget(options.reasoning) }
+      : {}),
+  });
   const refresh = async () => {
     if (!endpoint || !profile) return;
     const client = createSelfHostedProbeClient();
@@ -131,7 +141,19 @@ export function createRequestPreflight(options: {
     const current = readSelfHostedState(
       new Map(entries).get("selfHostedInference"),
     );
-    if (budgetIdentity(current, profile.id) !== identity)
+    if (
+      budgetIdentity(current, profile.id) !== identity ||
+      (options.reasoning?.choice !== "automatic" &&
+        options.reasoning?.capability.expiresAt !== undefined &&
+        JSON.stringify(
+          current.profiles
+            .find((p) => p.id === profile.id)
+            ?.evidence.filter((e) => e.metric === "reasoning.effort"),
+        ) !==
+          JSON.stringify(
+            profile.evidence.filter((e) => e.metric === "reasoning.effort"),
+          ))
+    )
       throw new ContextBudgetError(
         "context-settings-changed",
         "Endpoint/model/profile settings changed while this request was waiting. Start a new request with the current settings.",
@@ -150,8 +172,18 @@ export function createRequestPreflight(options: {
           specificationVersion: "v3",
           async transformParams({ params }) {
             await refresh();
+            const providerOptions = { ...params.providerOptions };
+            for (const [provider, settings] of Object.entries(
+              options.reasoning ? effortProviderOptions(options.reasoning) : {},
+            )) {
+              providerOptions[provider] = {
+                ...providerOptions[provider],
+                ...settings,
+              };
+            }
             return {
               ...params,
+              providerOptions,
               maxOutputTokens: resolveContextBudget(
                 limits(),
                 undefined,
@@ -168,9 +200,11 @@ export function createRequestPreflight(options: {
       return wrapped;
     },
     async prepare(body: Record<string, unknown>) {
+      if (options.reasoning) effortProviderOptions(options.reasoning);
       await refresh();
       const measured = assertRequestBudget(limits(), body);
       return async () => {
+        if (options.reasoning) effortProviderOptions(options.reasoning);
         await checkIdentity();
         // Admission revalidation is bounded/local only. Never hold capacity for metadata HTTP.
         if (endpoint && profile) {

@@ -20,6 +20,7 @@ static MEMORY_EPOCH: LazyLock<String> =
     LazyLock::new(|| format!("{}:{}", std::process::id(), now()));
 pub mod peer_ledger;
 pub mod project;
+pub mod reasoning_effort;
 pub mod retrieval;
 mod session_file;
 pub mod target_context;

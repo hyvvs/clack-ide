@@ -1268,7 +1268,7 @@ This order does not authorize any pending implementation in this planning task.
 | 14 | H1 | Durable task-scoped communication and clarification | Complete | PeerTask v6 events, atomic receipts, bounded clarification and guarded continuation; 1,437 frontend / 504 Rust tests pass |
 | 15 | H2 | Recipient-aware handoffs and coordinated review | Complete | Recipient-sized PeerTask v7 handoffs, hash-bound review/correction and consent-gated promotion; 1,492 frontend tests pass |
 | 16 | R1 | Truthful reasoning and chronological activity | Complete | Source-linked message activity receipts, provider distinctions and bounded timeline; 1,558 frontend tests pass; implementation record below |
-| 17 | R2 | Supported effort controls and actual request mapping | Pending | None |
+| 17 | R2 | Supported effort controls and actual request mapping | Complete | `feat(ai): add functional reasoning effort controls`; [implementation record](#r2-implementation-record-2026-10-03) |
 | 18 | T1 | Custom-tool definitions, validation and scoped authorization | Pending | None |
 | 19 | T2 | Guarded tool execution, testing and lifecycle | Pending | None |
 | 20 | T3a | Native confinement contract and tested platform support | Pending | None |
@@ -3119,6 +3119,130 @@ latency and no active-run mutation. Display visibility is independent of effort.
 Do not promise levels across all self-hosted engines. Rollback ignores idle
 effort overrides, preserves their history and uses evidenced provider defaults.
 Commit `feat(ai): map supported reasoning effort`, update ledger, STOP.
+
+#### R2 implementation record (2026-10-03)
+
+- **Architecture:** `reasoningEffort.ts` is the bounded, pure capability and
+  capture resolver. It distinguishes supported, unsupported and unknown exact
+  model/API contracts. Display labels, model prefixes and reasoning visibility
+  are not capability evidence. Automatic omits the effort override; it does not
+  invent a low/medium/high default. The existing adapter and B1 middleware own
+  serialization and admission. There is no second request stack or test call
+  during ordinary inference. Provider identity and actual adapter namespace are
+  distinct, including an Ollama deployment using the compatible transport.
+- **Implemented mappings:** All alternatives below are in addition to Automatic.
+  These are exact IDs, not promises about similarly named or future models.
+
+  | API / exact models | Exposed manual choices | Actual serialized field |
+  | --- | --- | --- |
+  | OpenAI Responses: `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano` | None, Low, Medium, High, Extra high | `reasoning.effort`: `none/low/medium/high/xhigh` |
+  | OpenAI Responses: `gpt-5.3-codex` | Low, Medium, High, Extra high | `reasoning.effort`: `low/medium/high/xhigh` |
+  | Anthropic: `claude-opus-4-7` | Low, Medium, High, Extra high, Maximum | `output_config.effort`: `low/medium/high/xhigh/max` |
+  | Anthropic: `claude-opus-4-6`, `claude-sonnet-4-6` | Low, Medium, High, Maximum | `output_config.effort`: `low/medium/high/max` |
+  | Google generateContent: `gemini-3-flash-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash` | Minimal, Low, Medium, High | `generationConfig.thinkingConfig.thinkingLevel`: `minimal/low/medium/high` |
+  | Google generateContent: `gemini-3.1-pro-preview` | Low, Medium, High | `generationConfig.thinkingConfig.thinkingLevel`: `low/medium/high` |
+  | Google generateContent: `gemini-2.5-pro` | 1K, 4K, 8K tokens | `generationConfig.thinkingConfig.thinkingBudget`: `1024/4096/8192` |
+  | Google generateContent: `gemini-2.5-flash` | Off, 1K, 4K, 8K tokens | `generationConfig.thinkingConfig.thinkingBudget`: `0/1024/4096/8192` |
+  | Groq: `openai/gpt-oss-20b`, `openai/gpt-oss-120b`; Cerebras: `gpt-oss-120b` | Low, Medium, High | `reasoning_effort`: `low/medium/high` |
+  | DeepSeek compatible route: `deepseek-v4-pro`, `deepseek-v4-flash` | Low, High, Maximum | `reasoning_effort`: `low/high/max` |
+
+  Installed adapter audit: OpenAI 3.0.70, Anthropic 3.0.83, Google 3.0.81,
+  Groq 3.0.40, Cerebras 2.0.55 and compatible 2.0.49. xAI 3.0.94 can serialize
+  Chat effort, but no exact current model/API contract was qualified here; its
+  control stays unknown. OpenRouter, Mistral and other unqualified IDs likewise
+  remain unknown rather than inheriting another provider's parameters.
+  `gpt-4.1-mini` and `claude-haiku-4-5` are explicitly unsupported.
+  Evidence is versioned `r2-2026-10-03-v1`, based on installed adapter source and
+  official [GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5),
+  [GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4),
+  [Mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini),
+  [Nano](https://developers.openai.com/api/docs/models/gpt-5.4-nano),
+  [Codex](https://developers.openai.com/api/docs/models/gpt-5.3-codex),
+  [Anthropic effort](https://platform.claude.com/docs/en/build-with-claude/effort),
+  [Google generateContent thinking](https://ai.google.dev/gemini-api/docs/generate-content/thinking),
+  [Groq](https://console.groq.com/docs/reasoning),
+  [Cerebras](https://inference-docs.cerebras.ai/capabilities/reasoning), and
+  [DeepSeek](https://api-docs.deepseek.com/guides/thinking_mode/) documentation.
+- **Persistence and ownership:** Additive `SessionMeta.effortPreferences` v1 is
+  `{version:1, choices:[{key, choice, revision}]}`, limited to 32 entries and
+  64 KiB. The key binds selection identity, provider, transport model, endpoint
+  identity/URL and endpoint configuration revision. Session ID remains the chat
+  owner; title, pane, agent display name and model labels never own preferences.
+  Unknown schema, malformed/duplicate entries, changed evidence and unsupported
+  values resolve to Automatic. Old sessions need no destructive migration.
+  Choosing Automatic removes only that model's override. Other chats and models
+  retain their own valid choices, including switching away and back.
+- **Atomic updates:** `conversation_effort_set` uses C1a's existing SessionFile,
+  metadata/per-owner locks, workspace authorization and exact expected-session
+  compare-and-swap. One atomic replacement saves the choice, increments
+  `modelRevision` and invalidates the C2 target snapshot. Failure reconciles the
+  cache with the old-or-new durable file. Existing model-switch events propagate
+  monotonic revisions across windows; ordinary stale session saves cannot erase
+  effort metadata. Original messages, attachment references and PeerTasks are
+  unchanged. Tests exercise actual temporary session files, interrupted writes,
+  reopen, competing updates and preservation of original messages.
+- **Run capture and C2/H2:** `SessionRun.reasoning` v1 captures key, provider,
+  adapter, model, choice and capability/evidence revision. Model construction
+  clones the capture, so UI/store mutation cannot alter SDK retries or tool
+  continuations. Existing run/approval/cancellation-drain locks remain; a pending
+  preference write also locks that chat until native completion. The same
+  captured configuration passes through transport and request preflight.
+  C2 uses target-specific saved effort for budgeting and fingerprints, while
+  extraction uses the source model's effort. Automatic retains the existing
+  provider-default fingerprint. H2 preparation/replies use recipient effort and
+  include it in context identity; no new scheduling or communication protocol.
+- **B1 accounting:** Reasoning shares the total output allowance, not free
+  additional tokens. Explicit Google numeric thinking budgets add reserved room
+  to the default answer allowance. Explicit output pins/call limits are already
+  totals and are not double-counted; insufficient room for thinking plus an
+  answer blocks before inference. Qualitative levels do not receive fabricated
+  token multipliers. Their exact consumption is unknown within the existing
+  total output cap, and changing effort revalidates requests/prepared contexts.
+  R1's returned reasoning/summary classification and visibility are untouched;
+  effort does not request or manufacture visible thoughts.
+- **Self-hosted evidence boundary:** A bounded `reasoning.effort` declaration in
+  existing profile evidence can explicitly declare supported or unsupported
+  `reasoning_effort`, exact levels and `shared-output` accounting. Only fresh
+  backend-reported/reported evidence scoped to the endpoint, model, deployment
+  and configuration revision qualifies; conflicting declarations remain unknown.
+  The 30-second instance bound, profile changes, revocation and queue expiry are
+  checked before dispatch, without metadata HTTP while holding a capacity slot.
+  Existing probes do not currently produce this effort declaration for all
+  engines. The accepted declaration contract is fixture-tested, not a claim of
+  deployed engine discovery. Ordinary Ollama/LM Studio/MLX/generic profiles with
+  no explicit declaration remain Automatic/unknown. No speculative parameters,
+  hidden capability inference request or cloud fallback is introduced.
+- **UI and verification:** Compact `Effort: Automatic` beside existing model
+  selectors; only exact supported alternatives, an omitted unsupported control,
+  and disabled unknown state. Advanced shows effective SDK options, capability,
+  evidence and accounting. Native selects and bounded scrollable popovers work
+  with keyboard input. `scripts/check-reasoning-effort.mjs` passes at 1100, 390
+  and 280 pixels: selection, chat isolation, locks, unknown/unsupported states,
+  effective values and no horizontal overflow/page errors; screenshots inspected.
+  Browser store/IPC is mocked, distinct from adapter and native persistence tests.
+  Focused R2 plus self-hosted routing/C1b/C2 integration: **151 tests / 6 files**;
+  of these **124 tests / 4 files** are new R2 tests. Actual installed adapters
+  intercept all **93 model/choice combinations**, including Automatic, plus
+  native-proxy declarations, invalid settings and real SDK retry/tool continuation.
+  Focused Rust effort tests: **6 passed**. Final full `npm.cmd test`: **1,682
+  tests / 146 files passed**. `cargo test --locked`: **510 passed** (460 library,
+  25 filesystem, 25 Git). Typecheck, build, lint, `cargo fmt --check`, strict
+  all-target locked Clippy and `git diff --check` pass. Lint remains **71 warnings,
+  2 informational notices, 0 errors**. Existing mixed-import/plugin-timing build,
+  Cargo home canonicalization and CRLF notices remain. The first full run found
+  provider/adapter identity and Automatic C2-key regressions; both were fixed and
+  the affected integrations and complete frontend suite rerun successfully.
+- **Limitations and rollback:** No live-provider inference, actual native GUI
+  interaction or running-app restart was performed. Provider acceptance/quality
+  remains unverified live, and exact-ID contracts require reviewed updates as
+  APIs change. Explicit thinking budgets that cannot fit a caller's output cap
+  fail safely, including auxiliary calls. No reasoning visibility or latency
+  guarantee, universal effort list or broad backend-support claim. Rollback
+  ignores idle overrides at capture and removes the UI while preserving stored
+  preferences/history and B1 provider-default admission. Only R2's ledger was
+  updated; delegation work, safety stashes and `autonomous_tracker/` were not
+  touched. **R2 is complete. T1: Tool definitions and authorization is next and
+  has not been started.**
 
 ### T1: Tool definitions and authorization
 

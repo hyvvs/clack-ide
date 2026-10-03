@@ -234,6 +234,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
     sessionToolContext(sessionId);
 
   const transport = createContextAwareTransport({
+    getReasoning: () => owner()?.run?.reasoning,
     onRetrieved: (retrievalNotice) =>
       useChatStore.getState().patchAgentMeta(sessionId, { retrievalNotice }),
     prepareCompactionContext: async (messages) => {

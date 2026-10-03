@@ -47,7 +47,10 @@ export function targetContextKey(input: {
   return contextDigest({
     policy: "c2-target-v1",
     extraction: "c1b-extraction-v1",
-    effort: "provider-default",
+    effort:
+      config.reasoning && config.reasoning.choice !== "automatic"
+        ? config.reasoning
+        : "provider-default",
     ...rest,
     identity: resolveModelTransportIdentity(input.modelId, config),
     profiles: config.selfHostedInference,
