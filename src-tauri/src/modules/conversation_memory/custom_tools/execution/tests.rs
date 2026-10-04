@@ -31,7 +31,7 @@ fn read_request(socket: &mut std::net::TcpStream) -> Vec<u8> {
 fn definition() -> Definition {
     serde_json::from_value(json!({"name":"custom_read","description":"Read approved input","inputSchema":{"type":"object","properties":{"path":{"type":"string","maxLength":1024}},"required":["path"],"additionalProperties":false},"outputSchema":{"type":"string","maxLength":8192},"outputDescription":"Untrusted text","binding":{"kind":"native","operation":"read_file"},"scope":"conversation","agents":["builtin:coder"],"conversations":["chat"],"permissions":["read-files"],"credentialRef":null,"timeoutMs":1000,"outputBytes":8192})).unwrap()
 }
-fn record() -> Record {
+pub(super) fn record() -> Record {
     Record {
         id: "call".into(),
         epoch: MEMORY_EPOCH.clone(),
@@ -60,6 +60,7 @@ fn record() -> Record {
         result: None,
         error: None,
         transitions: vec![("running".into(), now())],
+        confinement: None,
     }
 }
 #[test]
@@ -680,6 +681,118 @@ fn durable_completion_is_not_replayed_and_unclassified_errors_are_redacted() {
         .unwrap();
     assert!(read_ledger(&store, &path).is_err());
 }
+
+#[test]
+fn confinement_receipts_use_existing_atomic_ledger_and_recover_without_pid_replay() {
+    use super::super::confinement::{
+        Cleanup, Failure, Receipt, CAPABILITY_VERSION, POLICY_VERSION,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("tools.json");
+    let receipt = Receipt {
+        schema_version: 1,
+        policy_version: POLICY_VERSION,
+        policy_hash: "a".repeat(64),
+        capability_version: CAPABILITY_VERSION.into(),
+        failure: None,
+        cleanup: Cleanup::NotStarted,
+        platform_report: None,
+    };
+    let mut active = record();
+    active.confinement = Some(receipt);
+    active.epoch = "previous-process".into();
+    let store = session_file::SessionFile::default();
+    write_ledger(
+        &store,
+        &path,
+        &Ledger {
+            version: 1,
+            records: vec![active],
+        },
+    )
+    .unwrap();
+    let mut restored = read_ledger(&session_file::SessionFile::default(), &path).unwrap();
+    assert_eq!(restored.records[0].state, "interrupted");
+    assert_eq!(restored.records[0].effect, "unknown");
+    let receipt = restored.records[0].confinement.as_ref().unwrap();
+    assert_eq!(receipt.failure, Some(Failure::Interrupted));
+    assert_eq!(receipt.cleanup, Cleanup::UnknownAfterRestart);
+    assert!(!recover(&mut restored, "another-restart"));
+    let bytes = fs::read(&path).unwrap();
+    let mut disk: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("pid"));
+    assert!(!String::from_utf8_lossy(&bytes).contains("environment"));
+    disk["executions"]["records"][0]["confinement"]["schemaVersion"] = json!(999);
+    fs::write(&path, serde_json::to_vec(&disk).unwrap()).unwrap();
+    assert!(read_ledger(&session_file::SessionFile::default(), &path).is_err());
+    // Legacy T2 records retain their byte shape and load without migration.
+    disk["executions"]["records"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("confinement");
+    fs::write(&path, serde_json::to_vec(&disk).unwrap()).unwrap();
+    assert!(read_ledger(&session_file::SessionFile::default(), &path)
+        .unwrap()
+        .records[0]
+        .confinement
+        .is_none());
+}
+#[test]
+fn confinement_platform_evidence_persists_but_never_grants_execution() {
+    use super::super::confinement::{
+        platform, Cleanup, Receipt, CAPABILITY_VERSION, POLICY_VERSION,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("tools.json");
+    let store = session_file::SessionFile::default();
+    let mut r = record();
+    transition(&mut r, "failed", Some("confinement-unavailable"));
+    r.confinement = Some(Receipt {
+        schema_version: 1,
+        policy_version: POLICY_VERSION,
+        policy_hash: "a".repeat(64),
+        capability_version: CAPABILITY_VERSION.into(),
+        failure: Some(super::super::confinement::Failure::UnsupportedFilesystem),
+        cleanup: Cleanup::NotStarted,
+        platform_report: Some(platform::current()),
+    });
+    write_ledger(
+        &store,
+        &path,
+        &Ledger {
+            version: 1,
+            records: vec![r],
+        },
+    )
+    .unwrap();
+    let restored = read_ledger(&session_file::SessionFile::default(), &path).unwrap();
+    assert_eq!(
+        restored.records[0]
+            .confinement
+            .as_ref()
+            .unwrap()
+            .platform_report,
+        Some(platform::current())
+    );
+    let mut disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    disk["executions"]["records"][0]["confinement"]["platformReport"]["schemaVersion"] = json!(999);
+    fs::write(&path, serde_json::to_vec(&disk).unwrap()).unwrap();
+    assert!(read_ledger(&session_file::SessionFile::default(), &path).is_err());
+    disk["executions"]["records"][0]["confinement"]
+        .as_object_mut()
+        .unwrap()
+        .remove("platformReport");
+    fs::write(&path, serde_json::to_vec(&disk).unwrap()).unwrap();
+    assert!(read_ledger(&session_file::SessionFile::default(), &path)
+        .unwrap()
+        .records[0]
+        .confinement
+        .as_ref()
+        .unwrap()
+        .platform_report
+        .is_none());
+}
+
 #[test]
 fn history_retains_active_run_deduplication_and_fails_closed_for_unknown_owner() {
     let mut r = record();

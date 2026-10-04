@@ -169,6 +169,9 @@ pub struct Lease {
     pub require_preflight: bool,
 }
 impl Lease {
+    pub(crate) fn owner(&self) -> &str {
+        &self.entry.owner
+    }
     pub fn request_preflight(&self) -> watch::Receiver<Option<bool>> {
         self.entry
             .preflight_pending

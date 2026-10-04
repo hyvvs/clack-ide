@@ -1271,7 +1271,7 @@ This order does not authorize any pending implementation in this planning task.
 | 17 | R2 | Supported effort controls and actual request mapping | Complete | `feat(ai): add functional reasoning effort controls`; [implementation record](#r2-implementation-record-2026-10-03) |
 | 18 | T1 | Custom-tool definitions, validation and scoped authorization | Complete | `feat(ai): add scoped custom tool definitions`; [implementation record](#t1-implementation-record-2026-10-03) |
 | 19 | T2 | Guarded tool execution, testing and lifecycle | Pending | None |
-| 20 | T3a | Native confinement contract and tested platform support | Pending | None |
+| 20 | T3a | Native confinement contract and tested platform support | Complete | Embedded WASI backend on Windows/Linux/macOS; native Windows verified, Linux/macOS CI evidence pending; see T3a ledger |
 | 21 | T3b | Authorized confined scripts/functions | Pending | None |
 | 22 | T3c | Explicit scoped MCP connections and tools | Pending | None |
 | 23 | F1 | Relevant schemas, compact prompt parity and cache awareness | Pending | None |
@@ -3541,6 +3541,161 @@ mocked support or Full Access bypasses. K/L confinement assertions are required.
 Rollback disables the new boundary/unsupported execution kinds, preserves
 records, and does not weaken existing shell policy. Commit `feat(ai): enforce
 custom execution confinement`, update ledger, STOP.
+
+**Implementation ledger (2026-10-04): COMPLETE**
+
+The user's final T3a directive supersedes the earlier OS-specific launch design:
+embed Wasmtime/WASI, retain independent-copy staging, implement the SAME backend
+for Windows/Linux/macOS, and distinguish implementation support from actual
+native verification. No external CLI, interpreter installation, container, VM,
+Docker service or runtime download is required. This record supersedes the
+temporary blocked native-experiment handoffs. T3b has not started.
+
+- **Dependencies / size decision:** exact Wasmtime and wasmtime-wasi
+  `47.0.4` (Apache-2.0 WITH LLVM-exception), compatible with installed Rust
+  1.94.0. Defaults are disabled: engine features `std/runtime/cranelift`,
+  WASI `p1` (which internally uses p2/component support). No cache
+  deserialization, parallel compiler, profiler, pooling allocator or guest
+  thread feature is enabled. Exact `wasm-encoder 0.252.0` constructs a small
+  trusted forwarding module; `wat 1.252.0` is test-only. These Bytecode Alliance
+  packages offer Apache-2.0 WITH LLVM-exception (the encoder/wat also offer
+  Apache-2.0 or MIT). FlatBuffers 25.12.19 remains
+  dev-only for quarantined experiments; Windows bindings remain pinned
+  0.61.2. The locked dependency addition is 74 packages, plus the required
+  existing anyhow update 1.0.102 -> 1.0.104; no broad dependency upgrade.
+  Before integration, an isolated release probe with Clack's fat-LTO,
+  size-optimization, one-codegen-unit, stripped settings measured **109,568
+  bytes** empty versus **5,978,112 bytes** with the embedded engine/WASIp1
+  linker: **5,868,544 bytes / 5.60 MiB incremental**. Accepted for the shared
+  confinement backend. This is a dependency probe, NOT a claimed final signed
+  Clack package-size measurement. No benchmark artifact is committed.
+- **Production boundary:** `confinement/wasi.rs` compiles only hash-reviewed,
+  bounded core WebAssembly binaries, never PE/ELF/Mach-O or serialized native
+  Wasmtime code. The sole WASI preopen is the private staging directory at
+  `.`. No host cwd, real workspace, home directory, inherited descriptor,
+  stdin, environment, credentials or host process-spawn API is exposed.
+  Environment is empty unless explicitly captured policy allows LANG, LC_ALL
+  or TZ; argv is explicit and bounded. TCP/UDP, address lookup and socket
+  authorization are disabled; the linker exposes only WASIp1, with no socket
+  creation or native-process extensions. Destination-list network policies and
+  child-process policies fail closed instead of relaxing the boundary.
+- **Existing staging retained:** `confinement/staging.rs` preserves immutable
+  hash-checked independent copies, distinct native file identities, regular-file
+  requirements, hard-link rejection, reparse/symlink/traversal checks, source
+  authorization and secret-path denial. Module paths also respect explicit
+  denies and secret rules. Windows uses pinned handles/private owner DACL;
+  Unix uses component-wise `openat(O_NOFOLLOW|O_CLOEXEC)` and private modes.
+  Unix temporary roots are canonicalized before traversal. Immediately before
+  running, the manifest is checked again: exact expected files/hashes, single
+  links, no extra entries, and an empty real scratch directory. The guest
+  cannot create hard links, symlinks or directories. The host itself remains
+  trusted; this is not protection against an already-compromised Clack process
+  or same-user debugger modifying its memory.
+- **Resource bounds:** module input <= 1 MiB; <= 32 staged inputs totaling
+  8 MiB; <= 16 flat declared outputs; two admitted executions; one guest linear
+  memory bounded by captured policy (16 MiB through 1 GiB); one table <= 4,096
+  elements; 512 KiB Wasm stack. A second fixed forwarding instance shares the
+  SAME memory and adds no authority. It preserves WASI's guest-pointer checks
+  while metering writes and opens. Guest opens total <= 64, iovecs <= 128,
+  combined file-write budget 8 MiB, combined stdout/stderr plus returned-file
+  budget 1 KiB through 256 KiB. Sparse growth, pwrite, seek, fd renumbering and
+  file-size mutation are disabled. Fuel is finite (captured cpu_time_ms *
+  50,000 fuel units, not a claim of measured CPU milliseconds); async fuel
+  yields every 10,000 units. A 5 ms cancellation/deadline select also interrupts
+  async clock waits. Wall-clock policy is 100 ms through 120 seconds. Linear
+  memory limits are not a claim of an OS RSS cap on Clack: compiler/engine
+  overhead is additionally bounded by module size, object counts and admission.
+  Synchronous compilation is bounded by module input, not hard-preempted;
+  elapsed compilation time counts toward the deadline checked before guest
+  execution. No timing result is mislabeled as a benchmark.
+- **Outputs / lifecycle:** successful declared scratch outputs are returned as
+  bounded proposed bytes, never copied back to the workspace. A failed,
+  cancelled, revoked or cleanup-failed execution returns no proposed files;
+  applying changes remains the existing authorized review/write path's job.
+  Guest Store/futures and WASI handles drop before staging cleanup. No guest
+  child can survive cancellation because no host process API exists. Cleanup
+  failures remain explicit rather than reporting success. Unexpected host
+  termination can leave a private temporary directory; restart does not claim
+  its cleanup, adopt it, execute it, or replay anything from it.
+- **D1 / T2 integration:** `Prepared::execute` owns the captured D1 lease and a
+  bounded admission slot in its blocking worker until cleanup and receipt
+  persistence finish. Dropping the async caller signals cancellation; policy
+  revocation is rechecked while running and immediately before settlement.
+  Wrong owner, changed policy, consumed record and failed persistence fail
+  closed. `execution/confinement.rs` uses the EXISTING atomic T2 ledger, not a
+  new execution database. Optional receipt schema 1 records policy hash/version,
+  capability `clack-wasi-1`, typed failure, cleanup and platform evidence, never
+  environment, source bytes, handles or replayable launch data. Earlier
+  `clack-confinement-1` receipts still load, but old policies cannot authorize
+  new runs. Interrupted receipts become `interrupted / unknown-after-restart`;
+  repeated recovery is idempotent and never kills a stored PID or replays work.
+- **Platform support and evidence:** the same Wasmtime/WASIp1 backend and shared
+  adversarial suite are implemented for Windows, Linux and macOS, not separate
+  optional sandbox technologies. Runtime capability checking does not confuse
+  an absent local test result with a platform-specific fallback. Versioned
+  reports keep current-host evidence separate from implementation support and
+  cannot authorize execution. macOS packaging adds only the JIT entitlement
+  to its existing entitlement file; it does not grant filesystem/network
+  access to guests or disable library validation.
+
+| Target | Backend support | Native verification for this completion |
+| --- | --- | --- |
+| Windows x64 | Embedded Wasmtime/WASIp1 | Verified on Windows 11 build 26200.9457, Rust 1.94.0 |
+| Linux | Same embedded backend and Unix staging | Native Rust run not performed: existing WSL Ubuntu has no Rust, pkg-config or GTK/WebKit development dependencies; passwordless sudo is unavailable |
+| macOS | Same embedded backend and Unix staging; packaged JIT entitlement | No macOS host available; native/signing validation not performed |
+
+- **CI:** added the narrow `t3a-wasi` Windows/Ubuntu/macOS matrix running
+  `cargo test --locked --lib confinement`, including staging, real guest
+  attacks and receipt/no-replay tests. Existing full platform jobs remain.
+  Remote CI was not dispatched or claimed passed. Linux/macOS acceptance
+  evidence remains pending that real native run; no native GUI or live-provider
+  testing was performed.
+- **Adversarial verification:** native Windows focused confinement **28/28**,
+  including **17 actual WASI guest/integration tests**: allowed copied input,
+  denied real workspace/outside paths and hard-link aliases, traversal,
+  absolute/drive/UNC/secret paths, injected staged hard link, empty environment
+  and single preopen, socket and host-process import denial, socket descriptor
+  misuse, combined stdout/stderr flood, staged output/no write-back, memory
+  growth, fuel/wall timeout/cancellation, interruptible long clock wait,
+  start-section I/O, sparse growth/link/fd-renumber denial, file-growth/open
+  quotas, independent simultaneous guests, malformed/native module rejection,
+  D1 lease cleanup, caller-drop cancellation, revocation and failed final
+  persistence. Shared staging adds changed-hash, identity, input/output limits,
+  explicit denied module and source paths, and cleanup-preserves-outside tests.
+  Existing ledger tests cover atomic receipt persistence, old-record loading,
+  corrupt/unknown receipt rejection, truthful interrupted cleanup and no replay.
+  The Unix-specific symlink test is included in the native CI matrix, not
+  counted as locally executed.
+- **Full gates:** `npm.cmd run check-types` PASS; `npm.cmd run lint` PASS
+  with unchanged **71 warnings / 2 infos / 0 errors**; `npm.cmd test`
+  **1,724/1,724 in 150 files**; `npm.cmd run build` PASS (existing four
+  ineffective-dynamic-import notices plus build-plugin timing notice).
+  `cargo clippy --all-targets --locked -- -D warnings` PASS;
+  `cargo test --locked` **573/573** (**523 library + 25 filesystem +
+  25 Git**, no ignored tests). `cargo fmt --check` and
+  `git diff --check` PASS. The opt-in historical probes also compile via
+  `cargo check --tests --locked --features native-confinement-probes`;
+  their native attack suite was not rerun for WASI acceptance. Shell commands
+  in the Codex sandbox print an environment canonicalization warning; elevated
+  native test runs do not. Native temporary ACL tests required running outside
+  the assistant sandbox, not changing the application's confinement.
+- **Experiments quarantined:** LPAC/PSEC/job/namespace launch code, old Windows
+  adversarial fixtures and their native capture helper require BOTH tests and
+  explicit `native-confinement-probes`. None is a production fallback. The
+  standalone Linux Landlock/seccomp fixture is retained as historical evidence
+  only and removed from production acceptance CI. Previous counterexamples
+  (LPAC ambient grants, PSEC path/hard-link escapes and non-atomic child
+  ownership) are not erased or reinterpreted as passing security guarantees.
+- **Compatibility / scope / rollback:** existing conversations, memory,
+  compaction, B1 preflight, PeerTasks, native/HTTP custom tools, ordinary
+  terminals and shell permissions are unchanged. Script/function/MCP bindings
+  remain unavailable to models until their own checkpoint; the native WASI
+  boundary is implemented and tested, not speculative UI. Disable this new
+  boundary without removing receipts or weakening existing tool checks to roll
+  back. No delegation work, safety stash or autonomous_tracker content was
+  modified. Commit: `feat(ai): add cross-platform WASI tool confinement`.
+  **T3a is complete. Next: T3b: Confined scripts and functions. No T3b, T3c or
+  subsequent checkpoint was started.**
 
 #### T3b: Confined scripts and functions
 

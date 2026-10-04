@@ -18,6 +18,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+native-confinement-probes = []
+
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
@@ -53,9 +56,14 @@ sha2 = "0.10"
 lopdf = { version = "0.44", default-features = false }
 zip = { version = "4.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 sevenz-rust2 = "0.22.2"
+wasmtime = { version = "=47.0.4", default-features = false, features = ["std", "runtime", "cranelift"] }
+wasmtime-wasi = { version = "=47.0.4", default-features = false, features = ["p1"] }
+wasm-encoder = { version = "=0.252.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 proptest = "1"
+flatbuffers = "=25.12.19"
+wat = "=1.252.0"
 tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
@@ -72,11 +80,17 @@ objc2-foundation = { version = "0.3", features = ["NSString", "NSUserDefaults"] 
 keyring = { version = "3.6", default-features = false, features = [
 	"windows-native",
 ] }
-windows-sys = { version = "0.61", features = [
+windows-sys = { version = "=0.61.2", features = [
 	"Win32_Foundation",
 	"Win32_Storage_FileSystem",
 	"Win32_System_WindowsProgramming",
 	"Win32_Security",
+	"Win32_Security_Authorization",
+	"Win32_Security_Isolation",
+	"Win32_System_Pipes",
+	"Win32_System_SystemInformation",
+	"Win32_System_LibraryLoader",
+	"Win32_System_Registry",
 	"Win32_System_JobObjects",
 	"Win32_System_Threading",
 	"Win32_System_Diagnostics_ToolHelp",

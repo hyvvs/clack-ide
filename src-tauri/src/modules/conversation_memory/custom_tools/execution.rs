@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
+pub mod confinement;
 mod io;
 mod schema;
 #[cfg(test)]
@@ -62,6 +63,8 @@ pub struct Record {
     result: Option<Value>,
     error: Option<String>,
     transitions: Vec<(String, u64)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    confinement: Option<super::confinement::Receipt>,
 }
 #[derive(Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -272,6 +275,9 @@ fn recover(ledger: &mut Ledger, epoch: &str) -> bool {
                 record.effect = "unknown".into();
             }
             transition(record, "interrupted", Some("interrupted-no-replay"));
+            if let Some(receipt) = &mut record.confinement {
+                receipt.interrupted();
+            }
             changed = true;
         }
     }
@@ -308,6 +314,10 @@ fn read_ledger(store: &session_file::SessionFile, path: &Path) -> Result<Ledger>
             .any(|value| bounded(value, 2048).is_err())
             || !hash_valid(&record.tool.hash)
             || !hash_valid(&record.arguments_hash)
+            || record
+                .confinement
+                .as_ref()
+                .is_some_and(|r| r.validate().is_err())
             || record.tool.version == 0
             || record.permissions.len() > 16
             || record.permissions.iter().any(|p| bounded(p, 128).is_err())
@@ -495,6 +505,7 @@ fn resolve(app: &tauri::AppHandle, request: &Request, window: &str) -> Result<Pr
         result: None,
         error: None,
         transitions: vec![("awaiting-approval".into(), now())],
+        confinement: None,
     };
     Ok(Prepared {
         record,

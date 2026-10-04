@@ -2,6 +2,7 @@
 use super::*;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
+pub mod confinement;
 pub mod execution;
 #[cfg(test)]
 mod tests;
@@ -720,9 +721,11 @@ fn registry_view(registry: &Registry, access: &Access, eligible_only: bool) -> V
             "id": entry.id, "workspaceId": entry.workspace_id, "current": latest(entry),
             "versions": if eligible_only { vec![] } else if entry.workspace_id == access.workspace { entry.versions.clone() } else { vec![latest(entry).clone()] },
             "eligible": eligible(entry, access), "executable": eligible(entry, access) && execution::runtime_supported(entry, access),
-            "runtime": if execution::runtime_supported(entry, access) { "Guarded execution; invocation approval required" } else { "Execution unavailable: operation, argument contract, credential scope or platform" }
+            "runtime": if execution::runtime_supported(entry, access) { "Guarded execution; invocation approval required" }
+                else if matches!(latest(entry).definition.binding, Binding::Script { .. } | Binding::Function { .. } | Binding::Mcp { .. }) { confinement::unavailable_reason() }
+                else { "Execution unavailable: operation, argument contract, credential scope or platform" }
         })).collect();
-    json!({"schemaVersion": 1, "revision": registry.revision, "entries": entries})
+    json!({"schemaVersion": 1, "revision": registry.revision, "entries": entries, "confinement": confinement::capabilities()})
 }
 fn assignments(app: &tauri::AppHandle, definition: &Definition, access: &Access) -> Result<()> {
     let agents = app
