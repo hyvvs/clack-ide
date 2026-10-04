@@ -178,6 +178,40 @@ describe("T1 definitions and permission intersection", () => {
       change: { action: "authorize", id: "tool-a" },
     });
   });
+  it("WASI import uses the native picker without accepting paths, bytes or approval", async () => {
+    const definition = newToolDefinition("builtin:coder", "chat-a");
+    await customToolsClient("chat-a").importWasi(4, definition, "tool-a");
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("custom_tools_import_wasi", {
+      sessionId: "chat-a",
+      expectedRevision: 4,
+      definition,
+      toolId: "tool-a",
+    });
+  });
+  it("agent proposals cannot reach the WASI import or authorization commands", async () => {
+    const definition = entry().current.definition;
+    definition.binding = {
+      kind: "wasi",
+      schemaVersion: 1,
+      hash: "a".repeat(64),
+      abi: "wasi-preview1-json-v1",
+      export: "_start",
+      runtime: "clack-wasi-1",
+    };
+    definition.permissions = ["run-commands"];
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(view())
+      .mockResolvedValueOnce({ status: "proposed" });
+    const tools = buildCustomToolProposals(context());
+    await tools.propose_custom_tool.execute?.(
+      { definitionJson: JSON.stringify(definition) },
+      { toolCallId: "p", messages: [] },
+    );
+    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).toEqual([
+      "custom_tools_load",
+      "custom_tools_propose",
+    ]);
+  });
   it("all unavailable custom executable schemas are absent from the real built-in registry", async () => {
     const tools = buildTools(context());
     expect(tools).toHaveProperty("read_file");

@@ -64,6 +64,13 @@ pub struct Report {
     pub restart_safety: Evidence,
 }
 impl Report {
+    pub(crate) fn verified(&self) -> bool {
+        self.validate().is_ok()
+            && self
+                .entries()
+                .iter()
+                .all(|e| e.state == State::VerifiedSupported)
+    }
     fn new(platform: Platform, state: State, basis: Basis) -> Self {
         let e = Evidence { state, basis };
         Self {

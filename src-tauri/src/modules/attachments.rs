@@ -266,7 +266,10 @@ pub fn attachment_store_reconcile(
 ) -> Result<AttachmentReconcileResult, String> {
     let _collection = CONTENT_COLLECTION.write().map_err(|e| e.to_string())?;
     let mut retained = retain_ids;
-    match super::conversation_memory::retention_roots(&app) {
+    match super::conversation_memory::retention_roots(&app).and_then(|mut roots| {
+        roots.extend(super::conversation_memory::custom_tools::functions::retention_roots(&app)?);
+        Ok(roots)
+    }) {
         Ok(roots) => {
             retained.extend(roots);
             reconcile_store(&store_dir(&app)?, &retained)

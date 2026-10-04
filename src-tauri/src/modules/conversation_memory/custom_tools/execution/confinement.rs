@@ -10,7 +10,7 @@ pub struct Journal {
 }
 
 impl Journal {
-    // Not IPC. Until T3b registers an executable binding, T2 recheck refuses it.
+    // Not IPC: only a captured T2 invocation can acquire a confinement journal.
     pub fn capture(app: tauri::AppHandle, execution_id: &str, policy: &Policy) -> Result<Self> {
         let prepared = app
             .state::<MemoryState>()
@@ -21,22 +21,12 @@ impl Journal {
             .cloned()
             .ok_or("execution-unavailable")?;
         recheck(&app, &prepared)?;
-        let Binding::Script {
-            executable,
-            argv,
-            hash,
-        } = &prepared.definition.binding
-        else {
-            return Err("unsupported-kind".into());
-        };
-        if policy.owner != prepared.record.window
-            || policy.definition_hash != prepared.record.tool.hash
-            || policy.workspace != prepared.root
-            || policy.executable.path != Path::new(executable)
-            || &policy.executable.argv != argv
-            || &policy.executable.sha256 != hash
-            || policy.limits.timeout_ms > prepared.definition.timeout_ms
-            || policy.limits.output_bytes as u64 > prepared.definition.output_bytes
+        let expected = super::wasi::captured_policy(
+            &prepared,
+            functions::module_path(&app, &prepared.definition)?,
+        )?;
+        if expected.digest().map_err(|_| "stale-approval")?
+            != policy.digest().map_err(|_| "stale-approval")?
         {
             return Err("stale-approval".into());
         }
@@ -53,7 +43,7 @@ impl Journal {
                     if !finished {
                         recheck(&app, &prepared)?;
                     }
-                    update(record, receipt, finished)
+                    retain_receipt(record, receipt, finished)
                 })
                 .map(|_| ())
                 .map_err(|_| Failure::Persistence)
@@ -73,6 +63,14 @@ impl Journal {
     pub(crate) fn finish(&self, receipt: &Receipt) -> std::result::Result<(), Failure> {
         (self.write)(true, receipt)
     }
+}
+
+fn retain_receipt(record: &mut Record, receipt: &Receipt, finished: bool) -> Result<()> {
+    // Cleanup success is not JSON/schema success. Only T2 can settle a function.
+    let mut receipt_record = record.clone();
+    update(&mut receipt_record, receipt, finished)?;
+    record.confinement = receipt_record.confinement;
+    Ok(())
 }
 
 fn update(record: &mut Record, receipt: &Receipt, finished: bool) -> Result<()> {
@@ -122,13 +120,24 @@ pub(crate) fn fixture(
     revoked: Arc<AtomicBool>,
     fail_finish: bool,
 ) -> Journal {
-    let store = Arc::new(session_file::SessionFile::default());
     let mut record = super::tests::record();
     record.window = policy.owner.clone();
     record.epoch = MEMORY_EPOCH.to_string();
     record.tool.hash = policy.definition_hash.clone();
     record.native_id = Some(native_id.into());
     record.approval = Some("a".repeat(64));
+    fixture_record(path, policy, revoked, fail_finish, record)
+}
+
+#[cfg(test)]
+pub(super) fn fixture_record(
+    path: PathBuf,
+    policy: &Policy,
+    revoked: Arc<AtomicBool>,
+    fail_finish: bool,
+    record: Record,
+) -> Journal {
+    let store = Arc::new(session_file::SessionFile::default());
     write_ledger(
         &store,
         &path,
@@ -154,7 +163,13 @@ pub(crate) fn fixture(
             }
             let _guard = lock.lock().unwrap();
             let mut ledger = read_ledger(&store, &path).map_err(|_| Failure::Persistence)?;
-            update(&mut ledger.records[0], receipt, finished).map_err(|_| Failure::Persistence)?;
+            let record = &mut ledger.records[0];
+            if record.kind == "wasi" {
+                retain_receipt(record, receipt, finished)
+            } else {
+                update(record, receipt, finished)
+            }
+            .map_err(|_| Failure::Persistence)?;
             write_ledger(&store, &path, &ledger).map_err(|_| Failure::Persistence)
         }),
     }

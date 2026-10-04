@@ -14,6 +14,7 @@ pub mod staging;
 mod wasi;
 #[cfg(all(windows, test, feature = "native-confinement-probes"))]
 use staging as staged;
+pub(crate) use wasi::validate_function;
 #[cfg(test)]
 mod tests;
 #[cfg(all(windows, test, feature = "native-confinement-probes"))]

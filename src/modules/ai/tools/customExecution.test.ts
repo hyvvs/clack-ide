@@ -152,3 +152,70 @@ it("a replaced run cannot invoke a previously built tool", async () => {
   ).toEqual({ error: "run-changed" });
   expect(executeCustomTool).not.toHaveBeenCalled();
 });
+
+it("WASI functions contribute only their captured callable schema to B1", async () => {
+  const { ctx, entry, reference } = fixture();
+  entry.current.definition.binding = {
+    kind: "wasi",
+    schemaVersion: 1,
+    hash: "b".repeat(64),
+    abi: "wasi-preview1-json-v1",
+    export: "_start",
+    runtime: "clack-wasi-1",
+  };
+  entry.current.definition.permissions = ["run-commands"];
+  vi.mocked(executeCustomTool).mockResolvedValue({
+    state: "succeeded",
+    result: { answer: 4 },
+    effect: "none",
+  } as Awaited<ReturnType<typeof executeCustomTool>>);
+  const tools = await buildRuntimeTools(ctx);
+  const schemas = JSON.stringify(
+    await serializedToolSchemas({
+      [entry.current.definition.name]: tools[entry.current.definition.name],
+    }),
+  );
+  expect(schemas).toContain(entry.current.definition.name);
+  expect(schemas).not.toContain("clack-wasi-1");
+  await tools[entry.current.definition.name].execute?.(
+    { path: "literal data" },
+    { toolCallId: "function-call", messages: [] },
+  );
+  expect(executeCustomTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      tool: reference,
+      arguments: { path: "literal data" },
+    }),
+  );
+});
+
+it.each([
+  "unverified-runtime",
+  "chat-only",
+  "read-only-task",
+])("WASI %s is not a callable tool even with a valid module", async (reason) => {
+  const { ctx, entry } = fixture();
+  entry.current.definition.binding = {
+    kind: "wasi",
+    schemaVersion: 1,
+    hash: "b".repeat(64),
+    abi: "wasi-preview1-json-v1",
+    export: "_start",
+    runtime: "clack-wasi-1",
+  };
+  entry.current.definition.permissions = ["run-commands"];
+  if (reason === "unverified-runtime") entry.executable = false;
+  if (reason === "chat-only")
+    usePreferencesStore.setState({
+      agentPermissionProfiles: {
+        "builtin:coder": { mode: "chat-only", categories: {} },
+      },
+    });
+  const tools = await buildRuntimeTools(
+    reason === "read-only-task"
+      ? { ...ctx, getMutationMode: () => "read-only" }
+      : ctx,
+  );
+  expect(tools[entry.current.definition.name]).toBeUndefined();
+  expect(executeCustomTool).not.toHaveBeenCalled();
+});

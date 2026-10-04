@@ -8,6 +8,14 @@ export type ToolBinding =
   | { kind: "http"; url: string; method: string }
   | { kind: "script"; executable: string; argv: string[]; hash: string }
   | { kind: "function"; module: string; export: string; hash: string }
+  | {
+      kind: "wasi";
+      schemaVersion: 1;
+      hash: string;
+      abi: "wasi-preview1-json-v1";
+      export: "_start";
+      runtime: "clack-wasi-1";
+    }
   | { kind: "mcp"; server: string; tool: string };
 export type ToolDefinition = {
   name: string;
@@ -98,6 +106,17 @@ export function customToolsClient(sessionId: string) {
       }),
     validate: (definition: ToolDefinition) =>
       invoke<string>("custom_tools_validate", { definition }),
+    importWasi: (
+      expectedRevision: number,
+      definition: ToolDefinition,
+      toolId?: string,
+    ) =>
+      invoke<ToolRegistryView>("custom_tools_import_wasi", {
+        sessionId,
+        expectedRevision,
+        definition,
+        toolId: toolId ?? null,
+      }),
     change: (expectedRevision: number, change: ToolChange) =>
       invoke<ToolRegistryView>("custom_tools_change", {
         sessionId,

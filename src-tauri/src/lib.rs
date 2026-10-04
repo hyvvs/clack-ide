@@ -208,6 +208,7 @@ pub fn run() {
             modules::conversation_memory::custom_tools::custom_tools_validate,
             modules::conversation_memory::custom_tools::custom_tools_change,
             modules::conversation_memory::custom_tools::custom_tools_propose,
+            modules::conversation_memory::custom_tools::functions::custom_tools_import_wasi,
             modules::conversation_memory::custom_tools::execution::custom_tool_prepare,
             modules::conversation_memory::custom_tools::execution::custom_tool_execute,
             modules::conversation_memory::custom_tools::execution::custom_tool_cancel,

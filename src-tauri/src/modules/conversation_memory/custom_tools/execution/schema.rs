@@ -72,6 +72,7 @@ pub(super) fn arguments(definition: &Definition, args: &Value) -> Result<String>
         Binding::Http { method, .. } if method == "GET" && object.is_empty() => {}
         Binding::Http { method, .. }
             if method == "POST" && object.len() == 1 && object.contains_key("body") => {}
+        Binding::Wasi { .. } => {}
         _ => return Err("unsupported-operation-or-arguments".into()),
     }
     Ok(digest(&bytes))

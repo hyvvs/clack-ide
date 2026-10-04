@@ -8,7 +8,7 @@ fn access() -> Access {
         run: Some(1),
     }
 }
-fn definition() -> Definition {
+pub(super) fn definition() -> Definition {
     serde_json::from_value(json!({"name":"custom_read","description":"Read selected project input","inputSchema":{"type":"object","properties":{"path":{"type":"string","maxLength":1024}},"required":["path"],"additionalProperties":false},"outputSchema":{"type":"string","maxLength":8192},"outputDescription":"Untrusted file content","binding":{"kind":"native","operation":"read_file"},"scope":"conversation","agents":["builtin:coder"],"conversations":["chat-a"],"permissions":["read-files"],"credentialRef":null,"timeoutMs":30000,"outputBytes":65536})).unwrap()
 }
 fn create() -> Registry {

@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { beginInference } from "@/modules/ai/lib/inferenceLifecycle";
-import type { CapturedToolVersion } from "@/modules/ai/lib/customTools";
+import type {
+  CapturedToolVersion,
+  ToolBinding,
+} from "@/modules/ai/lib/customTools";
 
 export type ExecutionRecord = {
   id: string;
@@ -12,6 +15,7 @@ export type ExecutionRecord = {
   tool: CapturedToolVersion;
   toolName: string;
   kind: string;
+  function?: Extract<ToolBinding, { kind: "wasi" }>;
   argumentsHash: string;
   state: string;
   effect: string;

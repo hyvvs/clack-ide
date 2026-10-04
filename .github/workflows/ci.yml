@@ -143,6 +143,9 @@ jobs:
       - name: Shared staging, WASI adversarial and no-replay tests
         working-directory: src-tauri
         run: cargo test --locked --lib confinement
+      - name: T3b registration, authorization and confined JSON functions
+        working-directory: src-tauri
+        run: cargo test --locked --lib custom_tools
 
   coverage:
     runs-on: ubuntu-22.04

@@ -6,7 +6,9 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use wasmtime::{Caller, Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{
-    p1::WasiP1Ctx, p2::pipe::MemoryOutputPipe, DirPerms, FilePerms, WasiCtxBuilder,
+    p1::WasiP1Ctx,
+    p2::pipe::{MemoryInputPipe, MemoryOutputPipe},
+    DirPerms, FilePerms, WasiCtxBuilder,
 };
 
 pub(super) const MAX_MODULE_BYTES: usize = 1024 * 1024;
@@ -42,6 +44,7 @@ struct State {
 #[derive(Debug)]
 pub(super) struct Outcome {
     pub output: Vec<u8>,
+    pub stderr: Vec<u8>,
     pub failure: Option<Failure>,
 }
 
@@ -50,8 +53,14 @@ pub(super) fn run(
     root: &Path,
     policy: &Policy,
     cancelled: &dyn Fn() -> bool,
+    input: Option<&[u8]>,
 ) -> Outcome {
     let output = MemoryOutputPipe::new(policy.limits.output_bytes);
+    let stderr = if input.is_some() {
+        MemoryOutputPipe::new(policy.limits.output_bytes)
+    } else {
+        output.clone()
+    };
     let operation = || -> Result<(), Failure> {
         policy.check_host()?;
         if cancelled() {
@@ -72,8 +81,14 @@ pub(super) fn run(
             return Err(Failure::InvalidModule);
         }
         let mut wasi = WasiCtxBuilder::new();
+        if let Some(input) = input {
+            if input.len() > 16 * 1024 {
+                return Err(Failure::InvalidPolicy);
+            }
+            wasi.stdin(MemoryInputPipe::new(input.to_vec()));
+        }
         wasi.stdout(output.clone())
-            .stderr(output.clone())
+            .stderr(stderr.clone())
             .arg("program.wasm")
             .args(&policy.executable.argv)
             .envs(
@@ -165,8 +180,72 @@ pub(super) fn run(
     let failure = operation().err();
     Outcome {
         output: output.contents().to_vec(),
+        stderr: if input.is_some() {
+            stderr.contents().to_vec()
+        } else {
+            vec![]
+        },
         failure,
     }
+}
+
+pub(crate) fn validate_function(bytes: &[u8]) -> Result<(), Failure> {
+    if bytes.len() > MAX_MODULE_BYTES || !bytes.starts_with(b"\0asm\x01\0\0\0") {
+        return Err(Failure::InvalidModule);
+    }
+    let engine = engine()?;
+    let module = Module::from_binary(engine, bytes).map_err(|_| Failure::InvalidModule)?;
+    if module.imports().any(|i| {
+        i.module() != "wasi_snapshot_preview1"
+            || !matches!(
+                i.name(),
+                "args_get"
+                    | "args_sizes_get"
+                    | "environ_get"
+                    | "environ_sizes_get"
+                    | "fd_read"
+                    | "fd_pread"
+                    | "fd_write"
+                    | "fd_close"
+                    | "fd_fdstat_get"
+                    | "fd_seek"
+                    | "fd_tell"
+                    | "fd_fdstat_set_flags"
+                    | "fd_fdstat_set_rights"
+                    | "fd_filestat_get"
+                    | "fd_prestat_get"
+                    | "fd_prestat_dir_name"
+                    | "fd_readdir"
+                    | "path_open"
+                    | "path_filestat_get"
+                    | "path_readlink"
+                    | "clock_res_get"
+                    | "clock_time_get"
+                    | "poll_oneoff"
+                    | "random_get"
+                    | "sched_yield"
+                    | "proc_exit"
+            )
+    }) {
+        return Err(Failure::InvalidModule);
+    }
+    match module.get_export("_start") {
+        Some(wasmtime::ExternType::Func(f)) if f.params().len() == 0 && f.results().len() == 0 => {}
+        _ => return Err(Failure::InvalidModule),
+    }
+    match module.get_export("memory") {
+        Some(wasmtime::ExternType::Memory(m))
+            if !m.is_shared() && !m.is_64() && m.minimum() <= 1024 => {}
+        _ => return Err(Failure::InvalidModule),
+    }
+    let mut linker = Linker::<WasiP1Ctx>::new(engine);
+    wasmtime_wasi::p1::add_to_linker_async(&mut linker, |s| s)
+        .map_err(|_| Failure::Initialization)?;
+    // Type/link validation only; neither the start section nor _start executes.
+    linker
+        .instantiate_pre(&module)
+        .map_err(|_| Failure::InvalidModule)?;
+    Ok(())
 }
 
 fn deny(caller: &mut Caller<'_, State>, failure: Failure) -> wasmtime::Error {

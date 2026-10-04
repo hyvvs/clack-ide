@@ -61,6 +61,7 @@ pub(super) fn record() -> Record {
         error: None,
         transitions: vec![("running".into(), now())],
         confinement: None,
+        function: None,
     }
 }
 #[test]

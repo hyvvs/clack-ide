@@ -4,6 +4,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 pub mod confinement;
 pub mod execution;
+pub mod functions;
 #[cfg(test)]
 mod tests;
 
@@ -30,6 +31,14 @@ pub enum Binding {
         module: String,
         export: String,
         hash: String,
+    },
+    Wasi {
+        #[serde(rename = "schemaVersion")]
+        schema_version: u32,
+        hash: String,
+        abi: String,
+        export: String,
+        runtime: String,
     },
     Mcp {
         server: String,
@@ -68,6 +77,8 @@ struct Version {
     agent_id: String,
     run_id: Option<u64>,
     created_at: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    invalidates_previous: bool,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -381,6 +392,16 @@ fn validate(definition: &Definition) -> Result<()> {
             bounded(tool, 128)?;
             "network"
         }
+        Binding::Wasi { .. } => {
+            functions::validate_binding(&definition.binding)?;
+            if definition.credential_ref.is_some() || definition.permissions != ["run-commands"] {
+                return Err("tool_wasi_capabilities".into());
+            }
+            if definition.output_bytes > 16 * 1024 {
+                return Err("tool_wasi_output_limit".into());
+            }
+            "run-commands"
+        }
     };
     if !definition.permissions.iter().any(|p| p == required) {
         return Err("tool_missing_required_permission".into());
@@ -565,6 +586,7 @@ fn apply(
                     agent_id: access.agent.clone(),
                     run_id: access.run,
                     created_at: now(),
+                    invalidates_previous: false,
                 },
             )
         }
@@ -585,7 +607,13 @@ fn apply(
                 change,
                 Change::Disable { .. } | Change::Revoke { .. } | Change::Remove { .. }
             );
-            if (matches!(change, Change::Disable { .. }) && !version.enabled)
+            let has_confined_history = entry
+                .versions
+                .iter()
+                .any(|v| matches!(v.definition.binding, Binding::Wasi { .. }));
+            if (matches!(change, Change::Disable { .. })
+                && !version.enabled
+                && (!has_confined_history || version.invalidates_previous))
                 || (matches!(change, Change::Revoke { .. }) && version.status == "revoked")
             {
                 return Ok(registry.clone());
@@ -602,6 +630,7 @@ fn apply(
             version.session_id = access.session.clone();
             version.agent_id = access.agent.clone();
             version.run_id = access.run;
+            version.invalidates_previous = restrictive;
             (index, version)
         }
     };
@@ -619,6 +648,11 @@ fn apply(
         Change::Enable { .. } => {
             if version.status != "authorized" {
                 return Err("tool_native_consent_required".into());
+            }
+            if matches!(version.definition.binding, Binding::Wasi { .. })
+                && !functions::platform_verified()
+            {
+                return Err("tool_wasi_platform_unverified".into());
             }
             version.enabled = true;
         }
@@ -722,6 +756,7 @@ fn registry_view(registry: &Registry, access: &Access, eligible_only: bool) -> V
             "versions": if eligible_only { vec![] } else if entry.workspace_id == access.workspace { entry.versions.clone() } else { vec![latest(entry).clone()] },
             "eligible": eligible(entry, access), "executable": eligible(entry, access) && execution::runtime_supported(entry, access),
             "runtime": if execution::runtime_supported(entry, access) { "Guarded execution; invocation approval required" }
+                else if matches!(latest(entry).definition.binding, Binding::Wasi { .. }) { "WASI execution unavailable: platform verification or workspace environment" }
                 else if matches!(latest(entry).definition.binding, Binding::Script { .. } | Binding::Function { .. } | Binding::Mcp { .. }) { confinement::unavailable_reason() }
                 else { "Execution unavailable: operation, argument contract, credential scope or platform" }
         })).collect();
@@ -793,11 +828,23 @@ pub async fn custom_tools_load(
     blocking(move || {
         let access = access(&app, &session_id)?;
         let registry = load(&app)?;
-        Ok(registry_view(
-            &registry,
-            &access,
-            eligible_only.unwrap_or(false),
-        ))
+        let mut view = registry_view(&registry, &access, eligible_only.unwrap_or(false));
+        for value in view["entries"]
+            .as_array_mut()
+            .ok_or("tool_invalid_registry")?
+        {
+            if let Some(entry) = registry.entries.iter().find(|e| value["id"] == e.id) {
+                if matches!(latest(entry).definition.binding, Binding::Wasi { .. })
+                    && functions::module_path(&app, &latest(entry).definition).is_err()
+                {
+                    value["executable"] = json!(false);
+                    value["runtime"] = json!(
+                        "WASI module missing, corrupt, or unsupported; reimport reviewed code"
+                    );
+                }
+            }
+        }
+        Ok(view)
     })
     .await
 }
@@ -823,14 +870,18 @@ pub async fn custom_tools_change(
         }.ok_or("tool_unavailable")?;
         let restrictive = matches!(change, Change::Disable { .. } | Change::Revoke { .. } | Change::Remove { .. });
         let v = latest(target);
-        if !restrictive { assignments(&app, &v.definition, &captured)?; }
+        if !restrictive {
+            assignments(&app, &v.definition, &captured)?;
+            functions::registered_module(&app, &load(&app)?, &captured, &v.definition)?;
+        }
         let description = serde_json::to_string_pretty(&json!({
             "action": serde_json::to_value(&change).map_err(|e| e.to_string())?["action"],
             "name": v.definition.name, "workspace": captured.workspace,
             "scope": v.definition.scope, "agents": v.definition.agents,
             "conversations": v.definition.conversations, "permissions": v.definition.permissions,
             "version": v.version, "definitionSha256": v.hash,
-            "execution": "Unavailable in T1. Confirm the exact definition reviewed in Custom tools. Registration never grants execution or platform permissions."
+            "binding": v.definition.binding,
+            "execution": "Registration and invocation approval are separate. Confirm the exact definition reviewed in Custom tools."
         })).map_err(|e| e.to_string())?;
         if !app.dialog().message(description).title("Clack tool definition authorization")
             .buttons(MessageDialogButtons::OkCancel).blocking_show() {
@@ -860,6 +911,7 @@ pub async fn custom_tools_propose(
         if captured.run.is_none() { return Err("tool_active_run_required".into()); }
         validate(&definition)?;
         assignments(&app, &definition, &captured)?;
+        functions::registered_module(&app, &load(&app)?, &captured, &definition)?;
         let state = app.state::<MemoryState>();
         let lock = state.owner("custom-tools")?;
         let _guard = lock.lock().map_err(|e| e.to_string())?;

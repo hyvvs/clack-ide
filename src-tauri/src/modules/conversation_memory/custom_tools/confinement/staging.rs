@@ -31,12 +31,14 @@ pub struct Prepared {
     materialized: BTreeMap<String, String>,
     pins: Vec<File>,
     root: tempfile::TempDir,
+    json_input: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
 pub struct Completed {
     pub receipt: Receipt,
     pub output: Vec<u8>,
+    pub stderr: Vec<u8>,
     pub files: BTreeMap<String, Vec<u8>>,
 }
 
@@ -166,6 +168,7 @@ impl Prepared {
             materialized,
             pins,
             root,
+            json_input: None,
             receipt: Receipt {
                 schema_version: 1,
                 policy_version: POLICY_VERSION,
@@ -186,6 +189,19 @@ impl Prepared {
 
     pub fn receipt(&self) -> &Receipt {
         &self.receipt
+    }
+
+    pub(crate) fn json_input(mut self, bytes: Vec<u8>) -> Result<Self> {
+        if bytes.len() > 16 * 1024 {
+            return Err(Failure::InvalidPolicy);
+        }
+        self.receipt.policy_hash = super::super::hash(&serde_json::json!({
+            "staging": self.receipt.policy_hash, "abi": "wasi-preview1-json-v1",
+            "input": format!("{:x}", Sha256::digest(&bytes))
+        }))
+        .map_err(|_| Failure::InvalidPolicy)?;
+        self.json_input = Some(bytes);
+        Ok(self)
     }
 
     pub fn close(self) -> Result<()> {
@@ -261,6 +277,7 @@ impl Prepared {
         let mut completed = Completed {
             receipt: self.receipt.clone(),
             output: vec![],
+            stderr: vec![],
             files: BTreeMap::new(),
         };
         let operation = || -> Result<super::wasi::Outcome> {
@@ -276,11 +293,13 @@ impl Prepared {
                 self.root.path(),
                 &self.policy,
                 cancelled,
+                self.json_input.as_deref(),
             ))
         };
         match operation() {
             Ok(outcome) => {
                 completed.output = outcome.output;
+                completed.stderr = outcome.stderr;
                 completed.receipt.failure = outcome.failure;
                 // No host process/thread capability is exposed to the guest.
                 // run() returns only after its future, Store and WASI handles drop.
@@ -382,6 +401,7 @@ impl Prepared {
         let mut completed = Completed {
             receipt: self.receipt.clone(),
             output: vec![],
+            stderr: vec![],
             files: BTreeMap::new(),
         };
         let attempted = std::cell::Cell::new(false);
@@ -461,7 +481,8 @@ impl Prepared {
             .policy
             .limits
             .output_bytes
-            .saturating_sub(completed.output.len());
+            .saturating_sub(completed.output.len())
+            .saturating_sub(completed.stderr.len());
         for name in &self.outputs {
             let path = self.root.path().join("scratch").join(name);
             let mut pins = Vec::new();

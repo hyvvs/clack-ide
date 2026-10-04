@@ -1,4 +1,4 @@
-//! T2 consumes the T1 registry and D1 request leases. No process/code execution.
+//! T2 consumes T1 definitions and D1 leases; T3b code uses only T3a WASI.
 use super::*;
 use crate::modules::net::inference::{InferenceState, Lease};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +10,7 @@ mod io;
 mod schema;
 #[cfg(test)]
 mod tests;
+mod wasi;
 
 const MAX_INPUT: usize = 16 * 1024;
 const MAX_OUTPUT: usize = 16 * 1024;
@@ -65,6 +66,8 @@ pub struct Record {
     transitions: Vec<(String, u64)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     confinement: Option<super::confinement::Receipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    function: Option<Binding>,
 }
 #[derive(Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -81,6 +84,7 @@ pub(crate) struct Prepared {
     root: PathBuf,
     policy: String,
     checked_revision: std::sync::atomic::AtomicU64,
+    started: AtomicBool,
 }
 
 pub(super) fn supported(definition: &Definition) -> bool {
@@ -110,6 +114,11 @@ pub(super) fn supported(definition: &Definition) -> bool {
             }
             _ => false,
         },
+        Binding::Wasi { .. } => {
+            functions::validate_binding(&definition.binding).is_ok()
+                && functions::platform_verified()
+                && definition.credential_ref.is_none()
+        }
         _ => false,
     }
 }
@@ -123,7 +132,10 @@ pub(super) fn runtime_supported(entry: &Entry, access: &Access) -> bool {
     let definition = &latest(entry).definition;
     supported(definition)
         && !(access.workspace.starts_with("wsl:")
-            && matches!(definition.binding, Binding::Native { .. }))
+            && matches!(
+                definition.binding,
+                Binding::Native { .. } | Binding::Wasi { .. }
+            ))
         && definition
             .credential_ref
             .as_deref()
@@ -169,10 +181,45 @@ fn same_capture(record: &Record, captured: &Record) -> Result<()> {
         || record.kind != captured.kind
         || record.permissions != captured.permissions
         || record.test != captured.test
+        || record.function != captured.function
     {
         return Err("stale-approval".into());
     }
     Ok(())
+}
+
+fn active_version<'a>(
+    registry: &'a Registry,
+    access: &Access,
+    reference: &Reference,
+) -> Result<&'a Version> {
+    let entry = registry
+        .entries
+        .iter()
+        .find(|e| e.id == reference.id)
+        .ok_or("tool-revoked")?;
+    let version = entry
+        .versions
+        .iter()
+        .find(|v| v.version == reference.version && v.hash == reference.hash)
+        .ok_or("tool-revoked")?;
+    if !matches!(version.definition.binding, Binding::Wasi { .. }) {
+        return authorized_version(registry, access, reference);
+    }
+    let captured_entry = Entry {
+        versions: vec![version.clone()],
+        ..entry.clone()
+    };
+    if !eligible(&captured_entry, access)
+        || !runtime_supported(&captured_entry, access)
+        || entry
+            .versions
+            .iter()
+            .any(|v| v.version > reference.version && v.invalidates_previous)
+    {
+        return Err("tool-revoked".into());
+    }
+    Ok(version)
 }
 fn approve(record: &mut Record, captured: &Record, granted: bool) -> Result<()> {
     same_capture(record, captured)?;
@@ -253,6 +300,9 @@ fn settle(record: &mut Record, result: Result<Value>) {
                 | "approval-unavailable"
                 | "approval-review-too-large"
                 | "stale-approval" => error.as_str(),
+                "tool_wasi_content_unavailable"
+                | "tool_wasi_invalid_module"
+                | "tool_wasi_platform_unverified" => error.as_str(),
                 _ => "execution-unavailable",
             };
             transition(record, state, Some(error));
@@ -322,7 +372,12 @@ fn read_ledger(store: &session_file::SessionFile, path: &Path) -> Result<Ledger>
             || record.permissions.len() > 16
             || record.permissions.iter().any(|p| bounded(p, 128).is_err())
             || bounded(&record.tool_name, 128).is_err()
-            || !matches!(record.kind.as_str(), "native" | "http")
+            || !matches!(record.kind.as_str(), "native" | "http" | "wasi")
+            || (record.kind == "wasi") != record.function.is_some()
+            || record
+                .function
+                .as_ref()
+                .is_some_and(|b| functions::validate_binding(b).is_err())
             || record.created_at > record.updated_at
             || record
                 .transitions
@@ -455,16 +510,25 @@ fn resolve(app: &tauri::AppHandle, request: &Request, window: &str) -> Result<Pr
     .or_else(|| originals.meta["profile"]["workspaceRoot"].as_str())
     .ok_or("workspace-violation")?;
     if captured.workspace.starts_with("wsl:")
-        && matches!(definition.binding, Binding::Native { .. })
+        && matches!(
+            definition.binding,
+            Binding::Native { .. } | Binding::Wasi { .. }
+        )
     {
         return Err("unsupported-platform".into());
     }
-    let root = if matches!(definition.binding, Binding::Native { .. }) {
+    let root = if matches!(
+        definition.binding,
+        Binding::Native { .. } | Binding::Wasi { .. }
+    ) {
         project::authorized_tool_root(app, &originals, Path::new(root))?
     } else {
         PathBuf::new()
     };
-    let kind = if matches!(definition.binding, Binding::Http { .. }) {
+    let kind = if matches!(definition.binding, Binding::Wasi { .. }) {
+        functions::module_path(app, &definition)?;
+        "wasi"
+    } else if matches!(definition.binding, Binding::Http { .. }) {
         "http"
     } else {
         "native"
@@ -506,6 +570,11 @@ fn resolve(app: &tauri::AppHandle, request: &Request, window: &str) -> Result<Pr
         error: None,
         transitions: vec![("awaiting-approval".into(), now())],
         confinement: None,
+        function: if matches!(definition.binding, Binding::Wasi { .. }) {
+            Some(definition.binding.clone())
+        } else {
+            None
+        },
     };
     Ok(Prepared {
         record,
@@ -515,6 +584,7 @@ fn resolve(app: &tauri::AppHandle, request: &Request, window: &str) -> Result<Pr
         root,
         policy,
         checked_revision: std::sync::atomic::AtomicU64::new(registry.revision),
+        started: AtomicBool::new(false),
     })
 }
 fn recheck(app: &tauri::AppHandle, prepared: &Prepared) -> Result<()> {
@@ -528,15 +598,21 @@ fn recheck(app: &tauri::AppHandle, prepared: &Prepared) -> Result<()> {
         != prepared.checked_revision.load(Ordering::Acquire)
     {
         let registry = load(app)?;
-        authorized_version(&registry, &prepared.access, &prepared.record.tool)?;
+        if prepared.started.load(Ordering::Acquire) {
+            active_version(&registry, &prepared.access, &prepared.record.tool)?;
+        } else {
+            authorized_version(&registry, &prepared.access, &prepared.record.tool)?;
+        }
         prepared
             .checked_revision
             .store(registry.revision, Ordering::Release);
     }
     let mut originals = original_owner(app, &prepared.access.session)?;
     load_tasks(app, &mut originals)?;
-    if matches!(prepared.definition.binding, Binding::Native { .. })
-        && project::authorized_tool_root(app, &originals, &prepared.root)? != prepared.root
+    if matches!(
+        prepared.definition.binding,
+        Binding::Native { .. } | Binding::Wasi { .. }
+    ) && project::authorized_tool_root(app, &originals, &prepared.root)? != prepared.root
     {
         return Err("workspace-violation".into());
     }
@@ -669,7 +745,7 @@ fn approval_text(record: &Record, definition: &Definition, arguments: &Value) ->
     Ok(description)
 }
 
-async fn run(app: &tauri::AppHandle, prepared: &Prepared, lease: &Lease) -> Result<Value> {
+async fn run(app: &tauri::AppHandle, prepared: &Prepared, lease: Lease) -> Result<Value> {
     recheck(app, prepared)?;
     let description = approval_text(&prepared.record, &prepared.definition, &prepared.arguments)?;
     let dialog_app = app.clone();
@@ -694,11 +770,16 @@ async fn run(app: &tauri::AppHandle, prepared: &Prepared, lease: &Lease) -> Resu
     };
     edit_record(app, &prepared.record.id, |record| {
         recheck(app, prepared)?;
-        approve(record, &prepared.record, approved)
+        approve(record, &prepared.record, approved)?;
+        prepared.started.store(true, Ordering::Release);
+        Ok(())
     })?;
+    if matches!(prepared.definition.binding, Binding::Wasi { .. }) {
+        return wasi::execute(app, prepared, lease).await;
+    }
     let cancelled = Arc::new(AtomicBool::new(false));
     let result = monitor(
-        lease,
+        &lease,
         prepared.definition.timeout_ms,
         execute_io(app, prepared, cancelled.clone()),
         || recheck(app, prepared),
@@ -772,8 +853,9 @@ pub async fn custom_tool_execute(
     if !consumed {
         return Ok(existing);
     }
-    let result = run(&app, &prepared, &lease).await;
+    let result = run(&app, &prepared, lease).await;
     let settled = edit_record(&app, &execution_id, |record| {
+        let result = result.and_then(|output| recheck(&app, &prepared).map(|()| output));
         settle(record, result);
         Ok(())
     });

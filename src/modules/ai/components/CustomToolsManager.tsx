@@ -15,6 +15,7 @@ import {
   Add01Icon,
   Edit02Icon,
   Delete02Icon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { loadAll, type SessionMeta } from "@/modules/ai/lib/sessions";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
@@ -317,13 +318,32 @@ export function ToolList({ session }: { session: SessionMeta }) {
                 )
               : Promise.resolve()
           }
+          onImport={async (definition) => {
+            setBusy(true);
+            setError("");
+            try {
+              setView(
+                await customToolsClient(session.id).importWasi(
+                  editor.revision,
+                  definition,
+                  editor.entry?.id,
+                ),
+              );
+              setEditor(null);
+            } catch (error) {
+              setError(String(error));
+              refresh();
+            } finally {
+              setBusy(false);
+            }
+          }}
         />
       )}
     </div>
   );
 }
 
-function ToolEditor({
+export function ToolEditor({
   session,
   initial,
   entry,
@@ -332,6 +352,7 @@ function ToolEditor({
   onClose,
   onSave,
   onAuthorize,
+  onImport,
 }: {
   session: SessionMeta;
   initial: ToolDefinition;
@@ -341,6 +362,7 @@ function ToolEditor({
   onClose: () => void;
   onSave: (definition: ToolDefinition) => Promise<void>;
   onAuthorize: () => Promise<void>;
+  onImport: (definition: ToolDefinition) => Promise<void>;
 }) {
   const fieldId = useId();
   const [draft, setDraft] = useState(initial);
@@ -397,6 +419,7 @@ function ToolEditor({
     "http",
     "script",
     "function",
+    "wasi",
     "mcp",
   ];
   return (
@@ -493,19 +516,23 @@ function ToolEditor({
             </fieldset>
             <fieldset className="flex flex-wrap gap-3">
               <legend className="mb-1 text-xs">Required permissions</legend>
-              {[
-                "read-files",
-                "write-files",
-                "create-files",
-                "run-commands",
-                "network",
-              ].map((permission) => (
+              {(draft.binding.kind === "wasi"
+                ? ["run-commands"]
+                : [
+                    "read-files",
+                    "write-files",
+                    "create-files",
+                    "run-commands",
+                    "network",
+                  ]
+              ).map((permission) => (
                 <label
                   className="flex items-center gap-1 text-xs"
                   key={permission}
                 >
                   <input
                     type="checkbox"
+                    disabled={draft.binding.kind === "wasi"}
                     checked={draft.permissions.includes(permission)}
                     onChange={(e) =>
                       update({
@@ -536,34 +563,85 @@ function ToolEditor({
                             url: "https://example.com/api",
                             method: "GET",
                           }
-                        : kind === "script"
-                          ? { kind, executable: "", argv: [], hash: "" }
-                          : kind === "function"
-                            ? { kind, module: "", export: "", hash: "" }
-                            : { kind, server: "", tool: "" };
-                  update({ binding: next });
+                        : kind === "wasi"
+                          ? {
+                              kind,
+                              schemaVersion: 1,
+                              hash: "",
+                              abi: "wasi-preview1-json-v1",
+                              export: "_start",
+                              runtime: "clack-wasi-1",
+                            }
+                          : kind === "script"
+                            ? { kind, executable: "", argv: [], hash: "" }
+                            : kind === "function"
+                              ? { kind, module: "", export: "", hash: "" }
+                              : { kind, server: "", tool: "" };
+                  update({
+                    binding: next,
+                    ...(kind === "wasi"
+                      ? {
+                          permissions: ["run-commands"],
+                          credentialRef: null,
+                          outputBytes: Math.min(draft.outputBytes, 16384),
+                        }
+                      : {}),
+                  });
                   setBinding(JSON.stringify(next, null, 2));
                 }}
               >
                 {kinds.map((kind) => (
-                  <option key={kind}>{kind}</option>
+                  <option key={kind} value={kind}>
+                    {kind === "wasi" ? "WASM/WASI function" : kind}
+                  </option>
                 ))}
               </select>
             </label>
-            <label htmlFor={`${fieldId}-binding`} className="block text-xs">
-              Binding JSON (no credentials)
-              <Textarea
-                id={`${fieldId}-binding`}
-                aria-label="Binding JSON"
-                className="max-h-44 font-mono text-xs"
-                value={binding}
-                maxLength={12000}
-                onChange={(e) => {
-                  setBinding(e.target.value);
-                  setFeedback("");
-                }}
-              />
-            </label>
+            {draft.binding.kind === "wasi" && (
+              <div className="min-w-0 space-y-2">
+                <p className="text-xs break-all">
+                  Module SHA-256: {draft.binding.hash || "Not imported"}
+                </p>
+                <Button
+                  className="h-auto max-w-full whitespace-normal text-left"
+                  variant="outline"
+                  disabled={busy || validating || readOnly}
+                  onClick={() => {
+                    try {
+                      void onImport(raw());
+                    } catch {
+                      setFeedback("Invalid JSON in schema or binding.");
+                    }
+                  }}
+                >
+                  <HugeiconsIcon icon={Upload01Icon} size={14} />
+                  {draft.binding.hash
+                    ? "Replace module and save draft"
+                    : "Import module and save draft"}
+                </Button>
+              </div>
+            )}
+            <details
+              open={draft.binding.kind !== "wasi"}
+              className="min-w-0 space-y-2 text-xs"
+            >
+              <summary>Binding details</summary>
+              <label htmlFor={`${fieldId}-binding`} className="block text-xs">
+                Binding JSON (no credentials)
+                <Textarea
+                  id={`${fieldId}-binding`}
+                  aria-label="Binding JSON"
+                  className="max-h-44 font-mono text-xs"
+                  value={binding}
+                  readOnly={draft.binding.kind === "wasi"}
+                  maxLength={12000}
+                  onChange={(e) => {
+                    setBinding(e.target.value);
+                    setFeedback("");
+                  }}
+                />
+              </label>
+            </details>
             <label htmlFor={`${fieldId}-input`} className="block text-xs">
               Input schema
               <Textarea
@@ -622,7 +700,7 @@ function ToolEditor({
                   id={`${fieldId}-bytes`}
                   type="number"
                   min={1024}
-                  max={262144}
+                  max={draft.binding.kind === "wasi" ? 16384 : 262144}
                   value={draft.outputBytes}
                   onChange={(e) =>
                     update({ outputBytes: Number(e.target.value) })
@@ -630,19 +708,24 @@ function ToolEditor({
                 />
               </label>
             </div>
-            <label htmlFor={`${fieldId}-credential`} className="block text-xs">
-              Credential reference
-              <Input
-                id={`${fieldId}-credential`}
-                aria-label="Credential reference"
-                placeholder="keyring:reference"
-                value={draft.credentialRef ?? ""}
-                maxLength={128}
-                onChange={(e) =>
-                  update({ credentialRef: e.target.value || null })
-                }
-              />
-            </label>
+            {draft.binding.kind !== "wasi" && (
+              <label
+                htmlFor={`${fieldId}-credential`}
+                className="block text-xs"
+              >
+                Credential reference
+                <Input
+                  id={`${fieldId}-credential`}
+                  aria-label="Credential reference"
+                  placeholder="keyring:reference"
+                  value={draft.credentialRef ?? ""}
+                  maxLength={128}
+                  onChange={(e) =>
+                    update({ credentialRef: e.target.value || null })
+                  }
+                />
+              </label>
+            )}
           </fieldset>
           {entry && (
             <details className="min-w-0 text-xs">
@@ -689,7 +772,11 @@ function ToolEditor({
                 Validate
               </Button>
               <Button
-                disabled={busy || validating}
+                disabled={
+                  busy ||
+                  validating ||
+                  (draft.binding.kind === "wasi" && !draft.binding.hash)
+                }
                 onClick={() => void validate(true)}
               >
                 {entry ? "Save new version" : "Save draft"}

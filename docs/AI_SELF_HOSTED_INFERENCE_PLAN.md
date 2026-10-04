@@ -1272,7 +1272,7 @@ This order does not authorize any pending implementation in this planning task.
 | 18 | T1 | Custom-tool definitions, validation and scoped authorization | Complete | `feat(ai): add scoped custom tool definitions`; [implementation record](#t1-implementation-record-2026-10-03) |
 | 19 | T2 | Guarded tool execution, testing and lifecycle | Pending | None |
 | 20 | T3a | Native confinement contract and tested platform support | Complete | Embedded WASI backend on Windows/Linux/macOS; native Windows verified, Linux/macOS CI evidence pending; see T3a ledger |
-| 21 | T3b | Authorized confined scripts/functions | Pending | None |
+| 21 | T3b | Authorized confined WASI functions | Complete | `feat(ai): run authorized confined functions`; implementation record below |
 | 22 | T3c | Explicit scoped MCP connections and tools | Pending | None |
 | 23 | F1 | Relevant schemas, compact prompt parity and cache awareness | Pending | None |
 | 24 | D2 | Length continuation, stitching and tool repair safety | Pending | None |
@@ -3709,6 +3709,120 @@ revocation and crash produce truthful bounded states with no effect replay.
 Unsupported platforms cannot enable the tool. Rollback disables these bindings
 and preserves definitions/results/unknown-effect records. Commit `feat(ai): run
 authorized confined scripts`, update ledger, STOP.
+
+**T3b implementation record: complete (2026-10-04)**
+
+Commit: this checkpoint, `feat(ai): run authorized confined functions`, based
+on `3ce3bef`. The approved executable format for this checkpoint is reviewed
+core WASM/WASIp1 commands only, not arbitrary native scripts. T3a remains the
+only production code-execution boundary. No new runtime dependency was added.
+
+- **Registration and ownership:** Settings > Agents > Custom tools offers
+  `WASM/WASI function`, native file selection, immutable import/replacement,
+  schema editing, module identity, existing assignment/authorization/enable
+  controls, real invocation testing and execution history. Import saves an
+  inactive draft after native confirmation; it never executes guest code to
+  inspect it. Module parsing/link validation rejects malformed/oversized bytes,
+  unsupported component/native formats, imports outside the explicit WASIp1
+  allowlist, invalid import signatures, missing/invalid `_start` or memory, and
+  unsupported ABI/runtime versions. Import checks selected and canonical secret
+  paths. User-reviewed bytes, not the original mutable file path, are retained.
+- **Exact binding:** Additive `Binding::Wasi` has `kind: "wasi"`,
+  `schemaVersion: 1`, lowercase SHA-256 `hash`,
+  `abi: "wasi-preview1-json-v1"`, `export: "_start"` and
+  `runtime: "clack-wasi-1"`. Existing T1 definition hashes also cover schemas,
+  assignments, scope, timeout and output configuration. Code/configuration edits
+  produce new disabled draft versions requiring renewed review. Registry schema
+  1 and existing native/HTTP definitions and hashes remain compatible.
+- **Storage:** Module bytes use the existing attachment content-addressed store.
+  Registry publication uses the existing atomic `clack-ai-tools.json` owner,
+  revision CAS, and cross-window change event. The content collection read lease
+  spans module publication through registry commit. All module references in
+  bounded version history, including removed/revoked definitions, are GC roots;
+  failed-import orphans are collected by existing reconciliation. Missing or
+  corrupt code is unavailable, never recovered from a changed source path.
+  Registry corruption pauses collection. No second database or inline blobs.
+- **Authorization:** Native import and confirmation are the only route for new
+  bytes. Agent proposals can reference only already imported same-workspace
+  hashes and retain T1's current-agent/current-conversation proposal restriction.
+  They cannot import, replace, assign, authorize or enable modules. Execution
+  intersects enabled authorized version, assignment/scope, workspace/run identity,
+  current permission profile and verified platform. WASI requires exactly
+  `run-commands`, no credential reference. Full Access never weakens confinement.
+  Unverified required platform capabilities block enablement and execution;
+  WSL workspace invocation is unavailable. B1 still sees only callable schemas.
+- **Capture and revisions:** T2 captures tool/version/definition hash, argument
+  hash and the exact function binding. Native approval is for that request;
+  queued old versions and changed arguments cannot reuse approval. Once approved,
+  an active invocation retains its immutable version through later edits or
+  authorization of a replacement. Optional `invalidatesPrevious` version markers
+  explicitly stop earlier invocations on disable/revoke/remove, including disable
+  of a replacement draft; re-enabling does not revive cancelled versions. New
+  invocations require the latest authorized enabled version. Historical execution
+  records add optional `function` binding provenance. No older record is rewritten.
+- **Execution:** Deterministic bounded JSON object arguments go to stdin, one
+  UTF-8 JSON result comes from stdout and must match the reviewed output schema.
+  Stderr is separately captured under the shared output cap, never interpreted
+  as JSON or retained as a result. The captured T3a policy is compared in full;
+  the staging receipt additionally binds ABI and input hash. Independent-copy
+  staging and hash revalidation precede guest execution. There are no host-file
+  input grants: path-looking JSON remains data. The guest gets only its private
+  staging preopen, no workspace/home/app-data access, inherited environment,
+  credentials, networking or host process API. Outputs never write back to the
+  workspace; this version returns JSON only, not declared-file exports.
+- **Bounds:** Module <=1 MiB; serialized input <=16 KiB; combined stdout/stderr
+  and retained JSON limited to the configured 1-16 KiB; guest memory 64 MiB;
+  timeout 100-120,000 ms; fuel `timeoutMs * 50,000`, yielding every 10,000 units;
+  cancellation/deadline checks on a 5 ms runtime tick. Inherited T3a limits:
+  512 KiB stack, one memory, one table/4,096 elements, guest plus forwarding
+  instance only, 128 iovecs, 64 opens and 8 MiB cumulative staged file writes.
+  T3b stages zero user files and one bounded module, returns zero file outputs,
+  and has two shared guest execution slots. T1 remains 128 tools, 32 versions,
+  8 MiB registry metadata; T2 retains 128 bounded execution records. Existing
+  native approval text limit is 2,048 characters and approval expires at 60 s.
+  These are finite operation/resource bounds, not hard realtime guarantees for
+  host compilation or filesystem calls.
+- **Lifecycle and truthful results:** UI Test and agent invocations share T2
+  prepare/approval/execute, D1 ownership and T3a cleanup. The lease and guest slot
+  live until cleanup/receipt completion; cancel, timeout and revocation suppress
+  results. A successful cleanup receipt alone no longer settles a function as
+  successful: JSON/schema validation and a final owner-locked recheck must pass.
+  Existing atomic history recovery marks interrupted executions without replay.
+  Guest stderr and raw invalid output are not saved as successful results.
+- **Native verification:** Windows executed the real WASI fixtures locally.
+  `cargo test --locked --lib custom_tools --no-fail-fast`: **76 passed**;
+  dedicated `cargo test --locked --lib wasi`: **30 passed**, including **13 new
+  T3b tests** and 17 inherited WASI adversarial tests. Coverage includes immutable
+  content/retention, nonexecuting import validation, T1/T2 version/approval
+  intersection, actual JSON guests and ledger persistence, malformed UTF-8/JSON,
+  schema errors, workspace/secret/preopen/environment denial, memory/flood/loop
+  limits, revocation and restart/no replay. Inherited tests cover network/process
+  imports, hard links, staged-write bounds, real D1 cancellation and cleanup.
+- **Frontend verification:** Focused `customTools`, `customToolExecution`,
+  `customExecution` and `CustomToolsManager` tests: **48 passed across 4 files**.
+  Includes 10 new tests for native-only import, proposal restrictions, actual
+  callable schema accounting, unavailable/permission-denied exposure, editor
+  controls and UI Test dispatch through the common execution client. UI tests
+  use static rendering/callbacks with mocked IPC, not native dialog interaction.
+- **Full gates:** `npm.cmd run check-types`, `npm.cmd run lint`, `npm.cmd test`
+  (**1,734 tests / 151 files**), `npm.cmd run build`, `git diff --check`,
+  `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, and
+  `cargo test --locked` (**586 = 536 library + 25 filesystem + 25 Git**) passed.
+  Lint remains **71 warnings / 2 infos / 0 errors**. Build retains four ineffective
+  dynamic-import warnings plus the plugin-timing advisory. Sandboxed Rust tools
+  printed the existing user-profile path canonicalization warning; native tests
+  used escalated execution for private staging ACLs. No user process was stopped.
+- **Platforms and limits:** Same embedded backend on Windows/Linux/macOS; only
+  Windows native verification is claimed. The existing three-OS CI matrix now
+  also runs the custom-tool/T3b suite. It was not pushed or run remotely here;
+  Linux/macOS remain unverified and fail-closed. No native GUI import/approval,
+  live provider, signed release, or other-host run is claimed. No arbitrary
+  shell/PowerShell/Python/Node/native plugin execution, WASI components, file
+  export protocol, dependency installation, MCP connection or F1 ranking.
+- **Rollback/stop:** Disable/revoke WASI definitions or remove their runtime
+  eligibility; retain immutable definitions, module references and history. Do
+  not fall back to native scripts or replay an interrupted execution.
+  **T3b is complete. Next: T3c: Scoped MCP tools. No subsequent checkpoint started.**
 
 #### T3c: Scoped MCP tools
 
