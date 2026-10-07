@@ -12,6 +12,18 @@ import { createRunBudget } from "../lib/runBudget";
 import { normalizeAiError, normalizeAiStreamPartError } from "../lib/errors";
 
 const onApproval = () => {};
+it("D2 renders adjacent confirmed continuation segments once and exposes incomplete provenance", () => {
+  const message: UIMessage = { id: "segmented", role: "assistant", parts: [
+    { type: "text", text: "Hello ", providerMetadata: { clackAnswer: { segmentId: "first" } } },
+    { type: "text", text: "world", providerMetadata: { clackAnswer: { segmentId: "second" } } },
+  ], metadata: { clackAnswer: { version: 1, runId: "chat:1", state: "incomplete", reason: "Continuation limit reached.", continuations: 1, repairs: 0, segments: [
+    { id: "first", previous: null, provider: "fixture", model: "model", startedAt: 1, endedAt: 2, finish: "length", inputTokens: 10, outputTokens: 10, pending: [] },
+    { id: "second", previous: "first", provider: "fixture", model: "model", startedAt: 3, endedAt: 4, finish: "length", inputTokens: 20, outputTokens: 10, pending: [] },
+  ] } } };
+  const html = renderMessage(message);
+  expect(html).toContain("Hello world"); expect(html.match(/Hello/g)).toHaveLength(1);
+  expect(html).toContain("Incomplete answer:"); expect(html).toContain("Continuation limit reached."); expect(html).toContain("Response segments (2)");
+});
 
 function renderMessage(message: UIMessage): string {
   return renderToStaticMarkup(

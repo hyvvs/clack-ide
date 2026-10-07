@@ -277,7 +277,8 @@ export async function loadMessages(id: string): Promise<UIMessage[] | null> {
   if (!messages) return null;
   const migrated = await migrateLegacyDataUrlAttachments(messages);
   if (migrated.changed) await saveMessages(id, migrated.messages);
-  return migrated.messages;
+  const { recoverAnswerMessages } = await import("@/modules/ai/lib/answerContinuation");
+  return recoverAnswerMessages(migrated.messages);
 }
 
 export async function saveSessionsList(sessions: SessionMeta[]): Promise<void> {

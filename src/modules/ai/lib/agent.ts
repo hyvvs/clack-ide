@@ -30,6 +30,12 @@ import { createProxyFetch } from "./proxyFetch";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import { gateInferenceTools } from "@/modules/ai/lib/inferenceToolGate";
 import {
+  verifiedProviderFetch,
+  withAnswerContinuation,
+  readAnswer,
+  type AnswerState,
+} from "@/modules/ai/lib/answerContinuation";
+import {
   prepareToolExposure,
   sameToolRevision,
 } from "@/modules/ai/lib/toolExposure";
@@ -47,6 +53,7 @@ import {
   type InferenceAdmission,
 } from "@/modules/ai/lib/inferenceAdmission";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import { effectiveProfileValue } from "@/modules/ai/lib/selfHostedProfiles";
 import {
   captureEffort,
   effortCapability,
@@ -256,16 +263,17 @@ export async function buildLanguageModel(
     validateEvidence: () =>
       options.inferenceScope?.validateEvidence?.() ?? Promise.resolve(),
   });
-  const cloudFetch = preflightFetch(
-    (input, init) => globalThis.fetch(input, init),
-    preflight,
+  const cloudFetch = verifiedProviderFetch(
+    preflightFetch((input, init) => globalThis.fetch(input, init), preflight),
   );
-  const scopedLocalFetch = createProxyFetch({
-    allowPrivateNetwork: true,
-    scope: options.inferenceScope,
-    admission,
-    preflight,
-  });
+  const scopedLocalFetch = verifiedProviderFetch(
+    createProxyFetch({
+      allowPrivateNetwork: true,
+      scope: options.inferenceScope,
+      admission,
+      preflight,
+    }),
+  );
   switch (provider) {
     case "openai": {
       const { createOpenAI } = await import("@ai-sdk/openai");
@@ -359,13 +367,15 @@ export async function buildLanguageModel(
           ? customEndpointKey || undefined
           : epKey || key || undefined,
         fetch: options.selfHosted
-          ? createProxyFetch({
-              allowPrivateNetwork: options.allowPrivateNetwork === true,
-              selfHosted: true,
-              scope: options.inferenceScope,
-              admission,
-              preflight,
-            })
+          ? verifiedProviderFetch(
+              createProxyFetch({
+                allowPrivateNetwork: options.allowPrivateNetwork === true,
+                selfHosted: true,
+                scope: options.inferenceScope,
+                admission,
+                preflight,
+              }),
+            )
           : scopedLocalFetch,
       })(resolvedModelId);
       break;
@@ -658,6 +668,7 @@ const EMPTY_USAGE: AgentUsage = {
 };
 
 export type RunAgentOptions = {
+  onAnswerState?: (state: AnswerState) => void;
   reasoning?: EffortCapture;
   inputCapabilities?: ModelInputCapabilities;
   onRetrieved?: (notice: RetrievalNotice) => void;
@@ -752,7 +763,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     };
   }
   const provider = info.provider;
-  const model = withProviderRetryTracking(
+  const trackedModel = withProviderRetryTracking(
     baseModel,
     {
       onRetry: (event) => opts.onProviderRetry?.(event),
@@ -812,6 +823,67 @@ export async function runAgentStream(opts: RunAgentOptions) {
     limits: await modelBudgetLimits(baseModel),
   });
   const pinnedTools = new Set(exposure.names);
+  let stepsSeen = 0;
+  const hostedProfile = opts.selfHostedInference?.profiles.find(
+    p => p.id === opts.capturedModelIdentity?.selfHosted?.profileId,
+  );
+  const continuationSetting = hostedProfile && opts.selfHostedInference
+    ? effectiveProfileValue(opts.selfHostedInference, hostedProfile.id, "autoContinuation").value
+    : undefined;
+  const continuationCount = hostedProfile && opts.selfHostedInference
+    ? effectiveProfileValue(opts.selfHostedInference, hostedProfile.id, "continuationCount").value
+    : undefined;
+  const runCalls = opts.compaction;
+  const lastMessage = opts.uiMessages[opts.uiMessages.length - 1];
+  const model = withAnswerContinuation(trackedModel, {
+    previous: lastMessage?.role === "assistant"
+      ? readAnswer(lastMessage) ?? undefined
+      : undefined,
+    knownToolIds: opts.uiMessages.flatMap(m =>
+      m.parts.flatMap(p => "toolCallId" in p ? [p.toolCallId] : []),
+    ),
+    runId: inferenceScope.runId,
+    provider,
+    modelId,
+    signal: opts.abortSignal,
+    isCurrent: inferenceScope.isCurrent,
+    onState: opts.onAnswerState,
+    maxContinuations: continuationSetting === false ? 0
+      : typeof continuationCount === "number"
+        ? Math.max(0, Math.min(3, continuationCount)) : 3,
+    limits: () => modelBudgetLimits(baseModel),
+    remaining: runCalls
+      ? () => Math.max(0, runCalls.remainingCalls() - stepsSeen)
+      : undefined,
+    charge: runCalls
+      ? async () => {
+          if (runCalls.remainingCalls() <= stepsSeen + 1)
+            throw new ContextBudgetError(
+              "answer-run-budget",
+              "The logical run has insufficient remaining budget for an output continuation.",
+            );
+          await runCalls.chargeCall();
+        }
+      : undefined,
+    validate: async () => {
+      const current = await buildTools(requestToolContext);
+      await prepareToolExposure(
+        Object.fromEntries(Object.entries(current).filter(
+          ([name, definition]) => name in permittedTools &&
+            sameToolRevision(definition, permittedTools[name]),
+        )),
+        {
+          context: requestToolContext,
+          messages: prunedHistory,
+          uiMessages: opts.uiMessages,
+          target: exposureTarget,
+          system: stableSystem,
+          limits: await modelBudgetLimits(baseModel),
+          mandatory: [...pinnedTools],
+        },
+      );
+    },
+  });
   const tools = gateInferenceTools(
     permittedTools,
     inferenceScope,
@@ -851,7 +923,6 @@ export async function runAgentStream(opts: RunAgentOptions) {
           .preserveOpenRouterErrorMetadata
       : undefined;
 
-  let stepsSeen = 0;
   let targetSeed:
     | import("@/modules/ai/lib/conversationMemory").MemoryRevision
     | undefined;

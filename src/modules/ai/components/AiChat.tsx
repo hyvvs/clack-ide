@@ -1,4 +1,5 @@
 import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
+import { answerParts, readAnswer } from "@/modules/ai/lib/answerContinuation";
 import { AgentActivity } from "@/modules/ai/components/AgentActivity";
 import {
   ACTIVITY_ENABLED,
@@ -556,18 +557,20 @@ export const RenderedMessage = memo(function RenderedMessage({
   activityPresented?: boolean;
   workspaceId?: string | null;
 }) {
+  const renderedParts = useMemo(() => answerParts(message), [message]);
+  const answer = readAnswer(message);
   // Index of the trailing text part. Only that one is live mid-stream.
   // Earlier text parts (separated by tool calls) are already finalized.
   let lastTextIdx = -1;
-  for (let i = message.parts.length - 1; i >= 0; i -= 1) {
-    if (message.parts[i]?.type === "text") {
+  for (let i = renderedParts.length - 1; i >= 0; i -= 1) {
+    if (renderedParts[i]?.type === "text") {
       lastTextIdx = i;
       break;
     }
   }
   const groups = useMemo(
-    () => buildPartGroups(message.parts as AnyPart[]),
-    [message.parts],
+    () => buildPartGroups(renderedParts as AnyPart[]),
+    [renderedParts],
   );
   const activity = useMemo(
     () => activityPresented ? readActivity(message, sessionId, workspaceId) : null,
@@ -630,7 +633,7 @@ export const RenderedMessage = memo(function RenderedMessage({
             if (
               activityPresented && g.kind === "single" && g.part.type === "reasoning"
             ) {
-              const label = reasoningLabel(g.part, activity?.receipts.find(r => r.part === g.idx)?.format);
+              const label = reasoningLabel(g.part, activity?.receipts.find(r => r.part === message.parts.indexOf(g.part as UIMessage["parts"][number]))?.format);
               return label ? (
                 <ProviderOutput key={`${message.id}-${g.key}`} label={label} text={g.part.text} />
               ) : null;
@@ -666,6 +669,23 @@ export const RenderedMessage = memo(function RenderedMessage({
               </PartAppear>
             );
           })}
+          {answer && (answer.state === "incomplete" || (!streaming && answer.state !== "complete")) ? (
+            <p className="break-words text-xs text-[var(--clack-text-3)]">
+              Incomplete answer: {answer.reason ?? "Generation was interrupted; not automatically resumed."}
+            </p>
+          ) : null}
+          {answer && answer.segments.length > 1 ? (
+            <details className="min-w-0 break-words text-xs text-[var(--clack-text-3)]">
+              <summary>Response segments ({answer.segments.length})</summary>
+              {answer.segments.map(segment => (
+                <p key={segment.id}>
+                  {segment.provider} / {segment.model}: {segment.finish} ({segment.usageReported
+                    ? `${segment.inputTokens} input, ${segment.outputTokens} output tokens`
+                    : "usage unavailable"})
+                </p>
+              ))}
+            </details>
+          ) : null}
         </div>
       </MessageContent>
     </Message>

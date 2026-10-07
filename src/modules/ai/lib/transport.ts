@@ -24,6 +24,7 @@ import {
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
+import { answerMetadataStream } from "@/modules/ai/lib/answerContinuation";
 import type {
   ConversationCompactionContext,
   CompactionNotice,
@@ -170,56 +171,64 @@ export function createContextAwareTransport(deps: Deps) {
     const messagesForRun = envBlock
       ? injectEnvIntoLastUser(messagesWithAttachments, envBlock)
       : messagesWithAttachments;
-    const result = await runAgentStream({
-      reasoning,
-      inputCapabilities: capabilities,
-      compaction,
-      onRetrieved: deps.onRetrieved,
-      onOptimized: deps.onOptimized,
-      inferenceScope: activity?.scope ?? deps.getInferenceScope?.(),
-      selfHostedInference: hostedState,
-      keys: deps.getKeys(),
-      modelId: deps.getModelId(),
-      customInstructions: deps.getCustomInstructions(),
-      agentPersona: deps.getAgentPersona(),
-      toolContext: { ...deps.toolContext, onCustomToolActivity: (id, state, effect) => activity?.customTool(id, state, effect) },
-      onStep: deps.onStep,
-      onUsage: deps.onUsage,
-      onCompact: deps.onCompact,
-      onRunStep: deps.onRunStep,
-      onProviderRetry: (event) => {
-        deps.onProviderRetry?.(event);
-        activity?.retry(event);
-      },
-      onProviderRecovered: () => {
-        deps.onProviderRecovered?.();
-        activity?.recovered();
-      },
-      onFinishMeta: deps.onFinishMeta,
-      lmstudioBaseURL: deps.getLmstudioBaseURL?.(),
-      lmstudioModelId: deps.getLmstudioModelId?.(),
-      mlxBaseURL: deps.getMlxBaseURL?.(),
-      mlxModelId: deps.getMlxModelId?.(),
-      ollamaBaseURL: deps.getOllamaBaseURL?.(),
-      ollamaModelId: deps.getOllamaModelId?.(),
-      openaiCompatibleBaseURL: deps.getOpenaiCompatibleBaseURL?.(),
-      openaiCompatibleModelId: deps.getOpenaiCompatibleModelId?.(),
-      openaiCompatibleContextLimit: deps.getOpenaiCompatibleContextLimit?.(),
-      openrouterModelId: deps.getOpenrouterModelId?.(),
-      savedProviderModels: deps.getSavedProviderModels?.(),
-      capturedModelIdentity: deps.getCapturedModelIdentity?.(),
-      customEndpoints: deps.getCustomEndpoints?.(),
-      customEndpointKeys: deps.getCustomEndpointKeys?.(),
-      planMode: deps.getPlanMode?.(),
-      projectMemory,
-      logicalContinuation: batch.isLogicalContinuation,
-      uiMessages: messagesForRun,
-      abortSignal: options.abortSignal,
-    });
-    return result.toUIMessageStream({
-      originalMessages: options.messages,
-      onError: (error) =>
-        deps.onError?.(error) ?? "The AI run failed for an unexpected reason.",
+    return answerMetadataStream(async (onAnswerState) => {
+      const result = await runAgentStream({
+        onAnswerState,
+        reasoning,
+        inputCapabilities: capabilities,
+        compaction,
+        onRetrieved: deps.onRetrieved,
+        onOptimized: deps.onOptimized,
+        inferenceScope: activity?.scope ?? deps.getInferenceScope?.(),
+        selfHostedInference: hostedState,
+        keys: deps.getKeys(),
+        modelId: deps.getModelId(),
+        customInstructions: deps.getCustomInstructions(),
+        agentPersona: deps.getAgentPersona(),
+        toolContext: {
+          ...deps.toolContext,
+          onCustomToolActivity: (id, state, effect) =>
+            activity?.customTool(id, state, effect),
+        },
+        onStep: deps.onStep,
+        onUsage: deps.onUsage,
+        onCompact: deps.onCompact,
+        onRunStep: deps.onRunStep,
+        onProviderRetry: (event) => {
+          deps.onProviderRetry?.(event);
+          activity?.retry(event);
+        },
+        onProviderRecovered: () => {
+          deps.onProviderRecovered?.();
+          activity?.recovered();
+        },
+        onFinishMeta: deps.onFinishMeta,
+        lmstudioBaseURL: deps.getLmstudioBaseURL?.(),
+        lmstudioModelId: deps.getLmstudioModelId?.(),
+        mlxBaseURL: deps.getMlxBaseURL?.(),
+        mlxModelId: deps.getMlxModelId?.(),
+        ollamaBaseURL: deps.getOllamaBaseURL?.(),
+        ollamaModelId: deps.getOllamaModelId?.(),
+        openaiCompatibleBaseURL: deps.getOpenaiCompatibleBaseURL?.(),
+        openaiCompatibleModelId: deps.getOpenaiCompatibleModelId?.(),
+        openaiCompatibleContextLimit: deps.getOpenaiCompatibleContextLimit?.(),
+        openrouterModelId: deps.getOpenrouterModelId?.(),
+        savedProviderModels: deps.getSavedProviderModels?.(),
+        capturedModelIdentity: deps.getCapturedModelIdentity?.(),
+        customEndpoints: deps.getCustomEndpoints?.(),
+        customEndpointKeys: deps.getCustomEndpointKeys?.(),
+        planMode: deps.getPlanMode?.(),
+        projectMemory,
+        logicalContinuation: batch.isLogicalContinuation,
+        uiMessages: messagesForRun,
+        abortSignal: options.abortSignal,
+      });
+      return result.toUIMessageStream({
+        originalMessages: options.messages,
+        onError: (error) =>
+          deps.onError?.(error) ??
+          "The AI run failed for an unexpected reason.",
+      });
     });
   };
 

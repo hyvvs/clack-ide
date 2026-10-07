@@ -1275,7 +1275,7 @@ This order does not authorize any pending implementation in this planning task.
 | 21 | T3b | Authorized confined WASI functions | Complete | `feat(ai): run authorized confined functions`; implementation record below |
 | 22 | T3c | Explicit scoped MCP connections and tools | Complete | `feat(ai): connect scoped MCP tools`; implementation record below |
 | 23 | F1 | Relevant schemas, compact prompt parity and cache awareness | Complete | `feat(ai): select relevant authorized tool schemas`; implementation record below |
-| 24 | D2 | Length continuation, stitching and tool repair safety | Pending | None |
+| 24 | D2 | Length continuation, stitching and tool repair safety | Complete | `feat(ai): continue truncated responses safely`; implementation record below |
 | 25 | D3 | Partial-stream/offline recovery | Pending | None |
 | 26 | E2 | Passive calibration and optional bounded optimization | Pending | None |
 | 27 | F2 | Watchdogs, compact health UX and advanced polish | Pending | None |
@@ -3956,6 +3956,105 @@ length; code/Unicode survive stitching; partial JSON never executes; repaired
 arguments get normal approval; completed tool IDs are not replayed. Include
 restart/render reconstruction, loop cap and cancellation. Rollback renders
 persisted segments without starting further automatic continuation.
+
+##### D2 implementation record (2026-10-07)
+
+- **Finish ownership:** `lib/answerContinuation.ts` normalizes installed V3
+  adapter output into `stop`, `length`, `tool-calls`, `policy`, `cancelled`,
+  `interrupted`, `error` or `unknown`. Only confirmed `length` permits another
+  output request. Normal/policy/tool finishes, cancellation, missing/nonstandard
+  metadata, provider errors and disconnects do not trigger length continuation.
+  A bounded structured SSE receipt requires actual Chat Completions `[DONE]`,
+  Anthropic `message_stop`, or Responses terminal events; marker strings inside
+  model text/comments cannot forge completion. Responses completed text/tool
+  events are recognized even when the adapter omits a raw reason. Nonstandard
+  incomplete details remain unknown, not the adapter's default normal stop.
+- **Durable answer representation:** Version 1 `metadata.clackAnswer` belongs
+  to the captured logical `runId` on the existing assistant UIMessage. It records
+  streaming/preparing/complete/incomplete state, bounded reason, continuation
+  and repair counts, accumulated continuation time, and ordered segments with
+  IDs/previous links, provider/model, timestamps, normalized/raw/wire finish,
+  reported input/output usage, conservative output budget usage, and bounded
+  unresolved call ID/name/input or repair-output diagnostics. Text/reasoning
+  parts retain `providerMetadata.clackAnswer.segmentId`. Original streamed parts
+  remain intact; no alternative message store or synthetic saved user message
+  is introduced. Duplicate IDs, bad previous links/timestamps, unsupported or
+  malformed records and serialized metadata over 1,048,576 characters are
+  rejected without changing original parts.
+- **Captured route, bounds and budgeting:** At most **3 text continuations**
+  and **1 incomplete-call repair** per logical answer. Same-run approval/batch
+  resumes preserve counters and provenance. Extra preparation/generation has
+  an accumulated **120,000 ms** deadline; normal first requests retain D1's
+  existing native timeout ownership. Future requests are capped by the remaining
+  **16,384 total generated-token** allowance, using reported usage or a
+  conservative text/reasoning/tool-input estimate. Text/reasoning is bounded to
+  **1,048,576 characters**, tool input/repair output to **262,144 characters**,
+  segments to **256**, pending calls to **64**, and buffered tool events to
+  **4,096**. Fewer than 16 meaningful text characters stops tiny-output storms.
+  Existing captured self-hosted continuation opt-out/lower count is honored.
+  Internal system instructions plus accumulated assistant text reuse the same
+  destination/model, effort, settings and exposed schemas. Fresh permission and
+  definition-revision checks precede each extra request; required F1 schemas
+  stay pinned. B1 measures the actual enlarged prompt, tool schemas, remaining
+  output and reasoning reserve before sending; existing final wire/native B1
+  remains authoritative. Extra calls charge the existing shared run budget,
+  reserving SDK steps already consumed and the current response. No tool-step
+  counter reset, new permission or provider fallback is introduced. Per-segment
+  usage remains inspectable and aggregate SDK step usage is charged once.
+- **Tool safety:** Streamed tool events are quarantined until a complete,
+  finished call with a JSON object, matching stream completion and nonambiguous
+  provider state exists. Missing finish/input-end, partial JSON, repeated IDs
+  and provider-executed/ambiguous effects are not released to the executor.
+  Repair is limited to one originally exposed function, the same ID/name and
+  exact original argument prefix. Repair prose/JSON stays diagnostic, never
+  assistant prose. Final arguments still enter the actual SDK schema validation,
+  current authorization and normal approval/T2/T3 execution path. No callback
+  executes during reconstruction. Original source and completed prompt call IDs
+  remain protected even after working-history compaction, including IDs completed
+  in the current SDK batch; duplicate provider
+  emissions cannot replay effects. The existing native execution ledger remains
+  the exactly-once authority, not a replacement D2 effect store. Ordinary complete
+  hidden-name calls still encounter the original F1 permitted executor guards.
+- **Rendering, cancellation and recovery:** Only adjacent tagged text parts
+  connected through confirmed length provenance are joined for display. Exact,
+  unique prose overlap is elided only in a **32-256 character** boundary window;
+  newline/code/JSON/list/short/repeated fragments are not heuristically rewritten.
+  Whitespace, surrogate-pair boundaries and combining characters survive;
+  step/tool/reasoning boundaries stay explicit. One logical assistant message
+  shows an incomplete state and inspectable segment/usage details where relevant.
+  R1 receipt lookup retains original part indexes. Abort-aware preparation,
+  reads, charge and request waits settle cancellation/deadline without waiting
+  for stale callbacks; the captured owner check prevents later publication or
+  effects. Existing session save/load persists original parts/metadata. Loading
+  unfinished streaming/preparing state produces an idempotent incomplete
+  projection, never another inference, tool effect or automatic restart resume.
+- **Tests and verification:** **86 new tests** cover finish/cap/budget/deadline/
+  cancellation/stale preparation, schema and approval repair, duplicate IDs,
+  mixed tool/text ordering, conservative joins, Unicode/code/JSON/lists, actual
+  SDK UI streaming, existing persistence IPC, real agent request preparation
+  and intercepted native admission. Installed OpenAI Responses and Chat,
+  compatible/self-hosted, Anthropic, Google, xAI Chat, Groq and Cerebras adapters
+  consume intercepted protocol fixtures; unknown compatible/Responses finishes
+  fail closed. Focused D2/regression group **208 passed / 10 files**; full frontend
+  **1,880 passed / 157 files**. `npm.cmd run check-types`, `npm.cmd run lint`,
+  `npm.cmd test`, `npm.cmd run build` and `git diff --check` passed. Lint baseline
+  unchanged: **71 warnings / 2 infos / 0 errors**; final corrected files also
+  pass focused lint with no diagnostics. Final diff review reproduced and fixed
+  current-batch tool-ID replay after SDK working-prompt compaction; affected,
+  focused and full tests were refreshed for that concrete correction. Four existing ineffective
+  dynamic-import warnings and plugin timing advisory remain. Tests ran with
+  approved native execution because sandbox transform-cache renames return EPERM.
+  No Rust changes, dependency additions, redundant native suite, native GUI,
+  Linux/macOS, CI, or live-provider/server verification is claimed.
+- **Limits/rollback/stop:** Unknown/nonstandard protocols are not guessed;
+  providers that cannot preserve a repaired call's identity/prefix stop safely.
+  No fuzzy/model-based merge or code correction is attempted. Reported usage
+  and conservative budget estimates are distinguished; unreported real-provider
+  token/latency measurements are not claimed. Disable automatic continuation
+  independently while preserving raw parts and the segment renderer. No offline
+  recovery, replay, fallback routing or new store is implemented. **D2 is
+  complete. Next in execution order: D3: Partial stream and offline recovery.
+  No D3 or subsequent checkpoint started.**
 
 ### D3: Partial stream and offline recovery
 

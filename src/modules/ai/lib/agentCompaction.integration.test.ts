@@ -31,6 +31,8 @@ const fixture = vi.hoisted(() => ({
   revokeAtAdmission: false,
   revoked: false,
   manyTools: false,
+  lengthAnswer: false,
+  lengthAfterTool: false,
 }));
 vi.mock("@/modules/settings/store", async (original) => ({
   ...(await original<typeof import("@/modules/settings/store")>()),
@@ -123,6 +125,8 @@ function complete(text: string) {
 function sse(first: boolean, recovered = false) {
   const event = (delta: unknown, finish_reason: string | null) =>
     `data: ${JSON.stringify({ id: "response", object: "chat.completion.chunk", created: 1, model: "private-model", choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
+  if (fixture.lengthAnswer) return `${event({ role: "assistant", content: first ? "```ts\nconst result = someFunction(" : ");\n```" }, first ? "length" : "stop")}data: [DONE]\n\n`;
+  if (fixture.lengthAfterTool && !first) return `${event({ role: "assistant", content: "A sufficiently meaningful continuation." }, "length")}data: [DONE]\n\n`;
   return first
     ? event(
         {
@@ -178,6 +182,8 @@ beforeEach(() => {
   fixture.revokeAtAdmission = false;
   fixture.revoked = false;
   fixture.manyTools = false;
+  fixture.lengthAnswer = false;
+  fixture.lengthAfterTool = false;
   originals = [
     {
       id: "u",
@@ -539,10 +545,14 @@ afterEach(() => {
   seedMessages.delete(owner.sessionId);
 });
 
-async function run(contextLimit = 20000) {
+async function run(contextLimit = 20000, callLimit = 100) {
   const chargeCall = vi.fn(async () => {});
   const optimized = vi.fn();
+  const answerState = vi.fn();
+  const usageDelta = vi.fn();
   const result = await runAgentStream({
+    onAnswerState: answerState,
+    onUsage: usageDelta,
     ...(fixture.switching
       ? {
           ...usePreferencesStore.getState(),
@@ -576,7 +586,7 @@ async function run(contextLimit = 20000) {
       owner,
       originals: structuredClone(originals),
       ready: async () => {},
-      remainingCalls: () => 100,
+      remainingCalls: () => callLimit,
       chargeCall,
     },
     onOptimized: optimized,
@@ -596,9 +606,31 @@ async function run(contextLimit = 20000) {
     chunks.push(chunk);
     if (chunk.type === "error") errors.push(chunk.error);
   }
-  return { errors, chunks, chargeCall, optimized };
+  return { errors, chunks, chargeCall, optimized, answerState, usageDelta };
 }
 describe("automatic compaction in the real agent request path", () => {
+  it("D2 reserves completed SDK steps before charging another output request", async () => {
+    fixture.lengthAfterTool = true;
+    originals = [{ id: "mission", role: "user", parts: [{ type: "text", text: "Inspect the fixture." }] }];
+    const outcome = await run(8192, 2);
+    expect(streams).toHaveLength(2);
+    expect(fixture.execute).toHaveBeenCalledOnce();
+    expect(outcome.chargeCall).not.toHaveBeenCalled();
+    expect(outcome.answerState.mock.calls[outcome.answerState.mock.calls.length - 1]?.[0]).toMatchObject({ state: "incomplete", reason: "Answer continuation reached the shared token/run limit." });
+  });
+  it("D2 continues the same captured answer through native admission/B1 and the shared budget", async () => {
+    fixture.lengthAnswer = true;
+    originals = [{ id: "mission", role: "user", parts: [{ type: "text", text: "Write a code example." }] }];
+    const before = JSON.stringify(originals);
+    const outcome = await run(8192);
+    expect(outcome.errors).toEqual([]); expect(streams).toHaveLength(2);
+    expect(outcome.chargeCall).toHaveBeenCalledOnce(); expect(outcome.usageDelta).toHaveBeenCalledOnce();
+    expect(JSON.stringify(streams[1])).toContain("Continue the SAME assistant answer");
+    expect(streams[1].messages.filter(m => m.role === "user")).toHaveLength(1);
+    for (const body of streams) expect(resolveContextBudget({ asserted: 8192 }, measureRequest(body)).fits).toBe(true);
+    expect(outcome.answerState.mock.calls[outcome.answerState.mock.calls.length - 1][0]).toMatchObject({ state: "complete", continuations: 1 });
+    expect(JSON.stringify(originals)).toBe(before); expect(fixture.execute).not.toHaveBeenCalled(); expect(extracts).toHaveLength(0);
+  });
   it("F1 sends selected schemas through actual B1 wire preflight and pins paired tools on the next step", async () => {
     fixture.manyTools = true;
     originals = [
