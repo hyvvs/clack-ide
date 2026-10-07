@@ -68,6 +68,8 @@ pub struct Record {
     confinement: Option<super::confinement::Receipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     function: Option<Binding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mcp: Option<mcp::Provenance>,
 }
 #[derive(Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -85,6 +87,7 @@ pub(crate) struct Prepared {
     policy: String,
     checked_revision: std::sync::atomic::AtomicU64,
     started: AtomicBool,
+    mcp: Option<mcp::Capture>,
 }
 
 pub(super) fn supported(definition: &Definition) -> bool {
@@ -119,6 +122,7 @@ pub(super) fn supported(definition: &Definition) -> bool {
                 && functions::platform_verified()
                 && definition.credential_ref.is_none()
         }
+        Binding::Mcp { .. } => mcp::validate_binding(&definition.binding).is_ok(),
         _ => false,
     }
 }
@@ -182,6 +186,7 @@ fn same_capture(record: &Record, captured: &Record) -> Result<()> {
         || record.permissions != captured.permissions
         || record.test != captured.test
         || record.function != captured.function
+        || record.mcp != captured.mcp
     {
         return Err("stale-approval".into());
     }
@@ -269,7 +274,12 @@ fn settle(record: &mut Record, result: Result<Value>) {
             }
             let state = match error.as_str() {
                 "denied" => "denied",
-                "cancelled" | "tool-revoked" | "run-changed" | "permission-changed" => "cancelled",
+                "cancelled"
+                | "tool-revoked"
+                | "run-changed"
+                | "permission-changed"
+                | "mcp-credential-changed"
+                | "mcp-disconnected" => "cancelled",
                 "timed-out" | "approval-expired" => "timed-out",
                 _ => "failed",
             };
@@ -299,7 +309,35 @@ fn settle(record: &mut Record, result: Result<Value>) {
                 | "execution-capacity"
                 | "approval-unavailable"
                 | "approval-review-too-large"
-                | "stale-approval" => error.as_str(),
+                | "stale-approval"
+                | "mcp-auth-failed"
+                | "mcp-disconnected"
+                | "mcp-credential-changed"
+                | "mcp-credential-unavailable"
+                | "mcp-discovery-changed"
+                | "mcp-tool-changed"
+                | "mcp-tool-contract-changed"
+                | "mcp-network-failed"
+                | "mcp-http-failed"
+                | "mcp-server-error"
+                | "mcp-tool-error"
+                | "mcp-response-limit"
+                | "mcp-result-limit"
+                | "mcp-malformed-rpc"
+                | "mcp-malformed-json"
+                | "mcp-response-identity"
+                | "mcp-unsupported-server-request"
+                | "mcp-unsupported-notification"
+                | "mcp-unsupported-result-content"
+                | "mcp-result"
+                | "mcp-connection-busy"
+                | "mcp-session-changed"
+                | "mcp-session"
+                | "mcp-content-type"
+                | "mcp-incomplete-stream"
+                | "mcp-event-limit"
+                | "mcp-unsupported-event"
+                | "mcp-encoding" => error.as_str(),
                 "tool_wasi_content_unavailable"
                 | "tool_wasi_invalid_module"
                 | "tool_wasi_platform_unverified" => error.as_str(),
@@ -372,7 +410,9 @@ fn read_ledger(store: &session_file::SessionFile, path: &Path) -> Result<Ledger>
             || record.permissions.len() > 16
             || record.permissions.iter().any(|p| bounded(p, 128).is_err())
             || bounded(&record.tool_name, 128).is_err()
-            || !matches!(record.kind.as_str(), "native" | "http" | "wasi")
+            || !matches!(record.kind.as_str(), "native" | "http" | "wasi" | "mcp")
+            || (record.kind == "mcp") != record.mcp.is_some()
+            || record.mcp.as_ref().is_some_and(|m| m.validate().is_err())
             || (record.kind == "wasi") != record.function.is_some()
             || record
                 .function
@@ -530,6 +570,8 @@ fn resolve(app: &tauri::AppHandle, request: &Request, window: &str) -> Result<Pr
         "wasi"
     } else if matches!(definition.binding, Binding::Http { .. }) {
         "http"
+    } else if matches!(definition.binding, Binding::Mcp { .. }) {
+        "mcp"
     } else {
         "native"
     };
@@ -543,6 +585,11 @@ fn resolve(app: &tauri::AppHandle, request: &Request, window: &str) -> Result<Pr
             .as_bytes()
         )
     );
+    let mcp = if kind == "mcp" {
+        Some(mcp::capture(app, &captured, &definition)?)
+    } else {
+        None
+    };
     let record = Record {
         id,
         epoch: MEMORY_EPOCH.clone(),
@@ -570,6 +617,7 @@ fn resolve(app: &tauri::AppHandle, request: &Request, window: &str) -> Result<Pr
         error: None,
         transitions: vec![("awaiting-approval".into(), now())],
         confinement: None,
+        mcp: mcp.as_ref().map(|m| m.provenance.clone()),
         function: if matches!(definition.binding, Binding::Wasi { .. }) {
             Some(definition.binding.clone())
         } else {
@@ -585,9 +633,13 @@ fn resolve(app: &tauri::AppHandle, request: &Request, window: &str) -> Result<Pr
         policy,
         checked_revision: std::sync::atomic::AtomicU64::new(registry.revision),
         started: AtomicBool::new(false),
+        mcp,
     })
 }
 fn recheck(app: &tauri::AppHandle, prepared: &Prepared) -> Result<()> {
+    if let Some(captured) = &prepared.mcp {
+        mcp::recheck(app, captured)?;
+    }
     if access(app, &prepared.access.session)? != prepared.access {
         return Err("run-changed".into());
     }
@@ -729,12 +781,30 @@ async fn execute_io(
             let response = request.send().await.map_err(|_| "network-failed")?;
             io::response(response, limit, secret.as_deref()).await
         }
+        Binding::Mcp { .. } => {
+            let captured = prepared.mcp.as_ref().ok_or("mcp-unavailable")?;
+            mcp::invoke(app, captured, &prepared.arguments, || {
+                edit_record(app, &prepared.record.id, |record| {
+                    recheck(app, prepared)?;
+                    same_capture(record, &prepared.record)?;
+                    if record.state != "running" {
+                        return Err("cancelled".into());
+                    }
+                    // Even a tool annotated read-only may mutate a remote service.
+                    record.effect = "possible".into();
+                    Ok(())
+                })?;
+                Ok(())
+            })
+            .await
+        }
         _ => Err("unsupported-kind".into()),
     }
 }
 
 fn approval_text(record: &Record, definition: &Definition, arguments: &Value) -> Result<String> {
-    let description = format!("{} v{}\nWorkspace: {}\nAgent: {}\nDefinition SHA-256: {}\nBinding: {}\nPermissions: {}\nCredential reference: {}\nArguments (untrusted data): {}\n\nReal operation, not a dry run. Remote effects may not be reversible. Approve this exact request?",
+    let remote = record.mcp.as_ref().map(|p| serde_json::to_string(p).map(|p| format!("\nRemote MCP (not locally sandboxed); arguments leave Clack. Destination and provenance: {p}"))).transpose().map_err(|_| "mcp-provenance")?.unwrap_or_default();
+    let description = format!("{} v{}\nWorkspace: {}\nAgent: {}\nDefinition SHA-256: {}\nBinding: {}\nPermissions: {}\nCredential reference: {}\nArguments (untrusted data): {}{remote}\n\nReal operation, not a dry run. Remote effects may not be reversible. Approve this exact request?",
         record.tool_name, record.tool.version, record.workspace_id, record.agent_id,
         record.tool.hash, serde_json::to_string(&definition.binding).map_err(|_| "invalid-arguments")?,
         definition.permissions.join(", "), definition.credential_ref.as_deref().unwrap_or("none"),
@@ -743,6 +813,11 @@ fn approval_text(record: &Record, definition: &Definition, arguments: &Value) ->
         return Err("approval-review-too-large".into());
     }
     Ok(description)
+}
+
+pub(super) fn redact_mcp(mut value: Value, secret: Option<&str>) -> Value {
+    io::redact(&mut value, secret);
+    value
 }
 
 async fn run(app: &tauri::AppHandle, prepared: &Prepared, lease: Lease) -> Result<Value> {
@@ -786,6 +861,11 @@ async fn run(app: &tauri::AppHandle, prepared: &Prepared, lease: Lease) -> Resul
     )
     .await;
     cancelled.store(true, Ordering::Release);
+    if result.is_err() {
+        if let Some(captured) = &prepared.mcp {
+            mcp::interrupted(app, captured);
+        }
+    }
     let output = result?;
     recheck(app, prepared)?;
     schema::value_matches(&prepared.definition.output_schema, &output, 0)

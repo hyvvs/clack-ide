@@ -73,6 +73,7 @@ pub(super) fn arguments(definition: &Definition, args: &Value) -> Result<String>
         Binding::Http { method, .. }
             if method == "POST" && object.len() == 1 && object.contains_key("body") => {}
         Binding::Wasi { .. } => {}
+        Binding::Mcp { .. } if mcp::validate_binding(&definition.binding).is_ok() => {}
         _ => return Err("unsupported-operation-or-arguments".into()),
     }
     Ok(digest(&bytes))

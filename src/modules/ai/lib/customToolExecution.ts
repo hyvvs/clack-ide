@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { beginInference } from "@/modules/ai/lib/inferenceLifecycle";
+import type { McpProvenance } from "@/modules/ai/lib/mcpConnections";
 import type {
   CapturedToolVersion,
   ToolBinding,
@@ -16,6 +17,7 @@ export type ExecutionRecord = {
   toolName: string;
   kind: string;
   function?: Extract<ToolBinding, { kind: "wasi" }>;
+  mcp?: McpProvenance;
   argumentsHash: string;
   state: string;
   effect: string;

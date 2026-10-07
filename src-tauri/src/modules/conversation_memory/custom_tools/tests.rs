@@ -305,6 +305,9 @@ fn kinds_require_explicit_binding_capabilities_and_never_plaintext_credentials()
     d.binding = Binding::Mcp {
         server: "configured-server-id".into(),
         tool: "fetch".into(),
+        revision: None,
+        discovery: None,
+        tool_hash: None,
     };
     d.permissions = vec!["network".into()];
     assert!(validate(&d).is_ok());

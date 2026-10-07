@@ -1273,7 +1273,7 @@ This order does not authorize any pending implementation in this planning task.
 | 19 | T2 | Guarded tool execution, testing and lifecycle | Pending | None |
 | 20 | T3a | Native confinement contract and tested platform support | Complete | Embedded WASI backend on Windows/Linux/macOS; native Windows verified, Linux/macOS CI evidence pending; see T3a ledger |
 | 21 | T3b | Authorized confined WASI functions | Complete | `feat(ai): run authorized confined functions`; implementation record below |
-| 22 | T3c | Explicit scoped MCP connections and tools | Pending | None |
+| 22 | T3c | Explicit scoped MCP connections and tools | Complete | `feat(ai): connect scoped MCP tools`; implementation record below |
 | 23 | F1 | Relevant schemas, compact prompt parity and cache awareness | Pending | None |
 | 24 | D2 | Length continuation, stitching and tool repair safety | Pending | None |
 | 25 | D3 | Partial-stream/offline recovery | Pending | None |
@@ -3838,6 +3838,114 @@ protocol actions fail explicitly. Rollback disconnects owned connections,
 disables bindings and preserves definitions/history; ambiguous remote effects
 remain unresolved. Commit `feat(ai): connect scoped MCP tools`, update ledger,
 STOP. T3 is complete only with separate supported-kind/platform evidence.
+
+##### T3c implementation record (2026-10-04)
+
+- **Transport and ownership:** Explicit remote MCP 2025-06-18 Streamable HTTP
+  over public HTTPS, using the existing native pinned-DNS/SSRF boundary, no
+  redirects, proxies, inherited credentials or automatic retries. Both JSON and
+  bounded POST SSE responses work. Remote services are not locally sandboxed.
+  Native local MCP launchers remain unavailable on every OS: T3b's one-shot WASI
+  JSON ABI does not provide an interactive MCP server transport. No sandbox or
+  shell/Python/Node launcher changes. Protocol references:
+  [transport](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports),
+  [lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle),
+  [tools](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).
+- **Durable records:** Additive `connections` array in T1's existing schema-1
+  `clack-ai-tools.json` registry, not a new store. Native-generated stable
+  connection IDs belong to a workspace. Each keeps up to 32 monotonic config
+  revisions: name, transport, destination, conversation/agent/workspace scope,
+  explicit assignments, credential reference, authorization/enabled state and
+  timestamp. Discovery retains config revision, server identity, aggregate hash
+  and tool name/hash pairs. Config edits reset authorization/discovery; rename
+  preserves ID. Rolling history cannot exhaust disable/revoke capacity.
+- **Consent and credentials:** Native dialogs gate creation, edits, assignment,
+  authorization, enablement, explicit connect and credential changes. No agent
+  API creates/enables connections or self-assigns authority. Bearer secrets use
+  the existing secret store, keyed by connection ID plus destination digest;
+  only references persist. Destination edits cannot forward an old credential.
+  Secret presence/digest is rechecked during live work; deletion/replacement
+  invalidates eligibility and interrupts work. Discovery/results redact exact
+  credentials and sensitive fields; raw server errors are not history/log text.
+- **Discovery and T1:** Maximum 16 connections, 16 tools per connection, four
+  discovery pages, 64 KiB per wire response and 30 seconds for connection work.
+  Tool names are unique; cursor cycles, unsupported versions/capabilities,
+  malformed metadata and schemas fail closed. Raw tools are capped at 16 KiB;
+  schemas use T1's 8 KiB, depth/node/property limits. Missing finite string/array
+  bounds are supplied conservatively (8,192 characters / 64 items); unknown or
+  unbounded schema constructs are rejected, never fetched. Discovery registers
+  disabled T1 drafts with stable generated names, connection revision, discovery
+  hash and exact tool hash. Server annotations/descriptions never grant policy.
+- **Execution and provenance:** UI Test and agent calls share T2 native approval,
+  permission/run/window checks, D1 cancellation, call IDs and durable history.
+  MCP captures connection/config/discovery/tool identity, endpoint and credential
+  reference in addition to the existing tool version/schema hash, agent,
+  workspace/conversation and arguments hash. Native approval shows destination
+  and exact outgoing arguments and warns of external transfer. Every MCP call
+  is effectful regardless of read-only/idempotent annotations. A fresh bounded
+  tools listing is checked after approval and before invocation. Tool/result
+  schema substitution, changed assignment, disconnect/reconnect or credential
+  change cannot reuse a stale prepared call. B1 still accounts for actual T1
+  callable schemas; PeerTask does not transfer connection authority.
+- **Responses and lifecycle:** Maximum 16 text items, 8 KiB per text item,
+  16 KiB normalized result and T2's configured 100-120,000 ms operation deadline.
+  Structured output requires a declared bounded schema and passes T2 validation.
+  Binary/embedded-resource results are rejected; no resource URI is fetched.
+  Server `isError` is a failed execution, not success. Ping receives a bounded
+  reply; sampling/elicitation/other client requests receive method-not-found and
+  fail explicitly. SSE traffic is capped at 32 events per response. Connection
+  changes stop existing runtimes; stopped runtimes release idle clients, in-flight
+  requests are dropped through D1, and explicit disconnect attempts a two-second
+  session DELETE when credentials remain valid. This does not prove remote work
+  was cancelled. Calls sent before interruption retain unknown effects, never
+  blind replay. Failed calls require explicit reconnect; there is no reconnect
+  loop or background GET subscription.
+- **Recovery and UI:** Atomic T1 CAS publication installs discovery and tool
+  versions together. Identical reconnects deduplicate and preserve narrowed
+  assignments; changed discovery creates disabled drafts needing review.
+  Removed tools are not resurrected. Existing T1/T2 records load additively;
+  malformed connection/history data fails closed. Restart restores records but
+  no live session, connection, stream or invocation. Custom Tools now contains
+  bounded connection editor/list, scope/agent assignment, credential status,
+  connect/disconnect, authorize/enable/revoke and discovery inspection. Existing
+  tool review/test/history handles MCP; discovered contracts are read-only in
+  the editor and checked again natively.
+- **Tests:** Windows `cargo test --locked --lib mcp`: **30 passed**, including
+  actual local TCP JSON/SSE initialization, discovery, calls and DELETE;
+  malformed/oversized data, pagination, duplicate tools, session/version changes,
+  malicious text/lying annotations, credential redaction/revocation, native
+  launcher denial, ownership/scope, schema substitution, reconnect, persistence,
+  native approval captures, successful T2 result history and real in-flight D1
+  cancellation/disconnect/timeout with unknown effects/no replay. Broader
+  `cargo test --locked --lib custom_tools --no-fail-fast`: **106 passed**, retaining
+  native/HTTP/WASI coverage. Focused frontend MCP plus existing custom-tool
+  tests: **58 passed / 6 files**, including **10 new tests / 2 files**.
+- **Full gates:** `npm.cmd run check-types`, `npm.cmd run lint`, `npm.cmd test`
+  (**1,744 / 153 files**), `npm.cmd run build`, `git diff --check`,
+  `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`,
+  and `cargo test --locked` (**616 = 566 library + 25 filesystem + 25 Git**)
+  passed. Lint remains **71 warnings / 2 infos / 0 errors**; Vite retains four
+  ineffective dynamic-import warnings plus the plugin-timing advisory. Rust's
+  sandboxed user-profile path warning is unchanged. One new test-only Clippy
+  style issue was fixed. Rust checks were repeated for the final idle-client
+  cleanup and `isError` corrections; frontend full gates were not rerun without
+  frontend changes. Headless Chrome/Playwright checked the editor and expanded
+  connection row at **390x900 and 1280x900**: no page errors, horizontal overflow
+  or offscreen controls. These were browser fixtures, not native consent tests.
+- **Platforms and limitations:** Remote MCP uses the same code/security model on
+  Windows/Linux/macOS. Native Windows tests ran; Linux/macOS and native GUI/live
+  external-server tests were not performed. The existing three-OS CI matrix
+  already runs `custom_tools`, including this suite; no CI run or push is claimed.
+  No OAuth flow, legacy HTTP+SSE transport, unrestricted JSON Schema, automatic
+  installation/discovery, sampling, elicitation, startup execution, local native
+  process or local WASI MCP server. Remote content hashes identify advertised
+  contracts, not proof of remote implementation behavior. Large approval text
+  still fails closed at T2's existing 2,048-character review limit.
+- **Rollback/stop:** Disconnect and disable/revoke connections or T1 bindings;
+  retain connection revisions, definitions, provenance and execution history.
+  Never fall back to a native launcher or replay an ambiguous remote call.
+  **T3c is complete. Next in the execution-order ledger: F1: Efficiency with
+  policy parity. No F1 or subsequent checkpoint started.**
 
 ### D2: Safe length continuation
 

@@ -5,6 +5,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 pub mod confinement;
 pub mod execution;
 pub mod functions;
+pub mod mcp;
 #[cfg(test)]
 mod tests;
 
@@ -43,6 +44,16 @@ pub enum Binding {
     Mcp {
         server: String,
         tool: String,
+        #[serde(
+            default,
+            rename = "connectionRevision",
+            skip_serializing_if = "Option::is_none"
+        )]
+        revision: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        discovery: Option<String>,
+        #[serde(default, rename = "toolHash", skip_serializing_if = "Option::is_none")]
+        tool_hash: Option<String>,
     },
 }
 
@@ -93,6 +104,8 @@ struct Registry {
     schema_version: u32,
     revision: u64,
     entries: Vec<Entry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    connections: Vec<mcp::Connection>,
 }
 impl Default for Registry {
     fn default() -> Self {
@@ -100,6 +113,7 @@ impl Default for Registry {
             schema_version: 1,
             revision: 0,
             entries: vec![],
+            connections: vec![],
         }
     }
 }
@@ -387,9 +401,21 @@ fn validate(definition: &Definition) -> Result<()> {
             bounded(export, 64)?;
             "run-commands"
         }
-        Binding::Mcp { server, tool } => {
+        Binding::Mcp {
+            server,
+            tool,
+            revision,
+            discovery,
+            tool_hash,
+        } => {
             bounded(server, 128)?;
             bounded(tool, 128)?;
+            if revision.is_some() || discovery.is_some() || tool_hash.is_some() {
+                mcp::validate_binding(&definition.binding)?;
+                if definition.permissions != ["network"] || definition.credential_ref.is_some() {
+                    return Err("mcp-invalid-permissions".into());
+                }
+            }
             "network"
         }
         Binding::Wasi { .. } => {
@@ -458,6 +484,7 @@ fn eligible(entry: &Entry, access: &Access) -> bool {
         && (d.scope != "conversation" || d.conversations.contains(&access.session))
 }
 fn validate_registry(registry: &Registry) -> Result<()> {
+    mcp::validate_connections(&registry.connections)?;
     if registry.schema_version != 1
         || registry.entries.len() > MAX_TOOLS
         || registry.revision > 9_007_199_254_740_990
@@ -834,6 +861,11 @@ pub async fn custom_tools_load(
             .ok_or("tool_invalid_registry")?
         {
             if let Some(entry) = registry.entries.iter().find(|e| value["id"] == e.id) {
+                if matches!(latest(entry).definition.binding, Binding::Mcp { .. }) {
+                    let available = mcp::capture_in(&app, &registry, &access, &latest(entry).definition).is_ok();
+                    value["executable"] = json!(available && eligible(entry, &access));
+                    value["runtime"] = json!(if available { "Remote MCP; external-data approval required; not locally sandboxed" } else { "MCP unavailable: connect, review discovery, assignment and credential status" });
+                }
                 if matches!(latest(entry).definition.binding, Binding::Wasi { .. })
                     && functions::module_path(&app, &latest(entry).definition).is_err()
                 {
@@ -873,6 +905,7 @@ pub async fn custom_tools_change(
         if !restrictive {
             assignments(&app, &v.definition, &captured)?;
             functions::registered_module(&app, &load(&app)?, &captured, &v.definition)?;
+            if matches!(v.definition.binding, Binding::Mcp { .. }) { mcp::capture(&app, &captured, &v.definition)?; }
         }
         let description = serde_json::to_string_pretty(&json!({
             "action": serde_json::to_value(&change).map_err(|e| e.to_string())?["action"],
@@ -893,7 +926,10 @@ pub async fn custom_tools_change(
         if access(&app, &session_id)? != captured { return Err("tool_authorization_changed".into()); }
         let current = load(&app)?;
         if current.revision != expected_revision { return Err("tool_stale_revision: reload and review again".into()); }
-        if !restrictive { assignments(&app, &v.definition, &captured)?; }
+        if !restrictive {
+            assignments(&app, &v.definition, &captured)?;
+            if matches!(v.definition.binding, Binding::Mcp { .. }) { mcp::capture(&app, &captured, &v.definition)?; }
+        }
         publish(&app, &preview)?;
         Ok(view(&preview, &captured))
     })

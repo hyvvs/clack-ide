@@ -19,6 +19,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { loadAll, type SessionMeta } from "@/modules/ai/lib/sessions";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
+import { McpConnections } from "@/modules/ai/components/McpConnections";
 import {
   CustomToolHistory,
   CustomToolTest,
@@ -81,6 +82,9 @@ export function CustomToolsManager() {
         </select>
       </label>
       {error && <p role="alert">{error}</p>}
+      {session && (
+        <McpConnections key={`mcp-${session.id}`} session={session} />
+      )}
       {session && <ToolList key={session.id} session={session} />}
     </section>
   );
@@ -420,7 +424,7 @@ export function ToolEditor({
     "script",
     "function",
     "wasi",
-    "mcp",
+    ...(initial.binding.kind === "mcp" ? (["mcp"] as const) : []),
   ];
   return (
     <Dialog
@@ -464,6 +468,7 @@ export function ToolEditor({
                 aria-label="Tool description"
                 className="max-h-32"
                 value={draft.description}
+                readOnly={draft.binding.kind === "mcp"}
                 maxLength={2048}
                 onChange={(e) => update({ description: e.target.value })}
               />
@@ -482,11 +487,12 @@ export function ToolEditor({
                   })
                 }
               >
-                {["conversation", "agent", "workspace", "global"].map(
-                  (scope) => (
-                    <option key={scope}>{scope}</option>
-                  ),
-                )}
+                {(draft.binding.kind === "mcp"
+                  ? ["conversation", "agent", "workspace"]
+                  : ["conversation", "agent", "workspace", "global"]
+                ).map((scope) => (
+                  <option key={scope}>{scope}</option>
+                ))}
               </select>
             </label>
             <fieldset className="space-y-1">
@@ -518,13 +524,15 @@ export function ToolEditor({
               <legend className="mb-1 text-xs">Required permissions</legend>
               {(draft.binding.kind === "wasi"
                 ? ["run-commands"]
-                : [
-                    "read-files",
-                    "write-files",
-                    "create-files",
-                    "run-commands",
-                    "network",
-                  ]
+                : draft.binding.kind === "mcp"
+                  ? ["network"]
+                  : [
+                      "read-files",
+                      "write-files",
+                      "create-files",
+                      "run-commands",
+                      "network",
+                    ]
               ).map((permission) => (
                 <label
                   className="flex items-center gap-1 text-xs"
@@ -532,7 +540,10 @@ export function ToolEditor({
                 >
                   <input
                     type="checkbox"
-                    disabled={draft.binding.kind === "wasi"}
+                    disabled={
+                      draft.binding.kind === "wasi" ||
+                      draft.binding.kind === "mcp"
+                    }
                     checked={draft.permissions.includes(permission)}
                     onChange={(e) =>
                       update({
@@ -550,6 +561,10 @@ export function ToolEditor({
               Execution kind
               <select
                 aria-label="Execution kind"
+                disabled={
+                  initial.binding.kind === "mcp" &&
+                  !!initial.binding.connectionRevision
+                }
                 className="h-8 rounded border bg-background px-2"
                 value={draft.binding.kind}
                 onChange={(e) => {
@@ -633,7 +648,10 @@ export function ToolEditor({
                   aria-label="Binding JSON"
                   className="max-h-44 font-mono text-xs"
                   value={binding}
-                  readOnly={draft.binding.kind === "wasi"}
+                  readOnly={
+                    draft.binding.kind === "wasi" ||
+                    draft.binding.kind === "mcp"
+                  }
                   maxLength={12000}
                   onChange={(e) => {
                     setBinding(e.target.value);
@@ -649,6 +667,7 @@ export function ToolEditor({
                 aria-label="Input schema"
                 className="max-h-44 font-mono text-xs"
                 value={input}
+                readOnly={draft.binding.kind === "mcp"}
                 maxLength={8192}
                 onChange={(e) => {
                   setInput(e.target.value);
@@ -663,6 +682,7 @@ export function ToolEditor({
                 aria-label="Output schema"
                 className="max-h-44 font-mono text-xs"
                 value={output}
+                readOnly={draft.binding.kind === "mcp"}
                 maxLength={8192}
                 onChange={(e) => {
                   setOutput(e.target.value);
@@ -708,7 +728,7 @@ export function ToolEditor({
                 />
               </label>
             </div>
-            {draft.binding.kind !== "wasi" && (
+            {draft.binding.kind !== "wasi" && draft.binding.kind !== "mcp" && (
               <label
                 htmlFor={`${fieldId}-credential`}
                 className="block text-xs"

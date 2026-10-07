@@ -35,6 +35,7 @@ fn fixture(wat: &str) -> (tempfile::TempDir, Prepared, PathBuf) {
         policy: "captured".into(),
         checked_revision: 0.into(),
         started: AtomicBool::new(false),
+        mcp: None,
     };
     (root, prepared, module)
 }

@@ -16,7 +16,14 @@ export type ToolBinding =
       export: "_start";
       runtime: "clack-wasi-1";
     }
-  | { kind: "mcp"; server: string; tool: string };
+  | {
+      kind: "mcp";
+      server: string;
+      tool: string;
+      connectionRevision?: number;
+      discovery?: string;
+      toolHash?: string;
+    };
 export type ToolDefinition = {
   name: string;
   description: string;

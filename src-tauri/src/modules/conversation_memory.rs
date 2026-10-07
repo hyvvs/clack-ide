@@ -37,6 +37,7 @@ pub struct MemoryState {
     custom_tools: Arc<session_file::SessionFile>,
     tool_calls: Arc<Mutex<HashMap<String, Arc<custom_tools::execution::Prepared>>>>,
     tool_registry_revision: Arc<std::sync::atomic::AtomicU64>,
+    mcp_connections: Arc<Mutex<HashMap<String, Arc<custom_tools::mcp::Runtime>>>>,
     switches: Arc<Mutex<HashMap<String, (String, u64)>>>,
 }
 
