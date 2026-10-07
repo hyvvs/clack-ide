@@ -29,6 +29,10 @@ import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import { gateInferenceTools } from "@/modules/ai/lib/inferenceToolGate";
+import {
+  prepareToolExposure,
+  sameToolRevision,
+} from "@/modules/ai/lib/toolExposure";
 import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
 import { retrieveScopedEvidence } from "@/modules/ai/lib/scopedEvidence";
 import { runRetrievalAllowance } from "@/modules/ai/lib/retrievalAllowance";
@@ -52,7 +56,6 @@ import {
   createRequestPreflight,
   preflightFetch,
   modelBudgetLimits,
-  serializedToolSchemas,
 } from "@/modules/ai/lib/requestPreflight";
 import {
   measureRequest,
@@ -775,19 +778,42 @@ export async function runAgentStream(opts: RunAgentOptions) {
   let compactor:
     | Awaited<ReturnType<typeof createConversationCompactor>>
     | undefined;
+  const requestToolContext: ToolContext = opts.compaction
+    ? {
+        ...opts.toolContext,
+        requestConversationEvidence: (query, anchor, expand) =>
+          compactor?.requestEvidence(query, anchor, expand) ?? {
+            status: "unavailable",
+            message: "Context preparation has not started.",
+          },
+      }
+    : opts.toolContext;
+  const permittedTools =
+    opts.toolContext.isPeerReplyOnly?.() ||
+    opts.inputCapabilities?.tools === "unsupported"
+      ? {}
+      : await buildTools(requestToolContext);
+  const exposureTarget = {
+    modelId,
+    provider,
+    identity: opts.capturedModelIdentity,
+    profiles: opts.selfHostedInference,
+    endpoints: opts.customEndpoints,
+    savedModels: opts.savedProviderModels,
+    reasoning: opts.reasoning,
+    credentials: [opts.keys, opts.customEndpointKeys],
+  };
+  const exposure = await prepareToolExposure(permittedTools, {
+    context: requestToolContext,
+    messages: prunedHistory,
+    uiMessages: opts.uiMessages,
+    target: exposureTarget,
+    system: stableSystem + (opts.planMode ? PLAN_MODE_PROMPT : ""),
+    limits: await modelBudgetLimits(baseModel),
+  });
+  const pinnedTools = new Set(exposure.names);
   const tools = gateInferenceTools(
-    opts.toolContext.isPeerReplyOnly?.() ? {} : await buildTools(
-      opts.compaction
-        ? {
-            ...opts.toolContext,
-            requestConversationEvidence: (query, anchor, expand) =>
-              compactor?.requestEvidence(query, anchor, expand) ?? {
-                status: "unavailable",
-                message: "Context preparation has not started.",
-              },
-          }
-        : opts.toolContext,
-    ),
+    permittedTools,
     inferenceScope,
     opts.abortSignal,
   );
@@ -795,7 +821,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     await modelBudgetLimits(baseModel),
     measureRequest({
       system: stableSystem + (opts.planMode ? PLAN_MODE_PROMPT : ""),
-      tools: await serializedToolSchemas(tools),
+      tools: exposure.schemas,
     }),
   );
   const compact = opts.compaction
@@ -841,7 +867,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
           ? [{ role: "system" as const, content: PLAN_MODE_PROMPT }]
           : []),
       ],
-      tools: await serializedToolSchemas(tools),
+      tools: { exposure: exposure.identity, schemas: exposure.schemas },
       limits: await modelBudgetLimits(baseModel),
       capabilities: opts.inputCapabilities,
       permissions: [
@@ -885,7 +911,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
         materialized: opts.uiMessages,
         system: systemMessages,
         keepReasoning: keepsReasoning,
-        tools: await serializedToolSchemas(tools),
+        tools: exposure.schemas,
         model: baseModel,
         scope: inferenceScope,
         limits: () => modelBudgetLimits(baseModel),
@@ -920,6 +946,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     model,
     messages: finalMessages,
     tools,
+    activeTools: exposure.names,
     includeRawChunks: provider === "openrouter",
     experimental_transform: openRouterErrorTransform,
     onError: compactor
@@ -931,25 +958,64 @@ export async function runAgentStream(opts: RunAgentOptions) {
         ? () => undefined
         : undefined,
     onAbort: () => compactor?.dispose(),
-    prepareStep: preparedContext
-      ? async ({ messages: stepMessages, stepNumber }) => {
-          if ((opts.compaction?.remainingCalls() ?? 0) <= stepNumber)
-            throw new ContextBudgetError(
-              "compaction-run-budget",
-              "The logical run reached its request limit.",
-            );
-          return {
-            messages: applyCacheBreakpoints(
-              await preparedContext.prepare(
-                stepMessages.slice(finalMessages.length),
-              ),
-              provider,
-            ),
-          };
-        }
-      : undefined,
+    prepareStep: async ({ messages: stepMessages, stepNumber }) => {
+      const currentTools =
+        opts.toolContext.isPeerReplyOnly?.() ||
+        opts.inputCapabilities?.tools === "unsupported"
+          ? {}
+          : await buildTools(requestToolContext);
+      const selection = await prepareToolExposure(
+        Object.fromEntries(
+          Object.entries(currentTools).filter(
+            ([name, definition]) =>
+              name in permittedTools &&
+              sameToolRevision(definition, permittedTools[name]),
+          ),
+        ),
+        {
+          context: requestToolContext,
+          messages: stepMessages,
+          uiMessages: opts.uiMessages,
+          target: exposureTarget,
+          system: systemMessages,
+          limits: await modelBudgetLimits(baseModel),
+          mandatory: [...pinnedTools],
+        },
+      );
+      for (const name of selection.names) pinnedTools.add(name);
+      if (!preparedContext) return { activeTools: selection.names };
+      if ((opts.compaction?.remainingCalls() ?? 0) <= stepNumber)
+        throw new ContextBudgetError(
+          "compaction-run-budget",
+          "The logical run reached its request limit.",
+        );
+      return {
+        activeTools: selection.names,
+        messages: applyCacheBreakpoints(
+          await preparedContext.prepare(
+            stepMessages.slice(finalMessages.length),
+            selection.schemas,
+          ),
+          provider,
+        ),
+      };
+    },
     maxRetries: AGENT_PROVIDER_MAX_RETRIES,
-    stopWhen: [stepCountIs(opts.toolContext.isPeerReplyOnly?.() ? 1 : Math.max(1, Math.min(AGENT_SOFT_STEP_LIMIT, opts.toolContext.peerRemainingSteps?.() ?? AGENT_SOFT_STEP_LIMIT))), () => opts.toolContext.shouldYieldPeerRun?.() ?? false],
+    stopWhen: [
+      stepCountIs(
+        opts.toolContext.isPeerReplyOnly?.()
+          ? 1
+          : Math.max(
+              1,
+              Math.min(
+                AGENT_SOFT_STEP_LIMIT,
+                opts.toolContext.peerRemainingSteps?.() ??
+                  AGENT_SOFT_STEP_LIMIT,
+              ),
+            ),
+      ),
+      () => opts.toolContext.shouldYieldPeerRun?.() ?? false,
+    ],
     abortSignal: opts.abortSignal,
     onStepFinish: (step) => {
       stepsSeen++;

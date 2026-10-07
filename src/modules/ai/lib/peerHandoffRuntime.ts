@@ -1,4 +1,5 @@
 import { convertToModelMessages } from "ai";
+import { prepareToolExposure } from "@/modules/ai/lib/toolExposure";
 import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
 import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -23,10 +24,7 @@ import { materializeAttachmentMessages } from "@/modules/ai/lib/attachmentMessag
 import { inspectAttachmentContent } from "@/modules/ai/lib/attachmentStore";
 import { resolveModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
-import {
-  modelBudgetLimits,
-  serializedToolSchemas,
-} from "@/modules/ai/lib/requestPreflight";
+import { modelBudgetLimits } from "@/modules/ai/lib/requestPreflight";
 import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
 import { checkReadable } from "@/modules/ai/lib/security";
 import {
@@ -107,7 +105,9 @@ export async function preparePeerReply(
   const { buildConfiguredLanguageModel, buildStableSystem } = await import(
     "@/modules/ai/lib/agent"
   );
-  const { buildRuntimeTools: buildTools } = await import("@/modules/ai/tools/customExecution");
+  const { buildRuntimeTools: buildTools } = await import(
+    "@/modules/ai/tools/customExecution"
+  );
   const { sessionToolContext } = await import("@/modules/ai/store/chatRuntime");
   const { readProjectMemory } = await import("@/modules/ai/lib/transport");
   const context = sessionToolContext(event.recipient.sessionId).toolContext;
@@ -142,15 +142,21 @@ export async function preparePeerReply(
     seedMessages.get(event.recipient.sessionId) ??
     (await loadMessages(event.recipient.sessionId)) ??
     [];
+  const recipientMessages = await convertToModelMessages(
+    await materializeAttachmentMessages(recipientHistory, capabilities),
+  );
+  const exposure = await prepareToolExposure(await buildTools(context), {
+    context,
+    messages: [...recipientMessages, { role: "user", content: text }],
+    uiMessages: recipientHistory,
+    target: endpoint,
+    system,
+    limits: await modelBudgetLimits(model),
+  });
   const cost = measureRequest({
     system,
-    tools: await serializedToolSchemas(await buildTools(context)),
-    messages: [
-      await convertToModelMessages(
-        await materializeAttachmentMessages(recipientHistory, capabilities),
-      ),
-      text,
-    ],
+    tools: exposure.schemas,
+    messages: [recipientMessages, text],
   });
   if (!resolveContextBudget(await modelBudgetLimits(model), cost).fits)
     throw new ContextBudgetError(
@@ -387,7 +393,9 @@ async function prepareTask(
   const { buildConfiguredLanguageModel, buildStableSystem } = await import(
     "@/modules/ai/lib/agent"
   );
-  const { buildRuntimeTools: buildTools } = await import("@/modules/ai/tools/customExecution");
+  const { buildRuntimeTools: buildTools } = await import(
+    "@/modules/ai/tools/customExecution"
+  );
   const { readProjectMemory } = await import("@/modules/ai/lib/transport");
   const capabilities = resolveModelInputCapabilities(
     task.targetModelId,
@@ -422,7 +430,6 @@ async function prepareTask(
     preferences.customInstructions,
     await readProjectMemory(task.workspaceRoot, task.workspaceEnvironment),
   );
-  const tools = await serializedToolSchemas(await buildTools(context));
   const materialized = await materializeAttachmentMessages(
     artifacts.length
       ? [
@@ -436,18 +443,28 @@ async function prepareTask(
       : history,
     capabilities,
   );
+  const recipientMessages = await convertToModelMessages(materialized);
+  const exposure = await prepareToolExposure(await buildTools(context), {
+    context,
+    messages: [...recipientMessages, { role: "user", content: task.prompt }],
+    uiMessages: history,
+    target: { endpoint, configuration },
+    system,
+    limits: await modelBudgetLimits(model),
+  });
   const input: HandoffInput = {
     task: { ...task, handoff: undefined },
     recipient: { ...endpoint, workspaceId: task.workspaceId },
     limits: await modelBudgetLimits(model),
     system,
-    tools,
-    history: await convertToModelMessages(materialized),
+    tools: exposure.schemas,
+    history: recipientMessages,
     evidence,
     notes,
     artifacts: task.artifactRefs,
     configuration: {
       capabilities,
+      exposure: exposure.identity,
       reasoning: configuration.reasoning,
       policy: endpoint.policyRevision,
       sourcePolicy: source.policyRevision,

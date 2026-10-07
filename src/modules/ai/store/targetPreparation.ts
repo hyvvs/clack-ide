@@ -1,5 +1,6 @@
 import type { ModelMessage, UIMessage } from "ai";
-import { generateText } from "ai";
+import { generateText, convertToModelMessages } from "ai";
+import { prepareToolExposure } from "@/modules/ai/lib/toolExposure";
 import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
 import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -7,10 +8,7 @@ import {
   buildConfiguredLanguageModel,
   type LocalProviderConfig,
 } from "@/modules/ai/lib/agent";
-import {
-  modelBudgetLimits,
-  serializedToolSchemas,
-} from "@/modules/ai/lib/requestPreflight";
+import { modelBudgetLimits } from "@/modules/ai/lib/requestPreflight";
 import { createConversationCompactor } from "@/modules/ai/lib/conversationCompaction";
 import { materializeAttachmentMessages } from "@/modules/ai/lib/attachmentMessages";
 import { retrieveConversationEvidence } from "@/modules/ai/lib/conversationRetrieval";
@@ -111,7 +109,12 @@ export async function prepareTarget(options: {
       getWorkspaceId: () => owner.workspaceId,
       getWorkspaceRoot: () => session.profile?.workspaceRoot ?? null,
     };
-    const tools = await serializedToolSchemas(
+    const materialized = await materializeAttachmentMessages(
+      options.originals,
+      options.capabilities,
+    );
+    check();
+    const exposure = await prepareToolExposure(
       await buildTools({
         ...toolContext,
         requestConversationEvidence: () => ({
@@ -119,7 +122,16 @@ export async function prepareTarget(options: {
           message: "Preparing context.",
         }),
       }),
+      {
+        context: toolContext,
+        messages: await convertToModelMessages(materialized),
+        uiMessages: options.originals,
+        target: { modelId: options.modelId, configuration },
+        system: options.system,
+        limits: await modelBudgetLimits(model),
+      },
     );
+    const tools = exposure.schemas;
     check();
     const limits = await modelBudgetLimits(model);
     check();
@@ -127,7 +139,7 @@ export async function prepareTarget(options: {
       modelId: options.modelId,
       configuration,
       system: options.system,
-      tools,
+      tools: { exposure: exposure.identity, schemas: tools },
       limits,
       capabilities: options.capabilities,
       permissions: [
@@ -137,11 +149,6 @@ export async function prepareTarget(options: {
       workspace: [owner.workspaceId, session.profile?.agentId],
       credentials: [state.apiKeys, state.customEndpointKeys],
     });
-    check();
-    const materialized = await materializeAttachmentMessages(
-      options.originals,
-      options.capabilities,
-    );
     check();
     if (session.targetContext && session.profile?.modelId === options.modelId) {
       const cached = await loadTargetContext(owner, key);

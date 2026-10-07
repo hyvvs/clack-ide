@@ -1274,7 +1274,7 @@ This order does not authorize any pending implementation in this planning task.
 | 20 | T3a | Native confinement contract and tested platform support | Complete | Embedded WASI backend on Windows/Linux/macOS; native Windows verified, Linux/macOS CI evidence pending; see T3a ledger |
 | 21 | T3b | Authorized confined WASI functions | Complete | `feat(ai): run authorized confined functions`; implementation record below |
 | 22 | T3c | Explicit scoped MCP connections and tools | Complete | `feat(ai): connect scoped MCP tools`; implementation record below |
-| 23 | F1 | Relevant schemas, compact prompt parity and cache awareness | Pending | None |
+| 23 | F1 | Relevant schemas, compact prompt parity and cache awareness | Complete | `feat(ai): select relevant authorized tool schemas`; implementation record below |
 | 24 | D2 | Length continuation, stitching and tool repair safety | Pending | None |
 | 25 | D3 | Partial-stream/offline recovery | Pending | None |
 | 26 | E2 | Passive calibration and optional bounded optimization | Pending | None |
@@ -3995,6 +3995,89 @@ no correctness reliance on cache; realistic small-model tool payload tests.
 Validate proposed server-specific hints against versioned upstream contracts.
 Roll back independently to full permitted schemas and original prompts if
 quality/parity evidence is insufficient. Do not ship unproven compact policy.
+
+##### F1 implementation record (2026-10-07)
+
+- **Selector and ownership:** `lib/toolExposure.ts` selects only from the
+  existing runtime tool builder's executable, assigned, version-captured set,
+  then intersects current permissions and the recipient's read-only mutation
+  lane. The permitted executor set and request-exposed schemas remain separate.
+  SDK `activeTools` controls exposure; existing execution guards remain the
+  authority, including fabricated hidden names. No new permission grants,
+  model call, embedding, discovery, analytics, dependency or native executor.
+- **Deterministic bounds:** Policy `f1-exposure-v1`; at most 192 candidates,
+  2 MiB candidate JSON, 256 KiB exposed JSON, 16 relevance-ranked optional
+  schemas plus permitted workflow prerequisites and all mandatory schemas.
+  Lexical name/description/schema signals use at most 8,192 characters and
+  128 query terms per candidate (at most 24,576 membership comparisons).
+  Binary lexical tie-breaking is locale-independent. Uncertain relevance or
+  a tie across the optional cutoff retains the full permitted set. Only an
+  explicit greeting/thanks pattern omits all optional tools. Capacity failures
+  are actionable, never silent mandatory-tool omission; B1 is still required.
+- **Mandatory lifecycle:** Retain unresolved ModelMessage calls, current
+  tool/result pairs and UI input-streaming/input-available/approval states.
+  Already exposed schemas are pinned for the SDK run; fresh eligibility and
+  exact custom revision identity are checked before every step. Revoked,
+  disconnected, unsupported or changed mandatory tools block preparation
+  without deleting transcript/results or silently resolving approvals.
+- **B1 and context integration:** Selection precedes actual schema measurement
+  in agent preparation, each compactor step, model-switch sizing/target
+  preparation and recipient-owned H2 preparation. Compaction and retrieval
+  receive that step's actual schemas rather than the original full catalog.
+  Provider serialization and final native/wire B1 remain authoritative; no old
+  fit verdict is reused after exposure changes. Target preparation materializes
+  attachments through existing rules. Unsupported target routing, D1, R1/R2,
+  H1/H2, PeerTask provenance and all native security boundaries are unchanged.
+- **Custom/WASI/MCP parity:** Immutable weakly held metadata binds the stable
+  ID, definition version/hash, complete binding, assignment/scope/permissions
+  and credential reference. Distinct callable identities are not merged by
+  display text. The original SDK executor/approval callbacks are preserved.
+  WASI platform eligibility/confinement and MCP connection/discovery/tool
+  revision, credential/destination consent, exact approval and no-replay stay
+  in T2/T3. Preparation only reads current eligible records, never connects or
+  discovers additional tools. Sender authority is not copied to recipients.
+- **Cache and stable prefix:** A bounded 32-entry advisory cache stores only
+  hashed keys and selected names/fallback state, never private content,
+  credentials or executable authority. Keys cover source/UI state, session,
+  workspace/root, agent/run/mutation scope, target/configuration, limits,
+  policy/system and complete permitted schemas/custom revisions. Fresh
+  permission intersection always precedes cache access; async ownership/policy
+  changes reject prepared state. Cache misses/eviction produce equivalent
+  requests. C2/H2 identities also include F1 revision and exposed stable tool
+  identities, invalidating old snapshots. Existing Anthropic breakpoints are
+  unchanged; no provider-cache hit, portable KV state or server hint is claimed.
+  The redundant static tool catalog was removed, with all full prompt rules
+  and user/project/agent instructions retained. The existing lite prompt is
+  kept as an unused experiment: its missing policy rules are not shipped.
+  Selection is lazy at the existing model-switch startup boundary.
+- **Measured evidence:** The deterministic 4,096-token fixture selects 3 of 47
+  permitted schemas: **67,338 -> 477 bytes**, **27,230 -> 215 B1-estimated schema
+  tokens**, and **0 -> 3,119 available working tokens**, retaining the needed
+  file tool. These are estimator results, not tokenizer/latency benchmarks.
+  The actual SDK/provider two-step 8,192-token integration fixture omits 40
+  irrelevant tools, passes final B1, executes the original callback and retains
+  the paired result/schema on the second step without rewriting originals.
+  Full policy plus protected context that cannot fit 4K still fails closed.
+- **Tests and verification:** Final focused group **146 passed / 7 files**;
+  **44** new selector tests, **5** new custom/WASI/MCP boundary tests and **1**
+  new provider/B1 integration test. Full frontend **1,794 passed / 154 files**.
+  `npm.cmd run check-types`, `npm.cmd run lint`, `npm.cmd test`,
+  `npm.cmd run build` and `git diff --check` passed. Lint baseline unchanged:
+  **71 warnings / 2 infos / 0 errors**. Four pre-existing ineffective dynamic
+  import warnings and the plugin timing advisory remain. A concrete eager
+  startup-import regression and target-library array API issue were corrected;
+  affected tests and the final full suite passed. Windows sandbox transform
+  cache renames returned EPERM, so tests ran with approved native execution.
+  No Rust changes or redundant native-suite rerun; no native GUI, Linux/macOS,
+  live-provider/server or CI execution claimed.
+- **Limits/rollback/stop:** Relevance is conservative lexical routing, not
+  semantic task understanding; unknown strict provider schema limits are not
+  invented. Required schemas never sacrifice approval or security to fit.
+  Cache is webview-local and restart-disposable. Roll back independently to
+  full permitted exposure and the original full prompt; leave original
+  transcripts, approvals, registries and execution records intact. No compact
+  policy with unproven parity ships. **F1 is complete. Next in execution order:
+  D2: Safe length continuation. No D2 or subsequent checkpoint started.**
 
 ### F2: Watchdogs and polished controls
 

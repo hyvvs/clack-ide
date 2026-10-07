@@ -30,6 +30,7 @@ const fixture = vi.hoisted(() => ({
   shared: false,
   revokeAtAdmission: false,
   revoked: false,
+  manyTools: false,
 }));
 vi.mock("@/modules/settings/store", async (original) => ({
   ...(await original<typeof import("@/modules/settings/store")>()),
@@ -43,11 +44,26 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 vi.mock("@/modules/ai/tools/tools", async () => {
-  const { tool } = await import("ai");
+  const { tool, jsonSchema } = await import("ai");
   const { z } = await import("zod");
   const { buildEvidenceTools } = await import("@/modules/ai/tools/evidence");
   return {
     buildTools: (ctx: ToolContext) => ({
+      ...(fixture.manyTools
+        ? Object.fromEntries(
+            Array.from({ length: 40 }, (_, i) => [
+              `custom_telescope_${i}`,
+              tool({
+                description: "Astronomy telescope ".repeat(75),
+                inputSchema: jsonSchema({
+                  type: "object",
+                  properties: {},
+                  additionalProperties: false,
+                }),
+              }),
+            ]),
+          )
+        : {}),
       ...buildEvidenceTools(ctx),
       read_fixture: tool({
         description: "Read test evidence",
@@ -161,6 +177,7 @@ beforeEach(() => {
   fixture.shared = false;
   fixture.revokeAtAdmission = false;
   fixture.revoked = false;
+  fixture.manyTools = false;
   originals = [
     {
       id: "u",
@@ -563,15 +580,14 @@ async function run(contextLimit = 20000) {
       chargeCall,
     },
     onOptimized: optimized,
-    toolContext: (fixture.shared
-      ? {
-          getWorkspaceId: () => owner.workspaceId,
-          getWorkspaceRoot: () => "/integration",
-          getCwd: () => "/integration",
-          getSessionId: () => owner.sessionId,
-          getAgentId: () => (fixture.switching ? "builtin:coder" : "reviewer"),
-        }
-      : {}) as ToolContext,
+    toolContext: {
+      getWorkspaceId: () => (fixture.shared ? owner.workspaceId : null),
+      getWorkspaceRoot: () => "/integration",
+      getCwd: () => "/integration",
+      getSessionId: () => owner.sessionId,
+      getAgentId: () => (fixture.switching ? "builtin:coder" : "reviewer"),
+      getMutationMode: () => "shared-write",
+    } as ToolContext,
     uiMessages: structuredClone(originals),
   });
   const errors: unknown[] = [];
@@ -583,6 +599,31 @@ async function run(contextLimit = 20000) {
   return { errors, chunks, chargeCall, optimized };
 }
 describe("automatic compaction in the real agent request path", () => {
+  it("F1 sends selected schemas through actual B1 wire preflight and pins paired tools on the next step", async () => {
+    fixture.manyTools = true;
+    originals = [
+      {
+        id: "mission",
+        role: "user",
+        parts: [{ type: "text", text: "Read test evidence." }],
+      },
+    ];
+    const before = JSON.stringify(originals);
+    const outcome = await run(8192);
+    expect(outcome.errors).toEqual([]);
+    expect(streams).toHaveLength(2);
+    for (const body of streams) {
+      expect(JSON.stringify(body.tools)).toContain("read_fixture");
+      expect(JSON.stringify(body.tools)).not.toContain("telescope");
+      expect(
+        resolveContextBudget({ asserted: 8192 }, measureRequest(body)).fits,
+      ).toBe(true);
+    }
+    expect(fixture.execute).toHaveBeenCalledOnce();
+    expect(JSON.stringify(streams[1])).toContain("Latest exact tool output");
+    expect(JSON.stringify(originals)).toBe(before);
+    expect(extracts).toHaveLength(0);
+  });
   it("switches a large cloud conversation to a smaller endpoint and actually sends the staged target context", async () => {
     fixture.switching = true;
     fixture.shared = true;

@@ -232,10 +232,15 @@ export async function prepareModelSwitch(
     const { sessionToolContext } = await import(
       "@/modules/ai/store/chatRuntime"
     );
-    const { serializedToolSchemas, knownTransportContextLimit } = await import(
+    const { knownTransportContextLimit } = await import(
       "@/modules/ai/lib/requestPreflight"
     );
-    const { buildRuntimeTools: buildTools } = await import("@/modules/ai/tools/customExecution");
+    const { buildRuntimeTools: buildTools } = await import(
+      "@/modules/ai/tools/customExecution"
+    );
+    const { prepareToolExposure } = await import(
+      "@/modules/ai/lib/toolExposure"
+    );
     const savedTarget = resolveSavedProviderModelTarget(
       targetModelId,
       preferences.savedProviderModels,
@@ -243,15 +248,39 @@ export async function prepareModelSwitch(
     const savedContext = savedTarget
       ? knownTransportContextLimit(savedTarget.transportModelId)
       : undefined;
-    const toolSchemas = await serializedToolSchemas(
+    const selectionContext = {
+      ...sessionToolContext(sessionId ?? "").toolContext,
+      getAgentId: () => persona.id,
+    };
+    const exposure = await prepareToolExposure(
       await buildTools({
-        ...sessionToolContext(sessionId ?? "").toolContext,
+        ...selectionContext,
         requestConversationEvidence: () => ({
           status: "preflight",
           message: "Schema sizing only.",
         }),
       }),
+      {
+        context: selectionContext,
+        messages: messages
+          .filter((m) => m.role === "user")
+          .slice(-1)
+          .map((m) => ({
+            role: "user",
+            content: m.parts
+              .filter((p) => p.type === "text")
+              .map((p) => p.text)
+              .join("\n"),
+          })),
+        uiMessages: messages,
+        target: {
+          modelId: targetModelId,
+          provider: target.provider,
+          configuration: preferences,
+        },
+      },
     );
+    const toolSchemas = exposure.schemas;
     const toolTokens = measureRequest({ tools: toolSchemas }).tools;
     const requiresTools = toolSchemas.length > 0;
     if (!stillCurrent())

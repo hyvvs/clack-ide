@@ -7,6 +7,7 @@ import {
   type ToolEntry,
 } from "@/modules/ai/lib/customTools";
 import { serializedToolSchemas } from "@/modules/ai/lib/requestPreflight";
+import { prepareToolExposure } from "@/modules/ai/lib/toolExposure";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { ToolContext } from "@/modules/ai/tools/context";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
@@ -96,6 +97,85 @@ it.each([
   expect(
     (await buildRuntimeTools(ctx))[entry.current.definition.name],
   ).toBeUndefined();
+});
+
+it.each([
+  "disconnected",
+  "revoked",
+  "unassigned",
+  "stale-schema",
+])("F1 never selects MCP %s definitions or starts discovery", async (reason) => {
+  const { ctx, entry } = fixture();
+  entry.current.definition.description = "Weather forecast MCP";
+  entry.current.definition.binding = {
+    kind: "mcp",
+    server: "mcp-test",
+    tool: "weather",
+    connectionRevision: 3,
+    discovery: "b".repeat(64),
+    toolHash: "c".repeat(64),
+  };
+  entry.current.definition.permissions = ["network"];
+  if (reason === "disconnected") entry.executable = false;
+  if (reason === "revoked") entry.current.status = "revoked";
+  if (reason === "unassigned") entry.current.definition.agents = ["other"];
+  if (reason === "stale-schema") entry.current.version++;
+  const selected = await prepareToolExposure(await buildRuntimeTools(ctx), {
+    context: ctx,
+    target: "model",
+    messages: [{ role: "user", content: "Weather forecast MCP" }],
+  });
+  expect(selected.names).not.toContain(entry.current.definition.name);
+  expect(
+    vi
+      .mocked(invoke)
+      .mock.calls.every(([command]) => command === "custom_tools_load"),
+  ).toBe(true);
+  expect(executeCustomTool).not.toHaveBeenCalled();
+});
+it("F1 retains exact guarded WASI/MCP executors and version metadata without authority changes", async () => {
+  const { ctx, entry, reference } = fixture();
+  const input = { path: "literal data" };
+  vi.mocked(executeCustomTool).mockResolvedValue({
+    state: "succeeded",
+    result: true,
+    effect: "reported",
+  } as Awaited<ReturnType<typeof executeCustomTool>>);
+  for (const binding of [
+    {
+      kind: "wasi" as const,
+      schemaVersion: 1 as const,
+      hash: "b".repeat(64),
+      abi: "wasi-preview1-json-v1" as const,
+      export: "_start" as const,
+      runtime: "clack-wasi-1" as const,
+    },
+    {
+      kind: "mcp" as const,
+      server: "mcp-test",
+      tool: "weather",
+      connectionRevision: 3,
+      discovery: "b".repeat(64),
+      toolHash: "c".repeat(64),
+    },
+  ]) {
+    entry.current.definition.binding = binding;
+    entry.current.definition.description = "Weather checksum";
+    entry.current.definition.permissions =
+      binding.kind === "mcp" ? ["network"] : ["run-commands"];
+    const permitted = await buildRuntimeTools(ctx);
+    const selected = await prepareToolExposure(permitted, {
+      context: ctx,
+      target: "model",
+      messages: [{ role: "user", content: "Weather checksum" }],
+    });
+    const executor = selected.tools[entry.current.definition.name];
+    expect(executor).toBe(permitted[entry.current.definition.name]);
+    await executor.execute?.(input, { toolCallId: "call", messages: [] });
+    expect(executeCustomTool).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tool: reference, arguments: input, runId: 1 }),
+    );
+  }
 });
 it("routes the exact captured version and bounded native outcome, not narration or history", async () => {
   const { ctx, entry, reference } = fixture();

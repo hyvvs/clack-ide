@@ -279,7 +279,10 @@ export async function createConversationCompactor(options: {
         status: "unavailable",
         message: "Conversation retrieval is unavailable.",
       },
-    async prepare(extra: ModelMessage[] = []): Promise<ModelMessage[]> {
+    async prepare(
+      extra: ModelMessage[] = [],
+      tools: unknown = options.tools,
+    ): Promise<ModelMessage[]> {
       check();
       allowance.epoch++;
       let limits = await options.limits();
@@ -289,7 +292,7 @@ export async function createConversationCompactor(options: {
           units,
           limits,
           system: options.system,
-          tools: options.tools,
+          tools,
           extra,
           threshold: prepared
             ? COMPACTION_POLICY.target
@@ -319,12 +322,10 @@ export async function createConversationCompactor(options: {
                 current.groups,
                 current.messages,
                 limits,
-                options.tools,
+                tools,
               )
             : current.messages;
-        return scoped
-          ? scoped.prepare(messages, limits, options.tools)
-          : messages;
+        return scoped ? scoped.prepare(messages, limits, tools) : messages;
       };
       if (!current.needed) return finish();
       if (targetSeed) {
@@ -464,7 +465,7 @@ export async function createConversationCompactor(options: {
             units,
             limits,
             system: options.system,
-            tools: options.tools,
+            tools,
             extra,
             memory: { end, claims },
             threshold: COMPACTION_POLICY.target,

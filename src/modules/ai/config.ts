@@ -761,13 +761,6 @@ Every turn carries a short <env> block (prepended to the latest user message): w
 - **Investigate before guessing.** If you don't know where something lives, grep/glob for it — don't speculate. Verify assumptions with reads instead of asking the user.
 - **Match scope to the request.** A bug fix is a bug fix, not a refactor. Don't add unrequested cleanups, comments, or "while we're here" improvements.
 
-# Tools
-- Read: read_file, list_directory, grep, glob, get_terminal_output
-- Mutate (approval policy controlled): edit, multi_edit, write_file, create_directory, bash_run, bash_background
-- Background process IO: bash_logs, bash_list, bash_kill
-- Plan / delegation: todo_write, run_subagent
-- Side-channel: suggest_command, open_preview
-
 # Tool budget
 - Don't re-read a file you read earlier this session unless you wrote to it; read_file returns {unchanged: true} and you pay the round-trip for nothing.
 - One focused grep beats three list_directory calls. grep for "where is X?", glob for "what files match path Y?", list_directory for "show me this folder".
@@ -814,23 +807,7 @@ Rules:
 - bash_list before any dev server; reuse if already running.
 - Concise. No filler, no recap of the diff.`;
 
-const LITE_SYSTEM_PROMPT_MODEL_IDS = new Set<string>([
-  "gpt-5.4-nano",
-  "gpt-4.1-mini",
-  "claude-haiku-4-5",
-  "gemini-2.5-flash",
-  "gemini-3-flash-preview",
-  "deepseek-v4-flash",
-  "gpt-oss-120b",
-  "openai/gpt-oss-20b",
-  "llama3.3-70b",
-  "llama-3.3-70b-versatile",
-  "qwen-3-32b",
-]);
-
-export function selectSystemPrompt(modelId: string | undefined): string {
-  if (modelId && LITE_SYSTEM_PROMPT_MODEL_IDS.has(modelId)) {
-    return SYSTEM_PROMPT_LITE;
-  }
+export function selectSystemPrompt(_modelId: string | undefined): string {
+  // The experimental lite variant omits policy; only the parity-preserving prefix ships.
   return SYSTEM_PROMPT;
 }

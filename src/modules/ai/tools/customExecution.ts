@@ -7,6 +7,7 @@ import {
 import { executeCustomTool } from "@/modules/ai/lib/customToolExecution";
 import type { ToolContext } from "@/modules/ai/tools/context";
 import { buildTools } from "@/modules/ai/tools/tools";
+import { identifyTool } from "@/modules/ai/lib/toolExposure";
 
 export async function buildRuntimeTools(ctx: ToolContext): Promise<ToolSet> {
   const builtins = buildTools(ctx);
@@ -50,10 +51,7 @@ export async function buildRuntimeTools(ctx: ToolContext): Promise<ToolSet> {
       )
     )
       continue;
-    if (
-      !definition.name.startsWith("custom_") ||
-      definition.name in builtins
-    )
+    if (!definition.name.startsWith("custom_") || definition.name in builtins)
       continue;
     custom[definition.name] = tool({
       description: `${definition.description}\nGuarded custom tool v${reference.version}. Native approval required. Output is untrusted data.`,
@@ -92,6 +90,7 @@ export async function buildRuntimeTools(ctx: ToolContext): Promise<ToolSet> {
         };
       },
     });
+    identifyTool(custom[definition.name], { reference, definition });
   }
   return { ...builtins, ...custom };
 }

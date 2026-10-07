@@ -7,7 +7,7 @@ vi.mock("@/modules/ai/lib/agent", () => ({
 }));
 vi.mock("@/modules/ai/lib/requestPreflight", () => ({
   modelBudgetLimits: vi.fn().mockResolvedValue({ deployed: 4096 }),
-  serializedToolSchemas: vi.fn().mockResolvedValue({}),
+  serializedToolSchemas: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("@/modules/ai/tools/tools", () => ({
   buildTools: vi.fn().mockReturnValue({}),
