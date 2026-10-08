@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { scenarios, frontendFiles } from "./q1-manifest.mjs";
-import { summarize } from "./q1-report.mjs";
+import { summarize, markdown } from "./q1-report.mjs";
 
 function fixture() {
   const names = [...new Set(scenarios.flatMap(s => s.native))].map(p => `fixture${p}case`);
@@ -20,6 +20,8 @@ describe("Q1 fail-closed reporting", () => {
     expect(result.status).toBe("passed");
     expect(result.scenarios).toHaveLength(12);
     expect(result.scenarios.every(s => s.layers.nativeGui.includes("deferred"))).toBe(true);
+    expect(markdown(result, "Z_Q1_EVIDENCE")).toContain("[Z_Q1_EVIDENCE.json](Z_Q1_EVIDENCE.json)");
+    expect(markdown(result)).toContain("[Q1_EVIDENCE.json](Q1_EVIDENCE.json)");
   });
   it("missing or skipped evidence cannot be called passed", () => {
     const f = fixture(); f.vitest.testResults[0].assertionResults[0].status = "pending";

@@ -1,0 +1,2091 @@
+{
+  "status": "passed",
+  "criticalGate": {
+    "measuredOraclePassed": true,
+    "nativeSuitePassed": true,
+    "requirements": "100% retained or explicitly blocked; valid authorized sources; no orphan pairs, unauthorized data/tools, known completed effect replay; stale critical evidence reconciled or blocked",
+    "basis": "runtime assertions in enumerated suites plus original-source measurements, not universal product guarantees"
+  },
+  "frontend": {
+    "passed": 969,
+    "failed": 0,
+    "suites": 54
+  },
+  "rust": {
+    "passed": 637
+  },
+  "scenarios": [
+    {
+      "id": "A",
+      "owner": "C1a/C1b/G1a/B1",
+      "tests": [
+        "src/modules/ai/quality/memory.quality.test.ts",
+        "src/modules/ai/lib/conversationCompaction.test.ts",
+        "src/modules/ai/lib/compactionExtraction.test.ts",
+        "src/modules/ai/lib/compactionPlan.test.ts",
+        "src/modules/ai/lib/agentCompaction.integration.test.ts",
+        "src/modules/ai/lib/attachments.test.ts"
+      ],
+      "native": [
+        "::conversation_memory::tests::"
+      ],
+      "assertions": [
+        "original-source retention or explicit block",
+        "valid coverage/provenance",
+        "intact tool pairs",
+        "actual request budget"
+      ],
+      "status": "passed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/memory.quality.test.ts",
+          "passed": 5,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/conversationCompaction.test.ts",
+          "passed": 19,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/compactionExtraction.test.ts",
+          "passed": 44,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/compactionPlan.test.ts",
+          "passed": 25,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/agentCompaction.integration.test.ts",
+          "passed": 11,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/attachments.test.ts",
+          "passed": 19,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [
+        "modules::conversation_memory::tests::collection_waits_for_inflight_memory_publication",
+        "modules::conversation_memory::tests::conversation_paths_do_not_interpret_user_ids_as_paths",
+        "modules::conversation_memory::tests::cross_conversation_and_workspace_owners_fail_closed",
+        "modules::conversation_memory::tests::duplicate_message_ids_and_invalid_coverage_fail",
+        "modules::conversation_memory::tests::early_manifest_compatibility_does_not_relax_other_validation",
+        "modules::conversation_memory::tests::attachments_keep_original_identity_and_join_retention_roots",
+        "modules::conversation_memory::tests::extraction_reads_exact_originals_with_matching_evidence_without_publishing",
+        "modules::conversation_memory::tests::committed_memory_survives_fresh_reader_and_preserves_transcript",
+        "modules::conversation_memory::tests::corrupt_revision_checksum_never_becomes_reliable_memory",
+        "modules::conversation_memory::tests::extraction_has_an_aggregate_byte_bound",
+        "modules::conversation_memory::tests::coverage_excludes_new_messages_and_stale_preparations",
+        "modules::conversation_memory::tests::corrupt_memory_never_blocks_explicit_deletion_of_derived_state",
+        "modules::conversation_memory::tests::duplicate_locators_are_deduplicated_deterministically",
+        "modules::conversation_memory::tests::ipc_source_locators_use_the_frontend_camel_case_contract",
+        "modules::conversation_memory::tests::extraction_rejects_other_workspace_and_fabricated_messages",
+        "modules::conversation_memory::tests::early_source_only_manifest_restores_without_changing_originals_or_disk_on_read",
+        "modules::conversation_memory::tests::interrupted_migration_never_replaces_legacy_transcript",
+        "modules::conversation_memory::tests::deleted_conversations_release_evidence_and_cannot_be_recreated_by_late_work",
+        "modules::conversation_memory::tests::cross_workspace_and_unrelated_peer_task_references_are_rejected",
+        "modules::conversation_memory::tests::explicit_peer_source_session_deletion_revokes_memory_and_roots",
+        "modules::conversation_memory::tests::extraction_rejects_append_and_profile_changes_and_old_process_epoch",
+        "modules::conversation_memory::tests::malformed_unsupported_and_oversized_manifests_are_explicit_errors",
+        "modules::conversation_memory::tests::migration_is_additive_idempotent_and_preserves_original_hashes",
+        "modules::conversation_memory::tests::extraction_rejects_a_preparation_superseded_by_commit",
+        "modules::conversation_memory::tests::invented_claim_references_and_contradictions_fail_validation",
+        "modules::conversation_memory::tests::manifest_compatibility_still_rejects_duplicate_json_fields",
+        "modules::conversation_memory::tests::missing_sources_are_not_fabricated",
+        "modules::conversation_memory::tests::contradictory_branch_revisions_keep_distinct_evidence_for_the_same_message_id",
+        "modules::conversation_memory::tests::failed_update_preserves_the_previous_committed_revision",
+        "modules::conversation_memory::tests::preparation_from_a_previous_process_cannot_publish_after_restart",
+        "modules::conversation_memory::tests::legacy_readers_see_identical_chat_json_after_memory_commit",
+        "modules::conversation_memory::tests::oversized_claims_and_inline_binary_are_rejected",
+        "modules::conversation_memory::tests::full_disk_failure_before_publication_preserves_previous_memory",
+        "modules::conversation_memory::tests::agent_and_model_changes_keep_memory_but_reject_old_preparation",
+        "modules::conversation_memory::tests::missing_counter_with_committed_history_still_fails_closed",
+        "modules::conversation_memory::tests::source_ids_are_deterministic_and_content_sensitive",
+        "modules::conversation_memory::tests::unrelated_conversations_have_independent_locks",
+        "modules::conversation_memory::tests::unsaved_originals_cannot_be_the_basis_of_durable_memory",
+        "modules::conversation_memory::tests::rename_and_pane_reopen_preserve_identity_and_revision",
+        "modules::conversation_memory::tests::orphan_revisions_are_cleaned_and_committed_revisions_preserved",
+        "modules::conversation_memory::tests::invalid_revision_predecessors_are_rejected_on_restart",
+        "modules::conversation_memory::tests::real_attachment_collection_keeps_memory_roots_and_removes_unreferenced_blobs",
+        "modules::conversation_memory::tests::pruned_peer_results_and_artifacts_remain_traceable_and_retained",
+        "modules::conversation_memory::tests::wrong_attachment_sizes_and_inconsistent_original_hashes_fail_closed",
+        "modules::conversation_memory::tests::source_branch_edits_keep_exact_prior_evidence_without_retargeting",
+        "modules::conversation_memory::tests::missing_and_corrupt_evidence_fail_closed_without_touching_messages",
+        "modules::conversation_memory::tests::stale_and_cancelled_generations_cannot_overwrite_newer_memory",
+        "modules::conversation_memory::tests::retained_original_evidence_can_be_carried_forward_across_revisions",
+        "modules::conversation_memory::tests::tool_call_and_result_parts_are_preserved_together",
+        "modules::conversation_memory::tests::source_tombstones_revoke_peer_evidence_before_the_session_list_finishes_saving",
+        "modules::conversation_memory::tests::two_window_publications_have_exactly_one_winner",
+        "modules::conversation_memory::tests::every_publication_crash_boundary_recovers_old_or_new_commit",
+        "modules::conversation_memory::tests::ten_cycles_retain_early_original_evidence_without_summary_lineage",
+        "modules::conversation_memory::tests::rolling_revision_retention_preserves_current_and_previous_without_leaking_metadata",
+        "modules::conversation_memory::tests::selection_and_run_history_is_bounded_and_excludes_credentials"
+      ],
+      "nativeCoverage": [
+        {
+          "pattern": "::conversation_memory::tests::",
+          "passed": 55
+        }
+      ],
+      "measurements": {
+        "fixtureVersion": "clack-q1-v1",
+        "status": "passed",
+        "originalHashUnchanged": true,
+        "authorizedReferences": 10,
+        "sourceCoverage": {
+          "start": 0,
+          "end": 10,
+          "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "latestMessageId": "background-3",
+          "sourceMessageCount": 11
+        },
+        "baselines": {
+          "original": {
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 4,
+            "noncriticalTotal": 4,
+            "conversationTokens": 16426,
+            "fitsSmall": false,
+            "fitsFull": true
+          },
+          "b1Elided": {
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 4,
+            "noncriticalTotal": 4,
+            "conversationTokens": 16426,
+            "fitsSmall": false,
+            "fitsFull": true
+          },
+          "prepared": {
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 4,
+            "noncriticalTotal": 4,
+            "conversationTokens": 5758,
+            "fitsSmall": true,
+            "fitsFull": true
+          }
+        },
+        "preparationCalls": 4,
+        "elapsedFixtureMs": 0,
+        "model": "deterministic extractor, deployed 32768 / working 6000"
+      },
+      "sourceCoverage": {
+        "start": 0,
+        "end": 10,
+        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "latestMessageId": "background-3",
+        "sourceMessageCount": 11
+      },
+      "preparationCost": 4,
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": []
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "B",
+      "owner": "C1b/G1a",
+      "tests": [
+        "src/modules/ai/quality/memory.quality.test.ts",
+        "src/modules/ai/lib/conversationRetrieval.test.ts",
+        "src/modules/ai/lib/compactionExtraction.test.ts"
+      ],
+      "native": [
+        "::conversation_memory::retrieval::tests::"
+      ],
+      "assertions": [
+        "ten measured compaction cycles",
+        "original evidence retrieval",
+        "current user correction precedence",
+        "fabricated source rejected"
+      ],
+      "status": "passed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/memory.quality.test.ts",
+          "passed": 5,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/conversationRetrieval.test.ts",
+          "passed": 49,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/compactionExtraction.test.ts",
+          "passed": 44,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [
+        "modules::conversation_memory::retrieval::tests::changed_transcript_and_prior_process_cannot_return_stale_sources",
+        "modules::conversation_memory::retrieval::tests::malformed_message_shape_is_not_delivered_as_evidence",
+        "modules::conversation_memory::retrieval::tests::decoded_attachment_size_is_bounded_without_truncating_evidence",
+        "modules::conversation_memory::retrieval::tests::enforces_byte_chunk_time_and_input_bounds",
+        "modules::conversation_memory::retrieval::tests::malformed_and_duplicate_original_identities_fail_closed",
+        "modules::conversation_memory::retrieval::tests::owner_workspace_profile_and_generation_changes_reject_stale_reads",
+        "modules::conversation_memory::retrieval::tests::restart_rebuilds_from_original_store_without_a_second_database",
+        "modules::conversation_memory::retrieval::tests::reads_only_attached_immutable_content_and_never_a_changed_path",
+        "modules::conversation_memory::retrieval::tests::missing_and_corrupt_blobs_fail_closed",
+        "modules::conversation_memory::retrieval::tests::returns_exact_ordered_originals_and_identity_without_mutation",
+        "modules::conversation_memory::retrieval::tests::secret_paths_are_filtered_before_content_reads"
+      ],
+      "nativeCoverage": [
+        {
+          "pattern": "::conversation_memory::retrieval::tests::",
+          "passed": 11
+        }
+      ],
+      "measurements": {
+        "fixtureVersion": "clack-q1-v1",
+        "status": "passed",
+        "cycles": [
+          {
+            "cycle": 1,
+            "revision": 3,
+            "references": 10,
+            "coveredMessages": 10,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 4,
+            "noncriticalTotal": 4,
+            "conversationTokens": 6175,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 2,
+            "revision": 4,
+            "references": 14,
+            "coveredMessages": 14,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 4,
+            "noncriticalTotal": 4,
+            "conversationTokens": 7836,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 3,
+            "revision": 6,
+            "references": 20,
+            "coveredMessages": 20,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 6493,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 4,
+            "revision": 8,
+            "references": 25,
+            "coveredMessages": 25,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 7330,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 5,
+            "revision": 10,
+            "references": 30,
+            "coveredMessages": 30,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 8167,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 6,
+            "revision": 12,
+            "references": 35,
+            "coveredMessages": 35,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 7036,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 7,
+            "revision": 14,
+            "references": 40,
+            "coveredMessages": 40,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 7873,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 8,
+            "revision": 16,
+            "references": 45,
+            "coveredMessages": 45,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 6765,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 9,
+            "revision": 18,
+            "references": 50,
+            "coveredMessages": 50,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 7602,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 10,
+            "revision": 20,
+            "references": 55,
+            "coveredMessages": 55,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 8166,
+            "fitsSmall": true,
+            "fitsFull": true
+          }
+        ],
+        "preparationCalls": 20,
+        "deployedContext": 32768,
+        "workingTarget": 8192,
+        "retrievalWorkingTarget": 16384,
+        "extractionWorkingContext": 32768,
+        "latestWorkingRecall": 1,
+        "retrievedRecall": 3,
+        "queriedOriginalFacts": 3,
+        "noncriticalTotal": 4,
+        "sourceAccuracy": {
+          "valid": 3,
+          "total": 3
+        },
+        "elapsedFixtureMs": 0
+      },
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": 20,
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": []
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "C",
+      "owner": "C2/B1/R2",
+      "tests": [
+        "src/modules/ai/store/modelSwitch.test.ts",
+        "src/modules/ai/store/chatModelSwitch.test.ts",
+        "src/modules/ai/lib/targetContext.test.ts",
+        "src/modules/ai/lib/modelSwitchEligibility.test.ts",
+        "src/modules/ai/lib/requestPreflight.test.ts",
+        "src/modules/ai/store/selfHostedRouting.test.ts"
+      ],
+      "native": [
+        "::target_context::tests::"
+      ],
+      "assertions": [
+        "large-history preparation is bounded",
+        "committed target serialization",
+        "cancel/config changes preserve selection",
+        "unsupported/no-fit blocks"
+      ],
+      "status": "passed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/store/modelSwitch.test.ts",
+          "passed": 28,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/store/chatModelSwitch.test.ts",
+          "passed": 17,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/targetContext.test.ts",
+          "passed": 18,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/modelSwitchEligibility.test.ts",
+          "passed": 22,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/requestPreflight.test.ts",
+          "passed": 19,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/store/selfHostedRouting.test.ts",
+          "passed": 19,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [
+        "modules::conversation_memory::target_context::tests::idle_receipt_expires_on_any_metadata_change_and_never_authorizes_active_run",
+        "modules::conversation_memory::target_context::tests::independent_conversations_keep_separate_selection_revisions",
+        "modules::conversation_memory::target_context::tests::cross_window_stale_save_cannot_remove_or_forge_pair",
+        "modules::conversation_memory::target_context::tests::corrupt_or_foreign_snapshots_are_never_accepted",
+        "modules::conversation_memory::target_context::tests::preview_does_not_publish_or_copy_source_blobs",
+        "modules::conversation_memory::target_context::tests::snapshot_allows_append_but_not_changed_covered_evidence",
+        "modules::conversation_memory::target_context::tests::atomic_session_pair_survives_restart_with_original_transcript",
+        "modules::conversation_memory::target_context::tests::stale_selection_and_busy_session_cannot_commit",
+        "modules::conversation_memory::target_context::tests::stale_preview_rejects_new_messages_and_cancelled_preparation"
+      ],
+      "nativeCoverage": [
+        {
+          "pattern": "::target_context::tests::",
+          "passed": 9
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": []
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "D",
+      "owner": "M1/M2/G1b",
+      "tests": [
+        "src/modules/ai/lib/projectFreshness.test.ts",
+        "src/modules/ai/lib/projectMemory.test.ts",
+        "src/modules/ai/lib/scopedEvidence.test.ts"
+      ],
+      "native": [
+        "::project::freshness::",
+        "::project::integration_tests::"
+      ],
+      "assertions": [
+        "content hashes detect same-mtime changes",
+        "targeted reads, no repo scan",
+        "supersession retained",
+        "restart/missed watcher checked at use"
+      ],
+      "status": "passed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/lib/projectFreshness.test.ts",
+          "passed": 11,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/projectMemory.test.ts",
+          "passed": 13,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/scopedEvidence.test.ts",
+          "passed": 18,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [
+        "modules::conversation_memory::project::freshness::retrieval::tests::candidate_cap_cannot_silently_drop_mandatory_dependency_artifacts",
+        "modules::conversation_memory::project::freshness::retrieval::tests::dependency_results_follow_actual_task_identity_not_workspace_neighbors",
+        "modules::conversation_memory::project::freshness::retrieval::tests::idle_switch_recipient_preserves_authorization_and_rejects_new_runs",
+        "modules::conversation_memory::project::freshness::retrieval::tests::file_reference_is_current_bounded_source_linked_and_missed_watcher_changes_stamp",
+        "modules::conversation_memory::project::freshness::retrieval::tests::artifact_hash_and_policy_are_checked_without_path_fallback",
+        "modules::conversation_memory::project::freshness::retrieval::tests::passage_keeps_complete_negations_and_reports_unfit_long_lines",
+        "modules::conversation_memory::project::freshness::retrieval::tests::native_recipient_rejects_chat_only_cancelled_restarted_and_other_runs",
+        "modules::conversation_memory::project::freshness::retrieval::tests::request_bounds_and_secret_paths_fail_before_source_reads",
+        "modules::conversation_memory::project::freshness::retrieval::tests::required_missing_anchor_is_not_satisfied_by_an_unrelated_dependency",
+        "modules::conversation_memory::project::freshness::retrieval::tests::conflicts_are_qualified_and_different_workspace_content_never_ranks",
+        "modules::conversation_memory::project::freshness::retrieval::tests::task_revision_and_result_changes_invalidate_ephemeral_receipts",
+        "modules::conversation_memory::project::freshness::retrieval::tests::current_claims_linked_to_revoked_dependencies_are_invalidated",
+        "modules::conversation_memory::project::freshness::retrieval::tests::mandatory_task_evidence_takes_precedence_over_optional_project_matches",
+        "modules::conversation_memory::project::freshness::retrieval::tests::missing_original_is_explicit_and_never_fabricated",
+        "modules::conversation_memory::project::freshness::retrieval::tests::tool_result_promotions_expose_only_the_consented_source_slice",
+        "modules::conversation_memory::project::freshness::retrieval::tests::required_sources_fail_closed_at_native_byte_or_chunk_limits",
+        "modules::conversation_memory::project::freshness::retrieval::tests::unmerged_worktree_artifact_stays_historical_and_requires_exact_provenance",
+        "modules::conversation_memory::project::freshness::retrieval::tests::retrieval_sees_only_approved_same_checkout_slices_and_never_private_messages",
+        "modules::conversation_memory::project::freshness::tests::changed_dependency_graph_marks_cached_descendants_for_revalidation",
+        "modules::conversation_memory::project::freshness::tests::cyclic_dependency_metadata_stays_bounded_and_untrusted",
+        "modules::conversation_memory::project::freshness::tests::conflict_is_symmetric_and_does_not_resolve_itself",
+        "modules::conversation_memory::project::freshness::tests::cross_scope_or_fabricated_dependency_links_are_invalid",
+        "modules::conversation_memory::project::freshness::tests::declared_environment_bytes_invalidate_tests_without_rewriting_requirements",
+        "modules::conversation_memory::project::freshness::tests::metadata_and_read_limits_fail_closed",
+        "modules::conversation_memory::project::freshness::tests::environment_and_branch_revision_changes_invalidate_test_claims",
+        "modules::conversation_memory::project::freshness::tests::events_invalidate_only_known_dependencies_and_reject_late_checks",
+        "modules::conversation_memory::project::freshness::tests::evicted_entries_cannot_reuse_an_old_completion_ticket",
+        "modules::conversation_memory::project::freshness::tests::dependency_closure_reuses_reads_and_revokes_derived_authority",
+        "modules::conversation_memory::project::freshness::tests::secret_traversal_and_other_roots_are_denied_before_reads",
+        "modules::conversation_memory::project::freshness::tests::source_mutation_during_read_does_not_become_verified_evidence",
+        "modules::conversation_memory::project::freshness::tests::shared_excerpts_are_exactly_the_bounded_bytes_shown_for_authorization",
+        "modules::conversation_memory::project::freshness::tests::evidence_grant_loss_invalidates_dependents_without_publishing_private_sources",
+        "modules::conversation_memory::project::freshness::retrieval::tests::persisted_m2_record_is_revalidated_at_use_and_retains_historical_provenance",
+        "modules::conversation_memory::project::integration_tests::changed_task_checkout_metadata_invalidates_prepared_source",
+        "modules::conversation_memory::project::freshness::tests::rename_delete_and_untracked_changes_are_not_filename_guesses",
+        "modules::conversation_memory::project::integration_tests::native_binding_rechecks_real_workspace_authorization_and_aliases",
+        "modules::conversation_memory::project::freshness::tests::newer_revalidation_and_cancellation_barrier_reject_old_results",
+        "modules::conversation_memory::project::freshness::tests::restart_and_missed_events_rehash_only_declared_dependencies",
+        "modules::conversation_memory::project::integration_tests::deleted_or_changed_sources_cannot_revalidate_the_original_digest",
+        "modules::conversation_memory::project::freshness::tests::unchanged_files_are_hashed_once_per_batch_and_not_scanned",
+        "modules::conversation_memory::project::integration_tests::peertask_result_and_immutable_artifact_provenance_are_not_fabricated",
+        "modules::conversation_memory::project::freshness::tests::same_timestamp_changed_bytes_are_invalidated_and_original_evidence_survives",
+        "modules::conversation_memory::project::integration_tests::malformed_consent_and_fabricated_text_are_rejected",
+        "modules::conversation_memory::project::integration_tests::unmerged_worktree_result_is_not_published_as_main_checkout_knowledge",
+        "modules::conversation_memory::project::freshness::tests::older_schema_loads_without_automatic_publication_or_knowledge",
+        "modules::conversation_memory::project::integration_tests::same_owner_concurrent_commits_have_one_winner",
+        "modules::conversation_memory::project::integration_tests::separate_workspaces_commit_independently_to_existing_atomic_storage",
+        "modules::conversation_memory::project::freshness::tests::user_verified_replacement_is_atomic_source_linked_and_restart_safe",
+        "modules::conversation_memory::project::integration_tests::retained_history_and_metadata_have_finite_quotas",
+        "modules::conversation_memory::project::freshness::tests::git_checkout_identity_changes_even_when_file_bytes_do_not",
+        "modules::conversation_memory::project::integration_tests::metadata_capacity_preserves_room_to_approve_and_revoke_every_entry"
+      ],
+      "nativeCoverage": [
+        {
+          "pattern": "::project::freshness::",
+          "passed": 41
+        },
+        {
+          "pattern": "::project::integration_tests::",
+          "passed": 10
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": []
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "E",
+      "owner": "H1/H2/M2",
+      "tests": [
+        "src/modules/ai/quality/collaboration.quality.test.ts",
+        "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+        "src/modules/ai/lib/peerReview.test.ts",
+        "src/modules/ai/lib/peerKnowledge.test.ts",
+        "src/modules/ai/lib/peerTaskDependencies.test.ts",
+        "src/modules/ai/lib/peerTaskArtifacts.test.ts"
+      ],
+      "native": [
+        "::tests::pruned_peer_results_and_artifacts",
+        "::tests::explicit_peer_source_session_deletion",
+        "::tests::cross_workspace_and_unrelated_peer_task"
+      ],
+      "assertions": [
+        "investigate/implement/review/correct trace",
+        "independent session/root identities",
+        "immutable evidence",
+        "only downstream blocked by failure"
+      ],
+      "status": "passed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+          "passed": 20,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerReview.test.ts",
+          "passed": 12,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerKnowledge.test.ts",
+          "passed": 4,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerTaskDependencies.test.ts",
+          "passed": 17,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerTaskArtifacts.test.ts",
+          "passed": 11,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [
+        "modules::conversation_memory::tests::cross_workspace_and_unrelated_peer_task_references_are_rejected",
+        "modules::conversation_memory::tests::explicit_peer_source_session_deletion_revokes_memory_and_roots",
+        "modules::conversation_memory::tests::pruned_peer_results_and_artifacts_remain_traceable_and_retained"
+      ],
+      "nativeCoverage": [
+        {
+          "pattern": "::tests::pruned_peer_results_and_artifacts",
+          "passed": 1
+        },
+        {
+          "pattern": "::tests::explicit_peer_source_session_deletion",
+          "passed": 1
+        },
+        {
+          "pattern": "::tests::cross_workspace_and_unrelated_peer_task",
+          "passed": 1
+        }
+      ],
+      "measurements": {
+        "fixtureVersion": "clack-q1-v1",
+        "status": "passed",
+        "taskCompletion": {
+          "completedStages": 4,
+          "requiredStages": 4
+        },
+        "sourceAccuracy": {
+          "valid": 1,
+          "total": 1
+        },
+        "handoffUsefulness": {
+          "requiredEvidenceIncluded": 1,
+          "totalRequiredEvidence": 1
+        },
+        "unauthorizedDeliveries": 0,
+        "contextTokens": 666,
+        "model": "cloud investigator / small coder / cloud reviewer fixtures",
+        "preparationCalls": 1,
+        "sourceCoverage": [
+          "investigation-result"
+        ]
+      },
+      "sourceCoverage": [
+        "investigation-result"
+      ],
+      "preparationCost": 1,
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": []
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "F",
+      "owner": "H2/G1b/F1/B1",
+      "tests": [
+        "src/modules/ai/quality/collaboration.quality.test.ts",
+        "src/modules/ai/lib/peerHandoff.test.ts",
+        "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+        "src/modules/ai/lib/toolExposure.test.ts",
+        "src/modules/ai/lib/scopedEvidence.test.ts"
+      ],
+      "native": [
+        "::project::freshness::retrieval::"
+      ],
+      "assertions": [
+        "recipient-sized mission/evidence",
+        "private/irrelevant data excluded",
+        "required context not truncated",
+        "schema/context costs measured"
+      ],
+      "status": "passed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerHandoff.test.ts",
+          "passed": 19,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+          "passed": 20,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/toolExposure.test.ts",
+          "passed": 44,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/scopedEvidence.test.ts",
+          "passed": 18,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [
+        "modules::conversation_memory::project::freshness::retrieval::tests::candidate_cap_cannot_silently_drop_mandatory_dependency_artifacts",
+        "modules::conversation_memory::project::freshness::retrieval::tests::dependency_results_follow_actual_task_identity_not_workspace_neighbors",
+        "modules::conversation_memory::project::freshness::retrieval::tests::idle_switch_recipient_preserves_authorization_and_rejects_new_runs",
+        "modules::conversation_memory::project::freshness::retrieval::tests::file_reference_is_current_bounded_source_linked_and_missed_watcher_changes_stamp",
+        "modules::conversation_memory::project::freshness::retrieval::tests::artifact_hash_and_policy_are_checked_without_path_fallback",
+        "modules::conversation_memory::project::freshness::retrieval::tests::passage_keeps_complete_negations_and_reports_unfit_long_lines",
+        "modules::conversation_memory::project::freshness::retrieval::tests::native_recipient_rejects_chat_only_cancelled_restarted_and_other_runs",
+        "modules::conversation_memory::project::freshness::retrieval::tests::request_bounds_and_secret_paths_fail_before_source_reads",
+        "modules::conversation_memory::project::freshness::retrieval::tests::required_missing_anchor_is_not_satisfied_by_an_unrelated_dependency",
+        "modules::conversation_memory::project::freshness::retrieval::tests::conflicts_are_qualified_and_different_workspace_content_never_ranks",
+        "modules::conversation_memory::project::freshness::retrieval::tests::task_revision_and_result_changes_invalidate_ephemeral_receipts",
+        "modules::conversation_memory::project::freshness::retrieval::tests::current_claims_linked_to_revoked_dependencies_are_invalidated",
+        "modules::conversation_memory::project::freshness::retrieval::tests::mandatory_task_evidence_takes_precedence_over_optional_project_matches",
+        "modules::conversation_memory::project::freshness::retrieval::tests::missing_original_is_explicit_and_never_fabricated",
+        "modules::conversation_memory::project::freshness::retrieval::tests::tool_result_promotions_expose_only_the_consented_source_slice",
+        "modules::conversation_memory::project::freshness::retrieval::tests::required_sources_fail_closed_at_native_byte_or_chunk_limits",
+        "modules::conversation_memory::project::freshness::retrieval::tests::unmerged_worktree_artifact_stays_historical_and_requires_exact_provenance",
+        "modules::conversation_memory::project::freshness::retrieval::tests::retrieval_sees_only_approved_same_checkout_slices_and_never_private_messages",
+        "modules::conversation_memory::project::freshness::retrieval::tests::persisted_m2_record_is_revalidated_at_use_and_retains_historical_provenance"
+      ],
+      "nativeCoverage": [
+        {
+          "pattern": "::project::freshness::retrieval::",
+          "passed": 19
+        }
+      ],
+      "measurements": {
+        "fixtureVersion": "clack-q1-v1",
+        "status": "passed",
+        "missionRetained": true,
+        "requiredEvidenceIncluded": 1,
+        "optionalEvidenceOmitted": 1,
+        "sourceCoverage": [
+          "verified"
+        ],
+        "contextTokens": 724,
+        "schemaCost": {
+          "permitted": 3,
+          "exposed": 2,
+          "mandatory": 1,
+          "fallback": false,
+          "bytesBefore": 483,
+          "bytesAfter": 318,
+          "tokensBefore": 226,
+          "tokensAfter": 151,
+          "workingBefore": 3128,
+          "workingAfter": 3203
+        },
+        "unauthorizedDeliveries": 0,
+        "model": "4096-token recipient fixture"
+      },
+      "sourceCoverage": [
+        "verified"
+      ],
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": []
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "G",
+      "owner": "H1/H2/D1",
+      "tests": [
+        "src/modules/ai/quality/collaboration.quality.test.ts",
+        "src/modules/ai/lib/peerCommunication.test.ts",
+        "src/modules/ai/lib/peerCommunicationCoordinator.test.ts",
+        "src/modules/ai/lib/peerTaskCoordinator.test.ts",
+        "src/modules/ai/lib/workspaceWriteLease.test.ts"
+      ],
+      "native": [
+        "::session_file::tests::peer_"
+      ],
+      "assertions": [
+        "busy source/capacity one drains",
+        "single safe resume",
+        "bounded wait/rounds",
+        "unanswerable blocks without guessing"
+      ],
+      "status": "passed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerCommunication.test.ts",
+          "passed": 23,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerCommunicationCoordinator.test.ts",
+          "passed": 17,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerTaskCoordinator.test.ts",
+          "passed": 26,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/workspaceWriteLease.test.ts",
+          "passed": 5,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [
+        "modules::conversation_memory::session_file::tests::peer_receipt_cas_rejects_second_window_without_overwriting_the_winner",
+        "modules::conversation_memory::session_file::tests::peer_receipt_post_replace_failure_forces_reconciliation_not_duplicate_commit",
+        "modules::conversation_memory::session_file::tests::peer_ledger_migrates_existing_file_without_losing_legacy_metadata",
+        "modules::conversation_memory::session_file::tests::peer_receipt_failed_write_keeps_previous_revision_and_allows_retry"
+      ],
+      "nativeCoverage": [
+        {
+          "pattern": "::session_file::tests::peer_",
+          "passed": 4
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": []
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "H",
+      "owner": "M2/H2/write safety",
+      "tests": [
+        "src/modules/ai/quality/collaboration.quality.test.ts",
+        "src/modules/ai/lib/workspaceWriteLease.test.ts",
+        "src/modules/ai/lib/peerReview.test.ts",
+        "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+        "src/modules/ai/lib/readSnapshot.test.ts",
+        "src/modules/ai/tools/fileMutationSafety.test.ts"
+      ],
+      "native": [
+        "::git::agent_worktree::tests::",
+        "diff_shows_worktree_change",
+        "discard_tracked_restores_worktree"
+      ],
+      "assertions": [
+        "shared writes serialize",
+        "isolated checkout identity",
+        "stale patch/file invalidates review",
+        "changed user content not overwritten"
+      ],
+      "status": "passed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/workspaceWriteLease.test.ts",
+          "passed": 5,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerReview.test.ts",
+          "passed": 12,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+          "passed": 20,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/readSnapshot.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/tools/fileMutationSafety.test.ts",
+          "passed": 4,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [
+        "modules::git::agent_worktree::tests::accepts_generated_peer_task_ids",
+        "modules::git::agent_worktree::tests::derives_checkout_only_under_managed_root",
+        "modules::git::agent_worktree::tests::rejects_paths_and_shell_metacharacters",
+        "modules::git::agent_worktree::tests::reports_missing_managed_worktrees_without_creating_them",
+        "modules::git::agent_worktree::tests::captures_and_applies_an_isolated_change_set",
+        "modules::git::agent_worktree::tests::cleanup_removes_only_clean_worktrees_without_retained_task_records",
+        "discard_tracked_restores_worktree",
+        "diff_shows_worktree_change"
+      ],
+      "nativeCoverage": [
+        {
+          "pattern": "::git::agent_worktree::tests::",
+          "passed": 6
+        },
+        {
+          "pattern": "diff_shows_worktree_change",
+          "passed": 1
+        },
+        {
+          "pattern": "discard_tracked_restores_worktree",
+          "passed": 1
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": []
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "I",
+      "owner": "R1/R2/F2",
+      "tests": [
+        "src/modules/ai/lib/activity.test.ts",
+        "src/modules/ai/lib/activityPersistence.test.ts",
+        "src/modules/ai/lib/activityProviders.test.ts",
+        "src/modules/ai/lib/activityStream.test.ts",
+        "src/modules/ai/lib/outputWatchdog.integration.test.ts"
+      ],
+      "native": [
+        "::conversation_memory::tests::"
+      ],
+      "assertions": [
+        "reasoning/summary/activity distinct",
+        "provenance/order retained",
+        "restart reconstruction",
+        "secret canaries redacted"
+      ],
+      "status": "passed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/lib/activity.test.ts",
+          "passed": 46,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/activityPersistence.test.ts",
+          "passed": 1,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/activityProviders.test.ts",
+          "passed": 6,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/activityStream.test.ts",
+          "passed": 13,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/outputWatchdog.integration.test.ts",
+          "passed": 9,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [
+        "modules::conversation_memory::tests::collection_waits_for_inflight_memory_publication",
+        "modules::conversation_memory::tests::conversation_paths_do_not_interpret_user_ids_as_paths",
+        "modules::conversation_memory::tests::cross_conversation_and_workspace_owners_fail_closed",
+        "modules::conversation_memory::tests::duplicate_message_ids_and_invalid_coverage_fail",
+        "modules::conversation_memory::tests::early_manifest_compatibility_does_not_relax_other_validation",
+        "modules::conversation_memory::tests::attachments_keep_original_identity_and_join_retention_roots",
+        "modules::conversation_memory::tests::extraction_reads_exact_originals_with_matching_evidence_without_publishing",
+        "modules::conversation_memory::tests::committed_memory_survives_fresh_reader_and_preserves_transcript",
+        "modules::conversation_memory::tests::corrupt_revision_checksum_never_becomes_reliable_memory",
+        "modules::conversation_memory::tests::extraction_has_an_aggregate_byte_bound",
+        "modules::conversation_memory::tests::coverage_excludes_new_messages_and_stale_preparations",
+        "modules::conversation_memory::tests::corrupt_memory_never_blocks_explicit_deletion_of_derived_state",
+        "modules::conversation_memory::tests::duplicate_locators_are_deduplicated_deterministically",
+        "modules::conversation_memory::tests::ipc_source_locators_use_the_frontend_camel_case_contract",
+        "modules::conversation_memory::tests::extraction_rejects_other_workspace_and_fabricated_messages",
+        "modules::conversation_memory::tests::early_source_only_manifest_restores_without_changing_originals_or_disk_on_read",
+        "modules::conversation_memory::tests::interrupted_migration_never_replaces_legacy_transcript",
+        "modules::conversation_memory::tests::deleted_conversations_release_evidence_and_cannot_be_recreated_by_late_work",
+        "modules::conversation_memory::tests::cross_workspace_and_unrelated_peer_task_references_are_rejected",
+        "modules::conversation_memory::tests::explicit_peer_source_session_deletion_revokes_memory_and_roots",
+        "modules::conversation_memory::tests::extraction_rejects_append_and_profile_changes_and_old_process_epoch",
+        "modules::conversation_memory::tests::malformed_unsupported_and_oversized_manifests_are_explicit_errors",
+        "modules::conversation_memory::tests::migration_is_additive_idempotent_and_preserves_original_hashes",
+        "modules::conversation_memory::tests::extraction_rejects_a_preparation_superseded_by_commit",
+        "modules::conversation_memory::tests::invented_claim_references_and_contradictions_fail_validation",
+        "modules::conversation_memory::tests::manifest_compatibility_still_rejects_duplicate_json_fields",
+        "modules::conversation_memory::tests::missing_sources_are_not_fabricated",
+        "modules::conversation_memory::tests::contradictory_branch_revisions_keep_distinct_evidence_for_the_same_message_id",
+        "modules::conversation_memory::tests::failed_update_preserves_the_previous_committed_revision",
+        "modules::conversation_memory::tests::preparation_from_a_previous_process_cannot_publish_after_restart",
+        "modules::conversation_memory::tests::legacy_readers_see_identical_chat_json_after_memory_commit",
+        "modules::conversation_memory::tests::oversized_claims_and_inline_binary_are_rejected",
+        "modules::conversation_memory::tests::full_disk_failure_before_publication_preserves_previous_memory",
+        "modules::conversation_memory::tests::agent_and_model_changes_keep_memory_but_reject_old_preparation",
+        "modules::conversation_memory::tests::missing_counter_with_committed_history_still_fails_closed",
+        "modules::conversation_memory::tests::source_ids_are_deterministic_and_content_sensitive",
+        "modules::conversation_memory::tests::unrelated_conversations_have_independent_locks",
+        "modules::conversation_memory::tests::unsaved_originals_cannot_be_the_basis_of_durable_memory",
+        "modules::conversation_memory::tests::rename_and_pane_reopen_preserve_identity_and_revision",
+        "modules::conversation_memory::tests::orphan_revisions_are_cleaned_and_committed_revisions_preserved",
+        "modules::conversation_memory::tests::invalid_revision_predecessors_are_rejected_on_restart",
+        "modules::conversation_memory::tests::real_attachment_collection_keeps_memory_roots_and_removes_unreferenced_blobs",
+        "modules::conversation_memory::tests::pruned_peer_results_and_artifacts_remain_traceable_and_retained",
+        "modules::conversation_memory::tests::wrong_attachment_sizes_and_inconsistent_original_hashes_fail_closed",
+        "modules::conversation_memory::tests::source_branch_edits_keep_exact_prior_evidence_without_retargeting",
+        "modules::conversation_memory::tests::missing_and_corrupt_evidence_fail_closed_without_touching_messages",
+        "modules::conversation_memory::tests::stale_and_cancelled_generations_cannot_overwrite_newer_memory",
+        "modules::conversation_memory::tests::retained_original_evidence_can_be_carried_forward_across_revisions",
+        "modules::conversation_memory::tests::tool_call_and_result_parts_are_preserved_together",
+        "modules::conversation_memory::tests::source_tombstones_revoke_peer_evidence_before_the_session_list_finishes_saving",
+        "modules::conversation_memory::tests::two_window_publications_have_exactly_one_winner",
+        "modules::conversation_memory::tests::every_publication_crash_boundary_recovers_old_or_new_commit",
+        "modules::conversation_memory::tests::ten_cycles_retain_early_original_evidence_without_summary_lineage",
+        "modules::conversation_memory::tests::rolling_revision_retention_preserves_current_and_previous_without_leaking_metadata",
+        "modules::conversation_memory::tests::selection_and_run_history_is_bounded_and_excludes_credentials"
+      ],
+      "nativeCoverage": [
+        {
+          "pattern": "::conversation_memory::tests::",
+          "passed": 55
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": []
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "J",
+      "owner": "R2/B1/D2",
+      "tests": [
+        "src/modules/ai/lib/reasoningEffort.test.ts",
+        "src/modules/ai/lib/reasoningEffortRequests.test.ts",
+        "src/modules/ai/lib/reasoningEffortHosted.test.ts",
+        "src/modules/ai/store/reasoningEffort.test.ts",
+        "src/modules/ai/lib/answerProviders.integration.test.ts",
+        "src/modules/ai/lib/requestPreflight.test.ts"
+      ],
+      "native": [
+        "::reasoning_effort::tests::"
+      ],
+      "assertions": [
+        "every supported wire mapping",
+        "captured run isolated",
+        "retry/continuation preserve settings",
+        "unknown/unsupported emits no effort"
+      ],
+      "status": "passed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/lib/reasoningEffort.test.ts",
+          "passed": 12,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/reasoningEffortRequests.test.ts",
+          "passed": 97,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/reasoningEffortHosted.test.ts",
+          "passed": 8,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/store/reasoningEffort.test.ts",
+          "passed": 7,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/answerProviders.integration.test.ts",
+          "passed": 31,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/requestPreflight.test.ts",
+          "passed": 19,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [
+        "modules::conversation_memory::reasoning_effort::tests::additive_update_invalidates_target_and_preserves_other_fields",
+        "modules::conversation_memory::reasoning_effort::tests::automatic_removes_only_selected_choice_and_old_writers_fail",
+        "modules::conversation_memory::reasoning_effort::tests::stale_concurrent_update_and_running_owner_are_rejected",
+        "modules::conversation_memory::reasoning_effort::tests::unknown_values_and_foreign_owner_are_rejected",
+        "modules::conversation_memory::reasoning_effort::tests::existing_metadata_lock_serializes_competing_chat_updates_without_lost_choices",
+        "modules::conversation_memory::reasoning_effort::tests::effort_restart_and_interrupted_writes_preserve_original_transcript"
+      ],
+      "nativeCoverage": [
+        {
+          "pattern": "::reasoning_effort::tests::",
+          "passed": 6
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": []
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "K",
+      "owner": "T1/T2/T3a/T3b/T3c/F1",
+      "tests": [
+        "src/modules/ai/quality/collaboration.quality.test.ts",
+        "src/modules/ai/lib/customTools.test.ts",
+        "src/modules/ai/lib/customToolExecution.test.ts",
+        "src/modules/ai/lib/mcpConnections.test.ts",
+        "src/modules/ai/store/customToolCapture.test.ts",
+        "src/modules/ai/tools/customExecution.test.ts",
+        "src/modules/ai/lib/toolExposure.test.ts"
+      ],
+      "native": [
+        "::custom_tools::"
+      ],
+      "assertions": [
+        "only authorized exact tool version",
+        "WASI staging/path/environment/network adversaries",
+        "bounded MCP consent/result",
+        "no startup/self authorization"
+      ],
+      "status": "passed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/customTools.test.ts",
+          "passed": 20,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/customToolExecution.test.ts",
+          "passed": 10,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/mcpConnections.test.ts",
+          "passed": 4,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/store/customToolCapture.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/tools/customExecution.test.ts",
+          "passed": 19,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/toolExposure.test.ts",
+          "passed": 44,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [
+        "modules::conversation_memory::custom_tools::confinement::platform::tests::other_platform_evidence_is_not_inferred_from_this_host",
+        "modules::conversation_memory::custom_tools::confinement::platform::tests::reports_are_bounded_individual_and_never_execution_authority",
+        "modules::conversation_memory::custom_tools::confinement::tests::confinement_policy_is_bounded_versioned_and_never_permission_bypassable",
+        "modules::conversation_memory::custom_tools::confinement::tests::confinement_receipt_is_bounded_and_cleanup_never_implies_verified_recovery",
+        "modules::conversation_memory::custom_tools::confinement::tests::confinement_identity_changes_invalidate_the_native_policy_digest",
+        "modules::conversation_memory::custom_tools::confinement::staging::tests::shared_staging_cleanup_does_not_delete_an_outside_hardlink_target",
+        "modules::conversation_memory::custom_tools::execution::tests::advertised_runtime_requires_usable_contract_platform_and_tool_scoped_credential",
+        "modules::conversation_memory::custom_tools::execution::tests::arbitrary_code_kinds_and_native_mutations_stay_blocked",
+        "modules::conversation_memory::custom_tools::execution::tests::arguments_validate_types_contract_size_and_untrusted_approval_fields",
+        "modules::conversation_memory::custom_tools::confinement::staging::tests::shared_staging_copies_independent_identity_and_never_grants_launch",
+        "modules::conversation_memory::custom_tools::execution::tests::concurrent_duplicate_dispatch_has_one_consumer_without_cancelling_the_winner",
+        "modules::conversation_memory::custom_tools::execution::tests::chunked_output_flood_is_stopped_before_accumulation",
+        "modules::conversation_memory::custom_tools::confinement::staging::tests::shared_staging_bounds_names_metadata_and_source_permissions",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::injected_stage_hardlink_is_rejected_before_guest_execution",
+        "modules::conversation_memory::custom_tools::execution::tests::credential_references_cannot_select_provider_or_another_tools_key",
+        "modules::conversation_memory::custom_tools::confinement::staging::tests::shared_staging_rejects_existing_hardlink_aliases_and_changed_bytes",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::malformed_or_native_programs_never_execute",
+        "modules::conversation_memory::custom_tools::execution::tests::confinement_platform_evidence_persists_but_never_grants_execution",
+        "modules::conversation_memory::custom_tools::execution::tests::history_retains_active_run_deduplication_and_fails_closed_for_unknown_owner",
+        "modules::conversation_memory::custom_tools::execution::tests::d1_cancellation_timeout_and_revocation_prevent_or_interrupt_work",
+        "modules::conversation_memory::custom_tools::execution::tests::mcp_exact_approval_binds_destination_revision_credential_and_arguments",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::memory_growth_is_bounded",
+        "modules::conversation_memory::custom_tools::execution::tests::mcp_success_preserves_external_provenance_and_untrusted_output_in_t2_history",
+        "modules::conversation_memory::custom_tools::execution::tests::native_approval_cannot_be_reused_for_another_capture_or_after_consumption",
+        "modules::conversation_memory::custom_tools::execution::tests::confinement_receipts_use_existing_atomic_ledger_and_recover_without_pid_replay",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::sparse_growth_links_and_descriptor_reassignment_are_disabled",
+        "modules::conversation_memory::custom_tools::execution::tests::output_schema_is_deterministic_and_bounded",
+        "modules::conversation_memory::custom_tools::execution::tests::actual_http_request_does_not_inherit_environment_and_redacts_credentials",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::guest_start_section_uses_the_same_guarded_memory",
+        "modules::conversation_memory::custom_tools::execution::tests::public_destination_gate_rejects_private_metadata_and_non_https",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::empty_guest_completes_and_staging_is_removed",
+        "modules::conversation_memory::custom_tools::execution::tests::durable_completion_is_not_replayed_and_unclassified_errors_are_redacted",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::environment_is_empty_and_no_extra_preopens_are_inherited",
+        "modules::conversation_memory::custom_tools::execution::tests::real_http_output_rejects_redirects_floods_binary_malformed_and_headers",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::wasi_socket_calls_cannot_repurpose_stdin_or_preopen",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::declared_outputs_are_staged_and_never_applied_to_workspace",
+        "modules::conversation_memory::custom_tools::execution::tests::external_effect_then_process_interruption_recovers_without_replay",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_authorization_scope_permissions_and_unverified_platforms_fail_closed",
+        "modules::conversation_memory::custom_tools::execution::tests::registry_to_real_native_execution_keeps_recipient_scope_and_version",
+        "modules::conversation_memory::custom_tools::execution::tests::real_file_read_is_bounded_and_rejects_traversal_secrets_and_other_workspace",
+        "modules::conversation_memory::custom_tools::functions::tests::wasi_import_protects_secrets_and_oversized_files",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_active_version_freezes_but_queued_approval_and_explicit_revocation_do_not",
+        "modules::conversation_memory::custom_tools::execution::tests::mcp_restart_interrupted_effects_are_unknown_and_never_replayed",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::auth_failure_and_revoked_remote_session_are_explicit",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::changed_session_ids_and_malformed_json_fail_without_followup_requests",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_interrupted_execution_restarts_without_replay_or_fabricated_result",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::credentials_redacted_from_discovery_results_and_errors",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::incompatible_protocol_or_missing_tools_capability_is_rejected",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::production_transport_rejects_local_fixture_and_private_destinations",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::discovery_rejects_duplicate_names_too_many_tools_and_cursor_cycles",
+        "modules::conversation_memory::custom_tools::functions::tests::wasi_content_is_immutable_and_not_a_mutable_source_path",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::schemas_names_annotations_and_metadata_have_finite_contracts",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::real_streamable_http_initialize_discover_call_and_delete",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::split_sse_frames_utf8_limits_ids_and_server_requests_fail_closed",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::sse_rpc_response_and_bounded_notifications_are_supported",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::results_reject_binary_resources_malformed_and_oversized_content",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::server_ping_is_answered_but_sampling_and_elicitation_receive_method_not_found",
+        "modules::conversation_memory::custom_tools::mcp::tests::connection_assignment_workspace_and_peertask_never_transfer_authority",
+        "modules::conversation_memory::custom_tools::mcp::tests::connection_identity_revision_rename_and_destination_credentials",
+        "modules::conversation_memory::custom_tools::execution::tests::file_symlink_escape_is_denied",
+        "modules::conversation_memory::custom_tools::mcp::tests::endpoints_scopes_assignments_and_capacity_are_bounded",
+        "modules::conversation_memory::custom_tools::mcp::tests::discovery_is_disabled_untrusted_data_and_cannot_self_authorize",
+        "modules::conversation_memory::custom_tools::mcp::tests::explicit_authorize_enable_disable_revoke_and_stale_cas",
+        "modules::conversation_memory::custom_tools::mcp::tests::local_native_launcher_cannot_authorize_or_execute",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::guest_clock_wait_is_interruptible_without_consuming_wasm_fuel",
+        "modules::conversation_memory::custom_tools::mcp::tests::registered_contract_rejects_schema_substitution_scope_expansion_and_stale_discovery",
+        "modules::conversation_memory::custom_tools::mcp::tests::reconnect_deduplicates_and_schema_changes_reset_t1_authorization",
+        "modules::conversation_memory::custom_tools::functions::tests::wasi_registration_validates_bytes_imports_entrypoint_and_abi_without_execution",
+        "modules::conversation_memory::custom_tools::mcp::tests::scoped_credential_reference_and_provenance_validate_without_raw_secrets",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::concurrent_guests_have_independent_environment_and_output",
+        "modules::conversation_memory::custom_tools::tests::agent_can_only_propose_current_agent_conversation_and_cannot_self_authorize",
+        "modules::conversation_memory::custom_tools::mcp::tests::removed_tools_are_not_resurrected_by_reconnect",
+        "modules::conversation_memory::custom_tools::functions::tests::wasi_module_ownership_history_retention_and_collection_use_existing_store",
+        "modules::conversation_memory::custom_tools::tests::concurrent_edits_have_one_winner_and_do_not_overwrite_revocation",
+        "modules::conversation_memory::custom_tools::tests::capture_omits_inactive_definitions_and_history",
+        "modules::conversation_memory::custom_tools::mcp::tests::additive_restart_atomic_registry_persistence_and_corruption_checks",
+        "modules::conversation_memory::custom_tools::tests::empty_store_migration_is_additive_and_idempotent",
+        "modules::conversation_memory::custom_tools::tests::file_kinds_are_hash_pinned_definitions_not_executors",
+        "modules::conversation_memory::custom_tools::tests::kinds_require_explicit_binding_capabilities_and_never_plaintext_credentials",
+        "modules::conversation_memory::custom_tools::tests::malformed_recursive_remote_and_unbounded_schemas_fail_closed",
+        "modules::conversation_memory::custom_tools::tests::malformed_registry_versions_hashes_and_future_formats_are_isolated",
+        "modules::conversation_memory::custom_tools::tests::proposals_restart_without_approval_and_authorization_preserves_origin",
+        "modules::conversation_memory::custom_tools::tests::registration_assignment_and_execution_are_distinct",
+        "modules::conversation_memory::custom_tools::tests::disable_reenable_revoke_remove_keep_provenance",
+        "modules::conversation_memory::custom_tools::tests::all_scopes_keep_assignment_and_global_requires_native_authorization",
+        "modules::conversation_memory::custom_tools::tests::reserved_names_collisions_and_untrusted_descriptions_never_grant_policy",
+        "modules::conversation_memory::custom_tools::tests::rename_reassignment_and_history_do_not_mutate_captured_versions",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::network_and_host_process_imports_cannot_be_linked",
+        "modules::conversation_memory::custom_tools::mcp::tests::revocation_still_works_after_bounded_revision_history_fills",
+        "modules::conversation_memory::custom_tools::tests::registry_atomic_restart_failed_write_and_cas_preserve_previous_versions",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::stage_file_growth_and_open_count_are_bounded",
+        "modules::conversation_memory::custom_tools::mcp::tests::live_connection_revocation_and_disconnect_abort_inflight_discovery",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::stdout_and_stderr_share_one_strict_budget",
+        "modules::conversation_memory::custom_tools::mcp::protocol::tests::wire_response_limit_timeout_and_drop_do_not_retry",
+        "modules::conversation_memory::custom_tools::tests::history_capacity_reserves_disable_and_revocation",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::pure_loop_is_fuel_bounded_and_wall_clock_cancellable",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_function_floods_memory_and_stderr_are_bounded_separately_from_json",
+        "modules::conversation_memory::custom_tools::execution::tests::network_timeout_after_effect_is_unknown_and_revocation_drops_response",
+        "modules::conversation_memory::custom_tools::execution::tests::mcp_d1_cancellation_disconnect_and_credentials_drop_sent_requests_without_retry",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::execution_lease_atomic_receipts_cancellation_and_failed_finish",
+        "modules::conversation_memory::custom_tools::confinement::wasi::wasi_confinement::only_staged_copy_is_readable_not_workspace_paths_or_hardlink_aliases",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_function_has_no_workspace_secret_environment_or_extra_preopen",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_infinite_guest_times_out_and_revocation_interrupts_without_result",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_json_abi_uses_real_approved_module_and_bounded_d1_execution",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_output_validation_rejects_malformed_utf8_json_and_schema_mismatch",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_substitution_and_host_paths_in_arguments_never_grant_access"
+      ],
+      "nativeCoverage": [
+        {
+          "pattern": "::custom_tools::",
+          "passed": 106
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": []
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "L",
+      "owner": "C1a/C2/H1/T2/T3/D3/G3",
+      "tests": [
+        "src/modules/ai/quality/collaboration.quality.test.ts",
+        "src/modules/ai/lib/restartRecovery.test.ts",
+        "src/modules/ai/lib/streamRecovery.test.ts",
+        "src/modules/ai/store/streamRecovery.integration.test.ts",
+        "src/modules/ai/lib/peerCommunication.test.ts",
+        "src/modules/ai/lib/peerTaskArtifacts.test.ts",
+        "src/modules/ai/lib/fallbackRouting.integration.test.ts",
+        "src/modules/ai/lib/inferenceFallback.test.ts",
+        "src/modules/ai/lib/answerPersistence.test.ts",
+        "src/modules/ai/lib/providerRetry.test.ts"
+      ],
+      "native": [
+        "::session_file::",
+        "::target_context::tests::",
+        "::custom_tools::execution::",
+        "::fallback::tests::"
+      ],
+      "assertions": [
+        "last valid state across fault points",
+        "no effect/approval replay",
+        "workspace/revocation gates",
+        "unknown effects remain unresolved"
+      ],
+      "status": "passed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/restartRecovery.test.ts",
+          "passed": 29,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/streamRecovery.test.ts",
+          "passed": 50,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/store/streamRecovery.integration.test.ts",
+          "passed": 9,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerCommunication.test.ts",
+          "passed": 23,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerTaskArtifacts.test.ts",
+          "passed": 11,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/fallbackRouting.integration.test.ts",
+          "passed": 14,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/inferenceFallback.test.ts",
+          "passed": 24,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/answerPersistence.test.ts",
+          "passed": 2,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/providerRetry.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [
+        "modules::conversation_memory::custom_tools::execution::tests::advertised_runtime_requires_usable_contract_platform_and_tool_scoped_credential",
+        "modules::conversation_memory::custom_tools::execution::tests::arbitrary_code_kinds_and_native_mutations_stay_blocked",
+        "modules::conversation_memory::custom_tools::execution::tests::arguments_validate_types_contract_size_and_untrusted_approval_fields",
+        "modules::conversation_memory::custom_tools::execution::tests::concurrent_duplicate_dispatch_has_one_consumer_without_cancelling_the_winner",
+        "modules::conversation_memory::custom_tools::execution::tests::chunked_output_flood_is_stopped_before_accumulation",
+        "modules::conversation_memory::custom_tools::execution::tests::credential_references_cannot_select_provider_or_another_tools_key",
+        "modules::conversation_memory::custom_tools::execution::tests::confinement_platform_evidence_persists_but_never_grants_execution",
+        "modules::conversation_memory::custom_tools::execution::tests::history_retains_active_run_deduplication_and_fails_closed_for_unknown_owner",
+        "modules::conversation_memory::custom_tools::execution::tests::d1_cancellation_timeout_and_revocation_prevent_or_interrupt_work",
+        "modules::conversation_memory::custom_tools::execution::tests::mcp_exact_approval_binds_destination_revision_credential_and_arguments",
+        "modules::conversation_memory::custom_tools::execution::tests::mcp_success_preserves_external_provenance_and_untrusted_output_in_t2_history",
+        "modules::conversation_memory::custom_tools::execution::tests::native_approval_cannot_be_reused_for_another_capture_or_after_consumption",
+        "modules::conversation_memory::custom_tools::execution::tests::confinement_receipts_use_existing_atomic_ledger_and_recover_without_pid_replay",
+        "modules::conversation_memory::custom_tools::execution::tests::output_schema_is_deterministic_and_bounded",
+        "modules::conversation_memory::custom_tools::execution::tests::actual_http_request_does_not_inherit_environment_and_redacts_credentials",
+        "modules::conversation_memory::custom_tools::execution::tests::public_destination_gate_rejects_private_metadata_and_non_https",
+        "modules::conversation_memory::custom_tools::execution::tests::durable_completion_is_not_replayed_and_unclassified_errors_are_redacted",
+        "modules::conversation_memory::custom_tools::execution::tests::real_http_output_rejects_redirects_floods_binary_malformed_and_headers",
+        "modules::conversation_memory::custom_tools::execution::tests::external_effect_then_process_interruption_recovers_without_replay",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_authorization_scope_permissions_and_unverified_platforms_fail_closed",
+        "modules::conversation_memory::custom_tools::execution::tests::registry_to_real_native_execution_keeps_recipient_scope_and_version",
+        "modules::conversation_memory::custom_tools::execution::tests::real_file_read_is_bounded_and_rejects_traversal_secrets_and_other_workspace",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_active_version_freezes_but_queued_approval_and_explicit_revocation_do_not",
+        "modules::conversation_memory::custom_tools::execution::tests::mcp_restart_interrupted_effects_are_unknown_and_never_replayed",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_interrupted_execution_restarts_without_replay_or_fabricated_result",
+        "modules::conversation_memory::custom_tools::execution::tests::file_symlink_escape_is_denied",
+        "modules::conversation_memory::fallback::tests::alias_only_changes_do_not_change_configuration",
+        "modules::conversation_memory::fallback::tests::exact_origin_path_and_model_block_redirect_and_identity_confusion",
+        "modules::conversation_memory::fallback::tests::never_corruption_and_unsupported_versions_fail_closed",
+        "modules::conversation_memory::fallback::tests::partial_text_tools_and_unknown_effects_fail_closed",
+        "modules::conversation_memory::fallback::tests::revocation_cancels_queued_leases_and_isolates_other_conversations",
+        "modules::conversation_memory::fallback::tests::scoped_approval_stale_revision_agent_and_loop_guard",
+        "modules::conversation_memory::fallback::tests::secrets_and_oversized_identity_metadata_cannot_be_persisted",
+        "modules::conversation_memory::fallback::tests::stale_policy_writers_and_running_grants_fail_but_revocation_is_allowed",
+        "modules::conversation_memory::fallback::tests::atomic_restart_preserves_policy_history_without_dispatch_grants",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_function_floods_memory_and_stderr_are_bounded_separately_from_json",
+        "modules::conversation_memory::session_file::tests::corrupt_legacy_store_is_never_replaced_with_empty_defaults",
+        "modules::conversation_memory::custom_tools::execution::tests::network_timeout_after_effect_is_unknown_and_revocation_drops_response",
+        "modules::conversation_memory::session_file::tests::peer_receipt_cas_rejects_second_window_without_overwriting_the_winner",
+        "modules::conversation_memory::session_file::tests::peer_receipt_post_replace_failure_forces_reconciliation_not_duplicate_commit",
+        "modules::conversation_memory::session_file::tests::peer_ledger_migrates_existing_file_without_losing_legacy_metadata",
+        "modules::conversation_memory::session_file::tests::legacy_keys_survive_additive_atomic_updates_and_restart",
+        "modules::conversation_memory::session_file::tests::failed_save_preserves_disk_and_cache_then_allows_retry",
+        "modules::conversation_memory::session_file::tests::error_after_atomic_replacement_keeps_cache_consistent_with_disk",
+        "modules::conversation_memory::target_context::tests::idle_receipt_expires_on_any_metadata_change_and_never_authorizes_active_run",
+        "modules::conversation_memory::session_file::tests::peer_receipt_failed_write_keeps_previous_revision_and_allows_retry",
+        "modules::conversation_memory::session_file::tests::pending_staging_file_is_not_loaded_and_deletion_is_durable",
+        "modules::conversation_memory::target_context::tests::independent_conversations_keep_separate_selection_revisions",
+        "modules::conversation_memory::target_context::tests::cross_window_stale_save_cannot_remove_or_forge_pair",
+        "modules::conversation_memory::target_context::tests::corrupt_or_foreign_snapshots_are_never_accepted",
+        "modules::conversation_memory::session_file::tests::two_windows_update_independent_keys_without_lost_writes",
+        "modules::conversation_memory::session_file::tests::target_selection_and_context_are_old_or_new_even_on_interrupted_write",
+        "modules::conversation_memory::target_context::tests::preview_does_not_publish_or_copy_source_blobs",
+        "modules::conversation_memory::target_context::tests::snapshot_allows_append_but_not_changed_covered_evidence",
+        "modules::conversation_memory::target_context::tests::atomic_session_pair_survives_restart_with_original_transcript",
+        "modules::conversation_memory::custom_tools::execution::tests::mcp_d1_cancellation_disconnect_and_credentials_drop_sent_requests_without_retry",
+        "modules::conversation_memory::target_context::tests::stale_selection_and_busy_session_cannot_commit",
+        "modules::conversation_memory::target_context::tests::stale_preview_rejects_new_messages_and_cancelled_preparation",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_function_has_no_workspace_secret_environment_or_extra_preopen",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_infinite_guest_times_out_and_revocation_interrupts_without_result",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_json_abi_uses_real_approved_module_and_bounded_d1_execution",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_output_validation_rejects_malformed_utf8_json_and_schema_mismatch",
+        "modules::conversation_memory::custom_tools::execution::wasi::tests::wasi_substitution_and_host_paths_in_arguments_never_grant_access"
+      ],
+      "nativeCoverage": [
+        {
+          "pattern": "::session_file::",
+          "passed": 11
+        },
+        {
+          "pattern": "::target_context::tests::",
+          "passed": 9
+        },
+        {
+          "pattern": "::custom_tools::execution::",
+          "passed": 34
+        },
+        {
+          "pattern": "::fallback::tests::",
+          "passed": 9
+        }
+      ],
+      "measurements": {
+        "fixtureVersion": "clack-q1-v1",
+        "status": "passed",
+        "resumedDeadRuns": 0,
+        "approvalReplays": 0,
+        "sourceCoverage": [
+          "00000000-0000-4000-8000-000000000001"
+        ],
+        "model": "deterministic task state, no inference"
+      },
+      "sourceCoverage": [
+        "00000000-0000-4000-8000-000000000001"
+      ],
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": []
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    }
+  ],
+  "fixtureVersion": "clack-q1-v1",
+  "corpusSha256": "d3d50da5233404753c5c247c44e46825fac547dc0afaa99c44654e40105e4b30",
+  "sourceSignatures": {
+    "scripts/q1-report.test.mjs": "d67ee6f592b4f0bbdd3eff4fa2aac12d1aa7d87759034741c49729176d8a3801",
+    "src/modules/ai/lib/activity.test.ts": "43e1276fa136793e2170e1da58aa5f5ba5abb18e40a31a1e61076fe54739beba",
+    "src/modules/ai/lib/activityPersistence.test.ts": "4b268f7842189773d8198a147b97201c977cc9b843ea921187e4f4b01b91fd88",
+    "src/modules/ai/lib/activityProviders.test.ts": "dec36bfd8cf72d712b553073d41ef02fd72dac3be89a6f446f54cd9533ea62b0",
+    "src/modules/ai/lib/activityStream.test.ts": "aad753601836710d6dfb8b6f4569184faf6d8ce16c5e32fcc8adda3f4d0de3af",
+    "src/modules/ai/lib/agentCompaction.integration.test.ts": "87963928897e207ba6801fea0c3f60858eb9db90dd87ac63ea83622cf42f0590",
+    "src/modules/ai/lib/answerPersistence.test.ts": "68a8d22fabb3ddec7d4e2b4c89ce69087e3efb75d7a502c08ebf1b2de10b5a94",
+    "src/modules/ai/lib/answerProviders.integration.test.ts": "18556e6e2eee3ee459ac14101fd56edeb52c6ac156ba4c45a115ef980dcec286",
+    "src/modules/ai/lib/attachments.test.ts": "0c761940f8d2bd9b4cb823757e04d09577ebb844de277b9961d10b734accfbea",
+    "src/modules/ai/lib/compactionExtraction.test.ts": "38d6b22324a788ae201fc3eaa18aa6f4764bc6fc5127fa7727dab631a1e848a5",
+    "src/modules/ai/lib/compactionPlan.test.ts": "49c5ff2f63a27771ee47da7d9928214cfd298bdac37115c437e91c01fe450adc",
+    "src/modules/ai/lib/conversationCompaction.test.ts": "45d36fb5c0ea2494b3cfca6e1ff853b523963678a2d5bf13616d86f4e71e7043",
+    "src/modules/ai/lib/conversationRetrieval.test.ts": "53396631f7e1894c2d91acbddfbba4075080fccb57b8f116c80bd5775df7924b",
+    "src/modules/ai/lib/customToolExecution.test.ts": "7394266aea458faa06d1ef272cbd0e6b5e12fd9488620c32cd552fbdf850a5f2",
+    "src/modules/ai/lib/customTools.test.ts": "40cdb7d82af08a3338b6e1b0eb5ac1f0b0684ef9f307f942a63b37a84f578728",
+    "src/modules/ai/lib/fallbackRouting.integration.test.ts": "b817fef1c07c868a6064a662fd7b1af4b3bd2c1591ba8266452196f9baa63ec6",
+    "src/modules/ai/lib/inferenceFallback.test.ts": "9bf022f7ffdb33de18b451c13ed4aac7c03c9486ed9fc3dc525fdb7c1f469977",
+    "src/modules/ai/lib/mcpConnections.test.ts": "01d89bf661babc2b542205147b8b44afed598c61079b48674f240e6031888c48",
+    "src/modules/ai/lib/modelSwitchEligibility.test.ts": "ff2326448b9f45ed31009bfef8ff43966868d18aae1abd17a8a93a079c940ced",
+    "src/modules/ai/lib/outputWatchdog.integration.test.ts": "2350d5cae028c22f5db09467045cd85e27b0d19a23941b80cb8ff555b8fcd3a9",
+    "src/modules/ai/lib/peerCommunication.test.ts": "fa04056f04e73b7e9d350e84238abb2044068cf051eb6d7bf7b600df225c8183",
+    "src/modules/ai/lib/peerCommunicationCoordinator.test.ts": "f89d12f519203533ec1207b2a8a02830f37b7592802538197e9629d349c2fef0",
+    "src/modules/ai/lib/peerHandoff.test.ts": "8aa38624d11175c33039b5be3e0ffad43f1fbfba616fa675c4e6d48f72543b71",
+    "src/modules/ai/lib/peerHandoffRuntime.test.ts": "3faa977060af229f079edd95dcdb71a2b3978c83353bfeab4ba927deb66ada26",
+    "src/modules/ai/lib/peerKnowledge.test.ts": "5341193478879c48323f5128d331a5d6ee90f50a0404ce83d6406abd9f4fdc9a",
+    "src/modules/ai/lib/peerReview.test.ts": "613192bb56a3c00dca0d11c1b0b8f2e238370c6d2ce92765c9e79883178a39f5",
+    "src/modules/ai/lib/peerTaskArtifacts.test.ts": "4d95c63378127d43b29ee9d953f0855088d2efaebfd5f7a394fdfdf91fc96a3e",
+    "src/modules/ai/lib/peerTaskCoordinator.test.ts": "c9b56ac66e112cebec5f47bce197c00198a2a5f30101dd92b5f97515dbecb89d",
+    "src/modules/ai/lib/peerTaskDependencies.test.ts": "eacc48859fa727777d9ab365bc6c5c02f94e5c4fccb972a3dcb074088feeba45",
+    "src/modules/ai/lib/projectFreshness.test.ts": "7fd18eb49faeb018e316c075416d99ba8882461921908645b09c79ca636e81a8",
+    "src/modules/ai/lib/projectMemory.test.ts": "2b1874c1ca0efe31c6ce334c1f1db9bc6ffb05353c413f9c591fa43f1b56081b",
+    "src/modules/ai/lib/providerRetry.test.ts": "78a32ef1b06c5ce7964abee0f99b83e95b6883ea07cd13c0c8047d12426ee362",
+    "src/modules/ai/lib/readSnapshot.test.ts": "9bfbe0c08b4c730d5feb52a020e565a4ce6bf661d230dd1c0f5aa474f39b09db",
+    "src/modules/ai/lib/reasoningEffort.test.ts": "88cbee6aa76c4eede125e2e52e411ec85df94e4702ad823041af05f5840a0948",
+    "src/modules/ai/lib/reasoningEffortHosted.test.ts": "9e096bcd4b3fbe91c06489d6f9de2b6d4bbf2f07068efa5c3b40e13141e843ce",
+    "src/modules/ai/lib/reasoningEffortRequests.test.ts": "ce9bcc6a289106953cb80cc0171bb0219b169f1c4fc62fbaf293b98062ae8292",
+    "src/modules/ai/lib/requestPreflight.test.ts": "4b50091e1d67125b406154f338fb34a02edaa3f8665ebf0e8a4e603f36ff4c05",
+    "src/modules/ai/lib/restartRecovery.test.ts": "86df6883269a3903b712f3823cc5d27029b0664de581fe2c709c38291fc30792",
+    "src/modules/ai/lib/scopedEvidence.test.ts": "8f28cebe75bf38bdac57de6e4f42b2062e3e30804c472fbd033cf3c505232795",
+    "src/modules/ai/lib/streamRecovery.test.ts": "fbb13c37aef4ff9a85cabb331622ab8942e87f58ecc219d563be1f0608181f31",
+    "src/modules/ai/lib/targetContext.test.ts": "aa7b507f58f58d505901d228b7df8d6ac27c0fd1ff1aa9328ed610974d0ca2d8",
+    "src/modules/ai/lib/toolExposure.test.ts": "1289257a7387853e8834b65edbcf5560945b2ad106a660e75e800b2df6158bf6",
+    "src/modules/ai/lib/workspaceWriteLease.test.ts": "cbe359e2c89e91419f440425bfc3ac1a797821023cd7052fe3c7645ec1e8b9df",
+    "src/modules/ai/quality/collaboration.quality.test.ts": "164ada8594d57b443836af58db51d720d6945a5c9b705d535bab35c3ece90e45",
+    "src/modules/ai/quality/memory.quality.test.ts": "0b1fd4edd771325ac285feb898aac4192ab8bae8a5f5d7a8164ae5f4a02a358c",
+    "src/modules/ai/quality/oracle.test.ts": "9635888992b8efb234e292e513ed44e634602b884f58902f20f32c8dbd00e114",
+    "src/modules/ai/store/chatModelSwitch.test.ts": "d3c3f6a8974924490c7fada27c75cb477361e161ba5241b2598f3431fa80ff7c",
+    "src/modules/ai/store/customToolCapture.test.ts": "35bf3cff0984c411d0c4f0c0e59c426d88dbab5da656471526616017db1013b3",
+    "src/modules/ai/store/modelSwitch.test.ts": "c3e184953fabdc4506c79111274259c7e8d2c8566309ec9aada7db1c59264924",
+    "src/modules/ai/store/reasoningEffort.test.ts": "4d5304c23f06f6c2116ea33d4bc947d11446ff458b78e93aa7d26405feb0fabe",
+    "src/modules/ai/store/selfHostedRouting.test.ts": "09f0c9eaa7bb725e2199b01ed32099ca0f7e04492051f8182e8cf1e91ef57284",
+    "src/modules/ai/store/streamRecovery.integration.test.ts": "be54c584333e0d5816e279b66821370c1fbb9556b1c7d01c73fbb52a37f2bab9",
+    "src/modules/ai/tools/customExecution.test.ts": "e07a5702eb1edf2c2344b1a9deac4cc1acf9f220fcb7541eb1755715acfa7110",
+    "src/modules/ai/tools/fileMutationSafety.test.ts": "c4298c7a055f11dda091f8a8c3f13d62eb8bd8835953c52450ff17ce2ad8c19a",
+    "src/modules/ai/lib/conversationCompaction.fixture.ts": "d2d62dae9b7aee9f1f69af2eb89ec63976233619f22eea1ed65531f358e3dce9",
+    "src/modules/ai/lib/conversationRetrieval.ts": "9b6af108556bc12b5b214a51b54ea98586a30e16e1025adb3c52a5b114369806",
+    "src/modules/ai/quality/oracle.ts": "87e714fe114deb91094c1cb1606407a38d3d5011d48a0858d38aac2208de9a4a",
+    "scripts/q1-manifest.mjs": "f4194670ddd59ca1b77bbe4c487041535627e3ad3bf2466ee1a43e74e818d349",
+    "scripts/q1-report.mjs": "feb549d3c783f74210106748dc6b9ce429e4359e94aab6da9755c29b864c78b0",
+    "scripts/q1-quality.mjs": "0c7586d688e2c0f170df9bfc33dcc9cdeb7481379a14551a2c50eaf62bba9120"
+  },
+  "testedBaseCommit": "60720f2ed0553e62204f78d5ffc0327db1ba0451",
+  "host": "win32/x64",
+  "adapterVersions": {
+    "ai": "6.0.207",
+    "@ai-sdk/openai": "3.0.72",
+    "@ai-sdk/anthropic": "3.0.85",
+    "@ai-sdk/google": "3.0.83"
+  },
+  "fixtureMetadata": {
+    "quantization": "not applicable: deterministic model fixtures",
+    "deployedContext": "per-scenario recorded limits",
+    "credentials": "synthetic placeholders only",
+    "preparationClock": "fixed 1420; no benchmark claim",
+    "manualPins": "fixture-only context bounds",
+    "permissionVersions": "existing T1/T2/T3/F1 fixtures",
+    "runtimeMilliseconds": [
+      {
+        "file": "scripts/q1-report.test.mjs",
+        "elapsed": 5.983642578125
+      },
+      {
+        "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+        "elapsed": 35.5166015625
+      },
+      {
+        "file": "src/modules/ai/quality/memory.quality.test.ts",
+        "elapsed": 257.448974609375
+      },
+      {
+        "file": "src/modules/ai/quality/oracle.test.ts",
+        "elapsed": 3.8623046875
+      },
+      {
+        "file": "src/modules/ai/store/chatModelSwitch.test.ts",
+        "elapsed": 266.396484375
+      },
+      {
+        "file": "src/modules/ai/store/customToolCapture.test.ts",
+        "elapsed": 56.318115234375
+      },
+      {
+        "file": "src/modules/ai/store/modelSwitch.test.ts",
+        "elapsed": 541.2236328125
+      },
+      {
+        "file": "src/modules/ai/store/reasoningEffort.test.ts",
+        "elapsed": 61.277099609375
+      },
+      {
+        "file": "src/modules/ai/store/selfHostedRouting.test.ts",
+        "elapsed": 734.6318359375
+      },
+      {
+        "file": "src/modules/ai/store/streamRecovery.integration.test.ts",
+        "elapsed": 86.298095703125
+      },
+      {
+        "file": "src/modules/ai/tools/customExecution.test.ts",
+        "elapsed": 72.41845703125
+      },
+      {
+        "file": "src/modules/ai/tools/fileMutationSafety.test.ts",
+        "elapsed": 9.044189453125
+      },
+      {
+        "file": "src/modules/ai/lib/activity.test.ts",
+        "elapsed": 21.266845703125
+      },
+      {
+        "file": "src/modules/ai/lib/activityPersistence.test.ts",
+        "elapsed": 12.957275390625
+      },
+      {
+        "file": "src/modules/ai/lib/activityProviders.test.ts",
+        "elapsed": 63.6875
+      },
+      {
+        "file": "src/modules/ai/lib/activityStream.test.ts",
+        "elapsed": 27.4208984375
+      },
+      {
+        "file": "src/modules/ai/lib/agentCompaction.integration.test.ts",
+        "elapsed": 2126.690185546875
+      },
+      {
+        "file": "src/modules/ai/lib/answerPersistence.test.ts",
+        "elapsed": 4.936279296875
+      },
+      {
+        "file": "src/modules/ai/lib/answerProviders.integration.test.ts",
+        "elapsed": 146.931640625
+      },
+      {
+        "file": "src/modules/ai/lib/attachments.test.ts",
+        "elapsed": 10.147705078125
+      },
+      {
+        "file": "src/modules/ai/lib/compactionExtraction.test.ts",
+        "elapsed": 27.526611328125
+      },
+      {
+        "file": "src/modules/ai/lib/compactionPlan.test.ts",
+        "elapsed": 21.162109375
+      },
+      {
+        "file": "src/modules/ai/lib/conversationCompaction.test.ts",
+        "elapsed": 115.25341796875
+      },
+      {
+        "file": "src/modules/ai/lib/conversationRetrieval.test.ts",
+        "elapsed": 42.09326171875
+      },
+      {
+        "file": "src/modules/ai/lib/customToolExecution.test.ts",
+        "elapsed": 110.830322265625
+      },
+      {
+        "file": "src/modules/ai/lib/customTools.test.ts",
+        "elapsed": 15.251220703125
+      },
+      {
+        "file": "src/modules/ai/lib/fallbackRouting.integration.test.ts",
+        "elapsed": 314.018798828125
+      },
+      {
+        "file": "src/modules/ai/lib/inferenceFallback.test.ts",
+        "elapsed": 24.51806640625
+      },
+      {
+        "file": "src/modules/ai/lib/mcpConnections.test.ts",
+        "elapsed": 2.60791015625
+      },
+      {
+        "file": "src/modules/ai/lib/modelSwitchEligibility.test.ts",
+        "elapsed": 6.068115234375
+      },
+      {
+        "file": "src/modules/ai/lib/outputWatchdog.integration.test.ts",
+        "elapsed": 82.11572265625
+      },
+      {
+        "file": "src/modules/ai/lib/peerCommunication.test.ts",
+        "elapsed": 23.3720703125
+      },
+      {
+        "file": "src/modules/ai/lib/peerCommunicationCoordinator.test.ts",
+        "elapsed": 97.1220703125
+      },
+      {
+        "file": "src/modules/ai/lib/peerHandoff.test.ts",
+        "elapsed": 27.106689453125
+      },
+      {
+        "file": "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+        "elapsed": 68.528076171875
+      },
+      {
+        "file": "src/modules/ai/lib/peerKnowledge.test.ts",
+        "elapsed": 5.3447265625
+      },
+      {
+        "file": "src/modules/ai/lib/peerReview.test.ts",
+        "elapsed": 21.306884765625
+      },
+      {
+        "file": "src/modules/ai/lib/peerTaskArtifacts.test.ts",
+        "elapsed": 10.581787109375
+      },
+      {
+        "file": "src/modules/ai/lib/peerTaskCoordinator.test.ts",
+        "elapsed": 90.15283203125
+      },
+      {
+        "file": "src/modules/ai/lib/peerTaskDependencies.test.ts",
+        "elapsed": 5.14208984375
+      },
+      {
+        "file": "src/modules/ai/lib/projectFreshness.test.ts",
+        "elapsed": 4.22998046875
+      },
+      {
+        "file": "src/modules/ai/lib/projectMemory.test.ts",
+        "elapsed": 5.556884765625
+      },
+      {
+        "file": "src/modules/ai/lib/providerRetry.test.ts",
+        "elapsed": 16.443603515625
+      },
+      {
+        "file": "src/modules/ai/lib/readSnapshot.test.ts",
+        "elapsed": 2.114501953125
+      },
+      {
+        "file": "src/modules/ai/lib/reasoningEffort.test.ts",
+        "elapsed": 7.74072265625
+      },
+      {
+        "file": "src/modules/ai/lib/reasoningEffortHosted.test.ts",
+        "elapsed": 37.64501953125
+      },
+      {
+        "file": "src/modules/ai/lib/reasoningEffortRequests.test.ts",
+        "elapsed": 2120.79638671875
+      },
+      {
+        "file": "src/modules/ai/lib/requestPreflight.test.ts",
+        "elapsed": 76.917724609375
+      },
+      {
+        "file": "src/modules/ai/lib/restartRecovery.test.ts",
+        "elapsed": 8.10693359375
+      },
+      {
+        "file": "src/modules/ai/lib/scopedEvidence.test.ts",
+        "elapsed": 18.256591796875
+      },
+      {
+        "file": "src/modules/ai/lib/streamRecovery.test.ts",
+        "elapsed": 52.181396484375
+      },
+      {
+        "file": "src/modules/ai/lib/targetContext.test.ts",
+        "elapsed": 12.490478515625
+      },
+      {
+        "file": "src/modules/ai/lib/toolExposure.test.ts",
+        "elapsed": 57.63671875
+      },
+      {
+        "file": "src/modules/ai/lib/workspaceWriteLease.test.ts",
+        "elapsed": 3.419189453125
+      }
+    ]
+  }
+}

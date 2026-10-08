@@ -25,7 +25,7 @@ export function summarize(vitest, native, measurements) {
   });
   return { status: results.every(s => s.status === "passed") && allFilesPassed && measuredGate && nativeValid && vitest.success === true ? "passed" : "failed", criticalGate: { measuredOraclePassed: !!measuredGate, nativeSuitePassed: nativeValid, requirements: "100% retained or explicitly blocked; valid authorized sources; no orphan pairs, unauthorized data/tools, known completed effect replay; stale critical evidence reconciled or blocked", basis: "runtime assertions in enumerated suites plus original-source measurements, not universal product guarantees" }, frontend: { passed: vitest.numPassedTests, failed: vitest.numFailedTests, suites: files.length }, rust: { passed: passedNative.length }, scenarios: results };
 }
-export function markdown(report) {
+export function markdown(report, reportName = "Q1_EVIDENCE") {
   const measured = id => report.scenarios.find(s => s.id === id)?.measurements;
   const a = measured("A"), b = measured("B"), e = measured("E"), f = measured("F");
   const baselineRows = Object.entries(a?.baselines ?? {}).map(([name, score]) =>
@@ -43,7 +43,7 @@ Native GUI: **Not performed - explicitly deferred by user**. Real provider/serve
 | --- | --- | --- | --- | --- |
 ${report.scenarios.map(s => `| ${s.id} | ${s.owner} | ${s.status} | ${s.frontend.reduce((n, file) => n + file.passed, 0)} | ${s.nativeCases.length} |`).join("\n")}
 
-Counts overlap where scenarios reuse owner suites. Exact files, native case names, coverage, layers, measurements, failures and limitations are in [Q1_EVIDENCE.json](Q1_EVIDENCE.json). Critical gates are assertions in those suites, not universal product guarantees: 100% retained or explicitly blocked; valid authorized sources; zero orphan pairs, unauthorized data/tools or known completed effect replays; stale critical evidence reconciled or blocked.
+Counts overlap where scenarios reuse owner suites. Exact files, native case names, coverage, layers, measurements, failures and limitations are in [${reportName}.json](${reportName}.json). Critical gates are assertions in those suites, not universal product guarantees: 100% retained or explicitly blocked; valid authorized sources; zero orphan pairs, unauthorized data/tools or known completed effect replays; stale critical evidence reconciled or blocked.
 
 ## Original-Source Measurements
 

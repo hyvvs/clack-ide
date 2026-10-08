@@ -8,6 +8,8 @@ import { frontendFiles } from "./q1-manifest.mjs";
 import { summarize, markdown } from "./q1-report.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const reportName = process.argv[2] ?? "Q1_EVIDENCE";
+if (!/^[A-Z0-9_]{1,64}$/.test(reportName)) throw new Error("Invalid evidence report name");
 const temp = mkdtempSync(join(tmpdir(), "clack-q1-"));
 const corpus = JSON.parse(readFileSync(join(root, "src/modules/ai/quality/corpus.json"), "utf8"));
 const run = (command, args, cwd = root, env = process.env, quiet = false) => {
@@ -36,9 +38,9 @@ try {
   report.host = `${process.platform}/${process.arch}`;
   report.adapterVersions = Object.fromEntries(["ai", "@ai-sdk/openai", "@ai-sdk/anthropic", "@ai-sdk/google"].map(name => [name, JSON.parse(readFileSync(join(root, "node_modules", name, "package.json"), "utf8")).version]));
   report.fixtureMetadata = { quantization: "not applicable: deterministic model fixtures", deployedContext: "per-scenario recorded limits", credentials: "synthetic placeholders only", preparationClock: "fixed 1420; no benchmark claim", manualPins: "fixture-only context bounds", permissionVersions: "existing T1/T2/T3/F1 fixtures", runtimeMilliseconds: vitest.testResults?.map(f => ({ file: f.name.replaceAll("\\", "/").replace(`${root.replaceAll("\\", "/")}/`, ""), elapsed: f.endTime - f.startTime })) };
-  writeFileSync(join(root, "docs/Q1_EVIDENCE.json"), `${JSON.stringify(report, null, 2)}\n`);
-  writeFileSync(join(root, "docs/Q1_EVIDENCE.md"), markdown(report));
-  console.log(`Q1 ${report.status}: frontend ${report.frontend.passed ?? 0}; Rust ${report.rust.passed}. Evidence: docs/Q1_EVIDENCE.{json,md}`);
+  writeFileSync(join(root, `docs/${reportName}.json`), `${JSON.stringify(report, null, 2)}\n`);
+  writeFileSync(join(root, `docs/${reportName}.md`), markdown(report, reportName));
+  console.log(`Q1 ${report.status}: frontend ${report.frontend.passed ?? 0}; Rust ${report.rust.passed}. Evidence: docs/${reportName}.{json,md}`);
   process.exitCode = report.status === "passed" ? 0 : 1;
 } finally {
   // Only remove the exact directory this runner created.

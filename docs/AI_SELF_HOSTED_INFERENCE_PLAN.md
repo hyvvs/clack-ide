@@ -1283,7 +1283,7 @@ This order does not authorize any pending implementation in this planning task.
 | 29 | G2 | Explicit optional network discovery | Complete | `feat(ai): discover self-hosted servers safely`; implementation record below |
 | 30 | G3 | Consent-bound fallback routing | Complete | Versioned per-conversation Never/Ask/trusted destination consent; native request grants, compatibility/B1/effect guards, intercepted private-fixture traffic and restart/revocation tests. Native GUI/live-provider evidence not performed. |
 | 31 | Q1 | Context fidelity, freshness and collaboration quality suite | Complete (deterministic; native GUI deferred by user, real-provider evidence at Z) | A-L corpus/report, 969 focused frontend / 637 native automated tests; 2,201 full frontend tests |
-| 32 | Z | Integrated native/hardware validation and documentation | Pending | None |
+| 32 | Z | Integrated native/hardware validation and documentation | Complete (available automated/package gates; native GUI explicitly deferred, live-server/Linux/macOS acceptance not tested) | `chore(ai): complete final acceptance handoff`; S1-S13/A-L final matrix in `docs/FINAL_ACCEPTANCE.md`, 2,201 frontend / 637 Windows native tests, Q1 green, Windows 0.8.0 x64 NSIS built |
 
 ### A1: Profiles and migration
 
@@ -5173,6 +5173,87 @@ not just a green mocked suite. Validate cloud/saved-model/attachment/PeerTask
 regressions and platform gates. A hardware-dependent scenario cannot be marked
 Complete without its actual evidence or explicit user-approved deferral. No
 automatic release/publish. Commit acceptance documentation separately and stop.
+
+#### Z Implementation Record
+
+- **Scope/source:** Final acceptance/handoff only from `60720f2`, clean `main`
+  initially 15 commits ahead of `origin/main`. No product features, application
+  or Rust changes, version/release infrastructure edits, new roadmap or push.
+  `docs/FINAL_ACCEPTANCE.md` is the consolidated S1-S13 and A-L matrix: owners,
+  separate unit/integration/browser/native GUI/real-provider/platform evidence,
+  actual results, limitations, rollback and exact remaining external checks.
+  Previous checkpoint records were preserved. T2's stale Pending summary row
+  is explicitly identified in the handoff; its own completed implementation
+  record and `369cf96` remain the actual T2 evidence, not a new implementation.
+- **Q1 preservation/rerun:** Ran the integrated `clack-q1-v1` corpus once as
+  `npm.cmd run test:quality -- Z_Q1_EVIDENCE`. **A-L all passed**, **969 frontend
+  tests / 54 files**, including **637 Windows native tests**. Z results are
+  `docs/Z_Q1_EVIDENCE.{json,md}`; original `docs/Q1_EVIDENCE.{json,md}` remain
+  unchanged. The only orchestration change is an optional bounded report
+  basename, with default behavior unchanged and paired Markdown/JSON links;
+  existing report tests cover both names. Invalid path input was explicitly
+  rejected before any suite ran. Current report source hashes match the tested
+  files. No assertion, budget, permission or deadline was weakened.
+- **Fidelity/security:** **4/4 critical requirements** retained throughout ten
+  distinct compaction cycles; valid authorized original references, unchanged
+  transcript hashes, paired tool history, healthy fitting preparation and
+  investigation/implementation/review/correction. Fixture gates show **zero
+  unauthorized data/tool delivery, orphan tool pairs or replay of known
+  completed effects**; stale critical evidence reconciles or blocks. Known
+  unknown effects remain unresolved, not replayed. Noncritical compacted recall
+  **1/4**, omitted original retrieval **3/3** with **3/3** valid sources; B
+  retrieval uses **16384** working allowance, not the **8192** compacted target.
+  Q1's optional-envelope G1a fix remains covered. No live-model intelligence,
+  exact-tokenizer accuracy or universal security/performance guarantee inferred.
+- **Final automated gates:** `npm.cmd run check-types`, `npm.cmd run lint`,
+  `npm.cmd test -- --maxWorkers=4`, `npm.cmd run build` and `git diff --check`
+  pass. Full frontend **2,201 passed / 175 files**; lint remains **71 warnings /
+  2 informational notices / 0 errors**. From `src-tauri`, `cargo fmt --check`
+  and strict `cargo clippy --all-targets --locked -- -D warnings` pass;
+  `cargo test --locked` through the Q1 runner passes **637** (**587** library,
+  **25** filesystem, **25** Git), zero failed/ignored. No duplicate standalone
+  full Rust run. Saved/cloud routing, per-chat model ownership, attachments,
+  effort, tools, retry/continuation, PeerTask/artifact/clarification/review,
+  workspace navigation, terminal and Source Control regressions pass in the
+  full suites. Native backend tests are not native GUI/interactive PTY tests.
+- **Windows package:** `npm.cmd run tauri -- build --bundles nsis` passes on
+  Windows x64 (`10.0.26200`, 25H2; Node `22.20.0`, Rust/Cargo `1.94.0`). Native
+  optimized build finished in **5m 44s**, producing version **0.8.0**
+  `src-tauri/target/release/clack.exe` (**18,557,440 bytes**) and
+  `src-tauri/target/release/bundle/nsis/Clack_0.8.0_x64-setup.exe`
+  (**7,668,880 bytes**). Freshness, product/file versions and SHA-256 hashes
+  were inspected and recorded in the handoff. Installer is **NotSigned**;
+  installation, launch/uninstall, WebView bootstrapper and trust were not tested.
+  Existing current-user/download-bootstrapper policy is unchanged. The frontend
+  build/hook retains four existing ineffective-dynamic-import warnings and the
+  plugin-timing advisory; no native compiler/package error. Artifacts remain
+  ignored local outputs, not committed or uploaded.
+- **Deferred evidence:** Native GUI acceptance **Not performed - explicitly
+  deferred by user**: split panes, native Stop, minimize/restore, actual app
+  restart/Dispatcher/recovery, selectors, dialogs/focus, source/tool views,
+  workspace/explorer/breadcrumb/terminal/Source Control interactions and native
+  background/theme/transparency/blur rendering. Historical browser evidence is
+  labeled historical, not rerun or promoted to native acceptance. **Real
+  provider/server acceptance not performed**; no established safe local live
+  fixture, known inference processes or listeners on 11434/1234/8000 were found.
+  No new credentials, models, paid/cloud inference, LAN scan or Computer Use.
+  **Linux native acceptance: Not tested. macOS native acceptance: Not tested.**
+  Existing CI job definitions were inspected, not claimed current-revision run
+  results or dispatched. The handoff lists exact localhost/LAN/auth/backend,
+  model/context/effort/capacity/recovery, Windows native GUI/install, Linux/Arch/
+  NVIDIA and macOS native/tool/MCP/WASI/package checks still needing real hosts,
+  hardware or separately authorized manual interaction.
+- **Completion/rollback:** All available mandatory automated/package gates pass;
+  missing external and explicitly deferred manual evidence is recorded, never
+  marked passed. Under the user's Z completion rules, **Z and the 32-checkpoint
+  implementation/handoff roadmap are complete with those acceptance limits**,
+  not a release or blanket live-platform certification. Rollback preserves
+  original/additive data, corpus/history, provenance, artifacts and effect
+  receipts; disable failing behavior at its named owner rather than deleting
+  sources, weakening policy or replaying unknown effects. Only Z/orchestration
+  and handoff files are staged. Unrelated work/stashes/autonomous_tracker remain
+  untouched. Final closeout verifies clean `main`, 16 commits ahead. **No release,
+  tag, upload, push or subsequent roadmap/checkpoint was performed. STOP.**
 
 ### Gate for every implementation checkpoint
 
