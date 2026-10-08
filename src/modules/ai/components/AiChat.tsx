@@ -1,5 +1,10 @@
 import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
 import { answerParts, readAnswer } from "@/modules/ai/lib/answerContinuation";
+import { recoveryAvailability } from "@/modules/ai/lib/streamRecovery";
+import {
+  hasCapturedRecovery,
+  retryInterruptedRun,
+} from "@/modules/ai/store/chatRuntime";
 import { AgentActivity } from "@/modules/ai/components/AgentActivity";
 import {
   ACTIVITY_ENABLED,
@@ -291,6 +296,8 @@ export function AiChatView({
     !isBusy &&
     run?.budget?.phase === "hard-limit" &&
     lastMessage?.role === "assistant";
+  const recovery = recoveryAvailability(run, messages, sessionId);
+  const capturedRecovery = run && hasCapturedRecovery(sessionId, run.startedAt);
 
   const onApproval = useCallback(
     (id: string, approved: boolean) =>
@@ -440,6 +447,28 @@ export function AiChatView({
             }}
           />
         ) : null}
+        {!isBusy &&
+        run &&
+        (run.state === "interrupted" || run.state === "failed") ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-[var(--clack-text-3)]">
+            {recovery.allowed && capturedRecovery ? (
+              <button
+                type="button"
+                onClick={() => void retryInterruptedRun(sessionId)}
+                title={recovery.reason}
+                className="inline-flex shrink-0 items-center gap-1 rounded-[var(--clack-radius-button)] px-2 py-1 hover:bg-[var(--clack-accent-soft)]"
+              >
+                <HugeiconsIcon icon={ArrowRight01Icon} size={12} />
+                {recovery.partial ? "Continue Partial Answer" : "Retry"}
+              </button>
+            ) : null}
+            <span className="min-w-0 break-words">
+              {recovery.allowed && !capturedRecovery
+                ? "Captured settings unavailable after restart. Send a new instruction; prior output will not be replayed."
+                : recovery.reason}
+            </span>
+          </div>
+        ) : null}
       </ConversationContent>
       <ConversationScrollButton />
     </Conversation>
@@ -475,7 +504,7 @@ function RunTerminalStatus({
 }) {
   const label =
     state === "interrupted"
-      ? "Interrupted: this run ended when the previous Clack session closed."
+      ? "Interrupted. Partial output remains available; nothing was automatically resumed."
       : state === "cancelled"
         ? "Cancelled"
         : "Run failed";

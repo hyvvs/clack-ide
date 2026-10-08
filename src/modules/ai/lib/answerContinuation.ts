@@ -16,7 +16,10 @@ import {
   resolveContextBudget,
   type BudgetLimits,
 } from "@/modules/ai/lib/contextBudget";
-import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
+import {
+  InferenceTransportError,
+  deferStreamFailure,
+} from "@/modules/ai/lib/inferenceErrors";
 import { sanitizeAiErrorText } from "@/modules/ai/lib/errors";
 
 export const ANSWER_LIMITS = {
@@ -91,6 +94,7 @@ export const answerSchema = z.object({
       z.object({
         id: z.string().max(1024),
         previous: z.string().max(1024).nullable(),
+        recovery: z.boolean().optional(),
         provider: z.string().max(1024),
         model: z.string().max(1024),
         startedAt: z.number(),
@@ -155,8 +159,23 @@ export function answerParts(message: UIMessage): UIMessage["parts"] {
   const answer = readAnswer(message);
   if (!answer) return message.parts;
   const parts: UIMessage["parts"] = [];
-  for (const part of message.parts) {
+  for (const [index, part] of message.parts.entries()) {
     const previous = parts[parts.length - 1];
+    const next = message.parts[index + 1];
+    if (
+      part.type === "step-start" &&
+      previous?.type === "text" &&
+      next?.type === "text"
+    ) {
+      const recovery = answer.segments.find(
+        (s) => s.id === next.providerMetadata?.clackAnswer?.segmentId,
+      );
+      if (
+        recovery?.recovery &&
+        recovery.previous === previous.providerMetadata?.clackAnswer?.segmentId
+      )
+        continue;
+    }
     const currentSegment =
       part.type === "text"
         ? part.providerMetadata?.clackAnswer?.segmentId
@@ -170,7 +189,9 @@ export function answerParts(message: UIMessage): UIMessage["parts"] {
       part.type === "text" &&
       previous?.type === "text" &&
       segment?.previous === previousSegment &&
-      answer.segments.find((s) => s.id === previousSegment)?.finish === "length"
+      (answer.segments.find((s) => s.id === previousSegment)?.finish ===
+        "length" ||
+        answer.segments.find((s) => s.id === currentSegment)?.recovery === true)
     )
       parts[parts.length - 1] = {
         ...part,
@@ -196,6 +217,11 @@ export function recoverAnswerMessages(messages: UIMessage[]): UIMessage[] {
           ...answer,
           state: "incomplete",
           reason: "Application stopped; continuation was not resumed.",
+          segments: answer.segments.map((segment) =>
+            segment.endedAt === undefined
+              ? { ...segment, finish: "interrupted" }
+              : segment,
+          ),
         },
       },
     };
@@ -225,7 +251,6 @@ export function verifiedProviderFetch(fetcher: typeof fetch): typeof fetch {
         : path.endsWith("/responses")
           ? "responses"
           : null;
-    if (!protocol) return response;
     const decoder = new TextDecoder();
     let buffer = "",
       data: string[] = [],
@@ -273,22 +298,41 @@ export function verifiedProviderFetch(fetcher: typeof fetch): typeof fetch {
       if (buffer.length > 1_048_576)
         throw new InferenceTransportError("remote-disconnect");
     };
+    const reader = response.body.getReader();
+    const signal =
+      init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    let release: (() => void) | undefined;
     return new Response(
-      response.body.pipeThrough(
-        new TransformStream<Uint8Array, Uint8Array>({
-          transform(chunk, controller) {
-            buffer += decoder.decode(chunk, { stream: true });
-            scan();
-            controller.enqueue(chunk);
-          },
-          flush() {
+      new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const next = await reader.read();
+            if (!next.done) {
+              buffer += decoder.decode(next.value, { stream: true });
+              scan();
+              controller.enqueue(next.value);
+              return;
+            }
             buffer += decoder.decode();
             scan();
-            if (!complete)
-              throw new InferenceTransportError("remote-disconnect");
-          },
-        }),
-      ),
+            if (protocol && !complete)
+              throw new InferenceTransportError("missing-final-event");
+            controller.close();
+          } catch (error) {
+            // Drain adapter buffers before reporting failure; tool quarantine remains closed.
+            if (deferStreamFailure(signal, error)) {
+              await new Promise<void>((resolve) => {
+                release = resolve;
+              });
+            } else controller.error(error);
+            await reader.cancel().catch(() => {});
+          }
+        },
+        cancel(reason) {
+          release?.();
+          return reader.cancel(reason);
+        },
+      }),
       {
         status: response.status,
         statusText: response.statusText,
@@ -410,6 +454,7 @@ export function withAnswerContinuation(
     onState?: (state: AnswerState) => void;
     previous?: AnswerState;
     knownToolIds?: readonly string[];
+    recovery?: boolean;
   },
 ): LanguageModel {
   if (typeof model === "string" || model.specificationVersion !== "v3")
@@ -522,6 +567,10 @@ export function withAnswerContinuation(
                   id: crypto.randomUUID(),
                   previous:
                     state.segments[state.segments.length - 1]?.id ?? null,
+                  ...(options.recovery &&
+                  state.segments.length === options.previous?.segments.length
+                    ? { recovery: true }
+                    : {}),
                   provider: options.provider,
                   model: options.modelId,
                   startedAt: Date.now(),
@@ -589,9 +638,7 @@ export function withAnswerContinuation(
                     continue;
                   }
                   if (part.type === "error") {
-                    failed = true;
-                    controller.enqueue(part);
-                    continue;
+                    throw part.error;
                   }
                   if (part.type === "tool-input-start") {
                     if (
@@ -816,6 +863,18 @@ export function withAnswerContinuation(
                         : `Provider finish: ${segment.finish}.`
                       : undefined;
                   publish();
+                  if (
+                    !failed &&
+                    (segment.finish === "unknown" || segment.finish === "error")
+                  )
+                    controller.enqueue({
+                      type: "error",
+                      error: new InferenceTransportError(
+                        segment.finish === "unknown"
+                          ? "missing-final-event"
+                          : "provider-error",
+                      ),
+                    });
                   if (finish)
                     controller.enqueue({
                       ...finish,

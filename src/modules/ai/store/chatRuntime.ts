@@ -1,6 +1,15 @@
 import { Chat, type UIMessage } from "@ai-sdk/react";
 import { captureSessionTools } from "@/modules/ai/store/customToolCapture";
 import {
+  recoveryAvailability,
+  unresolvedExecution,
+} from "@/modules/ai/lib/streamRecovery";
+import { executionHistory } from "@/modules/ai/lib/customToolExecution";
+import { saveSessionsList } from "@/modules/ai/lib/sessions";
+import { waitForRecovery } from "@/modules/ai/lib/providerRetry";
+import { beginInference } from "@/modules/ai/lib/inferenceLifecycle";
+import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
+import {
   type ChatTransport,
   lastAssistantMessageIsCompleteWithApprovalResponses,
 } from "ai";
@@ -52,6 +61,11 @@ import {
   peerReplySessions,
   peerWaitingSessions,
 } from "@/modules/ai/lib/peerCommunicationRuntime";
+
+const recoveryOwners = new WeakMap<
+  Chat<UIMessage>,
+  (runId: string) => boolean
+>();
 
 export async function sendPeerCommunicationToSession(
   sessionId: string,
@@ -412,14 +426,14 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       }
       return streamError.text;
     },
-  }) as unknown as ChatTransport<UIMessage>;
+  });
 
   const initialMessages = seedMessages.get(sessionId);
   seedMessages.delete(sessionId);
 
-  return new Chat<UIMessage>({
+  const chat = new Chat<UIMessage>({
     id: sessionId,
-    transport,
+    transport: transport as unknown as ChatTransport<UIMessage>,
     messages: initialMessages,
     sendAutomaticallyWhen: ({ messages }) =>
       shouldAutomaticallySendSession(sessionId, messages),
@@ -428,6 +442,8 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       pendingTerminalStreamError = undefined;
     },
   });
+  recoveryOwners.set(chat, transport.canRecover);
+  return chat;
 }
 
 export async function prepareSessionChat(sessionId: string): Promise<void> {
@@ -454,12 +470,20 @@ function recordTerminalAiFailure(
   const state = useChatStore.getState();
   const runState = state.sessions.find((session) => session.id === sessionId)
     ?.run?.state;
-  const canTerminalize =
-    runState === "running" &&
-    normalized.kind !== "cancelled" &&
-    normalized.kind !== "interrupted";
+  const canTerminalize = runState === "running";
   if (canTerminalize) {
-    state.finishRun(sessionId, "failed", normalized);
+    state.finishRun(
+      sessionId,
+      normalized.kind === "interrupted"
+        ? "interrupted"
+        : normalized.kind === "cancelled"
+          ? "cancelled"
+          : "failed",
+      normalized,
+    );
+    const messages = chats.get(sessionId)?.messages;
+    if (messages)
+      void persistCompactionSource(sessionId, messages).catch(() => {});
   }
   if (import.meta.env.DEV && canTerminalize) {
     console.error("[clack] AI run failed", {
@@ -681,4 +705,122 @@ export async function continueRun(
     throw error;
   }
   return true;
+}
+
+export async function retryInterruptedRun(sessionId: string): Promise<boolean> {
+  const state = useChatStore.getState();
+  const session = state.sessions.find((item) => item.id === sessionId);
+  const run = session?.run;
+  const chat = chats.get(sessionId);
+  if (
+    !session ||
+    !run?.budget ||
+    !chat ||
+    chat.status === "submitted" ||
+    chat.status === "streaming"
+  )
+    return false;
+  if (
+    !recoveryAvailability(run, chat.messages, sessionId).allowed ||
+    !recoveryOwners.get(chat)?.(`${sessionId}:${run.startedAt}`) ||
+    session.profile?.agentId !== run.agentId ||
+    session.profile?.modelId !== run.modelId ||
+    (session.profile?.workspaceId ?? undefined) !== run.workspaceId ||
+    state.pendingApprovalsBySession[sessionId]?.length
+  )
+    return false;
+  const resumed = {
+    ...run,
+    state: "running" as const,
+    endedAt: undefined,
+    error: undefined,
+    recoveryAttempts: (run.recoveryAttempts ?? 0) + 1,
+    budget: {
+      ...run.budget,
+      phase: "running" as const,
+      continuationPromptPending: false,
+      totalSteps: run.budget.totalSteps + 1,
+    },
+  };
+  const originalMessages = JSON.stringify(chat.messages);
+  chat.clearError();
+  useChatStore.setState((current) => ({
+    sessions: current.sessions.map((item) =>
+      item.id === sessionId ? { ...item, run: resumed } : item,
+    ),
+  }));
+  state.patchAgentMeta(sessionId, {
+    status: "thinking",
+    step: "Checking interrupted run...",
+    error: null,
+    providerRetry: null,
+  });
+  const current = () =>
+    useChatStore.getState().sessions.find((item) => item.id === sessionId)
+      ?.run === resumed;
+  const preparation = new AbortController();
+  const deadline = setTimeout(
+    () => preparation.abort(new InferenceTransportError("preflight-timeout")),
+    10_000,
+  );
+  const lifecycle = beginInference(
+    {
+      sessionId,
+      runId: `${sessionId}:${run.startedAt}`,
+      label: "recovery checks",
+      isCurrent: current,
+    },
+    () => preparation.abort(new DOMException("Cancelled", "AbortError")),
+    "awaiting-admission",
+  );
+  const checkTranscript = () => {
+    if (JSON.stringify(chat.messages) !== originalMessages)
+      throw new Error(
+        "Conversation changed during recovery preparation; no request was replayed.",
+      );
+  };
+  try {
+    const records = await waitForRecovery(
+      executionHistory(sessionId),
+      preparation.signal,
+    );
+    if (!current()) return false;
+    checkTranscript();
+    if (unresolvedExecution(records, run.startedAt))
+      throw new Error(
+        "Tool effects require reconciliation. No inference or tool was replayed.",
+      );
+    await waitForRecovery(
+      persistCompactionSource(sessionId, chat.messages),
+      preparation.signal,
+    );
+    if (!current()) return false;
+    await waitForRecovery(
+      saveSessionsList(useChatStore.getState().sessions),
+      preparation.signal,
+    );
+    if (!current()) return false;
+    checkTranscript();
+    lifecycle.update("completed");
+    lifecycle.settle();
+    clearTimeout(deadline);
+    await chat.sendMessage(undefined, { body: { clackRecovery: true } });
+    return !chat.error;
+  } catch (error) {
+    if (current()) recordTerminalAiFailure(sessionId, error);
+    return false;
+  } finally {
+    clearTimeout(deadline);
+    lifecycle.settle();
+  }
+}
+
+export function hasCapturedRecovery(
+  sessionId: string,
+  startedAt: number,
+): boolean {
+  const chat = chats.get(sessionId);
+  return (
+    !!chat && recoveryOwners.get(chat)?.(`${sessionId}:${startedAt}`) === true
+  );
 }

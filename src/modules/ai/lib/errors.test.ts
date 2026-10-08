@@ -235,13 +235,13 @@ describe("normalizeAiError", () => {
     expect(shouldPresentAiError(error, "cancelled")).toBe(false);
   });
 
-  it("does not present interrupted recovery as a provider error", () => {
+  it("presents terminal interruptions as actionable without inventing a provider cause", () => {
     const error = normalizeAiError(new Error("Previous app session closed"), {
       kind: "interrupted",
     });
 
     expect(error.kind).toBe("interrupted");
-    expect(shouldPresentAiError(error, "interrupted")).toBe(false);
+    expect(shouldPresentAiError(error, "interrupted")).toBe(true);
   });
 
   it("redacts headers, key fields, provider keys, cookies, and tokens", () => {

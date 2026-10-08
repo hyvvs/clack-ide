@@ -7,6 +7,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createXai } from "@ai-sdk/xai";
 import { createGroq } from "@ai-sdk/groq";
 import { createCerebras } from "@ai-sdk/cerebras";
+import { withProviderRetryTracking } from "@/modules/ai/lib/providerRetry";
 import {
   verifiedProviderFetch,
   withAnswerContinuation,
@@ -141,6 +142,311 @@ const factories = {
   cerebras: (fetch: typeof globalThis.fetch) =>
     createCerebras({ apiKey: "fixture", fetch })("llama3.1-8b"),
 };
+describe("D3 deterministic installed-provider interruption fixtures", () => {
+  const names = [
+    "responses",
+    "openai",
+    "compatible",
+    "anthropic",
+    "google",
+  ] as const;
+  it.each(
+    names,
+  )("%s retries before output without changing destination or exposing failed-attempt text", async (provider) => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(wire(provider, false), {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    fetcher.mockRejectedValueOnce(
+      new Error("ECONNREFUSED: endpoint unreachable"),
+    );
+    const beforeRetry = vi.fn(async () => {}),
+      onRetry = vi.fn();
+    const tracked = withProviderRetryTracking(
+      factories[provider](verifiedProviderFetch(fetcher)),
+      { onRetry, onRecovered: vi.fn() },
+      2,
+      { delayMs: 0, beforeRetry },
+    );
+    const states: AnswerState[] = [];
+    const result = streamText({
+      model: withAnswerContinuation(tracked, {
+        runId: "chat:1",
+        provider,
+        modelId: "captured",
+        isCurrent: () => true,
+        limits: async () => ({ asserted: 32768 }),
+        onState: (s) => states.push(s),
+      }),
+      prompt: "Write",
+      maxRetries: 0,
+      onError: () => {},
+    });
+    expect(await result.text).toBe(ending);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]).toEqual(fetcher.mock.calls[0]);
+    expect(onRetry).toHaveBeenCalledOnce();
+    expect(states[states.length - 1]?.state).toBe("complete");
+  });
+  it.each(
+    names,
+  )("%s preserves partial output exactly once and refuses a missing final event", async (provider) => {
+    const events = wire(provider, false)
+      .split("\n\n")
+      .filter(Boolean)
+      .filter((event) => event !== "data: [DONE]")
+      .map((event) => {
+        const value = JSON.parse(event.slice(6));
+        if (
+          [
+            "response.completed",
+            "response.output_item.done",
+            "message_delta",
+            "message_stop",
+          ].includes(value.type)
+        )
+          return "";
+        for (const choice of value.choices ?? []) choice.finish_reason = null;
+        for (const candidate of value.candidates ?? [])
+          delete candidate.finishReason;
+        return sse(value);
+      })
+      .join("");
+    const fetcher = vi.fn(
+      async () =>
+        new Response(events, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    const states: AnswerState[] = [],
+      onRetry = vi.fn(),
+      onError = vi.fn();
+    const model = withAnswerContinuation(
+      withProviderRetryTracking(
+        factories[provider](verifiedProviderFetch(fetcher)),
+        { onRetry, onRecovered: vi.fn() },
+        2,
+        { delayMs: 0 },
+      ),
+      {
+        runId: "chat:1",
+        provider,
+        modelId: "captured",
+        isCurrent: () => true,
+        limits: async () => ({ asserted: 32768 }),
+        onState: (s) => states.push(s),
+      },
+    );
+    const result = streamText({
+      model,
+      prompt: "Write",
+      maxRetries: 0,
+      onError,
+    });
+    expect(await result.text).toBe(ending);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalled();
+    expect(states[states.length - 1]?.state).toBe("incomplete");
+    expect(states[states.length - 1]?.continuations).toBe(0);
+  });
+  it.each(
+    names,
+  )("%s preserves Unicode across split bytes on socket reset", async (provider) => {
+    const value = "Unicode \u{1F642} stays intact\n```ts\nconst x =";
+    const payload = wire(provider, false).replace(
+      ending,
+      value.replace(/\n/g, "\\n"),
+    );
+    const bytes = new TextEncoder().encode(payload);
+    const unicode = bytes.indexOf(0xf0);
+    const chunks = [
+      bytes.slice(0, unicode + 1),
+      bytes.slice(unicode + 1, unicode + 3),
+      bytes.slice(unicode + 3),
+    ];
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(c) {
+              const next = chunks.shift();
+              if (next) c.enqueue(next);
+              else c.error(new Error("ECONNRESET"));
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+    const states: AnswerState[] = [],
+      onRetry = vi.fn();
+    const result = streamText({
+      model: withAnswerContinuation(
+        withProviderRetryTracking(
+          factories[provider](verifiedProviderFetch(fetcher)),
+          { onRetry, onRecovered: vi.fn() },
+          2,
+          { delayMs: 0 },
+        ),
+        {
+          runId: "chat:1",
+          provider,
+          modelId: "captured",
+          isCurrent: () => true,
+          limits: async () => ({ asserted: 32768 }),
+          onState: (s) => states.push(s),
+        },
+      ),
+      prompt: "Write",
+      maxRetries: 0,
+      onError: () => {},
+    });
+    expect(await result.text).toBe(value);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(states[states.length - 1]?.state).toBe("incomplete");
+  });
+  it.each([
+    "responses",
+    "openai",
+    "compatible",
+    "anthropic",
+    "google",
+  ] as const)("%s never executes tool input without a verified final receipt", async (provider) => {
+    let payload: string;
+    if (provider === "responses")
+      payload = [
+        {
+          type: "response.created",
+          response: { id: "response", created_at: 1, model: "model" },
+        },
+        {
+          type: "response.output_item.added",
+          output_index: 0,
+          item: {
+            id: "fn",
+            type: "function_call",
+            call_id: "call",
+            name: "edit",
+            arguments: "",
+          },
+        },
+        {
+          type: "response.function_call_arguments.delta",
+          item_id: "fn",
+          output_index: 0,
+          delta: "{}",
+        },
+      ]
+        .map(sse)
+        .join("");
+    else if (provider === "anthropic")
+      payload = [
+        {
+          type: "message_start",
+          message: {
+            id: "msg",
+            type: "message",
+            role: "assistant",
+            model: "claude",
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 0 },
+          },
+        },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "call",
+            name: "edit",
+            input: {},
+          },
+        },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: "{}" },
+        },
+      ]
+        .map(sse)
+        .join("");
+    else if (provider === "google")
+      payload = sse({
+        candidates: [
+          {
+            index: 0,
+            content: {
+              role: "model",
+              parts: [{ functionCall: { name: "edit", args: {} } }],
+            },
+          },
+        ],
+      });
+    else
+      payload = sse({
+        id: "response",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "model",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call",
+                  type: "function",
+                  function: { name: "edit", arguments: "{}" },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+    const fetcher = vi.fn(
+      async () =>
+        new Response(payload, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    const execute = vi.fn(),
+      onRetry = vi.fn();
+    const result = streamText({
+      model: withAnswerContinuation(
+        withProviderRetryTracking(
+          factories[provider](verifiedProviderFetch(fetcher)),
+          { onRetry, onRecovered: vi.fn() },
+          2,
+          { delayMs: 0 },
+        ),
+        {
+          runId: "chat:1",
+          provider,
+          modelId: "captured",
+          isCurrent: () => true,
+          limits: async () => ({ asserted: 32768 }),
+        },
+      ),
+      prompt: "Edit",
+      maxRetries: 0,
+      onError: () => {},
+      tools: {
+        edit: tool({ inputSchema: jsonSchema({ type: "object" }), execute }),
+      },
+    });
+    await result.consumeStream();
+    expect(execute).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+});
 describe("actual installed provider adapters with intercepted protocol fixtures", () => {
   it("OpenAI Responses completed function calls retain normal approval despite absent raw reason", async () => {
     const payload = [

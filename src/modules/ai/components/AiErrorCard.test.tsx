@@ -82,7 +82,7 @@ describe("AiErrorCard", () => {
     expect(renderError(retrying)).toBe("");
   });
 
-  it("suppresses cancelled and interrupted states before rendering", () => {
+  it("suppresses cancellation but surfaces actionable interrupted recovery", () => {
     const cancelled = normalizeAiError(
       new DOMException("Request aborted", "AbortError"),
     );
@@ -91,6 +91,7 @@ describe("AiErrorCard", () => {
     });
 
     expect(shouldPresentAiError(cancelled, "cancelled")).toBe(false);
-    expect(shouldPresentAiError(interrupted, "interrupted")).toBe(false);
+    expect(shouldPresentAiError(interrupted, "interrupted")).toBe(true);
+    expect(interrupted.title).toBe("Interrupted");
   });
 });

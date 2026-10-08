@@ -13,6 +13,8 @@ export type AiErrorKind =
   | "quota"
   | "model_not_found"
   | "provider_unavailable"
+  | "model_loading"
+  | "backend_restart"
   | "network"
   | "timeout"
   | "bad_request"
@@ -38,6 +40,7 @@ export type NormalizedAiError = {
   requestId?: string;
   toolName?: string;
   retryable: boolean;
+  retryAttempts?: number;
   details?: string;
   cause?: string;
 };
@@ -139,6 +142,11 @@ export function normalizeAiError(
   context: AiErrorContext = {},
 ): NormalizedAiError {
   const chain = collectErrorChain(error);
+  const retryAttempts = chain.some(
+    (node) => node.record?.providerAttempts === 2,
+  )
+    ? 2
+    : undefined;
   const budget = chain.find(
     (node) => node.record?.contextPreflight === true,
   )?.record;
@@ -162,8 +170,12 @@ export function normalizeAiError(
     const detail = INFERENCE_ERRORS[native.code];
     return {
       ...detail,
-      title:
-        detail.kind === "timeout" ? "Inference timed out" : "Inference request",
+      title: retryAttempts
+        ? "Retry exhausted"
+        : detail.kind === "timeout"
+          ? "Inference timed out"
+          : "Inference request",
+      retryAttempts,
       disposition: "terminal",
       retryable: false,
       errorCode: native.code,
@@ -258,7 +270,7 @@ export function normalizeAiError(
   return compactUndefined({
     kind,
     disposition,
-    title,
+    title: retryAttempts ? "Retry exhausted" : title,
     message: sanitizeAiErrorText(message, MAX_MESSAGE_LENGTH),
     provider,
     model,
@@ -269,6 +281,7 @@ export function normalizeAiError(
     requestId,
     toolName,
     retryable,
+    retryAttempts,
     details: safeMessage || undefined,
     cause,
   });
@@ -279,12 +292,11 @@ export function shouldPresentAiError(
   runState?: "running" | "completed" | "failed" | "cancelled" | "interrupted",
 ): error is NormalizedAiError {
   if (!error) return false;
-  if (runState !== "failed") return false;
+  if (runState !== "failed" && runState !== "interrupted") return false;
   return (
     error.disposition !== "recoverable" &&
     error.disposition !== "retrying" &&
-    error.kind !== "cancelled" &&
-    error.kind !== "interrupted"
+    error.kind !== "cancelled"
   );
 }
 
@@ -676,6 +688,18 @@ function classifyError(input: {
   ) {
     return "rate_limit";
   }
+  if (
+    /\bmodel[_ -]?(?:loading|unloaded)|model.{0,60}(?:is loading|being loaded|not loaded|unloading)|loading model/i.test(
+      `${input.code ?? ""} ${input.message}`,
+    )
+  )
+    return "model_loading";
+  if (
+    /\b(?:backend|server)[_ -]?(?:restarted|restarting)\b/i.test(
+      `${input.code ?? ""} ${input.message}`,
+    )
+  )
+    return "backend_restart";
   const modelEvidence =
     /AI_NoSuchModelError/i.test(input.name) ||
     /(?:model[_-]?(?:not[_-]?found|unavailable|unknown)|no[_-]?such[_-]?model|invalid[_-]?model)/i.test(
@@ -770,6 +794,13 @@ function messageForError(input: {
           : `${provider} is currently unavailable.`,
         detail,
       );
+    case "model_loading":
+      return appendDetail(
+        "The server reports that the model is loading or unloaded.",
+        detail,
+      );
+    case "backend_restart":
+      return appendDetail("The server reports a backend restart.", detail);
     case "network":
       return appendDetail(
         input.endpoint
@@ -794,7 +825,10 @@ function messageForError(input: {
     case "cancelled":
       return "The AI run was cancelled.";
     case "interrupted":
-      return "The AI run was interrupted when the previous Clack session closed.";
+      return appendDetail(
+        "The AI response was interrupted. Partial output was preserved.",
+        detail,
+      );
     case "internal":
       return appendDetail("Clack could not process the AI response.", detail);
     case "unknown":
@@ -819,6 +853,10 @@ function titleForKind(kind: AiErrorKind, toolName?: string): string {
       return "Model unavailable";
     case "provider_unavailable":
       return "Provider error";
+    case "model_loading":
+      return "Model loading or unloaded";
+    case "backend_restart":
+      return "Backend restarted";
     case "network":
       return "Network error";
     case "timeout":
@@ -854,6 +892,8 @@ function isRetryableKind(kind: AiErrorKind, statusCode?: number): boolean {
     kind === "network" ||
     kind === "timeout" ||
     kind === "provider_unavailable" ||
+    kind === "model_loading" ||
+    kind === "backend_restart" ||
     statusCode === 409
   );
 }

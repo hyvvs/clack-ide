@@ -709,6 +709,7 @@ export type RunAgentOptions = {
   planMode?: boolean;
   projectMemory?: string | null;
   logicalContinuation?: boolean;
+  recovery?: boolean;
   uiMessages: UIMessage[];
   abortSignal?: AbortSignal;
 };
@@ -763,14 +764,6 @@ export async function runAgentStream(opts: RunAgentOptions) {
     };
   }
   const provider = info.provider;
-  const trackedModel = withProviderRetryTracking(
-    baseModel,
-    {
-      onRetry: (event) => opts.onProviderRetry?.(event),
-      onRecovered: () => opts.onProviderRecovered?.(),
-    },
-    AGENT_PROVIDER_MAX_RETRIES,
-  );
 
   const stableSystem = buildStableSystem(
     modelId,
@@ -835,7 +828,57 @@ export async function runAgentStream(opts: RunAgentOptions) {
     : undefined;
   const runCalls = opts.compaction;
   const lastMessage = opts.uiMessages[opts.uiMessages.length - 1];
+  const validateRecovery = async () => {
+    const current = await buildTools(requestToolContext);
+    await prepareToolExposure(
+      Object.fromEntries(
+        Object.entries(current).filter(
+          ([name, definition]) =>
+            name in permittedTools &&
+            sameToolRevision(definition, permittedTools[name]),
+        ),
+      ),
+      {
+        context: requestToolContext,
+        messages: prunedHistory,
+        uiMessages: opts.uiMessages,
+        target: exposureTarget,
+        system: stableSystem,
+        limits: await modelBudgetLimits(baseModel),
+        mandatory: [...pinnedTools],
+      },
+    );
+  };
+  const chargeRecovery = async () => {
+    if (!runCalls)
+      throw new ContextBudgetError(
+        "recovery-run-budget",
+        "Recovery requires the existing logical run budget.",
+      );
+    if (runCalls.remainingCalls() <= stepsSeen + 1)
+      throw new ContextBudgetError(
+        "recovery-run-budget",
+        "The logical run has insufficient budget for another inference attempt.",
+      );
+    await runCalls.chargeCall();
+  };
+  const trackedModel = withProviderRetryTracking(
+    baseModel,
+    {
+      onRetry: (event) => opts.onProviderRetry?.(event),
+      onRecovered: () => opts.onProviderRecovered?.(),
+    },
+    AGENT_PROVIDER_MAX_RETRIES,
+    {
+      isCurrent: inferenceScope.isCurrent,
+      beforeRetry: async () => {
+        await validateRecovery();
+        await chargeRecovery();
+      },
+    },
+  );
   const model = withAnswerContinuation(trackedModel, {
+    recovery: opts.recovery,
     previous: lastMessage?.role === "assistant"
       ? readAnswer(lastMessage) ?? undefined
       : undefined,
@@ -865,24 +908,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
           await runCalls.chargeCall();
         }
       : undefined,
-    validate: async () => {
-      const current = await buildTools(requestToolContext);
-      await prepareToolExposure(
-        Object.fromEntries(Object.entries(current).filter(
-          ([name, definition]) => name in permittedTools &&
-            sameToolRevision(definition, permittedTools[name]),
-        )),
-        {
-          context: requestToolContext,
-          messages: prunedHistory,
-          uiMessages: opts.uiMessages,
-          target: exposureTarget,
-          system: stableSystem,
-          limits: await modelBudgetLimits(baseModel),
-          mandatory: [...pinnedTools],
-        },
-      );
-    },
+    validate: validateRecovery,
   });
   const tools = gateInferenceTools(
     permittedTools,
@@ -904,9 +930,11 @@ export async function runAgentStream(opts: RunAgentOptions) {
     opts.onCompact?.({ droppedCount: compact.droppedCount });
   }
 
-  const continuationInstruction = opts.logicalContinuation
-    ? "\n\nThis generation continues the same logical run after an internal step batch. Continue from the existing plan and tool results without recapping or restarting the task."
-    : "";
+  const continuationInstruction = opts.recovery
+    ? "\n\nThe user explicitly requested recovery of an interrupted answer. The durable assistant text is already visible. Continue from its exact ending without repeating any prefix, recap, reasoning summary, or previous tool call. This is a new generation, not an exact transport resume. Never repeat a completed or uncertain external effect."
+    : opts.logicalContinuation
+      ? "\n\nThis generation continues the same logical run after an internal step batch. Continue from the existing plan and tool results without recapping or restarting the task."
+      : "";
   const messages: ModelMessage[] = [
     { role: "system", content: `${stableSystem}${continuationInstruction}` },
   ];
@@ -1071,7 +1099,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
         ),
       };
     },
-    maxRetries: AGENT_PROVIDER_MAX_RETRIES,
+    maxRetries: 0,
     stopWhen: [
       stepCountIs(
         opts.toolContext.isPeerReplyOnly?.()

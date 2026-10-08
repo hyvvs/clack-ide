@@ -1276,7 +1276,7 @@ This order does not authorize any pending implementation in this planning task.
 | 22 | T3c | Explicit scoped MCP connections and tools | Complete | `feat(ai): connect scoped MCP tools`; implementation record below |
 | 23 | F1 | Relevant schemas, compact prompt parity and cache awareness | Complete | `feat(ai): select relevant authorized tool schemas`; implementation record below |
 | 24 | D2 | Length continuation, stitching and tool repair safety | Complete | `feat(ai): continue truncated responses safely`; implementation record below |
-| 25 | D3 | Partial-stream/offline recovery | Pending | None |
+| 25 | D3 | Partial-stream/offline recovery | Complete | `fix(ai): recover interrupted streams safely`; implementation record below |
 | 26 | E2 | Passive calibration and optional bounded optimization | Pending | None |
 | 27 | F2 | Watchdogs, compact health UX and advanced polish | Pending | None |
 | 28 | U1 | Integrated collaboration/context/tool UX polish | Pending | None |
@@ -4065,6 +4065,79 @@ tool execution; exhausted attempts become terminal/actionable. No fallback
 destination before G3. Test disconnect on token/tool boundaries, delayed
 headers, Retry-After, crash persistence and user Retry/Stop. Rollback preserves
 partial segments and uses existing explicit interrupted-run handling.
+
+##### D3 implementation record (2026-10-08)
+
+- **Ownership and limits:** Extended `providerRetry.ts`, the existing retry
+  owner, to open and drain streams with at most **two retries / three attempts**.
+  Main-agent SDK retries are disabled: header and body failures share one budget.
+  Captured parameters/destination stay unchanged. Backoff is **2s / 4s**, with
+  validated seconds/HTTP-date Retry-After, a **30s delay cap**, and a **120s
+  pre-output ceiling**, including admission, preparation and delay. Excessive
+  Retry-After stops rather than retrying early. Additional attempts revalidate
+  F1 authorization, pinned schemas and B1, charging the existing run budget.
+- **Boundaries:** Only pre-output transient failures retry. Text (including
+  whitespace), reasoning, tool identity/input/result/approval boundaries and
+  finish events prohibit automatic replay. Failed structural prefixes are
+  discarded and bounded to **256 parts / 65,536 serialized characters**. Wire
+  validation reports missing final events/transport failures after draining
+  decoded SDK parts, without injecting fake completion or usage. D2 quarantines
+  calls until verified completion; disconnect/missing finish never become length.
+- **Persistence:** Original messages, raw parts, attachments and tool results
+  remain intact. Existing version-1 `clackAnswer` gains optional segment
+  `recovery`; `SessionRun` gains optional `recoveryAttempts`; normalized failures
+  retain bounded exhausted `retryAttempts`. Partial/error segments use existing
+  session IPC and terminal source flushes. Startup marks unfinished segments
+  interrupted without fabricating a completion timestamp, inference, tool result
+  or approval. Reconstruction is idempotent. Abrupt termination retains the last
+  committed snapshot; the existing debounce is not a per-token crash transaction.
+- **Explicit recovery:** One user-requested recovery per logical run for no
+  output or source-linked pure text. Exact conversation/run identity, unchanged
+  transcript, agent/model/workspace, remaining budget and native execution
+  history are checked first. Preparation uses D1 Stop ownership and a **10s
+  deadline**; changed/cancelled/stale/unavailable evidence fails closed. Request
+  settings/credentials are captured only in the bounded live Chat transport,
+  never session JSON; original native credential cleanup remains intact.
+  Recovery appends a linked D2 segment to the same assistant message, not a new
+  user request or regenerated transcript. It is a new generation, not an exact
+  resume. Existing bounded exact prose-overlap projection crosses its SDK step
+  boundary; raw parts, short repeats, code and reasoning are not fuzzily rewritten.
+- **Effects and status:** Any tool/approval/incomplete-call state in the current
+  answer or native custom/WASI/MCP execution in that run blocks original-task
+  recovery. D2 completed call IDs remain authoritative. Ambiguous effects require
+  reconciliation and a new normally authorized instruction. No disconnect repair,
+  approval revival, remote replay or ledger reset. UI/status distinguishes actual
+  scheduled/exhausted retry, partial interruption, cancellation, network/offline,
+  auth, timeout, reported model loading/unloading and explicit backend-restart
+  evidence. Socket reset alone is not a restart or health diagnosis. Interrupted
+  errors now settle the run, persist and remain actionable instead of running.
+- **Tests and verification:** **78 new tests**. Focused D3/D1/D2/B1/F1/R2,
+  persistence, tool/MCP and UI regressions: **423 passed / 17 files**. Concrete
+  full-suite corrections: **32 passed / 3 files**; final exact-ownership/affected
+  tests: **72 passed / 3 files**. Final full frontend: **1,958 passed / 159 files**.
+  Installed OpenAI Responses/Chat, compatible/self-hosted, Anthropic and Google
+  adapters consume intercepted header, partial-text, tool and split-Unicode
+  socket-reset fixtures. Existing xAI/Groq/Cerebras D2 fixtures remain passing.
+  Actual Chat/transport/store and mocked existing native session/history IPC
+  cover explicit recovery, message identity, restart/no-replay, MCP unknown
+  effects, unavailable ledger, stale evidence, timeout and Stop.
+  `npm.cmd run check-types`, `npm.cmd run lint`, `npm.cmd test`,
+  `npm.cmd run build` and `git diff --check` passed. Lint unchanged: **71 warnings
+  / 2 infos / 0 errors**. Four existing ineffective dynamic-import warnings and
+  plugin timing advisory remain. Full gates were refreshed only for concrete
+  verification/review corrections. No Rust/dependency changes, native GUI,
+  real-provider/server, Linux/macOS host or native execution-ledger verification
+  is claimed. Windows-host deterministic frontend tests used approved Vitest
+  cache execution. Delegation files, stashes and `autonomous_tracker/` untouched.
+- **Limitations, rollback and stop:** No verified exact-resume protocol. After
+  restart/Chat eviction, captured settings are unavailable: retain the answer and
+  require a new instruction. Reasoning/tool-bearing answers and delegated tasks
+  require existing task/effect ownership, not generic Retry. Auth, permission,
+  quota, malformed/internal or missing-model problems must be resolved first.
+  No fallback, endpoint-health redesign, background reconnect or new store.
+  Disable retries/explicit actions independently while retaining original parts,
+  interrupted receipts and the D2 renderer. **D3 is complete. Next in execution
+  order: E2: Calibration. No E2 or subsequent checkpoint started. No push.**
 
 ### E2: Calibration
 

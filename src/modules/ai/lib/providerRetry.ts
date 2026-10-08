@@ -1,7 +1,17 @@
 import { wrapLanguageModel, type LanguageModel } from "ai";
-import { normalizeAiError } from "./errors";
+import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
+import { normalizeAiError } from "@/modules/ai/lib/errors";
+import {
+  InferenceTransportError,
+  beginStreamValidation,
+} from "@/modules/ai/lib/inferenceErrors";
 
 export const AGENT_PROVIDER_MAX_RETRIES = 2;
+export const PROVIDER_RECOVERY_LIMITS = {
+  delayMs: 30_000,
+  totalMs: 120_000,
+  prefixParts: 256,
+} as const;
 
 export type ProviderRetryEvent = {
   error: unknown;
@@ -14,13 +24,69 @@ type ProviderRetryCallbacks = {
   onRecovered: () => void;
 };
 
+type RecoveryOptions = {
+  isCurrent?: () => boolean;
+  beforeRetry?: () => Promise<void>;
+  delayMs?: number;
+  totalMs?: number;
+};
+
+export function retryDelay(
+  error: unknown,
+  attempt: number,
+  now = Date.now(),
+): number | null {
+  const normalized = normalizeAiError(error);
+  const raw = normalized.retryAfter;
+  let requested = 0;
+  if (raw) {
+    if (/^\d+(?:\.\d+)?s?$/.test(raw))
+      requested = Number(raw.replace(/s$/, "")) * 1000;
+    else {
+      const date = Date.parse(raw);
+      if (Number.isFinite(date)) requested = Math.max(0, date - now);
+    }
+  }
+  const delay = Math.max(2000 * 2 ** (attempt - 1), requested);
+  return Number.isFinite(delay) && delay <= PROVIDER_RECOVERY_LIMITS.delayMs
+    ? delay
+    : null;
+}
+
+export function waitForRecovery<T>(
+  work: PromiseLike<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(work)
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
 export function isRetryableProviderAttempt(error: unknown): boolean {
   const normalized = normalizeAiError(error);
   return (
-    normalized.retryable &&
-    normalized.kind !== "tool" &&
-    normalized.kind !== "cancelled" &&
-    normalized.kind !== "interrupted"
+    (normalized.retryable ||
+      [
+        "remote-disconnect",
+        "connect-timeout",
+        "first-output-timeout",
+        "connection-failed",
+        "dns-failure",
+      ].includes(normalized.errorCode ?? "")) &&
+    ([
+      "rate_limit",
+      "network",
+      "timeout",
+      "provider_unavailable",
+      "model_loading",
+      "backend_restart",
+    ].includes(normalized.kind) ||
+      normalized.errorCode === "remote-disconnect")
   );
 }
 
@@ -61,23 +127,203 @@ export function withProviderRetryTracking(
   model: LanguageModel,
   callbacks: ProviderRetryCallbacks,
   maxRetries = AGENT_PROVIDER_MAX_RETRIES,
+  options: RecoveryOptions = {},
 ): LanguageModel {
   if (typeof model === "string" || model.specificationVersion !== "v3") {
     return model;
   }
-  const tracker = createProviderRetryTracker(callbacks, maxRetries);
   return wrapLanguageModel({
     model,
     middleware: {
       specificationVersion: "v3",
-      async wrapStream({ doStream }) {
-        try {
-          const result = await doStream();
-          tracker.succeeded();
-          return result;
-        } catch (error) {
+      async wrapStream({ model: underlying, params }) {
+        const tracker = createProviderRetryTracker(
+          callbacks,
+          Math.min(maxRetries, AGENT_PROVIDER_MAX_RETRIES),
+        );
+        const controller = new AbortController();
+        const stop = () =>
+          controller.abort(
+            params.abortSignal?.reason ??
+              new DOMException("Cancelled", "AbortError"),
+          );
+        if (params.abortSignal?.aborted) stop();
+        params.abortSignal?.addEventListener("abort", stop, { once: true });
+        const signal = controller.signal;
+        const validation = beginStreamValidation(signal);
+        const started = Date.now();
+        const totalMs = Math.min(
+          options.totalMs ?? PROVIDER_RECOVERY_LIMITS.totalMs,
+          PROVIDER_RECOVERY_LIMITS.totalMs,
+        );
+        const timer = setTimeout(
+          () =>
+            controller.abort(new InferenceTransportError("overall-deadline")),
+          totalMs,
+        );
+        let attempts = 0,
+          meaningful = false;
+        const current = () => {
+          if (signal.aborted) throw signal.reason;
+          if (options.isCurrent?.() === false)
+            throw new DOMException("Stale request", "AbortError");
+        };
+        const cleanup = () => {
+          clearTimeout(timer);
+          params.abortSignal?.removeEventListener("abort", stop);
+          validation.dispose();
+          controller.abort(new DOMException("Request settled", "AbortError"));
+        };
+        const exhausted = (error: unknown) =>
+          attempts >= AGENT_PROVIDER_MAX_RETRIES
+            ? Object.assign(new Error("Provider retries exhausted"), {
+                cause: error,
+                providerAttempts: attempts,
+              })
+            : error;
+        const retry = async (error: unknown) => {
+          current();
+          const delay = retryDelay(error, attempts + 1);
+          if (
+            meaningful ||
+            delay === null ||
+            attempts >= Math.min(maxRetries, AGENT_PROVIDER_MAX_RETRIES) ||
+            Date.now() - started + delay >= totalMs ||
+            !isRetryableProviderAttempt(error)
+          )
+            throw error;
+          attempts++;
           tracker.failed(error);
-          throw error;
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await waitForRecovery(
+              new Promise<void>((resolve) => {
+                timeout = setTimeout(
+                  resolve,
+                  options.delayMs === undefined
+                    ? delay
+                    : Math.min(delay, options.delayMs),
+                );
+              }),
+              signal,
+            );
+            current();
+            await waitForRecovery(
+              options.beforeRetry?.() ?? Promise.resolve(),
+              signal,
+            );
+            current();
+          } finally {
+            clearTimeout(timeout);
+          }
+        };
+        const open = async () => {
+          while (true) {
+            current();
+            validation.reset();
+            try {
+              return await waitForRecovery(
+                underlying
+                  .doStream({ ...params, abortSignal: signal })
+                  .then((result) => {
+                    if (signal.aborted || options.isCurrent?.() === false) {
+                      void result.stream.cancel().catch(() => {});
+                      current();
+                    }
+                    return result;
+                  }),
+                signal,
+              );
+            } catch (error) {
+              await retry(error);
+            }
+          }
+        };
+        try {
+          const initial = await open();
+          let active = true;
+          const stream = new ReadableStream<LanguageModelV3StreamPart>({
+            async start(output) {
+              let result = initial;
+              let reader:
+                | ReadableStreamDefaultReader<LanguageModelV3StreamPart>
+                | undefined;
+              try {
+                while (true) {
+                  const prefix: LanguageModelV3StreamPart[] = [];
+                  let prefixBytes = 0;
+                  let finished = false;
+                  reader = result.stream.getReader();
+                  try {
+                    while (true) {
+                      const next = await waitForRecovery(
+                        reader.read(),
+                        AbortSignal.any([signal, validation.failureSignal()]),
+                      );
+                      current();
+                      if (next.done) break;
+                      const part = next.value;
+                      if (part.type === "error") throw part.error;
+                      if (part.type === "finish") finished = true;
+                      const structural = [
+                        "stream-start",
+                        "response-metadata",
+                        "text-start",
+                        "reasoning-start",
+                        "raw",
+                      ].includes(part.type);
+                      if (!meaningful && structural) {
+                        prefixBytes += JSON.stringify(part).length;
+                        if (
+                          prefix.length >=
+                            PROVIDER_RECOVERY_LIMITS.prefixParts ||
+                          prefixBytes > 65_536
+                        )
+                          throw new InferenceTransportError("malformed-stream");
+                        prefix.push(part);
+                        continue;
+                      }
+                      if (!meaningful) {
+                        meaningful = true;
+                        clearTimeout(timer);
+                        tracker.succeeded();
+                        for (const buffered of prefix) output.enqueue(buffered);
+                        prefix.length = 0;
+                      }
+                      output.enqueue(part);
+                    }
+                    if (validation.error()) throw validation.error();
+                    if (!finished)
+                      throw new InferenceTransportError("missing-final-event");
+                    break;
+                  } catch (error) {
+                    await reader.cancel().catch(() => {});
+                    reader = undefined;
+                    await retry(error);
+                    result = await open();
+                  }
+                }
+                if (active) output.close();
+              } catch (error) {
+                if (active) {
+                  output.enqueue({ type: "error", error: exhausted(error) });
+                  output.close();
+                }
+              } finally {
+                await reader?.cancel().catch(() => {});
+                cleanup();
+              }
+            },
+            cancel() {
+              active = false;
+              controller.abort(new DOMException("Cancelled", "AbortError"));
+              cleanup();
+            },
+          });
+          return { ...initial, stream };
+        } catch (error) {
+          cleanup();
+          throw exhausted(error);
         }
       },
     },

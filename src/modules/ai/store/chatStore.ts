@@ -307,7 +307,11 @@ export function inferenceScopeForSession(sessionId: string) {
       const latest = useChatStore
         .getState()
         .sessions.find((s) => s.id === sessionId)?.run;
-      return latest?.state === "running" && latest.startedAt === run.startedAt;
+      return (
+        latest?.state === "running" &&
+        latest.startedAt === run.startedAt &&
+        latest.recoveryAttempts === run.recoveryAttempts
+      );
     },
   };
 }
@@ -983,7 +987,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     capturedSelfHostedRuns.delete(id);
     const now = Date.now();
     const runError =
-      state === "failed"
+      state === "failed" || state === "interrupted"
         ? (error ?? get().runtimeBySession[id]?.error ?? currentRun.error)
         : undefined;
     const next = get().sessions.map((session) =>
@@ -1013,7 +1017,10 @@ export const useChatStore = create<StoreState>((set, get) => ({
           status: state === "failed" ? ("error" as const) : ("idle" as const),
           step: null,
           approvalsPending: 0,
-          error: state === "failed" ? (runError ?? null) : null,
+          error:
+            state === "failed" || state === "interrupted"
+              ? (runError ?? null)
+              : null,
           providerRetry: null,
         },
       },
@@ -1103,7 +1110,9 @@ export const useChatStore = create<StoreState>((set, get) => ({
       runtimeBySession: Object.fromEntries(
         nextSessions.map((session) => [
           session.id,
-          session.run?.state === "failed" && session.run.error
+          (session.run?.state === "failed" ||
+            session.run?.state === "interrupted") &&
+          session.run.error
             ? { ...IDLE_META, status: "error", error: session.run.error }
             : IDLE_META,
         ]),
@@ -1146,7 +1155,10 @@ export const useChatStore = create<StoreState>((set, get) => ({
     const flip = () => {
       const session = get().sessions.find((item) => item.id === id);
       const restoredError =
-        session?.run?.state === "failed" ? (session.run.error ?? null) : null;
+        session?.run?.state === "failed" ||
+        session?.run?.state === "interrupted"
+          ? (session.run.error ?? null)
+          : null;
       set({
         activeSessionId: id,
         selectedModelId: session?.profile?.modelId ?? get().selectedModelId,

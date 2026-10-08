@@ -76,6 +76,7 @@ export type SessionRun = {
   budget?: RunBudgetState;
   endedAt?: number;
   error?: NormalizedAiError;
+  recoveryAttempts?: number;
 };
 
 const KEY_SESSIONS = "sessions";

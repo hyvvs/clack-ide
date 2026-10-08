@@ -125,6 +125,35 @@ type SendOptions = {
 };
 
 export function createContextAwareTransport(deps: Deps) {
+  let captured:
+    | {
+        runId: string;
+        configuration: Pick<
+          import("@/modules/ai/lib/agent").RunAgentOptions,
+          | "keys"
+          | "modelId"
+          | "reasoning"
+          | "selfHostedInference"
+          | "customInstructions"
+          | "agentPersona"
+          | "lmstudioBaseURL"
+          | "lmstudioModelId"
+          | "mlxBaseURL"
+          | "mlxModelId"
+          | "ollamaBaseURL"
+          | "ollamaModelId"
+          | "openaiCompatibleBaseURL"
+          | "openaiCompatibleModelId"
+          | "openaiCompatibleContextLimit"
+          | "openrouterModelId"
+          | "savedProviderModels"
+          | "capturedModelIdentity"
+          | "customEndpoints"
+          | "customEndpointKeys"
+          | "planMode"
+        >;
+      }
+    | undefined;
   let hostedCapabilities:
     | {
         identity: NonNullable<ModelTransportIdentity["selfHosted"]>;
@@ -135,7 +164,17 @@ export function createContextAwareTransport(deps: Deps) {
     options: SendOptions,
     activity?: ActivityStreamContext,
   ) => {
-    const reasoning = deps.getReasoning?.();
+    const recovery =
+      (options.body as { clackRecovery?: boolean } | undefined)
+        ?.clackRecovery === true;
+    const scope = deps.getInferenceScope?.();
+    if (recovery && (!captured || captured.runId !== scope?.runId))
+      throw new Error(
+        "Captured request settings are unavailable after restart. Send a new instruction; the partial answer remains preserved.",
+      );
+    const reasoning = recovery
+      ? captured?.configuration.reasoning
+      : deps.getReasoning?.();
     const batch = deps.onBatchStart?.() ?? { isLogicalContinuation: false };
     const compaction = await deps.prepareCompactionContext?.(options.messages);
     const live = deps.getLive();
@@ -144,7 +183,9 @@ export function createContextAwareTransport(deps: Deps) {
       deps.toolContext.getWorkspaceEnv?.(),
     );
     const envBlock = formatEnvBlock(live);
-    const hostedState = deps.getSelfHostedInference?.();
+    const hostedState = recovery
+      ? captured?.configuration.selfHostedInference
+      : deps.getSelfHostedInference?.();
     const identity = deps.getCapturedModelIdentity?.()?.selfHosted;
     const snapshot =
       hostedState && (!identity || hostedCapabilities?.identity !== identity)
@@ -172,6 +213,34 @@ export function createContextAwareTransport(deps: Deps) {
       ? injectEnvIntoLastUser(messagesWithAttachments, envBlock)
       : messagesWithAttachments;
     return answerMetadataStream(async (onAnswerState) => {
+      const configuration =
+        recovery && captured
+          ? captured.configuration
+          : structuredClone({
+              keys: deps.getKeys(),
+              modelId: deps.getModelId(),
+              reasoning,
+              selfHostedInference: hostedState,
+              customInstructions: deps.getCustomInstructions(),
+              agentPersona: deps.getAgentPersona(),
+              lmstudioBaseURL: deps.getLmstudioBaseURL?.(),
+              lmstudioModelId: deps.getLmstudioModelId?.(),
+              mlxBaseURL: deps.getMlxBaseURL?.(),
+              mlxModelId: deps.getMlxModelId?.(),
+              ollamaBaseURL: deps.getOllamaBaseURL?.(),
+              ollamaModelId: deps.getOllamaModelId?.(),
+              openaiCompatibleBaseURL: deps.getOpenaiCompatibleBaseURL?.(),
+              openaiCompatibleModelId: deps.getOpenaiCompatibleModelId?.(),
+              openaiCompatibleContextLimit:
+                deps.getOpenaiCompatibleContextLimit?.(),
+              openrouterModelId: deps.getOpenrouterModelId?.(),
+              savedProviderModels: deps.getSavedProviderModels?.(),
+              capturedModelIdentity: deps.getCapturedModelIdentity?.(),
+              customEndpoints: deps.getCustomEndpoints?.(),
+              customEndpointKeys: deps.getCustomEndpointKeys?.(),
+              planMode: deps.getPlanMode?.(),
+            });
+      if (!recovery && scope) captured = { runId: scope.runId, configuration };
       const result = await runAgentStream({
         onAnswerState,
         reasoning,
@@ -181,58 +250,56 @@ export function createContextAwareTransport(deps: Deps) {
         onOptimized: deps.onOptimized,
         inferenceScope: activity?.scope ?? deps.getInferenceScope?.(),
         selfHostedInference: hostedState,
-        keys: deps.getKeys(),
-        modelId: deps.getModelId(),
-        customInstructions: deps.getCustomInstructions(),
-        agentPersona: deps.getAgentPersona(),
         toolContext: {
           ...deps.toolContext,
           onCustomToolActivity: (id, state, effect) =>
             activity?.customTool(id, state, effect),
         },
-        onStep: deps.onStep,
-        onUsage: deps.onUsage,
-        onCompact: deps.onCompact,
-        onRunStep: deps.onRunStep,
+        onStep: (value) => {
+          if (scope?.isCurrent() !== false) deps.onStep?.(value);
+        },
+        onUsage: (value) => {
+          if (scope?.isCurrent() !== false) deps.onUsage?.(value);
+        },
+        onCompact: (value) => {
+          if (scope?.isCurrent() !== false) deps.onCompact?.(value);
+        },
+        onRunStep: (value) => {
+          if (scope?.isCurrent() !== false) deps.onRunStep?.(value);
+        },
         onProviderRetry: (event) => {
+          if (scope?.isCurrent() === false) return;
           deps.onProviderRetry?.(event);
           activity?.retry(event);
         },
         onProviderRecovered: () => {
+          if (scope?.isCurrent() === false) return;
           deps.onProviderRecovered?.();
           activity?.recovered();
         },
-        onFinishMeta: deps.onFinishMeta,
-        lmstudioBaseURL: deps.getLmstudioBaseURL?.(),
-        lmstudioModelId: deps.getLmstudioModelId?.(),
-        mlxBaseURL: deps.getMlxBaseURL?.(),
-        mlxModelId: deps.getMlxModelId?.(),
-        ollamaBaseURL: deps.getOllamaBaseURL?.(),
-        ollamaModelId: deps.getOllamaModelId?.(),
-        openaiCompatibleBaseURL: deps.getOpenaiCompatibleBaseURL?.(),
-        openaiCompatibleModelId: deps.getOpenaiCompatibleModelId?.(),
-        openaiCompatibleContextLimit: deps.getOpenaiCompatibleContextLimit?.(),
-        openrouterModelId: deps.getOpenrouterModelId?.(),
-        savedProviderModels: deps.getSavedProviderModels?.(),
-        capturedModelIdentity: deps.getCapturedModelIdentity?.(),
-        customEndpoints: deps.getCustomEndpoints?.(),
-        customEndpointKeys: deps.getCustomEndpointKeys?.(),
-        planMode: deps.getPlanMode?.(),
+        onFinishMeta: (value) => {
+          if (scope?.isCurrent() !== false) deps.onFinishMeta?.(value);
+        },
         projectMemory,
         logicalContinuation: batch.isLogicalContinuation,
         uiMessages: messagesForRun,
         abortSignal: options.abortSignal,
+        ...configuration,
+        recovery,
       });
       return result.toUIMessageStream({
         originalMessages: options.messages,
         onError: (error) =>
-          deps.onError?.(error) ??
+          (scope?.isCurrent() === false
+            ? "Cancelled or superseded run."
+            : deps.onError?.(error)) ??
           "The AI run failed for an unexpected reason.",
       });
     });
   };
 
   return {
+    canRecover: (runId: string) => captured?.runId === runId,
     sendMessages: (options: SendOptions) => {
       const owner = ACTIVITY_ENABLED ? deps.getActivityOwner?.() : undefined;
       if (!owner) return run(options);

@@ -189,7 +189,14 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
         budgetPhase === "soft-limit" ||
         budgetPhase === "hard-limit");
     let runStatus: AgentRunStatus;
-    if (terminalState === "failed") runStatus = "error";
+    if (
+      terminalState === "failed" ||
+      (terminalState === "interrupted" &&
+        useChatStore.getState().sessions.find((s) => s.id === sessionId)?.run
+          ?.error)
+    )
+      runStatus = "error";
+    else if (stoppedRun) runStatus = "idle";
     else if (providerRetry && terminalState === "running")
       runStatus = "retrying";
     else if (approvalsPending > 0) runStatus = "awaiting-approval";
