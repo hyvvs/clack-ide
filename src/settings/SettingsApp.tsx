@@ -30,22 +30,22 @@ const TABS: {
 }[] = [
   {
     id: "general",
-    label: "Overview",
+    label: "General",
     eyebrow: "Workspace, terminal, editor",
     icon: Settings01Icon,
     component: GeneralSection,
   },
   {
     id: "models",
-    label: "Models & Providers",
+    label: "Connections & models",
     eyebrow: "Cloud, local AI, voice",
     icon: AiScanIcon,
     component: ModelsSection,
   },
   {
     id: "agents",
-    label: "Agent Permissions",
-    eyebrow: "Personas, snippets, rules",
+    label: "Agents & tools",
+    eyebrow: "Instructions, tools, permissions",
     icon: UserMultiple02Icon,
     component: AgentsSection,
   },
@@ -58,8 +58,8 @@ const TABS: {
   },
   {
     id: "shortcuts",
-    label: "Advanced",
-    eyebrow: "Keyboard command surface",
+    label: "Keyboard shortcuts",
+    eyebrow: "App commands",
     icon: KeyboardIcon,
     component: ShortcutsSection,
   },
@@ -134,27 +134,27 @@ export function SettingsApp() {
               Clack Settings
             </span>
             <span className="text-[10px] text-[var(--clack-text-3)]">
-              Controls that exist, wired to real state
+              App settings
             </span>
           </div>
         </div>
         {USE_CUSTOM_WINDOW_CONTROLS && <WindowControls closeOnly />}
       </header>
 
-      <main className="flex min-h-0 flex-1">
+      <main className="flex min-h-0 flex-1 flex-col sm:flex-row">
         <Tabs
           value={active}
           onValueChange={(v) => setActive(v as SettingsTab)}
           orientation="vertical"
           className="contents"
         >
-          <aside className="clack-panel flex w-64 shrink-0 flex-col border-r px-3 py-4">
-            <TabsList className="grid h-auto gap-1 bg-transparent p-0">
+          <aside aria-label="Settings categories" className="clack-panel flex w-full shrink-0 flex-col border-b px-2 py-2 sm:w-64 sm:border-r sm:border-b-0 sm:px-3 sm:py-4">
+            <TabsList className="grid h-auto grid-cols-2 gap-1 bg-transparent p-0 sm:grid-cols-1">
               {TABS.map((t) => (
                 <TabsTrigger
                   key={t.id}
                   value={t.id}
-                  className="group h-auto justify-start gap-2 rounded-[var(--clack-radius-button)] border border-transparent bg-transparent px-2.5 py-2 text-left data-active:border-[color:var(--clack-border-accent)] data-active:bg-[var(--clack-accent-soft)] data-active:text-[var(--clack-text-1)] data-active:[&_svg]:text-[var(--clack-accent)]"
+                  className="group h-auto min-w-0 justify-start gap-2 rounded-[var(--clack-radius-button)] border border-transparent bg-transparent px-2 py-2 text-left whitespace-normal data-active:border-[color:var(--clack-border-accent)] data-active:bg-[var(--clack-accent-soft)] data-active:text-[var(--clack-text-1)] data-active:[&_svg]:text-[var(--clack-accent)]"
                 >
                   <HugeiconsIcon
                     icon={t.icon}
@@ -163,10 +163,10 @@ export function SettingsApp() {
                     className="shrink-0 text-[var(--clack-text-3)]"
                   />
                   <span className="flex min-w-0 flex-col">
-                    <span className="truncate text-[12px] font-semibold">
+                    <span className="text-[12px] font-semibold">
                       {t.label}
                     </span>
-                    <span className="truncate text-[10.5px] font-normal text-[var(--clack-text-3)]">
+                    <span className="hidden text-[10.5px] font-normal text-[var(--clack-text-3)] sm:block">
                       {t.eyebrow}
                     </span>
                   </span>
@@ -174,7 +174,7 @@ export function SettingsApp() {
               ))}
             </TabsList>
           </aside>
-          <section className="min-h-0 flex-1 overflow-y-auto px-8 pt-7 pb-8 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <section className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pt-4 pb-8 sm:px-8 sm:pt-7 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <div className="mx-auto w-full max-w-3xl">
               {ActiveSection && <ActiveSection />}
             </div>

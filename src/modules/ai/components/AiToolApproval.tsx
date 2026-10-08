@@ -133,8 +133,15 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
       </div>
 
       <div className="px-3 py-2.5">
-        <p className="mb-2 text-[10.5px] text-[var(--clack-text-3)]">{ownerAgent} / {owner?.run?.workspaceRoot ?? owner?.profile?.workspaceRoot ?? "Workspace unavailable"}</p>
+        <p className="mb-1 text-[11px] text-[var(--clack-text-2)]">Requested by {ownerAgent} in {owner?.title || "this chat"}</p>
+        {typeof input.path === "string" && <p className="mb-1 font-medium text-[var(--clack-text-1)] [overflow-wrap:anywhere]">Target: {input.path.split(/[\\/]/).filter(Boolean).pop() || input.path}</p>}
+        <details className="mb-2 text-[10.5px] text-[var(--clack-text-2)] [overflow-wrap:anywhere]">
+          <summary className="cursor-pointer">Workspace and full target</summary>
+          <p>{owner?.run?.workspaceRoot ?? owner?.profile?.workspaceRoot ?? "Workspace unavailable"}</p>
+          {typeof input.path === "string" && <p>{input.path}</p>}
+        </details>
         <PreviewBlock toolName={toolName} input={input} />
+        <p className="mt-2 text-[11px] text-[var(--clack-text-2)]">Allow once approves only this action. Broader permissions are separate.</p>
       </div>
 
       <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-[color:var(--clack-border-subtle)] px-3 py-2">
@@ -165,7 +172,7 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
                 className="h-7 gap-1 px-2 text-[11px]"
                 aria-label="Choose permission scope"
               >
-                Scope
+                More permissions
                 <HugeiconsIcon
                   icon={ArrowDown01Icon}
                   size={10}
@@ -228,16 +235,12 @@ function PreviewBlock({
   }
   // For file mutations we deliberately do NOT preview content here.
   // streamed write/edit content thrashes the UI and the AI diff tab is the
-  // authoritative place to review the change. Show just the path + a
-  // one-line size hint so the user knows what's being touched.
+  // authoritative place to review the change. The target is shown above.
   if (toolName === "write_file") {
     const content = typeof input.content === "string" ? input.content : "";
     const lines = content ? content.split("\n").length : 0;
     return (
       <div className="space-y-0.5 font-mono text-[11px]">
-        <div className="text-[var(--clack-text-3)]">
-          {String(input.path ?? "")}
-        </div>
         <div className="text-[10.5px] text-[var(--clack-text-3)]">
           {lines} line{lines === 1 ? "" : "s"} | review in the diff tab
         </div>
@@ -251,10 +254,7 @@ function PreviewBlock({
     const added = newStr ? newStr.split("\n").length : 0;
     return (
       <div className="space-y-0.5 font-mono text-[11px]">
-        <div className="text-[var(--clack-text-3)]">
-          {String(input.path ?? "")}
-          {input.replace_all ? " | replace all" : ""}
-        </div>
+        {input.replace_all ? <div className="text-[var(--clack-text-2)]">Replace all matches</div> : null}
         <div className="text-[10.5px] text-[var(--clack-text-3)]">
           -{removed} / +{added} line{added === 1 && removed === 1 ? "" : "s"} |
           review in the diff tab
@@ -268,9 +268,6 @@ function PreviewBlock({
       : [];
     return (
       <div className="space-y-0.5 font-mono text-[11px]">
-        <div className="text-[var(--clack-text-3)]">
-          {String(input.path ?? "")}
-        </div>
         <div className="text-[10.5px] text-[var(--clack-text-3)]">
           {edits.length} edit{edits.length === 1 ? "" : "s"} | review in the
           diff tab

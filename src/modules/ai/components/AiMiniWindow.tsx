@@ -1066,17 +1066,18 @@ function SessionPicker({ sessionId }: { sessionId: string }) {
           )}
           title={
             boundWorkspaceRoot
-              ? `Switch session · ${workspaceName(boundWorkspaceRoot)}${
+              ? `Choose chat · ${workspaceName(boundWorkspaceRoot)}${
                   backgroundRunningCount > 0
                     ? ` · ${backgroundRunningCount} running in background`
                     : ""
                 }`
-              : `Switch session · workspace unbound${
+              : `Choose chat · workspace unbound${
                   backgroundRunningCount > 0
                     ? ` · ${backgroundRunningCount} running in background`
                     : ""
                 }`
           }
+          aria-label={`Choose chat: ${active.title || "New chat"}`}
         >
           <span className="truncate">{active.title || "New chat"}</span>
           {backgroundRunningCount > 0 ? (
@@ -1101,7 +1102,7 @@ function SessionPicker({ sessionId }: { sessionId: string }) {
       <DropdownMenuContent align="start" className="min-w-56">
         <DropdownMenuItem onSelect={createSession} className="gap-2 text-xs">
           <HugeiconsIcon icon={Add01Icon} size={12} strokeWidth={1.75} />
-          New session
+          New chat
         </DropdownMenuItem>
         {boundWorkspaceRoot ? (
           <div className="px-2 py-1 text-[10px] text-muted-foreground">

@@ -80,10 +80,10 @@ try {
     const a=page.getByRole("region",{name:"Pane a"}),b=page.getByRole("region",{name:"Pane b"});await a.waitFor();
     await page.evaluate(({zoom,theme})=>{document.documentElement.style.setProperty("--app-zoom",String(zoom));window.setTheme(theme);}, {zoom,theme});
     assert.equal(await page.evaluate(()=>window.calls.length),0,"Collapsed inspection must not read native state");
-    await a.getByText("Context and sources",{exact:true}).focus();await page.keyboard.press("Enter");
-    await a.getByText(/1 original messages covered by saved compaction/).waitFor();
-    await b.getByText("Context and sources",{exact:true}).click();await b.getByText(/source changed; revalidation/).waitFor();
-    await a.getByText("Saved context statements (1)",{exact:true}).click();await b.getByText("Saved context statements (1)",{exact:true}).click();
+    await a.getByText("Sources & context",{exact:true}).focus();await page.keyboard.press("Enter");
+    await a.getByText(/1 original messages summarized/).waitFor();
+    await b.getByText("Sources & context",{exact:true}).click();await b.getByText(/summary sources changed/).waitFor();
+    await a.getByText("Saved summary (1)",{exact:true}).click();await b.getByText("Saved summary (1)",{exact:true}).click();
     await b.getByText(/stale.*conflicting statements/).waitFor();
     await a.getByRole("button",{name:"Inspect source 1 for constraints"}).click();await a.getByLabel("Retained original evidence").filter({hasText:"for a"}).waitFor();
     assert.equal(await b.getByLabel("Retained original evidence").count(),0);
@@ -124,12 +124,12 @@ try {
     await page.evaluate(()=>{window.targetFailure=true;window.chat.setState(s=>({sessions:s.sessions.map(x=>x.id==="a"?{...x,targetContext:{key:"prepared"}}:x)}));});
     await a.getByText("Prepared model-switch context needs revalidation.",{exact:true}).waitFor();
     await a.getByRole("alert").filter({hasText:"Prepared context unavailable"}).waitFor();
-    await a.getByText(/1 original messages covered by saved compaction/).waitFor();
+    await a.getByText(/1 original messages summarized/).waitFor();
     await page.evaluate(()=>{window.hold="a";window.chat.setState(s=>({sessions:s.sessions.map(x=>x.id==="a"?{...x,targetContext:null,run:{state:"completed"}}:x)}));});
     await page.waitForFunction(()=>Boolean(window.release));await page.evaluate(()=>window.switcha("b"));
-    await a.getByText("Context and sources",{exact:true}).click();
-    await a.getByText(/source changed; revalidation/).waitFor();await page.evaluate(()=>window.release());
-    assert.equal(await a.getByText(/1 original messages covered by saved compaction/).count(),0,"Late read cannot overwrite a rebound pane");
+    await a.getByText("Sources & context",{exact:true}).click();
+    await a.getByText(/summary sources changed/).waitFor();await page.evaluate(()=>window.release());
+    assert.equal(await a.getByText(/1 original messages summarized/).count(),0,"Late read cannot overwrite a rebound pane");
     assert.deepEqual(errors,[]);await page.close();
   }
   console.log("U1 browser breadth passed: pane-bound drafts/attachments/approvals/tools/Stop, lazy verified/stale/conflicting context, retained-source focus and stale-read isolation, preparation-failure isolation, provenance/handoff/review/clarification, bounded long content, effort support/locks, unknown effects, keyboard/dialog focus, 320px and 200% zoom, light/dark. Mocked browser evidence, not native acceptance.");

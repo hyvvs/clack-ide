@@ -13,6 +13,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { updateSelfHostedProfiles } from "@/modules/settings/store";
 import { ProviderIcon } from "@/settings/components/ProviderIcon";
 import { CalibrationControls } from "@/settings/components/CalibrationControls";
+import { describeConnectionAddress } from "@/modules/ai/lib/connectionPresentation";
 import { ServerDiscovery } from "@/settings/components/ServerDiscovery";
 import { selfHostedHealth } from "@/modules/ai/lib/selfHostedHealth";
 import {
@@ -441,6 +442,7 @@ function ServerEditor({
             Allow localhost and private-network access for this server
           </label>
         </fieldset>
+        <p className="text-xs [overflow-wrap:anywhere]">Destination: {describeConnectionAddress(baseURL).label}{describeConnectionAddress(baseURL).address ? ` - ${describeConnectionAddress(baseURL).address}` : ""}</p>
         <div className="server-heading">
           <span className="server-status" role="status">
             {current ? selfHostedHealth({ endpoint: current, snapshot: visibleSnapshot, checking: busy }).label : serverConnectionStatus(visibleSnapshot, busy)}

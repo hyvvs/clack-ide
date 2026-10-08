@@ -125,7 +125,7 @@ describe("U1 collaboration presentation", () => {
         ]}
       />,
     );
-    expect(html).toContain("Context and sources");
+    expect(html).toContain("Sources &amp; context");
     expect(html).not.toContain("PRIVATE_CANARY");
     expect(html).not.toContain("Loading saved context");
   });
@@ -288,7 +288,10 @@ describe("U1 collaboration presentation", () => {
       />,
     );
     expect(html).toContain('data-approval-session="source"');
-    expect(html).toContain("Architect / /captured");
+    expect(html).toContain("Requested by Architect in source");
+    expect(html).toContain("<p>/captured</p>");
+    expect(html).toContain("Target: output.txt");
+    expect(html).toContain("Allow once approves only this action");
     expect(html).toContain("flex-wrap");
     expect(html).toContain("Allow once");
   });

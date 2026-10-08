@@ -78,6 +78,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
 import { savedSelfHostedModelInfos } from "@/modules/ai/lib/selfHostedModels";
 import { hasKeyForModel } from "@/modules/ai/store/chatStore";
+import { modelConnectionLabel } from "@/modules/ai/lib/connectionPresentation";
 
 const PROVIDER_ICON = {
   openai: ChatGptIcon,
@@ -282,6 +283,17 @@ export function ModelDropdown({
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
   const selfHosted = usePreferencesStore((s) => s.selfHostedInference);
   const savedProviderModels = usePreferencesStore((s) => s.savedProviderModels);
+  const lmstudioBaseURL = usePreferencesStore((s) => s.lmstudioBaseURL);
+  const lmstudioModelId = usePreferencesStore((s) => s.lmstudioModelId);
+  const mlxBaseURL = usePreferencesStore((s) => s.mlxBaseURL);
+  const mlxModelId = usePreferencesStore((s) => s.mlxModelId);
+  const ollamaBaseURL = usePreferencesStore((s) => s.ollamaBaseURL);
+  const ollamaModelId = usePreferencesStore((s) => s.ollamaModelId);
+  const openaiCompatibleBaseURL = usePreferencesStore((s) => s.openaiCompatibleBaseURL);
+  const openaiCompatibleModelId = usePreferencesStore((s) => s.openaiCompatibleModelId);
+  const openrouterModelId = usePreferencesStore((s) => s.openrouterModelId);
+  const connectionSettings = { customEndpoints, savedProviderModels, selfHostedInference: selfHosted, lmstudioBaseURL, lmstudioModelId, mlxBaseURL, mlxModelId, ollamaBaseURL, ollamaModelId, openaiCompatibleBaseURL, openaiCompatibleModelId, openrouterModelId };
+  const destination = modelConnectionLabel(selected, connectionSettings);
   const currentState = useMemo(() => {
     try {
       return {
@@ -411,13 +423,13 @@ export function ModelDropdown({
             aria-label={
               locked
                 ? `Model: ${current.label}. Locked until this run finishes or stops completely.`
-                : `Change model: ${current.label}`
+                : `Change model: ${current.label}. ${targetId ? "This chat" : "New chats"}. ${destination}`
             }
             variant="ghost"
             size="sm"
             className={cn(
-              "h-5.5 gap-1 rounded-md px-1.5 my-1 text-xs hover:bg-accent hover:text-foreground",
-              compact && "min-w-0 max-w-28",
+              "h-auto min-h-6 min-w-0 max-w-full gap-1 rounded-md px-1.5 my-1 text-xs hover:bg-accent hover:text-foreground",
+              compact && "max-w-52",
               currentProviderHasKey
                 ? "text-muted-foreground"
                 : "text-amber-600 dark:text-amber-400",
@@ -435,7 +447,10 @@ export function ModelDropdown({
               size={12}
               strokeWidth={1.6}
             />
-            <span className={cn(compact && "truncate")}>{current.label}</span>
+            <span className="min-w-0 text-left">
+              <span className="block truncate">Model: {current.label}</span>
+              <span className="block truncate text-[10px]" title={destination}>{destination}</span>
+            </span>
             <HugeiconsIcon
               icon={locked ? SquareLock01Icon : ArrowDown01Icon}
               size={11}
@@ -490,6 +505,10 @@ export function ModelDropdown({
           />
         ) : (
           <>
+            <div className="border-b px-3 py-2 text-xs">
+              {targetId ? "Model for this chat" : "Model for new chats"}
+              {targetId && <p className="mt-1 text-[10.5px] text-muted-foreground">Other existing chats keep their model. New chats inherit the active chat's model.</p>}
+            </div>
             {/* Search */}
             <div className="flex items-center gap-2.5 border-b border-border/70 px-3 py-2.5">
               <HugeiconsIcon
@@ -514,6 +533,7 @@ export function ModelDropdown({
                     e.stopPropagation();
                 }}
                 placeholder="Search models, providers, capabilities…"
+                aria-label="Search models"
                 className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
               />
             </div>
@@ -580,7 +600,7 @@ export function ModelDropdown({
               </div>
 
               {/* Models list */}
-              <div className="min-h-0 flex-1 overflow-y-auto py-1">
+              <div className="min-h-0 min-w-0 flex-1 overflow-y-auto py-1">
                 {activeProvider === COMPAT_PROVIDER_ID && (
                   <div className="flex items-center gap-1.5 px-3 pt-1 pb-1.5 text-[11px] font-medium tracking-tight text-muted-foreground/90">
                     <HugeiconsIcon
@@ -615,6 +635,7 @@ export function ModelDropdown({
                     <ModelRow
                       key={m.id}
                       model={m}
+                      destination={modelConnectionLabel(m.id, connectionSettings)}
                       selected={m.id === selected}
                       disabled={locked}
                       hasKey={
@@ -748,6 +769,7 @@ function ProviderConfigureCTA({ providerId }: { providerId: ProviderId }) {
 
 function ModelRow({
   model,
+  destination,
   selected,
   disabled,
   hasKey,
@@ -757,6 +779,7 @@ function ModelRow({
   onToggleFavorite,
 }: {
   model: ModelInfo;
+  destination: string;
   selected: boolean;
   disabled: boolean;
   hasKey: boolean;
@@ -767,13 +790,14 @@ function ModelRow({
 }) {
   return (
     <DropdownMenuItem
+      aria-label={`${model.label}. ${destination}`}
       disabled={disabled}
       onSelect={(e) => {
         e.preventDefault();
         onPick();
       }}
       className={cn(
-        "group mx-1 my-0.5 flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5",
+        "group mx-1 my-0.5 flex cursor-pointer flex-wrap items-center gap-2 rounded-md px-2 py-1.5",
         selected ? "bg-accent/60 text-foreground" : "text-foreground/85",
         !hasKey && "opacity-60",
       )}
@@ -810,15 +834,15 @@ function ModelRow({
         />
       ) : null}
 
-      <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+      <div className="flex min-w-0 flex-1 basis-28 flex-col gap-1">
         <span
           className="min-w-0 truncate text-[12px] font-medium leading-none"
           title={model.label}
         >
           {model.label}
         </span>
-        <span className="truncate text-[10.5px] leading-none text-muted-foreground">
-          {model.description}
+        <span className="max-w-full truncate text-[10.5px] leading-none text-muted-foreground" title={destination}>
+          {destination}
         </span>
       </div>
 

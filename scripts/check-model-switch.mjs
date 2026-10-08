@@ -1,6 +1,7 @@
 // Browser fixture exercises the real selector and hook without native or provider calls.
 import assert from "node:assert/strict";
 import path from "node:path";
+import os from "node:os";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { mkdir } from "node:fs/promises";
@@ -18,6 +19,7 @@ const mocks = new Map([
   `],
   ["src/modules/settings/store", `export function setFavoriteModelIds() {} export function setRecentModelIds() {}`],
   ["src/modules/ai/lib/composer", `export const ACCEPTED_FILES = ""; export const useComposer = () => ({});`],
+  ["src/modules/ai/store/reasoningEffort", `export const sessionEffort=()=>({capability:{status:"unsupported"}});export const setSessionEffort=async()=>{};`],
   ["src/modules/ai/store/chatStore", `
     import { create } from "zustand";
     export const useChatStore = create(() => ({ activeSessionId:"chat", selectedModelId:"gpt-5.4-mini", apiKeys:{ openai:"test", anthropic:"test" }, sessions:[], locked:false }));
@@ -53,7 +55,7 @@ const entry = `
   window.cancelled = 0; window.committed = 0; window.blocked = false;
   createRoot(document.getElementById("root")).render(React.createElement("main", {style:{display:"flex",justifyContent:"end",padding:16}}, React.createElement(ModelDropdown)));
 `;
-const server = await createServer({ root, configFile:false, logLevel:"warn", optimizeDeps:{entries:[]},
+const server = await createServer({ root, configFile:false, logLevel:"warn", cacheDir:path.join(os.tmpdir(),`clack-model-ux-${process.pid}`), optimizeDeps:{entries:[],noDiscovery:true,include:["react","react-dom/client","react/jsx-runtime","zustand","zod","@hugeicons/react","@hugeicons/core-free-icons","class-variance-authority","radix-ui","clsx","tailwind-merge"]},
   resolve:{alias:{"@":path.join(root,"src")}},
   plugins:[{name:"isolated-model-switch",enforce:"pre",
     resolveId(source, importer) {
@@ -67,7 +69,7 @@ const server = await createServer({ root, configFile:false, logLevel:"warn", opt
       res.setHeader("Content-Type","text/html");
       res.end(await vite.transformIndexHtml("/model-switch-fixture", `<!doctype html><html class="dark"><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:var(--background);color:var(--foreground)"><div id="root"></div><script type="module" src="/model-switch-entry.jsx"></script></body></html>`));
     }); },
-  },react(),tailwindcss()],server:{host:"127.0.0.1",port:0},
+  },react(),tailwindcss()],server:{host:"127.0.0.1",port:0,watch:null,hmr:false},
 });
 let browser;
 try {
@@ -77,7 +79,7 @@ try {
     const page = await browser.newPage({viewport:{width,height:900}});
     page.setDefaultTimeout(15000);
     const errors=[];
-    page.on("pageerror",e=>errors.push(e.message));
+    page.on("pageerror",e=>{errors.push(e.message);console.error(e.message);});
     await page.goto(`${server.resolvedUrls.local[0]}model-switch-fixture`,{waitUntil:"networkidle",timeout:120000});
     const choose = async () => {
       await page.getByRole("button",{name:/Change model:/}).click();
@@ -89,6 +91,7 @@ try {
     await choose();
     await page.getByRole("button",{name:"Cancel",exact:true}).click();
     await page.waitForFunction(()=>window.cancelled===1 && !window.chatStore.getState().locked);
+    await page.getByRole("menu").waitFor({state:"hidden"});
     assert.equal(await page.evaluate(()=>window.committed),0);
     await choose();
     await page.evaluate(()=>window.finish());

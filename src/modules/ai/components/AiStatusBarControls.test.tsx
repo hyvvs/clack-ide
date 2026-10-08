@@ -148,7 +148,8 @@ describe.each([
     setRun(state);
     const html = renderToStaticMarkup(<ModelDropdown sessionId={sessionId} />);
     expect(html).not.toContain('disabled=""');
-    expect(html).toContain('aria-label="Change model: GPT-5.4 mini"');
+    expect(html).toContain('aria-label="Change model: GPT-5.4 mini.');
+    expect(html).toContain("Cloud connection");
   });
 
   it.each([

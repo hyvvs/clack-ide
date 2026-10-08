@@ -142,7 +142,7 @@ export function ContextSources({
       className="min-w-0 border-b border-[var(--clack-border-subtle)] pb-2 text-xs [overflow-wrap:anywhere]"
     >
       <summary className="cursor-pointer text-[var(--clack-text-2)]">
-        Context and sources
+        Sources & context
       </summary>
       {open && (
         <div className="mt-2 min-w-0 space-y-2">
@@ -163,7 +163,7 @@ export function ContextSources({
           )}
           {!view && !error && <p role="status">Loading saved context...</p>}
           {view && !revision && (
-            <p>No saved compaction. Original conversation is the source.</p>
+            <p>No saved summary yet. Original chat messages remain available.</p>
           )}
           {targetKey && view && (
             <p>
@@ -179,14 +179,14 @@ export function ContextSources({
           )}
           {revision && (
             <>
-              <p>
+              <p role={view?.sourceChanged ? "status" : undefined} className={view?.sourceChanged ? "font-medium text-[var(--clack-text-1)]" : undefined}>
                 {view?.sourceChanged
-                  ? "Saved context source changed; revalidation required."
-                  : `${revision.coverage.end - revision.coverage.start} original messages covered by saved compaction; ${view?.uncoveredMessages} outside this snapshot.`}
+                  ? "Saved summary sources changed; they need checking before reuse."
+                  : `${revision.coverage.end - revision.coverage.start} original messages summarized; ${view?.uncoveredMessages} newer messages are not in this summary.`}
               </p>
               <details>
                 <summary className="cursor-pointer">
-                  Saved context statements ({revision.claims.length})
+                  Saved summary ({revision.claims.length})
                 </summary>
                 <ul className="mt-2 max-h-52 space-y-2 overflow-auto">
                   {revision.claims.map((claim) => (
@@ -268,7 +268,7 @@ export function ContextSources({
                       <button
                         type="button"
                         disabled={!current}
-                        className="max-w-full text-left text-[var(--clack-accent)] hover:underline disabled:opacity-50"
+                        className="max-w-full text-left text-[var(--clack-accent)] hover:underline disabled:text-[var(--clack-text-2)]"
                         onClick={() => {
                           // Scope navigation to this transcript, including duplicate chats in split panes.
                           const pane = root.current?.closest(

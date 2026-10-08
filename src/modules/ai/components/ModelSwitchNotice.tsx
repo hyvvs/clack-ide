@@ -41,6 +41,7 @@ export function ModelSwitchNotice({
           {blocked ? "Cannot switch model" : "Check before switching"}
         </p>
         <p className="mt-1 text-muted-foreground break-words">{targetLabel}</p>
+        <p className="mt-1 text-muted-foreground">Same chat and history. Only future messages use the new model.</p>
       </div>
       <ul className="max-h-48 space-y-2 overflow-y-auto text-muted-foreground">
         {assessment.reasons.map((reason) => (

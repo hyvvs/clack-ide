@@ -433,22 +433,15 @@ export function ModelsSection() {
   return (
     <div className="flex flex-col gap-7">
       <SectionHeader
-        title="Models & Providers"
+        title="Connections & models"
         description="Connect cloud providers, local AI servers, OpenAI-compatible endpoints, defaults, and voice input. Keys live in the OS keychain."
       />
 
-      <DefaultsBlock
-        defaultModel={defaultModel}
-        configuredIds={configuredIds}
-        keys={keys}
-      />
-
-      <VoiceBlock />
       <SelfHostedServers addRequest={serverAddRequest} />
 
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <Label>Providers</Label>
+          <Label>Provider connections</Label>
           <AddProviderMenu
             providers={addableProviders}
             onAdd={addProvider}
@@ -538,6 +531,12 @@ export function ModelsSection() {
           </div>
         )}
       </div>
+      <DefaultsBlock
+        defaultModel={defaultModel}
+        configuredIds={configuredIds}
+        keys={keys}
+      />
+      <VoiceBlock />
     </div>
   );
 }
@@ -925,7 +924,7 @@ function DefaultsBlock({
     <div className="flex flex-col gap-3">
       <Label>Defaults</Label>
       <div className="flex flex-col gap-2.5 rounded-lg border border-border/60 bg-card/60 px-3 py-2.5">
-        <FieldRow label="Chat model">
+        <FieldRow label="Startup model">
           <DefaultModelPicker
             defaultModel={defaultModel}
             configuredIds={configuredIds}
@@ -1065,7 +1064,7 @@ function AutocompleteRow({
   return (
     <>
       <FieldRow label="Autocomplete">
-        <div className="flex flex-1 items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <Switch
             checked={enabled}
             onCheckedChange={(v) => void setAutocompleteEnabled(v)}
@@ -1075,7 +1074,7 @@ function AutocompleteRow({
               <Button
                 variant="outline"
                 disabled={!enabled}
-                className="h-8 flex-1 justify-between gap-2 px-2.5 text-[11.5px]"
+                className="h-8 min-w-0 flex-1 justify-between gap-2 px-2.5 text-[11.5px]"
               >
                 <span className="flex items-center gap-2 truncate">
                   <ProviderIcon provider={currentModel.provider} size={12} />
@@ -1606,11 +1605,11 @@ function FieldRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex min-w-0 flex-col items-stretch gap-1.5 sm:flex-row sm:items-center sm:gap-3">
       <span className="w-16 shrink-0 text-[11px] tracking-tight text-muted-foreground">
         {label}
       </span>
-      <div className="flex flex-1 items-center">{children}</div>
+      <div className="flex min-w-0 flex-1 items-center">{children}</div>
     </div>
   );
 }

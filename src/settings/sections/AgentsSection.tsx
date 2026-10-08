@@ -84,20 +84,17 @@ export function AgentsSection() {
 
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [editingSnippet, setEditingSnippet] = useState<Snippet | null>(null);
+  const agentOpener = useRef<HTMLElement | null>(null);
+  const openAgentEditor = (agent: Agent) => {
+    agentOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setEditingAgent(agent);
+  };
 
   return (
     <div className="flex flex-col gap-7">
       <SectionHeader
-        title="Agent Permissions"
+        title="Agents & tools"
         description="Tool access, personas, custom instructions, and reusable snippets."
-      />
-
-      <CustomInstructionsBlock value={customInstructions} />
-      <CustomToolsManager />
-
-      <PermissionSettings
-        rules={workspacePermissions}
-        agents={[...BUILTIN_AGENTS, ...customAgents]}
       />
 
       <section className="flex flex-col gap-2">
@@ -108,7 +105,7 @@ export function AgentsSection() {
             variant="outline"
             className="h-7 gap-1.5 px-2 text-[11px]"
             onClick={() =>
-              setEditingAgent({
+              openAgentEditor({
                 id: newAgentId(),
                 name: "New agent",
                 description: "",
@@ -129,12 +126,19 @@ export function AgentsSection() {
               agent={a}
               active={a.id === activeAgentId}
               onActivate={() => setActiveAgentId(a.id)}
-              onEdit={a.builtIn ? null : () => setEditingAgent(a)}
+              onEdit={a.builtIn ? null : () => openAgentEditor(a)}
               onDelete={a.builtIn ? null : () => removeAgent(a.id)}
             />
           ))}
         </div>
       </section>
+
+      <CustomToolsManager />
+      <PermissionSettings
+        rules={workspacePermissions}
+        agents={[...BUILTIN_AGENTS, ...customAgents]}
+      />
+      <CustomInstructionsBlock value={customInstructions} />
 
       <section className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
@@ -227,6 +231,11 @@ export function AgentsSection() {
       <AgentEditorDialog
         agent={editingAgent}
         existing={customAgents}
+        restoreFocus={() => {
+          if (!agentOpener.current?.isConnected) return false;
+          agentOpener.current.focus();
+          return true;
+        }}
         onClose={() => setEditingAgent(null)}
         onSave={(a) => {
           upsertAgent(a);
@@ -434,7 +443,7 @@ function AgentCard({
           size="sm"
           variant={active ? "default" : "outline"}
           onClick={onActivate}
-          className="h-6 gap-1 px-2 text-[10.5px]"
+          className="h-auto min-h-6 gap-1 px-2 text-[10.5px] whitespace-normal"
         >
           {active ? (
             <>
@@ -443,13 +452,13 @@ function AgentCard({
                 size={10}
                 strokeWidth={2}
               />
-              Active
+              Default for new chats
             </>
           ) : (
-            "Use agent"
+            "Set as default"
           )}
         </Button>
-        <div className="flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="flex gap-0.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100">
           {onEdit ? (
             <Button
               size="icon"
@@ -457,6 +466,7 @@ function AgentCard({
               className="size-6"
               onClick={onEdit}
               title="Edit"
+              aria-label={`Edit agent ${agent.name}`}
             >
               <HugeiconsIcon icon={Edit02Icon} size={11} strokeWidth={1.75} />
             </Button>
@@ -468,6 +478,7 @@ function AgentCard({
               className="size-6 text-muted-foreground hover:text-destructive"
               onClick={onDelete}
               title="Delete"
+              aria-label={`Delete agent ${agent.name}`}
             >
               <HugeiconsIcon icon={Delete02Icon} size={11} strokeWidth={1.75} />
             </Button>
@@ -481,11 +492,13 @@ function AgentCard({
 function AgentEditorDialog({
   agent,
   existing,
+  restoreFocus,
   onClose,
   onSave,
 }: {
   agent: Agent | null;
   existing: Agent[];
+  restoreFocus: () => boolean;
   onClose: () => void;
   onSave: (a: Agent) => void;
 }) {
@@ -499,14 +512,14 @@ function AgentEditorDialog({
 
   return (
     <Dialog open={!!agent} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" onCloseAutoFocus={(event) => { if (restoreFocus()) event.preventDefault(); }}>
         <DialogHeader>
           <DialogTitle className="text-[14px]">
             {isNew ? "New agent" : "Edit agent"}
           </DialogTitle>
         </DialogHeader>
         <div className="-mx-2 max-h-[calc(100vh-14rem)] overflow-y-auto px-2 flex flex-col gap-3">
-          <div className="flex gap-2">
+          <div className="flex min-w-0 flex-col gap-2 sm:flex-row">
             <div className="flex flex-col gap-1">
               <Label>Icon</Label>
               <div className="flex flex-wrap gap-1">
@@ -517,6 +530,8 @@ function AgentEditorDialog({
                     <button
                       key={id}
                       type="button"
+                      aria-label={`Choose ${id} icon`}
+                      aria-pressed={active}
                       onClick={() => setDraft({ ...draft, icon: id })}
                       className={cn(
                         "flex size-7 items-center justify-center rounded-md border transition-colors",
@@ -531,10 +546,11 @@ function AgentEditorDialog({
                 })}
               </div>
             </div>
-            <div className="flex flex-1 flex-col gap-1">
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
               <Label>Name</Label>
               <Input
                 value={draft.name}
+                aria-label="Name"
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 className="h-8 text-[12px]"
                 placeholder="e.g. Test Engineer"
@@ -545,6 +561,7 @@ function AgentEditorDialog({
             <Label>Description</Label>
             <Input
               value={draft.description}
+              aria-label="Description"
               onChange={(e) =>
                 setDraft({ ...draft, description: e.target.value })
               }
@@ -556,6 +573,7 @@ function AgentEditorDialog({
             <Label>Instructions</Label>
             <Textarea
               value={draft.instructions}
+              aria-label="Instructions"
               onChange={(e) =>
                 setDraft({ ...draft, instructions: e.target.value })
               }

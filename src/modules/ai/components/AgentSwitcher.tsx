@@ -91,6 +91,7 @@ export function AgentSwitcher({
               : "text-xs mr-1",
           )}
           title={`Agent: ${active.name}`}
+          aria-label={`Change agent for this chat: ${active.name}`}
           disabled={disabled}
         >
           <HugeiconsIcon icon={ActiveIcon} size={11} strokeWidth={1.75} />
@@ -104,6 +105,8 @@ export function AgentSwitcher({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-60">
+        <div className="px-2 py-1 text-xs font-medium">Agent for this chat</div>
+        <div className="px-2 pb-1 text-[10.5px] text-muted-foreground">Also sets the default agent for new chats.</div>
         <div className="px-2 pt-1.5 pb-1 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
           Built-in
         </div>

@@ -13,6 +13,7 @@ import {
 import { useChatStore, hasKeyForModel } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { MODELS } from "@/modules/ai/config";
+import { describeConnectionAddress } from "@/modules/ai/lib/connectionPresentation";
 import { getEnabledSavedProviderModelInfos } from "@/modules/ai/lib/savedProviderModels";
 import { savedSelfHostedModelInfos } from "@/modules/ai/lib/selfHostedModels";
 import {
@@ -36,6 +37,7 @@ function Destination({ destination }: { destination: FallbackDestination }) {
         {destination.identity.transportModelId}
       </p>
       <p>{destination.baseUrl}</p>
+      <p>{describeConnectionAddress(destination.baseUrl).label}</p>
       <p className="text-muted-foreground">{destination.modelId}</p>
       {destination.baseUrl.startsWith("http:") && (
         <p className="text-destructive">

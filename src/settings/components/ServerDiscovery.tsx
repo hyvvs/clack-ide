@@ -173,7 +173,10 @@ export function ServerDiscovery({
                   {url.hostname}:
                   {url.port || (url.protocol === "https:" ? "443" : "80")}
                 </strong>
-                <span>{item.baseURL}</span>
+                <details>
+                  <summary className="cursor-pointer">Full server address</summary>
+                  <span>{item.baseURL}</span>
+                </details>
                 <small>
                   Source: user-provided address / {SOURCES[item.source]}
                   {existing ? " / Already configured" : ""}
