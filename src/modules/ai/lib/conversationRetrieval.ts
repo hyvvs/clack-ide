@@ -217,11 +217,13 @@ export function createConversationRetriever(options: {
     if (
       !resolveContextBudget(limits, measureRequest({ messages: result, tools }))
         .fits
-    )
+    ) {
+      if (!cache.chunks.length) return messages;
       throw new RetrievalError(
         "budget",
         "Original evidence no longer fits this model's working context. Choose a larger verified context or narrow the request.",
       );
+    }
     return result;
   };
   return {
@@ -642,10 +644,46 @@ export function createConversationRetriever(options: {
             ? `original evidence; ${statuses.join(", ") || "no known missing selected sources"}`
             : `insufficient evidence; ${statuses.join(", ") || "no relevant original source found"}; ask for clarification instead of guessing`,
         };
+        // Final status/omission metadata can be larger than the trial envelope.
+        while (
+          !resolveContextBudget(
+            limits,
+            measureRequest({
+              messages: [
+                messages[0],
+                envelope(cache.chunks, cache.omitted, cache.status),
+                ...messages.slice(1),
+              ],
+              tools,
+            }),
+          ).fits
+        ) {
+          const optional = [...cache.chunks]
+            .reverse()
+            .find(
+              (chunk) => chunk.reason !== "exact-source-or-unresolved-claim",
+            );
+          if (!optional) break;
+          const group = groups.find(
+            (group) =>
+              optional.messageIndex >= group.start &&
+              optional.messageIndex < group.end,
+          );
+          if (!group) break;
+          cache.chunks = cache.chunks.filter(
+            (chunk) =>
+              chunk.messageIndex < group.start ||
+              chunk.messageIndex >= group.end,
+          );
+          cache.omitted++;
+          cache.status = cache.chunks.length
+            ? "original evidence; optional groups omitted for final budget"
+            : "insufficient evidence; optional groups omitted for final budget; ask for clarification instead of guessing";
+        }
         timeCheck();
         const output = attach(messages, limits, tools);
         options.onNotice?.({
-          sources: chunks.map((c) => ({
+          sources: cache.chunks.map((c) => ({
             messageId: c.messageId,
             evidenceId: c.evidence.id,
             digest: c.evidence.digest,
@@ -653,7 +691,7 @@ export function createConversationRetriever(options: {
             reason: c.reason,
             original: canonical(options.originals[c.messageIndex]),
           })),
-          omitted,
+          omitted: cache.omitted,
           rounds: allowance.conversationRounds,
           bytes: allowance.bytes,
           status: cache.status,

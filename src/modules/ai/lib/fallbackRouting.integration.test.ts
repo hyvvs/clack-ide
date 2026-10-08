@@ -13,7 +13,9 @@ import {
 import {
   useChatStore,
   inferenceScopeForSession,
+  seedMessages,
 } from "@/modules/ai/store/chatStore";
+import { corpus, assertPrivateAbsent } from "@/modules/ai/quality/oracle";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
 import {
@@ -203,9 +205,32 @@ beforeEach(async () => {
   };
   useChatStore.setState({
     ...chatState,
-    sessions: [saved],
+    sessions: [
+      saved,
+      ...corpus.canaries.map((canary, i) => ({
+        id: `q1-private-${i}`,
+        title: "Unrelated fixture",
+        createdAt: 1,
+        updatedAt: 1,
+        profile: {
+          agentId: `unrelated-${i}`,
+          modelId: "claude-haiku-4-5",
+          workspaceId: `local:/unrelated-${i}`,
+          workspaceRoot: `/unrelated-${i}`,
+        },
+        privateFixtureCanary: canary,
+      })),
+    ],
     apiKeys: { ...EMPTY_PROVIDER_KEYS, anthropic: "dummy-private-fixture-key" },
   });
+  for (const [i, canary] of corpus.canaries.entries())
+    seedMessages.set(`q1-private-${i}`, [
+      {
+        id: `secret-${i}`,
+        role: "user",
+        parts: [{ type: "text", text: canary }],
+      },
+    ]);
   vi.mocked(invoke)
     .mockReset()
     .mockImplementation(async (command, args) => {
@@ -335,9 +360,16 @@ beforeEach(async () => {
     history: [],
   };
   saved = { ...saved, fallback: policy };
-  useChatStore.setState({ sessions: [saved] });
+  useChatStore.setState({
+    sessions: useChatStore
+      .getState()
+      .sessions.map((s) => (s.id === saved.id ? saved : s)),
+  });
 });
 afterEach(() => {
+  assertPrivateAbsent(captures);
+  for (const [i] of corpus.canaries.entries())
+    seedMessages.delete(`q1-private-${i}`);
   resolveFallbackProposal("chat", false);
   useChatStore.setState(chatState);
   usePreferencesStore.setState(preferences);
@@ -345,7 +377,11 @@ afterEach(() => {
 function mode(value: FallbackPolicy["mode"]) {
   policy = { ...policy, mode: value };
   saved = { ...saved, fallback: policy };
-  useChatStore.setState({ sessions: [saved] });
+  useChatStore.setState({
+    sessions: useChatStore
+      .getState()
+      .sessions.map((s) => (s.id === saved.id ? saved : s)),
+  });
 }
 
 describe("G3 private fixture routing through SDK serialization and native preflight", () => {

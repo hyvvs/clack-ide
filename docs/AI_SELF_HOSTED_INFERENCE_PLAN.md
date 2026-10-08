@@ -1282,7 +1282,7 @@ This order does not authorize any pending implementation in this planning task.
 | 28 | U1 | Integrated collaboration/context/tool UX polish | Implementation complete; native GUI acceptance deferred by user | `feat(ai): integrate collaboration and context controls`; implementation record below |
 | 29 | G2 | Explicit optional network discovery | Complete | `feat(ai): discover self-hosted servers safely`; implementation record below |
 | 30 | G3 | Consent-bound fallback routing | Complete | Versioned per-conversation Never/Ask/trusted destination consent; native request grants, compatibility/B1/effect guards, intercepted private-fixture traffic and restart/revocation tests. Native GUI/live-provider evidence not performed. |
-| 31 | Q1 | Context fidelity, freshness and collaboration quality suite | Pending | None |
+| 31 | Q1 | Context fidelity, freshness and collaboration quality suite | Complete (deterministic; native GUI deferred by user, real-provider evidence at Z) | A-L corpus/report, 969 focused frontend / 637 native automated tests; 2,201 full frontend tests |
 | 32 | Z | Integrated native/hardware validation and documentation | Pending | None |
 
 ### A1: Profiles and migration
@@ -4838,6 +4838,103 @@ results; failures or missing hardware are explicit, never 'flawless'. Rollback
 retains corpus/results and disables the failing optimization at its owner;
 do not relax correctness thresholds to mark Q1 green. Commit `test(ai): verify
 context and collaboration quality`, update ledger, STOP.
+
+#### Q1 Implementation Record
+
+- **Scope/corpus:** Implemented only Q1 from `9e9ba23` on Windows x64.
+  `src/modules/ai/quality/corpus.json` is the synthetic, safe-to-commit
+  `clack-q1-v1` corpus (seed 1420): original message identities, literal
+  numeric/negated/multilingual requirements, architecture/current task,
+  code/prose observations, corrections, similar cross-workspace paths,
+  misleading tools, fabricated citations, missing artifacts and four private
+  canaries. No private user project content or credentials were exported.
+- **Composition:** `npm.cmd run test:quality` composes 54 existing/new frontend
+  files and the full native Rust fixture suite. `scripts/q1-manifest.mjs` maps
+  A-L to owning checkpoints; missing/skipped suites or missing native patterns
+  fail the report. Original-source and report-oracle mutation tests prevent
+  a good average, repeated observations of one revision or blanket refusal
+  from satisfying the critical gate. Four workers bound frontend resource
+  contention without changing assertions or deadlines; no new dependencies.
+- **A/B fidelity:** Transcript SHA-256 comparisons remain unchanged. A retains
+  **4/4 critical and 4/4 noncritical facts**, with **10 authorized original
+  references / 4 extraction calls**. Full and unchanged B1-elided conversation
+  cost **16,426 estimated tokens**, fitting the large baseline but not the
+  6000 working target; prepared context costs **5,758**, fitting that target.
+  B records **ten distinct compaction revisions**, **4/4 critical facts after
+  every cycle**, current user corrections, unresolved-task constraints and
+  original source lineage. Latest compacted noncritical recall is **1/4**;
+  all **3/3 queried omitted facts** are retrieved from the actual originals
+  with **3/3 valid sources**, not a summary-of-summary. B uses deployed and
+  extraction fixture context **32768**, compaction working target **8192**,
+  and historical retrieval working target **16384**. No claim of successful
+  required retrieval at 8192 or perfect compacted recall. **20** extraction
+  calls; fixed-clock elapsed values are not performance benchmarks.
+- **C-L integration:** Installed adapter interception checks target switching
+  and every supported effort mapping; owner suites cover configuration/cancel
+  races, unsupported/no-fit attachments, hash freshness/supersession and
+  targeted reads, clarification bounds/capacity-one routing, shared write
+  leases/worktree identities, stale review/changed user content, truthful
+  activity, exact tool authorization/versioning, WASI/MCP adversaries and
+  crash/unknown-effect recovery. New E/H fixtures compose independent
+  Investigator/Coder/Reviewer identities through finding, handoff, implementation,
+  review defect and correction: **4/4 stages**, source accuracy/useful required
+  evidence **1/1**; changed patch invalidates review, corrected review validates,
+  failed prerequisite blocks only downstream work. F retains mission and
+  required evidence, omits one irrelevant source and fits recipient B1;
+  estimated schema cost **226 -> 151 tokens / 483 -> 318 bytes**, handoff
+  conversation **724 tokens**. G/L composes task-linked receipts, idempotent
+  acknowledgement, expiration, restart interruption and sender authorization.
+- **Critical results:** A-L deterministic gates pass: **100% critical fixture
+  requirements retained or explicitly blocked**, emitted references valid and
+  authorized, **zero orphan tool pairs, unauthorized data/tool delivery or
+  replay of known completed effects** in enumerated fixtures; injected stale
+  critical evidence reconciles or blocks. Healthy preparation, evidence
+  retrieval and collaboration complete. Corpus canaries are checked in
+  prepared/retrieved/handoff/tool-schema outputs; foreign session histories
+  are also seeded during intercepted primary/fallback routing. Existing
+  tool/MCP native fixtures enforce secret/path/network boundaries. These are
+  bounded fixture assertions, not universal intelligence/security guarantees.
+- **Concrete owner fix:** G1a optional historical retrieval could exceed B1
+  because final omission/status metadata outgrew its trial envelope, including
+  an empty optional envelope. Recheck final serialization, omit only optional
+  whole source/tool groups, preserve fitting context when no optional evidence
+  envelope fits, and report delivered sources/omission counts exactly. Required
+  evidence remains fail-closed. The **49-test** retrieval owner suite passes;
+  no permission, mandatory evidence or B1 threshold was weakened.
+- **Evidence:** `docs/Q1_EVIDENCE.json` and `docs/Q1_EVIDENCE.md` record tested
+  base, corpus/source hashes, installed adapter versions, host, A-L owners,
+  test layers/cases, per-cycle coverage/retention, context/schema costs,
+  failures and limitations. Noncritical recall, source accuracy, completion
+  and handoff usefulness are separate from critical gates. Unit/IPC mocks,
+  intercepted SDK integration and native storage/filesystem/Git/WASI/HTTP
+  fixtures are distinct; E/G native evidence is provenance/receipt persistence,
+  not native end-to-end model collaboration. No historical per-real-model
+  baseline exists, so no intelligence/timing regression delta is invented.
+- **Verification:** Focused Q1 **969 passed / 54 frontend files**; full
+  frontend `npm.cmd test -- --maxWorkers=4` **2,201 passed / 175 files**.
+  `cargo test --locked` **637 passed** (**587** library + **25** filesystem +
+  **25** Git integration), zero failed/ignored, on this Windows host.
+  `npm.cmd run check-types`, `npm.cmd run lint`, `npm.cmd run build` and
+  `git diff --check` pass. Lint remains **71 warnings / 2 informational
+  notices**. Build retains existing ineffective-dynamic-import warnings and
+  a plugin-timing notice. No Rust source changes; fmt/Clippy were not rerun.
+  An initial unbounded-worker Q1 run had a failed large-switch integration
+  case; it passed **11/11** in isolation and in the bounded final run. No
+  assertion/deadline relaxation. Incorrect native-report patterns were fixed
+  to enumerate actual owner tests, not fabricate native evidence.
+- **Deferred/rollback:** Browser tests were not rerun for Q1. Native GUI:
+  **Not performed - explicitly deferred by user** (split panes, Stop,
+  minimize/restore, restart/recovery, selectors, dialogs/focus and source/tool
+  inspection remain at Z). Real provider/server:
+  **Not tested - real provider/server evidence deferred to Z**. No Computer
+  Use, live provider requests, public-network dependency, Linux/macOS native
+  run or packaging/release was performed. Z retains A-L/S1-S13 native/manual,
+  real small-model/LAN/backend/capacity/effort and platform/packaging evidence.
+  Rollback keeps corpus/results and original/additive durable state; disable
+  a failing optimization at its named owner, never weaken policy or erase
+  source evidence. Unrelated work/stashes/autonomous_tracker were untouched.
+  No push. **Q1 deterministic implementation is complete. Next:
+  Z: Final integration and handoff. No subsequent checkpoint was started.**
 
 ### G2: Optional server discovery
 

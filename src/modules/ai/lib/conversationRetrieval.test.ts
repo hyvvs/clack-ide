@@ -179,6 +179,48 @@ describe("automatic same-conversation evidence retrieval", () => {
     expect(await f.prepare()).toEqual(first);
     expect(f.read).toHaveBeenCalledOnce();
   });
+  it("final envelope metadata omits only optional whole groups at the B1 boundary", async () => {
+    const f = fixture();
+    const first = await f.prepare();
+    const limits = {
+      deployed: 32768,
+      workingTarget: measureRequest({ messages: first }).conversation - 1,
+    };
+    const optional = f.make();
+    const output = await optional.prepare(
+      f.view,
+      f.groups,
+      f.messages,
+      limits,
+      [],
+    );
+    expect(
+      resolveContextBudget(limits, measureRequest({ messages: output })).fits,
+    ).toBe(true);
+    expect(JSON.stringify(output)).toContain("budget");
+    const tight = {
+      deployed: 32768,
+      workingTarget: measureRequest({ messages: f.messages }).conversation + 1,
+    };
+    const noRoomForEmptyEnvelope = f.make();
+    expect(
+      await noRoomForEmptyEnvelope.prepare(
+        f.view,
+        f.groups,
+        f.messages,
+        tight,
+        [],
+      ),
+    ).toEqual(f.messages);
+    expect(
+      f.onNotice.mock.calls[f.onNotice.mock.calls.length - 1]?.[0].sources,
+    ).toEqual([]);
+    const mandatory = f.make();
+    mandatory.request("original decision", "early");
+    await expect(
+      mandatory.prepare(f.view, f.groups, f.messages, limits, []),
+    ).rejects.toMatchObject({ code: "retrieval-budget" });
+  });
   it("disables historical navigation when the original was changed or deleted", async () => {
     const f = fixture();
     await f.prepare();

@@ -16,6 +16,7 @@
     "tauri": "tauri",
     "tauri:dev:linux:nvidia": "__NV_DISABLE_EXPLICIT_SYNC=1 tauri dev",
     "test": "vitest run",
+    "test:quality": "node scripts/q1-quality.mjs",
     "test:watch": "vitest",
     "check-types": "tsc --noEmit",
     "lint": "biome lint ./src",
