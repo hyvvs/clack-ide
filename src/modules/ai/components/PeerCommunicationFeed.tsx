@@ -2,8 +2,10 @@ import type { PeerCommunicationEvent } from "@/modules/ai/lib/peerCommunication"
 
 export function PeerCommunicationFeed({
   events,
+  agentName = (id: string) => id,
 }: {
   events?: readonly PeerCommunicationEvent[];
+  agentName?: (id: string) => string;
 }) {
   if (!events?.length) return null;
   return (
@@ -18,8 +20,9 @@ export function PeerCommunicationFeed({
             className="min-w-0 break-words [overflow-wrap:anywhere]"
           >
             <div className="text-[var(--clack-text-3)]">
-              {event.kind.replace(/-/g, " ")} · {event.state}
+              {event.kind.replace(/-/g, " ")} / {communicationStateLabel(event)}
             </div>
+            <p className="text-[var(--clack-text-2)]">{agentName(event.sender.agentId)} to {agentName(event.recipient.agentId)}</p>
             <p className="whitespace-pre-wrap">{event.text}</p>
             {event.detail ? <p>{event.detail}</p> : null}
             <details>
@@ -53,4 +56,14 @@ export function PeerCommunicationFeed({
       </ol>
     </details>
   );
+}
+
+export function communicationStateLabel(event: Pick<PeerCommunicationEvent, "kind" | "state">): string {
+  if (event.state === "blocked") return "Blocked";
+  if (event.state === "cancelled") return "Cancelled; not replayed";
+  if (event.state === "answered") return "Answered";
+  if (event.state === "acknowledged") return "Consumed at task boundary";
+  const question = event.kind === "clarification-request" || event.kind === "review-request";
+  if (event.state === "delivered") return question ? "Waiting for answer" : "Delivered; awaiting task boundary";
+  return question ? "Waiting for recipient" : "Queued for recipient";
 }

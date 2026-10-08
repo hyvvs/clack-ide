@@ -149,8 +149,15 @@ const ActivityRow = memo(function ActivityRow({
           {event.messageId &&
           (!event.owner || event.owner.sessionId === sessionId) ? (
             <a
-              className="inline-block max-w-full underline [overflow-wrap:anywhere]"
               href={`#evidence-${sessionId}-${event.messageId}`}
+              className="inline-block max-w-full underline [overflow-wrap:anywhere]"
+              onClick={(click) => {
+                click.preventDefault();
+                const pane = click.currentTarget.closest("[data-conversation-pane]");
+                const target = Array.from(pane?.querySelectorAll<HTMLElement>("[data-evidence-message]") ?? []).find((element) => element.dataset.evidenceMessage === event.messageId);
+                target?.scrollIntoView({ block: "center" });
+                target?.focus({ preventScroll: true });
+              }}
             >
               Original message: {activityText(event.messageId)}
             </a>

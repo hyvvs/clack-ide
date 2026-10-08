@@ -1279,7 +1279,7 @@ This order does not authorize any pending implementation in this planning task.
 | 25 | D3 | Partial-stream/offline recovery | Complete | `fix(ai): recover interrupted streams safely`; implementation record below |
 | 26 | E2 | Passive calibration and optional bounded optimization | Complete | Metadata-only scoped observations, conservative recommendations, explicit bounded optimization; see E2 record |
 | 27 | F2 | Watchdogs, compact health UX and advanced polish | Complete | `feat(ai): guard pathological model output`; implementation record below |
-| 28 | U1 | Integrated collaboration/context/tool UX polish | Pending | None |
+| 28 | U1 | Integrated collaboration/context/tool UX polish | Implementation complete; native GUI acceptance deferred by user | `feat(ai): integrate collaboration and context controls`; implementation record below |
 | 29 | G2 | Explicit optional network discovery | Pending | None |
 | 30 | G3 | Consent-bound fallback routing | Pending | None |
 | 31 | Q1 | Context fidelity, freshness and collaboration quality suite | Pending | None |
@@ -4732,6 +4732,93 @@ not native evidence. Preserve terminal, Source Control and unrelated dialog
 work. Rollback switches to existing views without deleting runtime records.
 Commit `feat(ai): integrate collaboration and context controls`, update ledger,
 STOP.
+
+#### U1 Implementation Record
+
+- **Scope/ownership:** Integrated existing conversation, pane header, model
+  notice, task/communication cards, activity links and Custom Tools manager.
+  No dashboard, additional Dispatcher, runtime store, provider capability or
+  permission change. Conversation/pane bindings, global Dispatcher behavior,
+  B1/C1/C2 budgets, D1 cancellation, T2 approvals and native tool guards remain
+  authoritative. No transcript mutation or new model request is introduced.
+- **Context/source detail:** Collapsed, lazy `Context and sources` distinguishes
+  originals, saved compaction coverage/uncovered messages, stale/conflicting
+  statements, retrieved original evidence and prepared model-switch context.
+  Uses existing session-write barriers and conversation-owned native memory /
+  target-context reads; generation/inspection tickets reject late callbacks
+  after rebinding, refresh or unmount. Refreshes at transcript/run boundaries,
+  not each streamed token. Retained evidence inspection is bounded to 8 KiB;
+  provenance IDs/digests stay in disclosures. Missing prepared context cannot
+  hide valid conversation memory. Changed/missing retrieval sources are disabled;
+  valid source/activity links focus the original message in their own pane.
+  Existing project-evidence inspection remains independently scoped and keyed
+  to the conversation; memory is not copied into a new store or injected here.
+- **Collaboration:** Task actors use captured agent identities instead of
+  mutable current chat profiles. Cards expose source/target/model/workspace,
+  root/parent/worktree, recipient-sized handoff omissions, exact review targets
+  and immutable artifact provenance on demand. Pending questions show asker,
+  answer recipient, text and honest queued/waiting/answered/consumed/blocked/
+  cancelled status. Delivery is not described as resumed execution. Existing
+  dependency, correction, stale-review, apply/cancel and write-lease behavior
+  stays unchanged; input/result provenance uses stable identity keys.
+- **Tools/model/activity:** A named pane-header tool action lazily opens the
+  existing manager fixed to that conversation, with no active-chat fallback or
+  selectable retargeting. Existing authorization, assignment, runtime support,
+  MCP destination/version and execution-history/effect states are reused.
+  Approval presentation includes its captured agent/workspace and wraps paths
+  and actions. Model preparation separates actionable blockers from disclosed
+  budget numbers without changing commit/run locks. The effort action has an
+  accessible name and explicitly separates effort from reasoning visibility;
+  unsupported choices remain absent and active-run locks remain real. Existing
+  activity/recovery/watchdog distinctions are preserved. Escape respects open
+  menus/dialogs and prevented events before closing the AI mini-window.
+- **Automated verification:** Added **18 U1 tests**. Focused presentation/pane/
+  profile/model/recovery/activity/workspace/explorer/Source Control/terminal
+  group: **229 passed / 20 files**. Full frontend: **2,118 passed / 168 files**,
+  run once; final test-fixture typing, semantic evidence-region markup and
+  artifact-key corrections were followed by **32 passed / 2 affected files**
+  and the final browser fixture. `npm.cmd run check-types`, `npm.cmd run lint`,
+  `npm.cmd test`, `npm.cmd run build` and `git diff --check` passed. Lint remains
+  **71 warnings / 2 infos / 0 errors**. Four existing ineffective dynamic-import
+  warnings and the build plugin-timing advisory remain. No Rust source changed;
+  Rust gates were not rerun.
+- **Browser evidence, not native evidence:** Windows Chromium / Playwright
+  `scripts/check-collaboration-ux.mjs` passed **four configurations**:
+  **1280px/100% dark, 640px/100% light, 320px/100% dark, 640px/200% light**.
+  Uses actual app zoom scope, production components and theme-token application
+  with mocked native I/O, normalization, request and permission boundaries.
+  Confirms pane-local drafts/attachment references across active-chat/model/
+  agent changes, correct send/Stop/approval/task routing, private neighbor draft
+  exclusion, scoped tool/history results and MCP destination/unknown effects,
+  context/source focus, stale reads and prepared-context failure isolation,
+  clarification/handoff/review presentation, genuine effort support/locks,
+  keyboard Enter/Space, named controls, dialog Escape/focus return and no
+  destructive horizontal overflow with long identities/paths/hashes/errors.
+  Narrow/zoom screenshots were inspected. Browser fixtures do not prove native
+  process cancellation, native permissions, real provider behavior or platform
+  window integration. Scenario E-L presentation is represented by these and
+  existing functional tests, not claimed as a complete native causal workflow.
+- **Protected surfaces:** Workspace root, explorer context, workspace-terminal
+  binding, terminal pane/dock and Source Control context regressions passed in
+  the focused group/full suite. Their implementation files were not changed.
+  Workspace chip/breadcrumb/explorer native interaction is not claimed verified.
+  Unrelated delegation work, safety stashes and `autonomous_tracker/` were not
+  modified, staged or committed. Task-owned acceptance processes were stopped
+  through their CLI sessions; no GUI control was used to finish this checkpoint.
+- **Native GUI acceptance:** **Not performed - explicitly deferred by user.**
+  Native split-pane interaction, native Stop behavior, minimize/restore, native
+  restart/recovery interaction and native dialogs/focus behavior remain
+  individually **Not performed - explicitly deferred by user**. No Linux/macOS
+  native GUI verification is claimed. Light/dark browser checks do not establish
+  native configured-background/transparency/blur readability; those visual
+  states and native workspace navigation remain acceptance limitations. The
+  optional isolated loopback helper `scripts/native-u1.mjs` is retained for later
+  acceptance, not presented as a successful native acceptance run here.
+- **Rollback/stop:** Restore previous presentation while retaining original
+  sessions, memories, artifacts, tool histories, task records and permissions.
+  **U1 implementation is complete with the user-authorized native acceptance
+  limitation. Next: G2: Optional server discovery. No subsequent checkpoint
+  started. No push.**
 
 ### Q1: Integrated intelligence quality
 

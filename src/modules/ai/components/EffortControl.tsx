@@ -59,6 +59,7 @@ function SessionEffortControl({ sessionId: id }: { sessionId: string }) {
           size="sm"
           className="h-6 max-w-36 shrink-0 px-1.5 text-[11px]"
           title="Reasoning effort"
+          aria-label={`Reasoning effort: ${effortLabel(effort.choice)}`}
         >
           <span className="truncate">Effort: {effortLabel(effort.choice)}</span>
         </Button>
@@ -91,6 +92,7 @@ function SessionEffortControl({ sessionId: id }: { sessionId: string }) {
             ))}
           </select>
         </label>
+        <p className="text-xs text-muted-foreground">Effort does not control reasoning visibility.</p>
         {capability.status === "unknown" && (
           <p className="text-xs text-muted-foreground">
             Effort support is unverified for this model and API.

@@ -1,4 +1,5 @@
 import { InferenceActivityLabel } from "@/modules/ai/components/InferenceActivityLabel";
+import { ChatToolsControl } from "@/modules/ai/components/ChatToolsControl";
 import {
   Context,
   ContextContent,
@@ -161,10 +162,9 @@ export function AiMiniWindow({ state }: { state: PresenceState }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        const target = e.target as HTMLElement | null;
-        const tag = target?.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA") return;
+      const target = e.target as HTMLElement | null;
+      const overlayOpen = Boolean(document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"], [data-slot="popover-content"][data-state="open"]'));
+      if (shouldCloseAiMiniOnEscape(e, target?.tagName, overlayOpen)) {
         closeMini();
       }
     };
@@ -208,6 +208,14 @@ export function AiMiniWindow({ state }: { state: PresenceState }) {
       </div>
     </div>
   );
+}
+
+export function shouldCloseAiMiniOnEscape(
+  event: Pick<KeyboardEvent, "key" | "defaultPrevented">,
+  tagName: string | undefined,
+  overlayOpen: boolean,
+): boolean {
+  return event.key === "Escape" && !event.defaultPrevented && !overlayOpen && tagName !== "INPUT" && tagName !== "TEXTAREA";
 }
 
 const RESIZE_HANDLE_CLASS: Record<ResizeDir, string> = {
@@ -659,6 +667,7 @@ function Header({
         />
         <ModelDropdown sessionId={sessionId} compact />
         <EffortControl sessionId={sessionId} />
+        <ChatToolsControl key={sessionId} sessionId={sessionId} />
         <AgentPermissionControl agentId={displayedAgentId} compact />
         {messages !== undefined ? (
           <ContextIndicator sessionId={sessionId} messages={messages} compact />
@@ -772,12 +781,12 @@ export function ContextIndicator({
           {Math.round((used / Math.max(max, 1)) * 100)}%
         </span>
       </ContextTrigger>
-      <ContextContent className="w-64 text-[11px]">
+      <ContextContent className="w-64 max-w-[calc(100vw-24px)] max-h-[70dvh] overflow-y-auto text-[11px] [overflow-wrap:anywhere]">
         <ContextContentHeader />
         <ContextContentBody>
-          <div className="flex items-center justify-between text-[var(--clack-text-3)]">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-[var(--clack-text-3)]">
             <span>Model</span>
-            <span className="font-mono text-[var(--clack-text-1)]">
+            <span className="min-w-0 font-mono text-[var(--clack-text-1)]">
               {modelLabel}
             </span>
           </div>

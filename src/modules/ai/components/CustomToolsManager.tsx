@@ -34,7 +34,7 @@ import {
   type ToolBinding,
 } from "@/modules/ai/lib/customTools";
 
-export function CustomToolsManager() {
+export function CustomToolsManager({ sessionId }: { sessionId?: string } = {}) {
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [selected, setSelected] = useState("");
   const [error, setError] = useState("");
@@ -46,7 +46,7 @@ export function CustomToolsManager() {
           const bound = value.sessions.filter((s) => s.profile?.workspaceId);
           setSessions(bound);
           setSelected(
-            bound.find((s) => s.id === value.activeId)?.id ??
+            sessionId ?? bound.find((s) => s.id === value.activeId)?.id ??
               bound[0]?.id ??
               "",
           );
@@ -58,7 +58,7 @@ export function CustomToolsManager() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [sessionId]);
   const session = sessions.find((s) => s.id === selected);
   return (
     <section className="min-w-0 space-y-3" aria-label="Custom tools">
@@ -69,6 +69,7 @@ export function CustomToolsManager() {
           aria-label="Workspace conversation"
           className="h-8 max-w-full min-w-0 rounded border bg-background px-2"
           value={selected}
+          disabled={sessionId !== undefined}
           onChange={(e) => setSelected(e.target.value)}
         >
           {!sessions.length && (
@@ -82,6 +83,7 @@ export function CustomToolsManager() {
         </select>
       </label>
       {error && <p role="alert">{error}</p>}
+      {sessionId && !session && <p role="status">This conversation is unavailable or has no workspace. No tools can execute.</p>}
       {session && (
         <McpConnections key={`mcp-${session.id}`} session={session} />
       )}

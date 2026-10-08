@@ -288,7 +288,7 @@ describe("PeerTaskFeed", () => {
     expect(html).not.toContain("could not complete this task");
   });
 
-  it("explains direct and propagated cancellation without exposing task IDs", () => {
+  it("explains cancellation with task IDs confined to provenance details", () => {
     const parent = task({
       id: "parent-internal-id",
       targetAgentId: "Coder",
@@ -336,7 +336,8 @@ describe("PeerTaskFeed", () => {
 
     expect(parentHtml).toContain("Cancelled · 2 subtasks cancelled");
     expect(childHtml).toContain("Cancelled by Coder");
-    expect(childHtml).not.toContain("parent-internal-id");
+    expect(childHtml).toContain("Task details and provenance");
+    expect(childHtml.slice(0, childHtml.indexOf("<details>"))).not.toContain("parent-internal-id");
   });
 
   it("shows working, completed artifacts, and failure in human language", () => {

@@ -14,7 +14,7 @@ import {
 } from "@/modules/ai/lib/activity";
 import { ProviderOutput } from "@/modules/ai/components/ProviderOutput";
 import { inferenceLabel } from "@/modules/ai/lib/inferenceLifecycle";
-import { retrievalSourceMatches } from "@/modules/ai/lib/conversationRetrieval";
+import { ContextSources } from "@/modules/ai/components/ContextSources";
 import { ProjectMemoryPanel } from "@/modules/ai/components/ProjectMemoryPanel";
 import {
   Conversation,
@@ -307,9 +307,10 @@ export function AiChatView({
 
   if (messages.length === 0) {
     return (
-      <Conversation>
+      <Conversation data-conversation-pane={sessionId}>
         <ConversationContent className="gap-5 p-3">
-          <ProjectMemoryPanel sessionId={sessionId} messages={messages} />
+          <ContextSources key={sessionId} sessionId={sessionId} messages={messages} />
+          <ProjectMemoryPanel key={`project-${sessionId}`} sessionId={sessionId} messages={messages} />
           <ConversationEmptyState
             title="Ask Clack anything"
             description="Explain command output, fix errors, generate snippets, or run a task."
@@ -321,9 +322,10 @@ export function AiChatView({
   }
 
   return (
-    <Conversation>
+    <Conversation data-conversation-pane={sessionId}>
       <ConversationContent className="gap-5 p-3">
-        <ProjectMemoryPanel sessionId={sessionId} messages={messages} />
+        <ContextSources key={sessionId} sessionId={sessionId} messages={messages} />
+        <ProjectMemoryPanel key={`project-${sessionId}`} sessionId={sessionId} messages={messages} />
         {ACTIVITY_ENABLED ? (
           <AgentActivity sessionId={sessionId} messages={messages} />
         ) : null}
@@ -348,50 +350,6 @@ export function AiChatView({
               patchAgentMeta(sessionId, { compactionNotice: null });
             }}
           />
-        )}
-        {runtime?.retrievalNotice && (
-          <details className="min-w-0 text-[11px] text-[var(--clack-text-3)]">
-            <summary className="cursor-pointer">
-              Original evidence: {runtime.retrievalNotice.sources.length}{" "}
-              sources
-            </summary>
-            <p className="break-words">
-              {runtime.retrievalNotice.status}.{" "}
-              {runtime.retrievalNotice.omitted} groups omitted.
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {[
-                ...new Map(
-                  runtime.retrievalNotice.sources.map(
-                    (source) => [source.messageId, source] as const,
-                  ),
-                ).values(),
-              ].map((source) => {
-                const id = source.messageId;
-                const current = retrievalSourceMatches(
-                  source.original,
-                  messages.find((message) => message.id === id),
-                );
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    className="max-w-full truncate underline disabled:opacity-50"
-                    title={`View original message ${id}`}
-                    disabled={!current}
-                    onClick={() =>
-                      document
-                        .getElementById(`evidence-${sessionId}-${id}`)
-                        ?.scrollIntoView({ block: "center" })
-                    }
-                  >
-                    {current ? "View source" : "Source changed or unavailable"}:{" "}
-                    {id}
-                  </button>
-                );
-              })}
-            </div>
-          </details>
         )}
         {(showSpinner || inference) && (
           <div className="flex items-center gap-2 text-xs text-[var(--clack-text-3)]">
@@ -621,7 +579,7 @@ export const RenderedMessage = memo(function RenderedMessage({
     const attachments = message.parts.filter(isAttachmentMessagePart);
 
     return (
-      <Message from="user" id={`evidence-${sessionId}-${message.id}`}>
+      <Message from="user" id={`evidence-${sessionId}-${message.id}`} data-evidence-message={message.id} tabIndex={-1}>
         <MessageContent>
           {commandName ? <CommandSnippet name={commandName} /> : null}
           {stripped.chips.length > 0 ? (
@@ -655,7 +613,7 @@ export const RenderedMessage = memo(function RenderedMessage({
   }
 
   return (
-    <Message from={message.role} id={`evidence-${sessionId}-${message.id}`}>
+    <Message from={message.role} id={`evidence-${sessionId}-${message.id}`} data-evidence-message={message.id} tabIndex={-1}>
       <MessageContent>
         <div className="flex flex-col gap-3">
           {groups.map((g) => {

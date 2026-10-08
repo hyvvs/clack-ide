@@ -1,5 +1,5 @@
 import { Spinner } from "@/components/ui/spinner";
-import { PeerCommunicationFeed } from "@/modules/ai/components/PeerCommunicationFeed";
+import { PeerCommunicationFeed, communicationStateLabel } from "@/modules/ai/components/PeerCommunicationFeed";
 import { pendingPeerQuestion } from "@/modules/ai/lib/peerCommunication";
 import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
 import { inferenceLabel } from "@/modules/ai/lib/inferenceLifecycle";
@@ -115,8 +115,9 @@ export function PeerTaskCard({
     (state) => state.savedProviderModels,
   );
   const agents = [...BUILTIN_AGENTS, ...customAgents];
-  const sourceAgentId = source?.profile?.agentId ?? task.sourceAgentId;
-  const targetAgentId = target?.profile?.agentId ?? task.targetAgentId;
+  const agentName = (id: string) => agents.find((agent) => agent.id === id)?.name ?? id;
+  const sourceAgentId = task.sourceAgentId;
+  const targetAgentId = task.targetAgentId;
   const sourceAgentName =
     agents.find((agent) => agent.id === sourceAgentId)?.name ?? sourceAgentId;
   const targetAgentName =
@@ -161,6 +162,7 @@ export function PeerTaskCard({
   const peer = viewingSource ? target : source;
   const peerAgentName = viewingSource ? targetAgentName : sourceAgentName;
   const active = isPeerTaskActive(task);
+  const question = pendingPeerQuestion(task);
   const inference = useInferenceLifecycle(task.targetSessionId);
   const statusLabel = pendingPeerQuestion(task) ? "Waiting for clarification" : task.status === "running" && inference
     ? inferenceLabel(inference)
@@ -228,10 +230,10 @@ export function PeerTaskCard({
 
   return (
     <section
-      className="clack-ai-block overflow-hidden"
+      className="clack-ai-block min-w-0 overflow-hidden [overflow-wrap:anywhere]"
       data-peer-task-id={task.id}
     >
-      <div className="flex items-center gap-2 border-b border-[color:var(--clack-border-subtle)] px-2.5 py-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-[color:var(--clack-border-subtle)] px-2.5 py-2">
         {task.status === "waiting" ||
         task.status === "running" ||
         task.status === "queued" ? (
@@ -247,7 +249,7 @@ export function PeerTaskCard({
         <span className="min-w-0 truncate text-[11.5px] font-semibold text-[var(--clack-text-1)]">
           {title}
         </span>
-        <span className={cn("min-w-0 max-w-[50%] truncate text-[10px]", tone)} title={statusLabel}>{statusLabel}</span>
+        <span role="status" className={cn("min-w-0 max-w-full text-[10px]", tone)}>{statusLabel}</span>
         <button
           type="button"
           disabled={!peer}
@@ -269,7 +271,39 @@ export function PeerTaskCard({
         </button>
       </div>
       <div className="space-y-2 px-2.5 py-2 text-[11px]">
-        <PeerCommunicationFeed events={task.communication} />
+        {question && <div className="space-y-1 border-b border-[var(--clack-border-subtle)] pb-2">
+          <p className="font-medium">{agentName(question.sender.agentId)} asks {agentName(question.recipient.agentId)}</p>
+          <p className="whitespace-pre-wrap">{question.text}</p>
+          <p role="status" className="text-[var(--clack-text-3)]">{communicationStateLabel(question)}</p>
+        </div>}
+        <PeerCommunicationFeed events={task.communication} agentName={agentName} />
+        <details>
+          <summary className="cursor-pointer text-[var(--clack-text-2)]">Task details and provenance</summary>
+          <div className="mt-1 space-y-1">
+            <p>From {sourceAgentName}: {source?.title ?? "Deleted conversation"}</p>
+            <p>To {targetAgentName}: {target?.title ?? "Deleted conversation"}</p>
+            <p>Model: {modelLabel(task.targetModelId, customEndpoints, savedProviderModels)}</p>
+            <p>Workspace: {task.workspaceRoot}</p>
+            <p>Task {task.id} / Root {task.rootTaskId}{task.parentTaskId ? ` / Parent ${task.parentTaskId}` : ""}</p>
+            {task.worktree && <p>Checkout: {task.worktree.checkoutRoot} / Base {task.worktree.baseSha}</p>}
+            {task.handoff && <>
+              <p>Recipient-sized handoff: {task.handoff.sources.length} evidence sources; {task.handoff.omitted} omitted.</p>
+              <p>Receipt: {task.handoff.digest}</p>
+            </>}
+            {task.review && <>
+              <p>Review target: {task.review.files.length} captured files, {task.review.patches.length} patches, {task.review.results.length} task results.</p>
+              {task.review.files.map((file) => <p key={file.path}>{file.path} / {file.hash}</p>)}
+              {task.review.patches.map((patch) => <p key={patch.taskId}>Patch {patch.taskId} / {patch.hash}</p>)}
+              {task.review.results.map((result) => <p key={result.taskId}>Result {result.taskId} / {result.hash}</p>)}
+            </>}
+            {[{ kind: "input", refs: task.artifactRefs }, { kind: "result", refs: task.result?.artifacts ?? [] }].flatMap(({ kind, refs }) => refs.map((artifact) => <details key={`${kind}:${artifact.id}`}>
+              <summary className="cursor-pointer">Artifact: {artifact.displayName}</summary>
+              <p>{artifact.originType} / {artifact.sourceAgentId} / {artifact.sourceSessionId} / {artifact.sourceTaskId ?? "Original attachment"}</p>
+              <p>Immutable content: {artifact.contentRef.id} / {artifact.contentRef.contentHash}</p>
+              <p>{artifact.sourcePath ?? artifact.displayName}</p>
+            </details>))}
+          </div>
+        </details>
         <div>
           <div className="mb-0.5 text-[9.5px] font-medium uppercase text-[var(--clack-text-3)]">
             Task
@@ -534,7 +568,7 @@ export function PeerTaskCard({
             </div>
           </div>
         ) : null}
-        <div className="flex items-center gap-2 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[9.5px] text-[var(--clack-text-3)]">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[9.5px] text-[var(--clack-text-3)]">
           <span>{executionModeLabel(task)}</span>
           <span className="truncate">
             {targetAgentName} |{" "}
@@ -771,13 +805,10 @@ function executionModeLabel(task: PeerTask): string {
 
 function taskTargetAgentName(
   task: PeerTask,
-  sessions: readonly SessionMeta[],
+  _sessions: readonly SessionMeta[],
   agents: readonly Agent[],
 ): string {
-  const session = sessions.find(
-    (candidate) => candidate.id === task.targetSessionId,
-  );
-  const agentId = session?.profile?.agentId ?? task.targetAgentId;
+  const agentId = task.targetAgentId;
   return agents.find((agent) => agent.id === agentId)?.name ?? agentId;
 }
 

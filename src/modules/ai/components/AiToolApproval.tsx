@@ -15,6 +15,7 @@ import {
 } from "@/modules/ai/lib/permissions";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
+import { BUILTIN_AGENTS } from "@/modules/ai/lib/agents";
 import {
   ArrowDown01Icon,
   Cancel01Icon,
@@ -61,6 +62,10 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
   const label = meta?.label ?? toolName;
   const Icon = meta?.icon ?? ToolsIcon;
   const input = part.input as Record<string, unknown>;
+  const owner = useChatStore((s) => s.sessions.find((item) => item.id === sessionId));
+  const customAgents = useAgentsStore((s) => s.customAgents);
+  const ownerAgentId = owner?.run?.agentId ?? owner?.profile?.agentId;
+  const ownerAgent = [...BUILTIN_AGENTS, ...customAgents].find((agent) => agent.id === ownerAgentId)?.name ?? "Agent unavailable";
   const live = useChatStore((s) => s.live);
   const permissionContext: PermissionContext = {
     getCwd: () => {
@@ -110,8 +115,8 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
   };
 
   return (
-    <div className="clack-ai-block overflow-hidden shadow-sm">
-      <div className="flex items-center gap-2 border-b border-[color:var(--clack-border-subtle)] px-3 py-2">
+    <div className="clack-ai-block min-w-0 overflow-hidden shadow-sm [overflow-wrap:anywhere]" data-approval-session={sessionId}>
+      <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-[color:var(--clack-border-subtle)] px-3 py-2">
         <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-[var(--clack-warning)]" />
         <HugeiconsIcon
           icon={Icon}
@@ -119,7 +124,7 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
           strokeWidth={1.75}
           className="shrink-0 text-[var(--clack-accent)]"
         />
-        <span className="text-[12px] font-semibold text-[var(--clack-text-1)]">
+        <span className="min-w-0 text-[12px] font-semibold text-[var(--clack-text-1)]">
           {label}
         </span>
         <span className="ml-auto text-[10px] font-medium text-[var(--clack-warning)]">
@@ -128,10 +133,11 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
       </div>
 
       <div className="px-3 py-2.5">
+        <p className="mb-2 text-[10.5px] text-[var(--clack-text-3)]">{ownerAgent} / {owner?.run?.workspaceRoot ?? owner?.profile?.workspaceRoot ?? "Workspace unavailable"}</p>
         <PreviewBlock toolName={toolName} input={input} />
       </div>
 
-      <div className="flex items-center justify-end gap-1.5 border-t border-[color:var(--clack-border-subtle)] px-3 py-2">
+      <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-[color:var(--clack-border-subtle)] px-3 py-2">
         <Button
           size="sm"
           variant="destructive"

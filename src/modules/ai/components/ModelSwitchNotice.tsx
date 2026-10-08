@@ -35,7 +35,7 @@ export function ModelSwitchNotice({
   };
   const blocked = assessment.status === "blocked";
   return (
-    <div role="alert" className="space-y-3 p-3 text-xs outline-none">
+    <div role="alert" className="min-w-0 space-y-3 p-3 text-xs outline-none [overflow-wrap:anywhere]">
       <div>
         <p className="font-medium break-words">
           {blocked ? "Cannot switch model" : "Check before switching"}
@@ -47,16 +47,7 @@ export function ModelSwitchNotice({
           <li key={reason}>{reason}</li>
         ))}
       </ul>
-      {assessment.contextLimit !== null && (
-        <p className="text-muted-foreground tabular-nums">
-          Estimated text/tool context:{" "}
-          {assessment.estimatedTokens.toLocaleString()} tokens /{" "}
-          {assessment.contextLimit.toLocaleString()} ceiling
-          {assessment.workingBudget !== undefined &&
-            ` (${assessment.workingBudget.toLocaleString()} working)`}
-        </p>
-      )}
-      {assessment.details && (
+      {(assessment.details || assessment.contextLimit !== null) && (
         <details className="text-muted-foreground">
           {/* biome-ignore lint/a11y/noStaticElementInteractions: Native summary is interactive; Tab joins the notice focus loop. */}
           <summary
@@ -67,7 +58,11 @@ export function ModelSwitchNotice({
             Preparation details
           </summary>
           <ul className="mt-2 max-h-40 space-y-2 overflow-y-auto break-words [overflow-wrap:anywhere]">
-            {assessment.details.map((detail) => (
+            {assessment.contextLimit !== null && <li>
+              Estimated text/tool context: {assessment.estimatedTokens.toLocaleString()} tokens / {assessment.contextLimit.toLocaleString()} ceiling
+              {assessment.workingBudget !== undefined && ` (${assessment.workingBudget.toLocaleString()} working)`}
+            </li>}
+            {assessment.details?.map((detail) => (
               <li key={detail}>{detail}</li>
             ))}
           </ul>
@@ -80,6 +75,7 @@ export function ModelSwitchNotice({
           variant="outline"
           onClick={onBack}
           onKeyDown={onActionKeyDown}
+          className="h-auto min-h-8 max-w-full whitespace-normal"
         >
           Choose another model
         </Button>
@@ -89,6 +85,7 @@ export function ModelSwitchNotice({
             size="sm"
             onClick={onConfirm}
             onKeyDown={onActionKeyDown}
+            className="h-auto min-h-8 max-w-full whitespace-normal"
           >
             Optimize and switch
           </Button>
