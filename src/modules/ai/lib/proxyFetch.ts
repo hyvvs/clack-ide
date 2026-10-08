@@ -63,6 +63,7 @@ async function bodyToBytes(
 }
 
 export type ProxyOptions = {
+  onAdmission?: (signal: AbortSignal | null | undefined, observation: AdmissionObservation) => void;
   preflight?: ReturnType<typeof createRequestPreflight>;
   admission?: InferenceAdmission;
   allowPrivateNetwork?: boolean;
@@ -181,6 +182,7 @@ async function proxyFetchImpl(
             break;
           case "admission":
             attempt?.observe(event.observation);
+            opts.onAdmission?.(signal, event.observation);
             break;
           case "phase":
             attempt?.update(event.phase, nativeId);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { calibrationSchema, CALIBRATED_FIELDS } from "@/modules/ai/lib/calibrationSchema";
 
 export const SELF_HOSTED_SCHEMA_VERSION = 1;
 export const SELF_HOSTED_SETTINGS_KEY = "selfHostedInference";
@@ -94,6 +95,7 @@ export const evidenceSchema = z.object({
     "recommendation",
   ]),
   observedAt: timestamp.nullable(),
+  expiresAt: timestamp.optional(),
   confidence: z.enum(["unverified", "reported", "observed"]),
   scope: z.object({
     endpointId: id,
@@ -133,6 +135,7 @@ const profileSchema = z.object({
   evidence: z.array(evidenceSchema).max(64),
   recommendations: z.partialRecord(field, evidenceSchema),
   overrides: z.partialRecord(field, manual),
+  calibration: calibrationSchema.optional(),
   saved: z
     .object({ label: z.string().trim().min(1).max(1024).optional() })
     .optional(),
@@ -183,7 +186,11 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
     endpoints.push(endpoint);
   }
   for (const entry of envelope.data.profiles) {
-    const parsed = profileSchema.safeParse(entry);
+    const rawCalibration = z.object({ calibration: z.unknown().optional() }).safeParse(entry);
+    const invalidCalibration = rawCalibration.success && rawCalibration.data.calibration !== undefined &&
+      !calibrationSchema.safeParse(rawCalibration.data.calibration).success;
+    const parsed = profileSchema.safeParse(invalidCalibration
+      ? { ...(entry as Record<string, unknown>), calibration: undefined } : entry);
     if (!parsed.success) continue;
     const profile = parsed.data;
     if (
@@ -221,6 +228,9 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
           pin.evidence.source !== "user-assertion")
       )
         delete profile.overrides[name];
+      const calibrated = profile.recommendations[name];
+      if (invalidCalibration && calibrated?.expiresAt !== undefined && CALIBRATED_FIELDS.some(field => field === name))
+        profile.recommendations[name] = { ...calibrated, expiresAt: 0 };
     }
     profiles.push(profile);
   }
@@ -455,6 +465,7 @@ export function effectiveProfileValue(
   state: SelfHostedState,
   profileId: string,
   name: ProfileField,
+  now = Date.now(),
 ): {
   mode: "automatic" | "manual";
   value: ProfileEvidence["value"] | undefined;
@@ -467,7 +478,8 @@ export function effectiveProfileValue(
   const evidence = pin?.evidence ?? profile.recommendations[name];
   const stale =
     !!evidence &&
-    evidence.scope.configurationRevision !== endpoint.configurationRevision;
+    (evidence.scope.configurationRevision !== endpoint.configurationRevision ||
+      (evidence.expiresAt !== undefined && evidence.expiresAt <= now));
   return {
     mode: pin ? "manual" : "automatic",
     value: pin || !stale ? evidence?.value : undefined,

@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { updateSelfHostedProfiles } from "@/modules/settings/store";
 import { ProviderIcon } from "@/settings/components/ProviderIcon";
+import { CalibrationControls } from "@/settings/components/CalibrationControls";
 import {
   deleteSelfHostedEndpoint,
   type SelfHostedEndpoint,
@@ -463,6 +464,7 @@ function ServerEditor({
       ) : null}
       {current ? (
         <>
+          <CalibrationControls endpointId={current.id} disabled={changed || busy || saving} />
           <div className="server-heading">
             <h4>Models on {current.alias}</h4>
             <span>

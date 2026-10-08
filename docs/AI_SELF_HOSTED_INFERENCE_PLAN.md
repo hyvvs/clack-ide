@@ -1277,7 +1277,7 @@ This order does not authorize any pending implementation in this planning task.
 | 23 | F1 | Relevant schemas, compact prompt parity and cache awareness | Complete | `feat(ai): select relevant authorized tool schemas`; implementation record below |
 | 24 | D2 | Length continuation, stitching and tool repair safety | Complete | `feat(ai): continue truncated responses safely`; implementation record below |
 | 25 | D3 | Partial-stream/offline recovery | Complete | `fix(ai): recover interrupted streams safely`; implementation record below |
-| 26 | E2 | Passive calibration and optional bounded optimization | Pending | None |
+| 26 | E2 | Passive calibration and optional bounded optimization | Complete | Metadata-only scoped observations, conservative recommendations, explicit bounded optimization; see E2 record |
 | 27 | F2 | Watchdogs, compact health UX and advanced polish | Pending | None |
 | 28 | U1 | Integrated collaboration/context/tool UX polish | Pending | None |
 | 29 | G2 | Explicit optional network discovery | Pending | None |
@@ -4148,6 +4148,112 @@ from serial-only evidence, pins untouched, endpoint revisions isolated, errors
 reduce only automatic recommendations, cancellation honors GPU/time budget.
 Test outliers, cold loads, missing usage, reset and over-capacity manual values.
 Rollback freezes recommendations and disables sampling without losing pins.
+
+##### E2 implementation record (2026-10-08)
+
+- **Ownership and schema:** Optional `SelfHostedProfile.calibration` version 1
+  extends the existing A1 profile registry and native compare-and-swap store;
+  no new database, dependency, native command or telemetry. Samples belong to
+  the stable endpoint/model/deployment tuple and captured configuration
+  revision, not a display name. Each validated sample retains a unique ID,
+  timestamp, generation/optimization class, bounded outcome, cold/warm/unknown
+  status, queue delay, TTFT, latency, decoded-output duration/gaps, actual
+  reported input/output usage, confirmed concurrency and output kind. Prompt,
+  response, tool arguments/results, raw errors, credentials and headers are
+  never stored. Per-field tuning retains source sample IDs, revision and time;
+  recommendations use existing observed A1 evidence with explicit expiry.
+- **Passive collection:** Middleware inside existing B1 preflight observes
+  installed provider adapters and E1 native admission without extra model
+  calls, probes or repository reads. TTFT starts at the actual admitted native
+  attempt and ends at the first decoded output; queue delay stays separate.
+  Throughput requires valid reported token counts and measured generation
+  duration, not response length or estimated tokens. Missing usage stays null;
+  nonstreaming TTFT/speed stay unknown. Existing fresh A2 loaded evidence is
+  sampled at attempt start, never fabricated from generic network failures.
+  Tool output is classified separately and excluded from token speed. D3
+  deferred wire failures, missing finish, cancellation and provider error
+  parts cannot become successful performance evidence. Original signals,
+  transcript, retries, tools, effort and cancellation ownership stay intact.
+- **Bounds and persistence:** At most 100 samples/profile, seven days of
+  applicable evidence, 512 samples globally, 64 KiB UTF-8 calibration/profile,
+  and the existing 2 MiB native settings envelope. Pending metadata is capped
+  at 128 and batched after 16 samples or 500 ms. Duplicate, future, malformed,
+  deleted-profile and stale-revision samples are rejected. CAS merges current
+  state across windows without losing pins or unrelated edits; failed writes
+  preserve the previous valid state and cannot fail inference. Restart restores
+  committed metadata; old profiles without calibration remain valid. Invalid
+  optional calibration is isolated on read, its calibration recommendations
+  expire and valid pins remain visible. Raw corrupt/unsupported settings are
+  preserved and cannot be overwritten. Expired samples stop contributing;
+  retention also expires recommendations whose source samples were evicted.
+- **Deterministic recommendations:** Only `concurrentGenerations`,
+  `prefillTimeoutMs` and `idleTimeoutMs` are calibrated. Median evidence uses
+  the largest comparable cohort of at most 20 successful noncold requests,
+  separated by request class, measured concurrency and input-size band;
+  unknown usage has a separate latency-only cohort. Five fresh comparable
+  successes are required, with five actual timings for timing guidance.
+  Throughput requires at least five reported outputs of 32 tokens or more
+  over at least 250 ms. Ten-minute hysteresis prevents repeated retuning;
+  numeric timeout guidance moves at most 10% per interval and capacity at most
+  one slot, within 1-8. Serial-only success never increases capacity. Explicit
+  OOM can immediately reduce Automatic; repeated relevant concurrent overload
+  can reduce it after hysteresis. Auth, quota, cancellation, offline/loading
+  and malformed responses do not lower capacity. Native interval overlap,
+  sustained for at least 250 ms, supplies a conservative concurrency lower
+  bound; event-delivery order or configured capacity cannot imply headroom.
+  This disposable interval window is capped at 128 entries/one hour.
+- **Pins, staleness and runtime:** Manual > current recommendation > fallback;
+  calibration never edits pins and Reset removes only the selected manual
+  override. A pinned overload is warned about, never silently changed.
+  Material endpoint edits/credential changes follow A1 configuration revisions;
+  alias-only edits preserve evidence. Recommendation expiry is seven days.
+  E1 consumes capacity only at existing request boundaries; timeout fields
+  remain inspectable guidance, not changed native D1 deadlines. Performance
+  recommendation edits are excluded from B1 context identity so passive writes
+  do not interrupt captured runs. Actual context/transport/manual changes
+  still invalidate preparation. No context limit is raised or safety bypassed.
+- **Explicit Optimize:** Existing settings offer consent, progress and Stop.
+  One optimizer per endpoint/webview performs at most three sequential static
+  nonsecret requests, zero tools/retries/downloads and 60 seconds including
+  preparation. Actual B1 wire caps are 1,365 estimated input and 170 requested
+  output tokens/request: at most 4,095/510, within the 4,096/512 total ceilings.
+  Existing credential references, provider routing, E1 shared capacity and D1
+  cancellation remain authoritative. Saturation aborts before transmission;
+  cancellation/timeout/failure/stale configuration publishes no speculative
+  batch. Only three verified successful measurements commit atomically through
+  current profile CAS. Native cancellation acknowledgement precedes cleanup.
+  Three measurements may be insufficient for tuning: conservative settings
+  remain instead of a longer benchmark or an invented confidence claim.
+- **UI and verification:** Minimal Automatic/Recent usage/Manual states and
+  expandable evidence, observation window, confidence, medians, profile
+  revision, shared endpoint capacity and timeout guidance. Icon Save/Reset,
+  manual overload warnings and long-model/narrow-layout constraints work.
+  Optimization/error imports remain lazy and the existing eager-startup budget
+  passes. Final focused E2 **77 passed / 4 files** (43 algorithm/schema,
+  12 capture, 14 optimization, 8 installed-adapter/native-IPC/CAS integration).
+  Full frontend **2,035 passed / 163 files**. `npm.cmd run check-types`,
+  `npm.cmd run lint`, `npm.cmd test`, `npm.cmd run build` and `git diff --check`
+  passed. Lint remains **71 warnings / 2 infos / 0 errors**; four existing
+  ineffective dynamic-import warnings and the plugin timing advisory remain.
+  Windows Playwright checks at **1280/390/280 px** passed keyboard details,
+  pins/Reset, dismissed/accepted consent, progress, cancellation, completion
+  and long-model overflow. Browser optimization/IPC were mocked; integration
+  tests use installed SDK/adapters with intercepted native IPC. No Rust changes,
+  native GUI, Linux/macOS run, live provider/server/GPU calibration or CI run
+  claimed. Concrete eager-import and performance/B1 identity regressions were
+  corrected; final relevant and full checks were refreshed after the fixes.
+- **Limits, rollback and stop:** Unknown backend usage/thermal state stays
+  unknown. Cross-window load not observed by this webview cannot prove
+  concurrency; native E1 still governs all windows in this Clack instance.
+  Other applications/processes and uncooperative remote work are not globally
+  controlled. Requested output caps cannot force a remote backend to comply;
+  invalid/excess reported usage stops further optimization. Unflushed optional
+  metadata may be lost at shutdown without losing conversation state. No
+  analytics, permanent benchmark, ML tuning, automatic context adjustment or
+  phase-timeout execution changes. Rollback freezes Automatic recommendations
+  and disables sampling/Optimize while preserving pins and committed metadata.
+  **E2 is complete. Next in execution order: F2: Watchdogs and polished
+  controls. No F2 or subsequent checkpoint started. No push.**
 
 ### F1: Efficiency with policy parity
 

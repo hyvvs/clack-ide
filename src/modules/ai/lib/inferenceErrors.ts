@@ -7,6 +7,9 @@ type StreamValidation = {
   timer?: ReturnType<typeof setTimeout>;
 };
 const streamValidation = new WeakMap<AbortSignal, StreamValidation>();
+export function streamValidationFailure(signal: AbortSignal | undefined): unknown {
+  return signal ? streamValidation.get(signal)?.error : undefined;
+}
 export function beginStreamValidation(signal: AbortSignal) {
   const state: StreamValidation = { failure: new AbortController() };
   streamValidation.set(signal, state);

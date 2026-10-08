@@ -26,6 +26,7 @@ import {
   readSelfHostedState,
   type SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
+import { probeEvidenceIsFresh } from "@/modules/ai/lib/selfHostedProbe";
 import type { InferenceAdmission } from "@/modules/ai/lib/inferenceAdmission";
 import { endpointAllowsPrivate } from "@/modules/ai/lib/selfHostedModels";
 import {
@@ -77,6 +78,7 @@ export function createRequestPreflight(options: {
   admission?: InferenceAdmission;
   assertedContext?: number;
   reasoning?: EffortCapture;
+  optimization?: boolean;
   validateEvidence?: () => Promise<void>;
 }) {
   const state = options.state;
@@ -93,6 +95,7 @@ export function createRequestPreflight(options: {
   let snapshot: ProbeSnapshot | null = null;
   let refreshAttemptedAt = 0;
   const limits = (): BudgetLimits => ({
+    ...(options.optimization ? { inputCap: 1365, outputCap: 170 } : {}),
     ...(profile && state
       ? profileBudgetLimits(state, profile.id, snapshot)
       : options.local
@@ -160,6 +163,15 @@ export function createRequestPreflight(options: {
       );
   };
   return {
+    thermal(): "cold" | "warm" | "unknown" {
+      if (!endpoint || !profile) return "unknown";
+      const loaded = snapshot?.models.find(m => m.id === profile.transportModelId)?.evidence.find(e =>
+        e.metric === "probe.loaded" && typeof e.value === "boolean" &&
+        (profile.deploymentId === null || e.scope.deploymentId === profile.deploymentId) &&
+        probeEvidenceIsFresh(e, endpoint, snapshot),
+      );
+      return loaded?.value === true ? "warm" : loaded?.value === false ? "cold" : "unknown";
+    },
     wrap(model: LanguageModel): LanguageModel {
       if (typeof model === "string" || model.specificationVersion !== "v3")
         throw new ContextBudgetError(

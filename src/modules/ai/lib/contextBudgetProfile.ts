@@ -7,6 +7,7 @@ import {
   probeEvidenceIsFresh,
   type ProbeSnapshot,
 } from "@/modules/ai/lib/selfHostedProbe";
+import { CALIBRATED_FIELDS } from "@/modules/ai/lib/calibrationSchema";
 
 export function profileBudgetLimits(
   state: SelfHostedState,
@@ -79,6 +80,9 @@ export function budgetIdentity(
     profile?.transportModelId,
     profile?.deploymentId,
     profile?.overrides,
-    profile?.recommendations,
+    // Performance guidance does not change captured context or transport settings.
+    profile ? Object.fromEntries(Object.entries(profile.recommendations).filter(([field]) =>
+      !CALIBRATED_FIELDS.some(name => name === field),
+    )) : undefined,
   ]);
 }

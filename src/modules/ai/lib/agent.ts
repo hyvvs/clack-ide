@@ -54,6 +54,8 @@ import {
 } from "@/modules/ai/lib/inferenceAdmission";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { effectiveProfileValue } from "@/modules/ai/lib/selfHostedProfiles";
+import { createCalibrationCapture, type CalibrationCaptureOptions } from "@/modules/ai/lib/calibrationCapture";
+import { recordPassiveCalibration } from "@/modules/ai/lib/inferenceCalibration";
 import {
   captureEffort,
   effortCapability,
@@ -130,6 +132,7 @@ function ellipsize(s: string, max: number): string {
 }
 
 export type BuildModelOptions = {
+  calibration?: Pick<CalibrationCaptureOptions, "requestClass" | "record" | "onQueued">;
   reasoning?: EffortCapture;
   assertedContext?: number;
   admission?: InferenceAdmission;
@@ -170,7 +173,7 @@ export async function buildLanguageModel(
     "ollama",
     "openai-compatible",
   ].includes(provider);
-  const admission =
+  let admission =
     options.admission ??
     (localProvider
       ? endpointInferenceAdmission(
@@ -179,6 +182,11 @@ export async function buildLanguageModel(
           options.selfHostedInference,
         )
       : undefined);
+  const calibrationProfile = options.selfHostedInference?.profiles.find(p =>
+    p.endpointId === admission?.endpointId && p.transportModelId === resolvedModelId &&
+    (p.id === admission?.profileId || p.id === options.selfHostedInference?.endpoints.find(e => e.id === p.endpointId)?.legacy?.profileId),
+  );
+  if (admission && calibrationProfile) admission = { ...admission, profileId: calibrationProfile.id };
   const reasoning = options.reasoning
     ? structuredClone(options.reasoning)
     : undefined;
@@ -241,7 +249,7 @@ export async function buildLanguageModel(
     options.assertedContext,
     reasoning,
   ]);
-  const hit = options.inferenceScope ? undefined : modelCache.get(cacheKey);
+  const hit = options.inferenceScope || options.calibration ? undefined : modelCache.get(cacheKey);
   if (hit) return hit;
 
   let built: LanguageModel;
@@ -260,9 +268,21 @@ export async function buildLanguageModel(
     state: options.selfHostedInference,
     admission,
     assertedContext: options.assertedContext,
+    optimization: options.calibration?.requestClass === "optimization",
     validateEvidence: () =>
       options.inferenceScope?.validateEvidence?.() ?? Promise.resolve(),
   });
+  const calibrationEndpoint = options.selfHostedInference?.endpoints.find(e => e.id === calibrationProfile?.endpointId && e.deletedAt === undefined);
+  const calibration = calibrationProfile && calibrationEndpoint ? createCalibrationCapture({
+    profileId: calibrationProfile.id,
+    endpointId: calibrationEndpoint.id,
+    configurationRevision: calibrationEndpoint.configurationRevision,
+    thermal: preflight.thermal,
+    isCurrent: options.inferenceScope?.isCurrent,
+    record: options.calibration?.record ?? recordPassiveCalibration,
+    requestClass: options.calibration?.requestClass,
+    onQueued: options.calibration?.onQueued,
+  }) : undefined;
   const cloudFetch = verifiedProviderFetch(
     preflightFetch((input, init) => globalThis.fetch(input, init), preflight),
   );
@@ -272,6 +292,7 @@ export async function buildLanguageModel(
       scope: options.inferenceScope,
       admission,
       preflight,
+      onAdmission: calibration?.observe,
     }),
   );
   switch (provider) {
@@ -374,6 +395,7 @@ export async function buildLanguageModel(
                 scope: options.inferenceScope,
                 admission,
                 preflight,
+                onAdmission: calibration?.observe,
               }),
             )
           : scopedLocalFetch,
@@ -418,8 +440,8 @@ export async function buildLanguageModel(
       throw new Error(`Unsupported provider: ${_exhaustive as ProviderId}`);
     }
   }
-  built = preflight.wrap(built);
-  if (!options.inferenceScope) modelCache.set(cacheKey, built);
+  built = preflight.wrap(calibration ? calibration.wrap(built) : built);
+  if (!options.inferenceScope && !options.calibration) modelCache.set(cacheKey, built);
   return built;
 }
 
