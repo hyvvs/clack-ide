@@ -27,7 +27,8 @@ import type { ToolContext } from "@/modules/ai/tools/context";
 import { compactModelMessagesDetailed } from "./compact";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
-import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
+import { cancelSessionInference, type InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
+import { createOutputWatchdog, describeWatchdog, readWatchdogError, watchdogInstruction, type OutputWatchdog } from "@/modules/ai/lib/outputWatchdog";
 import { gateInferenceTools } from "@/modules/ai/lib/inferenceToolGate";
 import {
   verifiedProviderFetch,
@@ -38,6 +39,7 @@ import {
 import {
   prepareToolExposure,
   sameToolRevision,
+  toolRevisionIdentity,
 } from "@/modules/ai/lib/toolExposure";
 import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
 import { retrieveScopedEvidence } from "@/modules/ai/lib/scopedEvidence";
@@ -690,6 +692,7 @@ const EMPTY_USAGE: AgentUsage = {
 };
 
 export type RunAgentOptions = {
+  watchdog?: OutputWatchdog;
   onAnswerState?: (state: AnswerState) => void;
   reasoning?: EffortCapture;
   inputCapabilities?: ModelInputCapabilities;
@@ -850,6 +853,16 @@ export async function runAgentStream(opts: RunAgentOptions) {
     : undefined;
   const runCalls = opts.compaction;
   const lastMessage = opts.uiMessages[opts.uiMessages.length - 1];
+  const watchdog = opts.watchdog ?? createOutputWatchdog(watchdogInstruction(opts.uiMessages));
+  let answerState: AnswerState | undefined;
+  let watchdogStopped = false;
+  const stopWatchdog = (error: unknown) => {
+    const stop = readWatchdogError(error);
+    if (!stop || watchdogStopped || !inferenceScope.isCurrent()) return;
+    watchdogStopped = true;
+    if (answerState) opts.onAnswerState?.({ ...answerState, state: "incomplete", watchdog: stop, reason: describeWatchdog(stop.reason) });
+    void cancelSessionInference(inferenceScope.sessionId);
+  };
   const validateRecovery = async () => {
     const current = await buildTools(requestToolContext);
     await prepareToolExposure(
@@ -900,6 +913,8 @@ export async function runAgentStream(opts: RunAgentOptions) {
     },
   );
   const model = withAnswerContinuation(trackedModel, {
+    watchdog,
+    onWatchdog: stopWatchdog,
     recovery: opts.recovery,
     previous: lastMessage?.role === "assistant"
       ? readAnswer(lastMessage) ?? undefined
@@ -912,7 +927,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     modelId,
     signal: opts.abortSignal,
     isCurrent: inferenceScope.isCurrent,
-    onState: opts.onAnswerState,
+    onState: state => { answerState = state; opts.onAnswerState?.(state); },
     maxContinuations: continuationSetting === false ? 0
       : typeof continuationCount === "number"
         ? Math.max(0, Math.min(3, continuationCount)) : 3,
@@ -1080,6 +1095,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
         : undefined,
     onAbort: () => compactor?.dispose(),
     prepareStep: async ({ messages: stepMessages, stepNumber }) => {
+      if (watchdog.error) throw watchdog.error;
       const currentTools =
         opts.toolContext.isPeerReplyOnly?.() ||
         opts.inputCapabilities?.tools === "unsupported"
@@ -1165,8 +1181,13 @@ export async function runAgentStream(opts: RunAgentOptions) {
           lastCachedTokens: stepCached,
         });
       }
-      const observation = runStepObservation(step);
-      if (observation) opts.onRunStep?.(observation);
+      for (const call of step.toolCalls ?? []) {
+        const observation = runStepObservation({ toolResults: step.toolResults, toolCalls: [call] });
+        if (!observation) continue;
+        opts.onRunStep?.(observation);
+        const stop = watchdog.tool(observation, permittedTools[call.toolName] ? toolRevisionIdentity(permittedTools[call.toolName]) : null);
+        if (stop) { stopWatchdog(stop); throw stop; }
+      }
     },
     onFinish: (result) => {
       compactor?.dispose();

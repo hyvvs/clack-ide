@@ -286,7 +286,7 @@ describe("confirmed finish reasons and bounded continuation", () => {
   });
   it("caps repeated length stops at three, preserving completed segments", async () => {
     const f = fixture(
-      Array.from({ length: 5 }, () => [...text(), finish("length")]),
+      Array.from({ length: 5 }, (_, i) => [...text(`A meaningful new answer segment with progress ${i}.`), finish("length")]),
     );
     await collect(f);
     expect(f.doStream).toHaveBeenCalledTimes(4);

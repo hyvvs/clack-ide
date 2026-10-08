@@ -33,6 +33,9 @@ export function sameToolRevision(a: object, b: object): boolean {
     JSON.stringify(identities.get(a)) === JSON.stringify(identities.get(b))
   );
 }
+export function toolRevisionIdentity(tool: object): unknown {
+  return identities.get(tool) ?? null;
+}
 export function clearExposureCache() {
   cache.clear();
 }

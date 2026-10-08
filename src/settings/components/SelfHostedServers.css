@@ -31,3 +31,9 @@
 .server-calibration select { min-width: 0; max-width: 100%; width: 100%; height: 32px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); padding: 0 8px; }
 .server-calibration dd { min-width: 0; overflow-wrap: anywhere; }
 .server-calibration progress { width: 100%; height: 6px; accent-color: var(--primary); }
+.server-details dd { min-width: 0; overflow-wrap: anywhere; }
+.server-advanced-field { display: grid; grid-template-columns: minmax(0, 1fr) 32px 32px; gap: 8px; margin-top: 10px; align-items: center; }
+.server-advanced-field label { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 3px; }
+.server-advanced-field small, .server-health small { color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
+.server-advanced-field input { min-width: 0; width: 100%; }
+.server-health { display: flex; flex-direction: column; gap: 3px; font-size: 12px; overflow-wrap: anywhere; }

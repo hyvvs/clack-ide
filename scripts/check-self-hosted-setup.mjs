@@ -42,6 +42,7 @@ const mocks = new Map([
   `],
   ["src/modules/ai/lib/composer", `export const ACCEPTED_FILES = ""; export const useComposer = () => ({});`],
   ["src/modules/ai/hooks/useModelSelectionLock", `export function useModelSelectionLock() { return false; }`],
+  ["src/modules/ai/store/reasoningEffort", `export function sessionEffort() { throw new Error("No active conversation in setup fixture"); } export async function setSessionEffort() { throw new Error("No active conversation in setup fixture"); }`],
   ["src/modules/ai/hooks/useModelSwitch", `
     export function useModelSwitch() { return { reset: () => {}, request: async id => { window.chatStore.setState({ selectedModelId:id }); return true; }, confirm: () => true, checking:false, review:null, failure:null }; }
   `],
@@ -75,7 +76,7 @@ const entry = `
   root.render(React.createElement("main", {style:{maxWidth:700,padding:16,margin:"auto"}}, React.createElement(SelfHostedServers), React.createElement("div", {style:{display:"flex",justifyContent:"end",marginTop:20}}, React.createElement(ModelDropdown))));
 `;
 const server = await createServer({
-  root, configFile: false, logLevel: "warn", optimizeDeps: { entries: [] },
+  root, configFile: false, logLevel: "warn", optimizeDeps: { entries: [], noDiscovery: true, include: ["react", "react-dom/client", "react/jsx-runtime", "zustand", "zod", "@hugeicons/react", "@hugeicons/core-free-icons", "class-variance-authority", "radix-ui", "clsx", "tailwind-merge"] },
   resolve: { alias: { "@": path.join(root, "src") } },
   plugins: [{ name: "isolated-self-hosted-fixture", enforce: "pre",
     resolveId(source, importer) {
@@ -90,7 +91,7 @@ const server = await createServer({
       res.end(await vite.transformIndexHtml("/self-hosted-fixture", `<!doctype html><html class="dark"><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:var(--background);color:var(--foreground)"><div id="root"></div><script type="module" src="/self-hosted-entry.jsx"></script></body></html>`));
     }); },
   }, react(), tailwindcss()],
-  server: { host: "127.0.0.1", port: 0 },
+  server: { host: "127.0.0.1", port: 0, watch: null, hmr: false },
 });
 let browser;
 try {
@@ -107,7 +108,7 @@ try {
   await page.getByLabel("Credential (optional)", { exact: true }).fill("fixture-secret");
   await page.getByLabel("Allow localhost").check();
   await page.getByRole("button", { name: "Connect", exact: true }).click();
-  await page.getByText("Connected", { exact: true }).waitFor();
+  await page.locator(".server-status").getByText("Ready", { exact: true }).waitFor();
   assert.equal(await page.locator(".server-model").count(), 60);
   assert.equal(await page.getByLabel("Replace credential (optional)").inputValue(), "");
   assert.equal(await page.evaluate(() => JSON.stringify(window.prefs.getState()).includes("fixture-secret")), false);
@@ -125,12 +126,12 @@ try {
   await page.getByRole("textbox", { name: "Search server models" }).fill("");
   await page.evaluate(() => { window.delay = 500; });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await page.getByText("Updating", { exact: true }).waitFor();
+  await page.locator(".server-status").getByText("Checking", { exact: true }).waitFor();
   assert.equal(await page.locator(".server-model").count(), 60);
-  await page.getByText("Connected", { exact: true }).waitFor();
+  await page.locator(".server-status").getByText("Ready", { exact: true }).waitFor();
   await page.evaluate(() => { window.fail = "unreachable"; window.delay = 5; });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await page.getByText("Cached / refresh failed", { exact: true }).waitFor();
+  await page.locator(".server-status").getByText("Offline", { exact: true }).waitFor();
   assert.equal(await page.locator(".server-model").count(), 60);
   await page.getByLabel("Manual model ID", { exact: true }).fill("manual/model");
   await page.getByRole("button", { name: "Save models", exact: true }).click();

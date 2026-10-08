@@ -1278,7 +1278,7 @@ This order does not authorize any pending implementation in this planning task.
 | 24 | D2 | Length continuation, stitching and tool repair safety | Complete | `feat(ai): continue truncated responses safely`; implementation record below |
 | 25 | D3 | Partial-stream/offline recovery | Complete | `fix(ai): recover interrupted streams safely`; implementation record below |
 | 26 | E2 | Passive calibration and optional bounded optimization | Complete | Metadata-only scoped observations, conservative recommendations, explicit bounded optimization; see E2 record |
-| 27 | F2 | Watchdogs, compact health UX and advanced polish | Pending | None |
+| 27 | F2 | Watchdogs, compact health UX and advanced polish | Complete | `feat(ai): guard pathological model output`; implementation record below |
 | 28 | U1 | Integrated collaboration/context/tool UX polish | Pending | None |
 | 29 | G2 | Explicit optional network discovery | Pending | None |
 | 30 | G3 | Consent-bound fallback routing | Pending | None |
@@ -4366,6 +4366,107 @@ keyboard, narrow panes, real loading/offline states, pins and reset are usable.
 Test snapshots of effective values behaviorally, not UI snapshot spam. Native
 visual smoke must preserve effects/dispatcher/input focus. Rollback disables
 new detectors/UI without clearing profiles or altering existing run ceilings.
+
+#### F2 implementation record (2026-10-08)
+
+- **Baseline/scope:** Clean `main` at `87e3aad`; no checkpoint restarted.
+  Frontend-only changes, no new dependency, native command, permission, model
+  selection/fallback policy, transcript store or tool execution ledger. Unrelated
+  delegation files, safety stashes and `autonomous_tracker/` remain untouched.
+- **Bounded deterministic detectors:** `outputWatchdog.ts` owns one disposable
+  detector per captured conversation run, shared across SDK steps, approved
+  batches and D2/D3 continuation/recovery. Text and returned reasoning use
+  separate 16,384-character rolling windows. Consecutive whitespace stops at
+  8,192 characters, including spaces/newlines/tabs; scanning a received delta
+  examines only its last 16,384 characters. Prose is checked after at least
+  512 additional characters: eight exact trailing paragraphs of at least
+  48 characters, or an exact 1-8-word periodic tail repeated at least 32 times
+  over at least 1,024 characters, using at most 512 words. No semantic scorer,
+  model call, embedding, global output index or transcript scan per chunk.
+- **False positives:** Code/JSON/CSV/tables/list/separator/numeric structured
+  output is conservatively exempt from prose matching. CSV protection tolerates
+  partial first/last lines in a rolling window; commas alone do not exempt
+  repeated prose paragraphs. Explicit repetition requests in the latest user's
+  bounded 4,096-character/64-part instruction exempt prose, successful-tool and
+  continuation heuristics, not whitespace or failed-tool safety. Common negated
+  repetition requests do not grant this exemption. Changing prose and long
+  continuations with shared endings remain valid. Tests include large chunks,
+  arbitrary stream fragmentation and the legitimate-repetition corpus.
+- **Tool/continuation identity:** Completed SDK call/result pairs reuse
+  `runStepObservation`, existing failure tracking and F1 tool revision identity.
+  Eight successive identical successful tool/name/arguments/result/revision
+  observations stop; three identical failures retain the prior safety threshold.
+  Object keys are canonicalized, array order preserved. Complete comparisons
+  are bounded to 16,384 UTF-8 bytes, 1,024 nodes and depth 16; oversized, cyclic
+  or incomplete values reset comparison rather than create truncated matches.
+  No tool effects execute again. Two successive continuation/recovery segments
+  with fewer than 32 trimmed characters, or the same exact unstructured suffix
+  of at least 32 characters, stop. Only entire segments of at most 512 characters
+  qualify: long useful output is not treated as equivalent from its suffix alone.
+  Existing D2 token/time/continuation/repair and D3 retry ceilings are unchanged.
+- **Lifecycle/persistence:** Accepted triggering deltas are delivered before
+  stopping; completed calls/results, activity receipts and original messages
+  remain intact. Existing D1 inference ownership cancels admitted requests; the
+  latched detector refuses another step/request in that run. Version-1 answer
+  metadata gains an optional validated `{version, reason, observedAt}` watchdog
+  record and `watchdog` segment finish for an interrupted segment. Reasons are
+  `excessive_whitespace`, `repeated_output`, `repeated_tool_call` and
+  `continuation_loop`; normalization is terminal/nonretryable. The incomplete
+  transcript notice explains the stop. Existing session serialization preserves
+  output/reason after reopen/restart; D3 explicit recovery and automatic sending
+  cannot replay a watchdog-stopped run. A new user instruction starts a new run.
+  Old answer records without this optional field remain valid.
+- **Health/Advanced:** Existing self-hosted settings now show qualified Ready,
+  Checking, Loading, Offline, Limited, Authentication required, Rate limited,
+  Unverified and Calibrating states from owned current-configuration probe/E2
+  evidence, never a synthetic request. Recent inference metadata expires after
+  30 seconds; existing inventory/instance TTLs still govern probe evidence. A
+  reported unloaded model is Limited, not fabricated Loading; retained inventory
+  cannot hide offline/auth errors. Ready from an endpoint check explicitly does
+  not prove model readiness. One-shot expiry timers, not background polling,
+  update visible state. Advanced exposes actual B1 context/output/reserve,
+  endpoint/model/deployment and capability evidence with A1 Manual, Automatic /
+  Recommended and Automatic / Unknown fields. Four existing context/output pins
+  save/reset through existing guarded profile persistence. Reset affects one
+  field only, preserving other pins/profiles/calibration history. Invalid pins
+  remain resettable; B1 still blocks invalid requests. E2 capacity/evidence and
+  guidance-only timeout controls are unchanged; reasoning effort stays in the
+  existing conversation-owned R2 control. Escape closes Advanced/restores summary
+  focus or clears model search; Enter/Space and narrow layouts work.
+- **Verification:** Final focused watchdog/health/continuation/recovery/chat/
+  calibration/tool-exposure regression group: **220 passed / 10 files**. Added
+  **65 F2 tests**: 36 detector/fingerprint, nine installed-adapter/stream/lifecycle,
+  three actual agent/tool/approval, 15 health, one transcript-rendering and one
+  persisted chat/restart/no-replay integration. OpenAI, compatible, Anthropic
+  and Google fixtures use installed adapters with intercepted streams, not live
+  providers. Full frontend: **2,100 passed / 167 files**. `npm.cmd run check-types`,
+  `npm.cmd run lint`, `npm.cmd test`, `npm.cmd run build` and `git diff --check`
+  passed. Lint: unchanged **71 warnings / 2 infos / 0 errors**; four existing
+  ineffective dynamic-import warnings and the build plugin-timing advisory
+  remain. Windows Playwright fixture checks passed at **1280/390/280 px**:
+  health states, explicit Optimize consent/Stop, effective manual values, scoped
+  Reset, invalid pin recovery, long identities, search, keyboard/focus and no
+  horizontal overflow. Screenshots were inspected. Browser settings, credentials,
+  optimization and native IPC were isolated mocks. Existing self-hosted setup/
+  picker browser regression also passed: 1,500-model bounded search, credential/
+  private-network flows, retained offline inventory, manual fallback, keyboard
+  selection and 1100/390/320/640 px layouts. Browser fixtures prebundle dependencies
+  and disable live reload to avoid Vite's late-optimization navigation races;
+  the setup fixture isolates unused conversation-effort persistence. No native Tauri GUI,
+  live-provider/server, Linux/macOS or CI run claimed; no Rust changes or Rust
+  gate rerun. Native effects/Dispatcher/input smoke remains integrated acceptance
+  work for U1/Z, not evidence supplied by these browser tests.
+- **Limits/rollback/stop:** Heuristics intentionally favor false negatives for
+  structured/oversized/ambiguous material; mixed useful/whitespace content outside
+  a retained chunk suffix is not exhaustively scanned. Successful repeated
+  polling may stop at eight identical observations unless explicitly requested;
+  these are output guards, not a proof of backend progress. Durable reasons do
+  not persist private rolling windows or resume generation. No automatic health
+  checks, routing, optimization, new reasoning UI, security bypass or retry
+  controller. Rollback removes detector/UI integration while keeping saved
+  profiles, transcript metadata and existing hard ceilings. **F2 is complete.
+  Next: U1: Integrated collaboration/context/tool UX polish. No subsequent
+  checkpoint started. No push.**
 
 ### G1: Relevant history retrieval
 

@@ -16,13 +16,18 @@ import {
   resetProfileOverride,
   setProfileOverride,
 } from "@/modules/ai/lib/selfHostedProfiles";
+import { selfHostedHealth, HEALTH_RECENCY_MS } from "@/modules/ai/lib/selfHostedHealth";
+import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
+import { ProfileAdvancedControls } from "@/settings/components/ProfileAdvancedControls";
 
 export function CalibrationControls({
   endpointId,
   disabled,
+  snapshot,
 }: {
   endpointId: string;
   disabled?: boolean;
+  snapshot?: ProbeSnapshot | null;
 }) {
   const manualId = useId();
   const state = usePreferencesStore((s) => s.selfHostedInference);
@@ -39,6 +44,17 @@ export function CalibrationControls({
   const [status, setStatus] = useState("");
   const [manual, setManual] = useState<string | null>(null);
   const controller = useRef<AbortController | null>(null);
+  const [clock, setClock] = useState(Date.now());
+  useEffect(() => {
+    const now = Math.max(clock, Date.now());
+    const expiries = state.profiles.filter(p => p.endpointId === endpointId).flatMap(p => [
+      ...(p.calibration?.samples ?? []).map(s => s.observedAt + HEALTH_RECENCY_MS),
+      ...Object.values(p.recommendations).flatMap(e => e?.expiresAt === undefined ? [] : [e.expiresAt]),
+    ]).filter(time => time > now);
+    if (!expiries.length) return;
+    const timer = setTimeout(() => setClock(Date.now()), Math.max(1, Math.min(2_147_483_647, Math.min(...expiries) - now + 1)));
+    return () => clearTimeout(timer);
+  }, [state, clock, endpointId]);
   useEffect(
     () => () => {
       controller.current?.abort();
@@ -48,6 +64,7 @@ export function CalibrationControls({
   const profile = profiles.find((p) => p.id === selected) ?? profiles[0];
   if (!endpoint || !profile) return null;
   const summary = calibrationSummary(profile, endpoint.configurationRevision);
+  const health = selfHostedHealth({ endpoint, profile, snapshot, calibrating: progress !== null });
   const capacity = effectiveProfileValue(
     state,
     profile.id,
@@ -171,6 +188,7 @@ export function CalibrationControls({
           ))}
         </select>
       </label>
+      <p className="server-health" role="status" title={health.detail}>{health.label}<small>{health.detail}</small></p>
       <div className="server-heading">
         <span>
           Concurrent generations: {String(capacity.value ?? 1)} ({capacity.mode}
@@ -300,6 +318,7 @@ export function CalibrationControls({
           </Button>
         </div>
       </details>
+      <ProfileAdvancedControls key={profile.id} profileId={profile.id} snapshot={snapshot} disabled={disabled || progress !== null} />
       {status ? (
         <p className="server-warning" role="status">
           {status}

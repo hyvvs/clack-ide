@@ -211,6 +211,23 @@ async function interrupt() {
   return chat;
 }
 describe("D3 actual Chat, transport, run store and persistence boundary", () => {
+  it("F2 persists the stopped run and partial output across restart without recovery or tool replay", async () => {
+    plans = [[...text(partial + " ".repeat(8200)), finish]];
+    const chat = getOrCreateChat(id);
+    await chat.sendMessage({text: "Task"});
+    expect(run().state).toBe("failed");
+    expect(run().error).toMatchObject({kind: "watchdog", errorCode: "excessive_whitespace", retryable: false});
+    expect(readAnswer(chat.messages[chat.messages.length - 1])?.watchdog?.reason).toBe("excessive_whitespace");
+    await awaitSessionWrites(id);
+    const loaded = await loadMessages(id);
+    expect(loaded).toEqual(chat.messages);
+    expect(shouldAutomaticallySendSession(id, loaded ?? [])).toBe(false);
+    chats.clear(); seedMessages.set(id, loaded ?? []);
+    expect(await retryInterruptedRun(id)).toBe(false);
+    expect(getOrCreateChat(id).messages).toEqual(loaded);
+    expect(calls).toBe(1); expect(history).not.toHaveBeenCalled();
+    expect(recoverInterruptedSessions(useChatStore.getState().sessions).sessions).toEqual(useChatStore.getState().sessions);
+  });
   it("user recovery retains transcript identity, captured destination/settings and budget, then projects a single answer", async () => {
     const chat = await interrupt();
     const original = structuredClone(chat.messages);

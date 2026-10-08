@@ -15,6 +15,8 @@ export function recoveryAvailability(
   });
   if (!run || (run.state !== "failed" && run.state !== "interrupted"))
     return denied("This run is not interrupted.");
+  if (run.error?.kind === "watchdog" || messages.slice(-1).some(m => readAnswer(m)?.watchdog))
+    return denied("A watchdog stopped this run. Send a new instruction; partial output and completed effects are preserved.");
   if ((run.recoveryAttempts ?? 0) >= 1)
     return denied(
       "Explicit recovery exhausted. Send a new instruction without replaying prior effects.",

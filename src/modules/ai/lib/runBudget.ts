@@ -184,9 +184,10 @@ export function createRunLoopTracker(): RunLoopTracker {
 export function observeRunStep(
   current: RunLoopTracker,
   observation: RunStepObservation,
+  boundedFingerprint?: string,
 ): RunLoopTracker {
   if (!observation.failed) return createRunLoopTracker();
-  const fingerprint = stableFingerprint({
+  const fingerprint = boundedFingerprint ?? stableFingerprint({
     toolName: observation.toolName,
     input: observation.input,
     output: observation.output,

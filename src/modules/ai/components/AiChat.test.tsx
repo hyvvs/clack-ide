@@ -12,6 +12,22 @@ import { createRunBudget } from "../lib/runBudget";
 import { normalizeAiError, normalizeAiStreamPartError } from "../lib/errors";
 
 const onApproval = () => {};
+it("F2 renders preserved output with a structured watchdog explanation", () => {
+  const html = renderMessage({
+    ...assistantMessage("Accepted answer remains visible"),
+    metadata: { clackAnswer: {
+      version: 1, runId: "chat:1", state: "incomplete",
+      reason: "Stopped repeated output without progress. The partial answer is preserved.",
+      watchdog: { version: 1, reason: "repeated_output", observedAt: 3 },
+      continuations: 0, repairs: 0,
+      segments: [{ id: "first", previous: null, provider: "fixture", model: "model", startedAt: 1, endedAt: 3, finish: "watchdog", inputTokens: 0, outputTokens: 0, pending: [] }],
+    } },
+  });
+  expect(html).toContain("Accepted answer remains visible");
+  expect(html).toContain("Output watchdog:");
+  expect(html).toContain("Stopped repeated output without progress.");
+  expect(html).not.toContain("Incomplete answer:");
+});
 it("D2 renders adjacent confirmed continuation segments once and exposes incomplete provenance", () => {
   const message: UIMessage = { id: "segmented", role: "assistant", parts: [
     { type: "text", text: "Hello ", providerMetadata: { clackAnswer: { segmentId: "first" } } },

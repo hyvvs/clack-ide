@@ -21,6 +21,7 @@ import {
   deferStreamFailure,
 } from "@/modules/ai/lib/inferenceErrors";
 import { sanitizeAiErrorText } from "@/modules/ai/lib/errors";
+import { createOutputWatchdog, readWatchdogError, describeWatchdog, watchdogSchema, watchdogInstruction, type OutputWatchdog } from "@/modules/ai/lib/outputWatchdog";
 
 export const ANSWER_LIMITS = {
   continuations: 3,
@@ -39,6 +40,7 @@ export type AnswerFinish =
   | "policy"
   | "cancelled"
   | "interrupted"
+  | "watchdog"
   | "error"
   | "unknown";
 export function normalizeAnswerFinish(
@@ -73,6 +75,7 @@ const finishSchema = z.enum([
   "policy",
   "cancelled",
   "interrupted",
+  "watchdog",
   "error",
   "unknown",
 ]);
@@ -86,6 +89,7 @@ export const answerSchema = z.object({
   runId: z.string().max(1024),
   state: z.enum(["streaming", "preparing", "complete", "incomplete"]),
   reason: z.string().max(256).optional(),
+  watchdog: watchdogSchema.optional(),
   continuations: z.number().int().min(0).max(3),
   repairs: z.number().int().min(0).max(1),
   continuationTimeMs: z.number().min(0).max(120_000).optional(),
@@ -455,6 +459,8 @@ export function withAnswerContinuation(
     previous?: AnswerState;
     knownToolIds?: readonly string[];
     recovery?: boolean;
+    watchdog?: OutputWatchdog;
+    onWatchdog?: (error: unknown) => void;
   },
 ): LanguageModel {
   if (typeof model === "string" || model.specificationVersion !== "v3")
@@ -492,6 +498,8 @@ export function withAnswerContinuation(
       specificationVersion: "v3",
       async wrapStream({ params }) {
         check();
+        const watchdog = options.watchdog ?? createOutputWatchdog(watchdogInstruction(params.prompt));
+        if (watchdog.error) throw watchdog.error;
         const deadline = new AbortController();
         let timer: ReturnType<typeof setTimeout> | undefined;
         const signal = AbortSignal.any([
@@ -586,6 +594,7 @@ export function withAnswerContinuation(
                   generatedCharacters = 0,
                   finish: FinishPart | undefined,
                   failed = false;
+                const continuing = state.segments[state.segments.length - 2]?.finish === "length" || segment.recovery === true;
                 const calls = new Map<
                   string,
                   {
@@ -766,6 +775,10 @@ export function withAnswerContinuation(
                     state.segments.length === 1
                   )
                     controller.enqueue(part);
+                  if (part.type === "text-delta" || part.type === "reasoning-delta") {
+                    const stop = watchdog.observe(part.delta, part.type === "text-delta" ? "text" : "reasoning");
+                    if (stop) throw stop;
+                  }
                   if (
                     [...calls.values()].reduce(
                       (n, c) => n + c.input.length,
@@ -804,6 +817,8 @@ export function withAnswerContinuation(
                   ),
                 );
                 generated += segment.budgetTokens;
+                const loop = !failed && ["stop", "length", "tool-calls"].includes(segment.finish) ? watchdog.segment(text, continuing) : null;
+                if (loop) throw loop;
                 if (finish) usage = sumUsage(usage, finish.usage);
                 const toolComplete =
                   (segment.finish === "stop" ||
@@ -990,8 +1005,10 @@ export function withAnswerContinuation(
             } catch (error) {
               recordTime();
               state.state = "incomplete";
+              const watchdogStop = readWatchdogError(error);
+              if (watchdogStop) state.watchdog = watchdogStop;
               state.reason =
-                options.signal?.aborted || !options.isCurrent()
+                watchdogStop ? describeWatchdog(watchdogStop.reason) : options.signal?.aborted || !options.isCurrent()
                   ? "Continuation cancelled."
                   : error instanceof ContextBudgetError
                     ? "Continuation stopped at the context limit."
@@ -1002,7 +1019,7 @@ export function withAnswerContinuation(
               if (last && !last.endedAt) last.pending = interruptedCalls;
               if (last && !last.endedAt) {
                 last.endedAt = Date.now();
-                last.finish = options.signal?.aborted
+                last.finish = watchdogStop ? "watchdog" : options.signal?.aborted
                   ? "cancelled"
                   : "interrupted";
               }
@@ -1016,6 +1033,7 @@ export function withAnswerContinuation(
                     usage,
                   });
               }
+              if (watchdogStop) options.onWatchdog?.(error);
             } finally {
               clearTimeout(timer);
               await reader?.cancel().catch(() => {});

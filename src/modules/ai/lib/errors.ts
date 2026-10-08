@@ -5,6 +5,7 @@ import {
   RetryError,
 } from "ai";
 import { INFERENCE_ERRORS } from "@/modules/ai/lib/inferenceErrors";
+import { describeWatchdog, readWatchdogError } from "@/modules/ai/lib/outputWatchdog";
 
 export type AiErrorKind =
   | "authentication"
@@ -21,6 +22,7 @@ export type AiErrorKind =
   | "tool"
   | "cancelled"
   | "interrupted"
+  | "watchdog"
   | "internal"
   | "unknown";
 
@@ -142,6 +144,11 @@ export function normalizeAiError(
   context: AiErrorContext = {},
 ): NormalizedAiError {
   const chain = collectErrorChain(error);
+  const watchdog = chain.map(node => readWatchdogError(node.value)).find(Boolean);
+  if (watchdog) return {
+    kind: "watchdog", disposition: "terminal", title: "Output watchdog",
+    message: describeWatchdog(watchdog.reason), errorCode: watchdog.reason, retryable: false,
+  };
   const retryAttempts = chain.some(
     (node) => node.record?.providerAttempts === 2,
   )
@@ -829,6 +836,8 @@ function messageForError(input: {
         "The AI response was interrupted. Partial output was preserved.",
         detail,
       );
+    case "watchdog":
+      return "A watchdog stopped this run. Partial output and completed effects are preserved.";
     case "internal":
       return appendDetail("Clack could not process the AI response.", detail);
     case "unknown":
@@ -869,6 +878,8 @@ function titleForKind(kind: AiErrorKind, toolName?: string): string {
       return "Cancelled";
     case "interrupted":
       return "Interrupted";
+    case "watchdog":
+      return "Output watchdog";
     case "internal":
       return "Clack error";
     case "unknown":

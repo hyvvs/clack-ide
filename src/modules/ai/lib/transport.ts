@@ -24,6 +24,7 @@ import {
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
+import { createOutputWatchdog, watchdogInstruction, type OutputWatchdog } from "@/modules/ai/lib/outputWatchdog";
 import { answerMetadataStream } from "@/modules/ai/lib/answerContinuation";
 import type {
   ConversationCompactionContext,
@@ -125,6 +126,7 @@ type SendOptions = {
 };
 
 export function createContextAwareTransport(deps: Deps) {
+  let watchdogOwner: { runId: string; detector: OutputWatchdog } | undefined;
   let captured:
     | {
         runId: string;
@@ -168,6 +170,11 @@ export function createContextAwareTransport(deps: Deps) {
       (options.body as { clackRecovery?: boolean } | undefined)
         ?.clackRecovery === true;
     const scope = deps.getInferenceScope?.();
+    if (!scope || watchdogOwner?.runId !== scope.runId) watchdogOwner = {
+      runId: scope?.runId ?? crypto.randomUUID(),
+      detector: createOutputWatchdog(watchdogInstruction(options.messages)),
+    };
+    const watchdog = watchdogOwner.detector;
     if (recovery && (!captured || captured.runId !== scope?.runId))
       throw new Error(
         "Captured request settings are unavailable after restart. Send a new instruction; the partial answer remains preserved.",
@@ -242,6 +249,7 @@ export function createContextAwareTransport(deps: Deps) {
             });
       if (!recovery && scope) captured = { runId: scope.runId, configuration };
       const result = await runAgentStream({
+        watchdog,
         onAnswerState,
         reasoning,
         inputCapabilities: capabilities,

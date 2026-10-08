@@ -13,6 +13,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { updateSelfHostedProfiles } from "@/modules/settings/store";
 import { ProviderIcon } from "@/settings/components/ProviderIcon";
 import { CalibrationControls } from "@/settings/components/CalibrationControls";
+import { selfHostedHealth } from "@/modules/ai/lib/selfHostedHealth";
 import {
   deleteSelfHostedEndpoint,
   type SelfHostedEndpoint,
@@ -425,11 +426,7 @@ function ServerEditor({
         </fieldset>
         <div className="server-heading">
           <span className="server-status" role="status">
-            {serverConnectionStatus(
-              visibleSnapshot,
-              busy,
-              !!current?.credentialRef,
-            )}
+            {current ? selfHostedHealth({ endpoint: current, snapshot: visibleSnapshot, checking: busy }).label : serverConnectionStatus(visibleSnapshot, busy)}
           </span>
           <Button
             type="submit"
@@ -464,7 +461,7 @@ function ServerEditor({
       ) : null}
       {current ? (
         <>
-          <CalibrationControls endpointId={current.id} disabled={changed || busy || saving} />
+          <CalibrationControls endpointId={current.id} disabled={changed || busy || saving} snapshot={visibleSnapshot} />
           <div className="server-heading">
             <h4>Models on {current.alias}</h4>
             <span>
@@ -479,6 +476,7 @@ function ServerEditor({
             placeholder="Search models..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={e => { if (e.key === "Escape") { e.preventDefault(); setSearch(""); } }}
           />
           <section
             className="server-models"

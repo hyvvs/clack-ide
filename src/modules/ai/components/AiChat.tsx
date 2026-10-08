@@ -700,7 +700,7 @@ export const RenderedMessage = memo(function RenderedMessage({
           })}
           {answer && (answer.state === "incomplete" || (!streaming && answer.state !== "complete")) ? (
             <p className="break-words text-xs text-[var(--clack-text-3)]">
-              Incomplete answer: {answer.reason ?? "Generation was interrupted; not automatically resumed."}
+              {answer.watchdog ? "Output watchdog: " : "Incomplete answer: "}{answer.reason ?? "Generation was interrupted; not automatically resumed."}
             </p>
           ) : null}
           {answer && answer.segments.length > 1 ? (
