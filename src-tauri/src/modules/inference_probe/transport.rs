@@ -203,6 +203,48 @@ impl Transport {
         allow_private: bool,
         requests: &mut usize,
     ) -> Result<Value, ProbeError> {
+        self.request_bounded(
+            endpoint,
+            route,
+            (selected, secret),
+            allow_private,
+            requests,
+            MAX_BYTES,
+        )
+        .await
+    }
+
+    pub async fn discover(
+        &self,
+        endpoint: &Endpoint,
+        route: Route,
+        allow_private: bool,
+        requests: &mut usize,
+    ) -> Result<Value, ProbeError> {
+        if !matches!(route, Route::CompatibleModels | Route::OllamaTags) {
+            return Err(ProbeError::new(ErrorCode::UnsupportedProbeRoute));
+        }
+        self.request_bounded(
+            endpoint,
+            route,
+            (None, None),
+            allow_private,
+            requests,
+            64 * 1024,
+        )
+        .await
+    }
+
+    async fn request_bounded(
+        &self,
+        endpoint: &Endpoint,
+        route: Route,
+        context: (Option<&str>, Option<&str>),
+        allow_private: bool,
+        requests: &mut usize,
+        max_bytes: usize,
+    ) -> Result<Value, ProbeError> {
+        let (selected, secret) = context;
         if *requests >= MAX_REQUESTS {
             return Err(ProbeError::new(ErrorCode::RequestLimit));
         }
@@ -272,7 +314,7 @@ impl Transport {
             }
             if response
                 .content_length()
-                .is_some_and(|n| n > MAX_BYTES as u64)
+                .is_some_and(|n| n > max_bytes as u64)
             {
                 return Err(ProbeError::http(ErrorCode::ResponseTooLarge, status));
             }
@@ -280,7 +322,7 @@ impl Transport {
             let mut bytes = Vec::new();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.map_err(request_error)?;
-                if bytes.len().saturating_add(chunk.len()) > MAX_BYTES {
+                if bytes.len().saturating_add(chunk.len()) > max_bytes {
                     return Err(ProbeError::http(ErrorCode::ResponseTooLarge, status));
                 }
                 bytes.extend_from_slice(&chunk);

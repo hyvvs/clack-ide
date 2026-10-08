@@ -1,4 +1,6 @@
 use super::*;
+#[path = "discovery_tests.rs"]
+mod discovery_tests;
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},

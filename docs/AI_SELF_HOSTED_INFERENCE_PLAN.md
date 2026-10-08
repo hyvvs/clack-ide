@@ -1280,7 +1280,7 @@ This order does not authorize any pending implementation in this planning task.
 | 26 | E2 | Passive calibration and optional bounded optimization | Complete | Metadata-only scoped observations, conservative recommendations, explicit bounded optimization; see E2 record |
 | 27 | F2 | Watchdogs, compact health UX and advanced polish | Complete | `feat(ai): guard pathological model output`; implementation record below |
 | 28 | U1 | Integrated collaboration/context/tool UX polish | Implementation complete; native GUI acceptance deferred by user | `feat(ai): integrate collaboration and context controls`; implementation record below |
-| 29 | G2 | Explicit optional network discovery | Pending | None |
+| 29 | G2 | Explicit optional network discovery | Complete | `feat(ai): discover self-hosted servers safely`; implementation record below |
 | 30 | G3 | Consent-bound fallback routing | Pending | None |
 | 31 | Q1 | Context fidelity, freshness and collaboration quality suite | Pending | None |
 | 32 | Z | Integrated native/hardware validation and documentation | Pending | None |
@@ -4847,6 +4847,103 @@ no credentials on probes, results need selection, cancellation/deadline works,
 manual entry remains complete. Native network permission changes, if necessary,
 require explicit scoped review, not a blanket permission expansion. Rollback
 removes the discovery action; configured endpoints continue working.
+
+#### G2 Implementation Record
+
+- **Scope/ownership:** Implemented only G2 from `47ad921`. Add Server now has
+  an optional, collapsed Discover servers section beside the complete manual
+  form. Opening Settings, Add Server or discovery details performs no discovery
+  IPC, DNS lookup, HTTP request or timer/listener startup. Only the explicit
+  Discover action starts work. State is component-local and transient; nothing
+  is restored, replayed, saved to profiles, logged as telemetry or uploaded.
+- **Mechanism/bounds:** The supported mechanism is explicitly user-supplied
+  candidate addresses, not subnet/port scanning, broadcast or service browsing.
+  At most **8 addresses / 2 KiB each / 16 KiB input**, **2 fixed metadata GETs
+  per address**, **64 KiB response bodies**, **128 inventory records per
+  response**, **15 seconds overall** and the existing **5-second per-request
+  ceiling**. UI has a **17-second watchdog**, at most 8 results and a 240px
+  scroll region. Sequential candidates reuse the A2 two-request/two-DNS-slot
+  transport; no dependencies or background monitors were added. A bounded OS
+  resolver already running may finish after cancellation, but cannot initiate
+  HTTP from a dropped discovery run.
+- **Protocol/evidence:** Check the supplied base's compatible `/models` route;
+  only the fixed Ollama `/api/tags` fallback is available. Valid bounded inventory
+  produces an untrusted candidate. Only an Ollama-shaped tags response yields
+  that qualified backend hint; ports, returned backend labels, instructions,
+  display text and URLs do not establish identity or redirect discovery. A
+  401/403 yields an authentication-required candidate with unknown backend,
+  never a connected/authenticated claim or credential retry. Malformed, oversized,
+  redirected and unsupported responses yield sanitized index/error-code issues.
+  No generation, selected-model detail, calibration or prompt request is issued.
+- **Credentials/security:** Strict native options accept only `addresses` and
+  run-local `allowPrivateNetwork`. No profile identity, credential reference,
+  custom header, keychain read or inherited cookie/proxy/auth input is available
+  to discovery. The transport forces absent secret/model arguments. Reuses
+  A2 URL validation, approved-IP DNS pinning, redirect refusal, TLS and private
+  opt-in policy. Userinfo/query/fragment URLs and prohibited metadata/link-local/
+  transition destinations remain blocked even with private opt-in. The sole
+  new native command uses existing window-owned D1 leases; **no capability,
+  native network permission, dependency or global policy expansion** was made.
+- **Identity/selection:** Normalize scheme/host/default ports and trailing
+  slashes; root and `/v1` deduplicate, while distinct proxy prefixes, schemes and
+  ports remain distinct. Frontend validates bounded result shape and source/hint
+  consistency, then deduplicates defensively. Results show address, host/port,
+  fixed provenance and Already configured where applicable. Use address only
+  fills the normal editable A3 address/qualified hint, clears the draft credential
+  and endpoint-private opt-in, and focuses Address. It never saves, connects,
+  changes selected model, imports credentials/trust or overwrites existing
+  endpoint aliases/models/pins. Explicit normal Connect still owns A1 persistence
+  and A2 verification. Manual setup remains available after every failure.
+- **Cancellation/recovery:** Request reservations start only after invocation,
+  are bound to the calling window and consumed once, and are released on
+  completion/error/cancel. Cancel, replacement, unmount/window destruction and
+  existing application shutdown interrupt the owned lease; epoch checks and
+  abort races suppress stale/late results, including late request reservations.
+  Native timeout retains only already-completed candidates. No transient
+  discovery state survives restart; configured endpoints remain intact.
+- **Focused automated verification:** Added **28 frontend G2 tests** and
+  **12 native G2 tests**. Frontend discovery/A1/A2/A3 group:
+  **95 passed / 4 files**. Native `cargo test --locked modules::inference_probe`:
+  **63 passed**, including all new G2 tests and existing A2 regressions. Coverage
+  includes idle behavior, strict address-only input, provider/endpoint/header
+  canaries, malformed/oversized/contradictory data, duplicate identity, auth-only
+  candidates, forbidden URLs/IPs, response/count/route bounds, malicious returned
+  metadata, deadlines/partial results, owner isolation, cancellation and shutdown
+  without replay. Normal A2 transport limits/auth/evidence remain unchanged.
+- **Browser evidence:** Windows headless Chromium/Playwright fixture
+  `scripts/check-self-hosted-setup.mjs` passed at **1100/390/320/280px** with
+  mocked native IPC. Screenshots inspected at desktop and 280px. Confirms zero
+  discovery calls before opt-in, API-key and endpoint credential canaries absent
+  from IPC, explicit keyboard selection/focus return without save/probe/trust,
+  cancel/new-run/reopen late-result suppression, partial timeout presentation,
+  actual 17-second UI watchdog via virtual browser time, bounded long-address
+  results without horizontal overflow, existing endpoint preservation and manual
+  localhost/LAN/HTTPS/generic setup. Existing 1,500-model bounded search,
+  model binding/save, stale refresh, manual model fallback and picker checks
+  also passed. Browser evidence is not native window or real-provider evidence.
+- **Final gates:** `npm.cmd run check-types`, `npm.cmd run lint`, `npm.cmd test`,
+  `npm.cmd run build`, `git diff --check`, `cargo fmt --check`,
+  `cargo clippy --all-targets --locked -- -D warnings`, and
+  `cargo test --locked` passed. Full frontend: **2,146 passed / 169 files**.
+  Full Rust: **628 passed** (**578 unit + 25 filesystem + 25 Git integration**),
+  zero failures/ignored. Lint remains **71 warnings / 2 infos / 0 errors**;
+  four existing ineffective dynamic-import warnings and the build plugin-timing
+  advisory remain. Sandbox temp-cache/canonicalization restrictions required
+  approved test/formatter execution outside that sandbox, not product changes.
+- **Platforms/limitations:** Common Rust/React code supports Windows/Linux/macOS
+  without platform discovery dependencies. Windows native Rust loopback HTTP
+  fixtures actually ran; no live LAN/VPN/Tailscale, real backend/provider,
+  Linux/macOS native run or native Tauri GUI verification was performed. Native
+  GUI was not authorized for this checkpoint. No mDNS/advertisement enumeration;
+  users must supply candidates. Authentication and unsupported metadata may
+  prevent discovery and do not block complete manual setup. U1 native acceptance
+  limitations remain unchanged. E2/F2, tools/MCP, workspace/terminal/Source Control
+  implementation and unrelated delegation/stashes/`autonomous_tracker/` were
+  not modified; their automated regressions pass in the full suites.
+- **Rollback/stop:** Remove the optional discovery section/client/command while
+  retaining normal A1/A2/A3 setup and every configured endpoint/profile.
+  **G2 is complete. Next: G3: Explicit trusted fallback. No subsequent
+  checkpoint started. No push.**
 
 ### G3: Explicit trusted fallback
 

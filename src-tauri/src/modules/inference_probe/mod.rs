@@ -1,4 +1,5 @@
 mod cache;
+pub mod discovery;
 mod metadata;
 #[cfg(test)]
 mod tests;

@@ -13,6 +13,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { updateSelfHostedProfiles } from "@/modules/settings/store";
 import { ProviderIcon } from "@/settings/components/ProviderIcon";
 import { CalibrationControls } from "@/settings/components/CalibrationControls";
+import { ServerDiscovery } from "@/settings/components/ServerDiscovery";
 import { selfHostedHealth } from "@/modules/ai/lib/selfHostedHealth";
 import {
   deleteSelfHostedEndpoint,
@@ -346,6 +347,22 @@ function ServerEditor({
           <HugeiconsIcon icon={Cancel01Icon} size={15} />
         </Button>
       </div>
+      {!endpoint && !current && (
+        <ServerDiscovery
+          endpoints={state.endpoints}
+          onSelect={(candidate) => {
+            setBaseURL(candidate.baseURL);
+            setBackend(candidate.backendHint ?? "");
+            setPrivateNetwork(false);
+            setPassword("");
+            setSnapshot(null);
+            setError("");
+            requestAnimationFrame(() =>
+              document.getElementById(`${formId}-address`)?.focus(),
+            );
+          }}
+        />
+      )}
       <form
         onSubmit={(e) => {
           e.preventDefault();

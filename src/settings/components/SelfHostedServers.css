@@ -37,3 +37,12 @@
 .server-advanced-field small, .server-health small { color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
 .server-advanced-field input { min-width: 0; width: 100%; }
 .server-health { display: flex; flex-direction: column; gap: 3px; font-size: 12px; overflow-wrap: anywhere; }
+.server-discovery { min-width: 0; border-top: 1px solid var(--border); padding-top: 10px; overflow-wrap: anywhere; }
+.server-discovery summary { cursor: pointer; }
+.server-discovery-body { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; min-width: 0; }
+.server-discovery textarea { width: 100%; min-width: 0; resize: vertical; border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: var(--background); }
+.server-discovery .server-check { display: flex; align-items: center; gap: 8px; }
+.server-discovery-results { max-height: 240px; overflow: auto; min-width: 0; }
+.server-discovery-results li { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; border-bottom: 1px solid var(--border); padding: 10px 0; min-width: 0; }
+.server-discovery-results small { color: var(--muted-foreground); }
+.self-hosted-servers textarea:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
