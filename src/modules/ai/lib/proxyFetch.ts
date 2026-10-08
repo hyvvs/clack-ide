@@ -212,6 +212,7 @@ async function proxyFetchImpl(
             break;
           }
           case "chunk":
+            if (status >= 200 && status < 300 && event.bytes.length) opts.scope?.onResponseBody?.();
             controller?.enqueue(Uint8Array.from(event.bytes));
             break;
         }
@@ -260,6 +261,7 @@ async function proxyFetchImpl(
         timeoutPolicy: opts.selfHosted ? "self-hosted" : "legacy",
         admission: opts.admission,
         requirePreflight: Boolean(revalidate),
+        ...(opts.scope?.fallbackToken ? { fallbackToken: opts.scope.fallbackToken } : {}),
         onEvent: channel,
       }).then(
         () => {

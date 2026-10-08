@@ -256,6 +256,9 @@ export async function buildLanguageModel(
 
   let built: LanguageModel;
   const preflight = createRequestPreflight({
+    validateRouting: options.inferenceScope?.validateFallback,
+    requireRequestedOutput: Boolean(options.inferenceScope?.fallbackToken),
+    cachedMetadataOnly: Boolean(options.inferenceScope?.fallbackToken),
     reasoning:
       reasoning ??
       captureEffort(resolvedModelId, {
@@ -286,7 +289,10 @@ export async function buildLanguageModel(
     onQueued: options.calibration?.onQueued,
   }) : undefined;
   const cloudFetch = verifiedProviderFetch(
-    preflightFetch((input, init) => globalThis.fetch(input, init), preflight),
+    options.inferenceScope?.fallbackToken
+      ? createProxyFetch({ scope: options.inferenceScope, preflight })
+      : preflightFetch((input, init) => globalThis.fetch(input, init), preflight),
+    options.inferenceScope?.onResponseBody,
   );
   const scopedLocalFetch = verifiedProviderFetch(
     createProxyFetch({
@@ -296,6 +302,7 @@ export async function buildLanguageModel(
       preflight,
       onAdmission: calibration?.observe,
     }),
+    options.inferenceScope?.onResponseBody,
   );
   switch (provider) {
     case "openai": {
@@ -399,6 +406,7 @@ export async function buildLanguageModel(
                 preflight,
                 onAdmission: calibration?.observe,
               }),
+              options.inferenceScope?.onResponseBody,
             )
           : scopedLocalFetch,
       })(resolvedModelId);
@@ -692,6 +700,10 @@ const EMPTY_USAGE: AgentUsage = {
 };
 
 export type RunAgentOptions = {
+  validateRouting?: () => Promise<void>;
+  mandatoryTools?: string[];
+  requiredOutput?: number;
+  onRequestPrepared?: (requirements: import("@/modules/ai/lib/inferenceFallback").FallbackRequirements) => void;
   watchdog?: OutputWatchdog;
   onAnswerState?: (state: AnswerState) => void;
   reasoning?: EffortCapture;
@@ -747,6 +759,8 @@ export async function runAgentStream(opts: RunAgentOptions) {
         runId: crypto.randomUUID(),
         isCurrent: () => !opts.abortSignal?.aborted,
       };
+  inferenceScope.validateEvidence = opts.validateRouting ?? inferenceScope.validateEvidence;
+  inferenceScope.validateFallback = opts.validateRouting;
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
   const baseModel = await buildConfiguredLanguageModel(modelId, opts.keys, {
     reasoning: opts.reasoning,
@@ -817,11 +831,14 @@ export async function runAgentStream(opts: RunAgentOptions) {
           },
       }
     : opts.toolContext;
-  const permittedTools =
+  const availableTools =
     opts.toolContext.isPeerReplyOnly?.() ||
     opts.inputCapabilities?.tools === "unsupported"
       ? {}
       : await buildTools(requestToolContext);
+  const permittedTools = opts.mandatoryTools
+    ? Object.fromEntries(Object.entries(availableTools).filter(([name]) => opts.mandatoryTools?.includes(name)))
+    : availableTools;
   const exposureTarget = {
     modelId,
     provider,
@@ -833,6 +850,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     credentials: [opts.keys, opts.customEndpointKeys],
   };
   const exposure = await prepareToolExposure(permittedTools, {
+    mandatory: opts.mandatoryTools,
     context: requestToolContext,
     messages: prunedHistory,
     uiMessages: opts.uiMessages,
@@ -959,6 +977,10 @@ export async function runAgentStream(opts: RunAgentOptions) {
       tools: exposure.schemas,
     }),
   );
+  if (opts.requiredOutput && preparationBudget.output < opts.requiredOutput)
+    throw new ContextBudgetError("fallback-output", "Fallback cannot preserve the captured output allowance.");
+  opts.onRequestPrepared?.({ tools: [...exposure.names], output: preparationBudget.output,
+    permissions: JSON.stringify([usePreferencesStore.getState().agentPermissionProfiles, usePreferencesStore.getState().agentWorkspacePermissions]) });
   const compact = opts.compaction
     ? { messages: prunedHistory, compacted: false, droppedCount: 0 }
     : compactModelMessagesDetailed(prunedHistory, preparationBudget.working);
@@ -1075,10 +1097,12 @@ export async function runAgentStream(opts: RunAgentOptions) {
     : undefined;
   const preparedContext = compactor;
   inferenceScope.validateEvidence = async () => {
+    await opts.validateRouting?.();
     await preparedContext?.validateEvidence();
     await opts.toolContext.validatePeerReview?.();
   };
   return streamText({
+    maxOutputTokens: opts.requiredOutput,
     model,
     messages: finalMessages,
     tools,

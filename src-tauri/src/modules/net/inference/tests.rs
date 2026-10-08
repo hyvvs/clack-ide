@@ -20,6 +20,7 @@ fn request(url: String) -> Request {
         headers: None,
         body: Some(b"{}".to_vec()),
         allow_private: true,
+        fallback: None,
     }
 }
 

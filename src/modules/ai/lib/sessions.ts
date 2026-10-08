@@ -25,6 +25,7 @@ export type ConversationProfile = {
 };
 
 export type SessionMeta = {
+  fallback?: import("@/modules/ai/lib/inferenceFallback").FallbackPolicy;
   effortPreferences?: import("@/modules/ai/lib/reasoningEffort").EffortPreferences;
   modelRevision?: number;
   targetContext?: unknown;

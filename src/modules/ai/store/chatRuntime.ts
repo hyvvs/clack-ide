@@ -1,4 +1,5 @@
 import { Chat, type UIMessage } from "@ai-sdk/react";
+import { prepareSessionFallback } from "@/modules/ai/store/inferenceFallback";
 import { captureSessionTools } from "@/modules/ai/store/customToolCapture";
 import {
   recoveryAvailability,
@@ -255,6 +256,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
     sessionToolContext(sessionId);
 
   const transport = createContextAwareTransport({
+    prepareFallback: prepareSessionFallback(sessionId),
     getReasoning: () => owner()?.run?.reasoning,
     onRetrieved: (retrievalNotice) =>
       useChatStore.getState().patchAgentMeta(sessionId, { retrievalNotice }),

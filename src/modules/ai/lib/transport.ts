@@ -1,5 +1,8 @@
 import type { UIMessage } from "@ai-sdk/react";
-import { ACTIVITY_ENABLED, type ActivityOwner } from "@/modules/ai/lib/activity";
+import {
+  ACTIVITY_ENABLED,
+  type ActivityOwner,
+} from "@/modules/ai/lib/activity";
 import {
   activityStream,
   type ActivityStreamContext,
@@ -24,12 +27,34 @@ import {
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
-import { createOutputWatchdog, watchdogInstruction, type OutputWatchdog } from "@/modules/ai/lib/outputWatchdog";
+import {
+  createOutputWatchdog,
+  watchdogInstruction,
+  type OutputWatchdog,
+} from "@/modules/ai/lib/outputWatchdog";
 import { answerMetadataStream } from "@/modules/ai/lib/answerContinuation";
 import type {
   ConversationCompactionContext,
   CompactionNotice,
 } from "@/modules/ai/lib/conversationCompaction";
+import {
+  fallbackStream,
+  safeFallbackHistory,
+  type FallbackRequirements,
+} from "@/modules/ai/lib/inferenceFallback";
+import type { RunAgentOptions } from "@/modules/ai/lib/agent";
+
+export type FallbackAttempt = {
+  configuration: Partial<RunAgentOptions>;
+  capabilities: ModelInputCapabilities;
+};
+export type PrepareFallback = (request: {
+  primary: Partial<RunAgentOptions>;
+  originals: UIMessage[];
+  requirements: FallbackRequirements;
+  error: unknown;
+  signal?: AbortSignal;
+}) => Promise<FallbackAttempt | null>;
 
 const PROJECT_MEMORY_MAX_BYTES = 32 * 1024;
 type MemoryCacheEntry = { content: string | null; mtime: number };
@@ -72,6 +97,7 @@ type LiveSnapshot = {
 };
 
 type Deps = {
+  prepareFallback?: PrepareFallback;
   getActivityOwner?: () => ActivityOwner | undefined;
   onRetrieved?: import("@/modules/ai/lib/agent").RunAgentOptions["onRetrieved"];
   prepareCompactionContext?: (
@@ -126,6 +152,7 @@ type SendOptions = {
 };
 
 export function createContextAwareTransport(deps: Deps) {
+  let fallbackCapture: { runId: string; attempt: FallbackAttempt } | undefined;
   let watchdogOwner: { runId: string; detector: OutputWatchdog } | undefined;
   let captured:
     | {
@@ -170,10 +197,12 @@ export function createContextAwareTransport(deps: Deps) {
       (options.body as { clackRecovery?: boolean } | undefined)
         ?.clackRecovery === true;
     const scope = deps.getInferenceScope?.();
-    if (!scope || watchdogOwner?.runId !== scope.runId) watchdogOwner = {
-      runId: scope?.runId ?? crypto.randomUUID(),
-      detector: createOutputWatchdog(watchdogInstruction(options.messages)),
-    };
+    if (fallbackCapture?.runId !== scope?.runId) fallbackCapture = undefined;
+    if (!scope || watchdogOwner?.runId !== scope.runId)
+      watchdogOwner = {
+        runId: scope?.runId ?? crypto.randomUUID(),
+        detector: createOutputWatchdog(watchdogInstruction(options.messages)),
+      };
     const watchdog = watchdogOwner.detector;
     if (recovery && (!captured || captured.runId !== scope?.runId))
       throw new Error(
@@ -216,93 +245,152 @@ export function createContextAwareTransport(deps: Deps) {
       options.messages,
       capabilities,
     );
-    const messagesForRun = envBlock
-      ? injectEnvIntoLastUser(messagesWithAttachments, envBlock)
-      : messagesWithAttachments;
-    return answerMetadataStream(async (onAnswerState) => {
-      const configuration =
-        recovery && captured
-          ? captured.configuration
-          : structuredClone({
-              keys: deps.getKeys(),
-              modelId: deps.getModelId(),
-              reasoning,
-              selfHostedInference: hostedState,
-              customInstructions: deps.getCustomInstructions(),
-              agentPersona: deps.getAgentPersona(),
-              lmstudioBaseURL: deps.getLmstudioBaseURL?.(),
-              lmstudioModelId: deps.getLmstudioModelId?.(),
-              mlxBaseURL: deps.getMlxBaseURL?.(),
-              mlxModelId: deps.getMlxModelId?.(),
-              ollamaBaseURL: deps.getOllamaBaseURL?.(),
-              ollamaModelId: deps.getOllamaModelId?.(),
-              openaiCompatibleBaseURL: deps.getOpenaiCompatibleBaseURL?.(),
-              openaiCompatibleModelId: deps.getOpenaiCompatibleModelId?.(),
-              openaiCompatibleContextLimit:
-                deps.getOpenaiCompatibleContextLimit?.(),
-              openrouterModelId: deps.getOpenrouterModelId?.(),
-              savedProviderModels: deps.getSavedProviderModels?.(),
-              capturedModelIdentity: deps.getCapturedModelIdentity?.(),
-              customEndpoints: deps.getCustomEndpoints?.(),
-              customEndpointKeys: deps.getCustomEndpointKeys?.(),
-              planMode: deps.getPlanMode?.(),
-            });
-      if (!recovery && scope) captured = { runId: scope.runId, configuration };
-      const result = await runAgentStream({
-        watchdog,
-        onAnswerState,
-        reasoning,
-        inputCapabilities: capabilities,
-        compaction,
-        onRetrieved: deps.onRetrieved,
-        onOptimized: deps.onOptimized,
-        inferenceScope: activity?.scope ?? deps.getInferenceScope?.(),
-        selfHostedInference: hostedState,
-        toolContext: {
-          ...deps.toolContext,
-          onCustomToolActivity: (id, state, effect) =>
-            activity?.customTool(id, state, effect),
-        },
-        onStep: (value) => {
-          if (scope?.isCurrent() !== false) deps.onStep?.(value);
-        },
-        onUsage: (value) => {
-          if (scope?.isCurrent() !== false) deps.onUsage?.(value);
-        },
-        onCompact: (value) => {
-          if (scope?.isCurrent() !== false) deps.onCompact?.(value);
-        },
-        onRunStep: (value) => {
-          if (scope?.isCurrent() !== false) deps.onRunStep?.(value);
-        },
-        onProviderRetry: (event) => {
-          if (scope?.isCurrent() === false) return;
-          deps.onProviderRetry?.(event);
-          activity?.retry(event);
-        },
-        onProviderRecovered: () => {
-          if (scope?.isCurrent() === false) return;
-          deps.onProviderRecovered?.();
-          activity?.recovered();
-        },
-        onFinishMeta: (value) => {
-          if (scope?.isCurrent() !== false) deps.onFinishMeta?.(value);
-        },
-        projectMemory,
-        logicalContinuation: batch.isLogicalContinuation,
-        uiMessages: messagesForRun,
-        abortSignal: options.abortSignal,
-        ...configuration,
-        recovery,
+    const configuration =
+      recovery && captured
+        ? captured.configuration
+        : structuredClone({
+            keys: deps.getKeys(),
+            modelId: deps.getModelId(),
+            reasoning,
+            selfHostedInference: hostedState,
+            customInstructions: deps.getCustomInstructions(),
+            agentPersona: deps.getAgentPersona(),
+            lmstudioBaseURL: deps.getLmstudioBaseURL?.(),
+            lmstudioModelId: deps.getLmstudioModelId?.(),
+            mlxBaseURL: deps.getMlxBaseURL?.(),
+            mlxModelId: deps.getMlxModelId?.(),
+            ollamaBaseURL: deps.getOllamaBaseURL?.(),
+            ollamaModelId: deps.getOllamaModelId?.(),
+            openaiCompatibleBaseURL: deps.getOpenaiCompatibleBaseURL?.(),
+            openaiCompatibleModelId: deps.getOpenaiCompatibleModelId?.(),
+            openaiCompatibleContextLimit:
+              deps.getOpenaiCompatibleContextLimit?.(),
+            openrouterModelId: deps.getOpenrouterModelId?.(),
+            savedProviderModels: deps.getSavedProviderModels?.(),
+            capturedModelIdentity: deps.getCapturedModelIdentity?.(),
+            customEndpoints: deps.getCustomEndpoints?.(),
+            customEndpointKeys: deps.getCustomEndpointKeys?.(),
+            planMode: deps.getPlanMode?.(),
+          });
+    if (!recovery && scope) captured = { runId: scope.runId, configuration };
+    let primaryError: unknown;
+    let primaryBody = false;
+    let requirements: FallbackRequirements = { tools: [], output: 0 };
+    const execute = (attempt?: FallbackAttempt) =>
+      answerMetadataStream(async (onAnswerState) => {
+        const attemptMessages = attempt
+          ? await materializeAttachmentMessages(
+              options.messages,
+              attempt.capabilities,
+            )
+          : messagesWithAttachments;
+        const result = await runAgentStream({
+          watchdog,
+          onAnswerState,
+          reasoning,
+          compaction,
+          onRetrieved: deps.onRetrieved,
+          onOptimized: deps.onOptimized,
+          inferenceScope: scope
+            ? {
+                ...(activity?.scope ?? scope),
+                onResponseBody: () => {
+                  primaryBody = true;
+                },
+              }
+            : undefined,
+          selfHostedInference: hostedState,
+          toolContext: {
+            ...deps.toolContext,
+            onCustomToolActivity: (id, state, effect) =>
+              activity?.customTool(id, state, effect),
+          },
+          onStep: (value) => {
+            if (scope?.isCurrent() !== false) deps.onStep?.(value);
+          },
+          onUsage: (value) => {
+            if (scope?.isCurrent() !== false) deps.onUsage?.(value);
+          },
+          onCompact: (value) => {
+            if (scope?.isCurrent() !== false) deps.onCompact?.(value);
+          },
+          onRunStep: (value) => {
+            if (scope?.isCurrent() !== false) deps.onRunStep?.(value);
+          },
+          onProviderRetry: (event) => {
+            if (scope?.isCurrent() === false) return;
+            deps.onProviderRetry?.(event);
+            activity?.retry(event);
+          },
+          onProviderRecovered: () => {
+            if (scope?.isCurrent() === false) return;
+            deps.onProviderRecovered?.();
+            activity?.recovered();
+          },
+          onFinishMeta: (value) => {
+            if (scope?.isCurrent() !== false) deps.onFinishMeta?.(value);
+          },
+          projectMemory,
+          logicalContinuation: batch.isLogicalContinuation,
+          abortSignal: options.abortSignal,
+          ...configuration,
+          ...(attempt?.configuration ?? {}),
+          onRequestPrepared: (value) => {
+            requirements = value;
+          },
+          inputCapabilities: attempt?.capabilities ?? capabilities,
+          uiMessages: envBlock
+            ? injectEnvIntoLastUser(attemptMessages, envBlock)
+            : attemptMessages,
+          recovery,
+        });
+        return result.toUIMessageStream({
+          originalMessages: options.messages,
+          onError: (error) => {
+            if (!attempt && deps.prepareFallback) {
+              primaryError = error;
+              return "Primary inference failed.";
+            }
+            return (
+              (scope?.isCurrent() === false
+                ? "Cancelled or superseded run."
+                : deps.onError?.(error)) ??
+              "The AI run failed for an unexpected reason."
+            );
+          },
+        });
       });
-      return result.toUIMessageStream({
-        originalMessages: options.messages,
-        onError: (error) =>
-          (scope?.isCurrent() === false
-            ? "Cancelled or superseded run."
-            : deps.onError?.(error)) ??
-          "The AI run failed for an unexpected reason.",
-      });
+    if (!deps.prepareFallback || fallbackCapture)
+      return execute(fallbackCapture?.attempt);
+    return fallbackStream({
+      primary: () => Promise.resolve(execute()),
+      error: () => primaryError,
+      eligible:
+        !recovery &&
+        !batch.isLogicalContinuation &&
+        safeFallbackHistory(options.messages),
+      signal: options.abortSignal,
+      formatError: (error) =>
+        deps.onError?.(error) ?? "The AI run failed for an unexpected reason.",
+      fallback: async (error) => {
+        if (primaryBody || scope?.isCurrent() === false) return null;
+        const attempt = await deps.prepareFallback?.({
+          primary: configuration,
+          originals: options.messages,
+          requirements,
+          error,
+          signal: options.abortSignal,
+        });
+        if (
+          !attempt ||
+          scope?.isCurrent() === false ||
+          options.abortSignal?.aborted
+        )
+          return null;
+        await compaction?.chargeCall();
+        if (scope) fallbackCapture = { runId: scope.runId, attempt };
+        return execute(attempt);
+      },
     });
   };
 
@@ -311,13 +399,17 @@ export function createContextAwareTransport(deps: Deps) {
     sendMessages: (options: SendOptions) => {
       const owner = ACTIVITY_ENABLED ? deps.getActivityOwner?.() : undefined;
       if (!owner) return run(options);
-      return Promise.resolve(activityStream(
-        options.messages,
-        owner,
-        deps.getInferenceScope?.(),
-        context => run(options, context),
-        error => deps.onError?.(error) ?? "The AI run failed for an unexpected reason.",
-      ));
+      return Promise.resolve(
+        activityStream(
+          options.messages,
+          owner,
+          deps.getInferenceScope?.(),
+          (context) => run(options, context),
+          (error) =>
+            deps.onError?.(error) ??
+            "The AI run failed for an unexpected reason.",
+        ),
+      );
     },
     async reconnectToStream(): Promise<null> {
       return null;

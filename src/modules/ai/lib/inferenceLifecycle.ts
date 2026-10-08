@@ -12,6 +12,9 @@ export type InferencePhase =
   | "disconnected"
   | "failed";
 export type InferenceScope = {
+  fallbackToken?: string;
+  validateFallback?: () => Promise<void>;
+  onResponseBody?: () => void;
   sessionId: string;
   runId: string;
   label?: string;

@@ -19,6 +19,7 @@ const SESSION_STORE: &str = "terax-ai-sessions.json";
 static MEMORY_EPOCH: LazyLock<String> =
     LazyLock::new(|| format!("{}:{}", std::process::id(), now()));
 pub mod custom_tools;
+pub mod fallback;
 pub mod peer_ledger;
 pub mod project;
 pub mod reasoning_effort;
@@ -39,6 +40,7 @@ pub struct MemoryState {
     tool_registry_revision: Arc<std::sync::atomic::AtomicU64>,
     mcp_connections: Arc<Mutex<HashMap<String, Arc<custom_tools::mcp::Runtime>>>>,
     switches: Arc<Mutex<HashMap<String, (String, u64)>>>,
+    fallbacks: Arc<Mutex<HashMap<String, fallback::Grant>>>,
 }
 
 impl MemoryState {

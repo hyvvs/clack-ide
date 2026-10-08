@@ -194,6 +194,7 @@ struct Request {
     headers: Option<HashMap<String, String>>,
     body: Option<Vec<u8>>,
     allow_private: bool,
+    fallback: Option<(tauri::AppHandle, String)>,
 }
 async fn execute(
     lease: &Lease,
@@ -231,6 +232,17 @@ async fn execute(
         .max(Duration::from_millis(1));
     let client = build_safe_client(request.allow_private, &[(host, ips)], Some(remaining))
         .map_err(|_| Failure::new("invalid-request"))?;
+    if let Some((app, token)) = &request.fallback {
+        crate::modules::conversation_memory::fallback::dispatch(
+            app,
+            token,
+            lease,
+            &request.url,
+            request.body.as_deref(),
+            true,
+        )
+        .map_err(|_| Failure::new("fallback-consent-rejected"))?;
+    }
     let req = build_request(
         &client,
         &request.method,
@@ -433,6 +445,7 @@ pub fn ai_http_preflight(
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ai_http_stream(
+    app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     state: tauri::State<'_, InferenceState>,
     request_id: String,
@@ -444,10 +457,25 @@ pub async fn ai_http_stream(
     timeout_policy: Option<Policy>,
     admission: Option<admission::Admission>,
     require_preflight: Option<bool>,
+    fallback_token: Option<String>,
     on_event: Channel<Event>,
 ) -> Result<(), Failure> {
     let mut lease = state.start(window.label(), &request_id)?;
     lease.require_preflight = require_preflight.unwrap_or(false);
+    if let Some(token) = &fallback_token {
+        if method != "POST" || !lease.require_preflight {
+            return Err(Failure::new("fallback-consent-rejected"));
+        }
+        crate::modules::conversation_memory::fallback::dispatch(
+            &app,
+            token,
+            &lease,
+            &url,
+            body.as_deref(),
+            false,
+        )
+        .map_err(|_| Failure::new("fallback-consent-rejected"))?;
+    }
     if matches!(timeout_policy, Some(Policy::SelfHosted)) && admission.is_none() {
         return Err(Failure::new("invalid-capacity"));
     }
@@ -460,6 +488,7 @@ pub async fn ai_http_stream(
             headers,
             body,
             allow_private: allow_private_network.unwrap_or(false),
+            fallback: fallback_token.map(|token| (app, token)),
         },
         Timeouts::for_policy(timeout_policy.unwrap_or_default()),
         admission,

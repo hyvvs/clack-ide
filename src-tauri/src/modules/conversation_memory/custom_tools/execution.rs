@@ -78,6 +78,14 @@ struct Ledger {
     records: Vec<Record>,
 }
 
+pub(crate) fn has_run_effects(app: &tauri::AppHandle, session: &str, run: u64) -> Result<bool> {
+    let state = app.state::<MemoryState>();
+    Ok(read_ledger(&state.custom_tools, &path(app)?)?
+        .records
+        .iter()
+        .any(|record| record.session_id == session && record.run_id == Some(run)))
+}
+
 pub(crate) struct Prepared {
     record: Record,
     access: Access,

@@ -348,12 +348,14 @@ pub(super) fn guard_session_updates(old: &[Value], next: &[Value]) -> Result<()>
             if previous["modelRevision"] != entry["modelRevision"]
                 || previous["effortPreferences"] != entry["effortPreferences"]
                 || previous["targetContext"] != entry["targetContext"]
+                || previous["fallback"] != entry["fallback"]
             {
                 return Err("target_context_stale_session".into());
             }
         } else if entry.get("targetContext").is_some()
             || entry.get("modelRevision").is_some()
             || entry.get("effortPreferences").is_some()
+            || entry.get("fallback").is_some()
         {
             return Err("target_context_invalid_session".into());
         }

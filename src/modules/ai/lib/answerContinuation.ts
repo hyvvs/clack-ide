@@ -232,15 +232,14 @@ export function recoverAnswerMessages(messages: UIMessage[]): UIMessage[] {
   });
 }
 
-export function verifiedProviderFetch(fetcher: typeof fetch): typeof fetch {
+export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: () => void): typeof fetch {
   return async (input, init) => {
     const response = await fetcher(input, init);
-    if (
-      !response.ok ||
-      !response.body ||
-      !response.headers.get("content-type")?.includes("text/event-stream")
-    )
+    if (!response.ok || !response.body) return response;
+    if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+      onResponseBody?.();
       return response;
+    }
     const url =
       typeof input === "string"
         ? input
@@ -312,6 +311,7 @@ export function verifiedProviderFetch(fetcher: typeof fetch): typeof fetch {
           try {
             const next = await reader.read();
             if (!next.done) {
+              if (next.value.length) onResponseBody?.();
               buffer += decoder.decode(next.value, { stream: true });
               scan();
               controller.enqueue(next.value);

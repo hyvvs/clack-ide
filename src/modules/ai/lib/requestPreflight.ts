@@ -72,6 +72,9 @@ export async function serializedToolSchemas(tools: ToolSet) {
 }
 
 export function createRequestPreflight(options: {
+  validateRouting?: () => Promise<void>;
+  requireRequestedOutput?: boolean;
+  cachedMetadataOnly?: boolean;
   modelId: string;
   local: boolean;
   state?: SelfHostedState;
@@ -106,6 +109,7 @@ export function createRequestPreflight(options: {
       : {}),
   });
   const refresh = async () => {
+    await options.validateRouting?.();
     if (!endpoint || !profile) return;
     const client = createSelfHostedProbeClient();
     const probeOptions = {
@@ -116,6 +120,7 @@ export function createRequestPreflight(options: {
     try {
       snapshot = await client.read(probeOptions);
       if (
+        !options.cachedMetadataOnly &&
         (!snapshot ||
           snapshot.stale ||
           !snapshot.connected ||
@@ -184,6 +189,9 @@ export function createRequestPreflight(options: {
           specificationVersion: "v3",
           async transformParams({ params }) {
             await refresh();
+            const output = resolveContextBudget(limits(), undefined, params.maxOutputTokens).output;
+            if (options.requireRequestedOutput && params.maxOutputTokens !== undefined && output < params.maxOutputTokens)
+              throw new ContextBudgetError("fallback-output", "Fallback cannot preserve the requested output allowance.");
             const providerOptions = { ...params.providerOptions };
             for (const [provider, settings] of Object.entries(
               options.reasoning ? effortProviderOptions(options.reasoning) : {},
@@ -196,11 +204,7 @@ export function createRequestPreflight(options: {
             return {
               ...params,
               providerOptions,
-              maxOutputTokens: resolveContextBudget(
-                limits(),
-                undefined,
-                params.maxOutputTokens,
-              ).output,
+              maxOutputTokens: output,
             };
           },
         },

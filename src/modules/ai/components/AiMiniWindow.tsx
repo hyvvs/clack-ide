@@ -1,5 +1,6 @@
 import { InferenceActivityLabel } from "@/modules/ai/components/InferenceActivityLabel";
 import { ChatToolsControl } from "@/modules/ai/components/ChatToolsControl";
+import { ChatFallbackControl } from "@/modules/ai/components/ChatFallbackControl";
 import {
   Context,
   ContextContent,
@@ -668,6 +669,7 @@ function Header({
         <ModelDropdown sessionId={sessionId} compact />
         <EffortControl sessionId={sessionId} />
         <ChatToolsControl key={sessionId} sessionId={sessionId} />
+        <ChatFallbackControl key={`fallback:${sessionId}`} sessionId={sessionId} />
         <AgentPermissionControl agentId={displayedAgentId} compact />
         {messages !== undefined ? (
           <ContextIndicator sessionId={sessionId} messages={messages} compact />

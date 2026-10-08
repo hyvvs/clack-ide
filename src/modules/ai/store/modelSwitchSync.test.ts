@@ -10,7 +10,10 @@ vi.mock("@/modules/ai/store/chatStore", () => ({
   })),
 }));
 import { useChatStore } from "@/modules/ai/store/chatStore";
-import { applyCommittedModelSwitch } from "@/modules/ai/store/modelSwitchSync";
+import {
+  applyCommittedModelSwitch,
+  applyCommittedFallback,
+} from "@/modules/ai/store/modelSwitchSync";
 const session = (id: string, revision = 0): SessionMeta => ({
   id,
   title: id,
@@ -55,4 +58,35 @@ it("updates a background conversation without switching the foreground model", (
 it("does not resurrect a deleted conversation", () => {
   applyCommittedModelSwitch(session("deleted", 8));
   expect(useChatStore.getState().sessions).toHaveLength(2);
+});
+it("fallback events converge without replacing in-flight progress, pane ownership or selection", () => {
+  const current = {
+    ...session("a"),
+    title: "Renamed locally",
+    run: { state: "running" as const, startedAt: 10, recoveryAttempts: 1 },
+  };
+  useChatStore.setState({ sessions: [current, session("b")] });
+  const saved = {
+    ...session("a"),
+    modelRevision: 2,
+    title: "Older native title",
+    fallback: {
+      version: 1 as const,
+      revision: 1,
+      mode: "never" as const,
+      agentId: null,
+      workspaceId: null,
+      primary: null,
+      destination: null,
+      categories: [],
+      history: [],
+    },
+  };
+  applyCommittedFallback(saved);
+  expect(useChatStore.getState().sessions[0].run).toBe(current.run);
+  expect(useChatStore.getState().sessions[0].title).toBe("Renamed locally");
+  expect(useChatStore.getState().selectedModelId).toBe("source");
+  expect(useChatStore.getState().sessions[1].fallback).toBeUndefined();
+  applyCommittedFallback({ ...saved, modelRevision: 1, fallback: undefined });
+  expect(useChatStore.getState().sessions[0].fallback).toBe(saved.fallback);
 });

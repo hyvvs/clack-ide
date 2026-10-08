@@ -169,6 +169,9 @@ pub struct Lease {
     pub require_preflight: bool,
 }
 impl Lease {
+    pub(crate) fn cancellation_sender(&self) -> watch::Sender<bool> {
+        self.entry.cancel.clone()
+    }
     pub(crate) fn owner(&self) -> &str {
         &self.entry.owner
     }

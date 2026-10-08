@@ -1281,7 +1281,7 @@ This order does not authorize any pending implementation in this planning task.
 | 27 | F2 | Watchdogs, compact health UX and advanced polish | Complete | `feat(ai): guard pathological model output`; implementation record below |
 | 28 | U1 | Integrated collaboration/context/tool UX polish | Implementation complete; native GUI acceptance deferred by user | `feat(ai): integrate collaboration and context controls`; implementation record below |
 | 29 | G2 | Explicit optional network discovery | Complete | `feat(ai): discover self-hosted servers safely`; implementation record below |
-| 30 | G3 | Consent-bound fallback routing | Pending | None |
+| 30 | G3 | Consent-bound fallback routing | Complete | Versioned per-conversation Never/Ask/trusted destination consent; native request grants, compatibility/B1/effect guards, intercepted private-fixture traffic and restart/revocation tests. Native GUI/live-provider evidence not performed. |
 | 31 | Q1 | Context fidelity, freshness and collaboration quality suite | Pending | None |
 | 32 | Z | Integrated native/hardware validation and documentation | Pending | None |
 
@@ -4953,6 +4953,116 @@ mode sends only to the approved destination after compatibility and budget
 checks; changing endpoint invalidates consent; partial/unknown side effects
 block unsafe reroute. Test traffic captures containing private fixture data
 and revocation/restart. Rollback defaults to Never without deleting history.
+
+#### G3 implementation record
+
+- **Completed:** Explicit `Never`, `Ask me` and `Trusted destination` policy
+  in each AI pane. Only one already-configured destination can be approved;
+  no provider scoring, discovery, wildcard consent, fallback chains or global
+  approval. Never/decline leave the primary failure visible and cause zero
+  alternate requests/probes. Ask shows the failed primary, exact provider,
+  model, endpoint, data categories and compatibility/budget warning; approval
+  applies to this root run only. Trusted requires separate stored consent.
+  New consent is idle-only; revocation remains available during a run.
+- **Ownership/schema:** Additive schema-1 `SessionMeta.fallback` in the existing
+  native `SessionFile` store: `version`, `revision`, `mode`, `agentId`,
+  `workspaceId`, `primary`, `destination`, `categories`, `history`. Conversation
+  ID is its session owner, never a label/model/window. Destination descriptors
+  retain stable model selection, transport identity, base URL and SHA-256
+  configuration hash. Identity includes existing endpoint/profile IDs,
+  configuration revision and credential references, never resolved secrets.
+  Consent covers conversation, source files, attachments, memory, artifacts
+  and tool results; it does not grant file/tool/workspace permissions.
+- **Configuration/consent:** Native descriptors use current saved settings,
+  not discovery or inference HTTP. Endpoint/provider/profile/model, credential
+  reference and material route/configuration changes invalidate consent;
+  alias/display-only renames do not. A changed primary, agent or workspace
+  also blocks old consent. Preview is rechecked before policy save, before
+  grant creation and at native dispatch. Knowing another session/grant ID does
+  not bypass existing workspace authorization or owning-window checks.
+- **Request boundary/effects:** Only a settled, transient/retryable primary
+  failure on the initial safe root request can offer fallback. Authentication,
+  cancellation, incompatible/no-fit requests, logical continuation, D3
+  recovery, PeerTask roots, any visible text/reasoning/tool/unknown part, any
+  successful response-body bytes (including bytes not yet exposed by the SDK),
+  and any current-run T2/T3 execution record block reroute. The native durable
+  transcript and authoritative custom-tool/MCP ledger are checked independently.
+  Transcript SHA-256 captured before Ask must still match at approval. D3
+  retains partial-output recovery; no completed/unknown effect is replayed.
+- **Compatibility/B1:** Fallback makes a separate target capture without
+  changing the conversation's selected model or captured primary root. It
+  rematerializes attachments, validates target capability/effort, recomputes
+  F1 schemas limited to the primary exposed tools, preserves mandatory schemas
+  and output allowance, and rejects changed permission snapshots. Existing
+  C1/F1/B1 preparation and the actual serialized target request preflight run
+  again; no primary fit result is reused or feature silently stripped. Target
+  metadata is cache-only during fallback: no alternate probe before consent
+  or after revocation. Unknown/incompatible media/tool support blocks;
+  unknown capacity uses the existing conservative B1 policy. Final cloud as
+  well as self-hosted fallback HTTP uses the native guarded proxy.
+- **Native grants/history:** Process-only grants bind session/workspace,
+  owning window, root run, consent revision and exact destination. Native
+  checks before queueing register cancellation and are repeated immediately
+  before HTTP after admission/preflight/DNS. Only POST inference requests with
+  B1 and the exact approved origin/base path/model are allowed. Grants are
+  bounded to 128, expire after one hour and are never restored/replayed.
+  History records policy changes, approved source hashes and
+  `dispatch-authorized` request hashes, not raw prompts/credentials or claims
+  of successful delivery. One fallback target per root; its failure is surfaced
+  without a third destination. Subsequent root steps retain actual target
+  capture/provider provenance, still under current consent and guards.
+- **Persistence/revocation:** Native metadata ownership, expected-revision
+  checks and atomic existing session persistence prevent stale/forged generic
+  session writes from replacing consent/history. Cross-window fallback events
+  merge only fallback/revision metadata, not live progress, title or model
+  selection. Last 32 events and 64 KiB policy bounds apply; oversized updates
+  fail closed with the previous valid state intact. Revocation persists Never,
+  retains destination/history, cancels registered queued/running leases and
+  invalidates unsent grants. Restart restores exact policy/history but neither
+  pending Ask promises nor dispatch grants. Missing legacy policy defaults to
+  Never; malformed/unsupported policy cannot authorize traffic.
+- **Automated evidence:** 24 pure fallback cases, 14 real installed-SDK routing
+  integration cases with intercepted HTTP/native IPC boundaries and private
+  fixture canaries, plus one new cross-window merge regression. Final focused
+  seven-file group: **179 passed** (fallback, routing, continuation, preflight,
+  provider retry, tool exposure and model sync). Nine G3 native cases passed
+  within the full Rust suite, covering boundaries, scope/stale revisions,
+  revocation/cancellation, alias identity, persistence/restart, route/model
+  guards, bounded history and secret/corruption rejection. Traffic captures
+  prove primary-only Never, no Ask transmission before approval/on decline,
+  only the exact authorized target after approval/trusted consent, and no
+  transmission after revocation/configuration change or unsafe effects.
+- **Browser evidence:** `scripts/check-inference-fallback.mjs` passed with the
+  actual consent component/primitives/styles and isolated mocked runtime:
+  per-chat targeting, named controls, checkbox gating, keyboard Enter approval
+  and Escape, long endpoint strings, light/dark themes, 1280/390/320/160 CSS-px
+  widths and overflow assertions. The 160-px case is a narrow scaling fixture,
+  not a literal browser-zoom or native Tauri test. No Computer Use performed.
+- **Final gates:** `npm.cmd run check-types` passed; lint passed at unchanged
+  **71 warnings / 2 informational notices**; full frontend **2,185 tests / 171
+  files passed**; production build passed; `git diff --check`, `cargo fmt
+  --check`, strict all-target locked Clippy and `cargo test --locked` passed.
+  Full Rust: **637 passed** (587 library, 25 filesystem, 25 Git; remaining
+  targets had zero tests). Existing dynamic-import/build timing notices remain.
+  Windows sandbox/temp restrictions required escalated test/build execution;
+  an initial Windows test-executable Common Controls loader failure was
+  resolved with an ignored generated test-harness activation manifest. No
+  production dependency/system-file changes were needed.
+- **Verification limits:** Windows native Rust automated tests only. Native
+  Tauri GUI, live providers, real local/LAN fallback and Linux/macOS native runs
+  were **not performed** and are not claimed. Browser/intercepted fixtures are
+  supplementary evidence, not native/live acceptance. Cached unknown targets
+  can be conservatively unavailable; any successful response-body bytes block
+  fallback even if metadata-only. No PeerTask fallback, partial cross-provider
+  continuation, load balancing or discovery-triggered routing. Earlier
+  C2/D2/D3/B1/F1/G2/T1-T3 behavior is covered by passing full regressions;
+  unrelated delegation work, safety stashes and `autonomous_tracker/` untouched.
+- **Rollback/stop:** Set both frontend/native `FALLBACK_ROUTING_ENABLED`
+  guards to false (or remove the fallback hook); effective policy becomes
+  Never and native grant creation/dispatch refuses fallback. Preserve additive
+  consent/history, configured endpoints and primary routing; do not delete
+  records to disable routing. **G3 is complete. Next: Q1: Integrated
+  intelligence quality. No subsequent checkpoint started. No push.**
 
 ### Z: Final integration and handoff
 
