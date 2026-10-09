@@ -1,4 +1,4 @@
-import type { ModelMessage, UIMessage } from "ai";
+import type { LanguageModel, ModelMessage, UIMessage } from "ai";
 import { generateText, convertToModelMessages } from "ai";
 import { prepareToolExposure } from "@/modules/ai/lib/toolExposure";
 import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
@@ -16,6 +16,7 @@ import { retrieveScopedEvidence } from "@/modules/ai/lib/scopedEvidence";
 import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
 import {
   measureRequest,
+  ContextBudgetError,
   resolveContextBudget,
 } from "@/modules/ai/lib/contextBudget";
 import type { ModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
@@ -43,6 +44,7 @@ import { sessionToolContext } from "@/modules/ai/store/chatRuntime";
 export async function prepareTarget(options: {
   session: SessionMeta;
   modelId: string;
+  model: LanguageModel;
   originals: UIMessage[];
   system: ModelMessage[];
   environment: string;
@@ -95,11 +97,7 @@ export async function prepareTarget(options: {
         preferences.selfHostedInference,
       ),
     };
-    const model = await buildConfiguredLanguageModel(
-      options.modelId,
-      state.apiKeys,
-      configuration,
-    );
+    const model = options.model;
     check();
     const context = sessionToolContext(session.id).toolContext;
     // An idle conversation's previous run is historical, not the next run's agent.
@@ -263,8 +261,10 @@ export async function prepareTarget(options: {
       measureRequest({ messages, tools }),
     );
     if (!budget.fits)
-      throw new Error(
+      throw new ContextBudgetError(
+        "target-context-budget",
         budget.reason ?? "Prepared context cannot fit the target model.",
+        budget,
       );
     return {
       budget,

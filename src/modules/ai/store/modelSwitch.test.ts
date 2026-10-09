@@ -46,6 +46,14 @@ const history: UIMessage[] = [
 ];
 
 beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(
+      new Response('{"data":[]}', {
+        headers: { "content-type": "application/json" },
+      }),
+    ),
+  );
   vi.clearAllMocks();
   vi.mocked(invoke).mockImplementation(targetContextFixture);
   chats.clear();
@@ -80,6 +88,7 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   chats.clear();
   seedMessages.clear();

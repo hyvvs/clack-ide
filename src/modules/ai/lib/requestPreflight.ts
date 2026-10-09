@@ -5,8 +5,9 @@ import {
   type LanguageModel,
   type ToolSet,
 } from "ai";
-import { knownTransportContextLimit, type ProviderId } from "@/modules/ai/config";
+import type { ProviderId } from "@/modules/ai/config";
 export { knownTransportContextLimit } from "@/modules/ai/config";
+import { resolveProviderContext } from "@/modules/ai/lib/providerContext";
 import {
   assertRequestBudget,
   assertMeasuredRequestBudget,
@@ -98,6 +99,7 @@ export function createRequestPreflight(options: {
   let refreshAttemptedAt = 0;
   let schemaKinds: Record<string, SchemaKind> = {};
   let availableSchemas: number | undefined;
+  let providerLimits: BudgetLimits = {};
   const limits = (): BudgetLimits => ({
     ...(options.optimization ? { inputCap: 1365, outputCap: 170 } : {}),
     ...(profile && state
@@ -105,7 +107,7 @@ export function createRequestPreflight(options: {
       : options.local
         ? { asserted: options.assertedContext }
         : {
-            reported: knownTransportContextLimit(options.modelId, options.providerId),
+            ...providerLimits,
             asserted: options.assertedContext,
           }),
     ...(effortBudget(options.reasoning)
@@ -114,6 +116,12 @@ export function createRequestPreflight(options: {
   });
   const refresh = async () => {
     await options.validateRouting?.();
+    if (!options.local && !profile)
+      providerLimits = await resolveProviderContext(
+        options.modelId,
+        options.providerId,
+        options.cachedMetadataOnly,
+      );
     if (!endpoint || !profile) return;
     const client = createSelfHostedProbeClient();
     const probeOptions = {
@@ -241,6 +249,12 @@ export function createRequestPreflight(options: {
             snapshot = null;
           }
         }
+        if (!options.local && !profile)
+          providerLimits = await resolveProviderContext(
+            options.modelId,
+            options.providerId,
+            true,
+          );
         assertMeasuredRequestBudget(limits(), measured.cost, measured.output);
         await options.validateEvidence?.();
       };

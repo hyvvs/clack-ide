@@ -24,6 +24,7 @@ import {
 } from "@/modules/ai/lib/contextBudget";
 
 export type ModelSwitchAssessment = {
+  contextBlocked?: boolean;
   status: "compatible" | "blocked" | "warning";
   reasons: string[];
   blockingReasons?: string[];

@@ -1,6 +1,12 @@
 export const UNKNOWN_CONTEXT_POLICY = 4096;
 
+export type ReportedContextEvidence = {
+  providerId: string;
+  modelId: string;
+  origin: "provider-metadata" | "installed-registry";
+};
 export type BudgetLimits = {
+  reportedEvidence?: ReportedContextEvidence;
   deployed?: number;
   asserted?: number;
   reported?: number;
@@ -36,6 +42,7 @@ export type ContextSection =
   | SchemaKind
   | "other";
 export type ContextBudget = {
+  reportedEvidence?: ReportedContextEvidence;
   ceiling: number;
   source: "deployed" | "manual" | "reported" | "unknown-policy";
   output: number;
@@ -78,8 +85,10 @@ export function resolveContextBudget(
   marginOverride?: number,
 ): ContextBudget {
   for (const [field, value] of Object.entries(limits)) {
+    if (field === "reportedEvidence") continue;
     if (typeof value === "boolean" || value === undefined) continue;
     if (
+      typeof value !== "number" ||
       !Number.isSafeInteger(value) ||
       (field === "outputReserve" ? value < 0 : value <= 0)
     )
@@ -170,6 +179,9 @@ export function resolveContextBudget(
       ? `Request exceeds its context budget (estimated input ${input}, output reserve ${reserve}, margin ${margin}, ceiling ${ceiling}). ${cost.system + cost.tools + margin + reserve >= ceiling ? "System instructions and tool schemas leave insufficient conversation space." : "Conversation/task/attachment content exceeds the working budget."}${unknown}`
       : undefined;
   return {
+    ...(limits.reportedEvidence
+      ? { reportedEvidence: limits.reportedEvidence }
+      : {}),
     ceiling,
     source,
     output,
@@ -454,7 +466,9 @@ export function contextBudgetPresentation(budget: ContextBudget) {
   };
   const provenance = {
     deployed: "Verified deployed/server evidence",
-    reported: "Installed provider/model metadata",
+    reported: budget.reportedEvidence
+      ? `${budget.reportedEvidence.origin === "provider-metadata" ? "Provider-supplied context metadata" : "Installed provider/model metadata"} (${budget.reportedEvidence.providerId}, ${budget.reportedEvidence.modelId})`
+      : "Installed provider/model metadata",
     manual: "Explicit configured context pin",
     "unknown-policy":
       "Unverified capacity; conservative planning policy, not a server capacity claim",

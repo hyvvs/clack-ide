@@ -35,13 +35,22 @@ export function ModelSwitchNotice({
   };
   const blocked = assessment.status === "blocked";
   return (
-    <div role="alert" className="min-w-0 space-y-3 p-3 text-xs outline-none [overflow-wrap:anywhere]">
+    <div
+      role="alert"
+      className="min-w-0 space-y-3 p-3 text-xs outline-none [overflow-wrap:anywhere]"
+    >
       <div>
         <p className="font-medium break-words">
-          {blocked ? "Cannot switch model" : "Check before switching"}
+          {assessment.contextBlocked
+            ? "This model can't handle the required context for this conversation."
+            : blocked
+              ? "Cannot switch model"
+              : "Check before switching"}
         </p>
         <p className="mt-1 text-muted-foreground break-words">{targetLabel}</p>
-        <p className="mt-1 text-muted-foreground">Same chat and history. Only future messages use the new model.</p>
+        <p className="mt-1 text-muted-foreground">
+          Same chat and history. Only future messages use the new model.
+        </p>
       </div>
       <ul className="max-h-48 space-y-2 overflow-y-auto text-muted-foreground">
         {assessment.reasons.map((reason) => (
@@ -56,13 +65,18 @@ export function ModelSwitchNotice({
             onKeyDown={onActionKeyDown}
             className="cursor-pointer"
           >
-            Preparation details
+            Technical details
           </summary>
           <ul className="mt-2 max-h-40 space-y-2 overflow-y-auto break-words [overflow-wrap:anywhere]">
-            {assessment.contextLimit !== null && <li>
-              Estimated text/tool context: {assessment.estimatedTokens.toLocaleString()} tokens / {assessment.contextLimit.toLocaleString()} ceiling
-              {assessment.workingBudget !== undefined && ` (${assessment.workingBudget.toLocaleString()} working)`}
-            </li>}
+            {assessment.contextLimit !== null && (
+              <li>
+                Estimated text/tool context:{" "}
+                {assessment.estimatedTokens.toLocaleString()} tokens /{" "}
+                {assessment.contextLimit.toLocaleString()} ceiling
+                {assessment.workingBudget !== undefined &&
+                  ` (${assessment.workingBudget.toLocaleString()} working)`}
+              </li>
+            )}
             {assessment.details?.map((detail) => (
               <li key={detail}>{detail}</li>
             ))}

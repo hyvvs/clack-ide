@@ -312,7 +312,7 @@ describe("U1 collaboration presentation", () => {
     );
     expect(html).toContain("Cannot switch model");
     expect(html).toContain("Required context cannot fit");
-    expect(html).toContain("Preparation details");
+    expect(html).toContain("Technical details");
     expect(html).not.toContain("Optimize and switch");
   });
   it("transcript source targets can receive keyboard focus without entering the tab order", async () => {

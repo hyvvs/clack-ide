@@ -7,13 +7,9 @@ import { currentWorkspaceEnv } from "@/modules/workspace/env";
 import { BUILTIN_AGENTS } from "../lib/agents";
 import {
   assessModelSwitch,
-  knownModelContextLimit,
   type ModelSwitchAssessment,
 } from "../lib/modelSwitchEligibility";
-import {
-  resolveModelSelectionInfo,
-  resolveSavedProviderModelTarget,
-} from "../lib/savedProviderModels";
+import { resolveModelSelectionInfo } from "../lib/savedProviderModels";
 import { loadMessages, workspaceEnvironmentFromId } from "../lib/sessions";
 import { useAgentsStore } from "./agentsStore";
 import {
@@ -27,10 +23,9 @@ import {
 import { usePlanStore } from "./planStore";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import { resolveModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
-import { resolveSelfHostedSelection } from "@/modules/ai/lib/selfHostedProfiles";
-import { profileBudgetLimits } from "@/modules/ai/lib/contextBudgetProfile";
 import {
   ContextBudgetError,
+  contextBudgetPresentation,
   measureRequest,
 } from "@/modules/ai/lib/contextBudget";
 import {
@@ -64,6 +59,16 @@ function unavailable(reason: string): PreparedModelSwitch {
 }
 
 function switchFailure(error: unknown): string {
+  if (
+    error instanceof ContextBudgetError &&
+    error.budget &&
+    !error.budget.fits
+  ) {
+    const { budget } = error;
+    return budget.source === "unknown-policy"
+      ? "Clack couldn't verify this model's context capacity, so the switch was stopped before sending anything."
+      : `This conversation needs more context than this model supports. ${contextBudgetPresentation(budget).message}`;
+  }
   if (
     error instanceof ContextBudgetError ||
     error instanceof SwitchConsentRequired
@@ -197,9 +202,11 @@ export async function prepareModelSwitch(
     const { readProjectMemory, formatEnvBlock } = await import(
       "../lib/transport"
     );
-    const { buildStableSystem, planModeSystemText } = await import(
-      "../lib/agent"
-    );
+    const {
+      buildStableSystem,
+      planModeSystemText,
+      buildConfiguredLanguageModel,
+    } = await import("../lib/agent");
     const memory = await readProjectMemory(
       workspaceRoot,
       workspaceEnvironmentFromId(session?.profile?.workspaceId) ?? environment,
@@ -225,14 +232,10 @@ export async function prepareModelSwitch(
     } catch {
       /* A deleted source model must not prevent selecting a valid target. */
     }
-    const hostedTarget = resolveSelfHostedSelection(
-      preferences.selfHostedInference,
-      targetModelId,
-    );
     const { sessionToolContext } = await import(
       "@/modules/ai/store/chatRuntime"
     );
-    const { knownTransportContextLimit } = await import(
+    const { modelBudgetLimits } = await import(
       "@/modules/ai/lib/requestPreflight"
     );
     const { buildRuntimeTools: buildTools } = await import(
@@ -241,13 +244,25 @@ export async function prepareModelSwitch(
     const { prepareToolExposure } = await import(
       "@/modules/ai/lib/toolExposure"
     );
-    const savedTarget = resolveSavedProviderModelTarget(
+    const identity = resolveModelTransportIdentity(targetModelId, preferences);
+    const reasoning = captureEffort(
       targetModelId,
-      preferences.savedProviderModels,
+      identity,
+      session?.effortPreferences,
+      preferences.selfHostedInference,
     );
-    const savedContext = savedTarget
-      ? knownTransportContextLimit(savedTarget.transportModelId, savedTarget.providerId)
-      : undefined;
+    const model = await buildConfiguredLanguageModel(
+      targetModelId,
+      state.apiKeys,
+      {
+        ...preferences,
+        customEndpointKeys: state.customEndpointKeys,
+        capturedModelIdentity: identity,
+        reasoning,
+        inferenceScope: scope,
+      },
+    );
+    const limits = await modelBudgetLimits(model);
     const selectionContext = {
       ...sessionToolContext(sessionId ?? "").toolContext,
       getAgentId: () => persona.id,
@@ -288,33 +303,12 @@ export async function prepareModelSwitch(
         "The chat or model settings changed during the check. Choose the model again.",
       );
     const assessment = assessModelSwitch({
-      reasoningBudget: effortBudget(
-        captureEffort(
-          targetModelId,
-          resolveModelTransportIdentity(targetModelId, preferences),
-          session?.effortPreferences,
-          preferences.selfHostedInference,
-        ),
-      ),
+      reasoningBudget: effortBudget(reasoning),
       toolTokens,
-      budgetLimits:
-        hostedTarget.status === "available"
-          ? profileBudgetLimits(
-              preferences.selfHostedInference,
-              hostedTarget.profile.id,
-              probe,
-            )
-          : savedContext
-            ? { reported: savedContext }
-            : undefined,
+      budgetLimits: limits,
       messages,
       targetModelId,
-      contextLimit: knownModelContextLimit(
-        targetModelId,
-        preferences.customEndpoints,
-        preferences.openaiCompatibleContextLimit,
-        preferences,
-      ),
+      contextLimit: null,
       systemText:
         buildStableSystem(
           targetModelId,
@@ -336,6 +330,18 @@ export async function prepareModelSwitch(
       preferences.selfHostedInference,
       probe,
     );
+    const routeDetails = [
+      `Target provider/model: ${identity.providerId} / ${identity.transportModelId}`,
+      `Input/tool capability evidence: ${capabilities.evidence}; tools: ${capabilities.tools}`,
+      ...(identity.customEndpointId
+        ? [`Custom endpoint identity: ${identity.customEndpointId}`]
+        : []),
+      ...(identity.selfHosted
+        ? [
+            `Endpoint/profile identity: ${identity.selfHosted.endpointId} / ${identity.selfHosted.profileId}; configuration revision: ${identity.selfHosted.configurationRevision}`,
+          ]
+        : []),
+    ];
     const system = [
       {
         role: "system" as const,
@@ -371,6 +377,7 @@ export async function prepareModelSwitch(
         prepared = await prepareTarget({
           session,
           modelId: targetModelId,
+          model,
           originals: messages,
           system,
           environment: formatEnvBlock(snapshot) ?? "",
@@ -387,7 +394,11 @@ export async function prepareModelSwitch(
           prepared.budget.cost.conversation;
         assessment.contextLimit = prepared.budget.ceiling;
         assessment.workingBudget = prepared.budget.working;
-        assessment.details = prepared.details;
+        assessment.details = [
+          ...routeDetails,
+          ...contextBudgetPresentation(prepared.budget).details.split("\n"),
+          ...prepared.details,
+        ];
       } finally {
         lease.settle();
       }
@@ -438,6 +449,22 @@ export async function prepareModelSwitch(
               ...assessment,
               status: "blocked",
               reasons: [switchFailure(error)],
+              ...(error instanceof ContextBudgetError && error.budget
+                ? {
+                    contextBlocked: true,
+                    estimatedTokens:
+                      error.budget.cost.system +
+                      error.budget.cost.tools +
+                      error.budget.cost.conversation,
+                    contextLimit: error.budget.ceiling,
+                    details: [
+                      ...routeDetails,
+                      ...contextBudgetPresentation(error.budget).details.split(
+                        "\n",
+                      ),
+                    ],
+                  }
+                : {}),
             },
             commit: async () => ({ ok: false, reason: switchFailure(error) }),
           };
