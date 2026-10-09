@@ -22,14 +22,15 @@ const entry = (id = "vendor/test", context_length = 65536) => ({
 it("uses exact provider/model metadata and the smaller top-provider bound", async () => {
   const fetcher = vi
     .fn()
-    .mockResolvedValue(
+    .mockResolvedValueOnce(
       catalog([
         {
           ...entry(),
           top_provider: { context_length: 32768, max_completion_tokens: 1024 },
         },
       ]),
-    );
+    )
+    .mockResolvedValueOnce(new Response("missing", { status: 404 }));
   vi.stubGlobal("fetch", fetcher);
   const resolve = createProviderContextResolver();
   expect(
@@ -50,7 +51,7 @@ it("uses exact provider/model metadata and the smaller top-provider bound", asyn
   expect(
     resolveContextBudget(await resolve("vendor/test", "openai-compatible")),
   ).toMatchObject({ source: "unknown-policy", ceiling: 4096 });
-  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher).toHaveBeenCalledTimes(2);
   expect(fetcher).toHaveBeenCalledWith(
     "https://openrouter.ai/api/v1/models",
     expect.objectContaining({
@@ -59,6 +60,10 @@ it("uses exact provider/model metadata and the smaller top-provider bound", asyn
       referrerPolicy: "no-referrer",
       headers: { Accept: "application/json" },
     }),
+  );
+  expect(fetcher).toHaveBeenCalledWith(
+    "https://openrouter.ai/api/v1/model/vendor/test%3Afree",
+    expect.objectContaining({ method: "GET", credentials: "omit" }),
   );
 });
 
@@ -148,7 +153,7 @@ it("expires metadata instead of retaining a stale large capacity", async () => {
   expect(fetcher).toHaveBeenCalledTimes(1);
   expect((await resolve("vendor/test", "openrouter")).reported).toBeUndefined();
   await resolve("vendor/test", "openrouter");
-  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(fetcher).toHaveBeenCalledTimes(3);
   time.mockReturnValue(931002);
   fetcher.mockResolvedValue(catalog([entry("vendor/test", 4096)]));
   expect((await resolve("vendor/test", "openrouter")).reported).toBe(4096);
@@ -197,10 +202,10 @@ it("bounds network waiting and retries failed metadata only after its backoff", 
   vi.stubGlobal("fetch", fetcher);
   const resolve = createProviderContextResolver();
   const waiting = resolve("vendor/test", "openrouter");
-  await vi.advanceTimersByTimeAsync(3000);
+  await vi.advanceTimersByTimeAsync(6000);
   expect((await waiting).reported).toBeUndefined();
-  await resolve("vendor/another", "openrouter");
-  expect(fetcher).toHaveBeenCalledTimes(1);
+  await resolve("vendor/test", "openrouter");
+  expect(fetcher).toHaveBeenCalledTimes(2);
 });
 
 it("times out a stalled response body and cancels its reader", async () => {

@@ -14,10 +14,12 @@ import { native } from "./native";
 import type { ToolContext } from "../tools/tools";
 import type { RunStepObservation } from "./runBudget";
 import type { ProviderRetryEvent } from "./providerRetry";
-import type {
-  ModelTransportIdentity,
-  SavedProviderModel,
-} from "./savedProviderModels";
+import {
+  resolveModelTransportIdentity,
+  type ModelTransportIdentity,
+  type SavedProviderModel,
+} from "@/modules/ai/lib/savedProviderModels";
+import { resolveProviderContext } from "@/modules/ai/lib/providerContext";
 import type { WorkspaceEnv } from "@/modules/workspace/env";
 import { materializeAttachmentMessages } from "./attachmentMessages";
 import {
@@ -222,29 +224,9 @@ export function createContextAwareTransport(deps: Deps) {
     const hostedState = recovery
       ? captured?.configuration.selfHostedInference
       : deps.getSelfHostedInference?.();
-    const identity = deps.getCapturedModelIdentity?.()?.selfHosted;
-    const snapshot =
-      hostedState && (!identity || hostedCapabilities?.identity !== identity)
-        ? await readSelfHostedSnapshot(hostedState, deps.getModelId())
-        : null;
-    const capabilities =
-      identity && hostedCapabilities?.identity === identity
-        ? hostedCapabilities.capabilities
-        : resolveModelInputCapabilities(
-            deps.getModelId(),
-            hostedState,
-            snapshot,
-          );
-    if (identity) hostedCapabilities = { identity, capabilities };
-    else hostedCapabilities = undefined;
-    if (capabilities.text === "unsupported")
-      throw new Error(
-        "Model unavailable or not a chat model. Choose a chat model in Models & Providers.",
-      );
-    const messagesWithAttachments = await materializeAttachmentMessages(
-      options.messages,
-      capabilities,
-    );
+    const capturedIdentity = recovery
+      ? captured?.configuration.capturedModelIdentity
+      : deps.getCapturedModelIdentity?.();
     const configuration =
       recovery && captured
         ? captured.configuration
@@ -267,11 +249,52 @@ export function createContextAwareTransport(deps: Deps) {
               deps.getOpenaiCompatibleContextLimit?.(),
             openrouterModelId: deps.getOpenrouterModelId?.(),
             savedProviderModels: deps.getSavedProviderModels?.(),
-            capturedModelIdentity: deps.getCapturedModelIdentity?.(),
+            capturedModelIdentity: capturedIdentity,
             customEndpoints: deps.getCustomEndpoints?.(),
             customEndpointKeys: deps.getCustomEndpointKeys?.(),
             planMode: deps.getPlanMode?.(),
           });
+    if (!configuration.modelId)
+      throw new Error(
+        "Captured model selection is unavailable. Choose a model before sending.",
+      );
+    const route =
+      configuration.capturedModelIdentity ??
+      resolveModelTransportIdentity(configuration.modelId, configuration);
+    const providerEvidence =
+      route.providerId === "openrouter"
+        ? (
+            await resolveProviderContext(
+              route.transportModelId,
+              route.providerId,
+            )
+          ).reportedEvidence
+        : undefined;
+    options.abortSignal?.throwIfAborted();
+    const identity = capturedIdentity?.selfHosted;
+    const snapshot =
+      hostedState && (!identity || hostedCapabilities?.identity !== identity)
+        ? await readSelfHostedSnapshot(hostedState, configuration.modelId)
+        : null;
+    const capabilities =
+      identity && hostedCapabilities?.identity === identity
+        ? hostedCapabilities.capabilities
+        : resolveModelInputCapabilities(
+            configuration.modelId,
+            hostedState,
+            snapshot,
+            { identity: route, evidence: providerEvidence },
+          );
+    if (identity) hostedCapabilities = { identity, capabilities };
+    else hostedCapabilities = undefined;
+    if (capabilities.text === "unsupported")
+      throw new Error(
+        "Model unavailable or not a chat model. Choose a chat model in Models & Providers.",
+      );
+    const messagesWithAttachments = await materializeAttachmentMessages(
+      options.messages,
+      capabilities,
+    );
     if (!recovery && scope) captured = { runId: scope.runId, configuration };
     let primaryError: unknown;
     let primaryBody = false;

@@ -302,6 +302,12 @@ export async function prepareModelSwitch(
       return unavailable(
         "The chat or model settings changed during the check. Choose the model again.",
       );
+    const capabilities = resolveModelInputCapabilities(
+      targetModelId,
+      preferences.selfHostedInference,
+      probe,
+      { identity, evidence: limits.reportedEvidence },
+    );
     const assessment = assessModelSwitch({
       reasoningBudget: effortBudget(reasoning),
       toolTokens,
@@ -319,17 +325,8 @@ export async function prepareModelSwitch(
         planModeSystemText(usePlanStore.getState().active) +
         (formatEnvBlock(snapshot) ?? ""),
       providerChanged,
-      capabilities: resolveModelInputCapabilities(
-        targetModelId,
-        preferences.selfHostedInference,
-        probe,
-      ),
+      capabilities,
     });
-    const capabilities = resolveModelInputCapabilities(
-      targetModelId,
-      preferences.selfHostedInference,
-      probe,
-    );
     const routeDetails = [
       `Target provider/model: ${identity.providerId} / ${identity.transportModelId}`,
       `Input/tool capability evidence: ${capabilities.evidence}; tools: ${capabilities.tools}`,

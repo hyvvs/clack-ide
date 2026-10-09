@@ -25,7 +25,7 @@ describe("AI transport error preservation", () => {
     const transport = createContextAwareTransport({
       getKeys: () => ({ ...EMPTY_PROVIDER_KEYS }),
       toolContext: {} as ToolContext,
-      getModelId: () => "test-model",
+      getModelId: () => "gpt-5.4-mini",
       getCustomInstructions: () => "",
       getAgentPersona: () => null,
       getLive: () => ({

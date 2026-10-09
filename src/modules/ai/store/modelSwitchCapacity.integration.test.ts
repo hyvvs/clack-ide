@@ -85,6 +85,11 @@ const saved = [
     "absent",
     1,
   ),
+  createSavedProviderModel(
+    { providerId: "openrouter", transportModelId: "z-ai/glm-5.2:free" },
+    "exact-variant",
+    1,
+  ),
 ];
 const selection = (id: string) => savedProviderModelSelectionId(id);
 const endpoint = createSelfHostedEndpoint(
@@ -226,6 +231,25 @@ beforeEach(() => {
           }),
           { headers: { "content-type": "application/json" } },
         );
+      if (String(url).startsWith("https://openrouter.ai/api/v1/model/"))
+        return String(url) ===
+          "https://openrouter.ai/api/v1/model/z-ai/glm-5.2%3Afree"
+          ? new Response(
+              JSON.stringify({
+                data: {
+                  id: "z-ai/glm-5.2:free",
+                  context_length: 32768,
+                  top_provider: { max_completion_tokens: 1024 },
+                  architecture: {
+                    input_modalities: ["text"],
+                    output_modalities: ["text"],
+                  },
+                  supported_parameters: [],
+                },
+              }),
+              { headers: { "content-type": "application/json" } },
+            )
+          : new Response("missing", { status: 404 });
       expect(String(url)).toBe("https://openrouter.ai/api/v1/chat/completions");
       const body = JSON.parse(String(init?.body));
       requests.push(body);
@@ -384,5 +408,52 @@ it("retains provider evidence after saved selection display-name changes", async
   expect(prepared.assessment.details?.join("\n")).toContain(
     "openrouter, test-vendor/offered:free",
   );
+  prepared.dispose?.();
+});
+
+it("sends and switches the exact variant with its own capacity and capabilities", async () => {
+  seedMessages.set("chat-a", []);
+  useChatStore.setState({
+    sessions: useChatStore.getState().sessions.map((s) =>
+      s.id === "chat-a" && s.profile
+        ? {
+            ...s,
+            profile: { ...s.profile, modelId: selection("exact-variant") },
+          }
+        : s,
+    ),
+    selectedModelId: selection("exact-variant"),
+  });
+  await sendMessageToSession("chat-a", { text: "Hello" });
+  const chat = getOrCreateChat("chat-a");
+  expect(chat.status).toBe("ready");
+  expect(requests).toHaveLength(1);
+  expect(requests[0].model).toBe("z-ai/glm-5.2:free");
+  expect(requests[0].max_tokens).toBe(1024);
+  useChatStore.getState().finishRun("chat-a", "completed");
+  const transcript = structuredClone(chat.messages);
+  const other = useChatStore.getState().sessions[1];
+  const prepared = await prepareModelSwitch(
+    "chat-a",
+    selection("exact-variant"),
+  );
+  expect(prepared.assessment.contextLimit).toBe(32768);
+  expect(prepared.assessment.status).not.toBe("blocked");
+  expect(prepared.assessment.details?.join("\n")).toContain(
+    "tools: unsupported",
+  );
+  expect(prepared.assessment.details?.join("\n")).toContain("exact-model");
+  expect(await prepared.commit(true)).toEqual({ ok: true });
+  expect(chat.messages).toEqual(transcript);
+  expect(useChatStore.getState().sessions[1]).toBe(other);
+  expect(requests).toHaveLength(1);
+  const metadataCalls = vi
+    .mocked(fetch)
+    .mock.calls.filter(([url]) =>
+      String(url).startsWith("https://openrouter.ai/api/v1/model/"),
+    );
+  expect(metadataCalls.map(([url]) => String(url))).toEqual([
+    "https://openrouter.ai/api/v1/model/z-ai/glm-5.2%3Afree",
+  ]);
   prepared.dispose?.();
 });

@@ -4,6 +4,12 @@ export type ReportedContextEvidence = {
   providerId: string;
   modelId: string;
   origin: "provider-metadata" | "installed-registry";
+  lookup?: "catalog" | "exact-model";
+  capabilities?: {
+    inputModalities?: string[];
+    outputModalities?: string[];
+    supportedParameters?: string[];
+  };
 };
 export type BudgetLimits = {
   reportedEvidence?: ReportedContextEvidence;
@@ -467,7 +473,7 @@ export function contextBudgetPresentation(budget: ContextBudget) {
   const provenance = {
     deployed: "Verified deployed/server evidence",
     reported: budget.reportedEvidence
-      ? `${budget.reportedEvidence.origin === "provider-metadata" ? "Provider-supplied context metadata" : "Installed provider/model metadata"} (${budget.reportedEvidence.providerId}, ${budget.reportedEvidence.modelId})`
+      ? `${budget.reportedEvidence.origin === "provider-metadata" ? "Provider-supplied context metadata" : "Installed provider/model metadata"} (${budget.reportedEvidence.providerId}, ${budget.reportedEvidence.modelId}${budget.reportedEvidence.lookup ? `; ${budget.reportedEvidence.lookup}` : ""})`
       : "Installed provider/model metadata",
     manual: "Explicit configured context pin",
     "unknown-policy":

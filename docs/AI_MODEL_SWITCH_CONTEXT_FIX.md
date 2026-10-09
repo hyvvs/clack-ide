@@ -3,6 +3,9 @@
 Scope: target context resolution and switch error presentation only. No roadmap
 checkpoint, picker redesign, prompt reduction, or new conversation architecture.
 
+The sections through Verification record the initial fix at `e5a099f`. The exact
+OpenRouter variant follow-up is recorded separately at the end of this document.
+
 ## Root Cause
 
 At base `aab2374`, both normal inference and C2 target preparation ultimately used
@@ -116,3 +119,88 @@ Unknown picker entries are not disabled as though proven incompatible.
   The public metadata check is not an inference or native model-switch acceptance test.
 
 No push and no subsequent checkpoint is part of this fix.
+
+## Exact Variant Follow-Up (2026-10-09)
+
+### Gap and Lookup
+
+The broad catalog returned the base `z-ai/glm-5.2`, but not its exact `:free`
+variant. The previous resolver had no second lookup after that exact catalog miss.
+Selectability and a base-model entry do not establish a variant's capacity.
+
+Unknown OpenRouter routes now use the existing shared resolver with this order:
+exact broad-catalog entry, bounded exact-model lookup, then unknown policy. The
+documented endpoint is singular `GET /api/v1/model/{author}/{slug}`. Author and
+slug are independently encoded, preserving the selected suffix; for this variant
+the path is `/api/v1/model/z-ai/glm-5.2%3Afree`. The returned `data.id` must exactly
+match the selected ID. Base IDs, aliases resolving to a different ID, malformed
+responses and errors do not supply variant evidence.
+
+Source: [OpenRouter exact-model API](https://openrouter.ai/docs/api/api-reference/models/get-a-model-by-its-slug).
+
+### Evidence and Cache
+
+The same parser validates catalog and exact-model context, the conservative
+top-provider bound, completion limit, input/output modalities and supported
+parameters. Capability arrays are normalized, deduplicated and bounded to 32
+items of at most 64 characters. Descriptions and other untrusted model text are
+not retained. Missing capabilities stay unknown; an explicitly empty list means
+unsupported. Returned capability evidence is copied so callers cannot mutate
+cached records. No base capacity, completion limit or capability is inherited.
+
+Normal transport attachment checks, switch eligibility and target commit checks
+consume provider/model-matched evidence. Tools, image/audio and structured-output
+support retain variant distinctions. Native PDF delivery and reasoning support
+are not certified by this metadata change. Current target-context fingerprints
+and commit-time limit/capability comparisons retain stale-preparation protection.
+B1's arithmetic, unknown 4,096-token policy, safety margin, output reserve and
+final request enforcement are unchanged. No instructions or history were reduced.
+
+Successful metadata uses the existing fifteen-minute TTL; misses/failures use
+thirty-second backoff. Exact lookups deduplicate per selected ID, with at most
+128 cached records and eight outstanding exact requests. Each HTTP request has
+a three-second deadline including body reading; an uncached catalog miss can
+therefore take up to six seconds across the two bounded requests. Exact responses
+are capped at 64 KiB; catalog bounds remain four MiB and 4,096 entries. Expired
+cached-only evidence stays unknown. Installed routes remain offline. Other
+providers never consult OpenRouter. There is no picker enumeration or request-time
+retry loop. All requests are credential-free GETs with no conversation content,
+cookies, referrer or redirects. Readers and deadlines are released, and the fetch
+is aborted even when headers/status reject a response before a reader opens.
+
+### Live Result and Automated Verification
+
+Credential-free public metadata checks on 2026-10-09 returned:
+
+- Exact `z-ai/glm-5.2:free`: HTTP 404, `Model not found`. Both raw-colon and
+  encoded-colon paths returned that result. It correctly remains unverified.
+- Exact base `z-ai/glm-5.2`: HTTP 200 with context 1,048,576 and completion
+  limit 943,718. This is not evidence for the free variant.
+- Exact `poolside/laguna-s-2.1:free`: HTTP 200 with the exact variant ID,
+  context 262,144 and completion limit 32,768.
+
+The GLM success tests are explicitly synthetic provider responses, not live
+capacity claims. Unit fixtures give the base and variant different context,
+completion, tools, structured-output and modality metadata. The real frontend
+Chat/transport/adapter integration fixture sends the exact variant with its
+1,024-token completion cap and switches with its own 32,768-token context.
+HTTP/native operations and settings/session/todo persistence are stubbed, while
+the frontend Chat/transport/adapter path is real. Transcript and other-chat
+isolation remain intact, and switching performs no inference call.
+
+- Added coverage: 23 exact-variant unit cases and one chat/switch integration case.
+- Consolidated focused regression group: 20 files, 374 tests passed.
+- Final full frontend suite: 181 files, 2,293 tests passed.
+- `npm.cmd run check-types`: passed after fixture/captured-model typing fixes.
+- `npm.cmd run lint`: passed at existing 71 warnings and two informational notices.
+- `npm.cmd run build`: passed with the existing four ineffective dynamic import
+  warnings and plugin timing notice.
+- `git diff --check`: passed. Rust is unchanged; Rust gates were not needed.
+- Initial sandbox test launch failed before running tests due to a Vitest cache
+  rename EPERM. Tests passed with normal host cache access. Final checks were
+  repeated only when a concrete typing/lint or metadata cleanup correction required it.
+- No Computer Use, native GUI interaction or real-provider inference performed.
+
+Remaining limitation: an exact endpoint failure cannot verify a selectable variant.
+No model-specific table, suffix stripping, provider credential discovery, UI
+redesign, roadmap checkpoint or push is part of this follow-up.

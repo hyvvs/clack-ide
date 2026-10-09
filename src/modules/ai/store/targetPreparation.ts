@@ -290,18 +290,25 @@ export async function prepareTarget(options: {
           options.modelId,
         );
         check();
+        const currentLimits = await modelBudgetLimits(model);
+        check();
         const latestCapabilities = resolveModelInputCapabilities(
           options.modelId,
           preferences.selfHostedInference,
           latestProbe,
+          {
+            identity: resolveModelTransportIdentity(
+              options.modelId,
+              preferences,
+            ),
+            evidence: currentLimits.reportedEvidence,
+          },
         );
         if (
           (await contextDigest(latestCapabilities)) !==
           (await contextDigest(options.capabilities))
         )
           throw new Error("Target capabilities changed during preparation.");
-        check();
-        const currentLimits = await modelBudgetLimits(model);
         check();
         if (JSON.stringify(currentLimits) !== JSON.stringify(limits))
           throw new Error("Target context limits changed during preparation.");

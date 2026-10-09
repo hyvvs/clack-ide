@@ -1,6 +1,10 @@
 import { isCompatModelId, MODELS, type ModelInfo } from "@/modules/ai/config";
 import type { AttachmentRecord } from "./attachments";
-import { isSavedProviderModelSelectionId } from "./savedProviderModels";
+import {
+  isSavedProviderModelSelectionId,
+  type ModelTransportIdentity,
+} from "@/modules/ai/lib/savedProviderModels";
+import type { ReportedContextEvidence } from "@/modules/ai/lib/contextBudget";
 import {
   resolveSelfHostedSelection,
   type SelfHostedState,
@@ -16,7 +20,13 @@ export type ModelInputCapabilities = {
   document: CapabilitySupport;
   tools: CapabilitySupport;
   audio: CapabilitySupport;
-  evidence: "registry" | "freeform" | "unknown-model" | "server";
+  evidence:
+    | "registry"
+    | "freeform"
+    | "unknown-model"
+    | "server"
+    | "provider-metadata";
+  structuredOutputs?: CapabilitySupport;
 };
 
 export type AttachmentCapabilityStatus =
@@ -45,6 +55,10 @@ export function resolveModelInputCapabilities(
   selectionId: string,
   state?: SelfHostedState,
   snapshot: ProbeSnapshot | null = null,
+  provider?: {
+    identity: ModelTransportIdentity;
+    evidence?: ReportedContextEvidence;
+  },
 ): ModelInputCapabilities {
   const target = state && resolveSelfHostedSelection(state, selectionId);
   if (target?.status === "available")
@@ -62,6 +76,43 @@ export function resolveModelInputCapabilities(
       audio: "unsupported",
       evidence: "server",
     };
+  const evidence = provider?.evidence;
+  if (
+    provider?.identity.providerId === "openrouter" &&
+    evidence?.providerId === "openrouter" &&
+    evidence.origin === "provider-metadata" &&
+    evidence.modelId === provider.identity.transportModelId &&
+    evidence.capabilities
+  ) {
+    const {
+      inputModalities: input,
+      outputModalities: output,
+      supportedParameters: parameters,
+    } = evidence.capabilities;
+    const has = (
+      values: string[] | undefined,
+      value: string,
+    ): CapabilitySupport =>
+      values
+        ? values.includes(value)
+          ? "supported"
+          : "unsupported"
+        : "unknown";
+    return {
+      text:
+        (input && !input.includes("text")) ||
+        (output && !output.includes("text"))
+          ? "unsupported"
+          : "supported",
+      image: has(input, "image"),
+      audio: has(input, "audio"),
+      // The compatible adapter does not certify native PDF delivery from file modality metadata.
+      document: "unknown",
+      tools: has(parameters, "tools"),
+      structuredOutputs: has(parameters, "structured_outputs"),
+      evidence: "provider-metadata",
+    };
+  }
   if (
     isSavedProviderModelSelectionId(selectionId) ||
     isCompatModelId(selectionId) ||
