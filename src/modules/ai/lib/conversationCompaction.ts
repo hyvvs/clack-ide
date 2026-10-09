@@ -496,6 +496,7 @@ export async function createConversationCompactor(options: {
           throw new CompactionError(
             "budget",
             current.budget.reason ?? "The prepared request still exceeds B1.",
+            current.budget,
           );
         if (prepared)
           options.onOptimized?.({

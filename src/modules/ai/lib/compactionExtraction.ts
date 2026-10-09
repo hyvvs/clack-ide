@@ -6,6 +6,7 @@ import {
   measureRequest,
   resolveContextBudget,
   type BudgetLimits,
+  type ContextBudget,
 } from "@/modules/ai/lib/contextBudget";
 import type {
   MemoryClaim,
@@ -27,10 +28,11 @@ export const COMPACTION_POLICY = Object.freeze({
 });
 
 export class CompactionError extends ContextBudgetError {
-  constructor(code: string, detail: string) {
+  constructor(code: string, detail: string, budget?: ContextBudget) {
     super(
       `compaction-${code}`,
       `${detail} Original conversation history is unchanged.`,
+      budget,
     );
     this.name = "CompactionError";
   }

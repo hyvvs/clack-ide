@@ -339,6 +339,7 @@ export function createContextAwareTransport(deps: Deps) {
             requirements = value;
           },
           inputCapabilities: attempt?.capabilities ?? capabilities,
+          toolSelectionMessages: attemptMessages,
           uiMessages: envBlock
             ? injectEnvIntoLastUser(attemptMessages, envBlock)
             : attemptMessages,

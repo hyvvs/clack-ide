@@ -4,6 +4,7 @@ import {
   measureRequest,
   resolveContextBudget,
   type BudgetLimits,
+  type SchemaKind,
 } from "@/modules/ai/lib/contextBudget";
 import { serializedToolSchemas } from "@/modules/ai/lib/requestPreflight";
 import { contextDigest } from "@/modules/ai/lib/targetContext";
@@ -14,7 +15,7 @@ import {
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { ToolContext } from "@/modules/ai/tools/context";
 
-export const EXPOSURE_POLICY = "f1-exposure-v1";
+export const EXPOSURE_POLICY = "f1-exposure-v2";
 export const EXPOSURE_LIMITS = {
   candidates: 192,
   optional: 16,
@@ -35,6 +36,23 @@ export function sameToolRevision(a: object, b: object): boolean {
 }
 export function toolRevisionIdentity(tool: object): unknown {
   return identities.get(tool) ?? null;
+}
+export function toolSchemaKinds(tools: ToolSet): Record<string, SchemaKind> {
+  return Object.fromEntries(
+    Object.entries(tools).map(([name, tool]) => {
+      const identity = identities.get(tool) as
+        | { definition?: { binding?: { kind?: string } } }
+        | undefined;
+      return [
+        name,
+        identity?.definition?.binding?.kind === "mcp"
+          ? "mcp"
+          : name.startsWith("custom_")
+            ? "custom"
+            : "builtin",
+      ];
+    }),
+  );
 }
 export function clearExposureCache() {
   cache.clear();
@@ -83,6 +101,15 @@ export function exposureQuery(messages: readonly ModelMessage[]): string {
           .filter((p) => p.type === "text")
           .map((p) => p.text)
           .join("\n")
+  ).slice(-EXPOSURE_LIMITS.rankingCharacters);
+}
+export function uiExposureQuery(messages: readonly UIMessage[]): string {
+  const latest = [...messages].reverse().find((m) => m.role === "user");
+  return (
+    latest?.parts
+      .filter((p) => p.type === "text")
+      .map((p) => p.text)
+      .join("\n") ?? ""
   ).slice(-EXPOSURE_LIMITS.rankingCharacters);
 }
 export function requiredUiToolNames(messages: readonly UIMessage[]): string[] {
@@ -271,6 +298,7 @@ export async function prepareToolExposure(
     limits?: BudgetLimits;
     mandatory?: readonly string[];
     uiMessages?: readonly UIMessage[];
+    query?: string;
   },
 ) {
   const authorization = () =>
@@ -308,6 +336,7 @@ export async function prepareToolExposure(
   const key = await contextDigest({
     policy: EXPOSURE_POLICY,
     source: [input.messages, input.uiMessages],
+    query: input.query,
     session: input.context.getSessionId(),
     workspace: input.context.getWorkspaceId?.(),
     root: input.context.getWorkspaceRoot(),
@@ -333,7 +362,7 @@ export async function prepareToolExposure(
   const selection = selectToolSchemas({
     schemas,
     mandatory,
-    query: exposureQuery(input.messages),
+    query: input.query ?? exposureQuery(input.messages),
     system: input.system,
     messages: input.messages,
     limits: input.limits,

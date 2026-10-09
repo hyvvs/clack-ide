@@ -5,13 +5,15 @@ import {
   type LanguageModel,
   type ToolSet,
 } from "ai";
-import { MODEL_CONTEXT_LIMITS } from "@/modules/ai/config";
+import { knownTransportContextLimit, type ProviderId } from "@/modules/ai/config";
+export { knownTransportContextLimit } from "@/modules/ai/config";
 import {
   assertRequestBudget,
   assertMeasuredRequestBudget,
   ContextBudgetError,
   resolveContextBudget,
   type BudgetLimits,
+  type SchemaKind,
 } from "@/modules/ai/lib/contextBudget";
 import {
   budgetIdentity,
@@ -36,20 +38,16 @@ import {
 } from "@/modules/ai/lib/reasoningEffort";
 
 const modelBudgets = new WeakMap<object, () => Promise<BudgetLimits>>();
-export function knownTransportContextLimit(
-  modelId: string,
-): number | undefined {
-  if (
-    [
-      "openrouter-custom",
-      "openai-compatible-custom",
-      "lmstudio-local",
-      "mlx-local",
-      "ollama-local",
-    ].includes(modelId)
-  )
-    return undefined;
-  return MODEL_CONTEXT_LIMITS[modelId];
+const modelDiagnostics = new WeakMap<
+  object,
+  (kinds: Record<string, SchemaKind>, available: number) => void
+>();
+export function setModelSchemaDiagnostics(
+  model: LanguageModel,
+  kinds: Record<string, SchemaKind>,
+  available: number,
+) {
+  if (typeof model === "object") modelDiagnostics.get(model)?.(kinds, available);
 }
 export async function modelBudgetLimits(
   model: LanguageModel,
@@ -76,6 +74,7 @@ export function createRequestPreflight(options: {
   requireRequestedOutput?: boolean;
   cachedMetadataOnly?: boolean;
   modelId: string;
+  providerId?: ProviderId;
   local: boolean;
   state?: SelfHostedState;
   admission?: InferenceAdmission;
@@ -97,13 +96,18 @@ export function createRequestPreflight(options: {
     state && profile ? budgetIdentity(state, profile.id) : undefined;
   let snapshot: ProbeSnapshot | null = null;
   let refreshAttemptedAt = 0;
+  let schemaKinds: Record<string, SchemaKind> = {};
+  let availableSchemas: number | undefined;
   const limits = (): BudgetLimits => ({
     ...(options.optimization ? { inputCap: 1365, outputCap: 170 } : {}),
     ...(profile && state
       ? profileBudgetLimits(state, profile.id, snapshot)
       : options.local
         ? { asserted: options.assertedContext }
-        : { reported: knownTransportContextLimit(options.modelId) }),
+        : {
+            reported: knownTransportContextLimit(options.modelId, options.providerId),
+            asserted: options.assertedContext,
+          }),
     ...(effortBudget(options.reasoning)
       ? { reasoningBudget: effortBudget(options.reasoning) }
       : {}),
@@ -213,12 +217,16 @@ export function createRequestPreflight(options: {
         await refresh();
         return limits();
       });
+      modelDiagnostics.set(wrapped, (kinds, available) => {
+        schemaKinds = { ...kinds };
+        availableSchemas = available;
+      });
       return wrapped;
     },
     async prepare(body: Record<string, unknown>) {
       if (options.reasoning) effortProviderOptions(options.reasoning);
       await refresh();
-      const measured = assertRequestBudget(limits(), body);
+      const measured = assertRequestBudget(limits(), body, schemaKinds, availableSchemas);
       return async () => {
         if (options.reasoning) effortProviderOptions(options.reasoning);
         await checkIdentity();

@@ -230,7 +230,8 @@ export function planCompaction(options: {
   if (!protectedBudget.fits)
     throw new CompactionError(
       "protected-budget",
-      `Protected instructions, requirements, attachments, unresolved tools and recent history cannot fit this model. Choose a larger verified context or reduce the new request. ${protectedBudget.reason ?? ""}`,
+      `Protected instructions, requirements, attachments, unresolved tools and recent history cannot fit this model. ${protectedBudget.reason ?? ""}`,
+      protectedBudget,
     );
   if (
     tailStart <= coveredEnd ||

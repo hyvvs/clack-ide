@@ -2,9 +2,9 @@ import type { UIMessage } from "ai";
 import {
   endpointIdFromCompatModel,
   isCompatModelId,
-  MODEL_CONTEXT_LIMITS,
+  knownTransportContextLimit,
   type CustomEndpoint,
-} from "../config";
+} from "@/modules/ai/config";
 import {
   attachmentReferenceAsRecord,
   CLACK_ATTACHMENT_PART_TYPE,
@@ -16,7 +16,7 @@ import {
   type CapabilitySupport,
   type ModelInputCapabilities,
 } from "./modelCapabilities";
-import { isSavedProviderModelSelectionId } from "./savedProviderModels";
+import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
 import {
   estimateTextTokens,
   resolveContextBudget,
@@ -37,6 +37,7 @@ export function knownModelContextLimit(
   modelId: string,
   endpoints: readonly CustomEndpoint[] = [],
   legacyContextLimit?: number,
+  configuration?: Parameters<typeof resolveModelTransportIdentity>[1],
 ): number | null {
   const positive = (value: number | undefined) =>
     value && Number.isFinite(value) && value > 0 ? value : null;
@@ -48,13 +49,15 @@ export function knownModelContextLimit(
   }
   if (modelId === "openai-compatible-custom")
     return positive(legacyContextLimit);
-  // Freeform IDs have display estimates in config, not verified model windows.
-  if (
-    resolveModelInputCapabilities(modelId).evidence !== "registry" ||
-    isSavedProviderModelSelectionId(modelId)
-  )
+  try {
+    const identity = resolveModelTransportIdentity(modelId, configuration);
+    if (identity.selfHosted) return null;
+    return positive(
+      knownTransportContextLimit(identity.transportModelId, identity.providerId),
+    );
+  } catch {
     return null;
-  return positive(MODEL_CONTEXT_LIMITS[modelId]);
+  }
 }
 
 export function assessModelSwitch({

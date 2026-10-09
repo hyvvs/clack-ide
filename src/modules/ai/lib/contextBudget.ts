@@ -19,7 +19,22 @@ export type RequestCost = {
   tools: number;
   conversation: number;
   uncertainMedia: boolean;
+  breakdown?: Partial<Record<ContextSection, number>>;
+  schemas?: { available?: number; exposed: number; bytes: number };
 };
+export type SchemaKind = "builtin" | "custom" | "mcp";
+export type ContextSection =
+  | "core"
+  | "agent"
+  | "project"
+  | "customInstructions"
+  | "history"
+  | "memory"
+  | "retrieval"
+  | "attachments"
+  | "environment"
+  | SchemaKind
+  | "other";
 export type ContextBudget = {
   ceiling: number;
   source: "deployed" | "manual" | "reported" | "unknown-policy";
@@ -31,6 +46,7 @@ export type ContextBudget = {
   fits: boolean;
   reason?: string;
   provenance: "estimated";
+  reasoningReserve?: number;
 };
 
 export class ContextBudgetError extends Error {
@@ -164,6 +180,7 @@ export function resolveContextBudget(
     fits,
     reason,
     provenance: "estimated",
+    reasoningReserve: limits.reasoningBudget,
   };
 }
 
@@ -184,19 +201,84 @@ export function estimateTextTokens(text: string): number {
   return tokens;
 }
 
-export function measureRequest(body: Record<string, unknown>): RequestCost {
+export function measureRequest(
+  body: Record<string, unknown>,
+  schemaKinds: Record<string, SchemaKind> = {},
+  availableSchemas?: number,
+): RequestCost {
+  const breakdown: NonNullable<RequestCost["breakdown"]> = {};
   const cost: RequestCost = {
     system: 0,
     tools: 0,
     conversation: 0,
     uncertainMedia: false,
+    breakdown,
   };
-  const measure = (value: unknown): number => {
+  const add = (section: ContextSection, tokens: number) => {
+    if (tokens) breakdown[section] = (breakdown[section] ?? 0) + tokens;
+    return tokens;
+  };
+  const textCost = (text: string, section: ContextSection): number => {
+    const tokens = estimateTextTokens(text);
+    if (section === "core") {
+      const markers = [
+        ...text.matchAll(
+          /\n\n## (PROJECT MEMORY|ACTIVE AGENT[^\n]*|USER CUSTOM INSTRUCTIONS[^\n]*)/g,
+        ),
+      ].slice(0, 16);
+      let current: ContextSection = "core";
+      let previous = 0;
+      for (const marker of markers) {
+        const prefix = estimateTextTokens(text.slice(0, marker.index));
+        add(current, prefix - previous);
+        previous = prefix;
+        current =
+          marker[1] === "PROJECT MEMORY"
+            ? "project"
+            : marker[1].startsWith("ACTIVE AGENT")
+              ? "agent"
+              : "customInstructions";
+      }
+      add(current, tokens - previous);
+    } else if (
+      section === "history" &&
+      text.startsWith("<env>\n") &&
+      text.includes("</env>")
+    ) {
+      const end = text.indexOf("</env>") + 6;
+      const environment = estimateTextTokens(text.slice(0, end));
+      add("environment", environment);
+      textCost(text.slice(end), "history");
+    } else {
+      const content = text.trimStart();
+      const category =
+        section !== "history"
+          ? section
+          : content.startsWith("Derived conversation evidence,")
+            ? "memory"
+            : /^(Retrieved original conversation evidence\.|Authorized project\/task evidence \()/u.test(
+                  content,
+                )
+              ? "retrieval"
+              : /^----- CLACK (ATTACHMENT|SELECTION) -----/u.test(content)
+                ? "attachments"
+                : "history";
+      add(category, tokens);
+    }
+    return tokens;
+  };
+  const schemaNames = new Set<string>();
+  let schemaBytes = 0;
+  const measure = (value: unknown, section: ContextSection): number => {
     if (value == null) return 0;
-    if (typeof value === "string") return estimateTextTokens(value);
+    if (typeof value === "string") return textCost(value, section);
     if (Array.isArray(value))
-      return 2 + value.reduce((sum, item) => sum + measure(item) + 1, 0);
-    if (typeof value !== "object") return estimateTextTokens(String(value));
+      return (
+        add("other", 2 + value.length) +
+        value.reduce((sum, item) => sum + measure(item, section), 0)
+      );
+    if (typeof value !== "object")
+      return add(section, estimateTextTokens(String(value)));
     const record = value as Record<string, unknown>;
     // Recognize adapter media envelopes, never tokenize their base64 or URLs.
     if (
@@ -228,17 +310,35 @@ export function measureRequest(body: Record<string, unknown>): RequestCost {
       cost.uncertainMedia = true;
       return 0;
     }
+    if (["builtin", "custom", "mcp"].includes(section)) {
+      const fn =
+        record.function && typeof record.function === "object"
+          ? (record.function as Record<string, unknown>)
+          : record;
+      if (
+        typeof fn.name === "string" &&
+        ("parameters" in fn || "input_schema" in fn)
+      ) {
+        schemaNames.add(fn.name);
+        section =
+          schemaKinds[fn.name] ??
+          (fn.name.startsWith("custom_") ? "custom" : "builtin");
+      }
+    }
     return (
-      2 +
+      add(section, 2) +
       Object.entries(record).reduce(
-        (sum, [key, item]) => sum + estimateTextTokens(key) + measure(item) + 2,
+        (sum, [key, item]) =>
+          sum +
+          add(section, estimateTextTokens(key) + 2) +
+          measure(item, section),
         0,
       )
     );
   };
   for (const [key, value] of Object.entries(body)) {
     if (["system", "instructions", "systemInstruction"].includes(key))
-      cost.system += measure(value);
+      cost.system += measure(value, "core");
     else if (
       [
         "tools",
@@ -249,12 +349,20 @@ export function measureRequest(body: Record<string, unknown>): RequestCost {
         "functions",
         "function_call",
       ].includes(key)
-    )
-      cost.tools += measure(value);
-    else if (key === "generationConfig" && value && typeof value === "object") {
+    ) {
+      const isSchemas = key === "tools" || key === "functions";
+      if (isSchemas && value !== undefined)
+        schemaBytes += new TextEncoder().encode(JSON.stringify(value)).length;
+      cost.tools += measure(value, isSchemas ? "builtin" : "other");
+    } else if (
+      key === "generationConfig" &&
+      value &&
+      typeof value === "object"
+    ) {
       const config = value as Record<string, unknown>;
       cost.tools +=
-        measure(config.responseSchema) + measure(config.responseJsonSchema);
+        measure(config.responseSchema, "other") +
+        measure(config.responseJsonSchema, "other");
     } else if (["messages", "input", "contents", "prompt"].includes(key)) {
       if (Array.isArray(value)) {
         for (const item of value) {
@@ -263,18 +371,25 @@ export function measureRequest(body: Record<string, unknown>): RequestCost {
             typeof item === "object" &&
             ["system", "developer"].includes(String(item.role))
           )
-            cost.system += measure(item);
-          else cost.conversation += measure(item);
+            cost.system += measure(item, "core");
+          else cost.conversation += measure(item, "history");
         }
-      } else cost.conversation += measure(value);
+      } else cost.conversation += measure(value, "history");
     }
   }
+  cost.schemas = {
+    available: availableSchemas,
+    exposed: schemaNames.size,
+    bytes: schemaBytes,
+  };
   return cost;
 }
 
 export function assertRequestBudget(
   limits: BudgetLimits,
   body: Record<string, unknown>,
+  schemaKinds?: Record<string, SchemaKind>,
+  availableSchemas?: number,
 ): ContextBudget {
   const generation = body.generationConfig as
     | { maxOutputTokens?: number }
@@ -289,7 +404,7 @@ export function assertRequestBudget(
     invalid("The adapter must serialize exactly one output token limit.");
   return assertMeasuredRequestBudget(
     limits,
-    measureRequest(body),
+    measureRequest(body, schemaKinds, availableSchemas),
     values[0] as number,
   );
 }
@@ -310,4 +425,68 @@ export function assertMeasuredRequestBudget(
       budget,
     );
   return budget;
+}
+
+export function contextBudgetPresentation(budget: ContextBudget) {
+  const { cost } = budget;
+  const unknown = budget.source === "unknown-policy";
+  const message = unknown
+    ? "Verify or configure this model's context capacity. Clack stopped before sending a request that may be too large."
+    : cost.tools > Math.max(cost.system, cost.conversation)
+      ? "Disable unnecessary tools or choose a model with a larger context window."
+      : cost.conversation > cost.system + cost.tools
+        ? "Optimize the conversation or choose a model with a larger context window."
+        : "Choose a model with a larger context window for the required instructions and project context.";
+  const labels: Record<ContextSection, string> = {
+    core: "Core system instructions",
+    agent: "Agent instructions",
+    project: "Workspace/project instructions",
+    customInstructions: "User custom instructions",
+    history: "Conversation history and tool state",
+    memory: "Derived conversation memory",
+    retrieval: "Retrieved conversation/project/task evidence",
+    attachments: "Text attachments/selections",
+    environment: "Environment metadata",
+    builtin: "Built-in tool schemas",
+    custom: "Custom tool schemas",
+    mcp: "MCP tool schemas",
+    other: "Other required request structure/options",
+  };
+  const provenance = {
+    deployed: "Verified deployed/server evidence",
+    reported: "Installed provider/model metadata",
+    manual: "Explicit configured context pin",
+    "unknown-policy":
+      "Unverified capacity; conservative planning policy, not a server capacity claim",
+  };
+  const details = [
+    `Input estimate: ${cost.system + cost.tools + cost.conversation}`,
+    `Output reserve: ${budget.reserve}`,
+    `Reasoning reserve (included in output): ${budget.reasoningReserve ?? 0}`,
+    `Safety margin: ${budget.margin}`,
+    `Effective ceiling: ${budget.ceiling}`,
+    `Ceiling provenance: ${provenance[budget.source]}`,
+    `System total: ${cost.system}`,
+    `Schema/options total: ${cost.tools}`,
+    `Conversation total: ${cost.conversation}`,
+    ...(cost.schemas
+      ? [
+          `Schemas available: ${cost.schemas.available ?? "not captured"}`,
+          `Schemas exposed on wire: ${cost.schemas.exposed}`,
+          `Schema bytes on wire: ${cost.schemas.bytes}`,
+        ]
+      : []),
+    "Context breakdown (estimated tokens; section labels are diagnostic, not provenance):",
+    ...Object.entries(labels).map(
+      ([key, label]) =>
+        `${label}: ${cost.breakdown ? (cost.breakdown[key as ContextSection] ?? 0) : "not attributed"}`,
+    ),
+  ].join("\n");
+  return {
+    title: unknown
+      ? "Clack couldn't verify this model's context capacity."
+      : "This model can't fit the required context.",
+    message,
+    details,
+  };
 }

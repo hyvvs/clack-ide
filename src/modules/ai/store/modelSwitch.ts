@@ -246,7 +246,7 @@ export async function prepareModelSwitch(
       preferences.savedProviderModels,
     );
     const savedContext = savedTarget
-      ? knownTransportContextLimit(savedTarget.transportModelId)
+      ? knownTransportContextLimit(savedTarget.transportModelId, savedTarget.providerId)
       : undefined;
     const selectionContext = {
       ...sessionToolContext(sessionId ?? "").toolContext,
@@ -313,6 +313,7 @@ export async function prepareModelSwitch(
         targetModelId,
         preferences.customEndpoints,
         preferences.openaiCompatibleContextLimit,
+        preferences,
       ),
       systemText:
         buildStableSystem(

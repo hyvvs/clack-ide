@@ -585,10 +585,27 @@ export function modelKeepsReasoning(m: ModelInfo): boolean {
 
 export const DEFAULT_MODEL_ID: ModelId = "gpt-5.4-mini";
 
-/** Approximate context window (in tokens) per model. Used for the
- *  context-usage indicator in the AI mini-window header. Conservative
- *  estimates — actual provider limits may shift. */
+/** Installed context metadata. Placeholder estimates are display-only;
+ * B1 resolves evidence by exact provider and transport identity. */
 export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
+  // Exact gateway IDs from https://openrouter.ai/api/v1/models, checked 2026-10-09.
+  // No prefix stripping, suffix inference or gateway-wide default.
+  "openai/gpt-5.5": 1_050_000,
+  "openai/gpt-5.4-mini": 400_000,
+  "openai/gpt-5.4-nano": 400_000,
+  "openai/gpt-5.3-codex": 400_000,
+  "openai/gpt-4.1-mini": 1_047_576,
+  "anthropic/claude-opus-4.7": 1_000_000,
+  "anthropic/claude-sonnet-4.6": 1_000_000,
+  "anthropic/claude-haiku-4.5": 200_000,
+  "anthropic/claude-opus-4.6": 1_000_000,
+  "google/gemini-3.5-flash": 1_048_576,
+  "google/gemini-3.1-flash-lite": 1_048_576,
+  "google/gemini-3.1-pro-preview": 1_048_576,
+  "google/gemini-3-flash-preview": 1_048_576,
+  "google/gemini-2.5-pro": 1_048_576,
+  "google/gemini-2.5-flash": 1_048_576,
+  "openai/gpt-oss-120b": 131_072,
   "gpt-5.5": 1_050_000,
   "gpt-5.4-mini": 400_000,
   "gpt-5.4-nano": 400_000,
@@ -635,6 +652,29 @@ export function getModelContextLimit(
   if (modelId === "openai-compatible-custom" && compatOverride)
     return compatOverride;
   return MODEL_CONTEXT_LIMITS[modelId] ?? 128_000;
+}
+
+export function knownTransportContextLimit(
+  modelId: string,
+  providerId?: ProviderId,
+): number | undefined {
+  if (
+    [
+      "openrouter-custom",
+      "openai-compatible-custom",
+      "lmstudio-local",
+      "mlx-local",
+      "ollama-local",
+    ].includes(modelId)
+  )
+    return undefined;
+  const registry = MODELS.find((m) => m.id === modelId);
+  const provider = providerId ?? registry?.provider;
+  if (provider === "openrouter") {
+    if (!modelId.includes("/")) return undefined;
+  } else if (!registry || registry.provider !== provider) return undefined;
+  const value = MODEL_CONTEXT_LIMITS[modelId];
+  return typeof value === "number" ? value : undefined;
 }
 
 export type ModelPricing = {

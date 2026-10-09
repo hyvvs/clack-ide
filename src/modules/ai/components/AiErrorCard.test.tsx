@@ -5,6 +5,10 @@ import {
   normalizeAiError,
   shouldPresentAiError,
 } from "@/modules/ai/lib/errors";
+import {
+  ContextBudgetError,
+  resolveContextBudget,
+} from "@/modules/ai/lib/contextBudget";
 
 function renderError(error: ReturnType<typeof normalizeAiError>): string {
   return renderToStaticMarkup(
@@ -17,6 +21,29 @@ function renderError(error: ReturnType<typeof normalizeAiError>): string {
 }
 
 describe("AiErrorCard", () => {
+  it("keeps primary overflow copy concise and diagnostics behind Technical details", () => {
+    const budget = resolveContextBudget(
+      {},
+      { system: 5000, tools: 0, conversation: 2, uncertainMedia: false },
+    );
+    const html = renderError(
+      normalizeAiError(
+        new ContextBudgetError(
+          "context-overflow",
+          budget.reason ?? "Overflow",
+          budget,
+        ),
+      ),
+    );
+    expect(html).toContain(
+      "Clack couldn&#x27;t verify this model&#x27;s context capacity.",
+    );
+    expect(html).toContain("Verify or configure");
+    expect(html).toContain("Technical details");
+    expect(html).toContain("Model settings");
+    expect(html).not.toContain("estimated input 5002");
+    expect(html).toContain('data-state="closed"');
+  });
   it("renders structured authentication details and real actions", () => {
     const error = normalizeAiError(
       {

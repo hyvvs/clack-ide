@@ -6,6 +6,10 @@ import {
 } from "ai";
 import { INFERENCE_ERRORS } from "@/modules/ai/lib/inferenceErrors";
 import { describeWatchdog, readWatchdogError } from "@/modules/ai/lib/outputWatchdog";
+import {
+  ContextBudgetError,
+  contextBudgetPresentation,
+} from "@/modules/ai/lib/contextBudget";
 
 export type AiErrorKind =
   | "authentication"
@@ -154,15 +158,24 @@ export function normalizeAiError(
   )
     ? 2
     : undefined;
-  const budget = chain.find(
+  const budgetNode = chain.find(
     (node) => node.record?.contextPreflight === true,
-  )?.record;
+  );
+  const budget = budgetNode?.record;
   if (budget)
     return {
       kind: "bad_request",
       disposition: "terminal",
       title: "Context preflight",
       message: sanitizeAiErrorText(budget.message),
+      ...(budgetNode?.value instanceof ContextBudgetError &&
+      budgetNode.value.budget && !budgetNode.value.budget.fits &&
+      !budgetNode.value.budget.cost.uncertainMedia
+        ? contextBudgetPresentation(budgetNode.value.budget)
+        : {}),
+      provider: sanitizeAiErrorText(context.provider) || undefined,
+      model: sanitizeAiErrorText(context.model) || undefined,
+      endpoint: sanitizeAiEndpoint(context.endpoint),
       errorCode: String(budget.code),
       retryable: false,
     };
@@ -339,7 +352,7 @@ export function formatAiErrorDetails(error: NormalizedAiError): string {
     error.toolName ? `Tool: ${error.toolName}` : null,
     `Retryable: ${error.retryable ? "yes" : "no"}`,
     error.details && error.details !== error.message
-      ? `Provider detail: ${error.details}`
+      ? `Technical detail: ${error.details}`
       : null,
     error.cause ? `Cause: ${error.cause}` : null,
   ];

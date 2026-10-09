@@ -127,6 +127,34 @@ describe("relevance and bounded fallback", () => {
   it("a narrow conversational greeting omits optional tools", async () => {
     expect((await select("Hello!")).names).toEqual([]);
   });
+  it("trusted composition metadata does not rank optional tools or remove required state", async () => {
+    const wireMessages = message(
+      "<env>\nworkspace_root: /work\nactive_terminal_cwd: /work\n</env>\n\nHello",
+    );
+    const selected = await select("ignored", {
+      messages: wireMessages,
+      query: "Hello",
+      mandatory: ["custom_unrelated"],
+    });
+    expect(selected.names).toEqual(["custom_unrelated"]);
+    expect(selected.metrics).toMatchObject({
+      permitted: 7,
+      exposed: 1,
+      mandatory: 1,
+      fallback: false,
+    });
+    const changedQuery = await select("ignored", {
+      messages: wireMessages,
+      query: "MCP weather forecast",
+      mandatory: ["custom_unrelated"],
+    });
+    expect(changedQuery.cacheHit).toBe(false);
+    expect(changedQuery.names).toContain("custom_mcp");
+    // User-authored text is not stripped by matching an environment-like tag.
+    expect(
+      (await select("ignored", { messages: wireMessages })).names.length,
+    ).toBeGreaterThan(1);
+  });
   it("uncertainty includes all permitted tools even when B1 cannot admit them", async () => {
     const result = await select("Continue.", {
       limits: { reported: 512 },

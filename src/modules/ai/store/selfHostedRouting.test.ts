@@ -425,7 +425,7 @@ describe("self-hosted actual chat routing", () => {
     const text = "x".repeat(120000);
     await sendMessageToSession("a-chat", { text });
     expect(requests).toHaveLength(0);
-    expect(getOrCreateChat("a-chat").error?.message).toContain("exceeds");
+    expect(getOrCreateChat("a-chat").error?.message).toContain("Optimize the conversation");
     expect(JSON.stringify(getOrCreateChat("a-chat").messages)).toContain(text);
     await sendMessageToSession("b-chat", { text: "Small independent request" });
     expect(requests).toHaveLength(1);
@@ -442,7 +442,7 @@ describe("self-hosted actual chat routing", () => {
     useChatStore.getState().setSessionModelId("a-chat", idA, false);
     await sendMessageToSession("a-chat", { text: "Read file" });
     expect(requests).toHaveLength(1);
-    expect(getOrCreateChat("a-chat").error?.message).toContain("exceeds");
+    expect(getOrCreateChat("a-chat").error?.message).toContain("Optimize the conversation");
     expect(sessionInference("a-chat")).toBeNull();
   });
   it("rejects a changed profile after E1 queue wait without spending a model step or HTTP call", async () => {

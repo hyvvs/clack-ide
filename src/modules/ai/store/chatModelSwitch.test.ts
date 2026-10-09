@@ -60,7 +60,7 @@ const models = [
     1,
   ),
   createSavedProviderModel(
-    { providerId: "openrouter", transportModelId: "claude-sonnet-4-6" },
+    { providerId: "openrouter", transportModelId: "anthropic/claude-sonnet-4.6" },
     "switch-b",
     1,
   ),
@@ -290,7 +290,7 @@ describe("model switching in an existing chat", () => {
     expect(outgoing.map(({ url, body }) => [url, body.model])).toEqual([
       ["https://openrouter.ai/api/v1/chat/completions", "openai/gpt-oss-20b"],
       ["https://api.anthropic.com/v1/messages", "claude-sonnet-4-6"],
-      ["https://openrouter.ai/api/v1/chat/completions", "claude-sonnet-4-6"],
+      ["https://openrouter.ai/api/v1/chat/completions", "anthropic/claude-sonnet-4.6"],
     ]);
     expect(outgoing[0].headers.get("authorization")).toBe(
       "Bearer test-key-model-switch",
@@ -527,7 +527,7 @@ describe("model switching in an existing chat", () => {
       useChatStore.getState().setSessionModelId("chat-a", selectionB),
     ).toBe(true);
     await sendMessageToSession("chat-a", { text: "Use the new model" });
-    expect(requests[requests.length - 1]?.model).toBe("claude-sonnet-4-6");
+    expect(requests[requests.length - 1]?.model).toBe("anthropic/claude-sonnet-4.6");
   });
 
   it.each<Exclude<SessionRunState, "running">>([
@@ -550,7 +550,7 @@ describe("model switching in an existing chat", () => {
     expect(getOrCreateChat("chat-a")).toBe(chat);
     expect(requests.map((request) => request.model)).toEqual([
       "openai/gpt-oss-20b",
-      "claude-sonnet-4-6",
+      "anthropic/claude-sonnet-4.6",
     ]);
     expect(requests[1].messages).toEqual(
       expect.arrayContaining([
@@ -580,7 +580,7 @@ describe("model switching in an existing chat", () => {
 
     await sendMessageToSession("chat-a", { text: "Reply to pane A" });
 
-    expect(requests[1].model).toBe("claude-sonnet-4-6");
+    expect(requests[1].model).toBe("anthropic/claude-sonnet-4.6");
     expect(useChatStore.getState().selectedModelId).toBe(selectionA);
   });
 

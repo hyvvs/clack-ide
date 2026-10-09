@@ -38,6 +38,9 @@ import {
 } from "@/modules/ai/lib/answerContinuation";
 import {
   prepareToolExposure,
+  exposureQuery,
+  uiExposureQuery,
+  toolSchemaKinds,
   sameToolRevision,
   toolRevisionIdentity,
 } from "@/modules/ai/lib/toolExposure";
@@ -67,6 +70,7 @@ import {
   createRequestPreflight,
   preflightFetch,
   modelBudgetLimits,
+  setModelSchemaDiagnostics,
 } from "@/modules/ai/lib/requestPreflight";
 import {
   measureRequest,
@@ -269,6 +273,7 @@ export async function buildLanguageModel(
           : {}),
       }),
     modelId: resolvedModelId,
+    providerId: provider,
     local: localProvider,
     state: options.selfHostedInference,
     admission,
@@ -467,6 +472,7 @@ export type LocalProviderConfig = {
   ollamaModelId?: string;
   openaiCompatibleBaseURL?: string;
   openaiCompatibleModelId?: string;
+  openaiCompatibleContextLimit?: number;
   openrouterModelId?: string;
   savedProviderModels?: readonly SavedProviderModel[];
   customEndpoints?: readonly CustomEndpoint[];
@@ -514,7 +520,9 @@ export function buildConfiguredLanguageModel(
           ? local.customEndpoints?.find(
               (ep) => ep.id === captured.customEndpointId,
             )?.contextLimit
-          : undefined,
+          : modelId === "openai-compatible-custom"
+            ? local.openaiCompatibleContextLimit
+            : undefined,
         reasoning: local.reasoning,
         lmstudioBaseURL: local.lmstudioBaseURL,
         admission: captured.customEndpointId
@@ -617,12 +625,15 @@ export function buildConfiguredLanguageModel(
   } else if (m.id === "openrouter-custom") {
     if (!local.openrouterModelId?.trim()) {
       throw new Error(
-        "OpenRouter: no model id set. Open Settings → Models and enter an OpenRouter model id (e.g. anthropic/claude-sonnet-4-6).",
+        "OpenRouter: no model id set. Open Settings -> Models and enter an OpenRouter model id (e.g. anthropic/claude-sonnet-4.6).",
       );
     }
     resolvedId = local.openrouterModelId.trim();
   }
   return buildLanguageModel(m.provider, keys, resolvedId, {
+    assertedContext: modelId === "openai-compatible-custom"
+      ? local.openaiCompatibleContextLimit
+      : undefined,
     reasoning: local.reasoning,
     selfHostedInference: local.selfHostedInference,
     inferenceScope: local.inferenceScope,
@@ -748,6 +759,7 @@ export type RunAgentOptions = {
   logicalContinuation?: boolean;
   recovery?: boolean;
   uiMessages: UIMessage[];
+  toolSelectionMessages?: UIMessage[];
   abortSignal?: AbortSignal;
 };
 
@@ -774,6 +786,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     ollamaModelId: opts.ollamaModelId,
     openaiCompatibleBaseURL: opts.openaiCompatibleBaseURL,
     openaiCompatibleModelId: opts.openaiCompatibleModelId,
+    openaiCompatibleContextLimit: opts.openaiCompatibleContextLimit,
     openrouterModelId: opts.openrouterModelId,
     savedProviderModels: opts.savedProviderModels,
     customEndpoints: opts.customEndpoints,
@@ -812,6 +825,9 @@ export async function runAgentStream(opts: RunAgentOptions) {
   );
 
   const history = await convertToModelMessages(opts.uiMessages);
+  const toolQuery = opts.toolSelectionMessages
+    ? uiExposureQuery(opts.toolSelectionMessages)
+    : exposureQuery(history);
   const keepsReasoning = modelKeepsReasoning(info);
   const prunedHistory = pruneMessages({
     messages: history,
@@ -850,6 +866,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     credentials: [opts.keys, opts.customEndpointKeys],
   };
   const exposure = await prepareToolExposure(permittedTools, {
+    query: toolQuery,
     mandatory: opts.mandatoryTools,
     context: requestToolContext,
     messages: prunedHistory,
@@ -859,6 +876,11 @@ export async function runAgentStream(opts: RunAgentOptions) {
     limits: await modelBudgetLimits(baseModel),
   });
   const pinnedTools = new Set(exposure.names);
+  setModelSchemaDiagnostics(
+    baseModel,
+    toolSchemaKinds(permittedTools),
+    exposure.metrics.permitted,
+  );
   let stepsSeen = 0;
   const hostedProfile = opts.selfHostedInference?.profiles.find(
     p => p.id === opts.capturedModelIdentity?.selfHosted?.profileId,
@@ -893,6 +915,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
       ),
       {
         context: requestToolContext,
+        query: toolQuery,
         messages: prunedHistory,
         uiMessages: opts.uiMessages,
         target: exposureTarget,
@@ -1135,6 +1158,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
         ),
         {
           context: requestToolContext,
+          query: toolQuery,
           messages: stepMessages,
           uiMessages: opts.uiMessages,
           target: exposureTarget,

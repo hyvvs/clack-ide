@@ -30,6 +30,7 @@ export function AiErrorCard({
   onOpenProviderSettings,
 }: Props) {
   const [copied, setCopied] = useState(false);
+  const contextOverflow = ["context-overflow", "compaction-protected-budget", "compaction-budget"].includes(error.errorCode ?? "");
   if (
     error.disposition === "recoverable" ||
     error.disposition === "retrying"
@@ -38,7 +39,9 @@ export function AiErrorCard({
   }
   const canOpenSettings =
     Boolean(onOpenProviderSettings) &&
-    (error.kind === "authentication" || error.kind === "authorization");
+    (error.kind === "authentication" ||
+      error.kind === "authorization" ||
+      contextOverflow);
   const metadata = [
     error.provider ? ["Provider", error.provider] : null,
     error.model ? ["Model", error.model] : null,
@@ -109,7 +112,7 @@ export function AiErrorCard({
             className={actionClass}
           >
             <HugeiconsIcon icon={Settings01Icon} size={11} strokeWidth={1.8} />
-            Provider settings
+            {contextOverflow ? "Model settings" : "Provider settings"}
           </button>
         ) : null}
         <button type="button" onClick={() => void copyDetails()} className={actionClass}>

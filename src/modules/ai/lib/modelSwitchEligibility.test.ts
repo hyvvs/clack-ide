@@ -52,6 +52,39 @@ function check(
 }
 
 describe("known target context metadata", () => {
+  it("uses the same exact provider/transport evidence for saved models and target changes", () => {
+    const saved = {
+      id: "saved",
+      providerId: "openrouter" as const,
+      transportModelId: "anthropic/claude-sonnet-4.6",
+      displayName: "Alias",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const config = {
+      savedProviderModels: [saved],
+      openrouterModelId: saved.transportModelId,
+    };
+    expect(
+      knownModelContextLimit("saved-provider:saved", [], undefined, config),
+    ).toBe(1000000);
+    saved.displayName = "Renamed";
+    expect(
+      knownModelContextLimit("saved-provider:saved", [], undefined, config),
+    ).toBe(1000000);
+    saved.transportModelId = "openai/gpt-5.4-mini";
+    expect(
+      knownModelContextLimit("saved-provider:saved", [], undefined, config),
+    ).toBe(400000);
+    saved.transportModelId = "unknown/model";
+    expect(
+      knownModelContextLimit("saved-provider:saved", [], undefined, config),
+    ).toBeNull();
+    expect(
+      knownModelContextLimit("openrouter-custom", [], undefined, config),
+    ).toBe(1000000);
+  });
   it("uses existing registry and configured endpoint limits", () => {
     expect(knownModelContextLimit("claude-sonnet-4-6")).toBe(200_000);
     const endpoint: CustomEndpoint = {

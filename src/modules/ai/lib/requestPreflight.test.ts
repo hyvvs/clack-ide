@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildLanguageModel } from "@/modules/ai/lib/agent";
+import {
+  buildLanguageModel,
+  buildConfiguredLanguageModel,
+} from "@/modules/ai/lib/agent";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
 import type { ProviderId } from "@/modules/ai/config";
 import { invoke } from "@tauri-apps/api/core";
 import { normalizeAiError } from "@/modules/ai/lib/errors";
 import { ContextBudgetError } from "@/modules/ai/lib/contextBudget";
-import { knownTransportContextLimit } from "@/modules/ai/lib/requestPreflight";
+import {
+  knownTransportContextLimit,
+  modelBudgetLimits,
+} from "@/modules/ai/lib/requestPreflight";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -90,6 +96,57 @@ async function model(provider: ProviderId, id: string) {
   return built;
 }
 describe("real installed adapters serialize shared output/preflight", () => {
+  it("provider-qualified exact metadata does not infer capacity from names or another provider", () => {
+    expect(
+      knownTransportContextLimit("anthropic/claude-sonnet-4.6", "openrouter"),
+    ).toBe(1000000);
+    expect(knownTransportContextLimit("claude-sonnet-4-6", "anthropic")).toBe(
+      200000,
+    );
+    for (const [id, provider] of [
+      ["claude-sonnet-4-6", "openrouter"],
+      ["claude-sonnet-4-6", "openai"],
+      ["gpt-5.5", "ollama"],
+      ["anthropic/claude-sonnet-4.6:free", "openrouter"],
+      ["unknown/large-128k", "openrouter"],
+    ] as const)
+      expect(knownTransportContextLimit(id, provider)).toBeUndefined();
+  });
+  it("forwards the legacy manual pin in direct and captured model construction", async () => {
+    const configuration = {
+      openaiCompatibleBaseURL: "http://localhost:1234/v1",
+      openaiCompatibleModelId: "private-model",
+      openaiCompatibleContextLimit: 8192,
+    };
+    const direct = await buildConfiguredLanguageModel(
+      "openai-compatible-custom",
+      EMPTY_PROVIDER_KEYS,
+      configuration,
+    );
+    const captured = await buildConfiguredLanguageModel(
+      "openai-compatible-custom",
+      EMPTY_PROVIDER_KEYS,
+      {
+        ...configuration,
+        capturedModelIdentity: {
+          providerId: "openai-compatible",
+          transportModelId: "private-model",
+          endpointBaseURL: configuration.openaiCompatibleBaseURL,
+        },
+      },
+    );
+    expect(await modelBudgetLimits(direct)).toMatchObject({ asserted: 8192 });
+    expect(await modelBudgetLimits(captured)).toMatchObject({ asserted: 8192 });
+    const unknown = await buildConfiguredLanguageModel(
+      "ollama-local",
+      EMPTY_PROVIDER_KEYS,
+      { ollamaModelId: "gpt-5.5" },
+    );
+    expect(await modelBudgetLimits(unknown)).not.toHaveProperty(
+      "reported",
+      1050000,
+    );
+  });
   it("uses Anthropic's installed API output cap and measures the final capped request", async () => {
     const built = await model("anthropic", "claude-sonnet-4-6");
     await Promise.resolve(

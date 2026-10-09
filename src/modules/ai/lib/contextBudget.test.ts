@@ -5,9 +5,16 @@ import {
   measureRequest,
   resolveContextBudget,
   type BudgetLimits,
+  ContextBudgetError,
 } from "@/modules/ai/lib/contextBudget";
 import { compactModelMessagesDetailed } from "@/modules/ai/lib/compact";
 import type { ModelMessage } from "ai";
+import { buildStableSystem } from "@/modules/ai/lib/agent";
+import {
+  normalizeAiError,
+  formatAiErrorDetails,
+} from "@/modules/ai/lib/errors";
+import { CompactionError } from "@/modules/ai/lib/compactionExtraction";
 
 describe("shared budget arithmetic", () => {
   it("a zero extra reserve pin still leaves meaningful response capacity", () => {
@@ -96,6 +103,145 @@ describe("shared budget arithmetic", () => {
 });
 
 describe("actual request material", () => {
+  it("early protected-context refusal retains the same B1 accounting and primary guidance", () => {
+    const budget = resolveContextBudget(
+      { reported: 4096 },
+      { system: 5000, tools: 0, conversation: 2, uncertainMedia: false },
+    );
+    const error = normalizeAiError(
+      new CompactionError(
+        "protected-budget",
+        "Protected context cannot fit",
+        budget,
+      ),
+    );
+    expect(error.title).toBe("This model can't fit the required context.");
+    expect(error.details).toContain("Input estimate: 5002");
+    expect(error.message).not.toContain("reduce the new request");
+    expect(error.errorCode).toBe("compaction-protected-budget");
+  });
+  it("attributes actual serialized ingredients without changing B1 arithmetic or leaking content", () => {
+    const schema = (name: string) => ({
+      type: "function",
+      function: {
+        name,
+        description: "Required schema",
+        parameters: { type: "object", properties: {} },
+      },
+    });
+    const body = {
+      max_tokens: 100,
+      messages: [
+        {
+          role: "system",
+          content: buildStableSystem(
+            "gpt-5.5",
+            { name: "Coder", instructions: "private agent text" },
+            "private user instruction",
+            "private workspace text",
+          ),
+        },
+        {
+          role: "user",
+          content:
+            "<env>\nworkspace_root: /secret-name\n</env>\n\n----- CLACK ATTACHMENT -----\nprivate attachment",
+        },
+        {
+          role: "assistant",
+          content: "Derived conversation evidence, private memory",
+        },
+        {
+          role: "assistant",
+          content: "Retrieved original conversation evidence. private evidence",
+        },
+      ],
+      tools: [
+        schema("read_file"),
+        schema("custom_wasi"),
+        schema("custom_weather"),
+      ],
+    };
+    const cost = measureRequest(body, { custom_weather: "mcp" }, 26);
+    expect(
+      Object.values(cost.breakdown ?? {}).reduce((sum, n) => sum + (n ?? 0), 0),
+    ).toBe(cost.system + cost.tools + cost.conversation);
+    for (const key of [
+      "core",
+      "agent",
+      "project",
+      "customInstructions",
+      "environment",
+      "attachments",
+      "memory",
+      "retrieval",
+      "builtin",
+      "custom",
+      "mcp",
+    ] as const)
+      expect(cost.breakdown?.[key]).toBeGreaterThan(0);
+    expect(cost.schemas).toEqual({
+      available: 26,
+      exposed: 3,
+      bytes: new TextEncoder().encode(JSON.stringify(body.tools)).length,
+    });
+    const plain = measureRequest(body);
+    expect(cost.system).toBe(plain.system);
+    expect(cost.tools).toBe(plain.tools);
+    expect(cost.conversation).toBe(plain.conversation);
+    const budget = resolveContextBudget({ reported: 1024 }, cost, 100);
+    const details = formatAiErrorDetails(
+      normalizeAiError(
+        new ContextBudgetError("context-overflow", "Overflow", budget),
+      ),
+    );
+    expect(details).toContain("MCP tool schemas:");
+    expect(details).toContain("Schemas available: 26");
+    expect(details).not.toMatch(/private|secret-name/);
+  });
+  it.each([
+    [
+      {},
+      { system: 5000, tools: 0, conversation: 2, uncertainMedia: false },
+      "Clack couldn't verify",
+      "Verify or configure",
+    ],
+    [
+      { reported: 4096 },
+      { system: 5000, tools: 0, conversation: 2, uncertainMedia: false },
+      "This model can't fit",
+      "larger context window",
+    ],
+    [
+      { reported: 4096 },
+      { system: 10, tools: 5000, conversation: 2, uncertainMedia: false },
+      "This model can't fit",
+      "Disable unnecessary tools",
+    ],
+    [
+      { reported: 4096 },
+      { system: 10, tools: 0, conversation: 5000, uncertainMedia: false },
+      "This model can't fit",
+      "Optimize the conversation",
+    ],
+  ] as const)("presents the dominant cause with accounting in technical details", (limits, cost, title, advice) => {
+    const budget = resolveContextBudget(limits, cost, 100);
+    const error = normalizeAiError(
+      new ContextBudgetError(
+        "context-overflow",
+        budget.reason ?? "Overflow",
+        budget,
+      ),
+    );
+    expect(error.title).toContain(title);
+    expect(error.message).toContain(advice);
+    expect(error.message).not.toMatch(
+      /estimated input|margin|reduce the new request/,
+    );
+    expect(error.details).toContain("Effective ceiling: 4096");
+    expect(error.details).toContain("Input estimate:");
+    expect(error.details).toContain("Ceiling provenance:");
+    expect(error.retryable).toBe(false);
+  });
   it("does not mistake a tool's file metadata for a binary attachment", () => {
     expect(
       measureRequest({
