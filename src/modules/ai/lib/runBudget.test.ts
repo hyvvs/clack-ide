@@ -18,6 +18,9 @@ const cappedBatch = {
 };
 
 describe("run budget policy", () => {
+  it.each(["stop", "length", "error", "unknown"])("does not interpret %s as unfinished tool work at the ceiling", finishReason => {
+    expect(recordRunBatch(createRunBudget("ask"), { ...cappedBatch, finishReason }, "ask").phase).toBe("complete");
+  });
   it.each([
     "chat-only",
     "ask",

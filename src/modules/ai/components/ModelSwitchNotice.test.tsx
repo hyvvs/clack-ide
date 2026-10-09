@@ -26,6 +26,7 @@ it.each([
       assessment={{
         status: "blocked",
         contextBlocked: true,
+        contextCapacity: source === "unknown-policy" ? "unknown" : "known",
         reasons: [
           source === "reported"
             ? "This conversation needs more context than this model supports."
@@ -41,8 +42,14 @@ it.each([
   );
   const primary = html.split("<details")[0];
   expect(primary).toContain(
-    "This model can&#x27;t handle the required context for this conversation.",
+    source === "unknown-policy"
+      ? "Clack can&#x27;t verify this model&#x27;s context capacity."
+      : "This model can&#x27;t fit the required context for this conversation.",
   );
+  if (source === "unknown-policy") {
+    expect(primary).toContain("stopped before sending anything");
+    expect(primary).not.toContain("can&#x27;t fit");
+  }
   expect(primary).not.toMatch(
     /3337|4096|Output reserve|Safety margin|reduce the new request/,
   );

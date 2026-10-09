@@ -50,6 +50,7 @@ import {
   hasKeyForModel,
   capturedSelfHostedRuns,
   capturedProviderModelEvidence,
+  capturedAgentPersonas,
   inferenceScopeForSession,
   recordSelectedModelUse,
   seedMessages,
@@ -324,6 +325,10 @@ function makeChat(sessionId: string): Chat<UIMessage> {
     getAgentPersona: () => {
       const { activeId, customAgents } = useAgentsStore.getState();
       const session = owner();
+      const captured = capturedAgentPersonas.get(sessionId);
+      if (captured && session?.run?.state === "running" &&
+          session.run.startedAt === captured.startedAt && session.run.agentId === captured.agentId)
+        return { name: captured.name, instructions: captured.instructions };
       const conversationAgentId =
         session?.run?.agentId ?? session?.profile?.agentId;
       const all = [...BUILTIN_AGENTS, ...customAgents];

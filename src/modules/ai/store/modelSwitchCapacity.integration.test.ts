@@ -44,6 +44,11 @@ import {
 } from "@/modules/ai/store/chatRuntime";
 import { parseProviderContextCatalog } from "@/modules/ai/lib/providerModelEvidence";
 import { minimaxFreeCatalogRecord } from "@/modules/ai/lib/openrouterCatalog.fixture";
+import { useAgentsStore } from "@/modules/ai/store/agentsStore";
+import { capturedAgentPersonas } from "@/modules/ai/store/chatStore";
+import { continueRun } from "@/modules/ai/store/chatRuntime";
+import { recoverInterruptedSessions } from "@/modules/ai/lib/sessions";
+import { AGENT_SOFT_STEP_LIMIT } from "@/modules/ai/lib/runBudget";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@/modules/settings/store", async (original) => ({
@@ -64,6 +69,7 @@ vi.mock("@/modules/ai/lib/todos", async (original) => ({
 
 const preferences = usePreferencesStore.getState();
 const original = useChatStore.getState();
+const originalAgents = useAgentsStore.getState();
 const saved = [
   createSavedProviderModel(
     {
@@ -128,6 +134,114 @@ const history: UIMessage[] = [
 ];
 const requests: Record<string, unknown>[] = [];
 
+const pooper = {
+  id: "custom:instruction-fixture", name: "Response fixture", description: "Instruction delivery fixture",
+  instructions: 'Begin every normal response with "POOPER:" and prefer answers of at most two sentences unless the task requires more detail.',
+  icon: "spark" as const, builtIn: false,
+};
+const secondAgent = { ...pooper, id: "custom:second-fixture", name: "Second fixture", instructions: "SECOND_AGENT_ONLY: Review the request." };
+function bindInstructionFixture() {
+  useAgentsStore.setState({ customAgents: [pooper, secondAgent], activeId: "builtin:coder" });
+  useChatStore.setState(state => ({ sessions: state.sessions.map(session => session.id === "chat-a" && session.profile
+    ? { ...session, profile: { ...session.profile, agentId: pooper.id } } : session) }));
+}
+function systemRequest(body: Record<string, unknown>): string {
+  return JSON.stringify((body.messages as { role: string }[]).filter(message => message.role === "system"));
+}
+
+it("serializes the bound custom agent across model switches, replaces it on agent switch and isolates chats", async () => {
+  bindInstructionFixture();
+  await sendMessageToSession("chat-a", { text: "Hello" });
+  expect(systemRequest(requests[0])).toContain(JSON.stringify(pooper.instructions).slice(1, -1));
+  expect(systemRequest(requests[0])).toContain(`ACTIVE AGENT: ${pooper.name}`);
+  expect(systemRequest(requests[0])).not.toContain(BUILTIN_AGENTS[0].instructions.split("\n")[0]);
+  expect(systemRequest(requests[0]).indexOf("You are Clack")).toBeLessThan(systemRequest(requests[0]).indexOf("ACTIVE AGENT"));
+  expect(systemRequest(requests[0])).toContain("core safety, permissions, tool and runtime requirements always take precedence");
+  useChatStore.getState().finishRun("chat-a", "completed");
+  const switched = await prepareModelSwitch("chat-a", selection("offered"));
+  expect(await switched.commit(true)).toEqual({ ok: true });
+  switched.dispose?.();
+  expect(useChatStore.getState().sessions[0].profile?.agentId).toBe(pooper.id);
+  await sendMessageToSession("chat-a", { text: "Hello again" });
+  expect(systemRequest(requests[1])).toContain("POOPER:");
+  expect(requests[1].model).toBe(saved[1].transportModelId);
+  useChatStore.getState().finishRun("chat-a", "completed");
+  expect(useChatStore.getState().setSessionAgentId("chat-a", secondAgent.id)).toBe(true);
+  await sendMessageToSession("chat-a", { text: "Hello" });
+  expect(systemRequest(requests[2])).toContain(secondAgent.instructions);
+  expect(systemRequest(requests[2])).not.toContain("POOPER:");
+  await sendMessageToSession("chat-b", { text: "Hello" });
+  expect(systemRequest(requests[3])).toContain("ACTIVE AGENT: Coder");
+  expect(systemRequest(requests[3])).not.toContain("SECOND_AGENT_ONLY");
+  expect(systemRequest(requests[3])).not.toContain("POOPER:");
+});
+
+it("keeps run-start instructions after an agent edit during provider retry and explicit step continuation", async () => {
+  bindInstructionFixture();
+  const reply = vi.mocked(fetch).getMockImplementation();
+  if (!reply) throw new Error("Missing provider fixture");
+  let fail = true;
+  vi.mocked(fetch).mockImplementation(async (url, init) => {
+    if (String(url).endsWith("/chat/completions") && fail) {
+      fail = false;
+      requests.push(JSON.parse(String(init?.body)));
+      useAgentsStore.setState({ customAgents: [{ ...pooper, instructions: "EDITED_AFTER_START" }, secondAgent], activeId: secondAgent.id });
+      return new Response('{"error":{"message":"Temporarily unavailable"}}', { status: 503, headers: { "retry-after": "0", "content-type": "application/json" } });
+    }
+    return reply(url, init);
+  });
+  await sendMessageToSession("chat-a", { text: "Hello" });
+  expect(requests).toHaveLength(2);
+  expect(getOrCreateChat("chat-a").error).toBeUndefined();
+  useChatStore.getState().recordRunBatch("chat-a", { steps: AGENT_SOFT_STEP_LIMIT, hitSoftLimit: true, finishReason: "tool-calls" });
+  await continueRun("chat-a", false);
+  expect(requests).toHaveLength(3);
+  for (const body of requests) {
+    expect(systemRequest(body)).toContain("POOPER:");
+    expect(systemRequest(body)).not.toContain("EDITED_AFTER_START");
+    expect(systemRequest(body)).not.toContain("SECOND_AGENT_ONLY");
+  }
+  expect(useChatStore.getState().sessions[0].run?.agentId).toBe(pooper.id);
+});
+
+it("restores the conversation agent binding after serialization and restart recovery, not the global Coder", async () => {
+  bindInstructionFixture();
+  await sendMessageToSession("chat-a", { text: "Hello" });
+  const recovered = recoverInterruptedSessions(JSON.parse(JSON.stringify(useChatStore.getState().sessions)));
+  expect(recovered.sessions[0].profile?.agentId).toBe(pooper.id);
+  capturedAgentPersonas.clear();
+  chats.clear();
+  seedMessages.clear();
+  useChatStore.setState({ sessions: recovered.sessions, runtimeBySession: {} });
+  await sendMessageToSession("chat-a", { text: "Hello after restart" });
+  expect(systemRequest(requests[1])).toContain(`ACTIVE AGENT: ${pooper.name}`);
+  expect(systemRequest(requests[1])).toContain("POOPER:");
+  expect(systemRequest(requests[1])).not.toContain("ACTIVE AGENT: Coder");
+});
+
+it("retains the captured active agent during D2 length continuation", async () => {
+  bindInstructionFixture();
+  const reply = vi.mocked(fetch).getMockImplementation();
+  if (!reply) throw new Error("Missing provider fixture");
+  let length = true;
+  vi.mocked(fetch).mockImplementation(async (url, init) => {
+    if (String(url).endsWith("/chat/completions") && length) {
+      length = false;
+      requests.push(JSON.parse(String(init?.body)));
+      useAgentsStore.setState({ customAgents: [{ ...pooper, instructions: "CHANGED_DURING_LENGTH" }, secondAgent], activeId: secondAgent.id });
+      return new Response(`data: ${JSON.stringify({ id: "length", created: 1, model: saved[0].transportModelId, choices: [{ index: 0, delta: { content: "A sufficiently long partial answer " }, finish_reason: "length" }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+    }
+    return reply(url, init);
+  });
+  await sendMessageToSession("chat-a", { text: "Hello" });
+  expect(requests).toHaveLength(2);
+  for (const body of requests) {
+    expect(systemRequest(body)).toContain("POOPER:");
+    expect(systemRequest(body)).not.toContain("CHANGED_DURING_LENGTH");
+  }
+  expect(useChatStore.getState().sessions[0].run?.budget?.phase).toBe("complete");
+});
+
 function probe(modelId: string): ProbeSnapshot {
   const now = Date.now();
   return {
@@ -167,6 +281,7 @@ function probe(modelId: string): ProbeSnapshot {
 }
 
 beforeEach(() => {
+  capturedAgentPersonas.clear();
   capturedProviderModelEvidence.clear();
   requests.length = 0;
   chats.clear();
@@ -277,6 +392,8 @@ beforeEach(() => {
   );
 });
 afterEach(() => {
+  capturedAgentPersonas.clear();
+  useAgentsStore.setState(originalAgents);
   capturedProviderModelEvidence.clear();
   chats.clear();
   seedMessages.clear();
@@ -393,6 +510,7 @@ it.each([
     status: "blocked",
     contextLimit: 4096,
     contextBlocked: true,
+    contextCapacity: provenance === "Unverified capacity" ? "unknown" : "known",
   });
   expect(prepared.assessment.details?.join("\n")).toContain(provenance);
   expect(prepared.assessment.reasons.join(" ")).not.toMatch(

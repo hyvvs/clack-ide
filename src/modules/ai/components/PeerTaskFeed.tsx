@@ -48,6 +48,7 @@ import type { SessionMeta } from "../lib/sessions";
 import { useAgentsStore } from "../store/agentsStore";
 import { useChatStore } from "../store/chatStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
+import { viewTaskInDispatcher } from "@/modules/ai/store/dispatcherNavigation";
 
 export function PeerTaskFeed({
   sessionId,
@@ -69,7 +70,7 @@ export function PeerTaskFeed({
   );
   if (tasks.length === 0) return null;
   return (
-    <section className="flex flex-col gap-2" aria-label="Inter-agent tasks">
+    <section className="flex flex-col gap-2" aria-label="Assigned tasks">
       {recoveryError ? (
         <div className="clack-ai-block px-2.5 py-2 text-[10.5px] text-[var(--clack-warning)]">
           {recoveryError}
@@ -250,6 +251,15 @@ export function PeerTaskCard({
           {title}
         </span>
         <span role="status" className={cn("min-w-0 max-w-full text-[10px]", tone)}>{statusLabel}</span>
+        <button
+          type="button"
+          onClick={() => viewTaskInDispatcher(task.id, viewingSessionId)}
+          className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10.5px] text-[var(--clack-accent)] hover:underline"
+          title="View task in Dispatcher"
+        >
+          View task in Dispatcher
+          <HugeiconsIcon icon={ArrowRight01Icon} size={10} strokeWidth={1.8} />
+        </button>
         <button
           type="button"
           disabled={!peer}

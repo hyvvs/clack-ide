@@ -107,7 +107,7 @@ export function recordRunBatch(
     };
   }
 
-  if (!result.hitSoftLimit) {
+  if (!result.hitSoftLimit || result.finishReason !== "tool-calls") {
     return { ...next, phase: "complete", stopReason: null };
   }
 

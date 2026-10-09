@@ -281,6 +281,13 @@ export const capturedProviderModelEvidence = new Map<
   string,
   NonNullable<ModelTransportIdentity["providerEvidence"]>
 >();
+
+export const capturedAgentPersonas = new Map<string, {
+  agentId: string;
+  startedAt: number;
+  name: string;
+  instructions: string;
+}>();
 // Ephemeral request configuration only. Credentials must never enter SessionRun.
 export const capturedSelfHostedRuns = new Map<
   string,
@@ -704,12 +711,8 @@ export const useChatStore = create<StoreState>((set, get) => ({
     if (!agentId || !modelId) {
       return { ok: false, reason: "The chat identity is incomplete." };
     }
-    if (
-      !useAgentsStore
-        .getState()
-        .all()
-        .some((agent) => agent.id === agentId)
-    ) {
+    const agent = useAgentsStore.getState().all().find((agent) => agent.id === agentId);
+    if (!agent) {
       return {
         ok: false,
         reason: "This chat's agent no longer exists. Select another agent.",
@@ -749,6 +752,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
       capturedProviderModelEvidence.set(id, structuredClone(transportIdentity.providerEvidence));
     else capturedProviderModelEvidence.delete(id);
     const now = Date.now();
+    capturedAgentPersonas.set(id, { agentId, startedAt: now, name: agent.name, instructions: agent.instructions });
     const next = get().sessions.map((session) =>
       session.id === id
         ? {
@@ -917,7 +921,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
   consumeAutoContinuation: (id) => {
     const session = get().sessions.find((item) => item.id === id);
     const run = session?.run;
-    if (run?.state !== "running" || !run.budget) return false;
+    if (run?.state !== "running" || run.budget?.phase !== "auto-continue-pending") return false;
     const mode = permissionModeForAgent(run.agentId ?? "builtin:coder");
     if (!autoContinueForPermissionMode(mode)) {
       const budget = {
@@ -993,6 +997,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     if (currentRun?.state !== "running") return;
     capturedSelfHostedRuns.delete(id);
     capturedProviderModelEvidence.delete(id);
+    capturedAgentPersonas.delete(id);
     const now = Date.now();
     const runError =
       state === "failed" || state === "interrupted"
@@ -1244,6 +1249,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     runLoopTrackers.delete(id);
     capturedSelfHostedRuns.delete(id);
     capturedProviderModelEvidence.delete(id);
+    capturedAgentPersonas.delete(id);
     releaseWorkspaceWriteLeasesForSession(id);
     const pend = pendingPersist.get(id);
     if (pend) {

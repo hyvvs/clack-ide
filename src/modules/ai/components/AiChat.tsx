@@ -1,5 +1,6 @@
 import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
 import { answerParts, readAnswer } from "@/modules/ai/lib/answerContinuation";
+import type { SessionRun } from "@/modules/ai/lib/sessions";
 import { recoveryAvailability } from "@/modules/ai/lib/streamRecovery";
 import {
   hasCapturedRecovery,
@@ -288,12 +289,10 @@ export function AiChatView({
   const visibleError = shouldPresentAiError(normalizedError, run?.state)
     ? normalizedError
     : null;
-  const showContinue =
-    !isBusy &&
-    run?.budget?.phase === "soft-limit" &&
-    lastMessage?.role === "assistant";
+  const showContinue = shouldShowStepContinuation(run, lastMessage, chatIsBusy);
   const showHardLimit =
     !isBusy &&
+    run?.state === "running" &&
     run?.budget?.phase === "hard-limit" &&
     lastMessage?.role === "assistant";
   const recovery = recoveryAvailability(run, messages, sessionId);
@@ -431,6 +430,13 @@ export function AiChatView({
       <ConversationScrollButton />
     </Conversation>
   );
+}
+
+export function shouldShowStepContinuation(run: SessionRun | undefined, lastMessage: UIMessage | undefined, busy: boolean): boolean {
+  const answer = lastMessage ? readAnswer(lastMessage) : null;
+  return !busy && run?.state === "running" && run.budget?.phase === "soft-limit" &&
+    run.budget.lastFinishReason === "tool-calls" && lastMessage?.role === "assistant" &&
+    !answer?.watchdog && answer?.segments[answer.segments.length - 1]?.finish !== "length";
 }
 
 export function ProviderRetryNotice({ retry }: { retry: ProviderRetryState }) {

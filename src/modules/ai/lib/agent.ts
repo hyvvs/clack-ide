@@ -660,10 +660,10 @@ export function buildStableSystem(
 ): string {
   const base = selectSystemPrompt(modelId);
   const personaBlock = persona?.instructions.trim()
-    ? `\n\n## ACTIVE AGENT — ${persona.name}\n${persona.instructions.trim()}`
+    ? `\n\n## ACTIVE AGENT: ${persona.name}\nThe active agent defines the role and response style, replacing default engineering and output-style guidance where compatible. Clack's core safety, permissions, tool and runtime requirements always take precedence.\n${persona.instructions.trim()}`
     : "";
   const customBlock = customInstructions?.trim()
-    ? `\n\n## USER CUSTOM INSTRUCTIONS — follow unless they conflict with safety rules above\n${customInstructions.trim()}`
+    ? `\n\n## USER CUSTOM INSTRUCTIONS: follow unless they conflict with core requirements or the active agent above\n${customInstructions.trim()}`
     : "";
   const memoryBlock =
     projectMemory && projectMemory.trim().length > 0

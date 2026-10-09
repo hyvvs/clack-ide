@@ -9,6 +9,7 @@ import {
 } from "./PeerCommunicationFeed";
 import { AiToolApproval } from "./AiToolApproval";
 import { ModelSwitchNotice } from "./ModelSwitchNotice";
+import { FallbackConsentCopy } from "@/modules/ai/components/ChatFallbackControl";
 import { shouldCloseAiMiniOnEscape } from "./AiMiniWindow";
 import { useChatStore } from "../store/chatStore";
 import type { PeerTask } from "../lib/peerTasks";
@@ -81,6 +82,15 @@ const event = (
 ) => ({ state, kind });
 
 describe("U1 collaboration presentation", () => {
+  it("distinguishes destination data consent from Ask routing without authorizing automatic transmission", () => {
+    const ask = renderToStaticMarkup(<FallbackConsentCopy mode="ask" />);
+    const trusted = renderToStaticMarkup(<FallbackConsentCopy mode="trusted" />);
+    expect(ask).toContain("approving fallback allows transmission");
+    expect(ask).toContain("this exact destination");
+    expect(ask).toContain("conversation, source files, attachments, memory, artifacts, tool results");
+    expect(ask).not.toContain("automatic transmission");
+    expect(trusted).toContain("I authorize automatic transmission");
+  });
   it("Escape dismisses overlays before closing the AI window", () => {
     expect(
       shouldCloseAiMiniOnEscape(

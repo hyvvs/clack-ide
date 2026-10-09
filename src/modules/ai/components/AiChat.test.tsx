@@ -6,6 +6,7 @@ import {
   HardLimitRow,
   ProviderRetryNotice,
   RenderedMessage,
+  shouldShowStepContinuation,
 } from "./AiChat";
 import { AiInputBarConnect } from "./AiInputBar";
 import { createRunBudget } from "../lib/runBudget";
@@ -274,6 +275,17 @@ describe("AI provider fallback", () => {
 });
 
 describe("run limit notices", () => {
+  it("shows the step gate only for a live, genuinely unfinished tool batch", () => {
+    const run = { state: "running" as const, startedAt: 1, budget: { ...createRunBudget("ask"), phase: "soft-limit" as const, lastFinishReason: "tool-calls" } };
+    const message = assistantMessage("Tool output has been collected");
+    expect(shouldShowStepContinuation(run, message, false)).toBe(true);
+    expect(shouldShowStepContinuation(run, message, true)).toBe(false);
+    expect(shouldShowStepContinuation({ ...run, state: "completed" }, message, false)).toBe(false);
+    expect(shouldShowStepContinuation({ ...run, state: "interrupted" }, message, false)).toBe(false);
+    expect(shouldShowStepContinuation({ ...run, state: "failed" }, message, false)).toBe(false);
+    expect(shouldShowStepContinuation({ ...run, budget: { ...run.budget, lastFinishReason: "stop" } }, message, false)).toBe(false);
+    expect(shouldShowStepContinuation({ ...run, budget: { ...run.budget, lastFinishReason: "length" } }, message, false)).toBe(false);
+  });
   it("distinguishes the ordinary soft gate from the hard safety boundary", () => {
     const soft = renderToStaticMarkup(
       <ContinueRow onContinue={() => undefined} />,

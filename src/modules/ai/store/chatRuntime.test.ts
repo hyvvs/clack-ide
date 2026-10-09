@@ -394,6 +394,32 @@ describe("per-session runtime isolation", () => {
 });
 
 describe("autonomous run budget integration", () => {
+  it.each([
+    [AGENT_SOFT_STEP_LIMIT, "stop"],
+    [3, "stop"],
+    [AGENT_SOFT_STEP_LIMIT, "length"],
+  ])("does not turn a completed %s-step %s answer into an Ask continuation", (steps, finishReason) => {
+    setPermissionMode("ask");
+    useChatStore.setState({ sessions: [sessionMeta()] });
+    expect(useChatStore.getState().beginRun(SESSION_ID).ok).toBe(true);
+    useChatStore.getState().recordRunBatch(SESSION_ID, {
+      steps: Number(steps), hitSoftLimit: true, finishReason: String(finishReason),
+    });
+    const messages: UIMessage[] = [{ id: "final", role: "assistant", parts: [{ type: "text", text: "Complete final answer." }] }];
+    expect(shouldAutomaticallySendSession(SESSION_ID, messages)).toBe(false);
+    expect(useChatStore.getState().sessions[0].run?.budget?.phase).toBe("complete");
+    expect(useChatStore.getState().resumeRun(SESSION_ID, false)).toBe(false);
+  });
+
+  it.each(["interrupted", "failed", "cancelled"] as const)("does not convert %s recovery into step continuation", state => {
+    setPermissionMode("ask");
+    useChatStore.setState({ sessions: [sessionMeta()] });
+    useChatStore.getState().beginRun(SESSION_ID);
+    useChatStore.getState().recordRunBatch(SESSION_ID, cappedBatch());
+    useChatStore.getState().finishRun(SESSION_ID, state);
+    expect(shouldAutomaticallySendSession(SESSION_ID, [])).toBe(false);
+    expect(useChatStore.getState().consumeAutoContinuation(SESSION_ID)).toBe(false);
+  });
   it("keeps Ask behind a soft limit without finalizing the logical run", () => {
     setPermissionMode("ask");
     useChatStore.setState({ sessions: [sessionMeta()] });

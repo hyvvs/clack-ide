@@ -42,7 +42,9 @@ export function ModelSwitchNotice({
       <div>
         <p className="font-medium break-words">
           {assessment.contextBlocked
-            ? "This model can't handle the required context for this conversation."
+            ? assessment.contextCapacity === "unknown"
+              ? "Clack can't verify this model's context capacity."
+              : "This model can't fit the required context for this conversation."
             : blocked
               ? "Cannot switch model"
               : "Check before switching"}
@@ -51,6 +53,11 @@ export function ModelSwitchNotice({
         <p className="mt-1 text-muted-foreground">
           Same chat and history. Only future messages use the new model.
         </p>
+        {assessment.contextBlocked && assessment.contextCapacity === "unknown" && (
+          <p className="mt-1 text-muted-foreground">
+            Clack stopped before sending anything because it couldn't safely verify that the request would fit.
+          </p>
+        )}
       </div>
       <ul className="max-h-48 space-y-2 overflow-y-auto text-muted-foreground">
         {assessment.reasons.map((reason) => (

@@ -25,6 +25,7 @@ import {
 
 export type ModelSwitchAssessment = {
   contextBlocked?: boolean;
+  contextCapacity?: "known" | "unknown";
   status: "compatible" | "blocked" | "warning";
   reasons: string[];
   blockingReasons?: string[];

@@ -279,13 +279,7 @@ export function ChatFallbackControl({ sessionId }: { sessionId: string }) {
                       disabled={busy || saving || !preview}
                       onChange={(e) => setConsent(e.target.checked)}
                     />
-                    <span>
-                      {mode === "trusted"
-                        ? "I authorize automatic transmission"
-                        : "Ask before transmission"}{" "}
-                      to this exact destination of:{" "}
-                      {FALLBACK_CATEGORIES.join(", ")}.
-                    </span>
+                    <FallbackConsentCopy mode={mode} />
                   </label>
                 </>
               )}
@@ -342,4 +336,13 @@ export function ChatFallbackControl({ sessionId }: { sessionId: string }) {
       </DialogContent>
     </Dialog>
   );
+}
+
+export function FallbackConsentCopy({ mode }: { mode: "ask" | "trusted" }) {
+  return <span>
+    {mode === "trusted"
+      ? "I authorize automatic transmission"
+      : "I understand that approving fallback allows transmission"}{" "}
+    to this exact destination of: {FALLBACK_CATEGORIES.join(", ")}.
+  </span>;
 }

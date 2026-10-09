@@ -449,6 +449,7 @@ export async function prepareModelSwitch(
               ...(error instanceof ContextBudgetError && error.budget
                 ? {
                     contextBlocked: true,
+                    contextCapacity: error.budget.source === "unknown-policy" ? "unknown" : "known",
                     estimatedTokens:
                       error.budget.cost.system +
                       error.budget.cost.tools +
