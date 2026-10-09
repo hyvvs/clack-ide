@@ -16,11 +16,23 @@ vi.mock("@/modules/ai/store/chatStore", async (importOriginal) => {
   };
 });
 
+vi.mock("@/modules/settings/preferences", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/settings/preferences")>();
+  return { ...actual, usePreferencesStore: Object.assign(
+    <T,>(selector: (state: ReturnType<typeof actual.usePreferencesStore.getState>) => T) => selector(actual.usePreferencesStore.getState()),
+    actual.usePreferencesStore,
+  ) };
+});
+
 import { ModelDropdown } from "@/modules/ai/components/AiStatusBarControls";
 import { ModelSwitchNotice } from "./ModelSwitchNotice";
 import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
 import type { SessionRunState } from "@/modules/ai/lib/sessions";
 import { chats, useChatStore } from "@/modules/ai/store/chatStore";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { createSavedProviderModel, resolveModelTransportIdentity, savedProviderModelSelectionId } from "@/modules/ai/lib/savedProviderModels";
+import { parseProviderContextCatalog } from "@/modules/ai/lib/providerModelEvidence";
+import { minimaxFreeCatalogRecord } from "@/modules/ai/lib/openrouterCatalog.fixture";
 
 const original = useChatStore.getState();
 
@@ -164,6 +176,25 @@ describe.each([
 });
 
 describe("model picker scope", () => {
+  it("renders an exact catalog-backed saved selection without discarding its routing evidence", () => {
+    const preferences = usePreferencesStore.getState();
+    const model = createSavedProviderModel({ providerId: "openrouter", transportModelId: minimaxFreeCatalogRecord.id,
+      providerEvidence: parseProviderContextCatalog({ data: [minimaxFreeCatalogRecord] }).get(minimaxFreeCatalogRecord.id),
+    }, "minimax-picker");
+    const selection = savedProviderModelSelectionId(model.id);
+    try {
+      usePreferencesStore.setState({ savedProviderModels: [model] });
+      useChatStore.setState(state => ({ sessions: state.sessions.map(s => s.id === "chat-a" && s.profile ? { ...s, profile: { ...s.profile, modelId: selection } } : s) }));
+      const html = renderToStaticMarkup(<ModelDropdown sessionId="chat-a" />);
+      expect(html).toContain('aria-label="Change model: minimax/minimax-m3:free.');
+      expect(html).not.toContain('disabled=""');
+      const route = resolveModelTransportIdentity(selection, usePreferencesStore.getState());
+      expect(route.providerEvidence).toEqual(model.providerEvidence);
+      expect(route.transportModelId).toBe(minimaxFreeCatalogRecord.id);
+    } finally {
+      usePreferencesStore.setState(preferences);
+    }
+  });
   it("leaves an idle pane editable while another pane runs", () => {
     setRun("running");
     const html = renderToStaticMarkup(

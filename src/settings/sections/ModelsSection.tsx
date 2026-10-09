@@ -37,6 +37,7 @@ import {
   type CustomEndpointKeys,
 } from "@/modules/ai/lib/keyring";
 import {
+  captureSavedProviderModelEvidence,
   createSavedProviderModel,
   savedProviderModelSelectionId,
   type SavedProviderModel,
@@ -255,12 +256,17 @@ export function ModelsSection() {
     ) {
       return false;
     }
-    const model = createSavedProviderModel({
-      providerId: "openrouter",
-      transportModelId: normalized,
-      displayName,
-    });
-    await setSavedProviderModels([...savedProviderModels, model]);
+    const model = await captureSavedProviderModelEvidence(
+      createSavedProviderModel({
+        providerId: "openrouter",
+        transportModelId: normalized,
+        displayName,
+      }),
+    );
+    const latest = usePreferencesStore.getState().savedProviderModels;
+    if (latest.some(m => m.providerId === "openrouter" && m.transportModelId === normalized))
+      return false;
+    await setSavedProviderModels([...latest, model]);
     if (!openrouterModelId.trim()) await setOpenrouterModelId(normalized);
     return true;
   };
@@ -282,16 +288,18 @@ export function ModelsSection() {
     }
     const current = openrouterModels.find((model) => model.id === id);
     if (!current) return false;
-    const next = savedProviderModels.map((model) =>
-      model.id === id
-        ? {
-            ...model,
-            transportModelId,
-            ...(displayName ? { displayName } : { displayName: undefined }),
-            updatedAt: Date.now(),
-          }
-        : model,
-    );
+    const updated = await captureSavedProviderModelEvidence({
+      ...current,
+      transportModelId,
+      ...(displayName ? { displayName } : { displayName: undefined }),
+      updatedAt: Date.now(),
+    });
+    const latest = usePreferencesStore.getState().savedProviderModels;
+    if (
+      latest.find(m => m.id === id)?.updatedAt !== current.updatedAt ||
+      latest.some(m => m.id !== id && m.providerId === "openrouter" && m.transportModelId === transportModelId)
+    ) return false;
+    const next = latest.map(model => model.id === id ? updated : model);
     await setSavedProviderModels(next);
     if (openrouterModelId === current.transportModelId) {
       await setOpenrouterModelId(transportModelId);

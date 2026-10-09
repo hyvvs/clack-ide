@@ -277,6 +277,10 @@ const NOOP_LIVE: Live = {
 
 const CHATS_LRU_CAP = 8;
 export const chats = new Map<string, Chat<UIMessage>>();
+export const capturedProviderModelEvidence = new Map<
+  string,
+  NonNullable<ModelTransportIdentity["providerEvidence"]>
+>();
 // Ephemeral request configuration only. Credentials must never enter SessionRun.
 export const capturedSelfHostedRuns = new Map<
   string,
@@ -741,6 +745,9 @@ export const useChatStore = create<StoreState>((set, get) => ({
         profiles: preferences.selfHostedInference,
       });
     else capturedSelfHostedRuns.delete(id);
+    if (transportIdentity.providerEvidence)
+      capturedProviderModelEvidence.set(id, structuredClone(transportIdentity.providerEvidence));
+    else capturedProviderModelEvidence.delete(id);
     const now = Date.now();
     const next = get().sessions.map((session) =>
       session.id === id
@@ -985,6 +992,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     const currentRun = current?.run;
     if (currentRun?.state !== "running") return;
     capturedSelfHostedRuns.delete(id);
+    capturedProviderModelEvidence.delete(id);
     const now = Date.now();
     const runError =
       state === "failed" || state === "interrupted"
@@ -1235,6 +1243,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     seedMessages.delete(id);
     runLoopTrackers.delete(id);
     capturedSelfHostedRuns.delete(id);
+    capturedProviderModelEvidence.delete(id);
     releaseWorkspaceWriteLeasesForSession(id);
     const pend = pendingPersist.get(id);
     if (pend) {

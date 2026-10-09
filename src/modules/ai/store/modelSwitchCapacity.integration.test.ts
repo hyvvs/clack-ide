@@ -34,6 +34,7 @@ import { BUILTIN_AGENTS } from "@/modules/ai/lib/agents";
 import { prepareModelSwitch } from "@/modules/ai/store/modelSwitch";
 import {
   chats,
+  capturedProviderModelEvidence,
   seedMessages,
   useChatStore,
 } from "@/modules/ai/store/chatStore";
@@ -41,6 +42,8 @@ import {
   getOrCreateChat,
   sendMessageToSession,
 } from "@/modules/ai/store/chatRuntime";
+import { parseProviderContextCatalog } from "@/modules/ai/lib/providerModelEvidence";
+import { minimaxFreeCatalogRecord } from "@/modules/ai/lib/openrouterCatalog.fixture";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@/modules/settings/store", async (original) => ({
@@ -164,6 +167,7 @@ function probe(modelId: string): ProbeSnapshot {
 }
 
 beforeEach(() => {
+  capturedProviderModelEvidence.clear();
   requests.length = 0;
   chats.clear();
   seedMessages.clear();
@@ -273,6 +277,7 @@ beforeEach(() => {
   );
 });
 afterEach(() => {
+  capturedProviderModelEvidence.clear();
   chats.clear();
   seedMessages.clear();
   useChatStore.setState(original);
@@ -456,4 +461,72 @@ it("sends and switches the exact variant with its own capacity and capabilities"
     "https://openrouter.ai/api/v1/model/z-ai/glm-5.2%3Afree",
   ]);
   prepared.dispose?.();
+});
+
+it("retains exact MiniMax catalog evidence for send, another-model switch and reselection while metadata is offline", async () => {
+  const evidence = parseProviderContextCatalog({
+    data: [minimaxFreeCatalogRecord],
+  }).get(minimaxFreeCatalogRecord.id);
+  if (!evidence) throw new Error("Missing exact MiniMax fixture evidence.");
+  const savedModel = createSavedProviderModel({
+    providerId: "openrouter", transportModelId: minimaxFreeCatalogRecord.id,
+    providerEvidence: evidence,
+  }, "minimax-reproduction");
+  usePreferencesStore.setState({ savedProviderModels: [...saved, savedModel] });
+  const id = selection(savedModel.id);
+  const other = useChatStore.getState().sessions[1];
+  useChatStore.setState(state => ({
+    sessions: state.sessions.map(s => s.id === "chat-a" && s.profile
+      ? { ...s, profile: { ...s.profile, modelId: id } } : s),
+    selectedModelId: id,
+  }));
+  seedMessages.set("chat-a", []);
+  await sendMessageToSession("chat-a", { text: "Hello" });
+  const chat = getOrCreateChat("chat-a");
+  expect(chat.status).toBe("ready");
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({ model: minimaxFreeCatalogRecord.id, max_tokens: 2048 });
+  useChatStore.getState().finishRun("chat-a", "completed");
+  const transcript = structuredClone(chat.messages);
+  const initial = await prepareModelSwitch("chat-a", id);
+  expect(initial.assessment.contextLimit).toBe(1048576);
+  expect(initial.assessment.contextBlocked).not.toBe(true);
+  expect(initial.assessment.status).not.toBe("blocked");
+  expect(await initial.commit(true)).toEqual({ ok: true });
+  initial.dispose?.();
+  const normalModel = await buildConfiguredLanguageModel(id, useChatStore.getState().apiKeys, usePreferencesStore.getState());
+  expect(await modelBudgetLimits(normalModel)).toMatchObject({ reported: 1048576, outputCap: 32768, reportedEvidence: evidence });
+  const away = await prepareModelSwitch("chat-a", selection("laguna"));
+  expect(await away.commit(true)).toEqual({ ok: true });
+  away.dispose?.();
+  const back = await prepareModelSwitch("chat-a", id);
+  expect(back.assessment.contextLimit).toBe(1048576);
+  expect(back.assessment.status).not.toBe("blocked");
+  expect(back.assessment.details?.join("\n")).toContain("tools: supported");
+  expect(await back.commit(true)).toEqual({ ok: true });
+  expect(chat.messages).toEqual(transcript);
+  expect(useChatStore.getState().sessions[1]).toBe(other);
+  expect(seedMessages.get("chat-b")).toEqual(history);
+  expect(usePreferencesStore.getState().savedProviderModels.find(m => m.id === savedModel.id)?.providerEvidence).toEqual(evidence);
+  expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("minimax"))).toBe(false);
+  back.dispose?.();
+});
+
+it("captures evidence per active run, isolates another chat, and releases it on cancellation without persisting it per chat", () => {
+  const model = createSavedProviderModel({
+    providerId: "openrouter", transportModelId: minimaxFreeCatalogRecord.id,
+    providerEvidence: parseProviderContextCatalog({ data: [minimaxFreeCatalogRecord] }).get(minimaxFreeCatalogRecord.id),
+  }, "capture");
+  usePreferencesStore.setState({ savedProviderModels: [...saved, model] });
+  useChatStore.setState(state => ({ sessions: state.sessions.map(s => s.id === "chat-a" && s.profile
+    ? { ...s, profile: { ...s.profile, modelId: selection(model.id) } } : s) }));
+  expect(useChatStore.getState().beginRun("chat-a")).toEqual({ ok: true });
+  const captured = structuredClone(capturedProviderModelEvidence.get("chat-a"));
+  expect(captured).toEqual(model.providerEvidence);
+  expect(capturedProviderModelEvidence.get("chat-b")).toBeUndefined();
+  usePreferencesStore.setState({ savedProviderModels: saved });
+  expect(capturedProviderModelEvidence.get("chat-a")).toEqual(captured);
+  expect(useChatStore.getState().sessions[0].run).not.toHaveProperty("providerEvidence");
+  useChatStore.getState().finishRun("chat-a", "cancelled");
+  expect(capturedProviderModelEvidence.has("chat-a")).toBe(false);
 });

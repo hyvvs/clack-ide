@@ -2,67 +2,27 @@ import {
   knownTransportContextLimit,
   type ProviderId,
 } from "@/modules/ai/config";
-import type {
-  BudgetLimits,
-  ReportedContextEvidence,
-} from "@/modules/ai/lib/contextBudget";
+import type { BudgetLimits } from "@/modules/ai/lib/contextBudget";
+import {
+  freshProviderModelEvidence,
+  parseExactProviderModel,
+  parseProviderContextCatalog,
+  PROVIDER_METADATA_TTL as TTL,
+  type ProviderModelEvidence,
+} from "@/modules/ai/lib/providerModelEvidence";
+
+export {
+  parseExactProviderModel,
+  parseProviderContextCatalog,
+} from "@/modules/ai/lib/providerModelEvidence";
 
 const CATALOG_URL = "https://openrouter.ai/api/v1/models";
 const MAX_BYTES = 4 * 1024 * 1024;
-const MAX_MODELS = 4096;
-const TTL = 15 * 60_000;
 const FAILURE_TTL = 30_000;
 const MAX_EXACT_CACHE = 128;
 const MAX_EXACT_PENDING = 8;
-type Capacity = {
-  context: number;
-  output?: number;
-  capabilities?: ReportedContextEvidence["capabilities"];
-};
-type Catalog = { models: Map<string, Capacity>; expires: number };
-type ExactModel = { model: Capacity | null; expires: number };
-
-const positive = (value: unknown): value is number =>
-  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-const record = (value: unknown): Record<string, unknown> | null =>
-  value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-
-function stringSet(value: unknown): string[] | undefined {
-  if (value == null) return undefined;
-  if (
-    !Array.isArray(value) ||
-    value.length > 32 ||
-    value.some(
-      (v) =>
-        typeof v !== "string" ||
-        !v ||
-        v.length > 64 ||
-        !/^[a-zA-Z0-9_.-]+$/.test(v),
-    )
-  )
-    throw new Error("Invalid provider capability metadata.");
-  return [...new Set(value as string[])].sort();
-}
-
-function capabilities(
-  model: Record<string, unknown>,
-): Capacity["capabilities"] {
-  const architecture = record(model.architecture);
-  if (model.architecture != null && !architecture)
-    throw new Error("Invalid provider architecture metadata.");
-  const inputModalities = stringSet(architecture?.input_modalities);
-  const outputModalities = stringSet(architecture?.output_modalities);
-  const supportedParameters = stringSet(model.supported_parameters);
-  if (!inputModalities && !outputModalities && !supportedParameters)
-    return undefined;
-  return {
-    ...(inputModalities ? { inputModalities } : {}),
-    ...(outputModalities ? { outputModalities } : {}),
-    ...(supportedParameters ? { supportedParameters } : {}),
-  };
-}
+type Catalog = { models: Map<string, ProviderModelEvidence>; expires: number };
+type ExactModel = { model: ProviderModelEvidence | null; expires: number };
 
 export function exactProviderModelURL(modelId: string): string | null {
   if (
@@ -79,63 +39,6 @@ export function exactProviderModelURL(modelId: string): string | null {
   } catch {
     return null;
   }
-}
-
-export function parseProviderContextCatalog(
-  value: unknown,
-): Map<string, Capacity> {
-  const data = record(value)?.data;
-  if (!Array.isArray(data) || data.length > MAX_MODELS)
-    throw new Error("Invalid provider context catalog.");
-  const models = new Map<string, Capacity>();
-  const seen = new Set<string>();
-  for (const entry of data) {
-    const model = record(entry);
-    const id = model?.id;
-    if (
-      typeof id !== "string" ||
-      !id ||
-      id.length > 256 ||
-      /\s/.test(id) ||
-      [...id].some((c) => c.charCodeAt(0) < 32)
-    )
-      continue;
-    if (seen.has(id)) {
-      models.delete(id);
-      continue;
-    }
-    seen.add(id);
-    if (!positive(model?.context_length)) continue;
-    const top = record(model.top_provider);
-    if (model.top_provider != null && !top) continue;
-    if (top?.context_length != null && !positive(top.context_length)) continue;
-    const context = Math.min(
-      model.context_length,
-      (top?.context_length as number) ?? Infinity,
-    );
-    const output = top?.max_completion_tokens;
-    if (output != null && (!positive(output) || output > context)) continue;
-    try {
-      const capabilityMetadata = capabilities(model);
-      models.set(id, {
-        context,
-        ...(positive(output) ? { output } : {}),
-        ...(capabilityMetadata ? { capabilities: capabilityMetadata } : {}),
-      });
-    } catch {
-      /* Malformed capability data is not authoritative model evidence. */
-    }
-  }
-  return models;
-}
-
-export function parseExactProviderModel(
-  value: unknown,
-  modelId: string,
-): Capacity | null {
-  const data = record(record(value)?.data);
-  if (data?.id !== modelId) return null;
-  return parseProviderContextCatalog({ data: [data] }).get(modelId) ?? null;
 }
 
 async function readMetadata(url: string, maxBytes: number): Promise<unknown> {
@@ -196,7 +99,11 @@ export function createProviderContextResolver() {
   const exactPending = new Map<string, Promise<ExactModel>>();
   const freshExact = (id: string) => {
     const cached = exact.get(id);
-    return cached && cached.expires > Date.now() ? cached : undefined;
+    return cached &&
+      cached.expires > Date.now() &&
+      (!cached.model || cached.model.observedAt <= Date.now())
+      ? cached
+      : undefined;
   };
   const loadExact = async (id: string, url: string) => {
     const running = exactPending.get(id);
@@ -206,9 +113,17 @@ export function createProviderContextResolver() {
       .then((value) => parseExactProviderModel(value, id))
       .catch(() => null)
       .then((model) => {
+        const current = freshExact(id);
+        if (
+          current?.model &&
+          (!model || current.model.observedAt > model.observedAt)
+        ) {
+          exactPending.delete(id);
+          return current;
+        }
         const result = {
           model,
-          expires: Date.now() + (model ? TTL : FAILURE_TTL),
+          expires: model ? model.observedAt + TTL : Date.now() + FAILURE_TTL,
         };
         for (const [key, value] of exact)
           if (value.expires <= Date.now()) exact.delete(key);
@@ -227,8 +142,25 @@ export function createProviderContextResolver() {
     modelId: string,
     providerId?: ProviderId,
     cachedOnly = false,
+    selectedEvidence?: ProviderModelEvidence,
   ): Promise<BudgetLimits> => {
     const installed = knownTransportContextLimit(modelId, providerId);
+    const selected = freshProviderModelEvidence(
+      selectedEvidence,
+      providerId ?? "",
+      modelId,
+    );
+    const previous = freshExact(modelId)?.model;
+    if (selected && (!previous || previous.observedAt < selected.observedAt)) {
+      if (exact.size >= MAX_EXACT_CACHE && !exact.has(modelId)) {
+        const oldest = exact.keys().next().value;
+        if (oldest !== undefined) exact.delete(oldest);
+      }
+      exact.set(modelId, {
+        model: selected,
+        expires: selected.observedAt + TTL,
+      });
+    }
     const fresh = catalog && catalog.expires > Date.now() ? catalog : undefined;
     // Installed routes stay offline; catalog misses use isolated exact-ID evidence.
     if (
@@ -239,11 +171,11 @@ export function createProviderContextResolver() {
       !cachedOnly
     ) {
       pending ??= readMetadata(CATALOG_URL, MAX_BYTES)
-        .then(parseProviderContextCatalog)
+        .then((value) => parseProviderContextCatalog(value))
         .then(
           (models) => ({ models, expires: Date.now() + TTL }),
           () => ({
-            models: new Map<string, Capacity>(),
+            models: new Map<string, ProviderModelEvidence>(),
             expires: Date.now() + FAILURE_TTL,
           }),
         )
@@ -254,9 +186,15 @@ export function createProviderContextResolver() {
         });
       await pending;
     }
-    const catalogModel =
+    const catalogEntry =
       providerId === "openrouter" && catalog && catalog.expires > Date.now()
         ? catalog.models.get(modelId)
+        : undefined;
+    const catalogModel =
+      catalogEntry &&
+      catalogEntry.observedAt <= Date.now() &&
+      catalogEntry.observedAt + TTL > Date.now()
+        ? catalogEntry
         : undefined;
     let exactModel =
       providerId === "openrouter" ? freshExact(modelId) : undefined;
@@ -270,30 +208,23 @@ export function createProviderContextResolver() {
       const url = exactProviderModelURL(modelId);
       if (url) exactModel = await loadExact(modelId, url);
     }
-    const found = catalogModel ?? exactModel?.model ?? undefined;
+    const candidates = [catalogModel, exactModel?.model].filter(
+      (v): v is ProviderModelEvidence => Boolean(v),
+    );
+    const found = candidates.sort((a, b) => b.observedAt - a.observedAt)[0];
     const reported = found?.context ?? installed;
     return {
       reported,
       ...(found?.output ? { outputCap: found.output } : {}),
       ...(reported && providerId
         ? {
-            reportedEvidence: {
-              providerId,
-              modelId,
-              origin: found
-                ? ("provider-metadata" as const)
-                : ("installed-registry" as const),
-              ...(found
-                ? {
-                    lookup: catalogModel
-                      ? ("catalog" as const)
-                      : ("exact-model" as const),
-                    ...(found.capabilities
-                      ? { capabilities: structuredClone(found.capabilities) }
-                      : {}),
-                  }
-                : {}),
-            },
+            reportedEvidence: found
+              ? structuredClone(found)
+              : {
+                  providerId,
+                  modelId,
+                  origin: "installed-registry" as const,
+                },
           }
         : {}),
     };

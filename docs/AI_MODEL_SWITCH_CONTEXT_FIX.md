@@ -204,3 +204,119 @@ isolation remain intact, and switching performs no inference call.
 Remaining limitation: an exact endpoint failure cannot verify a selectable variant.
 No model-specific table, suffix stripping, provider credential discovery, UI
 redesign, roadmap checkpoint or push is part of this follow-up.
+
+## Follow-Up: Preserve Provider Capability Evidence
+
+Implemented from `7cccc5d` on 2026-10-09. This is an evidence-retention fix,
+not another roadmap checkpoint or provider-discovery redesign.
+
+### Actual Loss Points
+
+The existing OpenRouter settings flow accepted manually entered exact IDs. It
+did not fetch a catalog for the picker. `ModelDropdown` enumerated saved model
+records, which contained identity and display fields only. Selectability was
+not authoritative capacity evidence. Saved-record normalization would discard
+extra metadata, and captured transport identities contained only routing fields.
+The switch resolver therefore had an ID and a webview-local metadata cache, not
+a durable selection-owned capability record. A different window or restart had
+to rediscover the selected ID. Active-run reconstruction also dropped evidence
+when rebuilding a route from `SessionRun`. The catalog parser retained modalities
+and supported parameters but omitted the provider's structured reasoning record.
+
+The broad parser did not strip `:free`, filter free entries, or substitute base
+IDs. `canonical_slug` is not used as selected identity; it can name a base or
+dated model even when `id` names an exact free variant.
+
+### Shared Representation and Ownership
+
+`providerModelEvidence.ts` owns the shared version-1 normalized record:
+`providerId`, exact `modelId`, `origin`, `lookup`, `observedAt`, conservative
+`context`, optional `output`, and bounded `capabilities`. Capabilities retain
+input/output modalities, supported parameters, and reasoning mandatory/default
+flags, supported efforts and default effort. Tools and structured outputs use
+the existing capability projection from supported parameters. Reasoning metadata
+is retained as evidence, not treated as proof of an R2 adapter/wire contract.
+
+Adding/editing an OpenRouter model obtains evidence using the existing shared
+resolver, not a second catalog client. Only the normalized exact record is saved
+as optional `SavedProviderModel.providerEvidence` in the existing preferences
+store. Saved-model schema version 1 remains additive and idempotent; evidence
+has its own explicit version. Legacy records without evidence remain valid and
+use existing bounded lookup on demand. An ID edit discards mismatched evidence.
+Picker entries, saved/captured routes, normal inference, attachment checks,
+switch preparation, target commit checks and B1 consume this same representation.
+
+Settings writes and preference-change events preserve and validate the record
+across windows. Slow add/edit lookups recheck current preferences before saving.
+An active run captures a defensive copy in an ephemeral session-owned map; it
+is released on run completion/cancellation or session deletion and is not copied
+into the durable transcript or per-chat run JSON. Restart does not replay it.
+No full catalog, description, pricing, attachment, credential or transcript is
+added to a saved model. Conversation/model identity and existing locks are unchanged.
+
+### Resolution and Freshness
+
+Fresh, exact selected evidence seeds the existing bounded model cache. Catalog
+and cached positive evidence are compared by observation time; newer valid
+evidence wins. A failed or stale in-flight exact lookup cannot erase a newer
+valid record. A catalog miss/404 in another window cannot erase supplied fresh
+catalog evidence. Returned records are copied so callers cannot mutate cache data.
+
+The existing fifteen-minute success TTL, thirty-second failure backoff, 128-model
+cache bound, eight pending exact-lookups bound, three-second HTTP deadlines,
+four-MiB/4,096-entry catalog bound and 64-KiB exact-response bound remain.
+Persisted timestamps do not restart the TTL. Future timestamps, unsupported
+versions, invalid numeric limits, malformed capabilities and wrong provider/model
+identities fail closed. Expired evidence requires bounded refresh; failed refresh
+returns unknown. The singular exact-slug API remains the fallback after a genuine
+catalog/cache miss. No suffix stripping, base inheritance, hardcoded model limits,
+HTML scraping, credentials or conversation content are used for metadata lookup.
+B1 hierarchy, reserves, safety margins, unknown 4,096-token policy and final
+request enforcement are unchanged.
+
+### Live Metadata and Fixtures
+
+Credential-free public API checks returned HTTP 200 from `/api/v1/models`, with
+469 records and 782,082 response bytes. The catalog included the exact
+`poolside/laguna-s-2.1:free` record and the base `minimax/minimax-m3`, but did not
+include `minimax/minimax-m3:free`. The existing exact endpoint for that free
+variant returned HTTP 404, `Model not found`. Exact Laguna lookup returned 200.
+These checks cannot establish the missing MiniMax variant's live capacity.
+
+Sources: [OpenRouter catalog API](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
+and [exact-model API](https://openrouter.ai/docs/api/api-reference/models/get-a-model-by-its-slug).
+
+Fixtures retain the real API record shape, including canonical slug, architecture,
+pricing, top-provider limits, nullable fields, links and reasoning metadata. The
+positive MiniMax free record is explicitly a reproduction fixture modeled on that
+shape and the user's stated exact capacity, not a captured positive live response.
+Its own 1,048,576-token context survives settings serialization, picker rendering,
+cold-cache normal send, another-model switch and reselection. Its base record has
+its own smaller top-provider bound and different completion/reasoning metadata.
+Other variant fixtures cover equal and different capabilities, broad hits, exact
+fallback hits, and unknown misses. No production model constants were introduced.
+
+### Final Verification
+
+- Added 27 cases: 20 evidence cases, four settings persistence/event integration
+  cases, two cold-send/captured-run cases and one actual picker static-render case.
+- Consolidated focused regressions: 30 files, 584 tests passed, including B1,
+  F1, C2, R2, attachment capabilities, G3 fallback and normal inference routing.
+- Final full frontend suite: 183 files, 2,320 tests passed.
+- Typecheck passed. Two test-only `.at()` calls were replaced to match the
+  repository's existing JavaScript target; no compiler target was changed.
+- Lint passed at the existing 71 warnings and two informational notices.
+- Production build passed with the existing four ineffective dynamic import
+  warnings and plugin timing notice. `git diff --check` passed.
+- Initial sandbox test launch hit Vitest cache-rename EPERM before any tests ran;
+  test/build commands passed with normal host cache access.
+- Rust unchanged; Rust gates were not required. No Computer Use, native GUI
+  interaction, interactive browser verification or real-provider inference was
+  performed. The picker check is an automated React static-render fixture.
+
+Known limitation: manually configured IDs are still selectable without provider
+evidence. Where both supported metadata APIs lack an exact variant and no fresh
+saved evidence exists, its capacity remains unknown; this fix does not fabricate
+it. Unknown-capacity warnings and oversized mandatory-context blocks, including
+the known-small deployment block, retain their existing behavior. No subsequent
+feature checkpoint or push is included.

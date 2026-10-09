@@ -138,6 +138,7 @@ function ellipsize(s: string, max: number): string {
 }
 
 export type BuildModelOptions = {
+  providerEvidence?: import("@/modules/ai/lib/providerModelEvidence").ProviderModelEvidence;
   calibration?: Pick<CalibrationCaptureOptions, "requestClass" | "record" | "onQueued">;
   reasoning?: EffortCapture;
   assertedContext?: number;
@@ -254,6 +255,7 @@ export async function buildLanguageModel(
     options.selfHostedInference?.revision,
     options.assertedContext,
     reasoning,
+    options.providerEvidence,
   ]);
   const hit = options.inferenceScope || options.calibration ? undefined : modelCache.get(cacheKey);
   if (hit) return hit;
@@ -275,6 +277,7 @@ export async function buildLanguageModel(
     modelId: resolvedModelId,
     providerId: provider,
     local: localProvider,
+    providerEvidence: options.providerEvidence,
     state: options.selfHostedInference,
     admission,
     assertedContext: options.assertedContext,
@@ -516,6 +519,7 @@ export function buildConfiguredLanguageModel(
       keys,
       captured.transportModelId,
       {
+        providerEvidence: captured.providerEvidence,
         assertedContext: captured.customEndpointId
           ? local.customEndpoints?.find(
               (ep) => ep.id === captured.customEndpointId,
@@ -557,6 +561,7 @@ export function buildConfiguredLanguageModel(
       keys,
       target.transportModelId,
       {
+        providerEvidence: target.providerEvidence,
         reasoning: local.reasoning,
         lmstudioBaseURL: local.lmstudioBaseURL,
         inferenceScope: local.inferenceScope,

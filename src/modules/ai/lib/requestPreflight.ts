@@ -76,6 +76,7 @@ export function createRequestPreflight(options: {
   cachedMetadataOnly?: boolean;
   modelId: string;
   providerId?: ProviderId;
+  providerEvidence?: import("@/modules/ai/lib/providerModelEvidence").ProviderModelEvidence;
   local: boolean;
   state?: SelfHostedState;
   admission?: InferenceAdmission;
@@ -121,6 +122,7 @@ export function createRequestPreflight(options: {
         options.modelId,
         options.providerId,
         options.cachedMetadataOnly,
+        options.providerEvidence,
       );
     if (!endpoint || !profile) return;
     const client = createSelfHostedProbeClient();
@@ -254,6 +256,7 @@ export function createRequestPreflight(options: {
             options.modelId,
             options.providerId,
             true,
+            options.providerEvidence,
           );
         assertMeasuredRequestBudget(limits(), measured.cost, measured.output);
         await options.validateEvidence?.();

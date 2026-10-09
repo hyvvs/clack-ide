@@ -1,3 +1,5 @@
+import type { ProviderCapabilities } from "@/modules/ai/lib/providerModelEvidence";
+
 export const UNKNOWN_CONTEXT_POLICY = 4096;
 
 export type ReportedContextEvidence = {
@@ -5,11 +7,11 @@ export type ReportedContextEvidence = {
   modelId: string;
   origin: "provider-metadata" | "installed-registry";
   lookup?: "catalog" | "exact-model";
-  capabilities?: {
-    inputModalities?: string[];
-    outputModalities?: string[];
-    supportedParameters?: string[];
-  };
+  version?: 1;
+  observedAt?: number;
+  context?: number;
+  output?: number;
+  capabilities?: ProviderCapabilities;
 };
 export type BudgetLimits = {
   reportedEvidence?: ReportedContextEvidence;

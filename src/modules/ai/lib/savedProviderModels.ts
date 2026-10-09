@@ -16,6 +16,12 @@ import {
   selfHostedModelInfo,
   selfHostedTransportIdentity,
 } from "@/modules/ai/lib/selfHostedModels";
+import {
+  freshProviderModelEvidence,
+  normalizeProviderModelEvidence,
+  type ProviderModelEvidence,
+} from "@/modules/ai/lib/providerModelEvidence";
+import { resolveProviderContext } from "@/modules/ai/lib/providerContext";
 
 export const SAVED_PROVIDER_MODELS_SCHEMA_VERSION = 1;
 export const SAVED_PROVIDER_MODEL_SELECTION_PREFIX = "saved-provider:";
@@ -28,6 +34,7 @@ export type SavedProviderModel = {
   enabled: boolean;
   createdAt: number;
   updatedAt: number;
+  providerEvidence?: ProviderModelEvidence;
 };
 
 export type SavedProviderModelsMigration = {
@@ -39,6 +46,7 @@ export type SavedProviderModelsMigration = {
 export type ModelTransportIdentity = {
   providerId: ProviderId;
   transportModelId: string;
+  providerEvidence?: ProviderModelEvidence;
   endpointBaseURL?: string;
   customEndpointId?: string;
   selfHosted?: {
@@ -56,6 +64,7 @@ type CreateSavedProviderModelInput = {
   transportModelId: string;
   displayName?: string;
   enabled?: boolean;
+  providerEvidence?: ProviderModelEvidence;
 };
 
 const PROVIDER_IDS = new Set<string>(PROVIDERS.map((provider) => provider.id));
@@ -77,6 +86,11 @@ export function createSavedProviderModel(
     throw new Error(`Unknown provider: ${input.providerId}`);
   }
   if (!transportModelId) throw new Error("Provider model ID is empty");
+  const providerEvidence = normalizeProviderModelEvidence(
+    input.providerEvidence,
+    input.providerId,
+    transportModelId,
+  );
   return {
     id: normalizedId,
     providerId: input.providerId,
@@ -85,7 +99,27 @@ export function createSavedProviderModel(
     enabled: input.enabled ?? true,
     createdAt: now,
     updatedAt: now,
+    ...(providerEvidence ? { providerEvidence } : {}),
   };
+}
+
+export async function captureSavedProviderModelEvidence(
+  model: SavedProviderModel,
+): Promise<SavedProviderModel> {
+  if (model.providerId !== "openrouter") return model;
+  const limits = await resolveProviderContext(
+    model.transportModelId,
+    model.providerId,
+    false,
+    model.providerEvidence,
+  );
+  const providerEvidence = freshProviderModelEvidence(
+    limits.reportedEvidence,
+    model.providerId,
+    model.transportModelId,
+  );
+  const { providerEvidence: _previous, ...selection } = model;
+  return { ...selection, ...(providerEvidence ? { providerEvidence } : {}) };
 }
 
 export function normalizeSavedProviderModels(
@@ -175,12 +209,18 @@ export function findSavedProviderModel(
 export function resolveSavedProviderModelTarget(
   selectionId: string,
   models: readonly SavedProviderModel[],
-): { providerId: ProviderId; transportModelId: string } | null {
+): ModelTransportIdentity | null {
   const model = findSavedProviderModel(selectionId, models);
   if (!model?.enabled) return null;
+  const providerEvidence = normalizeProviderModelEvidence(
+    model.providerEvidence,
+    model.providerId,
+    model.transportModelId,
+  );
   return {
     providerId: model.providerId,
     transportModelId: model.transportModelId,
+    ...(providerEvidence ? { providerEvidence } : {}),
   };
 }
 
@@ -191,6 +231,11 @@ export function getSavedProviderModelInfo(
   const model = findSavedProviderModel(selectionId, models);
   if (!model) throw new Error(`Saved provider model not found: ${selectionId}`);
   const provider = getProvider(model.providerId);
+  const providerEvidence = normalizeProviderModelEvidence(
+    model.providerEvidence,
+    model.providerId,
+    model.transportModelId,
+  );
   return {
     id: selectionId,
     provider: model.providerId,
@@ -198,6 +243,7 @@ export function getSavedProviderModelInfo(
     hint: provider.label,
     description: `${provider.label} model ${model.transportModelId}`,
     capabilities: { intelligence: 3, speed: 3, cost: 3 },
+    ...(providerEvidence ? { providerEvidence } : {}),
   };
 }
 
@@ -363,6 +409,11 @@ function normalizeSavedProviderModel(
       : "";
   const createdAt = finiteTimestamp(candidate.createdAt);
   const updatedAt = finiteTimestamp(candidate.updatedAt, createdAt);
+  const providerEvidence = normalizeProviderModelEvidence(
+    candidate.providerEvidence,
+    providerId,
+    transportModelId,
+  );
   return {
     id,
     providerId: providerId as ProviderId,
@@ -371,6 +422,7 @@ function normalizeSavedProviderModel(
     enabled: candidate.enabled !== false,
     createdAt,
     updatedAt,
+    ...(providerEvidence ? { providerEvidence } : {}),
   };
 }
 

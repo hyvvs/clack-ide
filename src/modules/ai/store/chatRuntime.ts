@@ -49,6 +49,7 @@ import {
   getAgentMeta,
   hasKeyForModel,
   capturedSelfHostedRuns,
+  capturedProviderModelEvidence,
   inferenceScopeForSession,
   recordSelectedModelUse,
   seedMessages,
@@ -362,9 +363,11 @@ function makeChat(sessionId: string): Chat<UIMessage> {
     getCapturedModelIdentity: () => {
       const run = owner()?.run;
       if (!run?.providerId || !run.transportModelId) return undefined;
+      const providerEvidence = capturedProviderModelEvidence.get(sessionId);
       return {
         providerId: run.providerId,
         transportModelId: run.transportModelId,
+        ...(providerEvidence ? { providerEvidence } : {}),
         ...(run.selfHosted ? { selfHosted: run.selfHosted } : {}),
         ...(run.endpointBaseURL
           ? { endpointBaseURL: run.endpointBaseURL }

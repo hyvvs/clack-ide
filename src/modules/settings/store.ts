@@ -18,6 +18,7 @@ import {
 } from "@/modules/ai/config";
 import {
   migrateSavedProviderModels,
+  normalizeSavedProviderModels,
   SAVED_PROVIDER_MODELS_SCHEMA_VERSION,
   type SavedProviderModel,
 } from "@/modules/ai/lib/savedProviderModels";
@@ -900,7 +901,9 @@ export async function onPreferencesChange(
   // arrive via the Tauri event emitted by writePref().
   const unsubLocal = await store.onChange<unknown>((key, value) => {
     const mapped = map[key];
-    if (mapped) cb(mapped, value);
+    if (mapped)
+      cb(mapped, mapped === "savedProviderModels"
+        ? normalizeSavedProviderModels(value) : value);
   });
   const unsubEvent = await listen<{ key: string; value: unknown }>(
     PREFS_CHANGED_EVENT,
@@ -908,7 +911,9 @@ export async function onPreferencesChange(
       if (e.payload.key === SELF_HOSTED_SETTINGS_KEY)
         deliverSelfHosted(e.payload.value);
       const mapped = map[e.payload.key];
-      if (mapped) cb(mapped, e.payload.value);
+      if (mapped)
+        cb(mapped, mapped === "savedProviderModels"
+          ? normalizeSavedProviderModels(e.payload.value) : e.payload.value);
     },
   );
   // Reconcile after subscribing so an edit during hydration cannot be missed.

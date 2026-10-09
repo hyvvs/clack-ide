@@ -177,6 +177,7 @@ export type ModelCapabilities = {
 export type ModelTag = "vision" | "reasoning" | "tools" | "coding";
 
 export type ModelInfo = {
+  providerEvidence?: import("@/modules/ai/lib/providerModelEvidence").ProviderModelEvidence;
   id: string;
   provider: ProviderId;
   label: string;

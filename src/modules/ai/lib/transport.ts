@@ -267,6 +267,8 @@ export function createContextAwareTransport(deps: Deps) {
             await resolveProviderContext(
               route.transportModelId,
               route.providerId,
+              false,
+              route.providerEvidence,
             )
           ).reportedEvidence
         : undefined;
