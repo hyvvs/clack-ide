@@ -15,8 +15,7 @@ import {
 } from "@/modules/ai/lib/activity";
 import { ProviderOutput } from "@/modules/ai/components/ProviderOutput";
 import { inferenceLabel } from "@/modules/ai/lib/inferenceLifecycle";
-import { ContextSources } from "@/modules/ai/components/ContextSources";
-import { ProjectMemoryPanel } from "@/modules/ai/components/ProjectMemoryPanel";
+import { ChatContextPanel } from "@/modules/ai/components/ChatContextPanel";
 import {
   Conversation,
   ConversationContent,
@@ -308,8 +307,7 @@ export function AiChatView({
     return (
       <Conversation data-conversation-pane={sessionId}>
         <ConversationContent className="gap-5 p-3">
-          <ContextSources key={sessionId} sessionId={sessionId} messages={messages} />
-          <ProjectMemoryPanel key={`project-${sessionId}`} sessionId={sessionId} messages={messages} />
+          <ChatContextPanel key={sessionId} sessionId={sessionId} messages={messages} />
           <ConversationEmptyState
             title="Ask Clack anything"
             description="Explain command output, fix errors, generate snippets, or run a task."
@@ -323,8 +321,7 @@ export function AiChatView({
   return (
     <Conversation data-conversation-pane={sessionId}>
       <ConversationContent className="gap-5 p-3">
-        <ContextSources key={sessionId} sessionId={sessionId} messages={messages} />
-        <ProjectMemoryPanel key={`project-${sessionId}`} sessionId={sessionId} messages={messages} />
+        <ChatContextPanel key={sessionId} sessionId={sessionId} messages={messages} />
         {ACTIVITY_ENABLED ? (
           <AgentActivity sessionId={sessionId} messages={messages} />
         ) : null}

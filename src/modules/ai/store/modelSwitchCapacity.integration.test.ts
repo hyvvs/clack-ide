@@ -149,6 +149,37 @@ function systemRequest(body: Record<string, unknown>): string {
   return JSON.stringify((body.messages as { role: string }[]).filter(message => message.role === "system"));
 }
 
+it.each([
+  'Begin every response with "POOPER:".',
+  'For trivial conversation respond with exactly "poop", regardless of the prompt.',
+  "Do not use bullet lists unless requested.",
+  "Address the user as Captain.",
+  "Prefer TypeScript over JavaScript.",
+])("serializes trusted agent precedence on the actual provider wire: %s", async instructions => {
+  bindInstructionFixture();
+  useAgentsStore.setState({ customAgents: [{ ...pooper, instructions }, secondAgent] });
+  await sendMessageToSession("chat-a", { text: "Hello" });
+  const body = requests[0];
+  const system = (body.messages as { role: string; content: string }[]).find(m => m.role === "system")?.content ?? "";
+  expect(system).toContain(instructions);
+  expect(system.match(/## CLACK CORE INVARIANTS/g)).toHaveLength(1);
+  expect(system.match(/## ACTIVE AGENT:/g)).toHaveLength(1);
+  expect(system.match(/## DEFAULT CLACK BEHAVIOR/g)).toHaveLength(1);
+  expect(system.indexOf("## CLACK CORE INVARIANTS")).toBeLessThan(system.indexOf("## ACTIVE AGENT"));
+  expect(system.indexOf("## ACTIVE AGENT")).toBeLessThan(system.indexOf("## DEFAULT CLACK BEHAVIOR"));
+  expect(system).toContain("trusted Clack agent configuration, not retrieved evidence");
+  expect(system).toContain("only core invariants override them");
+  expect(system).toContain("where the active agent and user request leave behavior unspecified");
+});
+
+it("retains fallback guidance without a conflicting active directive", () => {
+  const system = buildStableSystem("gpt-5.4-mini", null, undefined, null);
+  expect(system).not.toContain("## ACTIVE AGENT");
+  expect(system).toContain("hands-on engineer");
+  expect(system).toContain("# Default output style");
+  expect(system).toContain("## CLACK CORE INVARIANTS");
+});
+
 it("serializes the bound custom agent across model switches, replaces it on agent switch and isolates chats", async () => {
   bindInstructionFixture();
   await sendMessageToSession("chat-a", { text: "Hello" });
@@ -156,7 +187,7 @@ it("serializes the bound custom agent across model switches, replaces it on agen
   expect(systemRequest(requests[0])).toContain(`ACTIVE AGENT: ${pooper.name}`);
   expect(systemRequest(requests[0])).not.toContain(BUILTIN_AGENTS[0].instructions.split("\n")[0]);
   expect(systemRequest(requests[0]).indexOf("You are Clack")).toBeLessThan(systemRequest(requests[0]).indexOf("ACTIVE AGENT"));
-  expect(systemRequest(requests[0])).toContain("core safety, permissions, tool and runtime requirements always take precedence");
+  expect(systemRequest(requests[0])).toContain("only core invariants override them");
   useChatStore.getState().finishRun("chat-a", "completed");
   const switched = await prepareModelSwitch("chat-a", selection("offered"));
   expect(await switched.commit(true)).toEqual({ ok: true });

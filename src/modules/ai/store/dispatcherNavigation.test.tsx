@@ -6,6 +6,7 @@ import {
   useDispatcherNavigation,
   viewTaskInDispatcher,
   focusTaskConversationPane,
+  viewAllTasksInDispatcher,
 } from "@/modules/ai/store/dispatcherNavigation";
 import {
   createAiPaneLayout,
@@ -15,6 +16,7 @@ import {
   dispatcherTaskConversation,
   dispatcherTaskStatus,
   workspaceDispatcherTasks,
+  availableDispatcherTasks,
 } from "@/modules/ai/lib/dispatcherTasks";
 import { PeerTaskFeed } from "@/modules/ai/components/PeerTaskFeed";
 import type { PeerTask } from "@/modules/ai/lib/peerTasks";
@@ -92,6 +94,21 @@ const task: PeerTask = {
   createdAt: 1,
   updatedAt: 2,
 };
+
+it("keeps global Dispatcher work visible across known workspaces without exposing orphaned or foreign task evidence", () => {
+  const elsewhere = session("elsewhere");
+  if (!elsewhere.profile) throw new Error("Fixture profile missing");
+  elsewhere.profile = { ...elsewhere.profile, workspaceId: "local:/elsewhere", workspaceRoot: "/elsewhere" };
+  const other = { ...task, id: "other", sourceSessionId: elsewhere.id, targetSessionId: "missing", workspaceId: elsewhere.profile.workspaceId, workspaceRoot: elsewhere.profile.workspaceRoot };
+  const orphan = { ...other, id: "orphan", sourceSessionId: "deleted" };
+  expect(availableDispatcherTasks([task, other, orphan], [session("a"), elsewhere]).map(t => t.id)).toEqual([task.id, other.id]);
+  viewAllTasksInDispatcher();
+  expect(useDispatcherNavigation.getState().request).toMatchObject({ taskId: null, sessionId: null });
+  expect(useChatStore.getState().panelOpen).toBe(true);
+  useChatStore.setState({ sessions: [session("a"), elsewhere] });
+  usePeerTaskStore.setState({ tasks: [other] });
+  expect(viewTaskInDispatcher(other.id, "a")).toBe(false);
+});
 it("focuses the already-open parent pane without rebinding another conversation", () => {
   vi.stubGlobal("requestAnimationFrame", vi.fn());
   try {

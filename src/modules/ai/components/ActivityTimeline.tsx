@@ -16,6 +16,7 @@ type Props = {
   messages: UIMessage[];
   tasks: readonly PeerTask[];
   run?: SessionRun;
+  statusLabel?: string;
 };
 const PAGE_SIZE = 40;
 
@@ -27,7 +28,7 @@ export const ActivityTimeline = memo(function ActivityTimeline(props: Props) {
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary className="cursor-pointer px-1 py-2 focus-visible:outline focus-visible:outline-1">
-        Agent activity
+        Agent activity{props.statusLabel ? `: ${props.statusLabel}` : ""}
       </summary>
       {open ? <ActivityRows {...props} /> : null}
     </details>

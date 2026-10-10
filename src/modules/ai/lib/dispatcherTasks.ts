@@ -12,6 +12,10 @@ export function workspaceDispatcherTasks(
     .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
 
+export function availableDispatcherTasks(tasks: readonly PeerTask[], sessions: readonly SessionMeta[]): PeerTask[] {
+  return tasks.filter(task => dispatcherTaskConversation(task, sessions) !== null).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+}
+
 export function dispatcherTaskStatus(task: PeerTask): string {
   if (pendingPeerQuestion(task)) return "Waiting for clarification";
   switch (task.status) {

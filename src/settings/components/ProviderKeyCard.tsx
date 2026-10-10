@@ -71,7 +71,7 @@ export function ProviderKeyCard({
   };
 
   return (
-    <div className="clack-settings-card flex flex-col gap-2 px-3 py-2.5">
+    <div data-settings-connection={provider.id} tabIndex={-1} className="clack-settings-card flex flex-col gap-2 px-3 py-2.5 focus-visible:outline">
       <div className="flex items-center gap-2">
         <ProviderIcon provider={provider.id} size={15} />
         <span className="text-[12.5px] font-semibold text-[var(--clack-text-1)]">

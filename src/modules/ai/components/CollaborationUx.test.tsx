@@ -142,7 +142,7 @@ describe("U1 collaboration presentation", () => {
   it("names pane tools without opening a second manager eagerly", () => {
     useChatStore.setState({ sessions: [session("source")] });
     const html = renderToStaticMarkup(<ChatToolsControl sessionId="source" />);
-    expect(html).toContain('aria-label="Manage tools for this chat"');
+    expect(html).toContain('aria-label="Tools for this chat"');
     expect(html).not.toContain("Workspace conversation");
   });
   it("shows captured task actors and model after both chat profiles change", () => {

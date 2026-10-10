@@ -28,7 +28,7 @@ import {
   selfHostedSelectionId,
 } from "@/modules/ai/lib/selfHostedModels";
 import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
-import { SYSTEM_PROMPT } from "@/modules/ai/config";
+import { CORE_SYSTEM_PROMPT, DEFAULT_CLACK_BEHAVIOR } from "@/modules/ai/config";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
 const project = readFileSync("CLACK.md", "utf8");
@@ -167,12 +167,8 @@ it("sends a fresh cloud Hello through the real transport, selector, adapter and 
   expect(serialized).toContain("Never remove required safety instructions.");
   const messages = body.messages as { role: string; content: string }[];
   expect(messages.filter((m) => m.role === "system")).toHaveLength(1);
-  expect(
-    messages
-      .map((m) => m.content)
-      .join("\n")
-      .split(SYSTEM_PROMPT),
-  ).toHaveLength(2);
+  for (const block of [CORE_SYSTEM_PROMPT, DEFAULT_CLACK_BEHAVIOR])
+    expect(messages.map((m) => m.content).join("\n").split(block)).toHaveLength(2);
   const cost = measureRequest(body);
   expect(
     resolveContextBudget({ reported: 1000000 }, cost, Number(body.max_tokens))

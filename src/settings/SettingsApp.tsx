@@ -2,6 +2,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import type { SettingsTab } from "@/modules/settings/openSettingsWindow";
+import { readSettingsRoute, SettingsTargetContext } from "@/modules/settings/settingsNavigation";
+import { SettingsConnectionTarget } from "@/modules/settings/SettingsConnectionTarget";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   AiScanIcon,
@@ -72,27 +74,10 @@ const TABS: {
   },
 ];
 
-const VALID_TABS: SettingsTab[] = [
-  "general",
-  "themes",
-  "shortcuts",
-  "models",
-  "agents",
-  "about",
-];
-
-function readInitialTab(): SettingsTab {
-  if (typeof window === "undefined") return "general";
-  const url = new URL(window.location.href);
-  const t = url.searchParams.get("tab");
-  // Back-compat: legacy "ai" and "connections" route to "models".
-  if (t === "ai" || t === "connections") return "models";
-  if (t && (VALID_TABS as string[]).includes(t)) return t as SettingsTab;
-  return "general";
-}
-
 export function SettingsApp() {
-  const [active, setActive] = useState<SettingsTab>(readInitialTab);
+  const [route, setRoute] = useState(() => readSettingsRoute(typeof window === "undefined" ? "" : window.location.search));
+  const active = route.tab;
+  const setActive = (tab: SettingsTab) => setRoute({ tab, target: {} });
   const init = usePreferencesStore((s) => s.init);
   const ActiveSection = TABS.find((t) => t.id === active)?.component;
 
@@ -101,15 +86,7 @@ export function SettingsApp() {
   }, [init]);
 
   useEffect(() => {
-    const apply = (detail: string) => {
-      if (detail === "ai" || detail === "connections") {
-        setActive("models");
-        return;
-      }
-      if ((VALID_TABS as string[]).includes(detail)) {
-        setActive(detail as SettingsTab);
-      }
-    };
+    const apply = (detail: string) => setRoute(readSettingsRoute(`tab=${detail}`));
     const unlistenPromise = getCurrentWebviewWindow().listen<string>(
       "terax:settings-tab",
       (e) => apply(e.payload),
@@ -176,7 +153,7 @@ export function SettingsApp() {
           </aside>
           <section className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pt-4 pb-8 sm:px-8 sm:pt-7 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <div className="mx-auto w-full max-w-3xl">
-              {ActiveSection && <ActiveSection />}
+              {ActiveSection && <SettingsTargetContext value={route.target}><SettingsConnectionTarget><ActiveSection /></SettingsConnectionTarget></SettingsTargetContext>}
             </div>
           </section>
         </Tabs>

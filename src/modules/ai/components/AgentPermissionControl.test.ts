@@ -39,8 +39,12 @@ describe("AgentPermissionControl policy updates", () => {
       join(process.cwd(), "src", "settings", "sections", "AgentsSection.tsx"),
       "utf8",
     );
-
-    expect(chat).toContain("<AgentPermissionControl");
+    const controls = readFileSync(
+      join(process.cwd(), "src", "modules", "ai", "components", "ChatSecondaryControls.tsx"),
+      "utf8",
+    );
+    expect(chat).toContain("<ChatSecondaryControls");
+    expect(controls).toContain("<AgentPermissionControl agentId={agentId}");
     expect(settings).toContain("<AgentPermissionControl");
   });
 

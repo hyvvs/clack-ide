@@ -48,7 +48,11 @@ function Destination({ destination }: { destination: FallbackDestination }) {
   );
 }
 
-export function ChatFallbackControl({ sessionId }: { sessionId: string }) {
+export function fallbackPolicyLabel(mode: string | undefined): string {
+  return mode === "ask" ? "Ask before external transmission" : mode === "trusted" ? "Trusted destination configured" : "Disabled";
+}
+
+export function ChatFallbackControl({ sessionId, showLabel = false }: { sessionId: string; showLabel?: boolean }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"never" | "ask" | "trusted">("never");
   const [target, setTarget] = useState("");
@@ -178,17 +182,18 @@ export function ChatFallbackControl({ sessionId }: { sessionId: string }) {
     >
       <DialogTrigger asChild>
         <Button
-          size="icon"
+          size={showLabel ? "sm" : "icon"}
           variant="ghost"
-          className="size-6"
-          aria-label={`Fallback policy: ${policy?.mode ?? "never"}`}
-          title={`Fallback: ${policy?.mode ?? "never"}`}
+          className={showLabel ? "h-7 min-w-0 gap-1 px-1.5 text-xs" : "size-6"}
+          aria-label={`Fallback policy: ${fallbackPolicyLabel(policy?.mode)}`}
+          title={`Fallback: ${fallbackPolicyLabel(policy?.mode)}`}
         >
           <HugeiconsIcon
             icon={ArrowReloadHorizontalIcon}
             size={13}
             strokeWidth={1.7}
           />
+          {showLabel && <span className="truncate">Fallback: {fallbackPolicyLabel(policy?.mode)}</span>}
         </Button>
       </DialogTrigger>
       <DialogContent className="flex max-h-[90dvh] w-[calc(100vw-24px)] max-w-md flex-col overflow-hidden p-4">

@@ -111,6 +111,7 @@ export function AgentPermissionControl({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="min-w-48">
+          <p className="max-w-64 px-2 py-2 text-[11px] text-muted-foreground">Agent-wide mode, including other chats using this agent. Workspace grants and one-time approvals remain scoped separately.</p>
           {AGENT_PERMISSION_MODES.map((mode) => (
             <DropdownMenuItem
               key={mode}

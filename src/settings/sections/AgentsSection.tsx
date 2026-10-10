@@ -34,6 +34,7 @@ import {
   useSnippetsStore,
 } from "@/modules/ai/store/snippetsStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { useSettingsTarget } from "@/modules/settings/settingsNavigation";
 import {
   setAgentPermissionProfiles,
   setAgentWorkspacePermissions,
@@ -85,10 +86,22 @@ export function AgentsSection() {
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [editingSnippet, setEditingSnippet] = useState<Snippet | null>(null);
   const agentOpener = useRef<HTMLElement | null>(null);
+  const target = useSettingsTarget();
+  const appliedTarget = useRef<typeof target | null>(null);
   const openAgentEditor = (agent: Agent) => {
     agentOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setEditingAgent(agent);
   };
+  useEffect(() => {
+    if (!target.agentId || appliedTarget.current === target) return;
+    const agent = [...BUILTIN_AGENTS, ...customAgents].find(a => a.id === target.agentId);
+    if (!agent) return;
+    appliedTarget.current = target;
+    const card = Array.from(document.querySelectorAll<HTMLElement>("[data-agent-card]")).find(element => element.dataset.agentCard === agent.id);
+    agentOpener.current = card ?? null;
+    card?.focus();
+    if (!agent.builtIn) setEditingAgent(agent);
+  }, [target, customAgents]);
 
   return (
     <div className="flex flex-col gap-7">
@@ -121,6 +134,7 @@ export function AgentsSection() {
         </div>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {[...BUILTIN_AGENTS, ...customAgents].map((a) => (
+            <div key={a.id} data-agent-card={a.id} tabIndex={-1} className="min-w-0 focus-visible:outline focus-visible:outline-1">
             <AgentCard
               key={a.id}
               agent={a}
@@ -128,12 +142,12 @@ export function AgentsSection() {
               onActivate={() => setActiveAgentId(a.id)}
               onEdit={a.builtIn ? null : () => openAgentEditor(a)}
               onDelete={a.builtIn ? null : () => removeAgent(a.id)}
-            />
+            /></div>
           ))}
         </div>
       </section>
 
-      <CustomToolsManager />
+      <CustomToolsManager initialSessionId={target.sessionId} />
       <PermissionSettings
         rules={workspacePermissions}
         agents={[...BUILTIN_AGENTS, ...customAgents]}

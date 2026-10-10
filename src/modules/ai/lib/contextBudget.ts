@@ -243,7 +243,7 @@ export function measureRequest(
     if (section === "core") {
       const markers = [
         ...text.matchAll(
-          /\n\n## (PROJECT MEMORY|ACTIVE AGENT[^\n]*|USER CUSTOM INSTRUCTIONS[^\n]*)/g,
+          /\n\n## (PROJECT MEMORY|ACTIVE AGENT[^\n]*|DEFAULT CLACK BEHAVIOR[^\n]*|USER CUSTOM INSTRUCTIONS[^\n]*)/g,
         ),
       ].slice(0, 16);
       let current: ContextSection = "core";
@@ -253,7 +253,9 @@ export function measureRequest(
         add(current, prefix - previous);
         previous = prefix;
         current =
-          marker[1] === "PROJECT MEMORY"
+          marker[1].startsWith("DEFAULT CLACK BEHAVIOR")
+            ? "core"
+            : marker[1] === "PROJECT MEMORY"
             ? "project"
             : marker[1].startsWith("ACTIVE AGENT")
               ? "agent"

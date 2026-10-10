@@ -79,6 +79,7 @@ import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
 import { savedSelfHostedModelInfos } from "@/modules/ai/lib/selfHostedModels";
 import { hasKeyForModel } from "@/modules/ai/store/chatStore";
 import { modelConnectionLabel } from "@/modules/ai/lib/connectionPresentation";
+import { chatConnectionSummary } from "@/modules/ai/lib/chatConnectionSummary";
 
 const PROVIDER_ICON = {
   openai: ChatGptIcon,
@@ -293,7 +294,8 @@ export function ModelDropdown({
   const openaiCompatibleModelId = usePreferencesStore((s) => s.openaiCompatibleModelId);
   const openrouterModelId = usePreferencesStore((s) => s.openrouterModelId);
   const connectionSettings = { customEndpoints, savedProviderModels, selfHostedInference: selfHosted, lmstudioBaseURL, lmstudioModelId, mlxBaseURL, mlxModelId, ollamaBaseURL, ollamaModelId, openaiCompatibleBaseURL, openaiCompatibleModelId, openrouterModelId };
-  const destination = modelConnectionLabel(selected, connectionSettings);
+  const owner = useChatStore(s => s.sessions.find(item => item.id === sessionId));
+  const destination = owner ? chatConnectionSummary(owner, connectionSettings).destination : modelConnectionLabel(selected, connectionSettings);
   const currentState = useMemo(() => {
     try {
       return {

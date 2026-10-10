@@ -34,7 +34,7 @@ import {
   type ToolBinding,
 } from "@/modules/ai/lib/customTools";
 
-export function CustomToolsManager({ sessionId }: { sessionId?: string } = {}) {
+export function CustomToolsManager({ sessionId, initialSessionId }: { sessionId?: string; initialSessionId?: string } = {}) {
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [selected, setSelected] = useState("");
   const [error, setError] = useState("");
@@ -46,7 +46,7 @@ export function CustomToolsManager({ sessionId }: { sessionId?: string } = {}) {
           const bound = value.sessions.filter((s) => s.profile?.workspaceId);
           setSessions(bound);
           setSelected(
-            sessionId ?? bound.find((s) => s.id === value.activeId)?.id ??
+            sessionId ?? initialSessionId ?? bound.find((s) => s.id === value.activeId)?.id ??
               bound[0]?.id ??
               "",
           );
@@ -58,10 +58,10 @@ export function CustomToolsManager({ sessionId }: { sessionId?: string } = {}) {
     return () => {
       live = false;
     };
-  }, [sessionId]);
+  }, [sessionId, initialSessionId]);
   const session = sessions.find((s) => s.id === selected);
   return (
-    <section className="min-w-0 space-y-3" aria-label="Custom tools">
+    <section className="min-w-0 space-y-3" aria-label="Custom tools" data-settings-tools tabIndex={-1}>
       <h2 className="text-sm font-semibold">Custom tools</h2>
       <label className="flex min-w-0 flex-col gap-1 text-xs">
         Workspace conversation
@@ -83,7 +83,7 @@ export function CustomToolsManager({ sessionId }: { sessionId?: string } = {}) {
         </select>
       </label>
       {error && <p role="alert">{error}</p>}
-      {sessionId && !session && <p role="status">This conversation is unavailable or has no workspace. No tools can execute.</p>}
+      {(sessionId || initialSessionId) && !session && <p role="status">This conversation is unavailable or has no workspace. No tools can execute.</p>}
       {session && (
         <McpConnections key={`mcp-${session.id}`} session={session} />
       )}

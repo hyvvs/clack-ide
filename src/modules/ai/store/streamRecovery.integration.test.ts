@@ -50,6 +50,7 @@ import {
   shouldAutomaticallySendSession,
 } from "@/modules/ai/store/chatRuntime";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 import {
   loadMessages,
   awaitSessionWrites,
@@ -229,6 +230,10 @@ describe("D3 actual Chat, transport, run store and persistence boundary", () => 
     expect(recoverInterruptedSessions(useChatStore.getState().sessions).sessions).toEqual(useChatStore.getState().sessions);
   });
   it("user recovery retains transcript identity, captured destination/settings and budget, then projects a single answer", async () => {
+    const agents = useAgentsStore.getState();
+    const persona = { id: "custom:d3-captain", name: "Captain", instructions: "Address the user as Captain.", description: "", icon: "spark" as const, builtIn: false };
+    useAgentsStore.setState({ customAgents: [persona] });
+    useChatStore.setState(state => ({ sessions: state.sessions.map(s => ({ ...s, profile: s.profile ? { ...s.profile, agentId: persona.id } : s.profile, run: s.run ? { ...s.run, agentId: persona.id } : s.run })) }));
     const chat = await interrupt();
     const original = structuredClone(chat.messages);
     const captured = runAgentStream.mock.calls[0][0] as RunAgentOptions;
@@ -237,6 +242,7 @@ describe("D3 actual Chat, transport, run store and persistence boundary", () => 
       customInstructions: "Changed after the interruption",
     });
     try {
+      useAgentsStore.setState({ customAgents: [{ ...persona, instructions: "EDITED_AFTER_INTERRUPTION" }] });
       expect(await retryInterruptedRun(id)).toBe(true);
       expect(calls).toBe(2);
       const recovered = runAgentStream.mock.calls[1][0] as RunAgentOptions;
@@ -244,6 +250,8 @@ describe("D3 actual Chat, transport, run store and persistence boundary", () => 
       expect(recovered.keys).toEqual(captured.keys);
       expect(recovered.customInstructions).toBe(captured.customInstructions);
       expect(recovered.reasoning).toEqual(captured.reasoning);
+      expect(recovered.agentPersona).toEqual(captured.agentPersona);
+      expect(recovered.agentPersona?.instructions).toBe(persona.instructions);
       expect(recovered.recovery).toBe(true);
       expect(run().startedAt).toBe(1);
       expect(run().recoveryAttempts).toBe(1);
@@ -259,6 +267,7 @@ describe("D3 actual Chat, transport, run store and persistence boundary", () => 
       expect(readAnswer(chat.messages[1])?.segments).toHaveLength(2);
       expect(history).toHaveBeenCalledExactlyOnceWith(id);
     } finally {
+      useAgentsStore.setState(agents, true);
       usePreferencesStore.setState({ customInstructions: instructions });
     }
   });

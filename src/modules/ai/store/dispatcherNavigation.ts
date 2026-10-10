@@ -7,8 +7,13 @@ import {
 } from "@/modules/ai/store/aiPaneStore";
 
 export const useDispatcherNavigation = create<{
-  request: { taskId: string; sessionId: string; signal: number } | null;
+  request: { taskId: string | null; sessionId: string | null; signal: number } | null;
 }>(() => ({ request: null }));
+
+export function viewAllTasksInDispatcher(): void {
+  useDispatcherNavigation.setState(state => ({ request: { taskId: null, sessionId: null, signal: (state.request?.signal ?? 0) + 1 } }));
+  useChatStore.getState().focusInput();
+}
 
 export function viewTaskInDispatcher(
   taskId: string,

@@ -20,9 +20,11 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { AgentIconId } from "../lib/agents";
-import { useAgentsStore } from "../store/agentsStore";
-import { useChatStore } from "../store/chatStore";
+import type { AgentIconId } from "@/modules/ai/lib/agents";
+import { useAgentsStore } from "@/modules/ai/store/agentsStore";
+import { useChatStore, capturedAgentPersonas } from "@/modules/ai/store/chatStore";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { AGENT_PERMISSION_MODE_LABELS, DEFAULT_AGENT_PERMISSION_PROFILE } from "@/modules/ai/lib/permissions";
 
 const ICONS: Record<AgentIconId, typeof CodeIcon> = {
   coder: CodeIcon,
@@ -56,6 +58,9 @@ export function AgentSwitcher({
       )?.profile?.agentId,
   );
   const setSessionAgentId = useChatStore((s) => s.setSessionAgentId);
+  const profiles = usePreferencesStore(s => s.agentPermissionProfiles);
+  const ownerId = sessionId ?? activeSessionId;
+  const run = useChatStore(s => s.sessions.find(item => item.id === ownerId)?.run);
 
   const list = useAgentsStore.getState().all();
   void customAgents; // keeps the store subscription alive
@@ -78,6 +83,9 @@ export function AgentSwitcher({
   const builtIn = list.filter((a) => a.builtIn);
   const custom = list.filter((a) => !a.builtIn);
   const ActiveIcon = ICONS[active.icon] ?? SparklesIcon;
+  const captured = run?.state === "running" ? capturedAgentPersonas.get(ownerId ?? "") : undefined;
+  const directive = captured && captured.startedAt === run?.startedAt && captured.agentId === active.id ? captured.instructions : active.instructions;
+  const selectionLocked = disabled || run?.state === "running";
 
   return (
     <DropdownMenu>
@@ -92,7 +100,6 @@ export function AgentSwitcher({
           )}
           title={`Agent: ${active.name}`}
           aria-label={`Change agent for this chat: ${active.name}`}
-          disabled={disabled}
         >
           <HugeiconsIcon icon={ActiveIcon} size={11} strokeWidth={1.75} />
           <span className="max-w-[7rem] truncate">{active.name}</span>
@@ -104,8 +111,16 @@ export function AgentSwitcher({
           />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-60">
+      <DropdownMenuContent align="start" className="w-80 max-w-[calc(100vw-16px)] max-h-[75dvh] overflow-y-auto [overflow-wrap:anywhere]">
         <div className="px-2 py-1 text-xs font-medium">Agent for this chat</div>
+        <section aria-label="Active agent configuration" className="space-y-1 border-b px-2 py-2 text-xs">
+          <p className="font-medium">{captured?.name ?? active.name}</p>
+          {active.description && <p className="text-muted-foreground">{active.description}</p>}
+          <p className="text-muted-foreground">Instructions{captured ? " (captured for this run)" : ""}</p><p className="max-h-40 overflow-y-auto whitespace-pre-wrap">{directive || "Clack defaults; no additional directive."}</p>
+          <p>Permissions: {AGENT_PERMISSION_MODE_LABELS[(profiles[active.id] ?? DEFAULT_AGENT_PERMISSION_PROFILE).mode]} (agent-wide)</p>
+          <p className="text-muted-foreground">Tools: scoped to this agent and workspace.</p>
+          {selectionLocked && <p role="status">Agent selection locked until this run finishes.</p>}
+        </section>
         <div className="px-2 pb-1 text-[10.5px] text-muted-foreground">Also sets the default agent for new chats.</div>
         <div className="px-2 pt-1.5 pb-1 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
           Built-in
@@ -115,6 +130,7 @@ export function AgentSwitcher({
           return (
             <DropdownMenuItem
               key={a.id}
+              disabled={selectionLocked}
               onSelect={() => selectAgent(a.id)}
               className={cn(
                 "flex items-start gap-2 pr-2 text-[12px]",
@@ -160,6 +176,7 @@ export function AgentSwitcher({
               return (
                 <DropdownMenuItem
                   key={a.id}
+                  disabled={selectionLocked}
                   onSelect={() => selectAgent(a.id)}
                   className={cn(
                     "flex items-start gap-2 text-[12px]",
@@ -194,6 +211,10 @@ export function AgentSwitcher({
           </>
         ) : null}
         <DropdownMenuSeparator />
+        <DropdownMenuItem disabled={!matchedAgent} onSelect={() => void openSettingsWindow("agents", { agentId: active.id })} className="gap-2 text-xs">
+          <HugeiconsIcon icon={PencilEdit02Icon} size={12} />
+          {active.builtIn ? "Inspect agent in Settings" : "Edit agent"}
+        </DropdownMenuItem>
         <DropdownMenuItem
           onSelect={() => void openSettingsWindow("agents")}
           className="gap-2 text-[12px] text-muted-foreground"

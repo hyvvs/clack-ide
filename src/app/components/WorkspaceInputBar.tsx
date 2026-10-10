@@ -16,7 +16,7 @@ import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 import { BUILTIN_AGENTS } from "@/modules/ai/lib/agents";
 import { focusTaskConversationPane, useDispatcherNavigation } from "@/modules/ai/store/dispatcherNavigation";
-import { dispatcherTaskConversation, dispatcherTaskStatus, workspaceDispatcherTasks } from "@/modules/ai/lib/dispatcherTasks";
+import { dispatcherTaskConversation, dispatcherTaskStatus, availableDispatcherTasks } from "@/modules/ai/lib/dispatcherTasks";
 import { isPeerTaskActive } from "@/modules/ai/lib/peerTaskCancellation";
 import { useBlockController } from "@/modules/terminal/lib/blockController";
 import { focusLeafInput } from "@/modules/terminal/lib/useTerminalSession";
@@ -292,12 +292,11 @@ export function DispatcherTarget({
   const customAgents = useAgentsStore(state => state.customAgents);
   const agents = [...BUILTIN_AGENTS, ...customAgents];
   const active = sessions.find((session) => session.id === activeSessionId);
-  const requestedSession = sessions.find(session => session.id === request?.sessionId);
-  const work = workspaceDispatcherTasks(tasks, (requestedSession ?? active)?.profile?.workspaceId);
+  const work = availableDispatcherTasks(tasks, sessions);
   const activeCount = work.filter(isPeerTaskActive).length;
   const requestedTask = work.find(task => task.id === request?.taskId);
   useEffect(() => {
-    if (requestedTask && request) setOpen(true);
+    if (request && (requestedTask || request.taskId === null)) setOpen(true);
   }, [requestedTask, request]);
   useEffect(() => {
     if (!open || !request) return;
@@ -338,7 +337,7 @@ export function DispatcherTarget({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top" className="max-h-[70dvh] w-80 max-w-[calc(100vw-24px)] overflow-y-auto">
         {work.length > 0 && <>
-          <div className="px-2 py-1 text-[10px] font-medium uppercase text-[var(--clack-text-3)]">Assigned tasks</div>
+          <div className="px-2 py-1 text-[10px] font-medium uppercase text-[var(--clack-text-3)]">All assigned tasks</div>
           {work.map(task => {
             const parent = sessions.find(session => session.id === task.sourceSessionId && session.profile?.workspaceId === task.workspaceId);
             const conversationId = dispatcherTaskConversation(task, sessions);
@@ -356,7 +355,7 @@ export function DispatcherTarget({
               className="min-w-0 flex-col items-start gap-1 px-2 py-1.5 text-xs"
             >
               <span className="flex w-full min-w-0 gap-2"><span className="min-w-0 flex-1 truncate font-medium">{agent}</span><span className="shrink-0 text-[10px]">{dispatcherTaskStatus(task)}</span></span>
-              <span className="max-w-full truncate text-[10px] text-[var(--clack-text-3)]">{parent?.title ?? "Deleted conversation"}</span>
+              <span className="max-w-full truncate text-[10px] text-[var(--clack-text-3)]">{parent?.title ?? "Deleted conversation"} | {workspaceLabel(task.workspaceRoot)}</span>
               <span className="max-w-full truncate" title={task.prompt}>{task.prompt}</span>
             </DropdownMenuItem>;
           })}

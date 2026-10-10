@@ -1,6 +1,6 @@
 import { InferenceActivityLabel } from "@/modules/ai/components/InferenceActivityLabel";
-import { ChatToolsControl } from "@/modules/ai/components/ChatToolsControl";
-import { ChatFallbackControl } from "@/modules/ai/components/ChatFallbackControl";
+import { ChatSecondaryControls } from "@/modules/ai/components/ChatSecondaryControls";
+import { DispatcherActivityLink } from "@/modules/ai/components/DispatcherActivityLink";
 import {
   Context,
   ContextContent,
@@ -18,11 +18,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -77,10 +72,6 @@ import {
 } from "@/modules/terminal/lib/panes";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { usePlanStore } from "../store/planStore";
-import { usePeerTaskStore } from "../store/peerTaskStore";
-import { isPeerTaskActive } from "../lib/peerTaskCancellation";
-import { activeDelegationAgentCount } from "../lib/delegationUx";
-import type { PeerTask } from "../lib/peerTasks";
 
 const EMPTY_TOKEN_USAGE = {
   inputTokens: 0,
@@ -88,7 +79,6 @@ const EMPTY_TOKEN_USAGE = {
   cachedInputTokens: 0,
 };
 import { AgentSwitcher } from "./AgentSwitcher";
-import { AgentPermissionControl } from "./AgentPermissionControl";
 import { AiChatView } from "./AiChat";
 import { PlanDiffReview } from "./PlanDiffReview";
 import { TodoStrip } from "./TodoStrip";
@@ -96,8 +86,6 @@ import { PeerTaskDialog } from "./PeerTaskDialog";
 import { AiComposerInput } from "./AiComposerInput";
 import { ChipsRow } from "./ChipsRow";
 import { ModelDropdown } from "./AiStatusBarControls";
-import { EffortControl } from "@/modules/ai/components/EffortControl";
-import { BUILTIN_AGENTS } from "../lib/agents";
 
 const SUGGESTIONS = [
   {
@@ -621,7 +609,7 @@ function Header({
 
   return (
     <div className="clack-shell relative flex shrink-0 flex-col gap-0.5 border-b px-2 py-1">
-      <div className="flex min-w-0 items-center gap-1">
+      <div className="flex min-w-0 flex-wrap items-center gap-1">
         <SessionPicker sessionId={sessionId} />
         <span className="flex-1" />
         {isBusy ? (
@@ -667,14 +655,8 @@ function Header({
           disabled={runState === "running"}
         />
         <ModelDropdown sessionId={sessionId} compact />
-        <EffortControl sessionId={sessionId} />
-        <ChatToolsControl key={sessionId} sessionId={sessionId} />
-        <ChatFallbackControl key={`fallback:${sessionId}`} sessionId={sessionId} />
-        <AgentPermissionControl agentId={displayedAgentId} compact />
-        {messages !== undefined ? (
-          <ContextIndicator sessionId={sessionId} messages={messages} compact />
-        ) : null}
       </div>
+      <ChatSecondaryControls key={sessionId} sessionId={sessionId} agentId={displayedAgentId} capacity={messages !== undefined ? <ContextIndicator sessionId={sessionId} messages={messages} compact /> : undefined} />
     </div>
   );
 }
@@ -1174,7 +1156,7 @@ function WindowHeader({
       <span className="text-[10px] text-[var(--clack-text-3)]">
         {paneCount} pane{paneCount === 1 ? "" : "s"}
       </span>
-      <DelegationActivity />
+      <DispatcherActivityLink />
       <span className="flex-1" />
       <Button
         type="button"
@@ -1234,94 +1216,6 @@ function WindowHeader({
       </Button>
     </div>
   );
-}
-
-function DelegationActivity() {
-  const tasks = usePeerTaskStore((state) => state.tasks);
-  const sessions = useChatStore((state) => state.sessions);
-  const activeSessionId = useChatStore((state) => state.activeSessionId);
-  const customAgents = useAgentsStore((state) => state.customAgents);
-  const workspaceId = sessions.find((session) => session.id === activeSessionId)
-    ?.profile?.workspaceId;
-  const activeTasks = useMemo(
-    () =>
-      tasks.filter(
-        (task) => task.workspaceId === workspaceId && isPeerTaskActive(task),
-      ),
-    [tasks, workspaceId],
-  );
-  if (activeTasks.length === 0) return null;
-
-  const agentCount = activeDelegationAgentCount(tasks, workspaceId);
-  const agents = [...BUILTIN_AGENTS, ...customAgents];
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="flex items-center gap-1 rounded-[var(--clack-radius-button)] px-1.5 py-0.5 text-[10px] text-[var(--clack-accent)] hover:bg-[var(--clack-accent-soft)]"
-          aria-label={`${agentCount} ${agentCount === 1 ? "agent" : "agents"} active`}
-        >
-          <Spinner className="size-2.5" />
-          {agentCount} {agentCount === 1 ? "agent" : "agents"} active
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 gap-2 p-2.5">
-        <div className="px-1 text-[10px] font-medium uppercase text-[var(--clack-text-3)]">
-          Delegated work
-        </div>
-        <div className="space-y-1">
-          {activeTasks.map((task) => {
-            const session = sessions.find(
-              (candidate) => candidate.id === task.targetSessionId,
-            );
-            const agentId = session?.profile?.agentId ?? task.targetAgentId;
-            const agentName =
-              agents.find((agent) => agent.id === agentId)?.name ?? agentId;
-            return (
-              <div
-                key={task.id}
-                className="rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] px-2 py-1.5"
-              >
-                <div className="flex items-center gap-2 text-[10.5px]">
-                  <span className="min-w-0 flex-1 truncate font-medium text-[var(--clack-text-1)]">
-                    {agentName}
-                  </span>
-                  <span className="shrink-0 text-[var(--clack-accent)]">
-                    {task.status === "running" ? <InferenceActivityLabel sessionId={task.targetSessionId} fallback="Working" /> : delegationActivityStatus(task, tasks, sessions, agents)}
-                  </span>
-                </div>
-                <div className="truncate text-[9.5px] text-[var(--clack-text-3)]">
-                  {task.prompt}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-function delegationActivityStatus(
-  task: PeerTask,
-  tasks: readonly PeerTask[],
-  sessions: readonly SessionMeta[],
-  agents: readonly { id: string; name: string }[],
-): string {
-  if (task.status === "running") return "Working";
-  if (task.status === "queued") return "Queued";
-  const waitingFor = task.dependsOn.flatMap((dependencyId) => {
-    const dependency = tasks.find((candidate) => candidate.id === dependencyId);
-    if (!dependency) return [];
-    const session = sessions.find(
-      (candidate) => candidate.id === dependency.targetSessionId,
-    );
-    const agentId = session?.profile?.agentId ?? dependency.targetAgentId;
-    return [agents.find((agent) => agent.id === agentId)?.name ?? agentId];
-  });
-  if (waitingFor.length === 0) return "Waiting";
-  return `Waiting for ${waitingFor.join(", ")}`;
 }
 
 function SessionRow({

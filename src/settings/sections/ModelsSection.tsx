@@ -608,7 +608,7 @@ function OpenRouterProviderCard({
   };
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/60 px-3 py-2.5">
+    <div data-settings-connection={provider.id} tabIndex={-1} className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/60 px-3 py-2.5 focus-visible:outline">
       <div className="flex items-center gap-2">
         <ProviderIcon provider={provider.id} size={15} />
         <span className="text-[12.5px] font-medium">{provider.label}</span>
@@ -1207,7 +1207,7 @@ function LocalProviderCard({
   };
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/60 px-3 py-2.5">
+    <div data-settings-connection={provider.id} tabIndex={-1} className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/60 px-3 py-2.5 focus-visible:outline">
       <div className="flex items-center gap-2">
         <ProviderIcon provider={provider.id} size={15} />
         <span className="text-[12.5px] font-medium">{provider.label}</span>
@@ -1424,7 +1424,7 @@ function CustomEndpointCard({
   };
 
   return (
-    <div className="flex flex-col rounded-lg border border-border/60 bg-card/60">
+    <div data-settings-connection={endpoint.id} tabIndex={-1} className="flex flex-col rounded-lg border border-border/60 bg-card/60 focus-visible:outline">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}

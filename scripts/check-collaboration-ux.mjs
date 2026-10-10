@@ -34,7 +34,8 @@ const entry = `
 import React,{useState}from"react";import{createRoot}from"react-dom/client";
 import{useChatStore}from"/src/modules/ai/store/chatStore.ts";
 import{ContextSources}from"/src/modules/ai/components/ContextSources.tsx";
-import{ChatToolsControl}from"/src/modules/ai/components/ChatToolsControl.tsx";
+import{CustomToolsManager}from"/src/modules/ai/components/CustomToolsManager.tsx";
+import{Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription,DialogTrigger}from"/src/components/ui/dialog.tsx";
 import{PeerTaskCard}from"/src/modules/ai/components/PeerTaskFeed.tsx";
 import{AiToolApproval}from"/src/modules/ai/components/AiToolApproval.tsx";
 import{EffortControl}from"/src/modules/ai/components/EffortControl.tsx";
@@ -54,9 +55,10 @@ const canonical=v=>Array.isArray(v)?"["+v.map(canonical).join(",")+"]":v&&typeof
 useChatStore.setState({runtimeBySession:Object.fromEntries(["a","b"].map(id=>[id,{retrievalNotice:{status:"original evidence",omitted:0,sources:[{messageId:"original",evidenceId:"retrieved",digest:"d".repeat(64),reason:"explicit source",original:canonical(message(id))},{messageId:"missing",evidenceId:"missing",digest:"e".repeat(64),reason:"missing evidence",original:"{}"}]}}]))});
 const task=id=>({schemaVersion:7,id:"task-"+id,sourceSessionId:id,targetSessionId:"recipient-"+id,sourceAgentId:"builtin:architect",sourceModelId:"cloud",targetAgentId:"builtin:reviewer",targetModelId:"Long-model-name-".repeat(15),workspaceId:"local:/"+id,workspaceRoot:sessions.find(s=>s.id===id).profile.workspaceRoot,workspaceEnvironment:{kind:"local"},kind:"review",executionMode:"isolated-worktree",prompt:"Review-title-".repeat(100),artifactRefs:[],parentTaskId:null,rootTaskId:"task-"+id,hopCount:0,dependsOn:[],status:"running",createdAt:1,updatedAt:2,communication:[{id:"question-"+id,kind:"clarification-request",state:"delivered",text:"Which bounds apply?",sender:{agentId:"builtin:reviewer",sessionId:"recipient-"+id},recipient:{agentId:"builtin:architect",sessionId:id},taskId:"task-"+id,sequence:1,evidence:[],digest:"a".repeat(64),workspaceId:"local:/"+id}],handoff:{sources:["artifact"],omitted:2,digest:"b".repeat(64)},review:{files:[{path:"path/".repeat(100)+"file.ts",hash:"c".repeat(64)}],patches:[],results:[]}});
 const el=React.createElement;
+function SettingsToolsFixture({sessionId}){return el(Dialog,null,el(DialogTrigger,{asChild:true},el("button",null,"Manage tools in Settings")),el(DialogContent,{className:"max-h-[85dvh] overflow-y-auto"},el(DialogHeader,null,el(DialogTitle,null,"Agent tools"),el(DialogDescription,null,"Canonical Settings manager fixture")),el(CustomToolsManager,{sessionId})));}
 function Draft({id}){const c=useComposer();return el("div",{style:{minWidth:0}},el("textarea",{"aria-label":"Draft "+id,value:c.value,onChange:e=>c.setValue(e.target.value),ref:c.textareaRef,style:{width:"100%",minWidth:0}}),el("input",{type:"file","aria-label":"Attachments "+id,onChange:e=>c.addFiles(e.target.files),style:{width:"100%",minWidth:0}}),el("p",null,c.files.map(f=>f.displayName+" / "+f.processingState).join(",")),el("button",{onClick:c.submit},"Send "+id),el("button",{onClick:c.stop},"Stop "+id));}
 function Pane({initial}){const[id,setId]=useState(initial);window["switch"+initial]=setId;const msgs=[message(id)];return el("section",{"aria-label":"Pane "+initial,"data-conversation-pane":id,style:{minWidth:0,borderBottom:"1px solid var(--border)",padding:12}},
-el("div",{style:{display:"flex",flexWrap:"wrap",gap:4}},el(ChatToolsControl,{key:"tools-"+id,sessionId:id}),el(EffortControl,{sessionId:id})),
+el("div",{style:{display:"flex",flexWrap:"wrap",gap:4}},el(SettingsToolsFixture,{key:"tools-"+id,sessionId:id}),el(EffortControl,{sessionId:id})),
 el(AiComposerProvider,{key:"composer-"+id,sessionId:id,consumeExternalEvents:false},el(Draft,{id})),
 el(ContextSources,{key:"context-"+id,sessionId:id,messages:msgs}),
 el("div",{"data-evidence-message":"original",tabIndex:-1},msgs[0].parts[0].text),
@@ -109,7 +111,7 @@ try {
     await a.getByRole("button",{name:"Reasoning effort: Automatic"}).click();await page.getByText("Effort does not control reasoning visibility.",{exact:true}).waitFor();
     assert.deepEqual(await page.getByLabel("Reasoning effort",{exact:true}).locator("option").allTextContents(),["Automatic","Low","High"]);await page.keyboard.press("Escape");
     assert.equal(await b.getByRole("button",{name:"Reasoning effort: Automatic"}).count(),0);
-    const tools=a.getByRole("button",{name:"Manage tools for this chat"});await tools.focus();await page.keyboard.press("Enter");
+    const tools=a.getByRole("button",{name:"Manage tools in Settings"});await tools.focus();await page.keyboard.press("Enter");
     const dialog=page.getByRole("dialog").first();await dialog.waitFor();await dialog.getByText("custom_read_a",{exact:false}).first().waitFor();
     assert.equal(await dialog.getByLabel("Workspace conversation").inputValue(),"a");assert.equal(await dialog.getByLabel("Workspace conversation").isDisabled(),true);
     await dialog.getByText("Native process launch unavailable",{exact:true}).waitFor();await dialog.getByText("Remote result a v3: interrupted / effect unknown",{exact:true}).click();

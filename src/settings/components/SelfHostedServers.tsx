@@ -82,7 +82,7 @@ export function SelfHostedServers({ addRequest = 0 }: { addRequest?: number }) {
             (p.saved || endpoint.legacy?.profileId === p.id),
         );
         return (
-          <div className="server-row" key={endpoint.id}>
+          <div className="server-row focus-visible:outline focus-visible:outline-1" key={endpoint.id} data-settings-connection={endpoint.id} tabIndex={-1}>
             <ProviderIcon provider={endpointProvider(endpoint)} size={17} />
             <button
               type="button"
