@@ -63,6 +63,7 @@ export function CustomToolsManager({ sessionId, initialSessionId }: { sessionId?
   return (
     <section className="min-w-0 space-y-3" aria-label="Custom tools" data-settings-tools tabIndex={-1}>
       <h2 className="text-sm font-semibold">Custom tools</h2>
+      <p className="text-xs text-muted-foreground">Built-in file, terminal and collaboration capabilities use the Agent's permissions. Custom tools are optional API, MCP or reviewed WASI integrations.</p>
       <label className="flex min-w-0 flex-col gap-1 text-xs">
         Workspace conversation
         <select

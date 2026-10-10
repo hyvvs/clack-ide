@@ -35,6 +35,8 @@ type Params = {
   tabs: Tab[];
   explorerRoot: string | null;
   openPreviewTab: (url: string) => void;
+  openWorkspaceFile?: (path: string) => void;
+  openWorkspaceSourceControl?: () => void;
   newAgentTab: (
     cwd: string | undefined,
     title: string,
@@ -113,6 +115,11 @@ export function useAiLiveBridge(params: Params) {
         ref.current.openPreviewTab(url);
         return true;
       },
+      openWorkspaceFile: (path) => {
+        if (!ref.current.openWorkspaceFile) throw new Error("File navigation unavailable.");
+        ref.current.openWorkspaceFile(path);
+      },
+      openWorkspaceSourceControl: () => ref.current.openWorkspaceSourceControl?.(),
       spawnManagedAgent: (prompt: string, sessionId: string) => {
         const trimmed = prompt.trim();
         if (!trimmed) return null;

@@ -47,19 +47,19 @@ agent configuration. Prompt hierarchy does not guarantee every model's obedience
 | Model selector | Current model and destination; existing same-conversation switch/preparation review | Connections & models for reusable defaults/configuration |
 | Controls | Expand effort, permissions, tools, connection, fallback and context capacity; permission/fallback summary stays visible | Existing configuration owners, not a new manager |
 | Connection | Exact transport model/provider, local/private-network/cloud address, capability/context status, cached self-hosted health and HTTP warning | Exact provider, saved endpoint or self-hosted server in Connections & models |
-| Tools | Permission-qualified built-in candidates, native assignment/eligibility, unsupported runtimes, MCP status/destination and approval requirements | Custom Tools Manager in Agents & tools, initially selecting this conversation |
+| Tools | Human-readable file/terminal/collaboration capabilities with permission, model and read-only states; optional external integrations; raw names under Details | Manage Agent tools opens the canonical Custom Tools Manager in Agents & tools for this conversation |
 | Context | Existing sources/conversation memory, project knowledge/freshness, immutable attachment references and pane-owned task artifacts | Existing evidence inspection; no merged store, automatic promotion or extra context injection |
 | Agent activity | Truthful run/inference status with expandable existing receipts/provider output | Existing activity presentation; effort remains separate from visibility |
 | Ask another agent | Existing bounded task dialog and explicit artifact/context selection | Existing task creation, not Agent selection |
-| Task card | Recipient, task, state, result, clarification/review/provenance and View task in Dispatcher | Existing Dispatcher and owned recipient/parent conversation |
-| Dispatcher link | All known assigned tasks plus active-task/running-chat counts | Existing global Dispatcher, with workspace/parent labels; task evidence access remains owner-checked |
+| Task card | Result actions first: Review/Apply isolated edits, Open authorized current files, View immutable artifact or textual result; visible task access and secondary provenance/navigation | Existing file tabs, patch application, Dispatcher and owning conversations |
+| Dispatcher link | Needs attention, Active and Completed work; selected task detail; Chats remain distinct dispatch destinations | Existing global PeerTask records and navigation; exact task selection/focus; workspace evidence remains owner-checked |
 | Inline approvals/recovery | Existing pane-bound approval, Continue, Retry, partial/offline recovery and watchdog actions | Existing run lifecycle; no new replay or fallback authorization |
 
 Settings remains the only full editor for agent definitions, connection credentials,
 servers, reusable tools/MCP configuration, calibration pins and provider diagnostics.
 Fallback keeps its existing conversation-scoped consent dialog; it is not permanently
-expanded in the header. The tools count is candidate availability, not a promise that
-every tool will be selected or that every path/input is authorized.
+expanded in the header. Technical tool counts describe permission-eligible candidates,
+not a promise of runtime/model support or authorization for every path/input.
 
 Contextual Settings links reuse the separate native Settings window and encoded,
 bounded agent/session/connection IDs. Both initial URL and existing-window events
@@ -146,3 +146,115 @@ or macOS native GUI verification is claimed. Live provider instruction-following
 not tested; correct serialized hierarchy does not guarantee every model obeys it.
 Real humans still need to assess discovery, readability, task/context-sharing scope
 and recovery workflows in actual conversations. No subsequent checkpoint was begun.
+
+## Task And Capability Correction
+
+Implemented from `c7558f3` without changing Chat/Dispatcher/Settings ownership or
+introducing another task store, file store or agent communication protocol.
+
+### Beginner Tools
+
+Tools now starts with "What can this Agent do?" and descriptions of the actual
+built-in tools, grouped into Files, Terminal, Collaboration and relevant supporting
+categories. States distinguish permission-allowed, approval-required, denied,
+read-only restrictions and unsupported/unverified model support. The existing
+shared capability resolver and captured active-run evidence remain authoritative.
+Raw function names and native registry reasons remain in expanded Details.
+
+External integrations remain optional. Native eligibility/assignment and runtime
+status determine custom-tool availability; MCP destinations, consent and approval
+requirements remain explicit. Unconfigured integrations do not appear available.
+The canonical custom manager explains that ordinary built-in capabilities use
+Agent permissions; no authoring wizard or duplicate manager was added to chat.
+Manage Agent tools remains a conversation-targeted Settings link. Its button stays
+outside the scrolling inventory. Tools and the adjacent connection popover respect
+Radix's available height, including a short 200% equivalent viewport.
+
+### Work Navigation
+
+Dispatcher retains its bottom-bar trigger and existing global ownership filters.
+Needs attention contains failures, blocked work, clarification and unapplied patches.
+Active contains running/queued/waiting work; Completed retains finished/cancelled
+records. Chats are a separate disclosure for dispatch destinations, not task rows.
+Rows prioritize Agent, description, state, parent chat/workspace and recorded outcome.
+Selecting a row reveals the existing task card, including source/target conversations.
+View task in Dispatcher selects, highlights and focuses the exact task. Arrow keys,
+Home/End and ordinary Tab/Enter navigation work without changing the current chat
+merely by inspecting a row. Background updates do not steal manual task selection.
+Task details load on demand; the startup AI/editor/markdown bundle budget is preserved.
+
+### Actual Outcomes And Safety
+
+Chat and Dispatcher reuse `PeerTaskOutcome`, operating on the same durable records.
+File changes appear before provenance. Isolated edits explicitly remain outside
+the workspace until the existing review/lease/apply path succeeds; Review changes
+and Apply to workspace precede Open. Apply errors stay recoverable, and no user
+changes are committed/stashed or applied automatically.
+
+Returned workspace/generated files can open through existing file/Markdown tabs.
+Actions revalidate owning conversation, workspace/environment/root identity,
+record membership, literal/canonical containment, secret-path policy and regular-file
+existence, then reject stale asynchronous ownership before navigation. Applied patch
+paths resolve against the real repository root, including workspace subdirectories.
+Unapplied worktree paths never pretend to be main-workspace files. Missing, foreign
+or protected files cannot open; a failure reports why rather than substituting a path.
+The opened editor/tab receives focus through the existing application bridge.
+
+View artifact reads the existing immutable content store, checking content ID/hash
+and byte size. Metadata is bounded to 20 MiB; inline text preview to 128 KiB. Missing,
+corrupt or recovery-marked evidence fails closed, without reading a filesystem
+substitute. Binary formats disclose that inline text preview is unavailable. Open
+file means the current workspace file; View artifact means the retained snapshot.
+Text-only results have View result; an empty result truthfully reports no returned
+files/artifacts. Assistant prose alone never manufactures a file-opening action.
+
+Task access is visible: workspace, read-only/edit-isolated/edit-main mode qualified
+by permissions, no copied conversation history and explicit attachment count/names.
+Clarification routes to its owning recipient chat. Raw IDs/provenance remain in Details.
+
+### Failure And Retry
+
+Dirty-worktree failures explain uncommitted changes and link to Source Control in
+the current authorized workspace; committing/stashing remains a manual user action.
+Rate limits get a human summary, collapsed raw diagnostics and the task-chat model
+selection route. Retry is conservative: exact failed captured Agent/model/run,
+no result/patch/worktree/recovery, no earlier assistant output/tool parts, no
+competing active target task, and successful native execution-history checks with
+no current-run or unknown-run effects. Stale ownership is checked again before
+the existing coordinator creates a new attempt; the failed original is retained.
+Concurrent chat/Dispatcher clicks are guarded. If proof is unavailable, Retry is
+not offered; no D3 peer-task recovery restriction or unknown effect is bypassed.
+
+### Correction Verification
+
+Focused regression: **124 tests / 6 files passed**, including **55 new outcome,
+ownership, capability and retry tests**. The startup-bundle correction separately
+passed 57 tests / 2 files, overlapping the outcome tests rather than adding 57.
+Full suite after the correction: **2,436 tests / 190 files passed**. TypeScript passed.
+Lint passed at the existing **71 warnings / 2 informational notices**, with no errors.
+Production build and `git diff --check` passed. Build retains existing mixed
+static/dynamic import warnings and plugin-timing notices. No Rust code changed;
+Rust gates were not rerun for this frontend-only correction.
+
+Headless evidence uses real React controls/stores/actions with native boundaries
+mocked; it does not demonstrate real patch writes or native filesystem/GUI behavior:
+
+- `check-first-use-ai-workflows.mjs`: 10 cases at 1280/390/320/280 CSS pixels and
+  200% equivalent scale (640 physical / 320 CSS, DPR 2), light/dark. Grouping/counts,
+  exact focus/highlight, keyboard task navigation, no selection theft, separate chat
+  destinations, owned artifact reads, Review/Apply/Open sequencing, result focus,
+  text/empty results, dirty/rate-limit actions and horizontal bounds passed.
+- `check-chat-controls.mjs`: 10 cases at the same widths/scaling/themes. Beginner
+  descriptions, raw Details, unsupported runtime/MCP status, keyboard access,
+  canonical Settings routes, private drafts/pane bindings, captured instructions,
+  Context and connection controls passed, including short-viewport Settings actions.
+- `check-collaboration-ux.mjs`: 4 existing cases passed for pane-owned drafts,
+  attachments/approvals/Stop callbacks, context/recovery/effort and tool-manager focus.
+
+One fixture bootstrap timed out; a diagnostic rerun passed without a production
+bootstrap change. The full suite found and caught an eager-import regression; it
+was fixed with on-demand task details before the final passing run. Short-viewport
+fixtures exposed clipped Settings actions and verified the bounded-scroll fixes.
+Native Tauri, live providers, real patch application and Linux/macOS GUI interaction:
+**Not performed - explicitly excluded by the user**. Real human validation of
+discoverability and recovery remains necessary. No push or subsequent checkpoint.

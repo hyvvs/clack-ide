@@ -51,6 +51,7 @@ export async function loadChatToolSummary(sessionId: string) {
       : null;
   return {
     agentId,
+    readOnly: toolContext.getMutationMode?.() === "read-only",
     builtin,
     custom,
     connections:

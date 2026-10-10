@@ -83,6 +83,8 @@ export type Live = {
   getWorkspaceRoot: () => string | null;
   getActiveFile: () => string | null;
   openPreview: (url: string) => boolean;
+  openWorkspaceFile?: (path: string) => void;
+  openWorkspaceSourceControl?: () => void;
   spawnManagedAgent: (
     prompt: string,
     sessionId: string,

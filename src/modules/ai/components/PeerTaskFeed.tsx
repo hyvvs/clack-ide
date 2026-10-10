@@ -1,6 +1,9 @@
 import { Spinner } from "@/components/ui/spinner";
 import { PeerCommunicationFeed, communicationStateLabel } from "@/modules/ai/components/PeerCommunicationFeed";
 import { pendingPeerQuestion } from "@/modules/ai/lib/peerCommunication";
+import { PeerTaskOutcome } from "@/modules/ai/components/PeerTaskOutcome";
+import { taskAccessLabel } from "@/modules/ai/lib/taskPresentation";
+import { focusTaskConversationPane } from "@/modules/ai/store/dispatcherNavigation";
 import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
 import { inferenceLabel } from "@/modules/ai/lib/inferenceLifecycle";
 import {
@@ -24,7 +27,6 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 import {
-  applyPeerTaskChangeSet,
   cancelPeerTask,
   discardPeerTaskWorktree,
 } from "../lib/peerTaskCoordinator";
@@ -94,11 +96,15 @@ export function PeerTaskCard({
   viewingSessionId,
   allTasks: providedTasks,
   onOpenSession,
+  inDispatcher = false,
+  onResultOpened,
 }: {
   task: PeerTask;
   viewingSessionId: string;
   allTasks?: readonly PeerTask[];
   onOpenSession?: (sessionId: string) => void;
+  inDispatcher?: boolean;
+  onResultOpened?: () => void;
 }) {
   const sessions = useChatStore((state) => state.sessions);
   const switchSession = useChatStore((state) => state.switchSession);
@@ -124,8 +130,6 @@ export function PeerTaskCard({
   const targetAgentName =
     agents.find((agent) => agent.id === targetAgentId)?.name ?? targetAgentId;
   const viewingSource = viewingSessionId === task.sourceSessionId;
-  const [applying, setApplying] = useState(false);
-  const [showPatch, setShowPatch] = useState(false);
   const [discardingWorktree, setDiscardingWorktree] = useState(false);
   const [showCancelConfirmation, setShowCancelConfirmation] = useState(false);
   const [showDependencyContext, setShowDependencyContext] = useState(false);
@@ -168,11 +172,6 @@ export function PeerTaskCard({
   const statusLabel = pendingPeerQuestion(task) ? "Waiting for clarification" : task.status === "running" && inference
     ? inferenceLabel(inference)
     : delegationStatusLabel(task);
-  const unavailableReturnedArtifactIds = new Set(
-    task.recovery?.contentIssues
-      ?.filter((issue) => issue.role === "returned")
-      .map((issue) => issue.artifactId) ?? [],
-  );
   const defaultTitle = delegationCardTitle(
     task,
     viewingSource,
@@ -222,12 +221,6 @@ export function PeerTaskCard({
           : task.status === "cancelled"
             ? "text-[var(--clack-text-3)]"
             : "text-[var(--clack-accent)]";
-  const applyChangeSet = async () => {
-    if (applying) return;
-    setApplying(true);
-    await applyPeerTaskChangeSet(task.id);
-    setApplying(false);
-  };
 
   return (
     <section
@@ -251,7 +244,7 @@ export function PeerTaskCard({
           {title}
         </span>
         <span role="status" className={cn("min-w-0 max-w-full text-[10px]", tone)}>{statusLabel}</span>
-        <button
+        {!inDispatcher && <button
           type="button"
           onClick={() => viewTaskInDispatcher(task.id, viewingSessionId)}
           className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10.5px] text-[var(--clack-accent)] hover:underline"
@@ -259,7 +252,7 @@ export function PeerTaskCard({
         >
           View task in Dispatcher
           <HugeiconsIcon icon={ArrowRight01Icon} size={10} strokeWidth={1.8} />
-        </button>
+        </button>}
         <button
           type="button"
           disabled={!peer}
@@ -281,10 +274,23 @@ export function PeerTaskCard({
         </button>
       </div>
       <div className="space-y-2 px-2.5 py-2 text-[11px]">
+        <PeerTaskOutcome task={task} sessionId={viewingSessionId} onOpenSession={onOpenSession} onResultOpened={onResultOpened} />
+        <section className="space-y-1 border-b border-[var(--clack-border-subtle)] pb-2" aria-label="Task access">
+          <p className="font-medium">Task access</p>
+          <p>Workspace: {task.workspaceRoot.split(/[\\/]/).filter(Boolean).pop() ?? task.workspaceRoot}</p>
+          <p>{taskAccessLabel(task)}{task.executionMode === "read-only" ? "; subject to Agent permissions" : ""}</p>
+          <p>Conversation history: Not shared. Attachments: {task.artifactRefs.length || "None"}.</p>
+          {inDispatcher && <><p>From: {source?.title ?? "Deleted conversation"}</p><p>To: {target?.title ?? "Deleted conversation"}</p></>}
+        </section>
         {question && <div className="space-y-1 border-b border-[var(--clack-border-subtle)] pb-2">
           <p className="font-medium">{agentName(question.sender.agentId)} asks {agentName(question.recipient.agentId)}</p>
           <p className="whitespace-pre-wrap">{question.text}</p>
           <p role="status" className="text-[var(--clack-text-3)]">{communicationStateLabel(question)}</p>
+          {sessions.some(s => s.id === question.recipient.sessionId && s.profile?.workspaceId === task.workspaceId) && <button type="button" className="text-[var(--clack-accent)] hover:underline" onClick={() => {
+            if (onOpenSession) onOpenSession(question.recipient.sessionId);
+            else void switchSession(question.recipient.sessionId);
+            focusTaskConversationPane(question.recipient.sessionId);
+          }}>Answer clarification in chat</button>}
         </div>}
         <PeerCommunicationFeed events={task.communication} agentName={agentName} />
         <details>
@@ -400,32 +406,7 @@ export function PeerTaskCard({
             </p>
           )}
         </div>
-        {task.result ? (
-          <div className="max-h-40 overflow-auto border-t border-[color:var(--clack-border-subtle)] pt-2 whitespace-pre-wrap text-[var(--clack-text-2)]">
-            {task.result.summary}
-            {task.result.artifacts.length > 0 ? (
-              <div className="mt-2 space-y-1">
-                <div className="text-[10px] font-medium text-[var(--clack-text-2)]">
-                  Returned files
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {task.result.artifacts.map((artifact) => (
-                    <span
-                      key={artifact.id}
-                      className="max-w-full truncate rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] px-1.5 py-0.5 text-[10px] text-[var(--clack-text-3)]"
-                      title={artifactProvenanceTitle(artifact)}
-                    >
-                      {artifact.displayName}
-                      {unavailableReturnedArtifactIds.has(artifact.id)
-                        ? " · Unavailable"
-                        : ""}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        ) : task.status === "blocked" ? (
+        {task.status === "blocked" ? (
           <div className="space-y-0.5 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[var(--clack-warning)]">
             <p>
               This task did not start because {blockedAgentName}{" "}
@@ -434,82 +415,6 @@ export function PeerTaskCard({
             <p className="text-[10px] text-[var(--clack-text-3)]">
               Other independent tasks are unaffected.
             </p>
-          </div>
-        ) : task.error ? (
-          <div className="space-y-0.5 border-t border-[color:var(--clack-border-subtle)] pt-2 text-destructive">
-            <p>
-              {targetAgentName} could not complete this task:{" "}
-              {task.error.message}
-            </p>
-            <p className="text-[10px] text-[var(--clack-text-3)]">
-              Nothing was returned.
-            </p>
-          </div>
-        ) : null}
-        {task.changeSet ? (
-          <div className="space-y-1.5 border-t border-[color:var(--clack-border-subtle)] pt-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10.5px] font-medium text-[var(--clack-text-1)]">
-                Changes ready to review
-              </span>
-              <span className="text-[10px] text-[var(--clack-text-3)]">
-                {task.changeSet.changedPaths.length} file
-                {task.changeSet.changedPaths.length === 1 ? "" : "s"} changed
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {task.changeSet.changedPaths.map((path) => (
-                <span
-                  key={path}
-                  className="max-w-full truncate rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--clack-text-3)]"
-                  title={path}
-                >
-                  {path}
-                </span>
-              ))}
-              {task.changeSet.changedPaths.length === 0 ? (
-                <span className="text-[10px] text-[var(--clack-text-3)]">
-                  No file changes
-                </span>
-              ) : null}
-            </div>
-            {task.changeSet.applyError ? (
-              <p className="text-[10px] text-destructive">
-                {task.changeSet.applyError}
-              </p>
-            ) : null}
-            {task.changeSet.patch.length > 0 ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setShowPatch((visible) => !visible)}
-                  className="text-[10px] text-[var(--clack-text-2)] hover:underline"
-                >
-                  {showPatch ? "Hide changes" : "Review changes"}
-                </button>
-                {showPatch ? (
-                  <pre className="max-h-48 overflow-auto whitespace-pre font-mono text-[9.5px] text-[var(--clack-text-2)]">
-                    {task.changeSet.patch}
-                  </pre>
-                ) : null}
-              </>
-            ) : null}
-            {viewingSource &&
-            task.changeSet.patch.length > 0 &&
-            !task.changeSet.appliedAt ? (
-              <button
-                type="button"
-                onClick={() => void applyChangeSet()}
-                disabled={applying}
-                className="text-[10px] font-medium text-[var(--clack-accent)] hover:underline disabled:opacity-50"
-              >
-                {applying ? "Checking workspace..." : "Apply patch"}
-              </button>
-            ) : task.changeSet.appliedAt ? (
-              <span className="text-[10px] text-[var(--clack-success)]">
-                Applied to workspace
-              </span>
-            ) : null}
           </div>
         ) : null}
         {task.worktree && !active && !task.recovery?.worktree ? (

@@ -78,7 +78,7 @@ el(ChatContextPanel,{sessionId:"a",messages}),
 el("p",{className:"py-3 text-sm"},"Current conversation answer"),
 el(PeerTaskFeed,{sessionId:"a"}),
 ... ["a","b"].map(id=>el(AiComposerProvider,{key:id,sessionId:id,consumeExternalEvents:false},el(Draft,{id}))),
-el(DispatcherTarget,{sessions,activeSessionId:active,onCreate:()=>{},onSelect:id=>useChatStore.getState().switchSession(id)}),
+el("footer",{style:{position:"fixed",bottom:8,left:8}},el(DispatcherTarget,{sessions,activeSessionId:active,onCreate:()=>{},onSelect:id=>useChatStore.getState().switchSession(id)})),
 target&&el("section",{"aria-label":"Canonical Settings fixture",className:"mt-6 border-t pt-3"},el(SettingsTargetContext,{value:target.target},target.tab==="agents"&&target.target.agentId?el(AgentsSection):el(SettingsConnectionTarget,null,el("div",{"data-settings-connection":"openai",tabIndex:-1},"OpenAI connection"),el("div",{"data-settings-connection":"other",tabIndex:-1},"Other connection")))));
 }
 window.route=readSettingsRoute;
@@ -121,10 +121,12 @@ try {
     assert.equal(await page.getByLabel("Draft a",{exact:true}).inputValue(),"PRIVATE_DRAFT_A");assert.equal(await page.getByLabel("Draft b",{exact:true}).inputValue(),"PRIVATE_DRAFT_B");
     const controls=page.locator("summary").filter({hasText:/^Controls/});await controls.focus();await page.keyboard.press("Enter");
     const tools=page.getByRole("button",{name:"Tools for this chat",exact:true});await tools.focus();await page.keyboard.press("Enter");
-    await page.getByText("2 available candidates; request-specific selection.").waitFor();
-    await page.locator("summary").filter({hasText:"Assigned custom tools and MCP"}).click();await page.getByText(/Native process launch unavailable/).waitFor();await page.getByText("Research MCP: Disconnected").waitFor();
+    await page.getByRole("heading",{name:"What can this Agent do?"}).waitFor();
+    await page.getByText("Read project files",{exact:true}).waitFor();await page.getByText("Create or replace files",{exact:true}).waitFor();
+    await page.locator("summary").filter({hasText:"Technical details"}).focus();await page.keyboard.press("Enter");await page.getByText("2 permission-eligible candidates; runtime and request checks still apply.").waitFor();await page.getByText("read_file: Permission allows").waitFor();
+    await page.locator("summary").filter({hasText:"Assigned custom tools and MCP"}).click();await page.getByText(/Native process launch unavailable/).last().waitFor();await page.getByText("Research MCP: Disconnected").first().waitFor();
     if(width===1280 && theme==="light")await capture(page,"tools");
-    await page.getByRole("button",{name:"Manage tools in Settings",exact:true}).click();
+    await page.getByRole("button",{name:"Manage Agent tools",exact:true}).click();
     const toolRoute=await page.evaluate(()=>window.route("tab="+window.calls.filter(c=>c[0]==="open_settings_window").at(-1)[1].tab));assert.equal(toolRoute.target.sessionId,"a");
     await page.getByRole("dialog").waitFor({state:"detached"});
     await page.getByRole("button",{name:"Connection details for this chat"}).click();await page.getByText("gpt-5.4-mini",{exact:true}).first().waitFor();
@@ -135,7 +137,7 @@ try {
     await page.keyboard.press("Escape");await page.evaluate(route=>window.settingsTarget(route),connectionRoute);await page.waitForFunction(()=>document.activeElement?.dataset.settingsConnection==="openai");await page.evaluate(()=>window.settingsTarget(null));
     await page.locator("summary").filter({hasText:/^Context /}).click();await page.locator("summary").filter({hasText:"Sources & context"}).click();await page.getByText("1 original messages. Original conversation preserved.").waitFor();
     await page.locator("summary").filter({hasText:/^Attachments \(/}).click();await page.getByText(/Evidence_long_filename/).waitFor();
-    const all=page.getByRole("button",{name:/View all tasks in Dispatcher/});await all.click();await page.getByText("All assigned tasks",{exact:true}).waitFor();await page.keyboard.press("Escape");await page.getByRole("menu").waitFor({state:"detached"});
+    const all=page.getByRole("button",{name:/View all tasks in Dispatcher/});await all.click();await page.getByText("Assigned work",{exact:true}).waitFor();await page.getByRole("heading",{name:"Active (1)",exact:true}).waitFor();await page.keyboard.press("Escape");await page.getByRole("dialog",{name:"Dispatcher",exact:true}).waitFor({state:"detached"});
     await page.evaluate(()=>window.lockRun());await agent.click();await page.getByText("Instructions (captured for this run)").waitFor();await page.getByText(/For trivial conversation respond with exactly/).waitFor();assert.equal(await page.getByText("CHANGED_AFTER_START",{exact:true}).count(),0);await page.keyboard.press("Escape");await page.getByRole("menu").waitFor({state:"detached"});await page.evaluate(()=>window.unlockRun());
     const overflow=await page.evaluate(()=>({page:document.documentElement.scrollWidth>innerWidth+1,panels:[...document.querySelectorAll('[data-slot="popover-content"],[role="dialog"]')].some(el=>el.scrollWidth>el.clientWidth+1)}));assert.deepEqual(overflow,{page:false,panels:false},`${width}px zoom ${zoom} ${theme}`);
     assert.deepEqual(errors,[]);

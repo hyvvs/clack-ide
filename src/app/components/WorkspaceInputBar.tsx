@@ -1,10 +1,4 @@
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { DispatcherNavigator, type DispatcherProps } from "@/modules/ai/components/DispatcherNavigator";
 import { cn } from "@/lib/utils";
 import { CLACK_Z_INDEX } from "@/lib/layers";
 import { AiInputBarConnect } from "@/modules/ai";
@@ -12,25 +6,15 @@ import { Chip } from "@/modules/ai/components/Chip";
 import { ChipsRow } from "@/modules/ai/components/ChipsRow";
 import { useComposer } from "@/modules/ai/lib/composer";
 import { useChatStore } from "@/modules/ai/store/chatStore";
-import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
-import { useAgentsStore } from "@/modules/ai/store/agentsStore";
-import { BUILTIN_AGENTS } from "@/modules/ai/lib/agents";
-import { focusTaskConversationPane, useDispatcherNavigation } from "@/modules/ai/store/dispatcherNavigation";
-import { dispatcherTaskConversation, dispatcherTaskStatus, availableDispatcherTasks } from "@/modules/ai/lib/dispatcherTasks";
-import { isPeerTaskActive } from "@/modules/ai/lib/peerTaskCancellation";
 import { useBlockController } from "@/modules/terminal/lib/blockController";
 import { focusLeafInput } from "@/modules/terminal/lib/useTerminalSession";
 import { useTheme } from "@/modules/theme";
 import {
   AiContentGenerator02Icon,
-  Add01Icon,
-  ArrowDown01Icon,
   CommandLineIcon,
   Folder01Icon,
   GitBranchIcon,
-  Message01Icon,
   TerminalIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
@@ -274,151 +258,8 @@ export function WorkspaceInputBar({
   );
 }
 
-export function DispatcherTarget({
-  sessions,
-  activeSessionId,
-  onSelect,
-  onCreate,
-}: {
-  sessions: ReturnType<typeof useChatStore.getState>["sessions"];
-  activeSessionId: string | null;
-  onSelect: (sessionId: string) => void | Promise<void>;
-  onCreate: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const focusRef = useRef<HTMLDivElement>(null);
-  const request = useDispatcherNavigation(state => state.request);
-  const tasks = usePeerTaskStore(state => state.tasks);
-  const customAgents = useAgentsStore(state => state.customAgents);
-  const agents = [...BUILTIN_AGENTS, ...customAgents];
-  const active = sessions.find((session) => session.id === activeSessionId);
-  const work = availableDispatcherTasks(tasks, sessions);
-  const activeCount = work.filter(isPeerTaskActive).length;
-  const requestedTask = work.find(task => task.id === request?.taskId);
-  useEffect(() => {
-    if (request && (requestedTask || request.taskId === null)) setOpen(true);
-  }, [requestedTask, request]);
-  useEffect(() => {
-    if (!open || !request) return;
-    const frame = requestAnimationFrame(() => {
-      focusRef.current?.focus();
-      focusRef.current?.scrollIntoView({ block: "nearest" });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [open, request]);
-  const changeOpen = (value: boolean) => {
-    setOpen(value);
-    if (!value) useDispatcherNavigation.setState({ request: null });
-  };
-  const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
-  return (
-    <DropdownMenu open={open} onOpenChange={changeOpen}>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          data-ai-dispatch-target
-          className="inline-flex h-[22px] max-w-[15rem] items-center gap-1.5 rounded-md border border-[color:var(--clack-border-strong)] bg-[var(--clack-accent-soft)] px-2 text-[11px] text-[var(--clack-text-1)] outline-none transition-colors hover:bg-accent/70 focus-visible:ring-1 focus-visible:ring-[var(--clack-focus)]"
-          title={`Dispatcher: chats and assigned tasks. ${activeCount} active tasks`}
-          aria-label={`Dispatcher. Choose dispatch target. Current target: ${active?.title || "New chat"}. ${activeCount} active tasks`}
-        >
-          <HugeiconsIcon icon={Message01Icon} size={11} strokeWidth={1.8} />
-          <span className="shrink-0 text-[var(--clack-text-3)]">Dispatcher</span>
-          <span className="min-w-0 truncate font-medium">
-            {active?.title || "New chat"}
-          </span>
-          {activeCount > 0 && <span className="shrink-0 text-[10px] tabular-nums text-[var(--clack-accent)]">{activeCount} active</span>}
-          <HugeiconsIcon
-            icon={ArrowDown01Icon}
-            size={10}
-            strokeWidth={2}
-            className="shrink-0 text-[var(--clack-text-3)]"
-          />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" side="top" className="max-h-[70dvh] w-80 max-w-[calc(100vw-24px)] overflow-y-auto">
-        {work.length > 0 && <>
-          <div className="px-2 py-1 text-[10px] font-medium uppercase text-[var(--clack-text-3)]">All assigned tasks</div>
-          {work.map(task => {
-            const parent = sessions.find(session => session.id === task.sourceSessionId && session.profile?.workspaceId === task.workspaceId);
-            const conversationId = dispatcherTaskConversation(task, sessions);
-            const agent = agents.find(agent => agent.id === task.targetAgentId)?.name ?? task.targetAgentId;
-            return <DropdownMenuItem
-              key={task.id}
-              ref={task.id === request?.taskId ? focusRef : undefined}
-              data-dispatcher-task-id={task.id}
-              disabled={!conversationId}
-              onSelect={async () => {
-                if (!conversationId) return;
-                await onSelect(conversationId);
-                focusTaskConversationPane(conversationId);
-              }}
-              className="min-w-0 flex-col items-start gap-1 px-2 py-1.5 text-xs"
-            >
-              <span className="flex w-full min-w-0 gap-2"><span className="min-w-0 flex-1 truncate font-medium">{agent}</span><span className="shrink-0 text-[10px]">{dispatcherTaskStatus(task)}</span></span>
-              <span className="max-w-full truncate text-[10px] text-[var(--clack-text-3)]">{parent?.title ?? "Deleted conversation"} | {workspaceLabel(task.workspaceRoot)}</span>
-              <span className="max-w-full truncate" title={task.prompt}>{task.prompt}</span>
-            </DropdownMenuItem>;
-          })}
-          <DropdownMenuSeparator />
-        </>}
-        <div className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase text-[var(--clack-text-3)]">
-          Dispatch to chat
-        </div>
-        {sorted.map((session) => {
-          const selected = session.id === activeSessionId;
-          return (
-            <DropdownMenuItem
-              key={session.id}
-              onSelect={() => onSelect(session.id)}
-              className={cn(
-                "min-w-0 gap-2 px-2 py-1.5 text-xs",
-                selected && "bg-[var(--clack-accent-soft)]",
-              )}
-            >
-              <HugeiconsIcon
-                icon={Message01Icon}
-                size={12}
-                strokeWidth={1.75}
-                className="shrink-0 text-[var(--clack-text-3)]"
-              />
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate font-medium">
-                  {session.title || "New chat"}
-                </span>
-                <span className="truncate text-[10px] font-normal text-[var(--clack-text-3)]">
-                  {session.run?.state === "running"
-                    ? "Running"
-                    : workspaceLabel(session.profile?.workspaceRoot)}
-                </span>
-              </span>
-              {selected ? (
-                <HugeiconsIcon
-                  icon={Tick02Icon}
-                  size={12}
-                  strokeWidth={2}
-                  className="shrink-0"
-                />
-              ) : null}
-            </DropdownMenuItem>
-          );
-        })}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={onCreate}
-          className="gap-2 px-2 py-1.5 text-xs"
-        >
-          <HugeiconsIcon icon={Add01Icon} size={12} strokeWidth={1.8} />
-          New chat
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-function workspaceLabel(root: string | null | undefined): string {
-  if (!root) return "Unbound conversation";
-  const segments = root.split(/[\\/]/).filter(Boolean);
-  return segments[segments.length - 1] || root;
+export function DispatcherTarget(props: DispatcherProps) {
+  return <DispatcherNavigator {...props} />;
 }
 
 function ModeToggle({

@@ -666,8 +666,7 @@ export default function App() {
     (path: string, pin?: boolean) => {
       // Markdown opens in its rendered view by default; a per-tab toggle flips
       // it to the raw editor. Other files open as persistent tabs by default.
-      if (isMarkdownPath(path)) newMarkdownTab(path);
-      else openFileTab(path, pin ?? true);
+      return isMarkdownPath(path) ? newMarkdownTab(path) : openFileTab(path, pin ?? true);
     },
     [openFileTab, newMarkdownTab],
   );
@@ -1612,6 +1611,21 @@ export default function App() {
     tabs,
     explorerRoot,
     openPreviewTab,
+    openWorkspaceFile: (path) => {
+      const id = handleOpenFile(path, true);
+      useChatStore.getState().minimizeMini();
+      requestAnimationFrame(() => {
+        if (id == null) return;
+        const editor = editorRefs.current.get(id);
+        if (editor) editor.focus();
+        else document.querySelector<HTMLElement>(`[data-tab-id="${id}"]`)?.focus();
+      });
+    },
+    openWorkspaceSourceControl: () => {
+      persistSidebarView("source-control");
+      sidebarRef.current?.expand();
+      useChatStore.getState().minimizeMini();
+    },
     newAgentTab,
     terminalRefs,
   });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import os from "node:os";
 import { createRequire } from "node:module";
+import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import react from "@vitejs/plugin-react";
@@ -11,14 +12,14 @@ const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const mocks = new Map([
-  ["@tauri-apps/api/core", `export async function invoke(){return null;}export class Channel{}export class Resource{}export async function addPluginListener(){return{unregister:async()=>{}};}export const isTauri=()=>false;`],
+  ["@tauri-apps/api/core", `export async function invoke(command,args){window.calls.push([command,args]);if(command==="fs_canonicalize")return args.path;if(command==="fs_stat")return{kind:"file",size:3,mtime:1};if(command==="git_resolve_repo")return{repoRoot:"/fixture"};if(command==="attachment_store_get")return new TextEncoder().encode("abc").buffer;if(command==="custom_tool_history")return[];return null;}export class Channel{}export class Resource{}export async function addPluginListener(){return{unregister:async()=>{}};}export const isTauri=()=>false;`],
   ["@tauri-apps/api/event", `export const emit=async()=>{};export const listen=async()=>()=>{};`],
   ["@tauri-apps/api/webviewWindow", `export const getCurrentWebviewWindow=()=>({listen:async()=>()=>{}});`],
   ["@tauri-apps/api/window", `export const getCurrentWindow=()=>({});`],
   ["@tauri-apps/plugin-os", `export const platform=()=>"windows";`],
   ["@tauri-apps/plugin-store", `export class LazyStore{async get(){return null;}async set(){}async save(){}async delete(){}async entries(){return [];}async onChange(){return()=>{};}}`],
   ["src/modules/ai/index", `export{AiInputBarConnect}from"/src/modules/ai/components/AiInputBar.tsx";`],
-  ["src/modules/ai/lib/peerTaskCoordinator", `export const applyPeerTaskChangeSet=async()=>{};export const cancelPeerTask=async()=>{};export const discardPeerTaskWorktree=async()=>{};`],
+  ["src/modules/ai/lib/peerTaskCoordinator", `export const applyPeerTaskChangeSet=async id=>{window.calls.push(["fixture-apply",id]);window.tasks.setState(s=>({tasks:s.tasks.map(t=>t.id===id?{...t,changeSet:{...t.changeSet,appliedAt:5}}:t)}));return{ok:true};};export const cancelPeerTask=async()=>{};export const discardPeerTaskWorktree=async()=>{};export const requestPeerTask=async()=>{throw Error("Native dispatch outside fixture");};`],
 ]);
 const entry = `
 import React from"react";import{createRoot}from"react-dom/client";
@@ -33,17 +34,28 @@ import{teraxDefault}from"/src/modules/theme/themes/terax-default.ts";
 import"/src/styles/globals.css";
 const sessions=["a","b","reviewer"].map(id=>({id,title:"Parent "+id,createdAt:1,updatedAt:1,profile:{agentId:"builtin:coder",modelId:"gpt-5.4-mini",workspaceId:"local:/fixture",workspaceRoot:"/fixture"}}));
 const task={schemaVersion:7,id:"assigned",sourceSessionId:"a",targetSessionId:"reviewer",sourceAgentId:"builtin:coder",sourceModelId:"gpt-5.4-mini",targetAgentId:"builtin:reviewer",targetModelId:"gpt-5.4-mini",workspaceId:"local:/fixture",workspaceRoot:"/fixture",workspaceEnvironment:{kind:"local"},kind:"review",executionMode:"read-only",prompt:"Review the bounds",artifactRefs:[],parentTaskId:null,rootTaskId:"assigned",hopCount:0,dependsOn:[],status:"running",createdAt:1,updatedAt:2};
-useChatStore.setState({sessions,activeSessionId:"b"});window.chat=useChatStore;window.tasks=usePeerTaskStore;window.assigned=task;window.opened=[];
+window.calls=[];window.files=[];window.sourceControl=0;
+useChatStore.setState({sessions,activeSessionId:"b",live:{...useChatStore.getState().live,getWorkspaceRoot:()=>"/fixture",openWorkspaceFile:path=>{window.files.push(path);window.openFile(path);},openWorkspaceSourceControl:()=>window.sourceControl++}});window.chat=useChatStore;window.tasks=usePeerTaskStore;window.assigned=task;window.opened=[];
 useAiPaneStore.setState({...createAiPaneLayout("b"),initialized:true});window.panes=useAiPaneStore;
-window.assign=()=>usePeerTaskStore.setState({tasks:[task,{...task,id:"other",sourceSessionId:"b",prompt:"Different chat's work",updatedAt:3}]});
+const result=(summary,artifacts=[])=>({summary,artifacts,targetSessionId:"reviewer",targetAgentId:task.targetAgentId,targetModelId:task.targetModelId,completedAt:4});
+const hash="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+window.assign=()=>usePeerTaskStore.setState({tasks:[task,{...task,id:"other",sourceSessionId:"b",prompt:"Different chat's work",updatedAt:3},
+{...task,id:"changes",status:"completed",prompt:"Create project README",executionMode:"isolated-worktree",changeSet:{baseSha:"base",patch:"diff --git a/README.md b/README.md\\n+Project README",changedPaths:["README.md"]}},
+{...task,id:"returned",status:"completed",prompt:"Return the report",result:result("Report ready",[{id:"artifact",attachmentId:"attachment",contentRef:{id:hash,contentHash:hash,byteSize:3},displayName:"report.md",mediaType:"text/plain",contentKind:"text",byteSize:3,sourceSessionId:"reviewer",sourceTaskId:"returned",sourceAgentId:task.targetAgentId,sourceModelId:task.targetModelId,workspaceId:task.workspaceId,workspaceRoot:task.workspaceRoot,createdAt:4,originType:"workspace-file",sourcePath:"report.md",accessPolicy:"model-input"}])},
+{...task,id:"text",status:"completed",prompt:"Explain the bounds",result:result("Only textual evidence; no claimed file opening.")},
+{...task,id:"empty",status:"completed",prompt:"Return nothing"},
+{...task,id:"dirty",status:"failed",prompt:"Isolated task failed",error:{code:"peer_run_failed",message:"workspace has uncommitted changes: commit or stash"}},
+{...task,id:"rate",status:"failed",prompt:"Provider task failed",error:{code:"peer_run_failed",message:"OpenRouter rate limit reached 429 "+"long_error_".repeat(100)}},
+{...task,id:"blocked",status:"blocked",prompt:"Dependent task blocked",blockedByTaskId:"dirty",blockedByStatus:"failed"}]});
 window.finish=()=>usePeerTaskStore.setState(s=>({tasks:s.tasks.map(t=>t.id===task.id?{...t,status:"completed",result:{summary:"Verified result",targetSessionId:"reviewer",targetAgentId:t.targetAgentId,targetModelId:t.targetModelId,completedAt:4,artifacts:[]}}:t)}));
 window.setTheme=mode=>{document.documentElement.className=mode;applyTheme(teraxDefault,mode);};
 const el=React.createElement;
-function App(){const sessions=useChatStore(s=>s.sessions);const active=useChatStore(s=>s.activeSessionId);return el("main",{style:{padding:8,minWidth:0}},
+function App(){const [file,setFile]=React.useState(null);window.openFile=path=>{setFile(path);requestAnimationFrame(()=>document.querySelector("[data-file-result]")?.focus());};const sessions=useChatStore(s=>s.sessions);const active=useChatStore(s=>s.activeSessionId);return el("main",{style:{padding:8,minWidth:0}},
+file&&el("button",{"data-file-result":true},"Opened "+file),
 el("button",{onClick:window.assign},"Assign fixture task"),
 el("section",{"aria-label":"Chat A"},el(PeerTaskFeed,{sessionId:"a"})),
 el("section",{"aria-label":"Chat B"},el(PeerTaskFeed,{sessionId:"b"})),
-el(DispatcherTarget,{sessions,activeSessionId:active,onCreate:()=>{},onSelect:async id=>{await new Promise(resolve=>setTimeout(resolve,20));window.opened.push(id);useChatStore.getState().switchSession(id);}}),
+el("footer",{style:{position:"fixed",bottom:8,left:8}},el(DispatcherTarget,{sessions,activeSessionId:active,onCreate:()=>{},onSelect:async id=>{await new Promise(resolve=>setTimeout(resolve,20));window.opened.push(id);useChatStore.getState().switchSession(id);}})),
 el(ModelSwitchNotice,{targetLabel:"Unknown target",assessment:{status:"blocked",contextBlocked:true,contextCapacity:"unknown",contextLimit:4096,estimatedTokens:3337,reasons:[],details:["Unverified capacity"]},onBack:()=>{},onConfirm:()=>{}}));}
 createRoot(document.getElementById("root")).render(el(App));
 `;
@@ -58,36 +70,61 @@ let browser;
 try {
   await server.listen();
   browser = await chromium.launch({ headless: true, executablePath: process.env.BROWSER_EXECUTABLE });
-  for (const width of [320, 1280]) for (const theme of ["light", "dark"]) {
-    const page = await browser.newPage({ viewport: { width, height: 1000 } });
+  if (process.env.TASK_OUTCOME_EVIDENCE) await mkdir(process.env.TASK_OUTCOME_EVIDENCE,{recursive:true});
+  for (const [width,zoom] of [[1280,1],[390,1],[320,1],[280,1],[640,2]]) for (const theme of ["light", "dark"]) {
+    const page = await browser.newPage({ viewport: { width:width/zoom, height:1000/zoom },deviceScaleFactor:zoom });
     page.setDefaultTimeout(30000);
     const errors = [];
-    page.on("pageerror", error => errors.push(error.message));
+    page.on("pageerror", error => { errors.push(error.message); console.error("Task fixture error:",error.message); });
+    page.on("console",message=>{if(message.type()==="error")console.error("Browser:",message.text());});
     await page.goto(server.resolvedUrls.local[0] + "workflow-fixture", { waitUntil: "load", timeout: 120000 });
     await page.getByRole("button", { name: "Assign fixture task" }).click();
     await page.evaluate(theme => window.setTheme(theme), theme);
     const a = page.getByRole("region", { name: "Chat A", exact: true });
     const b = page.getByRole("region", { name: "Chat B", exact: true });
+    const assigned=a.locator('[data-peer-task-id="assigned"]');
     assert.equal(await a.getByText("Review the bounds", { exact: true }).count(), 1);
     assert.equal(await b.getByText("Review the bounds", { exact: true }).count(), 0);
-    await a.getByRole("button", { name: "View task in Dispatcher" }).click();
+    const isolated=a.locator('[data-peer-task-id="changes"]');
+    assert.equal(await isolated.getByRole("button",{name:"Open README.md",exact:true}).count(),0);
+    await isolated.getByText("Review changes",{exact:true}).focus();await page.keyboard.press("Enter");await isolated.getByLabel("Captured patch").waitFor();
+    await assigned.getByRole("button", { name: "View task in Dispatcher" }).click();
+    const dispatcher=page.getByRole("dialog",{name:"Dispatcher",exact:true});
     const selected = page.locator('[data-dispatcher-task-id="assigned"]');
     await selected.waitFor();
     await page.waitForFunction(() => document.activeElement?.getAttribute("data-dispatcher-task-id") === "assigned");
     assert.match(await selected.innerText(), /Code Reviewer.*Running/s);
     assert.match(await selected.innerText(), /Parent a/);
+    assert.equal(await selected.getAttribute("aria-pressed"),"true");
+    await dispatcher.getByRole("heading",{name:"Needs attention (4)",exact:true}).waitFor();await dispatcher.getByRole("heading",{name:"Active (2)",exact:true}).waitFor();await dispatcher.getByRole("heading",{name:"Completed (3)",exact:true}).waitFor();
+    await page.keyboard.press("ArrowDown");assert.notEqual(await page.evaluate(()=>document.activeElement?.getAttribute("data-dispatcher-task-id")),"assigned");await selected.focus();
     await page.keyboard.press("Enter");
+    await dispatcher.getByRole("region",{name:"Selected task",exact:true}).getByText("Read-only workspace access; subject to Agent permissions",{exact:true}).waitFor();
+    await dispatcher.locator("summary").filter({hasText:"Chats - dispatch destinations"}).click();await dispatcher.getByRole("button",{name:/^Parent a/}).click();
     await page.waitForFunction(() => window.panes.getState().bindings[window.panes.getState().activePaneId] === "a");
     assert.deepEqual(await page.evaluate(() => window.opened), ["a"]);
+    await a.locator('[data-peer-task-id="text"]').getByText("View result",{exact:true}).click();await a.getByLabel("Task textual result").filter({hasText:"Only textual evidence"}).waitFor();
+    await a.locator('[data-peer-task-id="empty"]').getByText("No files or artifacts returned",{exact:true}).waitFor();
+    const returned=a.locator('[data-peer-task-id="returned"]');await returned.getByRole("button",{name:"View artifact: report.md",exact:true}).click();await returned.getByLabel("Immutable artifact preview").waitFor();assert.equal(await returned.getByLabel("Immutable artifact preview").inputValue(),"abc");
+    await returned.getByRole("button",{name:"Open report.md",exact:true}).click();assert.deepEqual(await page.evaluate(()=>window.files),["/fixture/report.md"]);await page.waitForFunction(()=>document.activeElement?.hasAttribute("data-file-result"));
+    await a.locator('[data-peer-task-id="dirty"]').getByRole("button",{name:"View Source Control",exact:true}).click();assert.equal(await page.evaluate(()=>window.sourceControl),1);
+    const rate=a.locator('[data-peer-task-id="rate"]');await rate.getByText("This model is temporarily rate-limited.",{exact:true}).waitFor();assert.equal(await rate.getByRole("button",{name:"Retry task",exact:true}).count(),0);assert.equal(await rate.getByText(/OpenRouter rate limit reached/).isVisible(),false);
+    await isolated.getByRole("button",{name:"View task in Dispatcher"}).click();const changedRow=dispatcher.locator('[data-dispatcher-task-id="changes"]');await page.waitForFunction(()=>document.activeElement?.getAttribute("data-dispatcher-task-id")==="changes");
+    const detail=dispatcher.getByRole("region",{name:"Selected task",exact:true});await detail.getByText("Review changes",{exact:true}).click();assert.equal(await detail.getByRole("button",{name:"Open README.md",exact:true}).count(),0);
+    await dispatcher.locator('[data-dispatcher-task-id="text"]').click();await page.evaluate(()=>window.tasks.setState(s=>({tasks:s.tasks.map(t=>t.id==="changes"?{...t,updatedAt:99}:t)})));assert.equal(await dispatcher.locator('[data-dispatcher-task-id="text"]').getAttribute("aria-pressed"),"true");await changedRow.click();
+    if (process.env.TASK_OUTCOME_EVIDENCE) await page.screenshot({path:path.join(process.env.TASK_OUTCOME_EVIDENCE,`dispatcher-${width}-${zoom}-${theme}.png`),fullPage:true});
+    const panelOverflow=await dispatcher.evaluate(el=>el.scrollWidth>el.clientWidth+1);assert.equal(panelOverflow,false);
+    await detail.getByRole("button",{name:"Apply to workspace",exact:true}).click();await detail.getByText("Applied to workspace",{exact:true}).waitFor();
+    await detail.getByRole("button",{name:"Open README.md",exact:true}).click();await dispatcher.waitFor({state:"detached"});await page.waitForFunction(()=>document.activeElement?.hasAttribute("data-file-result"));assert.deepEqual(await page.evaluate(()=>window.files),["/fixture/report.md","/fixture/README.md"]);
     await page.evaluate(() => window.finish());
-    await a.getByText("Verified result", { exact: true }).waitFor();
-    await a.getByRole("button", { name: "View task in Dispatcher" }).click();
+    await assigned.getByText("View result", { exact: true }).click();await assigned.getByText("Verified result", { exact: true }).waitFor();
+    await assigned.getByRole("button", { name: "View task in Dispatcher" }).click();
     await selected.waitFor();
     assert.match(await selected.innerText(), /Done/);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
     assert.equal(overflow, false, `Overflow at ${width}px ${theme}`);
     assert.deepEqual(errors, []);
-    console.log(`PASS ${width}px ${theme}: assignment, isolation, Dispatcher focus, parent navigation, retained result, no overflow`);
+    console.log(`PASS ${width}px ${zoom*100}% ${theme}: grouping, keyboard/exact focus, chat destinations, immutable artifacts, Review/Apply/Open, result focus, failures, isolation, no overflow`);
     await page.close();
   }
 } finally {

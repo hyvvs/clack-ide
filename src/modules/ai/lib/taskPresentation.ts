@@ -1,0 +1,119 @@
+import type { UIMessage } from "ai";
+import type { PeerTask, PeerTaskArtifact } from "@/modules/ai/lib/peerTasks";
+import type { SessionMeta } from "@/modules/ai/lib/sessions";
+import { pendingPeerQuestion } from "@/modules/ai/lib/peerCommunication";
+
+export type WorkGroup = "attention" | "active" | "completed";
+export function taskWorkGroup(task: PeerTask): WorkGroup {
+  if (
+    pendingPeerQuestion(task) ||
+    task.status === "failed" ||
+    task.status === "blocked" ||
+    (task.changeSet?.patch && !task.changeSet.appliedAt)
+  )
+    return "attention";
+  return ["running", "queued", "waiting"].includes(task.status)
+    ? "active"
+    : "completed";
+}
+
+export function taskOutcomeLabel(task: PeerTask): string {
+  if (task.changeSet?.changedPaths.length) {
+    const count = task.changeSet.changedPaths.length;
+    return `${count} ${count === 1 ? "file" : "files"} changed${task.changeSet.appliedAt ? " - Applied" : " - Review required"}`;
+  }
+  if (task.result?.artifacts.length)
+    return `Returned ${task.result.artifacts.map((a) => a.displayName).join(", ")}`;
+  if (task.result?.summary.trim()) return "Result available";
+  return "No files or artifacts returned";
+}
+
+export function taskFailure(task: PeerTask) {
+  if (
+    /uncommitted changes|dirty (?:workspace|worktree)/i.test(
+      task.error?.message ?? "",
+    )
+  )
+    return {
+      kind: "dirty" as const,
+      title:
+        "The isolated task couldn't start because your project has uncommitted changes.",
+      detail:
+        "Commit or stash your changes in Source Control, then assign the isolated task again. Clack will not commit or stash them for you.",
+    };
+  if (
+    /rate.?limit|too many requests|\b429\b/i.test(
+      `${task.error?.code} ${task.error?.message}`,
+    )
+  )
+    return {
+      kind: "rate-limit" as const,
+      title: "This model is temporarily rate-limited.",
+      detail: "The previous task and any completed effects are preserved.",
+    };
+  return {
+    kind: "other" as const,
+    title: "The Agent couldn't complete this task.",
+    detail:
+      "Review the task conversation before assigning more work. Completed or uncertain effects must not be replayed.",
+  };
+}
+
+export function taskRetryEligibility(
+  task: PeerTask,
+  target: SessionMeta | undefined,
+  messages: UIMessage[],
+): boolean {
+  const run = target?.run;
+  if (
+    task.status !== "failed" ||
+    taskFailure(task).kind !== "rate-limit" ||
+    task.result ||
+    task.changeSet ||
+    task.worktree ||
+    task.recovery ||
+    run?.peerTaskId !== task.id ||
+    run.state !== "failed" ||
+    run.error?.kind !== "rate_limit" ||
+    target?.profile?.workspaceId !== task.workspaceId ||
+    target.profile.agentId !== task.targetAgentId ||
+    target.profile.modelId !== task.targetModelId ||
+    run.agentId !== task.targetAgentId ||
+    run.modelId !== task.targetModelId
+  )
+    return false;
+  let lastUser = messages.length - 1;
+  while (lastUser >= 0 && messages[lastUser].role !== "user") lastUser--;
+  if (lastUser < 0) return false;
+  return messages
+    .filter((message) => message.role === "assistant")
+    .every((message) =>
+      message.parts.every((part) => part.type === "text" && !part.text.trim()),
+    );
+}
+
+export function artifactFilePath(
+  task: PeerTask,
+  artifact: PeerTaskArtifact,
+): string | null {
+  if (
+    artifact.workspaceId !== task.workspaceId ||
+    !artifact.sourcePath ||
+    !["workspace-file", "generated-file", "worktree-file"].includes(
+      artifact.originType,
+    )
+  )
+    return null;
+  if (task.executionMode === "isolated-worktree" && !task.changeSet?.appliedAt)
+    return null;
+  if (artifact.originType === "worktree-file") return null;
+  return artifact.sourcePath;
+}
+
+export function taskAccessLabel(task: PeerTask): string {
+  return task.executionMode === "read-only"
+    ? "Read-only workspace access"
+    : task.executionMode === "isolated-worktree"
+      ? "Can edit an isolated copy; changes need review and apply"
+      : "Can edit this workspace, subject to permissions and approvals";
+}

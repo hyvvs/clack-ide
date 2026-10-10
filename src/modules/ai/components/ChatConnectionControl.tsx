@@ -50,7 +50,7 @@ export function ChatConnectionControl({ sessionId }: { sessionId: string }) {
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        className="w-80 max-w-[calc(100vw-16px)] max-h-[70dvh] overflow-y-auto space-y-2 text-xs [overflow-wrap:anywhere]"
+        className="w-80 max-w-[calc(100vw-16px)] max-h-[min(70dvh,var(--radix-popover-content-available-height))] overflow-y-auto space-y-2 text-xs [overflow-wrap:anywhere]"
       >
         <h3 className="font-medium">Current model connection</h3>
         <dl className="space-y-1">

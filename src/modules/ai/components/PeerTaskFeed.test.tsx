@@ -113,7 +113,7 @@ describe("PeerTaskFeed", () => {
     expect(html).toContain("Changes ready to review");
     expect(html).toContain("1 file changed");
     expect(html).toContain("Review changes");
-    expect(html).toContain("Apply patch");
+    expect(html).toContain("Open this task&#x27;s workspace and owning conversation");
     expect(html).not.toContain("Applied to workspace");
   });
 
@@ -369,13 +369,14 @@ describe("PeerTaskFeed", () => {
 
     expect(workingHtml).toContain("agent-reviewer is working");
     expect(workingHtml).toContain("Working");
-    expect(returnedHtml).toContain("Returned files");
+    expect(returnedHtml).toContain("Returned report.md");
     expect(returnedHtml).toContain("report.md");
     expect(failedHtml).toContain("Delegated by agent-source");
     expect(failedHtml).toContain(
-      "agent-reviewer could not complete this task: Image input is unavailable.",
+      "Image input is unavailable.",
     );
-    expect(failedHtml).toContain("Nothing was returned.");
+    expect(failedHtml).toContain("Error details");
+    expect(failedHtml).toContain("The Agent couldn&#x27;t complete this task.");
   });
 
   it("states explicitly when delegation copied no files or conversation history", () => {
