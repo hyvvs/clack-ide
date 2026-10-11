@@ -21,6 +21,7 @@ import type { SessionMeta } from "../lib/sessions";
 import { native } from "../lib/native";
 import { recoverPeerTasks } from "../lib/restartRecovery";
 import { reconcilePeerCommunication } from "@/modules/ai/lib/peerCommunication";
+import { taskArchiveEligible } from "@/modules/ai/lib/taskArchive";
 
 type PeerTaskStore = {
   hydrated: boolean;
@@ -28,6 +29,8 @@ type PeerTaskStore = {
   recoveryError: string | null;
   tasks: PeerTask[];
   retryingTaskIds: string[];
+  managingTaskIds: string[];
+  setArchived: (ids: readonly string[], archived: boolean) => Promise<void>;
   updateCommunication: (
     update: (tasks: PeerTask[]) => PeerTask[],
   ) => Promise<void>;
@@ -86,6 +89,29 @@ export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
   recoveryError: null,
   tasks: [],
   retryingTaskIds: [],
+  managingTaskIds: [],
+  setArchived: async (ids, archived) => {
+    const state = get();
+    if (!state.recoveryReady) throw new Error("Task recovery must finish before changing visibility.");
+    const selected = state.tasks.filter(t => ids.includes(t.id));
+    if (selected.length !== new Set(ids).size || (archived && selected.some(t =>
+      !taskArchiveEligible(t, state.tasks, [...state.managingTaskIds, ...state.retryingTaskIds]),
+    ))) throw new Error("Active tasks, clarification, dependencies and in-progress actions must remain visible.");
+    const now = Date.now();
+    const tasks = state.tasks.map(t => ids.includes(t.id) ? { ...t, archivedAt: archived ? t.archivedAt ?? now : undefined } : t);
+    set({ tasks });
+    persist(tasks);
+    try {
+      await flushPeerTasks();
+    } catch (error) {
+      set(current => ({ tasks: current.tasks.map(t => {
+        const prepared = tasks.find(p => p.id === t.id);
+        const previous = selected.find(p => p.id === t.id);
+        return previous && t.archivedAt === prepared?.archivedAt ? { ...t, archivedAt: previous.archivedAt } : t;
+      }) }));
+      throw error;
+    }
+  },
   updateCommunication: async (update) => {
     if (!get().recoveryReady)
       throw new Error("Peer task recovery is not ready.");

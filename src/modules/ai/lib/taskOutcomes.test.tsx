@@ -26,6 +26,7 @@ import { requestPeerTask } from "@/modules/ai/lib/peerTaskCoordinator";
 import { getChat, useChatStore } from "@/modules/ai/store/chatStore";
 import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
 import { PeerTaskOutcome } from "@/modules/ai/components/PeerTaskOutcome";
+import { replaySafeExecution } from "@/modules/ai/lib/taskRetryEffects";
 
 vi.mock("@/modules/ai/lib/attachmentStore", async (original) => ({
   ...(await original<typeof import("@/modules/ai/lib/attachmentStore")>()),
@@ -480,6 +481,68 @@ describe("safe result navigation", () => {
   });
 });
 describe("effects-safe retry", () => {
+  it.each(["read_file", "list_directory", "grep", "glob", "request_conversation_evidence", "read_agent_output", "get_terminal_output", "bash_logs", "bash_list"])("allows rate limit after the read-only %s executor", async (name) => {
+    failed();
+    const inspected: UIMessage[] = [...messages, { id: "inspection", role: "assistant", parts: [{ type: `tool-${name}`, toolCallId: "read", state: "output-available", input: {}, output: {} }] }];
+    vi.mocked(getChat).mockReturnValue({ messages: inspected } as NonNullable<ReturnType<typeof getChat>>);
+    expect(taskRetryEligibility(task, target, inspected)).toBe(true);
+    await retryTaskWithoutEffects(task.id, "source");
+    expect(requestPeerTask).toHaveBeenCalledTimes(1);
+  });
+  it.each(["write_file", "edit", "multi_edit", "create_directory", "bash_run", "bash_background", "custom_mcp", "unknown"])("blocks read then %s then provider failure without duplicate effects", async name => {
+    failed();
+    const inspected: UIMessage[] = [...messages, { id: "effects", role: "assistant", parts: ["read_file", name].map(tool => ({ type: `tool-${tool}`, toolCallId: tool, state: "output-available", input: {}, output: {} })) }];
+    vi.mocked(getChat).mockReturnValue({ messages: inspected } as NonNullable<ReturnType<typeof getChat>>);
+    await expect(retryTaskWithoutEffects(task.id, "source")).rejects.toThrow();
+    expect(requestPeerTask).not.toHaveBeenCalled();
+  });
+  it("accepts a native read receipt, not custom or MCP annotations", async () => {
+    failed();
+    const record = { id: "receipt", toolName: "custom_read", sessionId: "target", workspaceId: task.workspaceId, agentId: task.targetAgentId, taskId: task.id, runId: 10, kind: "native", state: "succeeded", effect: "none" } as Awaited<ReturnType<typeof executionHistory>>[number];
+    const inspected: UIMessage[] = [...messages, { id: "read", role: "assistant", parts: [{ type: "dynamic-tool", toolName: "custom_read", toolCallId: "call", state: "output-available", input: {}, output: { executionId: "receipt" } }] }];
+    vi.mocked(getChat).mockReturnValue({ messages: inspected } as NonNullable<ReturnType<typeof getChat>>);
+    vi.mocked(executionHistory).mockResolvedValue([record]);
+    await retryTaskWithoutEffects(task.id, "source");
+    expect(requestPeerTask).toHaveBeenCalledTimes(1);
+    vi.mocked(requestPeerTask).mockClear();
+    for (const kind of ["mcp", "http", "wasi", "unknown"]) {
+      vi.mocked(executionHistory).mockResolvedValue([{ ...record, kind }]);
+      await expect(retryTaskWithoutEffects(task.id, "source")).rejects.toThrow("Previous tool executions");
+    }
+    expect(requestPeerTask).not.toHaveBeenCalled();
+  });
+  it.each(["possible", "reported", "unknown"])("does not accept native %s effects", effect => {
+    const record = { sessionId: "target", workspaceId: task.workspaceId, agentId: task.targetAgentId, runId: 10, kind: "native", state: "succeeded", effect } as Awaited<ReturnType<typeof executionHistory>>[number];
+    expect(replaySafeExecution(record, task, 10)).toBe(false);
+  });
+  it("requires native receipt ownership, terminal state and exact custom output correlation", async () => {
+    failed();
+    const record = { id: "receipt", toolName: "custom_read", sessionId: "target", workspaceId: task.workspaceId, agentId: task.targetAgentId, taskId: task.id, runId: 10, kind: "native", state: "succeeded", effect: "none" } as Awaited<ReturnType<typeof executionHistory>>[number];
+    for (const patch of [{ sessionId: "other" }, { workspaceId: "other" }, { agentId: "other" }, { taskId: "other" }, { runId: null }, { state: "running" }])
+      expect(replaySafeExecution({ ...record, ...patch }, task, 10)).toBe(false);
+    const inspected: UIMessage[] = [...messages, { id: "read", role: "assistant", parts: [{ type: "tool-custom_read", toolCallId: "call", state: "output-available", input: {}, output: { executionId: "not-receipt" } }] }];
+    vi.mocked(getChat).mockReturnValue({ messages: inspected } as NonNullable<ReturnType<typeof getChat>>);
+    vi.mocked(executionHistory).mockResolvedValue([record]);
+    await expect(retryTaskWithoutEffects(task.id, "source")).rejects.toThrow("Previous tool executions");
+    expect(requestPeerTask).not.toHaveBeenCalled();
+  });
+  it.each(["input-streaming", "input-available", "approval-requested"])("keeps unfinished read %s ambiguous", state => {
+    failed();
+    expect(taskRetryEligibility(task, target, [...messages, { id: "read", role: "assistant", parts: [{ type: "tool-read_file", toolCallId: "read", state, input: {} }] } as UIMessage])).toBe(false);
+  });
+  it("retains captured progress after safe reads only with matching run/task provenance", () => {
+    failed();
+    const progress: UIMessage = { id: "progress", role: "assistant", parts: [{ type: "text", text: "I inspected the files" }], metadata: { clackActivity: { version: 1, owner: { sessionId: "target", workspaceId: task.workspaceId, runId: "target:10", taskId: task.id }, receipts: [], omitted: 0 } } };
+    expect(taskRetryEligibility(task, target, [...messages, progress])).toBe(true);
+    expect(taskRetryEligibility(task, target, [...messages, { ...progress, metadata: undefined }])).toBe(false);
+  });
+  it("archive does not alter retry safety", async () => {
+    failed(); task.archivedAt = 20;
+    await retryTaskWithoutEffects(task.id, "source");
+    expect(requestPeerTask).toHaveBeenCalledTimes(1);
+    task.changeSet = { baseSha: "base", patch: "patch", changedPaths: ["a"] };
+    expect(taskRetryEligibility(task, target, messages)).toBe(false);
+  });
   it.each(["provider_unavailable", "model_loading", "backend_restart", "network", "timeout"] as const)("allows proven pre-effect %s failures", async (kind) => {
     failed();
     if (!target.run?.error) throw new Error("Missing run");
@@ -629,6 +692,14 @@ describe("effects-safe retry", () => {
       ]),
     ).toBe(false);
   });
+  it("scopes proven prior-run history without hiding unattributed or unfinished effects", () => {
+    failed();
+    const prior: UIMessage = { id: "previous-run", role: "assistant", parts: [{ type: "tool-write_file", toolCallId: "old", state: "output-available", input: {}, output: {} }, { type: "text", text: "Previous task completed" }], metadata: { clackActivity: { version: 1, owner: { sessionId: "target", workspaceId: task.workspaceId, runId: "target:5", taskId: "previous-task" }, receipts: [{ id: "tool", at: 5, kind: "tool", label: "output", part: 0 }, { id: "text", at: 5, kind: "part", label: "text", part: 1 }], omitted: 0 } } };
+    expect(taskRetryEligibility(task, target, [prior, ...messages])).toBe(true);
+    expect(taskRetryEligibility(task, target, [{ ...prior, metadata: undefined }, ...messages])).toBe(false);
+    expect(taskRetryEligibility(task, target, [{ ...prior, metadata: { clackActivity: { ...(prior.metadata as { clackActivity: object }).clackActivity, omitted: 1 } } }, ...messages])).toBe(false);
+    expect(taskRetryEligibility(task, target, [{ ...prior, parts: [{ type: "tool-write_file", toolCallId: "old", state: "input-available", input: {} }] }, ...messages])).toBe(false);
+  });
   it("rejects a second queued attempt", async () => {
     failed();
     usePeerTaskStore.setState({
@@ -720,11 +791,11 @@ describe("shared chat/Dispatcher outcome surface", () => {
     };
     expect(
       renderToStaticMarkup(<PeerTaskOutcome task={task} sessionId="source" />),
-    ).toContain("View Source Control");
+    ).toContain("Open Source Control");
     expect(
       renderToStaticMarkup(
         <PeerTaskOutcome task={task} sessionId="unrelated" />,
       ),
-    ).not.toContain("View Source Control");
+    ).not.toContain("Open Source Control");
   });
 });

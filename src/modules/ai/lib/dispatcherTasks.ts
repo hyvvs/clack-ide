@@ -7,8 +7,8 @@ export const dispatcherTaskGroups: [WorkGroup, string][] = [
   ["attention", "Needs attention"], ["active", "Active"], ["completed", "Completed"],
 ];
 
-export function visibleDispatcherTasks(tasks: readonly PeerTask[], sessions: readonly SessionMeta[], group?: WorkGroup): PeerTask[] {
-  const available = availableDispatcherTasks(tasks, sessions);
+export function visibleDispatcherTasks(tasks: readonly PeerTask[], sessions: readonly SessionMeta[], group?: WorkGroup, archived = false): PeerTask[] {
+  const available = availableDispatcherTasks(tasks, sessions).filter(t => Boolean(t.archivedAt) === archived);
   return dispatcherTaskGroups.flatMap(([key]) => group && group !== key ? [] : available.filter((task) => taskWorkGroup(task) === key));
 }
 

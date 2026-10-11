@@ -13,6 +13,7 @@ export type ExecutionRecord = {
   agentId: string;
   workspaceId: string;
   runId: number | null;
+  taskId?: string;
   tool: CapturedToolVersion;
   toolName: string;
   kind: string;

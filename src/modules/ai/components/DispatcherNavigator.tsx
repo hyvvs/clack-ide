@@ -6,6 +6,8 @@ import {
   Add01Icon,
   ArrowLeft01Icon,
   ArrowRight01Icon,
+  Cancel01Icon,
+  Archive02Icon,
 } from "@hugeicons/core-free-icons";
 import {
   Popover,
@@ -20,8 +22,10 @@ import {
   dispatcherTaskNeighbors,
   dispatcherTaskConversation,
   dispatcherTaskStatus,
+  availableDispatcherTasks,
 } from "@/modules/ai/lib/dispatcherTasks";
-import { isPeerTaskActive } from "@/modules/ai/lib/peerTaskCancellation";
+import { finishedTasksToArchive } from "@/modules/ai/lib/taskArchive";
+import { ConfiguredBackgroundLayer } from "@/modules/theme/ConfiguredBackgroundLayer";
 import {
   taskOutcomeLabel,
   taskWorkGroup,
@@ -57,28 +61,47 @@ export function DispatcherNavigator({
 }: DispatcherProps) {
   const [open, setOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [archived, setArchived] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState("");
+  const cancelClearRef = useRef<HTMLButtonElement>(null);
   const navigationRef = useRef<HTMLDivElement>(null);
   const resultNavigation = useRef(false);
   const request = useDispatcherNavigation((s) => s.request);
   const tasks = usePeerTaskStore((s) => s.tasks);
+  const managing = usePeerTaskStore(s => s.managingTaskIds);
+  const retrying = usePeerTaskStore(s => s.retryingTaskIds);
+  const recoveryReady = usePeerTaskStore(s => s.recoveryReady);
+  const recoveryError = usePeerTaskStore(s => s.recoveryError);
   const customAgents = useAgentsStore((s) => s.customAgents);
   const agents = [...BUILTIN_AGENTS, ...customAgents];
-  const work = visibleDispatcherTasks(tasks, sessions);
+  const current = visibleDispatcherTasks(tasks, sessions);
+  const archivedWork = visibleDispatcherTasks(tasks, sessions, undefined, true);
+  const work = archived ? archivedWork : current;
   const neighbors = dispatcherTaskNeighbors(work, selectedId);
-  const activeCount = work.filter(isPeerTaskActive).length;
+  const activeCount = work.filter(t => taskWorkGroup(t) === "active").length;
   const attentionCount = work.filter(
     (task) => taskWorkGroup(task) === "attention",
   ).length;
   const active = sessions.find((s) => s.id === activeSessionId);
-  const requestedTask = work.find((task) => task.id === request?.taskId);
+  const requestedTask = availableDispatcherTasks(tasks, sessions).find((task) => task.id === request?.taskId);
   const requestedTaskId = requestedTask?.id;
   const selected = work.find((task) => task.id === selectedId);
   const ownerId = selected && dispatcherTaskConversation(selected, sessions);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Only a new navigation request changes the visibility filter, not an archive action on its task.
   useEffect(() => {
     if (!request || (!requestedTaskId && request.taskId !== null)) return;
     setSelectedId(requestedTaskId ?? null);
+    setArchived(Boolean(requestedTask?.archivedAt));
     setOpen(true);
   }, [request, requestedTaskId]);
+  useEffect(() => { if (confirmClear) cancelClearRef.current?.focus(); }, [confirmClear]);
+  const finished = finishedTasksToArchive(tasks, [...managing, ...retrying]).filter(t => {
+    const owner = dispatcherTaskConversation(t, sessions);
+    return owner && t.workspaceId === active?.profile?.workspaceId;
+  });
+  const advanceSelection = () => setSelectedId(id => id === selectedId ? neighbors.next?.id ?? neighbors.previous?.id ?? null : id);
   // biome-ignore lint/correctness/useExhaustiveDependencies: Reopening the same task from chat must refocus its row even when selection is unchanged.
   useEffect(() => {
     if (!open || !selectedId) return;
@@ -91,6 +114,7 @@ export function DispatcherNavigator({
   }, [open, selectedId, request]);
   const changeOpen = (value: boolean) => {
     setOpen(value);
+    if (!value) setConfirmClear(false);
     if (!value) useDispatcherNavigation.setState({ request: null });
   };
   const openChat = async (id: string) => {
@@ -106,8 +130,8 @@ export function DispatcherNavigator({
           type="button"
           data-ai-dispatch-target
           className="inline-flex h-[22px] max-w-[15rem] items-center gap-1.5 rounded-md border border-[color:var(--clack-border-strong)] bg-[var(--clack-accent-soft)] px-2 text-[11px] text-[var(--clack-text-1)] outline-none hover:bg-accent/70 focus-visible:ring-1 focus-visible:ring-[var(--clack-focus)]"
-          title={`Dispatcher: ${activeCount} active tasks, ${attentionCount} need attention`}
-          aria-label={`Dispatcher. Choose dispatch target. Current target: ${active?.title || "New chat"}. ${activeCount} active tasks. ${attentionCount} need attention`}
+          title={`Dispatcher: ${current.filter(t => taskWorkGroup(t) === "active").length} active tasks, ${current.filter(t => taskWorkGroup(t) === "attention").length} need attention`}
+          aria-label={`Dispatcher. Choose dispatch target. Current target: ${active?.title || "New chat"}. ${current.filter(t => taskWorkGroup(t) === "active").length} active tasks. ${current.filter(t => taskWorkGroup(t) === "attention").length} need attention`}
         >
           <HugeiconsIcon icon={Message01Icon} size={11} />
           <span className="shrink-0 text-[var(--clack-text-3)]">
@@ -116,9 +140,9 @@ export function DispatcherNavigator({
           <span className="min-w-0 truncate font-medium">
             {active?.title || "New chat"}
           </span>
-          {activeCount > 0 && (
+          {current.some(t => taskWorkGroup(t) === "active") && (
             <span className="shrink-0 text-[10px] tabular-nums">
-              {activeCount} active
+              {current.filter(t => taskWorkGroup(t) === "active").length} active
             </span>
           )}
           <HugeiconsIcon
@@ -132,7 +156,10 @@ export function DispatcherNavigator({
         aria-label="Dispatcher"
         align="start"
         side="top"
-        className="w-[680px] max-w-[calc(100vw-16px)] max-h-[80dvh] gap-2 overflow-auto p-3 text-xs [overflow-wrap:anywhere]"
+        data-dispatcher-surface
+        className="clack-workspace relative isolate w-[720px] max-w-[calc(100vw-16px)] max-h-[80dvh] gap-0 overflow-hidden bg-transparent p-0 text-xs [overflow-wrap:anywhere]"
+        style={{ background: "var(--clack-bg-workspace)" }}
+        onEscapeKeyDown={event => { if (confirmClear) { event.preventDefault(); setConfirmClear(false); } }}
         onCloseAutoFocus={(event) => {
           if (resultNavigation.current) {
             event.preventDefault();
@@ -140,7 +167,39 @@ export function DispatcherNavigator({
           }
         }}
       >
-        <h3 className="text-sm font-semibold">Assigned work</h3>
+        <ConfiguredBackgroundLayer placement="contained" />
+        <div className="relative z-[1] min-h-0 overflow-auto p-3">
+        <header className="mb-3 space-y-2 border-b border-[var(--clack-border-subtle)] pb-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 space-y-1">
+              <h3 className="text-sm font-semibold">Dispatcher</h3>
+              <p role="status" className="text-[11px] text-[var(--clack-text-3)]">{attentionCount} need attention · {activeCount} active · {work.filter(t => taskWorkGroup(t) === "completed").length} completed</p>
+            </div>
+            <button type="button" aria-label="Close Dispatcher" title="Close Dispatcher" className="grid size-7 shrink-0 place-items-center rounded hover:bg-accent focus-visible:outline" onClick={() => changeOpen(false)}><HugeiconsIcon icon={Cancel01Icon} size={16} /></button>
+          </div>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <fieldset aria-label="Task visibility" className="inline-flex min-w-0 gap-1 rounded border border-[var(--clack-border-subtle)] p-0.5">
+              {[[false, "Current", current.length], [true, "Archived", archivedWork.length]].map(([value, label, count]) => <button key={String(label)} type="button" aria-label={value ? "Show archived" : "Show current"} aria-pressed={archived === value} className={cn("rounded px-2 py-1 focus-visible:outline", archived === value && "bg-[var(--clack-accent-soft)] text-[var(--clack-text-1)]")} onClick={() => { setArchived(Boolean(value)); setSelectedId(null); setConfirmClear(false); }}>{label} ({count})</button>)}
+            </fieldset>
+            {!archived && <button type="button" aria-label="Clear finished" className="inline-flex items-center gap-1 rounded px-1 py-1 text-[var(--clack-text-2)] hover:bg-accent disabled:opacity-40 focus-visible:outline" disabled={!finished.length || clearing || !recoveryReady} onClick={() => { setClearError(""); setConfirmClear(true); }}><HugeiconsIcon icon={Archive02Icon} size={14} />Clear finished</button>}
+          </div>
+          {confirmClear && <section aria-label="Confirm clear finished" className="space-y-2 border-t border-[var(--clack-border-subtle)] pt-2">
+            <p>Removes finished tasks from the active Dispatcher view. Their history and results are retained in Archived.</p>
+            <div className="flex flex-wrap gap-2">
+              <button ref={cancelClearRef} type="button" disabled={clearing} className="rounded px-2 py-1 hover:bg-accent focus-visible:outline" onClick={() => setConfirmClear(false)}>Cancel</button>
+              <button type="button" disabled={clearing || !finished.length} className="rounded bg-[var(--clack-accent-soft)] px-2 py-1 focus-visible:outline" onClick={() => {
+                setClearing(true);
+                const remaining = work.filter(t => !finished.some(f => f.id === t.id));
+                void import("@/modules/ai/lib/taskResultActions").then(module => module.archiveFinishedTasks(finished.map(t => t.id))).then(() => {
+                  setConfirmClear(false);
+                  setSelectedId(id => finished.some(t => t.id === id) ? remaining[0]?.id ?? null : id);
+                }).catch(e => setClearError(String(e))).finally(() => setClearing(false));
+              }}>{clearing ? "Clearing..." : `Archive ${finished.length} completed ${finished.length === 1 ? "task" : "tasks"}`}</button>
+            </div>
+          </section>}
+          {clearError && <p role="alert" className="text-destructive">{clearError}</p>}
+          {recoveryError && <p role="alert" className="text-[var(--clack-warning)]">{recoveryError}</p>}
+        </header>
         <div className="grid min-h-0 min-w-0 gap-3 min-[600px]:grid-cols-[220px_minmax(0,1fr)]">
           <div
             ref={navigationRef}
@@ -179,7 +238,7 @@ export function DispatcherNavigator({
               );
               return (
                 <section key={group} aria-label={label}>
-                  <h4 className="sticky top-0 bg-[var(--clack-surface-raised)] py-1 font-semibold">
+                  <h4 className="py-1 font-semibold text-[var(--clack-text-3)]">
                     {label} ({entries.length})
                   </h4>
                   {!entries.length && (
@@ -240,7 +299,7 @@ export function DispatcherNavigator({
             className="max-h-[38dvh] min-w-0 overflow-y-auto min-[600px]:max-h-[55dvh]"
             aria-label="Selected task"
           >
-            <nav aria-label="Previous and next tasks" className="sticky top-0 z-10 mb-2 flex min-w-0 flex-wrap items-center justify-between gap-1 border-b border-[var(--clack-border-subtle)] bg-[var(--clack-surface-raised)] pb-2">
+            <nav aria-label="Previous and next tasks" className="mb-2 flex min-w-0 flex-wrap items-center justify-between gap-1 border-b border-[var(--clack-border-subtle)] pb-2">
               <button type="button" aria-label="Previous task" title="Previous task" disabled={!neighbors.previous} onClick={() => setSelectedId(neighbors.previous?.id ?? null)} className="inline-flex h-7 items-center gap-1 rounded px-1.5 outline-none hover:bg-accent disabled:opacity-40 focus-visible:ring-1 focus-visible:ring-[var(--clack-focus)]">
                 <HugeiconsIcon icon={ArrowLeft01Icon} size={14} /> Previous
               </button>
@@ -262,6 +321,7 @@ export function DispatcherNavigator({
                   allTasks={tasks}
                   onOpenSession={(id) => void openChat(id)}
                   inDispatcher
+                  onVisibilityChanged={advanceSelection}
                   onResultOpened={() => {
                     resultNavigation.current = true;
                     changeOpen(false);
@@ -277,7 +337,7 @@ export function DispatcherNavigator({
         </div>
         <details className="border-t border-[var(--clack-border-subtle)] pt-2">
           <summary className="cursor-pointer font-semibold">
-            Chats - dispatch destinations ({sessions.length})
+            Chats ({sessions.length})
           </summary>
           <div className="max-h-40 space-y-1 overflow-auto pt-2">
             {[...sessions]
@@ -313,6 +373,7 @@ export function DispatcherNavigator({
             </button>
           </div>
         </details>
+        </div>
       </PopoverContent>
     </Popover>
   );

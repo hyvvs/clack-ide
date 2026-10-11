@@ -2,6 +2,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { PeerCommunicationFeed, communicationStateLabel } from "@/modules/ai/components/PeerCommunicationFeed";
 import { pendingPeerQuestion } from "@/modules/ai/lib/peerCommunication";
 import { PeerTaskOutcome } from "@/modules/ai/components/PeerTaskOutcome";
+import { TaskArchiveAction } from "@/modules/ai/components/TaskArchiveAction";
 import { taskAccessLabel } from "@/modules/ai/lib/taskPresentation";
 import { focusTaskConversationPane } from "@/modules/ai/store/dispatcherNavigation";
 import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
@@ -65,12 +66,13 @@ export function PeerTaskFeed({
     () =>
       allTasks.filter(
         (task) =>
-          task.sourceSessionId === sessionId ||
-          task.targetSessionId === sessionId,
+          !task.archivedAt && (task.sourceSessionId === sessionId ||
+          task.targetSessionId === sessionId),
       ),
     [allTasks, sessionId],
   );
-  if (tasks.length === 0) return null;
+  const archived = allTasks.filter(t => t.archivedAt && (t.sourceSessionId === sessionId || t.targetSessionId === sessionId));
+  if (tasks.length === 0 && !archived.length) return null;
   return (
     <section className="flex flex-col gap-2" aria-label="Assigned tasks">
       {recoveryError ? (
@@ -87,6 +89,7 @@ export function PeerTaskFeed({
           onOpenSession={onOpenSession}
         />
       ))}
+      {archived.length > 0 && <button type="button" className="self-start text-xs text-[var(--clack-text-3)] hover:underline" onClick={() => viewTaskInDispatcher(archived[0].id, sessionId)}>Archived tasks ({archived.length})</button>}
     </section>
   );
 }
@@ -98,6 +101,7 @@ export function PeerTaskCard({
   onOpenSession,
   inDispatcher = false,
   onResultOpened,
+  onVisibilityChanged,
 }: {
   task: PeerTask;
   viewingSessionId: string;
@@ -105,6 +109,7 @@ export function PeerTaskCard({
   onOpenSession?: (sessionId: string) => void;
   inDispatcher?: boolean;
   onResultOpened?: () => void;
+  onVisibilityChanged?: () => void;
 }) {
   const sessions = useChatStore((state) => state.sessions);
   const switchSession = useChatStore((state) => state.switchSession);
@@ -224,7 +229,7 @@ export function PeerTaskCard({
 
   return (
     <section
-      className="clack-ai-block min-w-0 overflow-hidden [overflow-wrap:anywhere]"
+      className={cn("min-w-0 overflow-hidden [overflow-wrap:anywhere]", !inDispatcher && "clack-ai-block")}
       data-peer-task-id={task.id}
     >
       <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-[color:var(--clack-border-subtle)] px-2.5 py-2">
@@ -241,9 +246,11 @@ export function PeerTaskCard({
           />
         )}
         <span className="min-w-0 truncate text-[11.5px] font-semibold text-[var(--clack-text-1)]">
-          {title}
+          {inDispatcher ? targetAgentName : title}
         </span>
         <span role="status" className={cn("min-w-0 max-w-full text-[10px]", tone)}>{statusLabel}</span>
+        {task.archivedAt && <span className="text-[var(--clack-text-3)]">Archived</span>}
+        <TaskArchiveAction task={task} sessionId={viewingSessionId} onChanged={onVisibilityChanged} />
         {!inDispatcher && <button
           type="button"
           onClick={() => viewTaskInDispatcher(task.id, viewingSessionId)}
@@ -274,14 +281,14 @@ export function PeerTaskCard({
         </button>
       </div>
       <div className="space-y-2 px-2.5 py-2 text-[11px]">
-        <PeerTaskOutcome task={task} sessionId={viewingSessionId} onOpenSession={onOpenSession} onResultOpened={onResultOpened} />
-        <section className="space-y-1 border-b border-[var(--clack-border-subtle)] pb-2" aria-label="Task access">
-          <p className="font-medium">Task access</p>
+        <PeerTaskOutcome task={task} sessionId={viewingSessionId} onOpenSession={onOpenSession} onResultOpened={onResultOpened} showTask />
+        <details className="space-y-1 border-b border-[var(--clack-border-subtle)] pb-2" aria-label="Task access">
+          <summary className="cursor-pointer font-medium">Access and context</summary>
           <p>Workspace: {task.workspaceRoot.split(/[\\/]/).filter(Boolean).pop() ?? task.workspaceRoot}</p>
           <p>{taskAccessLabel(task)}{task.executionMode === "read-only" ? "; subject to Agent permissions" : ""}</p>
           <p>Conversation history: Not shared. Attachments: {task.artifactRefs.length || "None"}.</p>
           {inDispatcher && <><p>From: {source?.title ?? "Deleted conversation"}</p><p>To: {target?.title ?? "Deleted conversation"}</p></>}
-        </section>
+        </details>
         {question && <div className="space-y-1 border-b border-[var(--clack-border-subtle)] pb-2">
           <p className="font-medium">{agentName(question.sender.agentId)} asks {agentName(question.recipient.agentId)}</p>
           <p className="whitespace-pre-wrap">{question.text}</p>
@@ -293,41 +300,6 @@ export function PeerTaskCard({
           }}>Answer clarification in chat</button>}
         </div>}
         <PeerCommunicationFeed events={task.communication} agentName={agentName} />
-        <details>
-          <summary className="cursor-pointer text-[var(--clack-text-2)]">Task details and provenance</summary>
-          <div className="mt-1 space-y-1">
-            <p>From {sourceAgentName}: {source?.title ?? "Deleted conversation"}</p>
-            <p>To {targetAgentName}: {target?.title ?? "Deleted conversation"}</p>
-            <p>Model: {modelLabel(task.targetModelId, customEndpoints, savedProviderModels)}</p>
-            <p>Workspace: {task.workspaceRoot}</p>
-            <p>Task {task.id} / Root {task.rootTaskId}{task.parentTaskId ? ` / Parent ${task.parentTaskId}` : ""}</p>
-            {task.worktree && <p>Checkout: {task.worktree.checkoutRoot} / Base {task.worktree.baseSha}</p>}
-            {task.handoff && <>
-              <p>Recipient-sized handoff: {task.handoff.sources.length} evidence sources; {task.handoff.omitted} omitted.</p>
-              <p>Receipt: {task.handoff.digest}</p>
-            </>}
-            {task.review && <>
-              <p>Review target: {task.review.files.length} captured files, {task.review.patches.length} patches, {task.review.results.length} task results.</p>
-              {task.review.files.map((file) => <p key={file.path}>{file.path} / {file.hash}</p>)}
-              {task.review.patches.map((patch) => <p key={patch.taskId}>Patch {patch.taskId} / {patch.hash}</p>)}
-              {task.review.results.map((result) => <p key={result.taskId}>Result {result.taskId} / {result.hash}</p>)}
-            </>}
-            {[{ kind: "input", refs: task.artifactRefs }, { kind: "result", refs: task.result?.artifacts ?? [] }].flatMap(({ kind, refs }) => refs.map((artifact) => <details key={`${kind}:${artifact.id}`}>
-              <summary className="cursor-pointer">Artifact: {artifact.displayName}</summary>
-              <p>{artifact.originType} / {artifact.sourceAgentId} / {artifact.sourceSessionId} / {artifact.sourceTaskId ?? "Original attachment"}</p>
-              <p>Immutable content: {artifact.contentRef.id} / {artifact.contentRef.contentHash}</p>
-              <p>{artifact.sourcePath ?? artifact.displayName}</p>
-            </details>))}
-          </div>
-        </details>
-        <div>
-          <div className="mb-0.5 text-[9.5px] font-medium uppercase text-[var(--clack-text-3)]">
-            Task
-          </div>
-          <p className="whitespace-pre-wrap text-[var(--clack-text-1)]">
-            {task.prompt}
-          </p>
-        </div>
         {task.status === "queued" ? (
           <p className="text-[10px] text-[var(--clack-text-3)]">
             {target?.run?.state === "running"
@@ -380,10 +352,10 @@ export function PeerTaskCard({
             ) : null}
           </div>
         ) : null}
-        <div className="space-y-1">
-          <div className="text-[10px] font-medium text-[var(--clack-text-2)]">
+        <details className="space-y-1">
+          <summary className="cursor-pointer text-[10px] font-medium text-[var(--clack-text-2)]">
             {viewingSource ? "Context sent" : "Context received"}
-          </div>
+          </summary>
           {task.artifactRefs.length > 0 ? (
             <div className="flex flex-wrap gap-1">
               {task.artifactRefs.map((artifact) => (
@@ -405,7 +377,7 @@ export function PeerTaskCard({
               copied.
             </p>
           )}
-        </div>
+        </details>
         {task.status === "blocked" ? (
           <div className="space-y-0.5 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[var(--clack-warning)]">
             <p>
@@ -483,6 +455,33 @@ export function PeerTaskCard({
             </div>
           </div>
         ) : null}
+        <details>
+          <summary className="cursor-pointer text-[var(--clack-text-2)]">Task details and provenance</summary>
+          <div className="mt-1 space-y-1">
+            <p>From {sourceAgentName}: {source?.title ?? "Deleted conversation"}</p>
+            <p>To {targetAgentName}: {target?.title ?? "Deleted conversation"}</p>
+            <p>Model: {modelLabel(task.targetModelId, customEndpoints, savedProviderModels)}</p>
+            <p>Workspace: {task.workspaceRoot}</p>
+            <p>Task {task.id} / Root {task.rootTaskId}{task.parentTaskId ? ` / Parent ${task.parentTaskId}` : ""}</p>
+            {task.worktree && <p>Checkout: {task.worktree.checkoutRoot} / Base {task.worktree.baseSha}</p>}
+            {task.handoff && <>
+              <p>Recipient-sized handoff: {task.handoff.sources.length} evidence sources; {task.handoff.omitted} omitted.</p>
+              <p>Receipt: {task.handoff.digest}</p>
+            </>}
+            {task.review && <>
+              <p>Review target: {task.review.files.length} captured files, {task.review.patches.length} patches, {task.review.results.length} task results.</p>
+              {task.review.files.map((file) => <p key={file.path}>{file.path} / {file.hash}</p>)}
+              {task.review.patches.map((patch) => <p key={patch.taskId}>Patch {patch.taskId} / {patch.hash}</p>)}
+              {task.review.results.map((result) => <p key={result.taskId}>Result {result.taskId} / {result.hash}</p>)}
+            </>}
+            {[{ kind: "input", refs: task.artifactRefs }, { kind: "result", refs: task.result?.artifacts ?? [] }].flatMap(({ kind, refs }) => refs.map((artifact) => <details key={`${kind}:${artifact.id}`}>
+              <summary className="cursor-pointer">Artifact: {artifact.displayName}</summary>
+              <p>{artifact.originType} / {artifact.sourceAgentId} / {artifact.sourceSessionId} / {artifact.sourceTaskId ?? "Original attachment"}</p>
+              <p>Immutable content: {artifact.contentRef.id} / {artifact.contentRef.contentHash}</p>
+              <p>{artifact.sourcePath ?? artifact.displayName}</p>
+            </details>))}
+          </div>
+        </details>
         <div className="flex min-w-0 flex-wrap items-center gap-2 border-t border-[color:var(--clack-border-subtle)] pt-2 text-[9.5px] text-[var(--clack-text-3)]">
           <span>{executionModeLabel(task)}</span>
           <span className="truncate">

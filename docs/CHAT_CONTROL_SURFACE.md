@@ -261,6 +261,10 @@ discoverability and recovery remains necessary. No push or subsequent checkpoint
 
 ## Failed Task Retry And Previous/Next Navigation
 
+Historical implementation record for `67c0a75`. The coarse effect exclusions below
+were replaced by the Dispatcher task-management refinement in the next section;
+the original verification results remain recorded here.
+
 Both the chat task card and Dispatcher selected-task detail use `PeerTaskOutcome`
 and the same `checkTaskRetry` / `retryTaskWithoutEffects` coordinator path. Retry is
 enabled only after native execution history validates the absence of effects. The
@@ -328,3 +332,122 @@ and horizontal bounds. Native IPC/provider/coordinator execution is mocked in th
 browser fixture; actual coordinator and real-file/Git workflows run in the automated
 integration group. **Computer Use, native GUI and live-provider verification were
 not performed, as requested.** No push or subsequent checkpoint.
+
+## Dispatcher Retry, Archive And Appearance
+
+The failed rate-limit task had no Retry because the previous guard treated every
+assistant tool part and current/unknown-run native execution as a possible effect,
+including completed reads. Chat and Dispatcher still share `PeerTaskOutcome` and
+the same final `checkTaskRetry` / `retryTaskWithoutEffects` coordinator checks.
+The refinement classifies effects using existing transcripts, activity receipts
+and native execution history, not another safety ledger.
+
+### Retry Safety And Recovery
+
+- Completed built-in `read_file`, `list_directory`, `grep`, `glob`,
+  `request_conversation_evidence`, `read_agent_output`, `get_terminal_output`,
+  `bash_logs` and `bash_list` are replay-safe based on their executor semantics.
+  Pending calls remain ambiguous. Read/list/search followed by a rate limit now
+  exposes an enabled `Retry task` in chat, Dispatcher and Archived.
+- Custom tools require an exact output execution-ID/tool-name match to a terminal
+  native `effect: none` receipt for the captured session/workspace/Agent/run/task.
+  A preliminary UI candidate cannot authorize Retry. MCP/HTTP/WASI operations,
+  mutating tools, shell execution and unknown effects remain blocked; remote
+  read-only annotations are not proof. Missing native history fails closed.
+- Existing results, patches, worktrees, recovery ambiguity, changed identities,
+  active assignments and missing immutable evidence retain their exclusions.
+  Authentication failures retain `Fix connection`. B1 is unchanged and runs again
+  on any new attempt; no model/provider or permission check is bypassed.
+- Current-run progress requires matching persisted activity ownership. Older
+  completed history is excluded only with validated part-specific earlier-run
+  receipts and no omitted receipts; unattributed/unfinished effects still block.
+  Receipt validation was extracted unchanged into dependency-light
+  `activityRecord.ts` so Dispatcher does not eagerly load provider runtime code.
+- Unsafe tasks explain `Retry unavailable` instead of silently omitting recovery.
+  Dirty candidates show `Retry after workspace is clean` and `Open Source Control`.
+  Visible dirty candidates recheck on focus and every three seconds, with the
+  existing explicit availability check retained. Clack never commits/stashes.
+- Retry still creates one linked new attempt and preserves the failed record,
+  immutable input provenance, root/parent/retry IDs and duplicate-click guard.
+  A retry of an archived failure is a new current task, not a restored old run.
+
+### Durable Archive And Clear Finished
+
+`PeerTask.archivedAt?: number` is additive presentation metadata in the existing
+version-7 bounded PeerTask ledger. IDs, status, update ordering, results, artifacts,
+hashes, effects, lineage, dependencies, review/change sets and recovery evidence
+remain intact. Archive does not delete content or introduce a store/cleanup policy;
+existing content-reference collection and the 256-task ledger retention bound are
+unchanged. It is not an unlimited historical backup.
+
+Per-task Archive is shared by chat cards and Dispatcher. Terminal completed, failed,
+cancelled or blocked tasks are eligible only without pending clarification, an
+active dependent/descendant, Retry or an in-progress Apply/worktree-management
+operation. Existing startup recovery must be ready. Coordinator-owned transient
+busy IDs protect actual operations across surfaces, including write-lease waits.
+
+Archive/Restore updates use the existing ledger save/flush and native CAS revision.
+Persistence failure restores the visibility field without overwriting concurrent
+task data and leaves the existing recovery error/pause active. Loading is additive
+and idempotent; invalid timestamps and malformed archived active tasks restore
+visibility. Dependency/result lookups continue using all records, not visible rows.
+Actions revalidate owning conversation and current authorized workspace.
+
+Current/Archived filters have independent counts. Archived records retain inspection,
+parent chat access, safe Retry and Restore. Chat offers an Archived tasks link.
+Archiving the selection advances to its next visible neighbor, then previous when
+needed; Previous/Next, exact list order and keyboard row focus remain intact.
+
+`Clear finished` confirms that history/results remain in Archived and archives only
+eligible completed tasks. It skips failures, cancelled/blocked work, preserved
+worktrees, unapplied patches, recovery and active dependencies/operations. There is
+no automatic failure archiving and no permanent purge.
+
+### Layout And Appearance Ownership
+
+Dispatcher retains task navigation plus selected details. Its header shows attention,
+active and completed counts, Current/Archived, Clear finished and Close. Recovery/
+result actions precede task/failure details; access/context and technical provenance
+are collapsed, and Chats remains secondary and collapsed. Selected details are
+unframed rather than a second opaque card inside the floating surface.
+
+The surface uses existing `clack-workspace`, `--clack-bg-workspace`, border/focus/
+accent/text tokens and the shared popover radius/shadow. The same contained
+`ConfiguredBackgroundLayer` used by floating AI surfaces renders the configured
+image, opacity (existing factor 0.5), blur, sizing and visibility. No independent
+Dispatcher appearance settings or hard-coded opaque surface are added. The
+application's current configurable blur is background-image blur, not a new
+Dispatcher-specific backdrop-blur control. Both themes/custom alpha tokens remain
+owned by the existing Settings/theme architecture.
+
+### Verification And Limits
+
+- Focused final group: **342 tests / 13 files passed**, covering retry effects,
+  actual coordinator transitions, archive/store serialization and hydration,
+  dependency/review/restart recovery, activity, startup budget, shared outcomes,
+  background rendering, stream recovery and real-file/Git acceptance fixtures.
+- Full frontend: **2,518 tests / 192 files passed**. A subsequent conservative
+  omitted-receipt guard assertion passed in the final focused group; production
+  build also passed after that tightening. TypeScript passed. Lint remains
+  **71 warnings / 2 informational notices**, no errors. Existing mixed
+  static/dynamic import and plugin-timing build notices remain.
+- Headless `check-first-use-ai-workflows.mjs`: **10 cases passed**, at
+  1280/390/320/280 CSS pixels plus equivalent 200% scaling (640 physical / 320 CSS,
+  DPR 2), both light/dark. Each case checks default background and custom image
+  opacity 0.15/0.9 with blur 0/12: **50 appearance configurations** total. Tests
+  assert actual shared layer settings/image references, inherited surface variable,
+  horizontal bounds, accessible action names, confirmation focus, row keyboard
+  focus, neighbor navigation, archive/restore, retained ledger data, bulk exclusions,
+  dirty-to-clean Retry, shared pending/lineage, stale callbacks and artifact/
+  Review/Apply/Open/Source Control ownership. An initial neighbor-focus fixture
+  race was corrected by waiting for the real mounted/focused row; production
+  neighbor selection required no change.
+- Browser native IPC/provider/coordinator boundaries use mocks. Automated
+  coordinator tests exercise the actual coordinator with native/provider boundaries
+  mocked; the acceptance integration group also uses temporary real files/Git and
+  loopback provider fixtures, not live providers.
+- No Rust changed; Rust gates were not rerun. Computer Use, native Tauri GUI,
+  live providers and Linux/macOS native acceptance were **not performed**, as
+  explicitly requested. Human validation of appearance/readability with the user's
+  backgrounds, native keyboard/focus and real-provider recovery remains necessary.
+  Legacy unattributed history or incomplete effect evidence remains conservative.

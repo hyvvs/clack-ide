@@ -72,12 +72,14 @@ import { beginInference, sessionInference } from "@/modules/ai/lib/inferenceLife
 import { selectDispatchablePeerTaskIds, recoverPeerTaskLedger } from "@/modules/ai/lib/peerTaskDependencies";
 import { retryTaskWithoutEffects } from "@/modules/ai/lib/taskResultActions";
 import { normalizePeerTask } from "@/modules/ai/lib/peerTasks";
+import { executionHistory } from "@/modules/ai/lib/customToolExecution";
 import { loadAttachmentContent } from "@/modules/ai/lib/attachmentStore";
 
 const SOURCE = "chat-source";
 const TARGET = "chat-target";
 
 beforeEach(() => {
+  vi.mocked(executionHistory).mockResolvedValue([]);
   vi.spyOn(native, "gitStatus").mockResolvedValue({ repoRoot: "C:/workspace", branch: "main", upstream: null, ahead: 0, behind: 0, isDetached: false, truncated: false, changedFiles: [] });
   vi.mocked(sendMessageToSession).mockClear();
   vi.mocked(sendMessageToSession).mockImplementation(async () => {
@@ -100,6 +102,7 @@ beforeEach(() => {
     recoveryError: null,
     tasks: [],
     retryingTaskIds: [],
+    managingTaskIds: [],
   });
   useChatStore.setState({
     activeSessionId: SOURCE,
@@ -1049,6 +1052,43 @@ describe("peer task coordination", () => {
 });
 
 describe("peer task persistence recovery", () => {
+  it.each([false, true])("retries read/list/search rate limits through the actual coordinator (archived %s)", async archived => {
+    const original = task({ status: "failed", archivedAt: archived ? 30 : undefined, error: { code: "peer_run_failed", message: "Rate limit 429" } });
+    usePeerTaskStore.setState({ tasks: [original] });
+    useChatStore.setState(s => ({ sessions: s.sessions.map(session => session.id !== TARGET ? session : { ...session, run: { state: "failed", startedAt: 10, peerTaskId: original.id, agentId: original.targetAgentId, modelId: original.targetModelId, error: { kind: "rate_limit", message: "429" } as NonNullable<NonNullable<typeof session.run>["error"]> } }) }));
+    chats.set(TARGET, { messages: [{ id: "request", role: "user", parts: [{ type: "text", text: original.prompt }] }, { id: "reads", role: "assistant", parts: ["read_file", "list_directory", "grep", "glob"].map(name => ({ type: `tool-${name}`, toolCallId: name, state: "output-available", input: {}, output: {} })) }] } as unknown as Chat<UIMessage>);
+    const attempt = await retryTaskWithoutEffects(original.id, SOURCE);
+    expect(attempt.retryOfTaskId).toBe(original.id);
+    expect(attempt.archivedAt).toBeUndefined();
+    await vi.waitFor(() => expect(sendMessageToSession).toHaveBeenCalledTimes(1));
+    expect(usePeerTaskStore.getState().tasks.find(t => t.id === original.id)).toEqual(original);
+  });
+  it("read then write then rate limit never creates another attempt or write", async () => {
+    const original = task({ status: "failed", error: { code: "peer_run_failed", message: "429" } });
+    usePeerTaskStore.setState({ tasks: [original] });
+    useChatStore.setState(s => ({ sessions: s.sessions.map(session => session.id !== TARGET ? session : { ...session, run: { state: "failed", startedAt: 10, peerTaskId: original.id, agentId: original.targetAgentId, modelId: original.targetModelId, error: { kind: "rate_limit" } as NonNullable<NonNullable<typeof session.run>["error"]> } }) }));
+    chats.set(TARGET, { messages: [{ id: "request", role: "user", parts: [{ type: "text", text: original.prompt }] }, { id: "effects", role: "assistant", parts: ["read_file", "write_file"].map(name => ({ type: `tool-${name}`, toolCallId: name, state: "output-available", input: {}, output: {} })) }] } as unknown as Chat<UIMessage>);
+    const write = vi.spyOn(native, "writeFile");
+    await expect(retryTaskWithoutEffects(original.id, SOURCE)).rejects.toThrow();
+    expect(usePeerTaskStore.getState().tasks).toEqual([original]);
+    expect(sendMessageToSession).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+  it("in-flight Apply blocks archiving and duplicate Apply through the actual coordinator", async () => {
+    const original = task({ status: "completed", executionMode: "isolated-worktree", changeSet: { baseSha: "base", patch: "patch", changedPaths: ["a"] } });
+    usePeerTaskStore.setState({ tasks: [original] });
+    let finish!: () => void;
+    const apply = vi.spyOn(native, "gitAgentPatchApply").mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    const pending = applyPeerTaskChangeSet(original.id);
+    await vi.waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+    await expect(usePeerTaskStore.getState().setArchived([original.id], true)).rejects.toThrow("must remain visible");
+    await expect(applyPeerTaskChangeSet(original.id)).resolves.toMatchObject({ ok: false, message: "Task action already in progress." });
+    finish();
+    await expect(pending).resolves.toEqual({ ok: true });
+    expect(usePeerTaskStore.getState().managingTaskIds).toEqual([]);
+    expect(apply).toHaveBeenCalledTimes(1);
+    await expect(usePeerTaskStore.getState().setArchived([original.id], true)).resolves.toBeUndefined();
+  });
   it.each(["missing", "corrupt"])("fails closed on %s immutable retry evidence", async (kind) => {
     const failed = task({ status: "failed", preRunFailure: true, artifactRefs: [peerArtifact("source.md", "input")] });
     usePeerTaskStore.setState({ tasks: [failed] });

@@ -14,6 +14,8 @@ import { getChat, useChatStore } from "@/modules/ai/store/chatStore";
 import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
 import type { PeerTask } from "@/modules/ai/lib/peerTasks";
 import { executionHistory } from "@/modules/ai/lib/customToolExecution";
+import { replaySafeExecution } from "@/modules/ai/lib/taskRetryEffects";
+import { finishedTasksToArchive } from "@/modules/ai/lib/taskArchive";
 
 export function canAccessTaskResult(
   task: PeerTask,
@@ -50,6 +52,22 @@ function ownedTask(taskId: string, sessionId: string) {
       "Open this task's workspace and owning conversation to access its result.",
     );
   return task;
+}
+
+export async function setTaskArchived(taskId: string, sessionId: string, archived: boolean) {
+  ownedTask(taskId, sessionId);
+  await usePeerTaskStore.getState().setArchived([taskId], archived);
+}
+
+export async function archiveFinishedTasks(ids: readonly string[]) {
+  const state = usePeerTaskStore.getState();
+  const eligible = finishedTasksToArchive(state.tasks, [...state.managingTaskIds, ...state.retryingTaskIds]);
+  for (const id of ids) {
+    const task = eligible.find(t => t.id === id);
+    if (!task || ![task.sourceSessionId, task.targetSessionId].some(owner => canAccessTaskResult(task, owner)))
+      throw new Error("Only eligible finished tasks in the current workspace can be cleared.");
+  }
+  await usePeerTaskStore.getState().setArchived(ids, true);
 }
 
 function inside(path: string, root: string) {
@@ -209,11 +227,13 @@ export async function checkTaskRetry(taskId: string, sessionId: string) {
   validate();
   const records = await executionHistory(task.targetSessionId);
   if (records.some((r) =>
-    r.runId == null ||
-    (task.preRunFailure
+    (r.runId == null || (task.preRunFailure
       ? !Number.isFinite(r.createdAt) || r.createdAt >= (task.startedAt ?? task.createdAt)
-      : r.runId === target?.run?.startedAt),
+      : r.runId === target?.run?.startedAt)) &&
+    !replaySafeExecution(r, task, target?.run?.startedAt ?? -1),
   ))
+    throw new Error("Previous tool executions require review; no request was replayed.");
+  if (!taskRetryEligibility(task, target, messages, records))
     throw new Error("Previous tool executions require review; no request was replayed.");
   if (task.executionMode === "isolated-worktree") {
     const status = await native.gitStatus(task.workspaceRoot);

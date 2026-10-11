@@ -635,12 +635,17 @@ export async function discardPeerTaskWorktree(
   if (!task?.worktree) {
     return { ok: false, message: "No preserved worktree is available." };
   }
+  const store = usePeerTaskStore.getState();
+  if (store.managingTaskIds.includes(taskId)) return { ok: false, message: "Task action already in progress." };
+  usePeerTaskStore.setState({ managingTaskIds: [...store.managingTaskIds, taskId] });
   try {
     await native.gitAgentWorktreeRemove(task.workspaceRoot, task.id);
     usePeerTaskStore.getState().clearWorktree(task.id);
     return { ok: true };
   } catch (error) {
     return { ok: false, message: String(error) };
+  } finally {
+    usePeerTaskStore.setState(s => ({ managingTaskIds: s.managingTaskIds.filter(id => id !== taskId) }));
   }
 }
 
@@ -657,6 +662,10 @@ export async function applyPeerTaskChangeSet(
     };
   }
   const applyLeaseId = `patch-apply:${task.id}`;
+  const store = usePeerTaskStore.getState();
+  if (store.managingTaskIds.includes(taskId)) return { ok: false, message: "Task action already in progress." };
+  usePeerTaskStore.setState({ managingTaskIds: [...store.managingTaskIds, taskId] });
+  try {
   const lease = await acquireWorkspaceWriteLease({
     workspaceId: task.workspaceId,
     sessionId: applyLeaseId,
@@ -678,6 +687,9 @@ export async function applyPeerTaskChangeSet(
     return { ok: false, message };
   } finally {
     releaseWorkspaceWriteLeasesForSession(applyLeaseId);
+  }
+  } finally {
+    usePeerTaskStore.setState(s => ({ managingTaskIds: s.managingTaskIds.filter(id => id !== taskId) }));
   }
 }
 

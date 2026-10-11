@@ -25,17 +25,20 @@ export function PeerTaskOutcome({
   sessionId,
   onOpenSession,
   onResultOpened,
+  showTask = false,
 }: {
   task: PeerTask;
   sessionId: string;
   onOpenSession?: (id: string) => void;
   onResultOpened?: () => void;
+  showTask?: boolean;
 }) {
   const sessions = useChatStore((s) => s.sessions);
   const live = useChatStore((s) => s.live);
   const tasks = usePeerTaskStore((s) => s.tasks);
   const retryPending = usePeerTaskStore((s) => s.retryingTaskIds.includes(task.id));
   const recoveryReady = usePeerTaskStore((s) => s.recoveryReady);
+  const managing = usePeerTaskStore(s => s.managingTaskIds.includes(task.id));
   const [retryCheck, setRetryCheck] = useState<{
     allowed: boolean;
     reason: string;
@@ -66,6 +69,8 @@ export function PeerTaskOutcome({
       s.profile?.workspaceId === task.workspaceId,
   );
   const failure = taskFailure(task);
+  const dirtyRetry = failure.kind === "dirty" || retryCheck.reason.includes("Source Control");
+  const effectsBlocked = !retryCheck.allowed && retryCheck.reason.includes("Previous tool executions");
   const retriedAs = tasks.find((t) => t.retryOfTaskId === task.id);
   const previousAttempt = tasks.find((t) => t.id === task.retryOfTaskId);
   const retryCandidate =
@@ -89,7 +94,7 @@ export function PeerTaskOutcome({
       allowed: false,
       reason: retryCandidate
         ? "Checking retry safety..."
-        : "Retry unavailable; review existing effects, recovery or changed task identity first.",
+        : "Retry unavailable. This task may already have changed files or external systems, or its captured identity is unavailable. Review its existing effects before assigning it again.",
     });
     if (retryCandidate)
       void checkTaskRetry(task.id, sessionId).then(
@@ -97,12 +102,19 @@ export function PeerTaskOutcome({
         (err) => {
           if (current) setRetryCheck({
             allowed: false,
-            reason: err instanceof Error ? err.message : "Retry safety unavailable.",
+            reason: `Retry unavailable. ${err instanceof Error ? err.message : "Retry safety unavailable."}`,
           });
         },
       );
     return () => { current = false; };
   }, [retryCandidate, task.id, sessionId, target, retryCheckVersion]);
+  useEffect(() => {
+    if (!retryCandidate || !dirtyRetry || retryCheck.allowed) return;
+    const refresh = () => setRetryCheckVersion(v => v + 1);
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 3000);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [retryCandidate, dirtyRetry, retryCheck.allowed]);
   const action = async (work: () => Promise<unknown>) => {
     if (busy) return;
     const ticket = generation.current;
@@ -129,6 +141,10 @@ export function PeerTaskOutcome({
     await openTaskFile(task.id, sessionId, input);
     onResultOpened?.();
   };
+  const description = showTask && <section aria-label="Task description" className="space-y-1 border-b border-[var(--clack-border-subtle)] pb-2">
+    <h4 className="font-medium text-[var(--clack-text-3)]">Task</h4>
+    <p className="whitespace-pre-wrap">{task.prompt}</p>
+  </section>;
   return (
     <section
       aria-label="Task outcome"
@@ -150,34 +166,6 @@ export function PeerTaskOutcome({
                 ? "Isolated task changes; not yet applied to your workspace."
                 : "Captured changes awaiting workspace review."}
           </p>
-          <ul className="space-y-1">
-            {changeSet.changedPaths.map((path) => (
-              <li
-                key={path}
-                className="flex min-w-0 flex-wrap items-center gap-2"
-              >
-                <span className="min-w-0 flex-1 break-words font-mono">
-                  {path}
-                </span>
-                {changeSet.appliedAt &&
-                  accessible &&
-                  live.openWorkspaceFile && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-auto max-w-full whitespace-normal text-xs"
-                      disabled={busy}
-                      onClick={() =>
-                        void action(() => openFile({ changedPath: path }))
-                      }
-                    >
-                      Open {path}
-                    </Button>
-                  )}
-              </li>
-            ))}
-          </ul>
-          {!changeSet.changedPaths.length && <p>No file changes</p>}
           {changeSet.patch && (
             <details>
               <summary className="cursor-pointer font-medium text-[var(--clack-accent)]">
@@ -200,7 +188,7 @@ export function PeerTaskOutcome({
                 size="sm"
                 className="h-auto max-w-full whitespace-normal text-xs"
                 disabled={
-                  busy || ["running", "queued", "waiting"].includes(task.status)
+                  busy || managing || ["running", "queued", "waiting"].includes(task.status)
                 }
                 onClick={() =>
                   void action(async () => {
@@ -214,6 +202,12 @@ export function PeerTaskOutcome({
                 {busy ? "Checking workspace..." : "Apply to workspace"}
               </Button>
             )}
+          {Boolean(changeSet.appliedAt && accessible && live.openWorkspaceFile) && <div className="flex flex-wrap gap-2">
+            {changeSet.changedPaths.map(path => <Button key={path} size="sm" className="h-auto max-w-full whitespace-normal text-xs" disabled={busy} onClick={() => void action(() => openFile({ changedPath: path }))}>Open {path}</Button>)}
+          </div>}
+          {task.status !== "failed" && description}
+          <ul className="space-y-1 font-mono">{changeSet.changedPaths.map(path => <li key={path} className="break-words">{path}</li>)}</ul>
+          {!changeSet.changedPaths.length && <p>No file changes</p>}
           {changeSet.applyError && (
             <details>
               <summary className="cursor-pointer text-destructive">
@@ -229,21 +223,19 @@ export function PeerTaskOutcome({
           <p role="status" className="font-medium text-destructive">
             {failure.title}
           </p>
-          <p className="text-[var(--clack-text-3)]">{failure.detail}</p>
           <div className="flex flex-wrap gap-2">
-            {failure.kind === "dirty" &&
+            {dirtyRetry &&
               accessible &&
               live.openWorkspaceSourceControl && (
                 <Button
                   size="sm"
-                  variant="outline"
                   className="h-auto whitespace-normal text-xs"
                   onClick={() => {
                     if (canAccessTaskResult(task, sessionId))
                       live.openWorkspaceSourceControl?.();
                   }}
                 >
-                  View Source Control
+                  Open Source Control
                 </Button>
               )}
             {(retryCandidate || retryPending) && (
@@ -264,7 +256,7 @@ export function PeerTaskOutcome({
                   })
                 }
               >
-                {retryPending ? "Retrying..." : "Retry task"}
+                {retryPending ? "Retrying..." : dirtyRetry && !retryCheck.allowed ? "Retry after workspace is clean" : effectsBlocked ? "Retry unavailable" : "Retry task"}
               </Button>
             )}
             {retryCandidate && !retryCheck.allowed && !retryPending && (
@@ -284,6 +276,9 @@ export function PeerTaskOutcome({
               </Button>
             )}
           </div>
+          {description}
+          <p className="text-[var(--clack-text-3)]">{failure.detail}</p>
+          {(!retryCandidate || effectsBlocked) && !retriedAs && accessible && failure.kind !== "auth" && <Button size="sm" className="h-auto whitespace-normal text-xs" onClick={() => openConversation(task.targetSessionId)}>Review effects in task chat</Button>}
           {!retriedAs && !retryCheck.allowed && !retryPending && (
             <p className="text-[var(--clack-text-3)]">
               {retryCheck.reason}
@@ -298,17 +293,14 @@ export function PeerTaskOutcome({
           </details>
         </div>
       )}
-      {task.result?.artifacts.map((artifact) => {
+      {!changeSet && !task.result?.artifacts.length && task.status !== "failed" && description}
+      {task.result?.artifacts.map((artifact, index) => {
         const unavailable = task.recovery?.contentIssues?.some(
           (issue) =>
             issue.role === "returned" && issue.artifactId === artifact.id,
         );
         return (
           <div key={artifact.id} className="space-y-1">
-            <p className="font-medium">
-              Returned {artifact.displayName}
-              {unavailable ? " - Unavailable" : ""}
-            </p>
             <div className="flex flex-wrap gap-2">
               {accessible && !unavailable && (
                 <Button
@@ -337,7 +329,6 @@ export function PeerTaskOutcome({
                 artifactFilePath(task, artifact) && (
                   <Button
                     size="sm"
-                    variant="outline"
                     className="h-auto max-w-full whitespace-normal text-xs"
                     disabled={busy}
                     onClick={() =>
@@ -348,6 +339,8 @@ export function PeerTaskOutcome({
                   </Button>
                 )}
             </div>
+            {index === 0 && !changeSet && task.status !== "failed" && description}
+            <p className="font-medium">Returned {artifact.displayName}{unavailable ? " - Unavailable" : ""}</p>
           </div>
         );
       })}

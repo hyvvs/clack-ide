@@ -198,6 +198,7 @@ export type PeerTask = {
   parentTaskId: string | null;
   retryOfTaskId?: string;
   preRunFailure?: true;
+  archivedAt?: number;
   rootTaskId: string;
   hopCount: number;
   dependsOn: string[];
@@ -404,6 +405,9 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
     retryOfTaskId: nonEmpty(task.retryOfTaskId) && task.retryOfTaskId === task.parentTaskId && task.retryOfTaskId !== task.id
       ? task.retryOfTaskId : undefined,
     preRunFailure: task.preRunFailure === true ? true : undefined,
+    archivedAt: typeof task.archivedAt === "number" && Number.isSafeInteger(task.archivedAt) && task.archivedAt > 0 &&
+      ["completed", "failed", "cancelled", "blocked"].includes(task.status)
+      ? task.archivedAt : undefined,
     workspaceEnvironment: task.workspaceEnvironment ??
       workspaceEnvironmentFromId(task.workspaceId) ?? { kind: "local" },
     executionMode: isExecutionMode(task.executionMode)

@@ -2,6 +2,8 @@ import type { UIMessage } from "ai";
 import type { PeerTask, PeerTaskArtifact } from "@/modules/ai/lib/peerTasks";
 import type { SessionMeta } from "@/modules/ai/lib/sessions";
 import { pendingPeerQuestion } from "@/modules/ai/lib/peerCommunication";
+import { replaySafeMessages } from "@/modules/ai/lib/taskRetryEffects";
+import type { ExecutionRecord } from "@/modules/ai/lib/customToolExecution";
 
 export type WorkGroup = "attention" | "active" | "completed";
 export function taskWorkGroup(task: PeerTask): WorkGroup {
@@ -69,6 +71,7 @@ export function taskRetryEligibility(
   task: PeerTask,
   target: SessionMeta | undefined,
   messages: UIMessage[],
+  records?: ExecutionRecord[],
 ): boolean {
   const run = target?.run;
   if (
@@ -95,11 +98,7 @@ export function taskRetryEligibility(
   let lastUser = messages.length - 1;
   while (lastUser >= 0 && messages[lastUser].role !== "user") lastUser--;
   if (lastUser < 0) return false;
-  return messages
-    .filter((message) => message.role === "assistant")
-    .every((message) =>
-      message.parts.every((part) => part.type === "text" && !part.text.trim()),
-    );
+  return replaySafeMessages(task, messages, run.startedAt, records);
 }
 
 export function artifactFilePath(

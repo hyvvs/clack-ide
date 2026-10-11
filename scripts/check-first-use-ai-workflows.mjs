@@ -12,7 +12,7 @@ const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const mocks = new Map([
-  ["@tauri-apps/api/core", `export async function invoke(command,args){window.calls.push([command,args]);if(command==="fs_canonicalize")return args.path;if(command==="fs_stat")return{kind:"file",size:3,mtime:1};if(command==="git_resolve_repo")return{repoRoot:"/fixture"};if(command==="attachment_store_get")return new TextEncoder().encode("abc").buffer;if(command==="custom_tool_history")return[];return null;}export class Channel{}export class Resource{}export async function addPluginListener(){return{unregister:async()=>{}};}export const isTauri=()=>false;`],
+  ["@tauri-apps/api/core", `export async function invoke(command,args){window.calls.push([command,args]);if(command==="fs_canonicalize")return args.path;if(command==="fs_stat")return{kind:"file",size:3,mtime:1};if(command==="git_resolve_repo")return{repoRoot:"/fixture"};if(command==="git_status")return{repoRoot:"/fixture",truncated:false,changedFiles:window.gitDirty?[{}]:[]};if(command==="attachment_store_get")return new TextEncoder().encode("abc").buffer;if(command==="custom_tool_history")return[];if(command==="peer_ledger_commit"){window.durable=structuredClone(args.tasks);return args.expected+1;}return null;}export class Channel{}export class Resource{}export async function addPluginListener(){return{unregister:async()=>{}};}export const isTauri=()=>false;`],
   ["@tauri-apps/api/event", `export const emit=async()=>{};export const listen=async()=>()=>{};`],
   ["@tauri-apps/api/webviewWindow", `export const getCurrentWebviewWindow=()=>({listen:async()=>()=>{}});`],
   ["@tauri-apps/api/window", `export const getCurrentWindow=()=>({});`],
@@ -31,6 +31,9 @@ import{createAiPaneLayout,useAiPaneStore}from"/src/modules/ai/store/aiPaneStore.
 import{ModelSwitchNotice}from"/src/modules/ai/components/ModelSwitchNotice.tsx";
 import{applyTheme}from"/src/modules/theme/applyTheme.ts";
 import{teraxDefault}from"/src/modules/theme/themes/terax-default.ts";
+import{usePreferencesStore}from"/src/modules/settings/preferences.ts";
+import{putBgImage}from"/src/modules/theme/bgImageStore.ts";
+import{SurfaceLayer}from"/src/modules/theme/SurfaceLayer.tsx";
 import"/src/styles/globals.css";
 const sessions=["a","b","reviewer"].map(id=>({id,title:"Parent "+id,createdAt:1,updatedAt:1,profile:{agentId:"builtin:coder",modelId:"gpt-5.4-mini",workspaceId:"local:/fixture",workspaceRoot:"/fixture"}}));
 const task={schemaVersion:7,id:"assigned",sourceSessionId:"a",targetSessionId:"reviewer",sourceAgentId:"builtin:coder",sourceModelId:"gpt-5.4-mini",targetAgentId:"builtin:reviewer",targetModelId:"gpt-5.4-mini",workspaceId:"local:/fixture",workspaceRoot:"/fixture",workspaceEnvironment:{kind:"local"},kind:"review",executionMode:"read-only",prompt:"Review the bounds",artifactRefs:[],parentTaskId:null,rootTaskId:"assigned",hopCount:0,dependsOn:[],status:"running",createdAt:1,updatedAt:2};
@@ -49,9 +52,12 @@ window.assign=()=>usePeerTaskStore.setState({tasks:[task,{...task,id:"other",sou
 {...task,id:"blocked",status:"blocked",prompt:"Dependent task blocked",blockedByTaskId:"dirty",blockedByStatus:"failed"}]});
 window.finish=()=>usePeerTaskStore.setState(s=>({tasks:s.tasks.map(t=>t.id===task.id?{...t,status:"completed",result:{summary:"Verified result",targetSessionId:"reviewer",targetAgentId:t.targetAgentId,targetModelId:t.targetModelId,completedAt:4,artifacts:[]}}:t)}));
 window.setTheme=mode=>{document.documentElement.className=mode;applyTheme(teraxDefault,mode);};
-window.retryFixture=()=>{window.retryRequests=[];usePeerTaskStore.setState({tasks:[{...task,id:"safe-failure",status:"failed",prompt:"Retry a pre-effect offline failure",error:{code:"peer_run_failed",message:"Provider unavailable"}}],recoveryReady:true});useChatStore.setState(s=>({sessions:s.sessions.map(session=>session.id!=="reviewer"?session:{...session,profile:{...session.profile,agentId:task.targetAgentId},run:{state:"failed",peerTaskId:"safe-failure",agentId:task.targetAgentId,modelId:task.targetModelId,startedAt:10,error:{kind:"network",message:"offline"}}})}));chats.set("reviewer",{messages:[{id:"request",role:"user",parts:[{type:"text",text:"Retry a pre-effect offline failure"}]}]});};
+window.backgroundFixture=async(active,opacity,blur)=>{if(active)await putBgImage("fixture-background",await(await fetch("/logo.png")).blob());usePreferencesStore.setState({hydrated:true,backgroundKind:active?"image":"none",backgroundImageId:active?"fixture-background":null,backgroundOpacity:opacity,backgroundBlur:blur});};
+window.retryFixture=()=>{window.retryRequests=[];usePeerTaskStore.setState({tasks:[{...task,id:"safe-failure",status:"failed",prompt:"Inspect workspace before rate limit",error:{code:"peer_run_failed",message:"Provider rate limit 429"}}],recoveryReady:true});useChatStore.setState(s=>({sessions:s.sessions.map(session=>session.id!=="reviewer"?session:{...session,profile:{...session.profile,agentId:task.targetAgentId},run:{state:"failed",peerTaskId:"safe-failure",agentId:task.targetAgentId,modelId:task.targetModelId,startedAt:10,error:{kind:"rate_limit",message:"429"}}})}));chats.set("reviewer",{messages:[{id:"request",role:"user",parts:[{type:"text",text:"Inspect workspace before rate limit"}]},{id:"reads",role:"assistant",parts:["read_file","list_directory","grep","glob"].map(name=>({type:"tool-"+name,toolCallId:name,state:"output-available",input:{},output:{}}))}]});};
+window.dirtyFixture=()=>{window.retryFixture();window.gitDirty=true;usePeerTaskStore.setState(s=>({tasks:s.tasks.map(t=>({...t,executionMode:"isolated-worktree",preRunFailure:true,error:{code:"peer_run_failed",message:"workspace has uncommitted changes"}}))}));useChatStore.setState(s=>({sessions:s.sessions.map(t=>t.id==="reviewer"?{...t,run:undefined}:t)}));};
 const el=React.createElement;
-function App(){const [file,setFile]=React.useState(null);window.openFile=path=>{setFile(path);requestAnimationFrame(()=>document.querySelector("[data-file-result]")?.focus());};const sessions=useChatStore(s=>s.sessions);const active=useChatStore(s=>s.activeSessionId);return el("main",{style:{padding:8,minWidth:0}},
+function App(){const [file,setFile]=React.useState(null);window.openFile=path=>{setFile(path);requestAnimationFrame(()=>document.querySelector("[data-file-result]")?.focus());};const sessions=useChatStore(s=>s.sessions);const active=useChatStore(s=>s.activeSessionId);return el("main",{className:"clack-workspace",style:{padding:8,minWidth:0}},
+el(SurfaceLayer),
 file&&el("button",{"data-file-result":true},"Opened "+file),
 el("button",{onClick:window.assign},"Assign fixture task"),
 el("section",{"aria-label":"Chat A"},el(PeerTaskFeed,{sessionId:"a"})),
@@ -109,15 +115,25 @@ try {
     await dispatcher.getByRole("heading",{name:"Needs attention (4)",exact:true}).waitFor();await dispatcher.getByRole("heading",{name:"Active (2)",exact:true}).waitFor();await dispatcher.getByRole("heading",{name:"Completed (3)",exact:true}).waitFor();
     await page.keyboard.press("ArrowDown");assert.notEqual(await page.evaluate(()=>document.activeElement?.getAttribute("data-dispatcher-task-id")),"assigned");await selected.focus();
     await page.keyboard.press("Enter");
+    await dispatcher.getByRole("region",{name:"Selected task",exact:true}).getByText("Access and context",{exact:true}).click();
     await dispatcher.getByRole("region",{name:"Selected task",exact:true}).getByText("Read-only workspace access; subject to Agent permissions",{exact:true}).waitFor();
-    await dispatcher.locator("summary").filter({hasText:"Chats - dispatch destinations"}).click();await dispatcher.getByRole("button",{name:/^Parent a/}).click();
+    for (const [custom,opacity,blur] of [[false,0.5,0],[true,0.15,0],[true,0.15,12],[true,0.9,0],[true,0.9,12]]) {
+      await page.evaluate(([custom,opacity,blur])=>window.backgroundFixture(custom,opacity,blur),[custom,opacity,blur]);
+      if(custom) {
+        await page.waitForFunction(([opacity,blur])=>{const layer=document.querySelector('[data-dispatcher-surface] .clack-contained-bg-surface');const shell=document.querySelector('.clack-bg-surface');return layer&&shell&&Number(layer.style.opacity)===opacity/2&&layer.style.opacity===shell.style.opacity&&layer.style.filter===shell.style.filter&&layer.style.filter===(blur?"blur("+blur+"px)":"");},[opacity,blur]);
+        assert.match(await dispatcher.locator('.clack-contained-bg-surface').evaluate(el=>el.style.backgroundImage),/blob:/);
+      } else assert.equal(await dispatcher.locator('.clack-contained-bg-surface').count(),0);
+      assert.equal(await dispatcher.evaluate(el=>el.style.background),"var(--clack-bg-workspace)");
+      assert.equal(await dispatcher.evaluate(el=>el.scrollWidth>el.clientWidth+1),false);
+    }
+    await dispatcher.locator("summary").filter({hasText:/^Chats \(/}).click();await dispatcher.getByRole("button",{name:/^Parent a/}).click();
     await page.waitForFunction(() => window.panes.getState().bindings[window.panes.getState().activePaneId] === "a");
     assert.deepEqual(await page.evaluate(() => window.opened), ["a"]);
     await a.locator('[data-peer-task-id="text"]').getByText("View result",{exact:true}).click();await a.getByLabel("Task textual result").filter({hasText:"Only textual evidence"}).waitFor();
     await a.locator('[data-peer-task-id="empty"]').getByText("No files or artifacts returned",{exact:true}).waitFor();
     const returned=a.locator('[data-peer-task-id="returned"]');await returned.getByRole("button",{name:"View artifact: report.md",exact:true}).click();await returned.getByLabel("Immutable artifact preview").waitFor();assert.equal(await returned.getByLabel("Immutable artifact preview").inputValue(),"abc");
     await returned.getByRole("button",{name:"Open report.md",exact:true}).click();assert.deepEqual(await page.evaluate(()=>window.files),["/fixture/report.md"]);await page.waitForFunction(()=>document.activeElement?.hasAttribute("data-file-result"));
-    await a.locator('[data-peer-task-id="dirty"]').getByRole("button",{name:"View Source Control",exact:true}).click();assert.equal(await page.evaluate(()=>window.sourceControl),1);
+    await a.locator('[data-peer-task-id="dirty"]').getByRole("button",{name:"Open Source Control",exact:true}).click();assert.equal(await page.evaluate(()=>window.sourceControl),1);
     const rate=a.locator('[data-peer-task-id="rate"]');await rate.getByText("This model is temporarily rate-limited.",{exact:true}).waitFor();assert.equal(await rate.getByRole("button",{name:"Retry task",exact:true}).count(),0);assert.equal(await rate.getByText(/OpenRouter rate limit reached/).isVisible(),false);
     await isolated.getByRole("button",{name:"View task in Dispatcher"}).click();const changedRow=dispatcher.locator('[data-dispatcher-task-id="changes"]');await page.waitForFunction(()=>document.activeElement?.getAttribute("data-dispatcher-task-id")==="changes");
     const detail=dispatcher.getByRole("region",{name:"Selected task",exact:true});await detail.getByText("Review changes",{exact:true}).click();assert.equal(await detail.getByRole("button",{name:"Open README.md",exact:true}).count(),0);
@@ -140,6 +156,17 @@ try {
     await page.waitForFunction(() => !document.querySelector('[data-peer-task-id="safe-failure"] button')?.disabled && [...document.querySelectorAll('[data-peer-task-id="safe-failure"] button')].some(button => button.textContent === "Retry task" && !button.disabled));
     await safe.getByRole("button", { name: "View task in Dispatcher" }).click();
     await dispatcher.getByRole("button",{name:"Retry task",exact:true}).waitFor();
+    assert.equal(await dispatcher.getByRole("button",{name:"Archive task",exact:true}).isVisible(),true);
+    assert.equal(await detail.getByText("Task details and provenance",{exact:true}).evaluate(el=>el.parentElement.open),false);
+    await dispatcher.getByRole("button",{name:"Archive task",exact:true}).click();
+    await dispatcher.getByRole("button",{name:"Show archived",exact:true}).click();
+    await dispatcher.locator('[data-dispatcher-task-id="safe-failure"]').click();
+    await page.waitForFunction(()=>[...document.querySelectorAll('[aria-label="Selected task"] button')].some(b=>b.textContent==="Retry task"&&!b.disabled));
+    assert.equal(await dispatcher.getByRole("button",{name:"Restore task",exact:true}).isVisible(),true);
+    assert.equal(await page.evaluate(()=>window.durable.some(t=>t.id==="safe-failure"&&t.archivedAt)),true);
+    await dispatcher.getByRole("button",{name:"Restore task",exact:true}).click();
+    await dispatcher.getByRole("button",{name:"Show current",exact:true}).click();
+    await dispatcher.locator('[data-dispatcher-task-id="safe-failure"]').click();
     assert.equal(await dispatcher.getByRole("button",{name:"Previous task",exact:true}).isDisabled(),true);
     assert.equal(await dispatcher.getByRole("button",{name:"Next task",exact:true}).isDisabled(),true);
     await dispatcher.getByRole("button",{name:"Retry task",exact:true}).click();
@@ -174,10 +201,43 @@ try {
     await page.evaluate(()=>window.finishRetry());
     await page.waitForFunction(()=>window.tasks.getState().tasks.some(task=>task.id==="retry-attempt") && window.tasks.getState().retryingTaskIds.length===0);
     assert.equal(await dispatcher.count(),0,"A stale retry callback must not reopen Dispatcher after dismissal");
+    await page.evaluate(()=>window.dirtyFixture());
+    await safe.getByRole("button",{name:"Retry after workspace is clean",exact:true}).waitFor();
+    assert.equal(await safe.getByRole("button",{name:"Retry after workspace is clean",exact:true}).isDisabled(),true);
+    await safe.getByRole("button",{name:"Open Source Control",exact:true}).click();
+    await page.evaluate(()=>{window.gitDirty=false;window.dispatchEvent(new Event("focus"));});
+    await page.waitForFunction(()=>[...document.querySelectorAll('[data-peer-task-id="safe-failure"] button')].some(b=>b.textContent==="Retry task"&&!b.disabled));
+    await page.evaluate(()=>{window.assign();window.tasks.setState({recoveryReady:true});});
+    await a.locator('[data-peer-task-id="text"]').getByRole("button",{name:"View task in Dispatcher"}).click();
+    await dispatcher.locator('[data-dispatcher-task-id="text"]').waitFor();
+    await page.waitForFunction(()=>document.activeElement?.getAttribute("data-dispatcher-task-id")==="text");
+    const cleanupOrder = await dispatcher.locator('[data-dispatcher-task-id]').evaluateAll(rows=>rows.map(row=>row.dataset.dispatcherTaskId));
+    const cleanupIndex = cleanupOrder.indexOf("text");
+    const cleanupNeighbor = cleanupOrder[cleanupIndex+1] ?? cleanupOrder[cleanupIndex-1];
+    await dispatcher.getByRole("button",{name:"Archive task",exact:true}).click();
+    await page.waitForFunction(id=>document.activeElement?.getAttribute("data-dispatcher-task-id")===id,cleanupNeighbor);
+    await dispatcher.getByRole("heading",{name:"Completed (2)",exact:true}).waitFor();
+    await dispatcher.getByRole("button",{name:"Show archived",exact:true}).click();
+    await dispatcher.locator('[data-dispatcher-task-id="text"]').click();
+    await dispatcher.getByRole("button",{name:"Restore task",exact:true}).click();
+    await dispatcher.getByRole("button",{name:"Show current",exact:true}).click();
+    await dispatcher.getByRole("button",{name:"Clear finished",exact:true}).click();
+    await dispatcher.getByText("Removes finished tasks from the active Dispatcher view. Their history and results are retained in Archived.",{exact:true}).waitFor();
+    await page.waitForFunction(()=>document.activeElement?.textContent==="Cancel");
+    await dispatcher.getByRole("button",{name:"Archive 3 completed tasks",exact:true}).click();
+    await dispatcher.getByRole("heading",{name:"Completed (0)",exact:true}).waitFor();
+    assert.equal(await dispatcher.locator('[data-dispatcher-task-id="rate"]').count(),1);
+    assert.equal(await dispatcher.locator('[data-dispatcher-task-id="changes"]').count(),1,"Unapplied patches must not be cleared");
+    await dispatcher.getByRole("button",{name:"Show archived",exact:true}).click();
+    await dispatcher.getByRole("heading",{name:"Completed (3)",exact:true}).waitFor();
+    await dispatcher.locator('[data-dispatcher-task-id="text"]').click();
+    assert.equal(await dispatcher.getByRole("button",{name:"Restore task",exact:true}).isVisible(),true);
+    await dispatcher.getByRole("button",{name:"Close Dispatcher",exact:true}).click();
+    await dispatcher.waitFor({state:"detached"});
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
     assert.equal(overflow, false, `Overflow at ${width}px ${theme}`);
     assert.deepEqual(errors, []);
-    console.log(`PASS ${width}px ${zoom*100}% ${theme}: Previous/Next visible order/boundaries/focus, shared safe retry/pending/lineage, deletion, chat continuity, artifacts, Review/Apply/Open, failures, isolation, no overflow`);
+    console.log(`PASS ${width}px ${zoom*100}% ${theme}: read-only rate-limit retry in chat/Dispatcher/Archived, archive/restore/persistence, bulk clear, Previous/Next/focus, 5 appearance configurations, artifacts, Review/Apply/Open, failures, isolation, no overflow`);
     await page.close();
   }
 } finally {
