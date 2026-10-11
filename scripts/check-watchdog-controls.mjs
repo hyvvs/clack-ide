@@ -82,7 +82,7 @@ try {
     }
     page.once("dialog",d=>d.dismiss());await page.getByRole("button",{name:"Optimize",exact:true}).click();assert.equal(await page.evaluate(()=>window.optimizations),0);
     page.once("dialog",d=>d.accept());await page.getByRole("button",{name:"Optimize",exact:true}).click();
-    await health("Calibrating");await page.getByRole("button",{name:"Cancel optimization",exact:true}).click();await page.getByText("Optimization cancelled",{exact:true}).waitFor();
+    await health("Calibrating");await page.waitForFunction(()=>window.optimizations===1);await page.getByRole("button",{name:"Cancel optimization",exact:true}).click();await page.getByText("Optimization cancelled",{exact:true}).waitFor();
     await page.evaluate(()=>{window.fail="unreachable";});await page.getByRole("button",{name:"Refresh",exact:true}).click();await page.locator(".server-status").getByText("Offline",{exact:true}).waitFor();assert.equal(await page.locator(".server-model").count(),2);
     await page.evaluate(()=>{window.fail="authentication-failed";});await page.getByRole("button",{name:"Refresh",exact:true}).click();await page.locator(".server-status").getByText("Authentication required",{exact:true}).waitFor();
     await page.evaluate(()=>{window.fail="stale";const s=structuredClone(window.prefs.getState().selfHostedInference);delete s.profiles[0].calibration;window.prefs.setState({selfHostedInference:s});});await page.getByRole("button",{name:"Refresh",exact:true}).click();await page.locator(".server-status").getByText("Unverified",{exact:true}).waitFor();

@@ -174,18 +174,22 @@ it.each([
 });
 
 it("uses the same normalized reasoning and modality evidence for exact fallback and equal-capability variants", () => {
-  const models = parseProviderContextCatalog({
-    data: [
-      minimaxFreeCatalogRecord,
-      { ...minimaxFreeCatalogRecord, id: "fixture/same-base" },
-      { ...minimaxFreeCatalogRecord, id: "fixture/same-base:free" },
-    ],
-  });
+  const observedAt = 1000;
+  const models = parseProviderContextCatalog(
+    {
+      data: [
+        minimaxFreeCatalogRecord,
+        { ...minimaxFreeCatalogRecord, id: "fixture/same-base" },
+        { ...minimaxFreeCatalogRecord, id: "fixture/same-base:free" },
+      ],
+    },
+    observedAt,
+  );
   expect(models.get("fixture/same-base")?.capabilities).toEqual(
     models.get("fixture/same-base:free")?.capabilities,
   );
   expect(
-    parseExactProviderModel({ data: minimaxFreeCatalogRecord }, id),
+    parseExactProviderModel({ data: minimaxFreeCatalogRecord }, id, observedAt),
   ).toEqual({ ...models.get(id), lookup: "exact-model" });
 });
 

@@ -1,0 +1,1721 @@
+{
+  "status": "failed",
+  "criticalGate": {
+    "measuredOraclePassed": true,
+    "nativeSuitePassed": false,
+    "requirements": "100% retained or explicitly blocked; valid authorized sources; no orphan pairs, unauthorized data/tools, known completed effect replay; stale critical evidence reconciled or blocked",
+    "basis": "runtime assertions in enumerated suites plus original-source measurements, not universal product guarantees"
+  },
+  "frontend": {
+    "passed": 975,
+    "failed": 0,
+    "suites": 54
+  },
+  "rust": {
+    "passed": 0
+  },
+  "scenarios": [
+    {
+      "id": "A",
+      "owner": "C1a/C1b/G1a/B1",
+      "tests": [
+        "src/modules/ai/quality/memory.quality.test.ts",
+        "src/modules/ai/lib/conversationCompaction.test.ts",
+        "src/modules/ai/lib/compactionExtraction.test.ts",
+        "src/modules/ai/lib/compactionPlan.test.ts",
+        "src/modules/ai/lib/agentCompaction.integration.test.ts",
+        "src/modules/ai/lib/attachments.test.ts"
+      ],
+      "native": [
+        "::conversation_memory::tests::"
+      ],
+      "assertions": [
+        "original-source retention or explicit block",
+        "valid coverage/provenance",
+        "intact tool pairs",
+        "actual request budget"
+      ],
+      "status": "failed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/memory.quality.test.ts",
+          "passed": 5,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/conversationCompaction.test.ts",
+          "passed": 19,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/compactionExtraction.test.ts",
+          "passed": 44,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/compactionPlan.test.ts",
+          "passed": 25,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/agentCompaction.integration.test.ts",
+          "passed": 11,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/attachments.test.ts",
+          "passed": 19,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [],
+      "nativeCoverage": [
+        {
+          "pattern": "::conversation_memory::tests::",
+          "passed": 0
+        }
+      ],
+      "measurements": {
+        "fixtureVersion": "clack-q1-v1",
+        "status": "passed",
+        "originalHashUnchanged": true,
+        "authorizedReferences": 10,
+        "sourceCoverage": {
+          "start": 0,
+          "end": 10,
+          "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "latestMessageId": "background-3",
+          "sourceMessageCount": 11
+        },
+        "baselines": {
+          "original": {
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 4,
+            "noncriticalTotal": 4,
+            "conversationTokens": 16426,
+            "fitsSmall": false,
+            "fitsFull": true
+          },
+          "b1Elided": {
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 4,
+            "noncriticalTotal": 4,
+            "conversationTokens": 16426,
+            "fitsSmall": false,
+            "fitsFull": true
+          },
+          "prepared": {
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 4,
+            "noncriticalTotal": 4,
+            "conversationTokens": 5758,
+            "fitsSmall": true,
+            "fitsFull": true
+          }
+        },
+        "preparationCalls": 4,
+        "elapsedFixtureMs": 0,
+        "model": "deterministic extractor, deployed 32768 / working 6000"
+      },
+      "sourceCoverage": {
+        "start": 0,
+        "end": 10,
+        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "latestMessageId": "background-3",
+        "sourceMessageCount": 11
+      },
+      "preparationCost": 4,
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": [
+          "::conversation_memory::tests::"
+        ]
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "B",
+      "owner": "C1b/G1a",
+      "tests": [
+        "src/modules/ai/quality/memory.quality.test.ts",
+        "src/modules/ai/lib/conversationRetrieval.test.ts",
+        "src/modules/ai/lib/compactionExtraction.test.ts"
+      ],
+      "native": [
+        "::conversation_memory::retrieval::tests::"
+      ],
+      "assertions": [
+        "ten measured compaction cycles",
+        "original evidence retrieval",
+        "current user correction precedence",
+        "fabricated source rejected"
+      ],
+      "status": "failed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/memory.quality.test.ts",
+          "passed": 5,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/conversationRetrieval.test.ts",
+          "passed": 49,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/compactionExtraction.test.ts",
+          "passed": 44,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [],
+      "nativeCoverage": [
+        {
+          "pattern": "::conversation_memory::retrieval::tests::",
+          "passed": 0
+        }
+      ],
+      "measurements": {
+        "fixtureVersion": "clack-q1-v1",
+        "status": "passed",
+        "cycles": [
+          {
+            "cycle": 1,
+            "revision": 3,
+            "references": 10,
+            "coveredMessages": 10,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 4,
+            "noncriticalTotal": 4,
+            "conversationTokens": 6175,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 2,
+            "revision": 4,
+            "references": 14,
+            "coveredMessages": 14,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 4,
+            "noncriticalTotal": 4,
+            "conversationTokens": 7836,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 3,
+            "revision": 6,
+            "references": 20,
+            "coveredMessages": 20,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 6493,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 4,
+            "revision": 8,
+            "references": 25,
+            "coveredMessages": 25,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 7330,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 5,
+            "revision": 10,
+            "references": 30,
+            "coveredMessages": 30,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 8167,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 6,
+            "revision": 12,
+            "references": 35,
+            "coveredMessages": 35,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 7036,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 7,
+            "revision": 14,
+            "references": 40,
+            "coveredMessages": 40,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 7873,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 8,
+            "revision": 16,
+            "references": 45,
+            "coveredMessages": 45,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 6765,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 9,
+            "revision": 18,
+            "references": 50,
+            "coveredMessages": 50,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 7602,
+            "fitsSmall": true,
+            "fitsFull": true
+          },
+          {
+            "cycle": 10,
+            "revision": 20,
+            "references": 55,
+            "coveredMessages": 55,
+            "criticalRetained": 4,
+            "criticalTotal": 4,
+            "noncriticalRecall": 1,
+            "noncriticalTotal": 4,
+            "conversationTokens": 8166,
+            "fitsSmall": true,
+            "fitsFull": true
+          }
+        ],
+        "preparationCalls": 20,
+        "deployedContext": 32768,
+        "workingTarget": 8192,
+        "retrievalWorkingTarget": 16384,
+        "extractionWorkingContext": 32768,
+        "latestWorkingRecall": 1,
+        "retrievedRecall": 3,
+        "queriedOriginalFacts": 3,
+        "noncriticalTotal": 4,
+        "sourceAccuracy": {
+          "valid": 3,
+          "total": 3
+        },
+        "elapsedFixtureMs": 0
+      },
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": 20,
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": [
+          "::conversation_memory::retrieval::tests::"
+        ]
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "C",
+      "owner": "C2/B1/R2",
+      "tests": [
+        "src/modules/ai/store/modelSwitch.test.ts",
+        "src/modules/ai/store/chatModelSwitch.test.ts",
+        "src/modules/ai/lib/targetContext.test.ts",
+        "src/modules/ai/lib/modelSwitchEligibility.test.ts",
+        "src/modules/ai/lib/requestPreflight.test.ts",
+        "src/modules/ai/store/selfHostedRouting.test.ts"
+      ],
+      "native": [
+        "::target_context::tests::"
+      ],
+      "assertions": [
+        "large-history preparation is bounded",
+        "committed target serialization",
+        "cancel/config changes preserve selection",
+        "unsupported/no-fit blocks"
+      ],
+      "status": "failed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/store/modelSwitch.test.ts",
+          "passed": 28,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/store/chatModelSwitch.test.ts",
+          "passed": 17,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/targetContext.test.ts",
+          "passed": 18,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/modelSwitchEligibility.test.ts",
+          "passed": 23,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/requestPreflight.test.ts",
+          "passed": 21,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/store/selfHostedRouting.test.ts",
+          "passed": 19,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [],
+      "nativeCoverage": [
+        {
+          "pattern": "::target_context::tests::",
+          "passed": 0
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": [
+          "::target_context::tests::"
+        ]
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "D",
+      "owner": "M1/M2/G1b",
+      "tests": [
+        "src/modules/ai/lib/projectFreshness.test.ts",
+        "src/modules/ai/lib/projectMemory.test.ts",
+        "src/modules/ai/lib/scopedEvidence.test.ts"
+      ],
+      "native": [
+        "::project::freshness::",
+        "::project::integration_tests::"
+      ],
+      "assertions": [
+        "content hashes detect same-mtime changes",
+        "targeted reads, no repo scan",
+        "supersession retained",
+        "restart/missed watcher checked at use"
+      ],
+      "status": "failed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/lib/projectFreshness.test.ts",
+          "passed": 11,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/projectMemory.test.ts",
+          "passed": 13,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/scopedEvidence.test.ts",
+          "passed": 18,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [],
+      "nativeCoverage": [
+        {
+          "pattern": "::project::freshness::",
+          "passed": 0
+        },
+        {
+          "pattern": "::project::integration_tests::",
+          "passed": 0
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": [
+          "::project::freshness::",
+          "::project::integration_tests::"
+        ]
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "E",
+      "owner": "H1/H2/M2",
+      "tests": [
+        "src/modules/ai/quality/collaboration.quality.test.ts",
+        "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+        "src/modules/ai/lib/peerReview.test.ts",
+        "src/modules/ai/lib/peerKnowledge.test.ts",
+        "src/modules/ai/lib/peerTaskDependencies.test.ts",
+        "src/modules/ai/lib/peerTaskArtifacts.test.ts"
+      ],
+      "native": [
+        "::tests::pruned_peer_results_and_artifacts",
+        "::tests::explicit_peer_source_session_deletion",
+        "::tests::cross_workspace_and_unrelated_peer_task"
+      ],
+      "assertions": [
+        "investigate/implement/review/correct trace",
+        "independent session/root identities",
+        "immutable evidence",
+        "only downstream blocked by failure"
+      ],
+      "status": "failed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+          "passed": 20,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerReview.test.ts",
+          "passed": 14,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerKnowledge.test.ts",
+          "passed": 4,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerTaskDependencies.test.ts",
+          "passed": 17,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerTaskArtifacts.test.ts",
+          "passed": 11,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [],
+      "nativeCoverage": [
+        {
+          "pattern": "::tests::pruned_peer_results_and_artifacts",
+          "passed": 0
+        },
+        {
+          "pattern": "::tests::explicit_peer_source_session_deletion",
+          "passed": 0
+        },
+        {
+          "pattern": "::tests::cross_workspace_and_unrelated_peer_task",
+          "passed": 0
+        }
+      ],
+      "measurements": {
+        "fixtureVersion": "clack-q1-v1",
+        "status": "passed",
+        "taskCompletion": {
+          "completedStages": 4,
+          "requiredStages": 4
+        },
+        "sourceAccuracy": {
+          "valid": 1,
+          "total": 1
+        },
+        "handoffUsefulness": {
+          "requiredEvidenceIncluded": 1,
+          "totalRequiredEvidence": 1
+        },
+        "unauthorizedDeliveries": 0,
+        "contextTokens": 666,
+        "model": "cloud investigator / small coder / cloud reviewer fixtures",
+        "preparationCalls": 1,
+        "sourceCoverage": [
+          "investigation-result"
+        ]
+      },
+      "sourceCoverage": [
+        "investigation-result"
+      ],
+      "preparationCost": 1,
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": [
+          "::tests::pruned_peer_results_and_artifacts",
+          "::tests::explicit_peer_source_session_deletion",
+          "::tests::cross_workspace_and_unrelated_peer_task"
+        ]
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "F",
+      "owner": "H2/G1b/F1/B1",
+      "tests": [
+        "src/modules/ai/quality/collaboration.quality.test.ts",
+        "src/modules/ai/lib/peerHandoff.test.ts",
+        "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+        "src/modules/ai/lib/toolExposure.test.ts",
+        "src/modules/ai/lib/scopedEvidence.test.ts"
+      ],
+      "native": [
+        "::project::freshness::retrieval::"
+      ],
+      "assertions": [
+        "recipient-sized mission/evidence",
+        "private/irrelevant data excluded",
+        "required context not truncated",
+        "schema/context costs measured"
+      ],
+      "status": "failed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerHandoff.test.ts",
+          "passed": 19,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+          "passed": 20,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/toolExposure.test.ts",
+          "passed": 45,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/scopedEvidence.test.ts",
+          "passed": 18,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [],
+      "nativeCoverage": [
+        {
+          "pattern": "::project::freshness::retrieval::",
+          "passed": 0
+        }
+      ],
+      "measurements": {
+        "fixtureVersion": "clack-q1-v1",
+        "status": "passed",
+        "missionRetained": true,
+        "requiredEvidenceIncluded": 1,
+        "optionalEvidenceOmitted": 1,
+        "sourceCoverage": [
+          "verified"
+        ],
+        "contextTokens": 724,
+        "schemaCost": {
+          "permitted": 3,
+          "exposed": 2,
+          "mandatory": 1,
+          "fallback": false,
+          "bytesBefore": 483,
+          "bytesAfter": 318,
+          "tokensBefore": 226,
+          "tokensAfter": 151,
+          "workingBefore": 3128,
+          "workingAfter": 3203
+        },
+        "unauthorizedDeliveries": 0,
+        "model": "4096-token recipient fixture"
+      },
+      "sourceCoverage": [
+        "verified"
+      ],
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": [
+          "::project::freshness::retrieval::"
+        ]
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "G",
+      "owner": "H1/H2/D1",
+      "tests": [
+        "src/modules/ai/quality/collaboration.quality.test.ts",
+        "src/modules/ai/lib/peerCommunication.test.ts",
+        "src/modules/ai/lib/peerCommunicationCoordinator.test.ts",
+        "src/modules/ai/lib/peerTaskCoordinator.test.ts",
+        "src/modules/ai/lib/workspaceWriteLease.test.ts"
+      ],
+      "native": [
+        "::session_file::tests::peer_"
+      ],
+      "assertions": [
+        "busy source/capacity one drains",
+        "single safe resume",
+        "bounded wait/rounds",
+        "unanswerable blocks without guessing"
+      ],
+      "status": "failed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerCommunication.test.ts",
+          "passed": 23,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerCommunicationCoordinator.test.ts",
+          "passed": 17,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerTaskCoordinator.test.ts",
+          "passed": 26,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/workspaceWriteLease.test.ts",
+          "passed": 5,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [],
+      "nativeCoverage": [
+        {
+          "pattern": "::session_file::tests::peer_",
+          "passed": 0
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": [
+          "::session_file::tests::peer_"
+        ]
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "H",
+      "owner": "M2/H2/write safety",
+      "tests": [
+        "src/modules/ai/quality/collaboration.quality.test.ts",
+        "src/modules/ai/lib/workspaceWriteLease.test.ts",
+        "src/modules/ai/lib/peerReview.test.ts",
+        "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+        "src/modules/ai/lib/readSnapshot.test.ts",
+        "src/modules/ai/tools/fileMutationSafety.test.ts"
+      ],
+      "native": [
+        "::git::agent_worktree::tests::",
+        "diff_shows_worktree_change",
+        "discard_tracked_restores_worktree"
+      ],
+      "assertions": [
+        "shared writes serialize",
+        "isolated checkout identity",
+        "stale patch/file invalidates review",
+        "changed user content not overwritten"
+      ],
+      "status": "failed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/workspaceWriteLease.test.ts",
+          "passed": 5,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerReview.test.ts",
+          "passed": 14,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+          "passed": 20,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/readSnapshot.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/tools/fileMutationSafety.test.ts",
+          "passed": 4,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [],
+      "nativeCoverage": [
+        {
+          "pattern": "::git::agent_worktree::tests::",
+          "passed": 0
+        },
+        {
+          "pattern": "diff_shows_worktree_change",
+          "passed": 0
+        },
+        {
+          "pattern": "discard_tracked_restores_worktree",
+          "passed": 0
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": [
+          "::git::agent_worktree::tests::",
+          "diff_shows_worktree_change",
+          "discard_tracked_restores_worktree"
+        ]
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "I",
+      "owner": "R1/R2/F2",
+      "tests": [
+        "src/modules/ai/lib/activity.test.ts",
+        "src/modules/ai/lib/activityPersistence.test.ts",
+        "src/modules/ai/lib/activityProviders.test.ts",
+        "src/modules/ai/lib/activityStream.test.ts",
+        "src/modules/ai/lib/outputWatchdog.integration.test.ts"
+      ],
+      "native": [
+        "::conversation_memory::tests::"
+      ],
+      "assertions": [
+        "reasoning/summary/activity distinct",
+        "provenance/order retained",
+        "restart reconstruction",
+        "secret canaries redacted"
+      ],
+      "status": "failed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/lib/activity.test.ts",
+          "passed": 46,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/activityPersistence.test.ts",
+          "passed": 1,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/activityProviders.test.ts",
+          "passed": 6,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/activityStream.test.ts",
+          "passed": 13,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/outputWatchdog.integration.test.ts",
+          "passed": 9,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [],
+      "nativeCoverage": [
+        {
+          "pattern": "::conversation_memory::tests::",
+          "passed": 0
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": [
+          "::conversation_memory::tests::"
+        ]
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "J",
+      "owner": "R2/B1/D2",
+      "tests": [
+        "src/modules/ai/lib/reasoningEffort.test.ts",
+        "src/modules/ai/lib/reasoningEffortRequests.test.ts",
+        "src/modules/ai/lib/reasoningEffortHosted.test.ts",
+        "src/modules/ai/store/reasoningEffort.test.ts",
+        "src/modules/ai/lib/answerProviders.integration.test.ts",
+        "src/modules/ai/lib/requestPreflight.test.ts"
+      ],
+      "native": [
+        "::reasoning_effort::tests::"
+      ],
+      "assertions": [
+        "every supported wire mapping",
+        "captured run isolated",
+        "retry/continuation preserve settings",
+        "unknown/unsupported emits no effort"
+      ],
+      "status": "failed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/lib/reasoningEffort.test.ts",
+          "passed": 12,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/reasoningEffortRequests.test.ts",
+          "passed": 97,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/reasoningEffortHosted.test.ts",
+          "passed": 8,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/store/reasoningEffort.test.ts",
+          "passed": 7,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/answerProviders.integration.test.ts",
+          "passed": 31,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/requestPreflight.test.ts",
+          "passed": 21,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [],
+      "nativeCoverage": [
+        {
+          "pattern": "::reasoning_effort::tests::",
+          "passed": 0
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": [
+          "::reasoning_effort::tests::"
+        ]
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "K",
+      "owner": "T1/T2/T3a/T3b/T3c/F1",
+      "tests": [
+        "src/modules/ai/quality/collaboration.quality.test.ts",
+        "src/modules/ai/lib/customTools.test.ts",
+        "src/modules/ai/lib/customToolExecution.test.ts",
+        "src/modules/ai/lib/mcpConnections.test.ts",
+        "src/modules/ai/store/customToolCapture.test.ts",
+        "src/modules/ai/tools/customExecution.test.ts",
+        "src/modules/ai/lib/toolExposure.test.ts"
+      ],
+      "native": [
+        "::custom_tools::"
+      ],
+      "assertions": [
+        "only authorized exact tool version",
+        "WASI staging/path/environment/network adversaries",
+        "bounded MCP consent/result",
+        "no startup/self authorization"
+      ],
+      "status": "failed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/customTools.test.ts",
+          "passed": 20,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/customToolExecution.test.ts",
+          "passed": 10,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/mcpConnections.test.ts",
+          "passed": 4,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/store/customToolCapture.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/tools/customExecution.test.ts",
+          "passed": 19,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/toolExposure.test.ts",
+          "passed": 45,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [],
+      "nativeCoverage": [
+        {
+          "pattern": "::custom_tools::",
+          "passed": 0
+        }
+      ],
+      "measurements": null,
+      "sourceCoverage": "owner suite provenance/coverage assertions; inspect enumerated test files",
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": [
+          "::custom_tools::"
+        ]
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    },
+    {
+      "id": "L",
+      "owner": "C1a/C2/H1/T2/T3/D3/G3",
+      "tests": [
+        "src/modules/ai/quality/collaboration.quality.test.ts",
+        "src/modules/ai/lib/restartRecovery.test.ts",
+        "src/modules/ai/lib/streamRecovery.test.ts",
+        "src/modules/ai/store/streamRecovery.integration.test.ts",
+        "src/modules/ai/lib/peerCommunication.test.ts",
+        "src/modules/ai/lib/peerTaskArtifacts.test.ts",
+        "src/modules/ai/lib/fallbackRouting.integration.test.ts",
+        "src/modules/ai/lib/inferenceFallback.test.ts",
+        "src/modules/ai/lib/answerPersistence.test.ts",
+        "src/modules/ai/lib/providerRetry.test.ts"
+      ],
+      "native": [
+        "::session_file::",
+        "::target_context::tests::",
+        "::custom_tools::execution::",
+        "::fallback::tests::"
+      ],
+      "assertions": [
+        "last valid state across fault points",
+        "no effect/approval replay",
+        "workspace/revocation gates",
+        "unknown effects remain unresolved"
+      ],
+      "status": "failed",
+      "layers": {
+        "frontend": "unit/integration; installed adapters, intercepted transports and mocked IPC where applicable",
+        "rust": "native automated storage/filesystem/Git/WASI/HTTP fixtures; not GUI",
+        "browser": "not performed in Q1",
+        "nativeGui": "Not performed - explicitly deferred by user",
+        "realProvider": "Not tested - real provider/server evidence deferred to Z"
+      },
+      "frontend": [
+        {
+          "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/restartRecovery.test.ts",
+          "passed": 29,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/streamRecovery.test.ts",
+          "passed": 50,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/store/streamRecovery.integration.test.ts",
+          "passed": 9,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerCommunication.test.ts",
+          "passed": 23,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/peerTaskArtifacts.test.ts",
+          "passed": 11,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/fallbackRouting.integration.test.ts",
+          "passed": 14,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/inferenceFallback.test.ts",
+          "passed": 24,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/answerPersistence.test.ts",
+          "passed": 2,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        },
+        {
+          "file": "src/modules/ai/lib/providerRetry.test.ts",
+          "passed": 3,
+          "failed": [],
+          "skipped": 0,
+          "valid": true
+        }
+      ],
+      "nativeCases": [],
+      "nativeCoverage": [
+        {
+          "pattern": "::session_file::",
+          "passed": 0
+        },
+        {
+          "pattern": "::target_context::tests::",
+          "passed": 0
+        },
+        {
+          "pattern": "::custom_tools::execution::",
+          "passed": 0
+        },
+        {
+          "pattern": "::fallback::tests::",
+          "passed": 0
+        }
+      ],
+      "measurements": {
+        "fixtureVersion": "clack-q1-v1",
+        "status": "passed",
+        "resumedDeadRuns": 0,
+        "approvalReplays": 0,
+        "sourceCoverage": [
+          "00000000-0000-4000-8000-000000000001"
+        ],
+        "model": "deterministic task state, no inference"
+      },
+      "sourceCoverage": [
+        "00000000-0000-4000-8000-000000000001"
+      ],
+      "preparationCost": "not measured separately by owner suite",
+      "failures": {
+        "frontend": [],
+        "missingNativePatterns": [
+          "::session_file::",
+          "::target_context::tests::",
+          "::custom_tools::execution::",
+          "::fallback::tests::"
+        ]
+      },
+      "limitations": [
+        "Synthetic fixture outcomes are not real-model intelligence scores",
+        "Native GUI and real-provider evidence remains for Z"
+      ],
+      "fixtureVersion": "clack-q1-v1"
+    }
+  ],
+  "fixtureVersion": "clack-q1-v1",
+  "corpusSha256": "d3d50da5233404753c5c247c44e46825fac547dc0afaa99c44654e40105e4b30",
+  "sourceSignatures": {
+    "scripts/q1-report.test.mjs": "d67ee6f592b4f0bbdd3eff4fa2aac12d1aa7d87759034741c49729176d8a3801",
+    "src/modules/ai/lib/activity.test.ts": "43e1276fa136793e2170e1da58aa5f5ba5abb18e40a31a1e61076fe54739beba",
+    "src/modules/ai/lib/activityPersistence.test.ts": "4b268f7842189773d8198a147b97201c977cc9b843ea921187e4f4b01b91fd88",
+    "src/modules/ai/lib/activityProviders.test.ts": "dec36bfd8cf72d712b553073d41ef02fd72dac3be89a6f446f54cd9533ea62b0",
+    "src/modules/ai/lib/activityStream.test.ts": "aad753601836710d6dfb8b6f4569184faf6d8ce16c5e32fcc8adda3f4d0de3af",
+    "src/modules/ai/lib/agentCompaction.integration.test.ts": "87963928897e207ba6801fea0c3f60858eb9db90dd87ac63ea83622cf42f0590",
+    "src/modules/ai/lib/answerPersistence.test.ts": "68a8d22fabb3ddec7d4e2b4c89ce69087e3efb75d7a502c08ebf1b2de10b5a94",
+    "src/modules/ai/lib/answerProviders.integration.test.ts": "18556e6e2eee3ee459ac14101fd56edeb52c6ac156ba4c45a115ef980dcec286",
+    "src/modules/ai/lib/attachments.test.ts": "0c761940f8d2bd9b4cb823757e04d09577ebb844de277b9961d10b734accfbea",
+    "src/modules/ai/lib/compactionExtraction.test.ts": "38d6b22324a788ae201fc3eaa18aa6f4764bc6fc5127fa7727dab631a1e848a5",
+    "src/modules/ai/lib/compactionPlan.test.ts": "49c5ff2f63a27771ee47da7d9928214cfd298bdac37115c437e91c01fe450adc",
+    "src/modules/ai/lib/conversationCompaction.test.ts": "45d36fb5c0ea2494b3cfca6e1ff853b523963678a2d5bf13616d86f4e71e7043",
+    "src/modules/ai/lib/conversationRetrieval.test.ts": "53396631f7e1894c2d91acbddfbba4075080fccb57b8f116c80bd5775df7924b",
+    "src/modules/ai/lib/customToolExecution.test.ts": "7394266aea458faa06d1ef272cbd0e6b5e12fd9488620c32cd552fbdf850a5f2",
+    "src/modules/ai/lib/customTools.test.ts": "40cdb7d82af08a3338b6e1b0eb5ac1f0b0684ef9f307f942a63b37a84f578728",
+    "src/modules/ai/lib/fallbackRouting.integration.test.ts": "b817fef1c07c868a6064a662fd7b1af4b3bd2c1591ba8266452196f9baa63ec6",
+    "src/modules/ai/lib/inferenceFallback.test.ts": "9bf022f7ffdb33de18b451c13ed4aac7c03c9486ed9fc3dc525fdb7c1f469977",
+    "src/modules/ai/lib/mcpConnections.test.ts": "01d89bf661babc2b542205147b8b44afed598c61079b48674f240e6031888c48",
+    "src/modules/ai/lib/modelSwitchEligibility.test.ts": "3a079bd8c1c2b1884d7f8b39d3fe48a15d03249f8e188c3d00b23c6ada6e9ed5",
+    "src/modules/ai/lib/outputWatchdog.integration.test.ts": "2350d5cae028c22f5db09467045cd85e27b0d19a23941b80cb8ff555b8fcd3a9",
+    "src/modules/ai/lib/peerCommunication.test.ts": "fa04056f04e73b7e9d350e84238abb2044068cf051eb6d7bf7b600df225c8183",
+    "src/modules/ai/lib/peerCommunicationCoordinator.test.ts": "f89d12f519203533ec1207b2a8a02830f37b7592802538197e9629d349c2fef0",
+    "src/modules/ai/lib/peerHandoff.test.ts": "8aa38624d11175c33039b5be3e0ffad43f1fbfba616fa675c4e6d48f72543b71",
+    "src/modules/ai/lib/peerHandoffRuntime.test.ts": "3faa977060af229f079edd95dcdb71a2b3978c83353bfeab4ba927deb66ada26",
+    "src/modules/ai/lib/peerKnowledge.test.ts": "5341193478879c48323f5128d331a5d6ee90f50a0404ce83d6406abd9f4fdc9a",
+    "src/modules/ai/lib/peerReview.test.ts": "38acb076e426111c0567c442e2102e76de4ac85929d4b0dbc16e507781ae1822",
+    "src/modules/ai/lib/peerTaskArtifacts.test.ts": "4d95c63378127d43b29ee9d953f0855088d2efaebfd5f7a394fdfdf91fc96a3e",
+    "src/modules/ai/lib/peerTaskCoordinator.test.ts": "c9b56ac66e112cebec5f47bce197c00198a2a5f30101dd92b5f97515dbecb89d",
+    "src/modules/ai/lib/peerTaskDependencies.test.ts": "eacc48859fa727777d9ab365bc6c5c02f94e5c4fccb972a3dcb074088feeba45",
+    "src/modules/ai/lib/projectFreshness.test.ts": "7fd18eb49faeb018e316c075416d99ba8882461921908645b09c79ca636e81a8",
+    "src/modules/ai/lib/projectMemory.test.ts": "2b1874c1ca0efe31c6ce334c1f1db9bc6ffb05353c413f9c591fa43f1b56081b",
+    "src/modules/ai/lib/providerRetry.test.ts": "78a32ef1b06c5ce7964abee0f99b83e95b6883ea07cd13c0c8047d12426ee362",
+    "src/modules/ai/lib/readSnapshot.test.ts": "9bfbe0c08b4c730d5feb52a020e565a4ce6bf661d230dd1c0f5aa474f39b09db",
+    "src/modules/ai/lib/reasoningEffort.test.ts": "88cbee6aa76c4eede125e2e52e411ec85df94e4702ad823041af05f5840a0948",
+    "src/modules/ai/lib/reasoningEffortHosted.test.ts": "9e096bcd4b3fbe91c06489d6f9de2b6d4bbf2f07068efa5c3b40e13141e843ce",
+    "src/modules/ai/lib/reasoningEffortRequests.test.ts": "ce9bcc6a289106953cb80cc0171bb0219b169f1c4fc62fbaf293b98062ae8292",
+    "src/modules/ai/lib/requestPreflight.test.ts": "e5276c4738c4115e7354afa6b05852259e82189e351d898518c3da812fef552b",
+    "src/modules/ai/lib/restartRecovery.test.ts": "86df6883269a3903b712f3823cc5d27029b0664de581fe2c709c38291fc30792",
+    "src/modules/ai/lib/scopedEvidence.test.ts": "8f28cebe75bf38bdac57de6e4f42b2062e3e30804c472fbd033cf3c505232795",
+    "src/modules/ai/lib/streamRecovery.test.ts": "fbb13c37aef4ff9a85cabb331622ab8942e87f58ecc219d563be1f0608181f31",
+    "src/modules/ai/lib/targetContext.test.ts": "aa7b507f58f58d505901d228b7df8d6ac27c0fd1ff1aa9328ed610974d0ca2d8",
+    "src/modules/ai/lib/toolExposure.test.ts": "faeff3cbcf0acfc1be4e2bac53890053463426ee845a4e4102e784c248d46ab1",
+    "src/modules/ai/lib/workspaceWriteLease.test.ts": "cbe359e2c89e91419f440425bfc3ac1a797821023cd7052fe3c7645ec1e8b9df",
+    "src/modules/ai/quality/collaboration.quality.test.ts": "164ada8594d57b443836af58db51d720d6945a5c9b705d535bab35c3ece90e45",
+    "src/modules/ai/quality/memory.quality.test.ts": "0b1fd4edd771325ac285feb898aac4192ab8bae8a5f5d7a8164ae5f4a02a358c",
+    "src/modules/ai/quality/oracle.test.ts": "9635888992b8efb234e292e513ed44e634602b884f58902f20f32c8dbd00e114",
+    "src/modules/ai/store/chatModelSwitch.test.ts": "5c660cc2e3fa83613d55d146fab2a370a7e95c416cd31e9da5c516c998c8787d",
+    "src/modules/ai/store/customToolCapture.test.ts": "35bf3cff0984c411d0c4f0c0e59c426d88dbab5da656471526616017db1013b3",
+    "src/modules/ai/store/modelSwitch.test.ts": "3f52e277addb37431e435fda9e60e8256db9e4b61ac799472d0a770d46ed8f1d",
+    "src/modules/ai/store/reasoningEffort.test.ts": "4d5304c23f06f6c2116ea33d4bc947d11446ff458b78e93aa7d26405feb0fabe",
+    "src/modules/ai/store/selfHostedRouting.test.ts": "983803787aa74482707afc39bec04bb8b2c69e24833b03d759db051c7a6482e2",
+    "src/modules/ai/store/streamRecovery.integration.test.ts": "a38a7e58d8521244f69cd75c78f98b898288c05f0734a5a569857ac737cfb879",
+    "src/modules/ai/tools/customExecution.test.ts": "e07a5702eb1edf2c2344b1a9deac4cc1acf9f220fcb7541eb1755715acfa7110",
+    "src/modules/ai/tools/fileMutationSafety.test.ts": "c4298c7a055f11dda091f8a8c3f13d62eb8bd8835953c52450ff17ce2ad8c19a",
+    "src/modules/ai/lib/conversationCompaction.fixture.ts": "d2d62dae9b7aee9f1f69af2eb89ec63976233619f22eea1ed65531f358e3dce9",
+    "src/modules/ai/lib/conversationRetrieval.ts": "9b6af108556bc12b5b214a51b54ea98586a30e16e1025adb3c52a5b114369806",
+    "src/modules/ai/quality/oracle.ts": "87e714fe114deb91094c1cb1606407a38d3d5011d48a0858d38aac2208de9a4a",
+    "scripts/q1-manifest.mjs": "f4194670ddd59ca1b77bbe4c487041535627e3ad3bf2466ee1a43e74e818d349",
+    "scripts/q1-report.mjs": "feb549d3c783f74210106748dc6b9ce429e4359e94aab6da9755c29b864c78b0",
+    "scripts/q1-quality.mjs": "0c7586d688e2c0f170df9bfc33dcc9cdeb7481379a14551a2c50eaf62bba9120"
+  },
+  "testedBaseCommit": "178b6530cc78623537e5f72840b0a424769a6dd4",
+  "host": "win32/x64",
+  "adapterVersions": {
+    "ai": "6.0.207",
+    "@ai-sdk/openai": "3.0.72",
+    "@ai-sdk/anthropic": "3.0.85",
+    "@ai-sdk/google": "3.0.83"
+  },
+  "fixtureMetadata": {
+    "quantization": "not applicable: deterministic model fixtures",
+    "deployedContext": "per-scenario recorded limits",
+    "credentials": "synthetic placeholders only",
+    "preparationClock": "fixed 1420; no benchmark claim",
+    "manualPins": "fixture-only context bounds",
+    "permissionVersions": "existing T1/T2/T3/F1 fixtures",
+    "runtimeMilliseconds": [
+      {
+        "file": "scripts/q1-report.test.mjs",
+        "elapsed": 6.9892578125
+      },
+      {
+        "file": "src/modules/ai/quality/collaboration.quality.test.ts",
+        "elapsed": 35.35107421875
+      },
+      {
+        "file": "src/modules/ai/quality/memory.quality.test.ts",
+        "elapsed": 256.3701171875
+      },
+      {
+        "file": "src/modules/ai/quality/oracle.test.ts",
+        "elapsed": 4.8701171875
+      },
+      {
+        "file": "src/modules/ai/store/chatModelSwitch.test.ts",
+        "elapsed": 300.254150390625
+      },
+      {
+        "file": "src/modules/ai/store/customToolCapture.test.ts",
+        "elapsed": 57.4951171875
+      },
+      {
+        "file": "src/modules/ai/store/modelSwitch.test.ts",
+        "elapsed": 498.369140625
+      },
+      {
+        "file": "src/modules/ai/store/reasoningEffort.test.ts",
+        "elapsed": 60.33935546875
+      },
+      {
+        "file": "src/modules/ai/store/selfHostedRouting.test.ts",
+        "elapsed": 757.333251953125
+      },
+      {
+        "file": "src/modules/ai/store/streamRecovery.integration.test.ts",
+        "elapsed": 82.575927734375
+      },
+      {
+        "file": "src/modules/ai/tools/customExecution.test.ts",
+        "elapsed": 72.169921875
+      },
+      {
+        "file": "src/modules/ai/tools/fileMutationSafety.test.ts",
+        "elapsed": 5.705322265625
+      },
+      {
+        "file": "src/modules/ai/lib/activity.test.ts",
+        "elapsed": 19.2666015625
+      },
+      {
+        "file": "src/modules/ai/lib/activityPersistence.test.ts",
+        "elapsed": 9.40869140625
+      },
+      {
+        "file": "src/modules/ai/lib/activityProviders.test.ts",
+        "elapsed": 58.484130859375
+      },
+      {
+        "file": "src/modules/ai/lib/activityStream.test.ts",
+        "elapsed": 26.35546875
+      },
+      {
+        "file": "src/modules/ai/lib/agentCompaction.integration.test.ts",
+        "elapsed": 2017.113037109375
+      },
+      {
+        "file": "src/modules/ai/lib/answerPersistence.test.ts",
+        "elapsed": 4.94140625
+      },
+      {
+        "file": "src/modules/ai/lib/answerProviders.integration.test.ts",
+        "elapsed": 136.94921875
+      },
+      {
+        "file": "src/modules/ai/lib/attachments.test.ts",
+        "elapsed": 10.12158203125
+      },
+      {
+        "file": "src/modules/ai/lib/compactionExtraction.test.ts",
+        "elapsed": 27.3525390625
+      },
+      {
+        "file": "src/modules/ai/lib/compactionPlan.test.ts",
+        "elapsed": 22.172607421875
+      },
+      {
+        "file": "src/modules/ai/lib/conversationCompaction.test.ts",
+        "elapsed": 119.724609375
+      },
+      {
+        "file": "src/modules/ai/lib/conversationRetrieval.test.ts",
+        "elapsed": 41.378662109375
+      },
+      {
+        "file": "src/modules/ai/lib/customToolExecution.test.ts",
+        "elapsed": 110.91357421875
+      },
+      {
+        "file": "src/modules/ai/lib/customTools.test.ts",
+        "elapsed": 13.2451171875
+      },
+      {
+        "file": "src/modules/ai/lib/fallbackRouting.integration.test.ts",
+        "elapsed": 317.0966796875
+      },
+      {
+        "file": "src/modules/ai/lib/inferenceFallback.test.ts",
+        "elapsed": 25.542236328125
+      },
+      {
+        "file": "src/modules/ai/lib/mcpConnections.test.ts",
+        "elapsed": 2.6083984375
+      },
+      {
+        "file": "src/modules/ai/lib/modelSwitchEligibility.test.ts",
+        "elapsed": 6.32763671875
+      },
+      {
+        "file": "src/modules/ai/lib/outputWatchdog.integration.test.ts",
+        "elapsed": 79.25732421875
+      },
+      {
+        "file": "src/modules/ai/lib/peerCommunication.test.ts",
+        "elapsed": 24.23681640625
+      },
+      {
+        "file": "src/modules/ai/lib/peerCommunicationCoordinator.test.ts",
+        "elapsed": 98.184814453125
+      },
+      {
+        "file": "src/modules/ai/lib/peerHandoff.test.ts",
+        "elapsed": 27.107421875
+      },
+      {
+        "file": "src/modules/ai/lib/peerHandoffRuntime.test.ts",
+        "elapsed": 65.50927734375
+      },
+      {
+        "file": "src/modules/ai/lib/peerKnowledge.test.ts",
+        "elapsed": 5.341796875
+      },
+      {
+        "file": "src/modules/ai/lib/peerReview.test.ts",
+        "elapsed": 22.1962890625
+      },
+      {
+        "file": "src/modules/ai/lib/peerTaskArtifacts.test.ts",
+        "elapsed": 8.556884765625
+      },
+      {
+        "file": "src/modules/ai/lib/peerTaskCoordinator.test.ts",
+        "elapsed": 90.408203125
+      },
+      {
+        "file": "src/modules/ai/lib/peerTaskDependencies.test.ts",
+        "elapsed": 5.202880859375
+      },
+      {
+        "file": "src/modules/ai/lib/projectFreshness.test.ts",
+        "elapsed": 4.216064453125
+      },
+      {
+        "file": "src/modules/ai/lib/projectMemory.test.ts",
+        "elapsed": 6.224853515625
+      },
+      {
+        "file": "src/modules/ai/lib/providerRetry.test.ts",
+        "elapsed": 14.59521484375
+      },
+      {
+        "file": "src/modules/ai/lib/readSnapshot.test.ts",
+        "elapsed": 2.120849609375
+      },
+      {
+        "file": "src/modules/ai/lib/reasoningEffort.test.ts",
+        "elapsed": 7.6953125
+      },
+      {
+        "file": "src/modules/ai/lib/reasoningEffortHosted.test.ts",
+        "elapsed": 38.6865234375
+      },
+      {
+        "file": "src/modules/ai/lib/reasoningEffortRequests.test.ts",
+        "elapsed": 2174.7421875
+      },
+      {
+        "file": "src/modules/ai/lib/requestPreflight.test.ts",
+        "elapsed": 76.90234375
+      },
+      {
+        "file": "src/modules/ai/lib/restartRecovery.test.ts",
+        "elapsed": 8.131103515625
+      },
+      {
+        "file": "src/modules/ai/lib/scopedEvidence.test.ts",
+        "elapsed": 18.28759765625
+      },
+      {
+        "file": "src/modules/ai/lib/streamRecovery.test.ts",
+        "elapsed": 51.20751953125
+      },
+      {
+        "file": "src/modules/ai/lib/targetContext.test.ts",
+        "elapsed": 12.540283203125
+      },
+      {
+        "file": "src/modules/ai/lib/toolExposure.test.ts",
+        "elapsed": 62.5458984375
+      },
+      {
+        "file": "src/modules/ai/lib/workspaceWriteLease.test.ts",
+        "elapsed": 3.197509765625
+      }
+    ]
+  }
+}

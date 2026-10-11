@@ -49,10 +49,12 @@ try {
   await server.listen();
   browser=await chromium.launch({headless:true,executablePath:process.env.BROWSER_EXECUTABLE});
   for(const width of [1100,390,280]) {
+    console.log(`T2 browser fixture: ${width}px`);
     const page=await browser.newPage({viewport:{width,height:850}});
     page.setDefaultTimeout(20000);
-    const errors=[];page.on("pageerror",e=>errors.push(e.message));
+    const errors=[];page.on("pageerror",e=>{errors.push(e.message);console.error(e.message);});
     await page.goto(server.resolvedUrls.local[0]+"tools-fixture",{waitUntil:"networkidle",timeout:120000});
+    console.log("T2 fixture loaded");
     const test=page.getByRole("button",{name:/^Test custom_/});
     await test.focus();await page.keyboard.press("Enter");
     const dialog=page.getByRole("dialog");await dialog.waitFor();
@@ -95,4 +97,4 @@ try {
     await page.close();
   }
   console.log("T2 browser checks passed at 1100/390/280px: keyboard, StrictMode, argument error, pending approval, running, denied/success/error/cancel/timeout/interrupted, unknown effect, durable history and long-content bounds. Native IPC/consent are mocked, not native GUI or live HTTP verification.");
-} finally { await browser?.close();await server.close(); }
+} finally { await browser?.close();server.httpServer?.closeAllConnections();await server.close(); }

@@ -8,6 +8,7 @@ import { native } from "@/modules/ai/lib/native";
 import { checkReadable } from "@/modules/ai/lib/security";
 import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
 import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
+import { isMissingPathError } from "@/modules/ai/lib/readSnapshot";
 
 async function reviewedFile(task: PeerTask, path: string) {
   const root = (
@@ -87,7 +88,28 @@ export async function capturePeerReview(
   const files: PeerReviewBinding["files"] = [];
   let bytes = 0;
   for (const path of paths) {
-    const file = await reviewedFile(task, path);
+    let file: Awaited<ReturnType<typeof reviewedFile>>;
+    try {
+      file = await reviewedFile(task, path);
+    } catch (error) {
+      const owners = dependencies.filter((item) =>
+        item?.changeSet?.changedPaths.includes(path),
+      );
+      // New isolated files exist only in the captured patch until apply. Never invent a file observation.
+      if (
+        isMissingPathError(error) &&
+        !task.artifactRefs.some((artifact) => artifact.sourcePath === path) &&
+        owners.length > 0 &&
+        owners.every(
+          (item) =>
+            item?.executionMode === "isolated-worktree" &&
+            item.changeSet?.patch &&
+            !item.changeSet.appliedAt,
+        )
+      )
+        continue;
+      throw error;
+    }
     if (
       task.artifactRefs.some(
         (artifact) =>

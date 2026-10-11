@@ -243,6 +243,7 @@ export function PeerTaskDialog({
         </DialogHeader>
 
         <div className="clack-delegation-body">
+          <p className="text-xs text-muted-foreground">Choose a different chat. It can use a different Agent or be a separate worker using the same Agent.</p>
           <div className="clack-delegation-field">
             <label htmlFor={`${id}-target`} className="clack-delegation-label">
               To

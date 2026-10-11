@@ -37,7 +37,7 @@ try {
   await server.listen();browser=await chromium.launch({headless:true,executablePath:process.env.BROWSER_EXECUTABLE});
   const page=await browser.newPage({viewport:{width:1280,height:800}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(server.resolvedUrls.local[0]+'fallback-fixture',{waitUntil:'networkidle',timeout:120000});
-  await page.locator('[data-chat="a"]').getByRole('button',{name:'Fallback policy: never'}).click();
+  await page.locator('[data-chat="a"]').getByRole('button',{name:'Fallback policy: Disabled'}).click();
   await page.getByLabel('Fallback mode').selectOption('trusted');await page.getByLabel('Fallback destination').selectOption('gpt-4.1-mini');
   await page.getByRole('checkbox').waitFor();assert.equal(await page.getByRole('button',{name:'Save policy'}).isDisabled(),true);
   await page.getByRole('checkbox').check();await page.getByRole('button',{name:'Save policy'}).click();

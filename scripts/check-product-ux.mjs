@@ -110,6 +110,7 @@ try {
     assert.equal(await page.evaluate(()=>window.chat.getState().sessions.find(s=>s.id==="b").profile.modelId),"gpt-5.4-mini");
     assert.equal(await b.getByLabel("Draft b").inputValue(),"PRIVATE_DRAFT_b");
     await b.getByRole("button",{name:"Ask another agent",exact:true}).click();await dialog.waitFor();
+    await dialog.getByText("Choose a different chat. It can use a different Agent or be a separate worker using the same Agent.",{exact:true}).waitFor();
     const task=dialog.getByRole("textbox",{name:"Task",exact:true});
     await task.fill("Review code without changing files.");
     assert.equal(await task.evaluate(el=>document.activeElement===el),true,"Task prompt receives keyboard focus");

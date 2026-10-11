@@ -95,7 +95,7 @@ try {
     assert.equal(await page.evaluate(()=>window.committed),0);
     await choose();
     await page.evaluate(()=>window.finish());
-    await page.getByText("Preparation details",{exact:true}).click();
+    await page.getByText("Technical details",{exact:true}).click();
     await page.getByRole("button",{name:"Choose another model"}).focus();
     await page.keyboard.press("Shift+Tab");
     assert.equal(await page.evaluate(()=>document.activeElement?.tagName),"SUMMARY");
