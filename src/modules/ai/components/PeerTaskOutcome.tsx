@@ -290,6 +290,7 @@ export function PeerTaskOutcome({
               {task.error?.message ?? "Execution error unavailable"}
             </p>
             <p>{task.error?.code}</p>
+            {task.error?.reason && <p>{task.error.reason}</p>}
           </details>
         </div>
       )}

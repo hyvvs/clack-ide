@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 import { promises as fs } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { execFileSync } from "node:child_process";
@@ -9,6 +10,11 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { stepCountIs, streamText, type UIMessage } from "ai";
 import type { Chat } from "@ai-sdk/react";
 import { buildStableSystem } from "@/modules/ai/lib/agent";
+import * as agentRuntime from "@/modules/ai/lib/agent";
+import * as preflight from "@/modules/ai/lib/requestPreflight";
+import * as projectMemory from "@/modules/ai/lib/projectMemory";
+import { preparePeerTaskHandoff } from "@/modules/ai/lib/peerHandoffRuntime";
+import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 import { buildTools } from "@/modules/ai/tools/tools";
 import type { ToolContext } from "@/modules/ai/tools/context";
 import { native } from "@/modules/ai/lib/native";
@@ -24,6 +30,7 @@ import {
   requestPeerTask,
   dispatchPeerTask,
   applyPeerTaskChangeSet,
+  discardPeerTaskWorktree,
 } from "@/modules/ai/lib/peerTaskCoordinator";
 import {
   recoverInterruptedPeerTasks,
@@ -32,6 +39,8 @@ import {
 import {
   readTaskArtifact,
   openTaskFile,
+  retryTaskWithoutEffects,
+  checkTaskRetry,
 } from "@/modules/ai/lib/taskResultActions";
 import { peerTaskArtifactToMessagePart } from "@/modules/ai/lib/peerTaskArtifacts";
 import { availableDispatcherTasks } from "@/modules/ai/lib/dispatcherTasks";
@@ -47,6 +56,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("@/modules/ai/store/chatRuntime", () => ({
   sendMessageToSession: vi.fn(),
+  sessionToolContext: (id: string) => ({ toolContext: context(id) }),
 }));
 vi.mock("@/modules/ai/lib/peerHandoffRuntime", () => ({
   preparePeerTaskHandoff: vi.fn().mockResolvedValue(null),
@@ -69,6 +79,7 @@ vi.mock("@/modules/ai/lib/sessions", async (original) => ({
 const originalChat = useChatStore.getState();
 const originalTasks = usePeerTaskStore.getState();
 const originalPreferences = usePreferencesStore.getState();
+const originalAgents = useAgentsStore.getState();
 const canary = "PRIVATE_ARCHITECT_HISTORY_NOT_SHARED";
 const flawed = "# Acceptance\nTimeout: 900\n";
 const corrected = "# Acceptance\nTimeout: 750\n";
@@ -93,8 +104,15 @@ let writes = Promise.resolve();
 let requests: Record<string, unknown>[];
 let maximum = 0,
   inFlight = 0;
+let liveHandoff = false;
+let preparationChurn: () => void = () => {};
+let preparationBarrier: (sessionId: string) => Promise<void> = async () => {};
 const opened = vi.fn();
 const canon = (value: string) => value.replace(/\\/g, "/");
+function required<T>(value: T | undefined | null): T {
+  if (value == null) throw new Error("Required fixture state is missing");
+  return value;
+}
 function owned(value: string) {
   const resolved = path.resolve(value);
   if (resolved !== container && !resolved.startsWith(`${container}${path.sep}`))
@@ -146,6 +164,12 @@ function context(sessionId: string, checkout = root): ToolContext {
   };
 }
 beforeEach(async () => {
+  liveHandoff = false;
+  preparationChurn = () => {};
+  preparationBarrier = async () => {};
+  vi.mocked(sendMessageToSession).mockClear();
+  vi.mocked(invoke).mockImplementation(async command => command === "custom_tool_history" ? [] : null);
+  vi.mocked(preparePeerTaskHandoff).mockResolvedValue(null as unknown as Awaited<ReturnType<typeof preparePeerTaskHandoff>>);
   requests = [];
   maximum = 0;
   inFlight = 0;
@@ -296,6 +320,9 @@ beforeEach(async () => {
       return { patch, changedPaths };
     },
   );
+  vi.spyOn(native, "gitAgentWorktreeRemove").mockImplementation(async (_repo, id) => {
+    git(root, "worktree", "remove", "--force", canon(path.join(container, id)));
+  });
   vi.spyOn(native, "gitAgentPatchApply").mockImplementation(
     async (_repo, baseSha, patch) => {
       if (git(root, "status", "--porcelain").trim())
@@ -321,6 +348,8 @@ beforeEach(async () => {
       const isWrite =
         (body.tools as unknown[] | undefined)?.length &&
         messages[messages.length - 1]?.role !== "tool";
+      const read = liveHandoff && JSON.stringify(body.tools ?? []).includes('"name":"read_file"');
+      const hello = liveHandoff && raw.includes("Create acceptance.txt containing hello.");
       const delta = isWrite
         ? {
             tool_calls: [
@@ -329,12 +358,14 @@ beforeEach(async () => {
                 id: "write-acceptance",
                 type: "function",
                 function: {
-                  name: "write_file",
-                  arguments: JSON.stringify({
-                    path: "README.acceptance.md",
+                  name: read ? "read_file" : "write_file",
+                  arguments: JSON.stringify(read ? { path: "seed.txt" } : {
+                    path: hello ? "acceptance.txt" : "README.acceptance.md",
+                    ...(hello ? { content: "hello" } : {
                     content: raw.includes("Correct the timeout")
                       ? corrected
                       : flawed,
+                    }),
                   }),
                 },
               },
@@ -386,8 +417,9 @@ beforeEach(async () => {
       const tools =
         agent === agents.coder
           ? {
-              write_file: buildTools(context(id, options?.checkoutRoot))
-                .write_file,
+              ...(liveHandoff && options?.mutationMode === "read-only"
+                ? { read_file: buildTools(context(id)).read_file }
+                : { write_file: buildTools(context(id, options?.checkoutRoot)).write_file }),
             }
           : undefined;
       const result = streamText({
@@ -429,6 +461,7 @@ afterEach(async () => {
   useChatStore.setState(originalChat, true);
   usePeerTaskStore.setState(originalTasks, true);
   usePreferencesStore.setState(originalPreferences, true);
+  useAgentsStore.setState(originalAgents, true);
   const parent = await fs.realpath(os.tmpdir());
   if (
     path.dirname(container) !== parent ||
@@ -448,9 +481,137 @@ async function completed(input: Parameters<typeof requestPeerTask>[0]) {
     .getState()
     .tasks.find((t) => t.id === response.task.id);
   if (!task) throw new Error("Completed task disappeared");
-  expect(task.status, task.error?.message).toBe("completed");
+  expect(task.status, JSON.stringify(task.error)).toBe("completed");
   return task;
 }
+
+async function useLiveHandoff() {
+  liveHandoff = true;
+  const actual = await vi.importActual<typeof import("@/modules/ai/lib/peerHandoffRuntime")>("@/modules/ai/lib/peerHandoffRuntime");
+  vi.mocked(preparePeerTaskHandoff).mockImplementation(actual.preparePeerTaskHandoff);
+  useAgentsStore.setState({ customAgents: Object.entries(agents).map(([id, agent]) => ({ ...agent, id, description: "Acceptance fixture", icon: "coder" as const, builtIn: false })) });
+  useChatStore.setState(s => ({ apiKeys: { ...s.apiKeys, openai: "fixture-key" }, sessions: s.sessions.map(session => ({ ...session, profile: { ...required(session.profile), modelId: "gpt-4.1-mini" } })) }));
+  vi.spyOn(agentRuntime, "buildConfiguredLanguageModel").mockImplementation(async () => createOpenAICompatible({ name: "acceptance", baseURL })("gpt-4.1-mini"));
+  vi.spyOn(preflight, "modelBudgetLimits").mockResolvedValue({ deployed: 64_000 });
+  vi.spyOn(projectMemory, "projectMemoryClient").mockImplementation(sessionId => {
+    const workspace = useChatStore.getState().sessions.find(s => s.id === sessionId)?.profile?.workspaceId;
+    return { load: async () => { await preparationBarrier(sessionId); preparationChurn(); return { workspace, revision: 1, entries: [] }; } } as unknown as ReturnType<typeof projectMemory.projectMemoryClient>;
+  });
+}
+
+function benignPreparationChurn() {
+  useChatStore.setState(s => ({ sessions: s.sessions.map(session => ({ ...session, title: `Refreshed ${session.id}`, updatedAt: session.updatedAt + 1, profile: { ...required(session.profile) } })) }));
+  usePreferencesStore.setState(s => ({ backgroundBlur: s.backgroundBlur ? 0 : 12 }));
+  usePeerTaskStore.setState(s => ({ tasks: structuredClone(s.tasks).map(task => ({ ...task, updatedAt: task.updatedAt + 1 })) }));
+  for (const chat of chats.values()) chat.messages = structuredClone(chat.messages);
+}
+
+it("live handoff: 25 sequential same/distinct-Agent delegations survive benign store churn without duplicate requests or private-history leakage", async () => {
+  await useLiveHandoff();
+  preparationChurn = benignPreparationChurn;
+  const targets = ["worker-a", "worker-b", "reviewer", "coder"];
+  for (let index = 0; index < 25; index++) {
+    const result = await completed({ sourceSessionId: "parent", targetSessionId: targets[index % targets.length], kind: "delegate", prompt: `Inspect README and summarize it. Iteration ${index}.`, executionMode: "read-only" });
+    expect(result.handoff?.recipientSessionId).toBe(result.targetSessionId);
+    expect(result.error).toBeUndefined();
+  }
+  expect(sendMessageToSession).toHaveBeenCalledTimes(25);
+  const calls = vi.mocked(sendMessageToSession).mock.calls;
+  expect(new Set(calls.map(call => call[2]?.peerTaskId)).size).toBe(25);
+  for (const [sessionId, message, options] of calls) {
+    const current = required(usePeerTaskStore.getState().tasks.find(t => t.id === options?.peerTaskId));
+    expect(sessionId).toBe(current.targetSessionId);
+    expect(JSON.stringify(message)).toContain(current.id);
+    expect(current.status).toBe("completed");
+  }
+  expect(JSON.stringify(requests)).not.toContain(canary);
+  expect(requests).toHaveLength(31); // 25 first requests plus six actual Coder read-tool result requests.
+  expect(usePeerTaskStore.getState().tasks.filter(t => t.error?.code === "peer_handoff_preparation_stale")).toEqual([]);
+}, 20000);
+
+it("live handoff: independent parallel preparations and real isolated edits survive churn and retain review/apply boundaries", async () => {
+  await useLiveHandoff();
+  preparationChurn = benignPreparationChurn;
+  const entered = new Set<string>();
+  let allEntered!: () => void, release!: () => void;
+  const allPreparing = new Promise<void>(resolve => { allEntered = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  preparationBarrier = async id => { entered.add(id); if (entered.size === 3) allEntered(); await held; };
+  const preparing = Promise.all(["worker-a", "worker-b", "reviewer"].map(id => completed({ sourceSessionId: "parent", targetSessionId: id, kind: "delegate", prompt: `Inspect README for ${id}`, executionMode: "read-only" })));
+  await allPreparing;
+  expect(sendMessageToSession).not.toHaveBeenCalled();
+  benignPreparationChurn();
+  release();
+  const results = await preparing;
+  preparationBarrier = async () => {};
+  expect(new Set(results.map(t => t.id)).size).toBe(3);
+  expect(sendMessageToSession).toHaveBeenCalledTimes(3);
+  const edit = await completed({ sourceSessionId: "parent", targetSessionId: "coder", kind: "delegate", prompt: "Create acceptance.txt containing hello.", executionMode: "isolated-worktree" });
+  expect(edit.changeSet?.changedPaths).toEqual(["acceptance.txt"]);
+  expect(edit.changeSet?.patch).toContain("+hello");
+  expect(git(root, "worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
+  await expect(fs.stat(path.join(root, "acceptance.txt"))).rejects.toThrow();
+  await expect(applyPeerTaskChangeSet(edit.id)).resolves.toEqual({ ok: true });
+  expect(await fs.readFile(path.join(root, "acceptance.txt"), "utf8")).toBe("hello");
+  expect(JSON.stringify(requests)).not.toContain(canary);
+}, 20000);
+
+it.each([false, true])("live handoff: stale setup with cleanup failure %s preserves truthful Retry and real worktree recovery", async cleanupFails => {
+  await useLiveHandoff();
+  let changed = false;
+  preparationChurn = () => {
+    if (changed) return;
+    changed = true;
+    usePreferencesStore.setState({ customInstructions: "Changed during setup" });
+  };
+  if (cleanupFails) vi.mocked(native.gitAgentWorktreeRemove).mockRejectedValueOnce(new Error("fixture cleanup failed"));
+  const assigned = await requestPeerTask({ sourceSessionId: "parent", targetSessionId: "coder", kind: "delegate", prompt: "Create acceptance.txt containing hello.", executionMode: "isolated-worktree" });
+  if (!assigned.ok) throw new Error(assigned.message);
+  const failed = required(usePeerTaskStore.getState().tasks.find(t => t.id === assigned.task.id));
+  expect(failed).toMatchObject({ status: "failed", error: { code: "peer_handoff_preparation_stale", reason: "policy_changed" } });
+  expect(sendMessageToSession).not.toHaveBeenCalled();
+  if (cleanupFails) {
+    expect(failed.worktree).toBeDefined();
+    expect(failed.preRunFailure).toBeUndefined();
+    await expect(checkTaskRetry(failed.id, "parent")).rejects.toThrow("reviewing");
+    expect(git(root, "worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(2);
+    await expect(fs.stat(required(failed.worktree).checkoutRoot)).resolves.toBeDefined();
+    await expect(discardPeerTaskWorktree(failed.id)).resolves.toEqual({ ok: true });
+    expect(usePeerTaskStore.getState().tasks.find(t => t.id === failed.id)?.worktree).toBeUndefined();
+    expect(git(root, "worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
+  } else {
+    expect(failed.worktree).toBeUndefined();
+    expect(failed.preRunFailure).toBe(true);
+    await expect(checkTaskRetry(failed.id, "parent")).resolves.toEqual(failed);
+    const retried = await retryTaskWithoutEffects(failed.id, "parent");
+    expect(retried.retryOfTaskId).toBe(failed.id);
+    const outcome = await new Promise<PeerTask>(resolve => {
+      const check = () => {
+        const current = required(usePeerTaskStore.getState().tasks.find(t => t.id === retried.id));
+        if (["completed", "failed", "cancelled", "blocked"].includes(current.status)) { unsubscribe(); resolve(current); }
+      };
+      const unsubscribe = usePeerTaskStore.subscribe(check);
+      check();
+    });
+    expect(outcome.status, JSON.stringify(outcome.error)).toBe("completed");
+    expect(sendMessageToSession).toHaveBeenCalledTimes(1);
+    expect(git(root, "worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
+  }
+}, 20000);
+
+it("live handoff: a failure after transmission retains real isolated changes instead of treating them as reversible setup", async () => {
+  await useLiveHandoff();
+  const send = required(vi.mocked(sendMessageToSession).getMockImplementation());
+  vi.mocked(sendMessageToSession).mockImplementation(async (...args) => { await send(...args); throw new Error("Provider disconnected after file creation"); });
+  const result = await requestPeerTask({ sourceSessionId: "parent", targetSessionId: "coder", kind: "delegate", prompt: "Create acceptance.txt containing hello.", executionMode: "isolated-worktree" });
+  if (!result.ok) throw new Error(result.message);
+  const failed = required(usePeerTaskStore.getState().tasks.find(t => t.id === result.task.id));
+  expect(failed.status).toBe("failed");
+  expect(failed.preRunFailure).toBeUndefined();
+  expect(await fs.readFile(path.join(required(failed.worktree).checkoutRoot, "acceptance.txt"), "utf8")).toBe("hello");
+  expect(native.gitAgentWorktreeRemove).not.toHaveBeenCalled();
+  await expect(checkTaskRetry(failed.id, "parent")).rejects.toThrow("reviewing");
+}, 20000);
 it("Architect -> Coder -> Reviewer -> correction returns immutable real file changes and survives ledger reinitialization", async () => {
   const implementation = await completed({
     sourceSessionId: "parent",

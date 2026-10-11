@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { handoffStaleReasons } from "@/modules/ai/lib/peerHandoffFailure";
 import {
   peerHandoffReceipt,
   peerReviewBinding,
@@ -148,6 +149,7 @@ export type PeerTaskChangeSet = {
 export type PeerTaskError = {
   code: string;
   message: string;
+  reason?: import("@/modules/ai/lib/peerHandoffFailure").HandoffStaleReason;
 };
 
 export type PeerTaskRecoveryContentIssue = {
@@ -402,6 +404,7 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
     schemaVersion: PEER_TASK_SCHEMA_VERSION,
     artifactRefs,
     result,
+    error: task.error && { ...task.error, reason: task.error.reason && handoffStaleReasons.includes(task.error.reason) ? task.error.reason : undefined },
     retryOfTaskId: nonEmpty(task.retryOfTaskId) && task.retryOfTaskId === task.parentTaskId && task.retryOfTaskId !== task.id
       ? task.retryOfTaskId : undefined,
     preRunFailure: task.preRunFailure === true ? true : undefined,

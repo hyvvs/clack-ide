@@ -61,11 +61,20 @@ import {
   type ProjectEntry,
 } from "@/modules/ai/lib/projectMemory";
 import { modelBudgetLimits } from "@/modules/ai/lib/requestPreflight";
+import { serializedToolSchemas } from "@/modules/ai/lib/requestPreflight";
+import { buildTools } from "@/modules/ai/tools/tools";
+import { jsonSchema, tool, type ToolSet } from "ai";
+import { useAgentsStore } from "@/modules/ai/store/agentsStore";
+import { PeerHandoffPreparationError } from "@/modules/ai/lib/peerHandoffFailure";
+import { identifyTool } from "@/modules/ai/lib/toolExposure";
+import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
+import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
 import { buildConfiguredLanguageModel } from "@/modules/ai/lib/agent";
 import { sendMessageToSession } from "@/modules/ai/store/chatRuntime";
 import {
   PEER_TASK_SCHEMA_VERSION,
   savePeerTasks,
+  normalizePeerTask,
   type PeerTask,
 } from "@/modules/ai/lib/peerTasks";
 
@@ -111,6 +120,11 @@ const requirement: ProjectEntry = {
   updatedAt: 1,
 };
 const client = { load: vi.fn(), revalidate: vi.fn() };
+const fixtureTools = vi.mocked(buildTools as (...args: Parameters<typeof buildTools>) => ToolSet);
+function required<T>(value: T | undefined | null): T {
+  if (value == null) throw new Error("Required fixture state is missing");
+  return value;
+}
 function makeChat(text: string) {
   return {
     status: "ready",
@@ -130,13 +144,17 @@ beforeEach(() => {
     {} as LanguageModel,
   );
   vi.mocked(savePeerTasks).mockResolvedValue(undefined);
+  fixtureTools.mockReturnValue({});
+  vi.mocked(serializedToolSchemas).mockResolvedValue([]);
   usePeerTaskStore.setState({
     tasks: [{ ...task }],
     hydrated: true,
     recoveryReady: true,
     recoveryError: null,
+    managingTaskIds: [], retryingTaskIds: [],
   });
   usePreferencesStore.setState({
+    customInstructions: "",
     agentPermissionProfiles: {
       "builtin:coder": { mode: "full-access", categories: {} },
       "builtin:architect": { mode: "full-access", categories: {} },
@@ -233,6 +251,75 @@ it("reuses identical validated preparation without promoting private memory", as
   const second = await preparePeerTaskHandoff(task, "");
   expect(second.receipt).toBe(first.receipt);
   expect(second.text).not.toContain("PRIVATE INVESTIGATOR");
+});
+it("actual dispatch survives benign store reconstruction during handoff preparation", async () => {
+  let release!: () => void;
+  let reached!: () => void;
+  const entered = new Promise<void>(resolve => { reached = resolve; });
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const view = await client.load();
+  client.load.mockImplementationOnce(async () => { reached(); await barrier; return view; });
+  usePeerTaskStore.setState({ tasks: [{ ...task, status: "queued" }] });
+  const dispatch = dispatchPeerTask(task.id);
+  await entered;
+  useChatStore.setState(s => ({ sessions: s.sessions.map(session => ({ ...session, title: "Refreshed title", updatedAt: 2, profile: { ...required(session.profile) } })) }));
+  usePreferencesStore.setState({ backgroundBlur: 12 });
+  usePeerTaskStore.setState(s => ({ tasks: structuredClone(s.tasks) }));
+  release();
+  await dispatch;
+  expect(usePeerTaskStore.getState().tasks[0], "benign metadata churn must not stale a real handoff").toMatchObject({ status: "completed" });
+  expect(sendMessageToSession).toHaveBeenCalledTimes(1);
+});
+
+async function pausePreparation(boundary: "project" | "model" = "project") {
+  let release!: () => void;
+  let reached!: () => void;
+  const entered = new Promise<void>(resolve => { reached = resolve; });
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const view = await client.load();
+  if (boundary === "project") client.load.mockImplementationOnce(async () => { reached(); await barrier; return view; });
+  else vi.mocked(buildConfiguredLanguageModel).mockImplementationOnce(async () => { reached(); await barrier; return {} as LanguageModel; });
+  return { entered, release: () => release() };
+}
+
+it.each([
+  ["model", "target_identity_changed"], ["agent", "target_identity_changed"],
+  ["workspace", "target_identity_changed"], ["permissions", "endpoint_changed"],
+  ["instructions", "policy_changed"], ["history", "history_changed"],
+  ["dependency", "dependency_changed"], ["task", "task_changed"],
+  ["source-run", "source_run_changed"], ["source-cancel", "source_cancelled"],
+  ["source-model", "endpoint_changed"], ["tools", "tools_changed"],
+  ["project", "project_changed"], ["freshness", "project_changed"],
+  ["target-run", "target_identity_changed"],
+])("rejects material %s changes during actual dispatch with bounded %s diagnostics", async (change, reason) => {
+  const dependency: PeerTask = { ...task, id: "dependency", status: "completed", result: { summary: "Verified dependency", artifacts: [], targetSessionId: "coder", targetAgentId: task.targetAgentId, targetModelId: task.targetModelId, completedAt: 1 } };
+  usePeerTaskStore.setState({ tasks: [dependency, { ...task, status: "queued", dependsOn: [dependency.id] }] });
+  useChatStore.setState(s => ({ sessions: s.sessions.map(session => session.id === "investigator" ? { ...session, run: { startedAt: 1, state: "running" as const } } : session) }));
+  const pause = await pausePreparation(["tools", "freshness"].includes(change) ? "model" : "project");
+  const dispatch = dispatchPeerTask(task.id);
+  await pause.entered;
+  if (["model", "agent", "workspace", "target-run", "source-model", "source-run", "source-cancel"].includes(change)) useChatStore.setState(s => ({ sessions: s.sessions.map(session => {
+    const source = change.startsWith("source-");
+    if (session.id !== (source ? "investigator" : "coder")) return session;
+    if (change.endsWith("run") || change === "source-cancel") return { ...session, run: { startedAt: change === "source-cancel" ? 1 : 9, state: change === "source-cancel" ? "cancelled" as const : "running" as const } };
+    return { ...session, profile: { ...required(session.profile), ...(change.endsWith("model") ? { modelId: source ? "gpt-4.1-mini" : "gpt-5.5" } : change === "agent" ? { agentId: "builtin:reviewer" } : { workspaceId: "local:/other", workspaceRoot: "/other" }) } };
+  }) }));
+  if (change === "permissions") usePreferencesStore.setState({ agentPermissionProfiles: { "builtin:coder": { mode: "chat-only", categories: {} } } });
+  if (change === "instructions") usePreferencesStore.setState({ customInstructions: "New policy" });
+  if (change === "history") chats.set("coder", makeChat("New recipient instruction"));
+  if (change === "task") usePeerTaskStore.setState(s => ({ tasks: s.tasks.map(t => t.id === task.id ? { ...t, prompt: "New task intent" } : t) }));
+  if (change === "dependency") usePeerTaskStore.setState(s => ({ tasks: s.tasks.map(t => t.id === dependency.id ? { ...t, result: { ...required(t.result), summary: "Changed finding" } } : t) }));
+  if (change === "tools") {
+    fixtureTools.mockReturnValue({ read_file: tool({ description: "New assigned tool", inputSchema: jsonSchema({ type: "object", properties: {} }) }) });
+    vi.mocked(serializedToolSchemas).mockImplementation(async tools => Object.keys(tools).map(name => ({ type: "function", function: { name, description: tools[name].description, parameters: { type: "object", properties: {} } } })));
+  }
+  if (change === "project") client.load.mockResolvedValue({ workspace: task.workspaceId, revision: 2, entries: [requirement] });
+  if (change === "freshness") client.revalidate.mockResolvedValue({ revision: 1, entries: [{ id: requirement.id, freshness: "invalidated" }] });
+  pause.release();
+  await dispatch;
+  const failed = required(usePeerTaskStore.getState().tasks.find(t => t.id === task.id));
+  expect(failed).toMatchObject({ status: "failed", preRunFailure: true, error: { code: reason === "project_changed" ? "peer_handoff_project_changed" : "peer_handoff_preparation_stale", reason } });
+  expect(sendMessageToSession).not.toHaveBeenCalled();
 });
 it.each([
   "cancel",
@@ -459,4 +546,112 @@ it.each(["chat-only", "secret-path"])("denies artifact transfer for %s before re
   usePeerTaskStore.setState({ tasks: [protectedTask] });
   await expect(preparePeerTaskHandoff(protectedTask, "")).rejects.toThrow("artifact_denied");
   expect(buildConfiguredLanguageModel).not.toHaveBeenCalled();
+});
+
+it("equivalent dependency, task, session and history reconstruction reuses cache but every hit validates current evidence", async () => {
+  const dependency: PeerTask = { ...task, id: "dependency", status: "completed", result: { summary: "Verified result", artifacts: [], targetSessionId: "coder", targetAgentId: task.targetAgentId, targetModelId: task.targetModelId, completedAt: 1 } };
+  const current = { ...task, dependsOn: [dependency.id] };
+  usePeerTaskStore.setState({ tasks: [dependency, current] });
+  const first = await preparePeerTaskHandoff(current, "");
+  usePeerTaskStore.setState(s => ({ tasks: structuredClone(s.tasks).map(t => ({ ...t, updatedAt: 99, archivedAt: t.id === dependency.id ? 99 : undefined })) }));
+  useChatStore.setState(s => ({ sessions: s.sessions.map(session => ({ ...session, title: "Renamed", profile: { ...required(session.profile) } })) }));
+  usePreferencesStore.setState({ themeId: "tokyo-night", backgroundOpacity: 0.2, ollamaBaseURL: "http://localhost:9999" });
+  const chat = required(chats.get("coder"));
+  chat.messages = structuredClone(chat.messages);
+  const second = await preparePeerTaskHandoff(required(usePeerTaskStore.getState().tasks.find(t => t.id === task.id)), "");
+  expect(second.receipt).toBe(first.receipt);
+  await expect(first.validate()).resolves.toBeUndefined();
+  usePeerTaskStore.setState(s => ({ tasks: s.tasks.map(t => t.id === dependency.id ? { ...t, result: { ...required(t.result), summary: "Changed evidence" } } : t) }));
+  await expect(second.validate()).rejects.toMatchObject({ reason: "dependency_changed" });
+});
+
+it.each(["schema", "revision"])("real %s tool changes invalidate an already prepared handoff", async change => {
+  const serialize = (await vi.importActual<typeof import("@/modules/ai/lib/requestPreflight")>("@/modules/ai/lib/requestPreflight")).serializedToolSchemas;
+  vi.mocked(serializedToolSchemas).mockImplementation(serialize);
+  const initial = tool({ description: "Inspect", inputSchema: jsonSchema({ type: "object", properties: { path: { type: "string" } } }) });
+  identifyTool(initial, { version: 1 });
+  fixtureTools.mockReturnValue({ read_file: initial });
+  const prepared = await preparePeerTaskHandoff(task, "");
+  const next = tool({ description: "Inspect", inputSchema: jsonSchema({ type: "object", properties: { path: { type: change === "schema" ? "number" : "string" } } }) });
+  identifyTool(next, { version: change === "revision" ? 2 : 1 });
+  fixtureTools.mockReturnValue({ read_file: next });
+  await expect(prepared.validate()).rejects.toMatchObject({ reason: "tools_changed" });
+});
+
+it("recipient effort changes invalidate policy without relying on session object identity", async () => {
+  const current = { ...task, targetModelId: "gpt-5.5" };
+  usePeerTaskStore.setState({ tasks: [current] });
+  useChatStore.setState(s => ({ sessions: s.sessions.map(session => session.id === "coder" ? { ...session, profile: { ...required(session.profile), modelId: current.targetModelId } } : session) }));
+  const effort = captureEffort(current.targetModelId, resolveModelTransportIdentity(current.targetModelId));
+  const prepared = await preparePeerTaskHandoff(current, "");
+  useChatStore.setState(s => ({ sessions: s.sessions.map(session => session.id === "coder" ? { ...session, effortPreferences: { version: 1, choices: [{ key: effort.key, choice: "high", revision: effort.capability.revision }] } } : session) }));
+  await expect(prepared.validate()).rejects.toMatchObject({ reason: "policy_changed" });
+});
+
+it("actual Agent instruction policy changes invalidate the existing endpoint digest", async () => {
+  const prepared = await preparePeerTaskHandoff(task, "");
+  const state = useAgentsStore.getState();
+  const agents = state.all();
+  try {
+    useAgentsStore.setState({ all: () => agents.map(agent => agent.id === task.targetAgentId ? { ...agent, instructions: "Changed trusted policy" } : agent) });
+    await expect(prepared.validate()).rejects.toMatchObject({ reason: "endpoint_changed" });
+  } finally { useAgentsStore.setState(state, true); }
+});
+
+it("bound prepared handoffs expire and changed capacity never reuses the cached result unchecked", async () => {
+  const at = Date.now();
+  const prepared = await preparePeerTaskHandoff(task, "");
+  vi.mocked(modelBudgetLimits).mockResolvedValue({ deployed: 8192 });
+  await expect(prepared.validate()).rejects.toMatchObject({ reason: "capability_changed" });
+  vi.mocked(modelBudgetLimits).mockResolvedValue({ deployed: 4096 });
+  vi.spyOn(Date, "now").mockReturnValue(at + 15_001);
+  await expect(prepared.validate()).rejects.toBeInstanceOf(PeerHandoffPreparationError);
+  await expect(prepared.validate()).rejects.toMatchObject({ reason: "expired" });
+});
+
+it("a dependency evidence change invalidates only its consumer, not independent prepared tasks", async () => {
+  const dependency: PeerTask = { ...task, id: "dependency", status: "completed", result: { summary: "Shared finding", artifacts: [], targetSessionId: "coder", targetAgentId: task.targetAgentId, targetModelId: task.targetModelId, completedAt: 1 } };
+  const independent = { ...task, id: "independent", rootTaskId: "independent" };
+  const consumer = { ...task, dependsOn: [dependency.id] };
+  usePeerTaskStore.setState({ tasks: [dependency, consumer, independent] });
+  const [first, second] = await Promise.all([preparePeerTaskHandoff(consumer, ""), preparePeerTaskHandoff(independent, "")]);
+  expect(first.receipt.key).not.toBe(second.receipt.key);
+  usePeerTaskStore.setState(s => ({ tasks: s.tasks.map(t => t.id === dependency.id ? { ...t, review: { version: 1, files: [], patches: [], results: [{ taskId: "changed", hash: "b".repeat(64) }] } } : t) }));
+  await expect(first.validate()).rejects.toMatchObject({ reason: "dependency_changed" });
+  await expect(second.validate()).resolves.toBeUndefined();
+});
+
+it.each(["peer_handoff_preparation_deadline", "peer_handoff_target_unavailable", "peer_handoff_target_capability", "peer_handoff_artifact_denied", "peer_handoff_artifact_corrupt", "peer_handoff_project_changed"])("retains the known %s failure code before transmission", async code => {
+  usePeerTaskStore.setState({ tasks: [{ ...task, status: "queued" }] });
+  vi.mocked(buildConfiguredLanguageModel).mockRejectedValueOnce(new Error(code));
+  await dispatchPeerTask(task.id);
+  expect(usePeerTaskStore.getState().tasks[0]).toMatchObject({ status: "failed", preRunFailure: true, error: { code } });
+  expect(sendMessageToSession).not.toHaveBeenCalled();
+});
+
+it("actual context overflow preserves its specific pre-send cause without sending or truncating", async () => {
+  vi.mocked(modelBudgetLimits).mockResolvedValue({ deployed: 256 });
+  usePeerTaskStore.setState({ tasks: [{ ...task, status: "queued" }] });
+  await dispatchPeerTask(task.id);
+  expect(usePeerTaskStore.getState().tasks[0]).toMatchObject({ status: "failed", preRunFailure: true, error: { code: "peer-handoff-required-overflow" } });
+  expect(sendMessageToSession).not.toHaveBeenCalled();
+});
+
+it("task cancellation during a held preparation stops authoritatively without transmission", async () => {
+  const pause = await pausePreparation();
+  usePeerTaskStore.setState({ tasks: [{ ...task, status: "queued" }] });
+  const dispatch = dispatchPeerTask(task.id);
+  await pause.entered;
+  usePeerTaskStore.setState(s => ({ tasks: s.tasks.map(t => ({ ...t, status: "cancelled" })) }));
+  pause.release();
+  await dispatch;
+  expect(usePeerTaskStore.getState().tasks[0].status).toBe("cancelled");
+  expect(usePeerTaskStore.getState().tasks[0].error).toBeUndefined();
+  expect(sendMessageToSession).not.toHaveBeenCalled();
+});
+
+it("durable failure diagnostics retain only bounded known reason codes", () => {
+  const record = { ...task, status: "failed", error: { code: "peer_handoff_preparation_stale", message: "Setup changed", reason: "policy_changed" } };
+  expect(normalizePeerTask(JSON.parse(JSON.stringify(record)))?.error?.reason).toBe("policy_changed");
+  expect(normalizePeerTask({ ...record, error: { ...record.error, reason: "untrusted arbitrary diagnostic text" } })?.error?.reason).toBeUndefined();
 });

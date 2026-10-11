@@ -31,6 +31,16 @@ export function taskOutcomeLabel(task: PeerTask): string {
 }
 
 export function taskFailure(task: PeerTask) {
+  if (task.error?.code === "peer_handoff_preparation_stale" || task.error?.code === "peer_handoff_preparation_deadline")
+    return {
+      kind: "setup" as const,
+      title: task.error.code === "peer_handoff_preparation_deadline"
+        ? "Task setup timed out before the Agent started."
+        : "Task setup changed before the Agent started.",
+      detail: task.preRunFailure && !task.worktree && !task.changeSet && !task.recovery
+        ? "Nothing was sent or changed. Retry the task using the latest configuration."
+        : "Review the preserved task setup and any uncertain effects before assigning it again.",
+    };
   if (
     /uncommitted changes|dirty (?:workspace|worktree)/i.test(
       task.error?.message ?? "",

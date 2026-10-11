@@ -481,6 +481,18 @@ describe("safe result navigation", () => {
   });
 });
 describe("effects-safe retry", () => {
+  it("effect-free handoff setup failure exposes truthful recovery without promising safety for preserved worktrees", () => {
+    failed();
+    task.error = { code: "peer_handoff_preparation_stale", message: "peer_handoff_preparation_stale", reason: "policy_changed" };
+    task.preRunFailure = true;
+    target.run = undefined;
+    expect(taskFailure(task)).toMatchObject({ kind: "setup", title: "Task setup changed before the Agent started.", detail: "Nothing was sent or changed. Retry the task using the latest configuration." });
+    expect(taskRetryEligibility(task, target, messages)).toBe(true);
+    task.worktree = { baseSha: "base", checkoutRoot: "C:/preserved" };
+    expect(taskFailure(task).detail).not.toContain("Nothing was sent");
+    expect(taskRetryEligibility(task, target, messages)).toBe(false);
+    expect(renderToStaticMarkup(<PeerTaskOutcome task={task} sessionId="source" />)).toContain("policy_changed");
+  });
   it.each(["read_file", "list_directory", "grep", "glob", "request_conversation_evidence", "read_agent_output", "get_terminal_output", "bash_logs", "bash_list"])("allows rate limit after the read-only %s executor", async (name) => {
     failed();
     const inspected: UIMessage[] = [...messages, { id: "inspection", role: "assistant", parts: [{ type: `tool-${name}`, toolCallId: "read", state: "output-available", input: {}, output: {} }] }];

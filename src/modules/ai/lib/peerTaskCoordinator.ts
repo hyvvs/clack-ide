@@ -59,6 +59,7 @@ import {
 import { peerWaitingSessions } from "@/modules/ai/lib/peerCommunicationRuntime";
 import { PEER_HANDOFF_ENABLED } from "@/modules/ai/lib/peerHandoff";
 import { preparePeerTaskHandoff } from "@/modules/ai/lib/peerHandoffRuntime";
+import { PeerHandoffPreparationError } from "@/modules/ai/lib/peerHandoffFailure";
 import {
   capturePeerReview,
   validatePeerReview,
@@ -293,6 +294,7 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
   if (!claimed) return;
   let worktreeCreated = false;
   let captureStarted = false;
+  let unresolvedSetup = false;
   let possibleEffect = false;
   try {
     await flushPeerTasks();
@@ -329,7 +331,7 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
           const status = await native.gitStatus(repo.repoRoot);
           if (status.truncated || status.changedFiles.length)
             throw new Error("workspace has uncommitted changes; commit or stash in Source Control");
-          possibleEffect = true;
+          unresolvedSetup = true;
           return await native.gitAgentWorktreeCreate(repo.repoRoot, claimed.id);
         } finally {
           releaseWorkspaceWriteLeasesForSession(setupLeaseId);
@@ -524,12 +526,15 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
       ?.communication?.some((event) => event.kind === "clarification-request");
     if (
       worktreeCreated &&
+      !possibleEffect &&
       !captureStarted &&
       !cancelled &&
       !communicationNeedsRecovery
     ) {
       try {
         await native.gitAgentWorktreeRemove(claimed.workspaceRoot, claimed.id);
+        usePeerTaskStore.getState().clearWorktree(claimed.id);
+        unresolvedSetup = false;
       } catch {
         // Preserve the original peer failure. The task retains worktree
         // metadata when cleanup itself fails.
@@ -539,8 +544,9 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
     const normalized = normalizeAiError(error, { disposition: "terminal" });
     usePeerTaskStore.getState().fail(
       claimed.id,
-      { code: peerArtifactFailureCode(error), message: normalized.message },
-      possibleEffect ? undefined : true,
+      { code: peerArtifactFailureCode(error), message: normalized.message,
+        ...(error instanceof PeerHandoffPreparationError ? { reason: error.reason } : {}) },
+      possibleEffect || unresolvedSetup ? undefined : true,
     );
   } finally {
     if (peerWaitingSessions.delete(claimed.targetSessionId)) {
@@ -907,8 +913,11 @@ function hasRepeatedTask(
 }
 
 function peerArtifactFailureCode(error: unknown): string {
+  if (error instanceof PeerHandoffPreparationError) return error.code;
   if (error instanceof PeerArtifactPackageError) return error.code;
   const message = error instanceof Error ? error.message : String(error);
+  if (/^peer_handoff_[a-z_]+$/.test(message)) return message;
+  if (error instanceof Error && "code" in error && typeof error.code === "string" && /^tool-exposure-|^peer-handoff-/.test(error.code)) return error.code;
   if (/unavailable|not found|cannot find/i.test(message)) {
     return "peer_artifact_content_missing";
   }

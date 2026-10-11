@@ -134,3 +134,134 @@ Still untested: native GUI split panes/Stop/dialogs/focus/minimize/restore/windo
 Remaining human UX questions: whether first-time users understand the separate-worker destination, workspace access versus explicit evidence sharing, immutable Review versus Apply, and unknown-effect recovery. Browser named-control/focus/layout evidence cannot establish subjective comprehension.
 
 The implementation roadmap was not reopened and no new checkpoint was started. Only this bounded sweep, concrete defect fixes, test fixtures and acceptance documentation belong to the commit. Safety stashes, delegation user work and `autonomous_tracker/` were not touched. Stop after commit; do not push.
+
+## Live handoff preparation reliability
+
+Scoped follow-up to `e223059`: repeated delegated tasks could fail before the
+recipient started with `peer_handoff_preparation_stale`, previously collapsed to
+`peer_run_failed`. The new regression holds the actual production handoff at a
+controlled project-load boundary, reconstructs stores and releases it. Before the
+fix the actual coordinator reported Failed and did not send; afterwards it completes
+with one dispatch. Previous acceptance evidence above is unchanged.
+
+### False-stale predicates and material snapshots
+
+The previous validator compared the target session object (`owner !== session`),
+the complete preferences-store object, and dependency object references. Zustand
+metadata reconciliation and an appearance update recreated those objects without
+changing their meaning. Its whole-task digest also included `createdAt`/`updatedAt`
+and visibility metadata. All of those could incorrectly invalidate setup.
+
+Validation now uses the existing canonical `communicationDigest` for material
+snapshots, captured together before asynchronous preparation:
+
+- Task ownership, status, intent, source/target identities, workspace/environment,
+  execution mode, artifacts, review, communication and dependency relationships
+  remain protected. Creation/update timestamps, archive visibility and the handoff
+  receipt written by preparation itself are excluded from the task/cache identity.
+- Recipient ID/profile/model revision remain protected, not its title or UI update
+  time. A new active recipient run still blocks preparation. Source generation and
+  cancellation/failure/interruption guards remain strict.
+- Request policy includes custom instructions, exact selected source/target routes,
+  selected custom-endpoint configuration, selected saved-model capability evidence,
+  relevant legacy URL/context settings, recipient effort and fallback policy. Hosted
+  profiles use the existing `budgetIdentity` plus transport configuration identity.
+  Unrelated appearance and unselected-server settings are not request policy.
+- The existing endpoint-policy digest still binds Agent configuration, profile,
+  transport/model revision and applicable permission rules. No consent, permission,
+  fallback, private-history or destination check was removed.
+- Dependencies retain material identity/result/artifact/review/change-set evidence,
+  not JavaScript reference equality or display timestamps. Recipient messages retain
+  the existing full content digest; identical reconstruction passes, changed messages
+  reject. No private source conversation is copied.
+- Tool definitions are captured before evidence preparation and revalidated through
+  current permitted exposure, schemas and existing `toolRevisionIdentity` metadata.
+  Preparation uses the task's captured workspace/mutation lane, not the previous
+  recipient run's lane. Only informational descriptions of the two known builtins
+  `request_peer_task` and `cancel_peer_task` are excluded from exposure comparison:
+  they list live chat titles/graph status. Callable names, schemas, ownership and
+  revisions remain protected; custom/MCP definitions are not exempted.
+- Current capability support and B1 limits, project revision, selected record IDs,
+  revalidated freshness and evidence hashes remain checked. Genuine project drift
+  retains `peer_handoff_project_changed`.
+
+The existing cache remains capped at 32 entries / 512 KiB of prepared text. Its key
+now includes material policy, owner, dependency, history and source-generation
+identities alongside the original request/evidence inputs. Equivalent reconstruction
+can reuse a receipt, but every hit performs fresh validation, including immediately
+before dispatch. The 15-second preparation deadline also bounds returned validators;
+expiry cannot turn an old preparation into an unchecked send.
+
+### Setup effects, root causes and Retry
+
+Creating Clack's own worktree is tracked as unresolved reversible setup, separately
+from possible external effects. Before inference, successful native removal clears
+the worktree record and permits a durable `preRunFailure` receipt. The shared guarded
+Retry path can create a fresh linked attempt/worktree without altering the failure.
+Ambiguous creation responses, failed cleanup, preserved worktrees, recovery and
+possible inference/tool effects remain conservative.
+
+After transmission may have begun, failure no longer automatically removes a
+potentially modified worktree. Its real changes remain available for inspection and
+the existing explicit discard/review path; blind Retry stays blocked. Successful
+completion still captures an immutable patch and retains existing Review/Apply
+checks. No effect ledger, task store, approval or exactly-once mechanism was replaced.
+
+Known preparation/deadline/unavailable/capability/project/artifact/context-overflow
+codes now survive coordinator failure normalization. A finite `HandoffStaleReason`
+is retained as optional existing error metadata and shown in Error details; loading
+drops unknown reason values. Diagnostics contain no prompt contents or credentials.
+Effect-free races show `Task setup changed before the Agent started` and `Nothing
+was sent or changed. Retry the task using the latest configuration.` Preserved or
+uncertain setup does not make that claim. Archive/Previous/Next are unchanged.
+
+Automatic re-preparation was intentionally **not** added. The false predicates are
+fixed; a real race requires the existing explicit Retry and current configuration/
+authorization checks. There is no hidden retry loop or automatic external replay.
+
+### Actual verification
+
+- Final focused group: **350 tests / 12 files passed**, covering actual handoff and
+  dispatch, guarded retry, PeerTask persistence/recovery, project/dependency/review
+  boundaries, tool exposure, communication, Archive/navigation and startup budget.
+- Production-handoff reliability suite: **52 tests**. Material model/Agent/workspace,
+  permission, instruction/Agent policy, task intent, recipient history, dependency
+  result/review, source generation/cancellation, competing recipient run, tool
+  assignment/schema/revision, capacity/effort, project revision/freshness and expiry
+  changes reject. Task cancellation stops without sending. Changed dependency
+  evidence invalidates its consumer, not an independent prepared task. Known causes
+  and bounded serialized diagnostic reasons are verified.
+- Real-file/Git/loopback integration suite: **8 tests**, including five new live-
+  handoff scenarios. Its **25 sequential delegations** across same-Agent workers and
+  distinct Agents had **zero false stale failures, zero duplicate dispatches and
+  zero private-canary leakage**. There were 25 task sends and 31 HTTP requests: six
+  Coder reads legitimately require a second tool-result request, not another task.
+  Session titles/profiles, appearance, task timestamps/record reconstruction and
+  equivalent message reconstruction churn during actual handoff validation.
+- Three independent preparations wait at explicit barriers simultaneously, survive
+  cross-task churn, then dispatch once each with distinct identities. Real isolated
+  `acceptance.txt` creation captures `+hello`; the main file stays absent until
+  authorized Apply, then contains exactly `hello`. Pre-send stale + successful
+  cleanup allows a fresh linked Retry with no orphan checkout. Failed cleanup keeps
+  the real checkout, blocks Retry, and permits explicit inspection/discard. A failure
+  after transmission retains the real created file and blocks Retry.
+- `npm.cmd run check-types`, `npm.cmd run lint`, `npm.cmd test`,
+  `npm.cmd run build` and `git diff --check` passed. Full frontend:
+  **2,556 tests / 192 files**, no failures/skips. Lint remains **71 warnings / two
+  informational notices**; new fixture-only type/null-assertion diagnostics were
+  corrected, not suppressed. Existing mixed-import/plugin-timing build notices
+  remain. No Rust changes; Rust gates were not rerun.
+
+These tests use the actual `preparePeerTaskHandoff`, handoff formatter/B1 measurement,
+coordinator, store, schema selection and production file tools. Temporary Git/repos,
+worktrees, files and the HTTP/SSE transport are real and owned by the fixture.
+Tauri IPC, project-memory I/O, model-construction/capacity metadata and credential
+boundaries are controlled; the composed fixture supplies a 64,000-token capacity.
+It is not an end-to-end native Tauri or live-provider claim. The prior three composed
+acceptance scenarios still stub handoff; the five added scenarios explicitly run it.
+
+Native GUI/Computer Use and real-provider verification were not performed, as
+requested. Linux/macOS/WSL native validation and subjective human recovery UX remain
+external acceptance. Setup is bounded by the existing deadline and can still fail
+for real changes/unavailable evidence; retries with unknown effects remain blocked.
+No subsequent feature checkpoint was started. No push.

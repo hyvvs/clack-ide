@@ -1,7 +1,7 @@
 import { convertToModelMessages } from "ai";
-import { prepareToolExposure } from "@/modules/ai/lib/toolExposure";
+import { prepareToolExposure, toolRevisionIdentity } from "@/modules/ai/lib/toolExposure";
 import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
-import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
+import { findSavedProviderModel, resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 import {
@@ -25,6 +25,10 @@ import { inspectAttachmentContent } from "@/modules/ai/lib/attachmentStore";
 import { resolveModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import { modelBudgetLimits } from "@/modules/ai/lib/requestPreflight";
+import { budgetIdentity } from "@/modules/ai/lib/contextBudgetProfile";
+import { resolveSelfHostedSelection } from "@/modules/ai/lib/selfHostedProfiles";
+import { PeerHandoffPreparationError } from "@/modules/ai/lib/peerHandoffFailure";
+import type { Preferences } from "@/modules/settings/store";
 import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
 import { checkReadable } from "@/modules/ai/lib/security";
 import {
@@ -45,6 +49,52 @@ import {
 
 const cache = new Map<string, Awaited<ReturnType<typeof prepareHandoff>>>();
 const MAX_CACHED_CHARS = 512 * 1024;
+
+function taskSnapshot(task: PeerTask | undefined) {
+  return task && { ...task, createdAt: 0, updatedAt: 0, archivedAt: undefined, handoff: undefined };
+}
+
+function routeSnapshot(modelId: string, preferences: Preferences) {
+  const route = resolveModelTransportIdentity(modelId, preferences);
+  const hosted = resolveSelfHostedSelection(preferences.selfHostedInference, modelId);
+  const saved = findSavedProviderModel(modelId, preferences.savedProviderModels);
+  const endpoint = preferences.customEndpoints.find(e => e.id === route.customEndpointId);
+  return {
+    route,
+    hosted: hosted.status === "available"
+      ? budgetIdentity(preferences.selfHostedInference, hosted.profile.id) : hosted.status,
+    endpoint: endpoint && { ...endpoint, name: undefined },
+    savedModel: saved && { id: saved.id, providerId: saved.providerId, transportModelId: saved.transportModelId, enabled: saved.enabled, providerEvidence: saved.providerEvidence },
+    legacy: route.providerId === "lmstudio" ? preferences.lmstudioBaseURL
+      : route.providerId === "mlx" ? preferences.mlxBaseURL
+      : route.providerId === "ollama" ? preferences.ollamaBaseURL
+      : modelId === "openai-compatible-custom" ? [preferences.openaiCompatibleBaseURL, preferences.openaiCompatibleContextLimit] : undefined,
+  };
+}
+
+function requestPolicy(task: PeerTask, preferences: Preferences) {
+  const owner = useChatStore.getState().sessions.find(s => s.id === task.targetSessionId);
+  return {
+    instructions: preferences.customInstructions,
+    target: routeSnapshot(task.targetModelId, preferences),
+    source: routeSnapshot(task.sourceModelId, preferences),
+    reasoning: recipientEffort(task.targetSessionId, task.targetModelId),
+    fallback: owner?.fallback,
+  };
+}
+
+function exposureSnapshot(exposure: Awaited<ReturnType<typeof prepareToolExposure>>) {
+  return exposure.schemas.map(schema => ({
+    ...schema,
+    function: {
+      ...schema.function,
+      // These builtin descriptions list chat titles and live graph status, not execution policy.
+      description: ["request_peer_task", "cancel_peer_task"].includes(schema.function.name)
+        ? undefined : schema.function.description,
+    },
+    revision: toolRevisionIdentity(exposure.tools[schema.function.name]),
+  }));
+}
 
 function recipientEffort(sessionId: string, modelId: string) {
   const session = useChatStore
@@ -177,14 +227,15 @@ export async function preparePeerReply(
 
 export async function preparePeerTaskHandoff(task: PeerTask, notes: string) {
   let expired = false;
+  const deadline = Date.now() + 15_000;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      prepareTask(task, notes, () => expired),
+      prepareTask(task, notes, () => expired || Date.now() >= deadline),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           expired = true;
-          reject(new Error("peer_handoff_preparation_deadline"));
+          reject(new PeerHandoffPreparationError("expired", "peer_handoff_preparation_deadline"));
         }, 15_000);
       }),
     ]);
@@ -204,12 +255,17 @@ async function prepareTask(
     .getState()
     .sessions.find((item) => item.id === sessionId);
   const preferences = usePreferencesStore.getState();
-  const endpoint = await peerEndpoint(sessionId, task.workspaceId);
-  const source = await peerEndpoint(task.sourceSessionId, task.workspaceId);
-  const taskKey = await communicationDigest({ ...task, handoff: undefined });
   const sourceRun = useChatStore
     .getState()
     .sessions.find((item) => item.id === task.sourceSessionId)?.run?.startedAt;
+  const [policyKey, ownerKey, dependencyKey, endpoint, source, taskKey] = await Promise.all([
+    communicationDigest(requestPolicy(task, preferences)),
+    communicationDigest({ id: session?.id, profile: session?.profile, modelRevision: session?.modelRevision ?? 0 }),
+    communicationDigest(task.dependsOn.map(id => taskSnapshot(initialTasks.find(t => t.id === id)))),
+    peerEndpoint(sessionId, task.workspaceId),
+    peerEndpoint(task.sourceSessionId, task.workspaceId),
+    communicationDigest(taskSnapshot(task)),
+  ]);
   if (!hasKeyForModel(task.targetModelId))
     throw new Error("peer_handoff_target_unavailable");
   if (
@@ -228,50 +284,39 @@ async function prepareTask(
     const owner = useChatStore
       .getState()
       .sessions.find((item) => item.id === sessionId);
-    if (
-      expired() ||
-      !current.recoveryReady ||
-      current.tasks.find((item) => item.id === task.id)?.status !== "running" ||
-      (await communicationDigest({
-        ...current.tasks.find((item) => item.id === task.id),
-        handoff: undefined,
-      })) !== taskKey ||
-      useChatStore
-        .getState()
-        .sessions.find((item) => item.id === task.sourceSessionId)?.run
-        ?.startedAt !== sourceRun ||
-      ["cancelled", "failed", "interrupted"].includes(
-        useChatStore
-          .getState()
-          .sessions.find((item) => item.id === task.sourceSessionId)?.run
-          ?.state ?? "",
-      ) ||
-      owner !== session ||
-      preferences !== usePreferencesStore.getState() ||
-      JSON.stringify(await peerEndpoint(sessionId, task.workspaceId)) !==
-        JSON.stringify(endpoint) ||
-      JSON.stringify(
-        await peerEndpoint(task.sourceSessionId, task.workspaceId),
-      ) !== JSON.stringify(source) ||
-      (await communicationDigest(
-        getChat(sessionId)?.messages ?? seedMessages.get(sessionId) ?? history,
-      )) !== historyKey ||
-      task.dependsOn.some(
-        (id) =>
-          current.tasks.find((item) => item.id === id) !==
-          initialTasks.find((item) => item.id === id),
-      )
-    )
-      throw new Error("peer_handoff_preparation_stale");
+    const fail = (reason: ConstructorParameters<typeof PeerHandoffPreparationError>[0]): never => { throw new PeerHandoffPreparationError(reason); };
+    if (expired()) fail("expired");
+    if (!current.recoveryReady) fail("recovery_required");
+    const latest = current.tasks.find(item => item.id === task.id);
+    if (latest?.status !== "running" || await communicationDigest(taskSnapshot(latest)) !== taskKey) fail("task_changed");
+    const run = useChatStore.getState().sessions.find(item => item.id === task.sourceSessionId)?.run;
+    if (run?.startedAt !== sourceRun) fail("source_run_changed");
+    if (["cancelled", "failed", "interrupted"].includes(run?.state ?? "")) fail("source_cancelled");
+    if (await communicationDigest({ id: owner?.id, profile: owner?.profile, modelRevision: owner?.modelRevision ?? 0 }) !== ownerKey) fail("target_identity_changed");
+    if (owner?.run?.state === "running") fail("target_identity_changed");
+    if (await communicationDigest(requestPolicy(task, usePreferencesStore.getState())) !== policyKey) fail("policy_changed");
+    try {
+      if (JSON.stringify(await peerEndpoint(sessionId, task.workspaceId)) !== JSON.stringify(endpoint) ||
+        JSON.stringify(await peerEndpoint(task.sourceSessionId, task.workspaceId)) !== JSON.stringify(source)) fail("endpoint_changed");
+    } catch (error) {
+      if (error instanceof PeerHandoffPreparationError) throw error;
+      fail("endpoint_changed");
+    }
+    if (await communicationDigest(getChat(sessionId)?.messages ?? seedMessages.get(sessionId) ?? history) !== historyKey) fail("history_changed");
+    if (await communicationDigest(task.dependsOn.map(id => taskSnapshot(current.tasks.find(item => item.id === id)))) !== dependencyKey) fail("dependency_changed");
   };
   const { sessionToolContext } = await import("@/modules/ai/store/chatRuntime");
   const base = sessionToolContext(sessionId).toolContext;
   const context = {
     ...base,
     getAgentId: () => endpoint.agentId,
+    getWorkspaceId: () => task.workspaceId,
+    getMutationMode: () => task.executionMode,
     getWorkspaceRoot: () => task.workspaceRoot,
     getCwd: () => task.workspaceRoot,
   };
+  const { buildRuntimeTools: buildTools } = await import("@/modules/ai/tools/customExecution");
+  const initialTools = await buildTools(context);
   const readable = (path?: string) =>
     resolveCurrentAgentPermission("read_file", path ? { path } : {}, context)
       .outcome === "allow";
@@ -393,9 +438,6 @@ async function prepareTask(
   const { buildConfiguredLanguageModel, buildStableSystem } = await import(
     "@/modules/ai/lib/agent"
   );
-  const { buildRuntimeTools: buildTools } = await import(
-    "@/modules/ai/tools/customExecution"
-  );
   const { readProjectMemory } = await import("@/modules/ai/lib/transport");
   const capabilities = resolveModelInputCapabilities(
     task.targetModelId,
@@ -444,16 +486,16 @@ async function prepareTask(
     capabilities,
   );
   const recipientMessages = await convertToModelMessages(materialized);
-  const exposure = await prepareToolExposure(await buildTools(context), {
+  const exposure = await prepareToolExposure(initialTools, {
     context,
     messages: [...recipientMessages, { role: "user", content: task.prompt }],
     uiMessages: history,
-    target: { endpoint, configuration },
+    target: { endpoint, policyKey },
     system,
     limits: await modelBudgetLimits(model),
   });
   const input: HandoffInput = {
-    task: { ...task, handoff: undefined },
+    task: taskSnapshot(task) as PeerTask,
     recipient: { ...endpoint, workspaceId: task.workspaceId },
     limits: await modelBudgetLimits(model),
     system,
@@ -470,6 +512,7 @@ async function prepareTask(
       sourcePolicy: source.policyRevision,
       projectRevision,
       projectEvidenceKey,
+      policyKey, ownerKey, dependencyKey, historyKey, sourceRun,
     },
   };
   await check();
@@ -489,6 +532,18 @@ async function prepareTask(
   }
   const validate = async () => {
     await check();
+    const currentCapabilities = resolveModelInputCapabilities(task.targetModelId,
+      usePreferencesStore.getState().selfHostedInference,
+      await readSelfHostedSnapshot(usePreferencesStore.getState().selfHostedInference, task.targetModelId));
+    if (await communicationDigest(currentCapabilities) !== await communicationDigest(capabilities) ||
+      await communicationDigest(await modelBudgetLimits(model)) !== await communicationDigest(input.limits))
+      throw new PeerHandoffPreparationError("capability_changed");
+    const currentExposure = await prepareToolExposure(await buildTools(context), {
+      context, messages: [...recipientMessages, { role: "user", content: task.prompt }],
+      uiMessages: history, target: endpoint, system, limits: input.limits,
+    });
+    if (await communicationDigest(exposureSnapshot(currentExposure)) !== await communicationDigest(exposureSnapshot(exposure)))
+      throw new PeerHandoffPreparationError("tools_changed");
     if (projectRevision !== undefined) {
       const view = await project.load();
       if (
@@ -500,8 +555,9 @@ async function prepareTask(
             ).entries,
           )) !== projectEvidenceKey)
       )
-        throw new Error("peer_handoff_project_changed");
+        throw new PeerHandoffPreparationError("project_changed", "peer_handoff_project_changed");
     }
+    await check();
   };
   await validate();
   return {
