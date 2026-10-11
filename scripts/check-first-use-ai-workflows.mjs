@@ -19,13 +19,13 @@ const mocks = new Map([
   ["@tauri-apps/plugin-os", `export const platform=()=>"windows";`],
   ["@tauri-apps/plugin-store", `export class LazyStore{async get(){return null;}async set(){}async save(){}async delete(){}async entries(){return [];}async onChange(){return()=>{};}}`],
   ["src/modules/ai/index", `export{AiInputBarConnect}from"/src/modules/ai/components/AiInputBar.tsx";`],
-  ["src/modules/ai/lib/peerTaskCoordinator", `export const applyPeerTaskChangeSet=async id=>{window.calls.push(["fixture-apply",id]);window.tasks.setState(s=>({tasks:s.tasks.map(t=>t.id===id?{...t,changeSet:{...t.changeSet,appliedAt:5}}:t)}));return{ok:true};};export const cancelPeerTask=async()=>{};export const discardPeerTaskWorktree=async()=>{};export const requestPeerTask=async()=>{throw Error("Native dispatch outside fixture");};`],
+  ["src/modules/ai/lib/peerTaskCoordinator", `export const applyPeerTaskChangeSet=async id=>{window.calls.push(["fixture-apply",id]);window.tasks.setState(s=>({tasks:s.tasks.map(t=>t.id===id?{...t,changeSet:{...t.changeSet,appliedAt:5}}:t)}));return{ok:true};};export const cancelPeerTask=async()=>{};export const discardPeerTaskWorktree=async()=>{};export const requestPeerTask=async request=>{window.retryRequests.push(request);await new Promise(resolve=>window.finishRetry=resolve);const original=window.tasks.getState().tasks.find(t=>t.id===request.retryOfTaskId);const task={...original,id:"retry-attempt",parentTaskId:original.id,retryOfTaskId:original.id,status:"queued",error:undefined,updatedAt:100};window.tasks.setState(s=>({tasks:[task,...s.tasks]}));return{ok:true,task};};`],
 ]);
 const entry = `
 import React from"react";import{createRoot}from"react-dom/client";
 import{DispatcherTarget}from"/src/app/components/WorkspaceInputBar.tsx";
 import{PeerTaskFeed}from"/src/modules/ai/components/PeerTaskFeed.tsx";
-import{useChatStore}from"/src/modules/ai/store/chatStore.ts";
+import{chats,useChatStore}from"/src/modules/ai/store/chatStore.ts";
 import{usePeerTaskStore}from"/src/modules/ai/store/peerTaskStore.ts";
 import{createAiPaneLayout,useAiPaneStore}from"/src/modules/ai/store/aiPaneStore.ts";
 import{ModelSwitchNotice}from"/src/modules/ai/components/ModelSwitchNotice.tsx";
@@ -49,6 +49,7 @@ window.assign=()=>usePeerTaskStore.setState({tasks:[task,{...task,id:"other",sou
 {...task,id:"blocked",status:"blocked",prompt:"Dependent task blocked",blockedByTaskId:"dirty",blockedByStatus:"failed"}]});
 window.finish=()=>usePeerTaskStore.setState(s=>({tasks:s.tasks.map(t=>t.id===task.id?{...t,status:"completed",result:{summary:"Verified result",targetSessionId:"reviewer",targetAgentId:t.targetAgentId,targetModelId:t.targetModelId,completedAt:4,artifacts:[]}}:t)}));
 window.setTheme=mode=>{document.documentElement.className=mode;applyTheme(teraxDefault,mode);};
+window.retryFixture=()=>{window.retryRequests=[];usePeerTaskStore.setState({tasks:[{...task,id:"safe-failure",status:"failed",prompt:"Retry a pre-effect offline failure",error:{code:"peer_run_failed",message:"Provider unavailable"}}],recoveryReady:true});useChatStore.setState(s=>({sessions:s.sessions.map(session=>session.id!=="reviewer"?session:{...session,profile:{...session.profile,agentId:task.targetAgentId},run:{state:"failed",peerTaskId:"safe-failure",agentId:task.targetAgentId,modelId:task.targetModelId,startedAt:10,error:{kind:"network",message:"offline"}}})}));chats.set("reviewer",{messages:[{id:"request",role:"user",parts:[{type:"text",text:"Retry a pre-effect offline failure"}]}]});};
 const el=React.createElement;
 function App(){const [file,setFile]=React.useState(null);window.openFile=path=>{setFile(path);requestAnimationFrame(()=>document.querySelector("[data-file-result]")?.focus());};const sessions=useChatStore(s=>s.sessions);const active=useChatStore(s=>s.activeSessionId);return el("main",{style:{padding:8,minWidth:0}},
 file&&el("button",{"data-file-result":true},"Opened "+file),
@@ -96,6 +97,15 @@ try {
     assert.match(await selected.innerText(), /Code Reviewer.*Running/s);
     assert.match(await selected.innerText(), /Parent a/);
     assert.equal(await selected.getAttribute("aria-pressed"),"true");
+    const order = await dispatcher.locator('[data-dispatcher-task-id]').evaluateAll(rows => rows.map(row => row.dataset.dispatcherTaskId));
+    const assignedIndex = order.indexOf("assigned");
+    await dispatcher.getByRole("button", { name: "Previous task", exact: true }).click();
+    await page.waitForFunction(id => document.activeElement?.getAttribute("data-dispatcher-task-id") === id, order[assignedIndex-1]);
+    assert.equal(await dispatcher.locator(`[data-dispatcher-task-id="${order[assignedIndex-1]}"]`).getAttribute("aria-pressed"), "true");
+    const nextButton = dispatcher.getByRole("button", { name: "Next task", exact: true });
+    await nextButton.focus(); await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("data-dispatcher-task-id") === "assigned");
+    await dispatcher.getByText(`Task ${assignedIndex+1} of ${order.length}`, {exact:true}).waitFor();
     await dispatcher.getByRole("heading",{name:"Needs attention (4)",exact:true}).waitFor();await dispatcher.getByRole("heading",{name:"Active (2)",exact:true}).waitFor();await dispatcher.getByRole("heading",{name:"Completed (3)",exact:true}).waitFor();
     await page.keyboard.press("ArrowDown");assert.notEqual(await page.evaluate(()=>document.activeElement?.getAttribute("data-dispatcher-task-id")),"assigned");await selected.focus();
     await page.keyboard.press("Enter");
@@ -121,10 +131,53 @@ try {
     await assigned.getByRole("button", { name: "View task in Dispatcher" }).click();
     await selected.waitFor();
     assert.match(await selected.innerText(), /Done/);
+    await page.keyboard.press("Escape");
+    await dispatcher.waitFor({state:"detached"});
+    await page.waitForFunction(()=>document.activeElement?.hasAttribute("data-ai-dispatch-target"));
+    await page.evaluate(() => window.retryFixture());
+    const retryOwnership = await page.evaluate(()=>({active:window.chat.getState().activeSessionId,bindings:window.panes.getState().bindings}));
+    const safe = a.locator('[data-peer-task-id="safe-failure"]');
+    await page.waitForFunction(() => !document.querySelector('[data-peer-task-id="safe-failure"] button')?.disabled && [...document.querySelectorAll('[data-peer-task-id="safe-failure"] button')].some(button => button.textContent === "Retry task" && !button.disabled));
+    await safe.getByRole("button", { name: "View task in Dispatcher" }).click();
+    await dispatcher.getByRole("button",{name:"Retry task",exact:true}).waitFor();
+    assert.equal(await dispatcher.getByRole("button",{name:"Previous task",exact:true}).isDisabled(),true);
+    assert.equal(await dispatcher.getByRole("button",{name:"Next task",exact:true}).isDisabled(),true);
+    await dispatcher.getByRole("button",{name:"Retry task",exact:true}).click();
+    await dispatcher.getByRole("button",{name:"Retrying...",exact:true}).waitFor();
+    assert.equal(await dispatcher.getByRole("button",{name:"Retrying...",exact:true}).isDisabled(),true);
+    assert.equal(await safe.getByRole("button",{name:"Retrying...",exact:true}).isDisabled(),true);
+    await page.waitForFunction(() => window.retryRequests.length === 1);
+    await page.evaluate(() => window.finishRetry());
+    await page.waitForFunction(() => document.activeElement?.getAttribute("data-dispatcher-task-id") === "retry-attempt");
+    assert.equal(await safe.getByRole("button",{name:"Retried as - queued",exact:true}).count(),1);
+    await dispatcher.getByRole("button",{name:"Previous attempt - failed",exact:true}).waitFor();
+    assert.deepEqual(await page.evaluate(()=>({active:window.chat.getState().activeSessionId,bindings:window.panes.getState().bindings})),retryOwnership);
+    await dispatcher.getByRole("button",{name:"Previous task",exact:true}).click();
+    await page.waitForFunction(() => document.activeElement?.getAttribute("data-dispatcher-task-id") === "safe-failure");
+    assert.equal(await dispatcher.getByRole("button",{name:"Previous task",exact:true}).isDisabled(),true);
+    await dispatcher.getByRole("button",{name:"Next task",exact:true}).click();
+    assert.equal(await dispatcher.getByRole("button",{name:"Next task",exact:true}).isDisabled(),true);
+    await page.evaluate(()=>window.tasks.setState(s=>({tasks:s.tasks.filter(t=>t.id!=="retry-attempt")})));
+    await dispatcher.getByText("No task selected",{exact:true}).waitFor();
+    assert.equal(await dispatcher.getByRole("button",{name:"Previous task",exact:true}).isDisabled(),true);
+    assert.equal(await dispatcher.getByRole("button",{name:"Next task",exact:true}).isDisabled(),true);
+    await page.keyboard.press("Escape");
+    await dispatcher.waitFor({state:"detached"});
+    await page.waitForFunction(()=>document.activeElement?.hasAttribute("data-ai-dispatch-target"));
+    await page.evaluate(()=>window.retryFixture());
+    await page.waitForFunction(()=>[...document.querySelectorAll('[data-peer-task-id="safe-failure"] button')].some(button=>button.textContent==="Retry task"&&!button.disabled));
+    await safe.getByRole("button",{name:"View task in Dispatcher"}).click();
+    await dispatcher.getByRole("button",{name:"Retry task",exact:true}).click();
+    await page.waitForFunction(()=>window.retryRequests.length===1);
+    await page.keyboard.press("Escape");
+    await dispatcher.waitFor({state:"detached"});
+    await page.evaluate(()=>window.finishRetry());
+    await page.waitForFunction(()=>window.tasks.getState().tasks.some(task=>task.id==="retry-attempt") && window.tasks.getState().retryingTaskIds.length===0);
+    assert.equal(await dispatcher.count(),0,"A stale retry callback must not reopen Dispatcher after dismissal");
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
     assert.equal(overflow, false, `Overflow at ${width}px ${theme}`);
     assert.deepEqual(errors, []);
-    console.log(`PASS ${width}px ${zoom*100}% ${theme}: grouping, keyboard/exact focus, chat destinations, immutable artifacts, Review/Apply/Open, result focus, failures, isolation, no overflow`);
+    console.log(`PASS ${width}px ${zoom*100}% ${theme}: Previous/Next visible order/boundaries/focus, shared safe retry/pending/lineage, deletion, chat continuity, artifacts, Review/Apply/Open, failures, isolation, no overflow`);
     await page.close();
   }
 } finally {

@@ -39,7 +39,7 @@ export function taskFailure(task: PeerTask) {
       title:
         "The isolated task couldn't start because your project has uncommitted changes.",
       detail:
-        "Commit or stash your changes in Source Control, then assign the isolated task again. Clack will not commit or stash them for you.",
+        "Commit or stash your changes in Source Control, then check retry availability. Clack will not commit or stash them for you.",
     };
   if (
     /rate.?limit|too many requests|\b429\b/i.test(
@@ -50,6 +50,12 @@ export function taskFailure(task: PeerTask) {
       kind: "rate-limit" as const,
       title: "This model is temporarily rate-limited.",
       detail: "The previous task and any completed effects are preserved.",
+    };
+  if (/authentication|authorization|invalid.*(?:key|credential)|\b40[13]\b/i.test(`${task.error?.code} ${task.error?.message}`))
+    return {
+      kind: "auth" as const,
+      title: "This task's connection needs attention.",
+      detail: "Fix the connection before assigning new work. Invalid credentials are not retried.",
     };
   return {
     kind: "other" as const,
@@ -67,21 +73,25 @@ export function taskRetryEligibility(
   const run = target?.run;
   if (
     task.status !== "failed" ||
-    taskFailure(task).kind !== "rate-limit" ||
     task.result ||
     task.changeSet ||
     task.worktree ||
     task.recovery ||
-    run?.peerTaskId !== task.id ||
-    run.state !== "failed" ||
-    run.error?.kind !== "rate_limit" ||
     target?.profile?.workspaceId !== task.workspaceId ||
     target.profile.agentId !== task.targetAgentId ||
     target.profile.modelId !== task.targetModelId ||
-    run.agentId !== task.targetAgentId ||
-    run.modelId !== task.targetModelId
+    run?.state === "running" ||
+    taskFailure(task).kind === "auth"
   )
     return false;
+  if (task.preRunFailure) return run?.peerTaskId !== task.id;
+  if (
+    run?.peerTaskId !== task.id || run.state !== "failed" ||
+    run.agentId !== task.targetAgentId || run.modelId !== task.targetModelId ||
+    !run.error ||
+    !(["rate_limit", "provider_unavailable", "model_loading", "backend_restart", "network", "timeout"].includes(run.error.kind) ||
+      (run.error.kind === "bad_request" && run.error.title === "Context preflight"))
+  ) return false;
   let lastUser = messages.length - 1;
   while (lastUser >= 0 && messages[lastUser].role !== "user") lastUser--;
   if (lastUser < 0) return false;

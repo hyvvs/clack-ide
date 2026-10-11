@@ -17,6 +17,8 @@ import {
   dispatcherTaskStatus,
   workspaceDispatcherTasks,
   availableDispatcherTasks,
+  visibleDispatcherTasks,
+  dispatcherTaskNeighbors,
 } from "@/modules/ai/lib/dispatcherTasks";
 import { PeerTaskFeed } from "@/modules/ai/components/PeerTaskFeed";
 import type { PeerTask } from "@/modules/ai/lib/peerTasks";
@@ -94,6 +96,29 @@ const task: PeerTask = {
   createdAt: 1,
   updatedAt: 2,
 };
+
+it("navigates the displayed attention/active/completed order with stable ties and no wrap", () => {
+  const sessions = [session("a")];
+  const attention = { ...task, id: "failed", status: "failed" as const, updatedAt: 1 };
+  const done = { ...task, id: "done", status: "completed" as const, updatedAt: 100 };
+  const visible = visibleDispatcherTasks([done, task, attention, { ...task, id: "orphan", sourceSessionId: "missing" }], sessions);
+  expect(visible.map(t => t.id)).toEqual(["failed", "assigned", "done"]);
+  expect(dispatcherTaskNeighbors(visible, attention.id)).toMatchObject({ index: 0, count: 3, previous: undefined, next: task });
+  expect(dispatcherTaskNeighbors(visible, task.id)).toMatchObject({ previous: attention, next: done });
+  expect(dispatcherTaskNeighbors(visible, done.id)).toMatchObject({ previous: task, next: undefined });
+  expect(dispatcherTaskNeighbors([task], task.id)).toMatchObject({ previous: undefined, next: undefined });
+  expect(dispatcherTaskNeighbors(visible, "deleted")).toMatchObject({ index: -1, previous: undefined, next: undefined });
+});
+it("uses only available/filter-visible rows and recalculates neighbors after updates/deletion", () => {
+  const sessions = [session("a")];
+  const b = { ...task, id: "b", updatedAt: 2 };
+  const c = { ...task, id: "c", updatedAt: 3, status: "failed" as const };
+  expect(visibleDispatcherTasks([b, c, task], sessions, "active").map(t => t.id)).toEqual(["assigned", "b"]);
+  const reordered = visibleDispatcherTasks([{ ...b, updatedAt: 9 }, c, task], sessions, "active");
+  expect(dispatcherTaskNeighbors(reordered, task.id).previous?.id).toBe("b");
+  expect(dispatcherTaskNeighbors(reordered.filter(t => t.id !== task.id), task.id).next).toBeUndefined();
+  expect(visibleDispatcherTasks([task], [], "active")).toEqual([]);
+});
 
 it("keeps global Dispatcher work visible across known workspaces without exposing orphaned or foreign task evidence", () => {
   const elsewhere = session("elsewhere");

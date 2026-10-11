@@ -4,6 +4,8 @@ import {
   ArrowDown01Icon,
   Message01Icon,
   Add01Icon,
+  ArrowLeft01Icon,
+  ArrowRight01Icon,
 } from "@hugeicons/core-free-icons";
 import {
   Popover,
@@ -13,7 +15,9 @@ import {
 import { cn } from "@/lib/utils";
 import { BUILTIN_AGENTS } from "@/modules/ai/lib/agents";
 import {
-  availableDispatcherTasks,
+  visibleDispatcherTasks,
+  dispatcherTaskGroups,
+  dispatcherTaskNeighbors,
   dispatcherTaskConversation,
   dispatcherTaskStatus,
 } from "@/modules/ai/lib/dispatcherTasks";
@@ -21,7 +25,6 @@ import { isPeerTaskActive } from "@/modules/ai/lib/peerTaskCancellation";
 import {
   taskOutcomeLabel,
   taskWorkGroup,
-  type WorkGroup,
 } from "@/modules/ai/lib/taskPresentation";
 import type { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
@@ -43,11 +46,6 @@ export type DispatcherProps = {
   onSelect: (sessionId: string) => void | Promise<void>;
   onCreate: () => void;
 };
-const groups: [WorkGroup, string][] = [
-  ["attention", "Needs attention"],
-  ["active", "Active"],
-  ["completed", "Completed"],
-];
 const workspaceLabel = (root?: string | null) =>
   root?.split(/[\\/]/).filter(Boolean).pop() ?? "Unbound conversation";
 
@@ -59,14 +57,14 @@ export function DispatcherNavigator({
 }: DispatcherProps) {
   const [open, setOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const requestedRef = useRef<HTMLButtonElement>(null);
   const navigationRef = useRef<HTMLDivElement>(null);
   const resultNavigation = useRef(false);
   const request = useDispatcherNavigation((s) => s.request);
   const tasks = usePeerTaskStore((s) => s.tasks);
   const customAgents = useAgentsStore((s) => s.customAgents);
   const agents = [...BUILTIN_AGENTS, ...customAgents];
-  const work = availableDispatcherTasks(tasks, sessions);
+  const work = visibleDispatcherTasks(tasks, sessions);
+  const neighbors = dispatcherTaskNeighbors(work, selectedId);
   const activeCount = work.filter(isPeerTaskActive).length;
   const attentionCount = work.filter(
     (task) => taskWorkGroup(task) === "attention",
@@ -81,14 +79,16 @@ export function DispatcherNavigator({
     setSelectedId(requestedTaskId ?? null);
     setOpen(true);
   }, [request, requestedTaskId]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Reopening the same task from chat must refocus its row even when selection is unchanged.
   useEffect(() => {
-    if (!open || !requestedTaskId || !request) return;
+    if (!open || !selectedId) return;
     const frame = requestAnimationFrame(() => {
-      requestedRef.current?.focus();
-      requestedRef.current?.scrollIntoView({ block: "nearest" });
+      const row = [...(navigationRef.current?.querySelectorAll<HTMLButtonElement>("[data-dispatcher-task-id]") ?? [])].find((button) => button.dataset.dispatcherTaskId === selectedId);
+      row?.focus();
+      row?.scrollIntoView({ block: "nearest" });
     });
     return () => cancelAnimationFrame(frame);
-  }, [open, requestedTaskId, request]);
+  }, [open, selectedId, request]);
   const changeOpen = (value: boolean) => {
     setOpen(value);
     if (!value) useDispatcherNavigation.setState({ request: null });
@@ -173,7 +173,7 @@ export function DispatcherNavigator({
               rows[next]?.focus();
             }}
           >
-            {groups.map(([group, label]) => {
+            {dispatcherTaskGroups.map(([group, label]) => {
               const entries = work.filter(
                 (task) => taskWorkGroup(task) === group,
               );
@@ -198,9 +198,6 @@ export function DispatcherNavigator({
                         key={task.id}
                         type="button"
                         data-dispatcher-task-id={task.id}
-                        ref={
-                          task.id === request?.taskId ? requestedRef : undefined
-                        }
                         aria-pressed={task.id === selectedId}
                         onClick={() => setSelectedId(task.id)}
                         className={cn(
@@ -243,6 +240,15 @@ export function DispatcherNavigator({
             className="max-h-[38dvh] min-w-0 overflow-y-auto min-[600px]:max-h-[55dvh]"
             aria-label="Selected task"
           >
+            <nav aria-label="Previous and next tasks" className="sticky top-0 z-10 mb-2 flex min-w-0 flex-wrap items-center justify-between gap-1 border-b border-[var(--clack-border-subtle)] bg-[var(--clack-surface-raised)] pb-2">
+              <button type="button" aria-label="Previous task" title="Previous task" disabled={!neighbors.previous} onClick={() => setSelectedId(neighbors.previous?.id ?? null)} className="inline-flex h-7 items-center gap-1 rounded px-1.5 outline-none hover:bg-accent disabled:opacity-40 focus-visible:ring-1 focus-visible:ring-[var(--clack-focus)]">
+                <HugeiconsIcon icon={ArrowLeft01Icon} size={14} /> Previous
+              </button>
+              <span role="status" className="text-[10px] tabular-nums text-[var(--clack-text-3)]">{neighbors.index < 0 ? "No task selected" : `Task ${neighbors.index + 1} of ${neighbors.count}`}</span>
+              <button type="button" aria-label="Next task" title="Next task" disabled={!neighbors.next} onClick={() => setSelectedId(neighbors.next?.id ?? null)} className="inline-flex h-7 items-center gap-1 rounded px-1.5 outline-none hover:bg-accent disabled:opacity-40 focus-visible:ring-1 focus-visible:ring-[var(--clack-focus)]">
+                Next <HugeiconsIcon icon={ArrowRight01Icon} size={14} />
+              </button>
+            </nav>
             {selected && ownerId ? (
               <Suspense fallback={<p role="status">Loading task details...</p>}>
                 <PeerTaskCard

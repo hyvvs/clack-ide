@@ -1,6 +1,25 @@
 import type { PeerTask } from "@/modules/ai/lib/peerTasks";
 import type { SessionMeta } from "@/modules/ai/lib/sessions";
 import { pendingPeerQuestion } from "@/modules/ai/lib/peerCommunication";
+import { taskWorkGroup, type WorkGroup } from "@/modules/ai/lib/taskPresentation";
+
+export const dispatcherTaskGroups: [WorkGroup, string][] = [
+  ["attention", "Needs attention"], ["active", "Active"], ["completed", "Completed"],
+];
+
+export function visibleDispatcherTasks(tasks: readonly PeerTask[], sessions: readonly SessionMeta[], group?: WorkGroup): PeerTask[] {
+  const available = availableDispatcherTasks(tasks, sessions);
+  return dispatcherTaskGroups.flatMap(([key]) => group && group !== key ? [] : available.filter((task) => taskWorkGroup(task) === key));
+}
+
+export function dispatcherTaskNeighbors(visible: readonly PeerTask[], selectedId: string | null) {
+  const index = visible.findIndex((task) => task.id === selectedId);
+  return {
+    index, count: visible.length,
+    previous: index > 0 ? visible[index - 1] : undefined,
+    next: index >= 0 ? visible[index + 1] : undefined,
+  };
+}
 
 export function workspaceDispatcherTasks(
   tasks: readonly PeerTask[],

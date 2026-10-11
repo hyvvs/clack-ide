@@ -395,6 +395,10 @@ it("retains isolated work when clarification cannot complete", async () => {
     checkoutRoot: "C:/cache/task",
     baseSha: "a".repeat(40),
   });
+  vi.spyOn(native, "gitStatus").mockResolvedValue({
+    repoRoot: task.workspaceRoot, branch: "main", upstream: null,
+    ahead: 0, behind: 0, isDetached: false, truncated: false, changedFiles: [],
+  });
   const remove = vi
     .spyOn(native, "gitAgentWorktreeRemove")
     .mockResolvedValue(undefined);

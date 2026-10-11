@@ -27,6 +27,7 @@ type PeerTaskStore = {
   recoveryReady: boolean;
   recoveryError: string | null;
   tasks: PeerTask[];
+  retryingTaskIds: string[];
   updateCommunication: (
     update: (tasks: PeerTask[]) => PeerTask[],
   ) => Promise<void>;
@@ -46,7 +47,7 @@ type PeerTaskStore = {
   markChangeSetApplied: (id: string) => void;
   setChangeSetApplyError: (id: string, message: string) => void;
   complete: (id: string, result: PeerTaskResult) => void;
-  fail: (id: string, error: PeerTaskError) => void;
+  fail: (id: string, error: PeerTaskError, preRunFailure?: true) => void;
   cancel: (
     targets: readonly PeerTaskCancellationTarget[],
   ) => PeerTaskCancellationTarget[];
@@ -84,6 +85,7 @@ export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
   recoveryReady: false,
   recoveryError: null,
   tasks: [],
+  retryingTaskIds: [],
   updateCommunication: async (update) => {
     if (!get().recoveryReady)
       throw new Error("Peer task recovery is not ready.");
@@ -266,7 +268,7 @@ export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
     set({ tasks });
     persist(tasks);
   },
-  fail: (id, error) => {
+  fail: (id, error, preRunFailure) => {
     const now = Date.now();
     const tasks = reconciled(
       get().tasks.map((item) =>
@@ -277,6 +279,7 @@ export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
           ? {
               ...item,
               status: "failed" as const,
+              preRunFailure,
               error,
               endedAt: now,
               updatedAt: now,

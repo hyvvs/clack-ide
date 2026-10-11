@@ -38,6 +38,13 @@ vi.mock("@/modules/ai/lib/peerTaskCoordinator", () => ({
   requestPeerTask: vi.fn(),
   applyPeerTaskChangeSet: vi.fn(),
 }));
+vi.mock("@/modules/ai/store/peerTaskStore", async (original) => {
+  const actual = await original<typeof import("@/modules/ai/store/peerTaskStore")>();
+  return { ...actual, usePeerTaskStore: Object.assign(
+    (select: (s: ReturnType<typeof actual.usePeerTaskStore.getState>) => unknown) => select(actual.usePeerTaskStore.getState()),
+    actual.usePeerTaskStore,
+  ) };
+});
 vi.mock("@/modules/ai/store/chatStore", async (original) => {
   const actual =
     await original<typeof import("@/modules/ai/store/chatStore")>();
@@ -138,7 +145,8 @@ beforeEach(() => {
       openWorkspaceSourceControl: vi.fn(),
     },
   });
-  usePeerTaskStore.setState({ tasks: [task] });
+  usePeerTaskStore.setState({ tasks: [task], recoveryReady: true, retryingTaskIds: [] });
+  vi.spyOn(native, "gitStatus").mockResolvedValue({ repoRoot: "/fixture", branch: "main", upstream: null, ahead: 0, behind: 0, isDetached: false, truncated: false, changedFiles: [] });
   vi.spyOn(native, "canonicalize").mockImplementation(async (path) => path);
   vi.spyOn(native, "stat").mockResolvedValue({
     kind: "file",
@@ -472,6 +480,55 @@ describe("safe result navigation", () => {
   });
 });
 describe("effects-safe retry", () => {
+  it.each(["provider_unavailable", "model_loading", "backend_restart", "network", "timeout"] as const)("allows proven pre-effect %s failures", async (kind) => {
+    failed();
+    if (!target.run?.error) throw new Error("Missing run");
+    target.run.error.kind = kind;
+    task.error = { code: "peer_run_failed", message: "Provider could not start" };
+    expect(taskRetryEligibility(task, target, messages)).toBe(true);
+    await retryTaskWithoutEffects(task.id, "source");
+    expect(requestPeerTask).toHaveBeenCalledWith(expect.objectContaining({ retryOfTaskId: task.id, awaitCompletion: false }));
+  });
+  it("allows context preflight failure without weakening B1", () => {
+    failed();
+    if (!target.run?.error) throw new Error("Missing run");
+    target.run.error = { ...target.run.error, kind: "bad_request", title: "Context preflight" };
+    expect(taskRetryEligibility(task, target, messages)).toBe(true);
+  });
+  it("never retries authentication or authorization failures", async () => {
+    failed();
+    if (!target.run?.error) throw new Error("Missing run");
+    target.run.error.kind = "authentication";
+    task.error = { code: "authentication", message: "Invalid API key" };
+    expect(taskRetryEligibility(task, target, messages)).toBe(false);
+    expect(renderToStaticMarkup(<PeerTaskOutcome task={task} sessionId="source" />)).toContain("Fix connection");
+    await expect(retryTaskWithoutEffects(task.id, "source")).rejects.toThrow("reviewing");
+  });
+  it("checks dirty workspace prerequisites without modifying files", async () => {
+    failed();
+    task.preRunFailure = true;
+    task.executionMode = "isolated-worktree";
+    task.error = { code: "peer_run_failed", message: "workspace has uncommitted changes" };
+    target.run = undefined;
+    vi.mocked(native.gitStatus).mockResolvedValueOnce({ truncated: false, changedFiles: [{}] } as Awaited<ReturnType<typeof native.gitStatus>>);
+    await expect(retryTaskWithoutEffects(task.id, "source")).rejects.toThrow("Source Control");
+    expect(requestPeerTask).not.toHaveBeenCalled();
+    await retryTaskWithoutEffects(task.id, "source");
+    expect(requestPeerTask).toHaveBeenCalledTimes(1);
+  });
+  it.each(["unknown", "completed"])("blocks %s external effect independently of visible tool output", async (effect) => {
+    failed();
+    vi.mocked(executionHistory).mockResolvedValue([{ runId: 10, effect }] as Awaited<ReturnType<typeof executionHistory>>);
+    await expect(retryTaskWithoutEffects(task.id, "source")).rejects.toThrow("Previous tool executions");
+    expect(requestPeerTask).not.toHaveBeenCalled();
+  });
+  it("retains both lineage directions on the shared outcome surface", () => {
+    failed();
+    const next = { ...task, id: "attempt", parentTaskId: task.id, retryOfTaskId: task.id, status: "completed" as const };
+    usePeerTaskStore.setState({ tasks: [next, task] });
+    expect(renderToStaticMarkup(<PeerTaskOutcome task={task} sessionId="source" />)).toContain("Retried as - completed");
+    expect(renderToStaticMarkup(<PeerTaskOutcome task={next} sessionId="source" />)).toContain("Previous attempt - failed");
+  });
   it("starts a new existing-coordinator task, retaining the failed original", async () => {
     failed();
     expect(taskRetryEligibility(task, target, messages)).toBe(true);

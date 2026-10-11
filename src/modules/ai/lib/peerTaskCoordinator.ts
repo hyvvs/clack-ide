@@ -8,6 +8,8 @@ import {
   PEER_TASK_MAX_ACTIVE,
   PEER_TASK_MAX_HOPS,
   PEER_TASK_MAX_PER_ROOT,
+  PEER_TASK_MAX_INPUT_ARTIFACTS,
+  PEER_TASK_MAX_INPUT_ARTIFACT_BYTES,
   PEER_TASK_SCHEMA_VERSION,
   newPeerTaskId,
   peerTaskFingerprint,
@@ -37,6 +39,9 @@ import {
   retainPeerTaskArtifactContent,
 } from "./peerTaskArtifacts";
 import { native } from "./native";
+import { checkTaskRetry } from "@/modules/ai/lib/taskResultActions";
+import { taskRetryEligibility } from "@/modules/ai/lib/taskPresentation";
+import { loadAttachmentContent } from "@/modules/ai/lib/attachmentStore";
 import {
   acquireWorkspaceWriteLease,
   releaseWorkspaceWriteLeasesForSession,
@@ -72,6 +77,7 @@ export type PeerTaskRequest = {
   dependsOn?: string[];
   awaitCompletion?: boolean;
   followUpTo?: string;
+  retryOfTaskId?: string;
 };
 
 export type PeerTaskRequestResult =
@@ -97,9 +103,26 @@ export async function requestPeerTask(
   const { source, target, parent, rootTaskId, hopCount, dependsOn } =
     validation;
   const capturedProfiles = JSON.stringify([source.profile, target.profile]);
+  const capturedRun = target.run;
+  const capturedMessages = getChat(target.id)?.messages;
+  let retry: PeerTask | undefined;
   let artifacts: PeerTaskArtifact[];
   try {
-    artifacts = await packagePeerTaskArtifacts(
+    if (request.retryOfTaskId) {
+      retry = await checkTaskRetry(request.retryOfTaskId, request.sourceSessionId);
+      if (retry.artifactRefs.length > PEER_TASK_MAX_INPUT_ARTIFACTS ||
+        retry.artifactRefs.reduce((total, artifact) => total + artifact.byteSize, 0) > PEER_TASK_MAX_INPUT_ARTIFACT_BYTES)
+        throw new Error("Retry artifacts exceed the existing delegation bounds.");
+      for (const artifact of retry.artifactRefs) {
+        if (artifact.workspaceId !== retry.workspaceId || !Number.isSafeInteger(artifact.byteSize) || artifact.byteSize < 0 || artifact.contentRef.byteSize !== artifact.byteSize)
+          throw new Error("Retry artifact identity or size is invalid.");
+        const bytes = await loadAttachmentContent(artifact.contentRef.id);
+        const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes).buffer)), (b) => b.toString(16).padStart(2, "0")).join("");
+        if (bytes.length !== artifact.byteSize || hash !== artifact.contentRef.contentHash || hash !== artifact.contentRef.id)
+          throw new Error("Retry artifact integrity check failed; no filesystem substitute was read.");
+      }
+      artifacts = retry.artifactRefs;
+    } else artifacts = await packagePeerTaskArtifacts(
       {
         pathRefs: request.artifactRefs,
         attachmentRecords: request.attachmentRecords,
@@ -139,14 +162,15 @@ export async function requestPeerTask(
         currentValidation.target.profile,
       ]) ||
     currentValidation.rootTaskId !== rootTaskId ||
-    currentValidation.parent !== parent
+    currentValidation.parent !== parent ||
+    (retry && (currentValidation.target.run !== capturedRun || getChat(target.id)?.messages !== capturedMessages))
   )
     return {
       ok: false,
       code: "peer_request_stale",
       message: "Task identities changed during artifact preparation.",
     };
-  if (hasRepeatedTask(fingerprint, parent ? rootTaskId : null)) {
+  if (!retry && hasRepeatedTask(fingerprint, parent ? rootTaskId : null)) {
     return {
       ok: false,
       code: "peer_task_repeated",
@@ -176,6 +200,7 @@ export async function requestPeerTask(
     prompt: request.prompt.trim(),
     artifactRefs: artifacts,
     parentTaskId: parent?.id ?? null,
+    ...(retry ? { retryOfTaskId: retry.id } : {}),
     rootTaskId,
     hopCount,
     dependsOn,
@@ -248,6 +273,10 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
     });
     return;
   }
+  if (task.retryOfTaskId && (target.profile?.agentId !== task.targetAgentId || target.profile?.modelId !== task.targetModelId)) {
+    peerStore.fail(taskId, { code: "peer_retry_identity_changed", message: "The captured retry Agent/model changed before dispatch. No task was replayed." });
+    return;
+  }
   if (target.run?.state === "running") return;
   if (
     !target.profile?.workspaceId ||
@@ -264,6 +293,7 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
   if (!claimed) return;
   let worktreeCreated = false;
   let captureStarted = false;
+  let possibleEffect = false;
   try {
     await flushPeerTasks();
     let checkout: { checkoutId: string; checkoutRoot: string } | undefined;
@@ -296,6 +326,10 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
       if (!setupLease.ok) throw new Error(setupLease.message);
       const worktree = await (async () => {
         try {
+          const status = await native.gitStatus(repo.repoRoot);
+          if (status.truncated || status.changedFiles.length)
+            throw new Error("workspace has uncommitted changes; commit or stash in Source Control");
+          possibleEffect = true;
           return await native.gitAgentWorktreeCreate(repo.repoRoot, claimed.id);
         } finally {
           releaseWorkspaceWriteLeasesForSession(setupLeaseId);
@@ -361,6 +395,7 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
         (message) => message.id,
       ),
     );
+    possibleEffect = true;
     await sendMessageToSession(
       claimed.targetSessionId,
       {
@@ -502,10 +537,11 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
     }
     if (cancelled) return;
     const normalized = normalizeAiError(error, { disposition: "terminal" });
-    usePeerTaskStore.getState().fail(claimed.id, {
-      code: peerArtifactFailureCode(error),
-      message: normalized.message,
-    });
+    usePeerTaskStore.getState().fail(
+      claimed.id,
+      { code: peerArtifactFailureCode(error), message: normalized.message },
+      possibleEffect ? undefined : true,
+    );
   } finally {
     if (peerWaitingSessions.delete(claimed.targetSessionId)) {
       useChatStore.getState().finishRun(claimed.targetSessionId, "failed");
@@ -720,6 +756,19 @@ function validateRequest(
     };
   }
   const tasks = usePeerTaskStore.getState().tasks;
+  const retry = request.retryOfTaskId ? tasks.find((task) => task.id === request.retryOfTaskId) : undefined;
+  if (request.retryOfTaskId && (
+    !retry || request.followUpTo ||
+    retry.sourceSessionId !== source.id || retry.targetSessionId !== target.id ||
+    retry.workspaceId !== sourceProfile.workspaceId ||
+    retry.prompt !== prompt || retry.kind !== request.kind ||
+    retry.executionMode !== (request.executionMode ?? "read-only") ||
+    JSON.stringify(retry.dependsOn) !== JSON.stringify(request.dependsOn ?? []) ||
+    request.artifactRefs?.length || request.attachmentRecords?.length || request.attachmentReferences?.length ||
+    !taskRetryEligibility(retry, target, getChat(target.id)?.messages ?? []) ||
+    tasks.some((task) => task.retryOfTaskId === retry.id ||
+      (task.targetSessionId === target.id && ["running", "queued", "waiting"].includes(task.status)))
+  )) return { ok: false, code: "peer_retry_denied", message: "Retry intent, identity or effect state changed. Review the existing attempt." };
   const activeTaskCount = tasks.filter(
     (task) =>
       task.status === "waiting" ||
@@ -748,12 +797,12 @@ function validateRequest(
       message:
         "Review/correction must follow your own completed task in this workspace.",
     };
-  const parentId = followUp?.id ?? source.run?.peerTaskId ?? null;
+  const parentId = retry?.id ?? followUp?.id ?? source.run?.peerTaskId ?? null;
   const parent = parentId
     ? (tasks.find((task) => task.id === parentId) ?? null)
     : null;
   const rootTaskId = parent?.rootTaskId ?? parent?.id ?? taskId;
-  const hopCount = parent ? parent.hopCount + 1 : 0;
+  const hopCount = retry ? retry.hopCount : parent ? parent.hopCount + 1 : 0;
   if (hopCount > PEER_TASK_MAX_HOPS) {
     return {
       ok: false,

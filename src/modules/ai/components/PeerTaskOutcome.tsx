@@ -10,12 +10,14 @@ import {
 } from "@/modules/ai/lib/taskPresentation";
 import {
   canAccessTaskResult,
+  checkTaskRetry,
   openTaskFile,
   readTaskArtifact,
   retryTaskWithoutEffects,
 } from "@/modules/ai/lib/taskResultActions";
 import { getChat, useChatStore } from "@/modules/ai/store/chatStore";
-import { focusTaskConversationPane } from "@/modules/ai/store/dispatcherNavigation";
+import { focusTaskConversationPane, viewTaskInDispatcher } from "@/modules/ai/store/dispatcherNavigation";
+import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
 
 export function PeerTaskOutcome({
@@ -32,6 +34,13 @@ export function PeerTaskOutcome({
   const sessions = useChatStore((s) => s.sessions);
   const live = useChatStore((s) => s.live);
   const tasks = usePeerTaskStore((s) => s.tasks);
+  const retryPending = usePeerTaskStore((s) => s.retryingTaskIds.includes(task.id));
+  const recoveryReady = usePeerTaskStore((s) => s.recoveryReady);
+  const [retryCheck, setRetryCheck] = useState<{
+    allowed: boolean;
+    reason: string;
+  }>({ allowed: false, reason: "Checking retry safety..." });
+  const [retryCheckVersion, setRetryCheckVersion] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -57,7 +66,11 @@ export function PeerTaskOutcome({
       s.profile?.workspaceId === task.workspaceId,
   );
   const failure = taskFailure(task);
-  const retryable =
+  const retriedAs = tasks.find((t) => t.retryOfTaskId === task.id);
+  const previousAttempt = tasks.find((t) => t.id === task.retryOfTaskId);
+  const retryCandidate =
+    recoveryReady &&
+    !retriedAs &&
     accessible &&
     !tasks.some(
       (t) =>
@@ -69,6 +82,27 @@ export function PeerTaskOutcome({
       target,
       getChat(task.targetSessionId)?.messages ?? [],
     );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Recheck native safety when the captured owner changes or the user explicitly refreshes prerequisites.
+  useEffect(() => {
+    let current = true;
+    setRetryCheck({
+      allowed: false,
+      reason: retryCandidate
+        ? "Checking retry safety..."
+        : "Retry unavailable; review existing effects, recovery or changed task identity first.",
+    });
+    if (retryCandidate)
+      void checkTaskRetry(task.id, sessionId).then(
+        () => { if (current) setRetryCheck({ allowed: true, reason: "" }); },
+        (err) => {
+          if (current) setRetryCheck({
+            allowed: false,
+            reason: err instanceof Error ? err.message : "Retry safety unavailable.",
+          });
+        },
+      );
+    return () => { current = false; };
+  }, [retryCandidate, task.id, sessionId, target, retryCheckVersion]);
   const action = async (work: () => Promise<unknown>) => {
     if (busy) return;
     const ticket = generation.current;
@@ -100,6 +134,12 @@ export function PeerTaskOutcome({
       aria-label="Task outcome"
       className="min-w-0 space-y-2 [overflow-wrap:anywhere]"
     >
+      {(retriedAs || previousAttempt) && (
+        <div className="flex min-w-0 flex-wrap gap-2">
+          {previousAttempt && <Button size="sm" variant="outline" className="h-auto max-w-full whitespace-normal text-xs" onClick={() => viewTaskInDispatcher(previousAttempt.id, sessionId)}>Previous attempt - {previousAttempt.status}</Button>}
+          {retriedAs && <Button size="sm" variant="outline" className="h-auto max-w-full whitespace-normal text-xs" onClick={() => viewTaskInDispatcher(retriedAs.id, sessionId)}>Retried as - {retriedAs.status}</Button>}
+        </div>
+      )}
       {changeSet && (
         <div className="space-y-2 border-b border-[var(--clack-border-subtle)] pb-2">
           <p className="font-semibold">{taskOutcomeLabel(task)}</p>
@@ -206,25 +246,32 @@ export function PeerTaskOutcome({
                   View Source Control
                 </Button>
               )}
-            {failure.kind === "rate-limit" && retryable && (
+            {(retryCandidate || retryPending) && (
               <Button
                 size="sm"
-                variant="outline"
                 className="h-auto whitespace-normal text-xs"
-                disabled={busy}
+                disabled={busy || retryPending || !retryCheck.allowed}
                 onClick={() =>
                   void action(async () => {
                     const ticket = generation.current;
-                    await retryTaskWithoutEffects(task.id, sessionId);
-                    if (ticket === generation.current)
+                    const attempt = await retryTaskWithoutEffects(task.id, sessionId);
+                    if (ticket === generation.current) {
+                      viewTaskInDispatcher(attempt.id, sessionId);
                       setNotice(
                         "New task attempt assigned; the failed record is retained.",
                       );
+                    }
                   })
                 }
               >
-                Retry task
+                {retryPending ? "Retrying..." : "Retry task"}
               </Button>
+            )}
+            {retryCandidate && !retryCheck.allowed && !retryPending && (
+              <Button size="sm" variant="outline" className="h-auto whitespace-normal text-xs" disabled={busy} onClick={() => setRetryCheckVersion((version) => version + 1)}>Check retry availability</Button>
+            )}
+            {accessible && (failure.kind === "auth" || target?.run?.error?.kind === "authentication" || target?.run?.error?.kind === "authorization") && (
+              <Button size="sm" variant="outline" className="h-auto whitespace-normal text-xs" onClick={() => void openSettingsWindow("models")}>Fix connection</Button>
             )}
             {failure.kind === "rate-limit" && target && (
               <Button
@@ -237,10 +284,9 @@ export function PeerTaskOutcome({
               </Button>
             )}
           </div>
-          {failure.kind === "rate-limit" && !retryable && (
+          {!retriedAs && !retryCheck.allowed && !retryPending && (
             <p className="text-[var(--clack-text-3)]">
-              Retry unavailable until the task's effects and recovery state are
-              reviewed.
+              {retryCheck.reason}
             </p>
           )}
           <details>

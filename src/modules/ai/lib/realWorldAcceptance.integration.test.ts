@@ -256,6 +256,10 @@ beforeEach(async () => {
     upstream: null,
     isDetached: false,
   });
+  vi.spyOn(native, "gitStatus").mockImplementation(async () => ({
+    repoRoot: root, branch: "main", upstream: null, ahead: 0, behind: 0, isDetached: false, truncated: false,
+    changedFiles: git(root, "status", "--porcelain").trim() ? [{ path: "fixture-change", originalPath: null, indexStatus: "M", worktreeStatus: "M", staged: false, unstaged: true, untracked: false, statusLabel: "Modified" }] : [],
+  }));
   vi.spyOn(native, "gitAgentWorktreeCreate").mockImplementation(
     async (_repo, id) => {
       if (git(root, "status", "--porcelain").trim())

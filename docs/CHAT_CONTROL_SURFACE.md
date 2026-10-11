@@ -258,3 +258,73 @@ fixtures exposed clipped Settings actions and verified the bounded-scroll fixes.
 Native Tauri, live providers, real patch application and Linux/macOS GUI interaction:
 **Not performed - explicitly excluded by the user**. Real human validation of
 discoverability and recovery remains necessary. No push or subsequent checkpoint.
+
+## Failed Task Retry And Previous/Next Navigation
+
+Both the chat task card and Dispatcher selected-task detail use `PeerTaskOutcome`
+and the same `checkTaskRetry` / `retryTaskWithoutEffects` coordinator path. Retry is
+enabled only after native execution history validates the absence of effects. The
+existing PeerTask store owns transient `retryingTaskIds`, so both surfaces disable
+duplicate clicks and immediately show `Retrying...`. Creating the new attempt opens
+its exact Dispatcher row without changing the active conversation or pane bindings.
+If that task surface is dismissed/replaced during checks, a stale callback does not
+reopen Dispatcher or steal focus; the new attempt remains in the same shared store.
+
+Eligible failures are captured-run rate limits, provider unavailability, model
+loading/backend restart, network/timeouts and context preflight before output/tool
+state. Context preflight still runs normally on the new attempt; Retry does not
+override B1. Setup/handoff preparation failures are eligible only with a durable
+`preRunFailure` receipt written in the same existing ledger update as the failure.
+That receipt is never granted after a possible worktree creation or inference run.
+Isolated setup first checks Git cleanliness under the existing setup write lease;
+native worktree creation retains its own cleanliness/authorization enforcement.
+
+No blind retry is allowed for returned results, patches, preserved worktrees,
+restart/recovery ambiguity, assistant output/reasoning/tool parts, current-run or
+unknown-run native executions (including completed reads and MCP/custom-tool
+effects), missing execution history, changed captured Agent/model/workspace/run,
+or another active target assignment. Authentication/authorization failures offer
+`Fix connection` instead. Dirty workspaces offer Source Control; Retry stays disabled
+until an explicit `Check retry availability` verifies clean, non-truncated status.
+Clack never commits or stashes on the user's behalf. Legacy setup failures lacking
+a receipt remain conservative; prior assistant evidence can also prevent retry.
+Changing the captured target Agent/model requires an explicit new assignment.
+
+Retry retains the failed record and creates a new PeerTask with `retryOfTaskId` and
+`parentTaskId` pointing to it, preserving the existing root and delegation hop count.
+Original prompt, target identities, execution/permission mode and dependencies are
+retained; the failed attempt is not added as a completion prerequisite. Explicit
+immutable artifacts are reused with their complete original provenance, bounded by
+existing artifact limits and hash/size checks. Missing/corrupt content is never
+substituted from a filesystem path. Existing active/root/dependency limits, write
+leases, approvals, cancellation, persistence CAS and no-replay recovery still apply.
+An original can have only one direct retry; later explicit attempts retry the newest
+eligible failure. Both lineage directions are inspectable after serialization/restart
+through the existing bounded version-7 task ledger's additive optional metadata.
+
+Previous/Next uses the exact displayed sequence: Needs attention, Active, Completed,
+then descending update time and stable ID within each group. Availability/owner
+filtering is applied before navigation. The shared sequence helper also supports a
+group-filtered input; the current Dispatcher displays all available groups, not a
+new filter UI. First/last buttons are disabled without wrapping, `Task N of M` gives
+position, and selection remains keyed by task ID when updates reorder the list.
+Deleted/unavailable selections safely show no selection with disabled navigation.
+Buttons have explicit accessible names, select/focus the neighboring visible row,
+and preserve the existing Arrow Up/Down/Home/End list behavior.
+
+Verification: **227 focused tests / 9 files passed**, plus **17 clarification
+regression tests / 1 file passed** after updating its clean-workspace fixture.
+Full frontend: **2,460 tests / 191 files passed**. TypeScript, production build and
+`git diff --check` passed. Lint remains **71 warnings / 2 informational notices**,
+with no errors. Existing mixed static/dynamic import and plugin-timing build warnings
+remain. No Rust code changed; Rust gates were not rerun.
+
+`check-first-use-ai-workflows.mjs` passed all **10 headless browser cases** at
+1280/390/320/280 CSS pixels and 200% equivalent scaling (640 physical / 320 CSS,
+DPR 2), light/dark. Coverage includes exact visible-order Previous/Next, boundaries,
+keyboard activation and row focus, shared retry/pending/lineage, unchanged chat/pane
+ownership, dismissal during retry, deletion, grouping, immutable artifact and Review/Apply/Open regressions,
+and horizontal bounds. Native IPC/provider/coordinator execution is mocked in this
+browser fixture; actual coordinator and real-file/Git workflows run in the automated
+integration group. **Computer Use, native GUI and live-provider verification were
+not performed, as requested.** No push or subsequent checkpoint.

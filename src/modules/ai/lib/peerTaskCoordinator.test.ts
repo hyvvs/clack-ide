@@ -2,6 +2,7 @@ import type { Chat, UIMessage } from "@ai-sdk/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/modules/ai/lib/peerHandoffRuntime", () => ({ preparePeerTaskHandoff: vi.fn().mockResolvedValue(null) }));
+vi.mock("@/modules/ai/lib/customToolExecution", () => ({ executionHistory: vi.fn().mockResolvedValue([]) }));
 
 vi.mock("../store/chatRuntime", () => ({
   sendMessageToSession: vi.fn().mockResolvedValue(undefined),
@@ -11,6 +12,7 @@ vi.mock("./attachmentStore", async (importOriginal) => {
   const original = await importOriginal<typeof import("./attachmentStore")>();
   return {
     ...original,
+    loadAttachmentContent: vi.fn(),
     storeAttachmentContent: vi.fn(async (bytes: Uint8Array) => ({
       id: "b".repeat(64),
       contentHash: "b".repeat(64),
@@ -68,11 +70,15 @@ import { clearWorkspaceWriteLeasesForTests } from "./workspaceWriteLease";
 import type { AttachmentMessageReference } from "./attachmentMessages";
 import { beginInference, sessionInference } from "@/modules/ai/lib/inferenceLifecycle";
 import { selectDispatchablePeerTaskIds, recoverPeerTaskLedger } from "@/modules/ai/lib/peerTaskDependencies";
+import { retryTaskWithoutEffects } from "@/modules/ai/lib/taskResultActions";
+import { normalizePeerTask } from "@/modules/ai/lib/peerTasks";
+import { loadAttachmentContent } from "@/modules/ai/lib/attachmentStore";
 
 const SOURCE = "chat-source";
 const TARGET = "chat-target";
 
 beforeEach(() => {
+  vi.spyOn(native, "gitStatus").mockResolvedValue({ repoRoot: "C:/workspace", branch: "main", upstream: null, ahead: 0, behind: 0, isDetached: false, truncated: false, changedFiles: [] });
   vi.mocked(sendMessageToSession).mockClear();
   vi.mocked(sendMessageToSession).mockImplementation(async () => {
     const chat = chats.get(TARGET);
@@ -93,10 +99,12 @@ beforeEach(() => {
     recoveryReady: true,
     recoveryError: null,
     tasks: [],
+    retryingTaskIds: [],
   });
   useChatStore.setState({
     activeSessionId: SOURCE,
     sessionsHydrated: true,
+    live: { ...useChatStore.getState().live, getWorkspaceRoot: () => "C:/workspace" },
     sessions: [
       session(SOURCE, "agent-a", "model-a"),
       session(TARGET, "agent-b", "model-b"),
@@ -1041,6 +1049,63 @@ describe("peer task coordination", () => {
 });
 
 describe("peer task persistence recovery", () => {
+  it.each(["missing", "corrupt"])("fails closed on %s immutable retry evidence", async (kind) => {
+    const failed = task({ status: "failed", preRunFailure: true, artifactRefs: [peerArtifact("source.md", "input")] });
+    usePeerTaskStore.setState({ tasks: [failed] });
+    if (kind === "missing") vi.mocked(loadAttachmentContent).mockRejectedValueOnce(new Error("Missing immutable content"));
+    else vi.mocked(loadAttachmentContent).mockResolvedValueOnce(new Uint8Array(10));
+    await expect(retryTaskWithoutEffects(failed.id, SOURCE)).rejects.toThrow();
+    expect(usePeerTaskStore.getState().tasks).toEqual([failed]);
+    expect(sendMessageToSession).not.toHaveBeenCalled();
+  });
+  it("denies direct retry requests that change the captured intent", async () => {
+    const failed = task({ status: "failed", preRunFailure: true });
+    usePeerTaskStore.setState({ tasks: [failed] });
+    await expect(requestPeerTask({ sourceSessionId: SOURCE, targetSessionId: TARGET, kind: failed.kind, prompt: "Different task", retryOfTaskId: failed.id })).resolves.toMatchObject({ ok: false, code: "peer_retry_denied" });
+    expect(sendMessageToSession).not.toHaveBeenCalled();
+  });
+  it("creates exactly one linked retry through the real coordinator, preserving intent, artifacts, dependencies and restart history", async () => {
+    const bytes = new TextEncoder().encode("immutable");
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), b => b.toString(16).padStart(2, "0")).join("");
+    const input = { ...peerArtifact("source.md", "input"), byteSize: bytes.length, contentRef: { id: hash, contentHash: hash, byteSize: bytes.length } };
+    const prerequisite = task({ id: "prerequisite", rootTaskId: "chain", status: "completed" });
+    const original = task({ id: "failed", rootTaskId: "chain", hopCount: 1, parentTaskId: prerequisite.id, dependsOn: [prerequisite.id], status: "failed", preRunFailure: true, artifactRefs: [input], error: { code: "peer_run_failed", message: "Preparation unavailable" } });
+    usePeerTaskStore.setState({ tasks: [original, prerequisite] });
+    vi.mocked(loadAttachmentContent).mockResolvedValue(bytes);
+    const requests = await Promise.allSettled([retryTaskWithoutEffects(original.id, SOURCE), retryTaskWithoutEffects(original.id, SOURCE)]);
+    const successful = requests.find(r => r.status === "fulfilled");
+    expect(successful?.status).toBe("fulfilled");
+    if (successful?.status !== "fulfilled") return;
+    const retry = successful.value;
+    expect(usePeerTaskStore.getState().tasks.filter(t => t.retryOfTaskId === original.id)).toHaveLength(1);
+    expect(retry).toMatchObject({ retryOfTaskId: original.id, parentTaskId: original.id, rootTaskId: original.rootTaskId, hopCount: original.hopCount, dependsOn: original.dependsOn, artifactRefs: original.artifactRefs, prompt: original.prompt, targetAgentId: original.targetAgentId, targetModelId: original.targetModelId, executionMode: original.executionMode });
+    expect(original.status).toBe("failed");
+    await vi.waitFor(() => expect(usePeerTaskStore.getState().tasks.find(t => t.id === retry.id)?.status).toBe("completed"));
+    const restored = JSON.parse(JSON.stringify(usePeerTaskStore.getState().tasks)).map(normalizePeerTask);
+    expect(restored.find((t: PeerTask) => t.id === retry.id)).toMatchObject({ retryOfTaskId: original.id, status: "completed" });
+    expect(restored.find((t: PeerTask) => t.id === original.id)).toMatchObject({ status: "failed", error: original.error });
+    await expect(retryTaskWithoutEffects(original.id, SOURCE)).rejects.toThrow("already assigned");
+  });
+  it("records a dirty pre-start failure without creating a worktree or running the agent", async () => {
+    const failed = task({ executionMode: "isolated-worktree" });
+    usePeerTaskStore.setState({ tasks: [failed] });
+    vi.spyOn(native, "gitResolveRepo").mockResolvedValue({ repoRoot: "C:/workspace", branch: "main", upstream: null, isDetached: false });
+    vi.mocked(native.gitStatus).mockResolvedValue({ truncated: false, changedFiles: [{}] } as Awaited<ReturnType<typeof native.gitStatus>>);
+    const create = vi.spyOn(native, "gitAgentWorktreeCreate");
+    await dispatchPeerTask(failed.id);
+    expect(usePeerTaskStore.getState().tasks[0]).toMatchObject({ status: "failed", preRunFailure: true });
+    expect(create).not.toHaveBeenCalled();
+    expect(sendMessageToSession).not.toHaveBeenCalled();
+  });
+  it("never marks an ambiguous native worktree creation failure as pre-effect", async () => {
+    usePeerTaskStore.setState({ tasks: [task({ executionMode: "isolated-worktree" })] });
+    vi.spyOn(native, "gitResolveRepo").mockResolvedValue({ repoRoot: "C:/workspace", branch: "main", upstream: null, isDetached: false });
+    vi.spyOn(native, "gitAgentWorktreeCreate").mockRejectedValue(new Error("lost native response after creation"));
+    await dispatchPeerTask("task");
+    expect(usePeerTaskStore.getState().tasks[0]).toMatchObject({ status: "failed" });
+    expect(usePeerTaskStore.getState().tasks[0].preRunFailure).toBeUndefined();
+    await expect(retryTaskWithoutEffects("task", SOURCE)).rejects.toThrow("reviewing");
+  });
   it("marks an in-flight task failed instead of replaying billed work", () => {
     const recovered = recoverInterruptedPeerTasks(
       [task({ status: "running" }), task({ id: "queued", status: "queued" })],

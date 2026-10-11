@@ -14,7 +14,6 @@ import { getChat, useChatStore } from "@/modules/ai/store/chatStore";
 import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
 import type { PeerTask } from "@/modules/ai/lib/peerTasks";
 import { executionHistory } from "@/modules/ai/lib/customToolExecution";
-import { peerTaskArtifactToMessagePart } from "@/modules/ai/lib/peerTaskArtifacts";
 
 export function canAccessTaskResult(
   task: PeerTask,
@@ -182,54 +181,64 @@ export async function readTaskArtifact(
   };
 }
 
-const retrying = new Set<string>();
+export async function checkTaskRetry(taskId: string, sessionId: string) {
+  const task = ownedTask(taskId, sessionId);
+  const target = useChatStore.getState().sessions.find(
+    (s) => s.id === task.targetSessionId,
+  );
+  const liveChat = getChat(task.targetSessionId);
+  const messages = liveChat?.messages ?? [];
+  const validate = () => {
+    if (
+      ownedTask(taskId, sessionId) !== task ||
+      useChatStore.getState().sessions.find((s) => s.id === target?.id) !== target ||
+      getChat(task.targetSessionId) !== liveChat ||
+      (liveChat && liveChat.messages !== messages) ||
+      !taskRetryEligibility(task, target, messages)
+    )
+      throw new Error("This task cannot be retried without reviewing its effects or changed identity.");
+    if (usePeerTaskStore.getState().tasks.some((t) =>
+      t.retryOfTaskId === task.id ||
+      (t.targetSessionId === task.targetSessionId &&
+        ["running", "queued", "waiting"].includes(t.status)),
+    ))
+      throw new Error("Another attempt is already assigned to this conversation.");
+    if (!usePeerTaskStore.getState().recoveryReady)
+      throw new Error("Task recovery must finish before retrying.");
+  };
+  validate();
+  const records = await executionHistory(task.targetSessionId);
+  if (records.some((r) =>
+    r.runId == null ||
+    (task.preRunFailure
+      ? !Number.isFinite(r.createdAt) || r.createdAt >= (task.startedAt ?? task.createdAt)
+      : r.runId === target?.run?.startedAt),
+  ))
+    throw new Error("Previous tool executions require review; no request was replayed.");
+  if (task.executionMode === "isolated-worktree") {
+    const status = await native.gitStatus(task.workspaceRoot);
+    if (status.truncated || status.changedFiles.length)
+      throw new Error("Commit or stash changes in Source Control, then check retry availability.");
+  }
+  validate();
+  return task;
+}
+
 export async function retryTaskWithoutEffects(
   taskId: string,
   sessionId: string,
 ) {
-  if (retrying.has(taskId))
+  if (usePeerTaskStore.getState().retryingTaskIds.includes(taskId))
     throw new Error("Task retry already being checked.");
-  retrying.add(taskId);
+  usePeerTaskStore.setState((s) => ({
+    retryingTaskIds: [...s.retryingTaskIds, taskId],
+  }));
   try {
-    const task = ownedTask(taskId, sessionId);
-    const chat = useChatStore.getState();
-    const target = chat.sessions.find((s) => s.id === task.targetSessionId);
-    const messages = getChat(task.targetSessionId)?.messages ?? [];
-    if (!taskRetryEligibility(task, target, messages))
-      throw new Error(
-        "This task cannot be retried without reviewing its effects.",
-      );
-    const competing = () =>
-      usePeerTaskStore
-        .getState()
-        .tasks.some(
-          (t) =>
-            t.targetSessionId === task.targetSessionId &&
-            ["running", "queued", "waiting"].includes(t.status),
-        );
-    if (competing())
-      throw new Error("Another task is already assigned to this conversation.");
-    const records = await executionHistory(task.targetSessionId);
-    if (
-      records.some((r) => r.runId === target?.run?.startedAt || r.runId == null)
-    )
-      throw new Error(
-        "Previous tool executions require review; no request was replayed.",
-      );
+    const task = await checkTaskRetry(taskId, sessionId);
     const { requestPeerTask } = await import(
       "@/modules/ai/lib/peerTaskCoordinator"
     );
-    if (
-      competing() ||
-      ownedTask(taskId, sessionId) !== task ||
-      useChatStore.getState().sessions.find((s) => s.id === target?.id) !==
-        target ||
-      !taskRetryEligibility(
-        task,
-        target,
-        getChat(task.targetSessionId)?.messages ?? [],
-      )
-    )
+    if (ownedTask(taskId, sessionId) !== task)
       throw new Error("Task changed during retry checks.");
     const result = await requestPeerTask({
       sourceSessionId: task.sourceSessionId,
@@ -238,13 +247,14 @@ export async function retryTaskWithoutEffects(
       prompt: task.prompt,
       executionMode: task.executionMode,
       dependsOn: task.dependsOn,
-      attachmentReferences: task.artifactRefs.map(
-        (a) => peerTaskArtifactToMessagePart(a).data,
-      ),
+      retryOfTaskId: task.id,
+      awaitCompletion: false,
     });
     if (!result.ok) throw new Error(result.message);
     return result.task;
   } finally {
-    retrying.delete(taskId);
+    usePeerTaskStore.setState((s) => ({
+      retryingTaskIds: s.retryingTaskIds.filter((id) => id !== taskId),
+    }));
   }
 }

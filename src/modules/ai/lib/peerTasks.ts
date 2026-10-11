@@ -196,6 +196,8 @@ export type PeerTask = {
   artifactRefs: PeerTaskArtifact[];
   legacyArtifactRefs?: PeerArtifactRef[];
   parentTaskId: string | null;
+  retryOfTaskId?: string;
+  preRunFailure?: true;
   rootTaskId: string;
   hopCount: number;
   dependsOn: string[];
@@ -399,6 +401,9 @@ export function normalizePeerTask(value: unknown): PeerTask | null {
     schemaVersion: PEER_TASK_SCHEMA_VERSION,
     artifactRefs,
     result,
+    retryOfTaskId: nonEmpty(task.retryOfTaskId) && task.retryOfTaskId === task.parentTaskId && task.retryOfTaskId !== task.id
+      ? task.retryOfTaskId : undefined,
+    preRunFailure: task.preRunFailure === true ? true : undefined,
     workspaceEnvironment: task.workspaceEnvironment ??
       workspaceEnvironmentFromId(task.workspaceId) ?? { kind: "local" },
     executionMode: isExecutionMode(task.executionMode)
