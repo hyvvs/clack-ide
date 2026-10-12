@@ -35,6 +35,7 @@ vi.mock("./sessions", async (importOriginal) => {
   return {
     ...original,
     saveSessionsList: vi.fn().mockResolvedValue(undefined),
+    saveMessages: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -133,6 +134,14 @@ afterEach(() => {
 });
 
 describe("peer task coordination", () => {
+  it.each(["completed", "failed", "cancelled", "interrupted"] as const)("idle %s source uses its current Agent/model and does not inherit an old task chain", async state => {
+    const old = task({ id: "old-source", sourceSessionId: TARGET, targetSessionId: SOURCE, status: "completed", hopCount: PEER_TASK_MAX_HOPS });
+    usePeerTaskStore.setState({ tasks: [old] });
+    useChatStore.setState(current => ({ sessions: current.sessions.map(item => item.id === SOURCE ? { ...item, run: { state, startedAt: 1, peerTaskId: old.id, agentId: "previous-agent", modelId: "previous-model" } } : item) }));
+    const response = await requestPeerTask({ sourceSessionId: SOURCE, targetSessionId: TARGET, prompt: "Start independent work using the current selections", kind: "question", awaitCompletion: false });
+    expect(response.ok).toBe(true);
+    if (response.ok) expect(response.task).toMatchObject({ sourceAgentId: "agent-a", sourceModelId: "model-a", parentTaskId: null, hopCount: 0, rootTaskId: response.task.id });
+  });
   it("dependency-ready tasks retain global limits while waiting for native admission", async () => {
     const completed = task({ id: "prerequisite", status: "completed" });
     const ready = task({ id: "ready", dependsOn: [completed.id] });
@@ -529,6 +538,14 @@ describe("peer task coordination", () => {
       "Stored attachment content is unavailable",
       "peer_artifact_content_missing",
     ],
+      [
+        "OpenAI Compatible returned 503 Service Unavailable. Controlled server unavailable",
+        "peer_run_failed",
+      ],
+      [
+        "Endpoint not found",
+        "peer_run_failed",
+      ],
     [
       "Stored attachment content failed integrity validation",
       "peer_artifact_integrity_failed",

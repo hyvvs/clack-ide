@@ -1,4 +1,4 @@
-import { convertToModelMessages } from "ai";
+import { convertToModelMessages, type UIMessage } from "ai";
 import { prepareToolExposure, toolRevisionIdentity } from "@/modules/ai/lib/toolExposure";
 import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
 import { findSavedProviderModel, resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
@@ -19,6 +19,7 @@ import {
   type HandoffInput,
 } from "@/modules/ai/lib/peerHandoff";
 import type { PeerTask } from "@/modules/ai/lib/peerTasks";
+import { projectCompletedPeerHistory } from "@/modules/ai/lib/peerHistory";
 import { peerTaskArtifactToMessagePart } from "@/modules/ai/lib/peerTaskArtifacts";
 import { materializeAttachmentMessages } from "@/modules/ai/lib/attachmentMessages";
 import { inspectAttachmentContent } from "@/modules/ai/lib/attachmentStore";
@@ -36,6 +37,11 @@ import {
   projectMemoryClient,
 } from "@/modules/ai/lib/projectMemory";
 import { loadMessages } from "@/modules/ai/lib/sessions";
+import { awaitSessionWrites } from "@/modules/ai/lib/sessions";
+import { loadConversationMemory } from "@/modules/ai/lib/conversationMemory";
+import { conversationCompactionUnits } from "@/modules/ai/lib/conversationCompaction";
+import { planCompaction } from "@/modules/ai/lib/compactionPlan";
+import { COMPACTION_POLICY } from "@/modules/ai/lib/compactionExtraction";
 import { validatePeerReview } from "@/modules/ai/lib/peerReview";
 import {
   measureRequest,
@@ -198,7 +204,7 @@ export async function preparePeerReply(
   const exposure = await prepareToolExposure(await buildTools(context), {
     context,
     messages: [...recipientMessages, { role: "user", content: text }],
-    uiMessages: recipientHistory,
+    uiMessages: [...recipientHistory, { id: `peer-reply:${event.id}`, role: "user", parts: [{ type: "text", text }] }],
     target: endpoint,
     system,
     limits: await modelBudgetLimits(model),
@@ -258,6 +264,7 @@ async function prepareTask(
   const sourceRun = useChatStore
     .getState()
     .sessions.find((item) => item.id === task.sourceSessionId)?.run?.startedAt;
+  const sourceWasActive = useChatStore.getState().sessions.find(item => item.id === task.sourceSessionId)?.run?.state === "running";
   const [policyKey, ownerKey, dependencyKey, endpoint, source, taskKey] = await Promise.all([
     communicationDigest(requestPolicy(task, preferences)),
     communicationDigest({ id: session?.id, profile: session?.profile, modelRevision: session?.modelRevision ?? 0 }),
@@ -291,7 +298,7 @@ async function prepareTask(
     if (latest?.status !== "running" || await communicationDigest(taskSnapshot(latest)) !== taskKey) fail("task_changed");
     const run = useChatStore.getState().sessions.find(item => item.id === task.sourceSessionId)?.run;
     if (run?.startedAt !== sourceRun) fail("source_run_changed");
-    if (["cancelled", "failed", "interrupted"].includes(run?.state ?? "")) fail("source_cancelled");
+    if (sourceWasActive && ["cancelled", "failed", "interrupted"].includes(run?.state ?? "")) fail("source_cancelled");
     if (await communicationDigest({ id: owner?.id, profile: owner?.profile, modelRevision: owner?.modelRevision ?? 0 }) !== ownerKey) fail("target_identity_changed");
     if (owner?.run?.state === "running") fail("target_identity_changed");
     if (await communicationDigest(requestPolicy(task, usePreferencesStore.getState())) !== policyKey) fail("policy_changed");
@@ -485,19 +492,37 @@ async function prepareTask(
       : history,
     capabilities,
   );
-  const recipientMessages = await convertToModelMessages(materialized);
+  let recipientMessages = await convertToModelMessages(await projectCompletedPeerHistory(materialized, sessionId, initialTasks));
+  const exposureHistory: UIMessage[] = [...history, { id: `peer-handoff:${task.id}`, role: "user", parts: [{ type: "text", text: task.prompt }] }];
+  const exposureMessages = [...recipientMessages, { role: "user" as const, content: task.prompt }];
   const exposure = await prepareToolExposure(initialTools, {
     context,
-    messages: [...recipientMessages, { role: "user", content: task.prompt }],
-    uiMessages: history,
+    messages: exposureMessages,
+    uiMessages: exposureHistory,
     target: { endpoint, policyKey },
     system,
     limits: await modelBudgetLimits(model),
   });
+  const limits = await modelBudgetLimits(model);
+  const historyBudget = resolveContextBudget(limits, measureRequest({ system, tools: exposure.schemas, messages: [...recipientMessages, { role: "user", content: task.prompt }] }));
+  if (history.length && resolveContextBudget(limits, measureRequest({ system, tools: exposure.schemas, messages: [{ role: "user", content: task.prompt }] })).fits && (!historyBudget.fits || historyBudget.cost.conversation >= historyBudget.working * COMPACTION_POLICY.trigger)) {
+    await awaitSessionWrites(sessionId);
+    await check();
+    const view = await loadConversationMemory({ sessionId, workspaceId: task.workspaceId });
+    await check();
+    if (view.sourceChanged) throw new Error("peer_handoff_history_changed");
+    if (view.revision) {
+      if (view.revision.policyVersion !== COMPACTION_POLICY.version || view.revision.coverage.start !== 0)
+        throw new Error("peer_handoff_memory_policy_changed");
+      const units = await conversationCompactionUnits(history, materialized.slice(0, history.length), sessionId);
+      const preparedHistory = planCompaction({ units, system: [{ role: "system", content: system }], tools: exposure.schemas, limits, threshold: 1, memory: { end: view.revision.coverage.end, claims: view.revision.claims } });
+      recipientMessages = [...preparedHistory.messages.slice(1), ...await convertToModelMessages(materialized.slice(history.length))];
+    }
+  }
   const input: HandoffInput = {
     task: taskSnapshot(task) as PeerTask,
     recipient: { ...endpoint, workspaceId: task.workspaceId },
-    limits: await modelBudgetLimits(model),
+    limits,
     system,
     tools: exposure.schemas,
     history: recipientMessages,
@@ -539,8 +564,8 @@ async function prepareTask(
       await communicationDigest(await modelBudgetLimits(model)) !== await communicationDigest(input.limits))
       throw new PeerHandoffPreparationError("capability_changed");
     const currentExposure = await prepareToolExposure(await buildTools(context), {
-      context, messages: [...recipientMessages, { role: "user", content: task.prompt }],
-      uiMessages: history, target: endpoint, system, limits: input.limits,
+      context, messages: exposureMessages,
+      uiMessages: exposureHistory, target: endpoint, system, limits: input.limits,
     });
     if (await communicationDigest(exposureSnapshot(currentExposure)) !== await communicationDigest(exposureSnapshot(exposure)))
       throw new PeerHandoffPreparationError("tools_changed");

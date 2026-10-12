@@ -5255,6 +5255,83 @@ automatic release/publish. Commit acceptance documentation separately and stop.
   untouched. Final closeout verifies clean `main`, 16 commits ahead. **No release,
   tag, upload, push or subsequent roadmap/checkpoint was performed. STOP.**
 
+#### Post-Roadmap Coworking Hardening Record
+
+- **Scope/base:** Bounded user-requested production hardening from `6d770ec`
+  on clean `main`, initially 28 commits ahead. The original checkpoint records
+  and historical planning classifications above/below are preserved. This
+  does not create a new inference, conversation, project memory, scheduler,
+  PeerTask, retry or tool authority. Independent MIT CoS audit at pinned
+  `495848f4ed1beb4ebb42dde4519b8ad2ae8999f1`, before production changes; no
+  copied code. See `docs/COS_COMPARATIVE_AUDIT.md` and
+  `docs/MULTI_AGENT_COWORKING_ACCEPTANCE.md` for source links, owner map,
+  KEEP/ADAPT/REJECT decisions and all 27 controlled hard acceptance rows.
+- **Corrections:** Exact active-run versus idle source identity, benign-churn
+  source-set sealing, immutable patch provenance after checkout removal,
+  captured relative attachment paths, warm recipient history reuse, verified
+  code-owned completed handoff projection, objective-only relevance,
+  required/optional schema headroom and pinning, canonical native settings
+  identity, optional retrieval resizing/omissions, bounded source batches,
+  safe compaction headroom, completed-claim paging, stale React snapshot
+  rejection, and exact append-only source rebase. Rebases retry source reads/
+  CAS, never generation: two per operation, eight total, same owner/profile/
+  epoch/previous revision and complete-prefix proof. Four extraction calls
+  and existing B1 limits remain. Source/permission/Git/task/material identity
+  still fails closed. Original transcripts/artifacts are not rewritten.
+- **Presentation/recovery:** Dispatcher counts clarification/capacity/Apply
+  work accurately; shared live labels require exact task/run ownership,
+  retaining terminal outcome/cancellation details. Persisted numeric lifecycle
+  timestamps display seconds. Stop/shutdown explicitly persist the final SDK
+  tail after drain, independently of a background React bridge. Provider
+  unavailable errors are not mislabeled as missing attachments.
+- **F/N composed Windows acceptance:** Invisible test-only Tauri host invokes
+  real production commands, SDK/transport/B1/admission/context/handoff/ledger/
+  workspace/attachment/Git owners, without production-boundary mocks. Main
+  run: 64 scenario entries, 135 durable tasks, 301 native HTTP requests,
+  50 mixed successes then 50 reads, 12 queued/parallel workers, actual peaks
+  1/2 at capacities 1/2, full 16k research/edit/review/correction/Apply, 13
+  unique acknowledged writes, safe read Retry, unsafe staged Retry denial,
+  archive/restore/clear, cancellation at three actual request phases,
+  60,000-line bounded read and real second-process restart with zero replay.
+  All 135 tasks/20 conversations restore; repeated recovery is idempotent.
+  All 269 captured worker requests, including same-Agent workers, have no
+  private-parent canary. No cloud credentials or keychain command routes.
+- **Small-target evidence/limits:** 4k basic chat sends zero schemas; its
+  richer protected delegation honestly blocks. 8k research/review and an
+  isolated function edit succeed. Supplemental five-scenario/ten-task native
+  run uses 35 requests: an all-8k immutable review exceeds B1 by three
+  estimated tokens (6984 input + 512 output + 699 margin > 8192). Original
+  blocked attempt remains; an explicit new 16k local review succeeds and
+  permits Apply, without replaying the code edit or changing B1. This is not
+  labeled an all-8k editing/review success or real-engine quality evidence.
+- **Automated gates:** Full frontend 2617 passed / 193 files; full Windows
+  Rust 645 passed (592 library, 25 FS, 25 Git, three real-world tests).
+  Typecheck/build/whitespace/Rustfmt/strict all-target Clippy pass. Lint stays
+  71 warnings/two infos/zero errors; four existing ineffective-dynamic-import
+  warnings and plugin-timing advisory remain. Full frontend rerun followed
+  concrete card/persistence fixes; an unchanged 15-second switch fixture's
+  contention timeout passes in isolation and final two-worker full run.
+  No test deadline or security/capacity assertion was weakened. Ten exact
+  operational-fact compaction cycles each at 8k and 16k pass. Focused groups
+  and non-additive counts are in the acceptance record.
+- **B evidence:** All eleven headless browser fixture scripts pass, including
+  1280/390/320/280px, 200% equivalent scaling, light/dark, five background/
+  opacity/blur settings, pane drafts/attachments/approvals/Stop, verified/
+  stale/conflicting evidence, activity/effort, keyboard/focus, Dispatcher
+  navigation, Retry/archive/restore/clear and review/artifact/file actions.
+  Existing workspace navigation, terminal and Source Control regressions
+  pass in browser/full suites; actual reviewed Apply/stage/commit is F/N.
+- **Deferred/rollback:** Native GUI/Computer Use **Not performed - explicitly
+  deferred by user**. No Linux/macOS native, live provider/engine, GPU/OOM,
+  tokenizer accuracy, perfect recall or universal performance claim. Scoped
+  HTTP/WASI/MCP and broader chaos/cancellation combinations have D/N/B
+  regression evidence, not all combinations in the principal native mission.
+  Finite record/source quotas and safe mandatory-overflow blocks remain.
+  Roll back code at the existing owners while retaining additive original
+  sessions/tasks/artifacts/content/effect receipts and prior valid revisions;
+  no destructive migration or ambiguous-effect replay. Only this hardening
+  pass is committed. No push, release or later checkpoint. STOP.
+
 ### Gate for every implementation checkpoint
 
 Inspect git status/log first and confirm the previous checkpoint commit. Do

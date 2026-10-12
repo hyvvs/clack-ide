@@ -975,6 +975,41 @@ fn paths(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf)> {
     ))
 }
 
+fn rebase_preparation(
+    root: &Path,
+    content: &Path,
+    originals: &Originals,
+    expected: &Preparation,
+    message_count: usize,
+    prefix_hash: &str,
+) -> Result<MemoryView> {
+    if expected.runtime_id != *MEMORY_EPOCH
+        || !valid_hash(prefix_hash)
+        || message_count == 0
+        || message_count > originals.messages.len()
+    {
+        return Err("memory_stale_preparation".into());
+    }
+    let view = load(root, content, originals, &expected.owner)?;
+    let next = &view.preparation;
+    let revisions = next
+        .source
+        .transcript_revision
+        .checked_sub(expected.source.transcript_revision)
+        .ok_or("memory_stale_preparation")?;
+    if view.source_changed
+        || revisions == 0
+        || next.previous != expected.previous
+        || next.source.profile_hash != expected.source.profile_hash
+        || next.source.profile_revision != expected.source.profile_revision
+        || next.generation.checked_sub(expected.generation) != Some(revisions)
+        || hash(&originals.messages[..message_count])? != prefix_hash
+    {
+        return Err("memory_stale_preparation".into());
+    }
+    Ok(view)
+}
+
 fn originals(app: &tauri::AppHandle, id: &str) -> Result<Originals> {
     read_originals(app, id, true)
 }
@@ -1267,6 +1302,33 @@ pub async fn conversation_memory_load(
         authorize(&app, &originals, &owner)?;
         let (root, content) = paths(&app)?;
         load(&root, &content, &originals, &owner)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn conversation_memory_rebase(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, MemoryState>,
+    preparation: Preparation,
+    message_count: usize,
+    prefix_hash: String,
+) -> Result<MemoryView> {
+    let state = state.inner().clone();
+    blocking(move || {
+        let lock = state.owner(&preparation.owner.session_id)?;
+        let _owner = lock.lock().map_err(|e| e.to_string())?;
+        let originals = originals(&app, &preparation.owner.session_id)?;
+        authorize(&app, &originals, &preparation.owner)?;
+        let (root, content) = paths(&app)?;
+        rebase_preparation(
+            &root,
+            &content,
+            &originals,
+            &preparation,
+            message_count,
+            &prefix_hash,
+        )
     })
     .await
 }

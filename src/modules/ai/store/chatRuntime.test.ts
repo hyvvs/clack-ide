@@ -40,6 +40,7 @@ import {
   touchChat,
   useChatStore,
   persistCompactionSource,
+  flushPersist,
   chargeCompactionCall,
 } from "./chatStore";
 import { saveMessages } from "../lib/sessions";
@@ -88,6 +89,41 @@ afterEach(() => {
 });
 
 describe("durable compaction runtime boundary", () => {
+  it("cancellation persists the final SDK activity tail even after the background bridge unmounts", async () => {
+    const original: UIMessage[] = [{ id: "request", role: "user", parts: [{ type: "text", text: "Read configuration" }] }];
+    const tail: UIMessage = { id: "cancelled-before-output", role: "assistant", parts: [], metadata: { clackActivity: { version: 1, receipts: [{ kind: "cancelled", label: "Response cancelled" }] } } };
+    const chat = { messages: original, stop: vi.fn(async () => { chat.messages = [...original, tail]; }) } as unknown as Chat<UIMessage>;
+    chats.set(SESSION_ID, chat);
+    useChatStore.setState({ sessions: [{ id: SESSION_ID, title: "Background", createdAt: 1, updatedAt: 1, run: { state: "running", startedAt: 1 } }] });
+    vi.mocked(saveMessages).mockClear();
+    await cancelRun(SESSION_ID);
+    expect(saveMessages).toHaveBeenCalledExactlyOnceWith(SESSION_ID, [...original, tail]);
+    expect(useChatStore.getState().sessions[0].run?.state).toBe("cancelled");
+  });
+  it("late React history snapshots cannot overwrite the captured current transcript", async () => {
+    const old: UIMessage[] = [{ id: "old", role: "user", parts: [] }];
+    const latest: UIMessage[] = [...old, { id: "new", role: "user", parts: [] }];
+    chats.set(SESSION_ID, { messages: latest } as Chat<UIMessage>);
+    await persistCompactionSource(SESSION_ID, latest);
+    vi.mocked(saveMessages).mockClear();
+    useChatStore.getState().persistMessages(SESSION_ID, old);
+    flushPersist(SESSION_ID);
+    expect(saveMessages).not.toHaveBeenCalled();
+    expect(chats.get(SESSION_ID)?.messages).toBe(latest);
+  });
+  it("a delayed flush rejects a snapshot superseded before its React effect catches up", () => {
+    const old: UIMessage[] = [{ id: "old", role: "user", parts: [] }];
+    const chat = { messages: old } as Chat<UIMessage>;
+    chats.set(SESSION_ID, chat);
+    vi.mocked(saveMessages).mockClear();
+    useChatStore.getState().persistMessages(SESSION_ID, old);
+    chat.messages = [...old, { id: "new", role: "user", parts: [] }];
+    flushPersist(SESSION_ID);
+    expect(saveMessages).not.toHaveBeenCalled();
+    useChatStore.getState().persistMessages(SESSION_ID, chat.messages);
+    flushPersist(SESSION_ID);
+    expect(saveMessages).toHaveBeenCalledExactlyOnceWith(SESSION_ID, chat.messages);
+  });
   it("flushes the latest source and removes a stale debounce without modifying messages", async () => {
     const latest: UIMessage[] = [
       {
@@ -927,6 +963,17 @@ describe("peer communication continuation", () => {
 });
 
 describe("sendMessageToSession", () => {
+  it.each(["completed", "failed", "cancelled", "interrupted"] as const)("does not reuse a %s run's removed checkout for future preparation", state => {
+    const base = sessionMeta();
+    useChatStore.setState({ sessions: [{ ...base, profile: { ...base.profile, agentId: "next-agent", workspaceRoot: "C:/work/clack", workspaceId: "local:c:/work/clack" },
+      run: { state, startedAt: 1, agentId: "old-agent", workspaceId: "local:c:/work/clack", workspaceRoot: "C:/work/clack", checkoutRoot: "C:/removed/copy", checkoutId: "local:c:/removed/copy", mutationMode: "read-only" },
+    }] });
+    const context = sessionToolContext(SESSION_ID).toolContext;
+    expect(context.getWorkspaceRoot()).toBe("C:/work/clack");
+    expect(context.getWorkspaceId?.()).toBe("local:c:/work/clack");
+    expect(context.getAgentId()).toBe("next-agent");
+    expect(context.getMutationMode?.()).toBe("shared-write");
+  });
   it("captures a peer run's workspace environment and isolated checkout", () => {
     useWorkspaceEnvStore.setState({ env: { kind: "wsl", distro: "Arch" } });
     const base = sessionMeta();

@@ -19,6 +19,8 @@ import {
   availableDispatcherTasks,
   visibleDispatcherTasks,
   dispatcherTaskNeighbors,
+  dispatcherActiveCount,
+  taskLifecycleTimes,
 } from "@/modules/ai/lib/dispatcherTasks";
 import { PeerTaskFeed } from "@/modules/ai/components/PeerTaskFeed";
 import type { PeerTask } from "@/modules/ai/lib/peerTasks";
@@ -219,7 +221,7 @@ it("denies another chat or workspace and keeps retained completed tasks findable
 });
 it.each([
   ["queued", "Queued"],
-  ["running", "Running"],
+  ["running", "In progress"],
   ["waiting", "Waiting for required tasks"],
   ["blocked", "Blocked"],
   ["completed", "Done"],
@@ -227,4 +229,33 @@ it.each([
   ["cancelled", "Cancelled"],
 ] as const)("labels %s work as %s", (status, label) => {
   expect(dispatcherTaskStatus({ ...task, status })).toBe(label);
+});
+
+it("counts live clarification work even though it belongs in the attention group", () => {
+  const clarification = { ...task, communication: [{ kind: "clarification-request", state: "acknowledged" }] } as PeerTask;
+  expect(dispatcherActiveCount([clarification, { ...task, id: "queued", status: "queued" }, { ...task, id: "waiting", status: "waiting" }, { ...task, id: "failed", status: "failed" }])).toBe(3);
+});
+
+it("uses captured live phases instead of labeling capacity waits running", () => {
+  expect(dispatcherTaskStatus(task, { phase: "queued", id: "attempt" })).toBe("Waiting for model capacity");
+  expect(dispatcherTaskStatus(task, { phase: "generating", id: "attempt" })).toBe("In progress");
+  expect(dispatcherTaskStatus(task, undefined, { preparing: true })).toBe("Preparing");
+  expect(dispatcherTaskStatus(task, undefined, { approval: true })).toBe("Waiting for approval");
+  expect(dispatcherTaskStatus(task, undefined, { finalizing: true })).toBe("Finalizing result");
+  expect(dispatcherTaskStatus({ ...task, status: "completed" }, { phase: "generating", id: "later-attempt" })).toBe("Done");
+});
+
+it("renders persisted lifecycle times to seconds without inventing absent events", () => {
+  const exact = { ...task, createdAt: 1720000000123, startedAt: 1720000001567, endedAt: 1720000002987, archivedAt: 1720000004123 };
+  const rows = taskLifecycleTimes(exact, "en-GB", "UTC");
+  expect(rows.map(row => [row.label, row.at])).toEqual([["Created", exact.createdAt], ["Started", exact.startedAt], ["Ended", exact.endedAt], ["Archived", exact.archivedAt]]);
+  expect(rows[0].text).toContain("09:46:40");
+  expect(taskLifecycleTimes({ ...task, startedAt: undefined }).map(row => row.label)).toEqual(["Created"]);
+  expect(taskLifecycleTimes(JSON.parse(JSON.stringify(exact)), "en-GB", "UTC")).toEqual(rows);
+  expect(taskLifecycleTimes({ ...task, createdAt: Number.MAX_VALUE, startedAt: NaN })).toEqual([]);
+});
+it("counts an actual pending-patch Apply action as active until settlement", () => {
+  const applying = { ...task, status: "completed" as const, changeSet: { baseSha: "a", patch: "diff", changedPaths: ["config.json"] } };
+  expect(dispatcherActiveCount([applying], [task.id])).toBe(1);
+  expect(dispatcherActiveCount([applying], [])).toBe(0);
 });

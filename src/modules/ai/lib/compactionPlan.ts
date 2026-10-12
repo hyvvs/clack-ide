@@ -9,6 +9,7 @@ import {
   CompactionError,
 } from "@/modules/ai/lib/compactionExtraction";
 import type { MemoryClaim } from "@/modules/ai/lib/conversationMemory";
+import { handoffObjective } from "@/modules/ai/lib/peerHistory";
 
 /** A complete original UI message, converted by the existing SDK path. */
 export type CompactionUnit = {
@@ -23,9 +24,17 @@ export type CompactionGroup = {
   protected: boolean;
 };
 
-type Part = { type: string; toolCallId?: string; output?: unknown };
+type Part = { type: string; toolCallId?: string; toolName?: string; output?: unknown };
 function parts(message: ModelMessage): Part[] {
   return Array.isArray(message.content) ? (message.content as Part[]) : [];
+}
+
+export function confirmedWorkspaceWrites(messages: readonly ModelMessage[]): string[] {
+  return messages.flatMap(message => message.role !== "tool" ? [] : parts(message).flatMap(part => {
+    const envelope = part.output as { type?: string; value?: { ok?: boolean; clackWorkspaceWrite?: boolean; error?: unknown } } | undefined;
+    return part.type === "tool-result" && part.toolCallId && ["write_file", "edit", "multi_edit", "create_directory"].includes(part.toolName ?? "") &&
+      envelope?.type === "json" && envelope.value?.ok === true && envelope.value.clackWorkspaceWrite === true && !envelope.value.error ? [part.toolCallId] : [];
+  }));
 }
 
 function failedOutput(output: unknown): boolean {
@@ -151,9 +160,12 @@ export function planCompaction(options: {
   );
   const linked = new Set(claims.flatMap((claim) => claim.contradicts));
   const latestUser = [...units].reverse().find((unit) => unit.role === "user");
+  const taskText = (latestUser?.messages ?? []).map(message =>
+    typeof message.content === "string" ? message.content : message.content.filter(part => part.type === "text").map(part => part.text).join("\n"),
+  ).map(text => handoffObjective(text) ?? text).join("\n");
   const query = new Set(
     (
-      JSON.stringify(latestUser?.messages ?? [])
+      taskText
         .toLowerCase()
         .match(/[a-z0-9_.-]{4,}/g) ?? []
     ).filter(
@@ -209,6 +221,7 @@ export function planCompaction(options: {
       budget,
       assemble,
       omittedCompletedClaims,
+      selectedClaims: selected,
     };
 
   // A token-sized contiguous tail, extended to whole tool groups, not a fixed N.
@@ -248,6 +261,7 @@ export function planCompaction(options: {
       budget,
       assemble,
       omittedCompletedClaims,
+      selectedClaims: selected,
     };
   return {
     needed: true,
@@ -258,5 +272,6 @@ export function planCompaction(options: {
     budget,
     assemble,
     omittedCompletedClaims,
+    selectedClaims: selected,
   };
 }

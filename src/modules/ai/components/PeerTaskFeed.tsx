@@ -5,8 +5,8 @@ import { PeerTaskOutcome } from "@/modules/ai/components/PeerTaskOutcome";
 import { TaskArchiveAction } from "@/modules/ai/components/TaskArchiveAction";
 import { taskAccessLabel } from "@/modules/ai/lib/taskPresentation";
 import { focusTaskConversationPane } from "@/modules/ai/store/dispatcherNavigation";
-import { useInferenceLifecycle } from "@/modules/ai/hooks/useInferenceLifecycle";
-import { inferenceLabel } from "@/modules/ai/lib/inferenceLifecycle";
+import { usePeerTaskStatus } from "@/modules/ai/hooks/usePeerTaskStatus";
+import { taskLifecycleTimes } from "@/modules/ai/lib/dispatcherTasks";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -173,10 +173,8 @@ export function PeerTaskCard({
   const peerAgentName = viewingSource ? targetAgentName : sourceAgentName;
   const active = isPeerTaskActive(task);
   const question = pendingPeerQuestion(task);
-  const inference = useInferenceLifecycle(task.targetSessionId);
-  const statusLabel = pendingPeerQuestion(task) ? "Waiting for clarification" : task.status === "running" && inference
-    ? inferenceLabel(inference)
-    : delegationStatusLabel(task);
+  const liveStatusLabel = usePeerTaskStatus(task);
+  const statusLabel = active || liveStatusLabel === "Applying" ? liveStatusLabel : delegationStatusLabel(task);
   const defaultTitle = delegationCardTitle(
     task,
     viewingSource,
@@ -457,6 +455,9 @@ export function PeerTaskCard({
         ) : null}
         <details>
           <summary className="cursor-pointer text-[var(--clack-text-2)]">Task details and provenance</summary>
+          <dl className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 text-[10px] tabular-nums">
+            {taskLifecycleTimes(task).map(row => <div key={row.label} className="contents"><dt>{row.label}</dt><dd><time dateTime={new Date(row.at).toISOString()}>{row.text}</time></dd></div>)}
+          </dl>
           <div className="mt-1 space-y-1">
             <p>From {sourceAgentName}: {source?.title ?? "Deleted conversation"}</p>
             <p>To {targetAgentName}: {target?.title ?? "Deleted conversation"}</p>

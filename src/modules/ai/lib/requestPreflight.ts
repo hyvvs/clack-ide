@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import {
   asSchema,
   wrapLanguageModel,
@@ -167,12 +168,12 @@ export function createRequestPreflight(options: {
       budgetIdentity(current, profile.id) !== identity ||
       (options.reasoning?.choice !== "automatic" &&
         options.reasoning?.capability.expiresAt !== undefined &&
-        JSON.stringify(
+        canonicalJson(
           current.profiles
             .find((p) => p.id === profile.id)
             ?.evidence.filter((e) => e.metric === "reasoning.effort"),
         ) !==
-          JSON.stringify(
+          canonicalJson(
             profile.evidence.filter((e) => e.metric === "reasoning.effort"),
           ))
     )

@@ -14,13 +14,16 @@ import {
 } from "@/modules/ai/lib/permissions";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { ToolContext } from "@/modules/ai/tools/context";
+import { handoffObjective } from "@/modules/ai/lib/peerHistory";
+import { referencedFiles } from "@/modules/ai/lib/scopedEvidence";
 
-export const EXPOSURE_POLICY = "f1-exposure-v2";
+export const EXPOSURE_POLICY = "f1-exposure-v4";
 export const EXPOSURE_LIMITS = {
   candidates: 192,
   optional: 16,
   bytes: 262144,
   candidateBytes: 2097152,
+  optionalContextShare: 0.25,
   rankingCharacters: 8192,
   cache: 32,
 } as const;
@@ -94,23 +97,25 @@ export function requiredToolNames(messages: readonly ModelMessage[]): string[] {
 export function exposureQuery(messages: readonly ModelMessage[]): string {
   const latest = [...messages].reverse().find((m) => m.role === "user");
   if (!latest) return "";
-  return (
+  const text = (
     typeof latest.content === "string"
       ? latest.content
       : latest.content
           .filter((p) => p.type === "text")
           .map((p) => p.text)
           .join("\n")
-  ).slice(-EXPOSURE_LIMITS.rankingCharacters);
+  );
+  return (handoffObjective(text) ?? text).slice(-EXPOSURE_LIMITS.rankingCharacters);
 }
 export function uiExposureQuery(messages: readonly UIMessage[]): string {
   const latest = [...messages].reverse().find((m) => m.role === "user");
-  return (
+  const text = (
     latest?.parts
       .filter((p) => p.type === "text")
       .map((p) => p.text)
       .join("\n") ?? ""
-  ).slice(-EXPOSURE_LIMITS.rankingCharacters);
+  );
+  return (handoffObjective(text) ?? text).slice(-EXPOSURE_LIMITS.rankingCharacters);
 }
 export function requiredUiToolNames(messages: readonly UIMessage[]): string[] {
   const names = new Set<string>();
@@ -165,7 +170,8 @@ export function selectToolSchemas(input: {
       "tool-exposure-identity",
       "Conflicting callable tool names cannot be selected.",
     );
-  const mandatory = [...new Set(input.mandatory ?? [])].sort(compare);
+  const named = new Set(input.query.slice(-EXPOSURE_LIMITS.rankingCharacters).match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []);
+  const mandatory = [...new Set([...(input.mandatory ?? []), ...schemas.filter(schema => named.has(schema.function.name)).map(schema => schema.function.name)])].sort(compare);
   for (const name of mandatory)
     if (!byName.has(name))
       throw new ContextBudgetError(
@@ -182,8 +188,10 @@ export function selectToolSchemas(input: {
     : schemas
         .map((schema) => {
           const name = words(schema.function.name.replace(/_/g, " "));
+          const description = ["request_peer_task", "cancel_peer_task"].includes(schema.function.name)
+            ? (schema.function.description ?? "").split("\n\n", 1)[0] : schema.function.description ?? "";
           const metadata = words(
-            `${schema.function.description ?? ""} ${JSON.stringify(schema.function.parameters)}`.slice(
+            `${description} ${JSON.stringify(schema.function.parameters)}`.slice(
               0,
               EXPOSURE_LIMITS.rankingCharacters,
             ),
@@ -191,6 +199,7 @@ export function selectToolSchemas(input: {
           let score = 0;
           for (const word of query)
             score += name.has(word) ? 8 : metadata.has(word) ? 1 : 0;
+          if (schema.function.name === "read_file" && /\bread\b/i.test(boundedQuery) && referencedFiles(boundedQuery).length) score += 16;
           if (
             /\b(fix|edit|file|files|code|implement|create|directory|read|search)\b/i.test(
               boundedQuery,
@@ -221,9 +230,20 @@ export function selectToolSchemas(input: {
     (!conversational &&
       (!ranked.some((r) => r.score > 0) ||
         (ranked[EXPOSURE_LIMITS.optional]?.score > 0 &&
+          ranked[0].score === ranked[EXPOSURE_LIMITS.optional].score &&
           ranked[EXPOSURE_LIMITS.optional].score ===
             ranked[EXPOSURE_LIMITS.optional - 1].score)));
   const selected = new Set(mandatory);
+  const dependencies: Record<string, string[]> = {
+    edit: ["read_file"],
+    multi_edit: ["read_file"],
+    write_file: ["list_directory"],
+    create_directory: ["list_directory"],
+    bash_background: ["bash_list", "bash_logs", "bash_kill", "open_preview"],
+  };
+  const requiredCost = measureRequest({ system: input.system, messages: input.messages, tools: schemas.filter(schema => selected.has(schema.function.name)) });
+  const requiredBudget = resolveContextBudget(input.limits ?? {}, requiredCost);
+  const schemaAllowance = Math.floor(Math.min(requiredBudget.ceiling * EXPOSURE_LIMITS.optionalContextShare, Math.max(0, requiredBudget.working - requiredCost.conversation) / 2));
   if (input.reuseNames)
     for (const name of input.reuseNames) {
       if (!byName.has(name))
@@ -238,16 +258,15 @@ export function selectToolSchemas(input: {
     ? []
     : fallback
       ? ranked
-      : ranked.filter((r) => r.score > 0).slice(0, EXPOSURE_LIMITS.optional)) {
-    if (fallback || score > 0) selected.add(schema.function.name);
+      : ranked.filter((r) => r.score >= Math.min(4, ranked[0]?.score || 1)).slice(0, EXPOSURE_LIMITS.optional)) {
+    if (fallback || score > 0) {
+      const trial = new Set([...selected, schema.function.name]);
+      for (const name of trial)
+        for (const dependency of dependencies[name] ?? []) if (byName.has(dependency)) trial.add(dependency);
+      if (fallback || selected.size === 0 || measureRequest({ tools: schemas.filter(item => trial.has(item.function.name)) }).tools <= schemaAllowance)
+        for (const name of trial) selected.add(name);
+    }
   }
-  const dependencies: Record<string, string[]> = {
-    edit: ["read_file"],
-    multi_edit: ["read_file"],
-    write_file: ["list_directory"],
-    create_directory: ["list_directory"],
-    bash_background: ["bash_list", "bash_logs", "bash_kill", "open_preview"],
-  };
   for (const name of [...selected])
     for (const dependency of dependencies[name] ?? [])
       if (byName.has(dependency)) selected.add(dependency);

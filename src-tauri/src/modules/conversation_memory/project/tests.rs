@@ -95,6 +95,28 @@ fn workspace_identity_is_environment_and_root_not_label() {
 }
 
 #[test]
+fn idle_project_access_does_not_reuse_a_removed_historical_checkout() {
+    let mut f = Fixture::new();
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = fs::canonicalize(dir.path()).unwrap();
+    let root = crate::modules::fs::to_canon(&canonical);
+    let workspace = identity("local", &root);
+    let registry = crate::modules::workspace::WorkspaceRegistry::default();
+    registry.authorize(&canonical).unwrap();
+    f.originals.meta["profile"] =
+        json!({"workspaceId":workspace,"workspaceRoot":root,"agentId":"coder"});
+    for status in ["completed", "failed", "cancelled", "interrupted"] {
+        f.originals.meta["run"] = json!({"state":status,"workspaceId":workspace,"checkoutRoot":format!("{root}/removed-checkout"),"peerTaskId":"old-task"});
+        assert_eq!(
+            bind(&registry, &f.originals).unwrap().scope.checkout,
+            workspace
+        );
+    }
+    f.originals.meta["run"]["state"] = json!("running");
+    assert!(bind(&registry, &f.originals).is_err());
+}
+
+#[test]
 fn no_private_chat_or_pending_proposal_is_shared() {
     let f = Fixture::new();
     let before = serde_json::to_vec(&f.originals.messages).unwrap();

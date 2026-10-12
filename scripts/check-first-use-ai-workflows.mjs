@@ -100,7 +100,7 @@ try {
     const selected = page.locator('[data-dispatcher-task-id="assigned"]');
     await selected.waitFor();
     await page.waitForFunction(() => document.activeElement?.getAttribute("data-dispatcher-task-id") === "assigned");
-    assert.match(await selected.innerText(), /Code Reviewer.*Running/s);
+    assert.match(await selected.innerText(), /Code Reviewer.*Preparing/s);
     assert.match(await selected.innerText(), /Parent a/);
     assert.equal(await selected.getAttribute("aria-pressed"),"true");
     const order = await dispatcher.locator('[data-dispatcher-task-id]').evaluateAll(rows => rows.map(row => row.dataset.dispatcherTaskId));

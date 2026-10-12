@@ -91,6 +91,59 @@ function setup(
 afterEach(() => vi.useRealTimers());
 
 describe("authorized project/task working evidence", () => {
+  it("final omission-count growth re-sizes only optional sources and publishes the actual selection", async () => {
+    const first = chunk();
+    const base = setup();
+    base.read.mockResolvedValue({ ...response([first]), omitted: 999 });
+    const original = await base.retriever.prepare(messages, { deployed: 32768 }, []);
+    const tight = { deployed: 32768, workingTarget: measureRequest({ messages: original }).conversation };
+    const onPrepared = vi.fn();
+    const f = setup({ onPrepared });
+    const text = "Optional irrelevant source ".repeat(1000);
+    f.read.mockResolvedValue({ ...response([first, chunk({ id: "e".repeat(64), source: { recordId: "other" }, text, end: new TextEncoder().encode(text).byteLength })]), omitted: 999 });
+    const output = await f.retriever.prepare(messages, tight, []);
+    expect(resolveContextBudget(tight, measureRequest({ messages: output })).fits).toBe(true);
+    expect(onPrepared).toHaveBeenLastCalledWith([], 1001, 0);
+    expect(JSON.stringify(output)).not.toContain("Optional irrelevant source");
+    expect(f.read).toHaveBeenCalledOnce();
+  });
+  it("advances file observations only after a confirmed write while keeping ownership and task evidence sealed", async () => {
+    const f = setup();
+    const identityStamp = "e".repeat(64);
+    f.read.mockResolvedValue({ ...response(), identityStamp, taskIds: ["captured-task"] });
+    await f.retriever.prepare(messages, limits, []);
+    f.read.mockResolvedValue({ ...response([chunk({ contentHash: "f".repeat(64) })]), identityStamp, taskIds: ["captured-task"], stamp: "d".repeat(64) });
+    await f.retriever.prepare(messages, limits, [], true);
+    expect(f.read.mock.calls[1][0]).toMatchObject({ expected: null, expectedIdentity: identityStamp, taskIds: ["captured-task"] });
+    await f.retriever.validate();
+    expect(f.read.mock.calls[2][0]).toMatchObject({ expected: "d".repeat(64) });
+    expect(f.allowance.scopedRounds).toBe(1);
+    f.read.mockResolvedValue({ ...response(), identityStamp: "b".repeat(64) });
+    await expect(f.retriever.prepare(messages, limits, [], true)).rejects.toMatchObject({ code: "retrieval-stale" });
+  });
+  it("revalidates the captured native task-source set instead of newly arriving task results", async () => {
+    const f = setup();
+    f.read.mockResolvedValue({ ...response(), taskIds: ["captured-task"] });
+    await f.retriever.prepare(messages, limits, []);
+    await f.retriever.prepare(messages, limits, []);
+    expect(f.read.mock.calls[1][0]).toMatchObject({ taskIds: ["captured-task"], expected: "c".repeat(64) });
+  });
+  it("rejects malformed native task-source identities", async () => {
+    const f = setup();
+    f.read.mockResolvedValue({ ...response(), taskIds: ["duplicate", "duplicate"] });
+    await expect(f.retriever.prepare(messages, limits, [])).rejects.toMatchObject({ code: "retrieval-malformed" });
+  });
+  it("does not block an otherwise valid request because an optional omission preamble is too large", async () => {
+    const f = setup();
+    f.read.mockResolvedValue(response([chunk({ text: "x".repeat(3000), end: 3000 })]));
+    const input: ModelMessage[] = [{ role: "system", content: "Keep authorization." }, { role: "user", content: "read ".repeat(200) }];
+    const narrow = { deployed: 1100, outputReserve: 256, maxOutput: 256 };
+    expect(resolveContextBudget(narrow, measureRequest({ messages: input })).fits).toBe(true);
+    const prepared = await f.retriever.prepare(input, narrow, []);
+    expect(resolveContextBudget(narrow, measureRequest({ messages: prepared })).fits).toBe(true);
+    expect(prepared).toContainEqual(input[1]);
+    expect(JSON.stringify(prepared)).not.toContain("x".repeat(3000));
+  });
   it("shares two lookup rounds across both evidence lanes", () => {
     const allowance = newRetrievalAllowance();
     claimRetrievalRound(allowance);

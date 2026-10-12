@@ -98,6 +98,62 @@ describe("relevance and bounded fallback", () => {
     expect(result.metrics.fallback).toBe(true);
     expect(result.names).toHaveLength(20);
   });
+  it("does not broaden a clear file-read intent because incidental metadata ties at the cutoff", async () => {
+    const candidates = tools();
+    for (let i = 0; i < 100; i++) candidates[`custom_incidental_${i}`] = tool({
+      description: "Unrelated operation. Read the safety notes before using it.", inputSchema: jsonSchema({ type: "object", properties: {} }),
+    });
+    const result = await select("Read file config.json", { limits: { reported: 8192 } }, candidates);
+    expect(result.metrics.fallback).toBe(false);
+    expect(result.names).toContain("read_file");
+    expect(result.names.some(name => name.startsWith("custom_incidental"))).toBe(false);
+    expect(result.metrics.tokensAfter).toBeLessThan(result.metrics.tokensBefore / 4);
+  });
+  it("leaves working-context headroom instead of filling a small model with optional schemas", async () => {
+    const candidates = tools();
+    for (const name of ["read_file", "list_directory", "edit", "multi_edit", "write_file", "create_directory", "todo_write"])
+      candidates[name] = tool({ description: `${name.replace(/_/g, " ")} ${"file contract ".repeat(250)}`, inputSchema: jsonSchema({ type: "object", properties: {} }) });
+    const result = await select("Read file config.json", { limits: { reported: 16384, outputReserve: 1024 } }, candidates);
+    expect(result.names).toContain("read_file");
+    expect(result.metrics.tokensAfter).toBeLessThanOrEqual(4096);
+    expect((await select("Hello", { limits: { reported: 8192 }, mandatory: Object.keys(candidates) }, candidates)).names).toHaveLength(Object.keys(candidates).length);
+  });
+  it("optional schema allowance respects remaining current-context space, not only the model ceiling", async () => {
+    const candidates = tools();
+    candidates.request_conversation_evidence = tool({ description: "Request conversation evidence", inputSchema: jsonSchema({ type: "object", properties: {} }) });
+    for (const name of ["read_file", "list_directory", "edit", "write_file"])
+      candidates[name] = tool({ description: `${name.replace(/_/g, " ")} ${"file contract ".repeat(90)}`, inputSchema: jsonSchema({ type: "object", properties: {} }) });
+    const system = "trusted invariant ".repeat(400);
+    const messages = message("existing handoff ".repeat(180));
+    const limits = { reported: 8192, outputReserve: 512 };
+    const selected = await select("request_conversation_evidence for current file state", { query: "request_conversation_evidence for current file state", system, messages, limits }, candidates);
+    expect(selected.names).toContain("request_conversation_evidence");
+    const baseCost = measureRequest({ system, messages });
+    const baseBudget = resolveContextBudget(limits, baseCost);
+    expect(selected.metrics.tokensAfter).toBeLessThanOrEqual(Math.floor(Math.min(2048, (baseBudget.working - baseCost.conversation) / 2)));
+    expect(selected.names.length).toBeLessThan(Object.keys(candidates).length);
+  });
+  it("explicitly named task tools remain mandatory under pressure from raw history", async () => {
+    const selected = await select("read_file then edit", { query: "read_file then edit", system: "trusted invariant ".repeat(400), messages: message("old history ".repeat(1000)), limits: { reported: 8192 } });
+    expect(selected.names).toEqual(expect.arrayContaining(["read_file", "edit"]));
+    expect(selected.budget.fits).toBe(false);
+    expect(selected.metrics.fallback).toBe(false);
+  });
+  it("live collaboration descriptions cannot outrank a clear task objective under history pressure", async () => {
+    const candidates = tools();
+    candidates.cancel_peer_task = tool({ description: "Cancel an owned active task.\n\nTasks in this collaboration:\nread config json report exact timeout retaining completed review historical evidence", inputSchema: jsonSchema({ type: "object", properties: {} }) });
+    const selected = await select("read config.json and report the exact timeout, retaining the completed review as historical evidence", { query: "read config.json and report the exact timeout, retaining the completed review as historical evidence", messages: message("old history ".repeat(5000)), limits: { reported: 16384 } }, candidates);
+    expect(selected.names).toContain("read_file");
+    expect(selected.names).not.toContain("cancel_peer_task");
+  });
+  it("an Agent mention does not redirect an explicit file read to agent-output inspection", async () => {
+    const candidates = tools();
+    candidates.read_agent_output = tool({ description: "Read another agent's output", inputSchema: jsonSchema({ type: "object", properties: {} }) });
+    const query = "Agent read config.json and report the exact timeout";
+    const selected = await select(query, { query, messages: message("old history ".repeat(5000)), limits: { reported: 16384 } }, candidates);
+    expect(selected.names).toContain("read_file");
+    expect(selected.names).not.toContain("read_agent_output");
+  });
   it.each([
     ["Read the file", "read_file"],
     ["HTTP invoice request", "custom_http"],

@@ -73,6 +73,61 @@ fn extraction_rejects_append_and_profile_changes_and_old_process_epoch() {
 }
 
 #[test]
+fn explicit_append_rebase_requires_exact_prefix_and_preserves_strict_commit_cas() {
+    let mut f = Fixture::new();
+    let mut candidate = f.candidate();
+    let prefix = hash(&f.originals.messages).unwrap();
+    let prep = candidate.preparation.clone();
+    f.originals
+        .messages
+        .push(json!({"id":"later","role":"assistant","parts":[]}));
+    let stale = serde_json::from_value(serde_json::to_value(&candidate).unwrap()).unwrap();
+    assert_eq!(f.commit(stale).unwrap_err(), "memory_stale_preparation");
+    let next = rebase_preparation(&f.root, &f.content, &f.originals, &prep, 2, &prefix).unwrap();
+    candidate.preparation = next.preparation;
+    f.commit(candidate).unwrap();
+    let view = f.view().unwrap();
+    assert_eq!(view.revision.unwrap().coverage.end, 2);
+    assert_eq!(view.uncovered_messages, 1);
+}
+
+#[test]
+fn append_rebase_rejects_changed_prefix_owner_run_revision_epoch_and_cancel() {
+    for change in [
+        "prefix", "owner", "run", "revision", "epoch", "cancel", "bounds",
+    ] {
+        let mut f = Fixture::new();
+        let candidate = f.candidate();
+        let prefix = hash(&f.originals.messages).unwrap();
+        let mut prep = candidate.preparation.clone();
+        f.originals
+            .messages
+            .push(json!({"id":"later","role":"assistant","parts":[]}));
+        let mut count = 2;
+        match change {
+            "prefix" => f.originals.messages[0]["parts"][0]["text"] = json!("Changed requirement"),
+            "owner" => f.originals.meta["profile"]["workspaceId"] = json!("local:/other"),
+            "run" => f.originals.meta["run"]["startedAt"] = json!(2),
+            "revision" => {
+                f.commit(f.candidate()).unwrap();
+            }
+            "epoch" => prep.runtime_id = "old-process".into(),
+            "cancel" => {
+                let mut manifest = synchronize(&f.root, &f.originals).unwrap();
+                manifest.generation += 1;
+                write_manifest(&f.root, &manifest).unwrap();
+            }
+            "bounds" => count = 4,
+            _ => unreachable!(),
+        }
+        assert!(
+            rebase_preparation(&f.root, &f.content, &f.originals, &prep, count, &prefix).is_err(),
+            "accepted {change}"
+        );
+    }
+}
+
+#[test]
 fn extraction_rejects_other_workspace_and_fabricated_messages() {
     let fixture = Fixture::new();
     let mut prep = fixture.view().unwrap().preparation;

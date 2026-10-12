@@ -5,6 +5,7 @@ import {
   measureRequest,
   resolveContextBudget,
   type BudgetLimits,
+  type ContextBudget,
 } from "@/modules/ai/lib/contextBudget";
 import type {
   MemoryEvidence,
@@ -21,7 +22,8 @@ import {
 } from "@/modules/ai/lib/retrievalAllowance";
 
 export const RETRIEVAL_POLICY = Object.freeze({
-  version: "g1a-lexical-v1",
+  version: "g1a-lexical-v2",
+  optionalSpaceShare: 0.5,
   rounds: 2,
   chunks: 12,
   bytes: 65536,
@@ -39,6 +41,7 @@ export type EvidenceResult = {
   chunks: EvidenceChunk[];
   issues: Array<{ messageId: string; status: string }>;
 };
+type RetrievedChunk = EvidenceChunk & { reason: string; messageRange: { start: number; end: number } };
 export type RetrievalNotice = {
   sources: Array<{
     messageId: string;
@@ -65,10 +68,11 @@ export const retrieveConversationEvidence = (
 ): Promise<EvidenceResult> => invoke("conversation_memory_retrieve", request);
 
 export class RetrievalError extends ContextBudgetError {
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, budget?: ContextBudget) {
     super(
       `retrieval-${code}`,
       `${message} Original conversation and memory are unchanged.`,
+      budget,
     );
   }
 }
@@ -193,7 +197,7 @@ export function createConversationRetriever(options: {
   let cache:
     | {
         key: string;
-        chunks: Array<EvidenceChunk & { reason: string }>;
+        chunks: RetrievedChunk[];
         omitted: number;
         status: string;
       }
@@ -206,19 +210,32 @@ export function createConversationRetriever(options: {
         "This retrieval no longer belongs to the active run.",
       );
   };
+  const publish = () => {
+    if (!cache) return;
+    options.onNotice?.({
+      sources: cache.chunks.map(c => ({ messageId: c.messageId, evidenceId: c.evidence.id, digest: c.evidence.digest, contentId: c.contentId, reason: c.reason, original: canonical(options.originals[c.messageIndex]) })),
+      omitted: cache.omitted, rounds: allowance.conversationRounds, bytes: allowance.bytes, status: cache.status,
+    });
+  };
   const attach = (
     messages: ModelMessage[],
     limits: BudgetLimits,
     tools: unknown,
   ) => {
-    if (!cache) return messages;
-    const retrieved = envelope(cache.chunks, cache.omitted, cache.status);
-    const result = [messages[0], retrieved, ...messages.slice(1)];
-    if (
-      !resolveContextBudget(limits, measureRequest({ messages: result, tools }))
-        .fits
-    ) {
-      if (!cache.chunks.length) return messages;
+    const selectedCache = cache;
+    if (!selectedCache) return messages;
+    const output = () => [messages[0], envelope(selectedCache.chunks, selectedCache.omitted, selectedCache.status), ...messages.slice(1)];
+    while (!resolveContextBudget(limits, measureRequest({ messages: output(), tools })).fits) {
+      const optional = [...selectedCache.chunks].reverse().find(chunk => chunk.reason !== "exact-source-or-unresolved-claim");
+      if (!optional) break;
+      const { start, end } = optional.messageRange;
+      selectedCache.chunks = selectedCache.chunks.filter(chunk => chunk.messageIndex < start || chunk.messageIndex >= end);
+      selectedCache.omitted++;
+      selectedCache.status = "original evidence; optional groups omitted for current budget";
+    }
+    const result = output();
+    if (!resolveContextBudget(limits, measureRequest({ messages: result, tools })).fits) {
+      if (!selectedCache.chunks.length && resolveContextBudget(limits, measureRequest({ messages, tools })).fits) return messages;
       throw new RetrievalError(
         "budget",
         "Original evidence no longer fits this model's working context. Choose a larger verified context or narrow the request.",
@@ -264,7 +281,12 @@ export function createConversationRetriever(options: {
       check();
       const key = canonical([RETRIEVAL_POLICY.version, view.preparation]);
       if (cache && cache.key !== key) cache = undefined;
-      if (cache && !pending) return attach(messages, limits, tools);
+      if (cache && !pending) {
+        const omitted = cache.omitted;
+        const output = attach(messages, limits, tools);
+        if (cache.omitted !== omitted) publish();
+        return output;
+      }
       const omittedGroups = groups.filter(
         (group) =>
           !group.protected && group.end <= (view.revision?.coverage.end ?? 0),
@@ -307,8 +329,14 @@ export function createConversationRetriever(options: {
         if (request?.anchor) sourceIds.add(request.anchor);
         for (const match of query.matchAll(
           /\bsource:([\w.-]+)|\b([a-f0-9]{64})\b/g,
-        ))
-          sourceIds.add(match[1] ?? match[2]);
+        )) {
+          const id = match[1] ?? match[2];
+          // A policy, revision or file checksum is not a requested conversation
+          // source. Unlabelled hashes are anchors only with owned source proof.
+          if (match[1] || view.revision?.evidence.some(e => e.id === id || e.contentIds.includes(id)) ||
+              options.originals.some(message => message.id === id || referencesSource(message, id)))
+            sourceIds.add(id);
+        }
         if (!sourceIds.size)
           index ??= buildRetrievalIndex(options.originals, timeCheck);
         const terms = retrievalTerms(query);
@@ -407,7 +435,7 @@ export function createConversationRetriever(options: {
               entry.anchored ||
               (omittedGroups.includes(entry.group) && entry.score > 0),
           )
-          .sort((a, b) => b.score - a.score || a.group.start - b.group.start);
+          .sort((a, b) => Number(b.anchored) - Number(a.anchored) || b.score - a.score || a.group.start - b.group.start);
         if (request?.expand && anchors.size) {
           const anchoredGroups = groups.filter((group) =>
             [...anchors].some((n) => n >= group.start && n < group.end),
@@ -458,7 +486,7 @@ export function createConversationRetriever(options: {
         if (!options.managedRound) allowance.epoch++;
         claimRetrievalRound(allowance);
         allowance.conversationRounds++;
-        const chunks: Array<EvidenceChunk & { reason: string }> = [];
+        const chunks: RetrievedChunk[] = [];
         const statuses: string[] = [];
         if (ids.length) {
           const remainingMs =
@@ -617,12 +645,14 @@ export function createConversationRetriever(options: {
               envelope(candidateCache.chunks, omitted, candidateCache.status),
               ...messages.slice(1),
             ];
-            if (
-              !resolveContextBudget(
+            const trialBudget = resolveContextBudget(
                 limits,
                 measureRequest({ messages: trial, tools }),
-              ).fits
-            ) {
+              );
+            const baseCost = measureRequest({ messages, tools });
+            const baseBudget = resolveContextBudget(limits, baseCost);
+            const optionalAllowance = Math.max(0, baseBudget.working - baseCost.conversation) * RETRIEVAL_POLICY.optionalSpaceShare;
+            if (!trialBudget.fits || (!candidate.anchored && trialBudget.cost.conversation - baseCost.conversation > optionalAllowance)) {
               if (candidate.anchored)
                 throw new RetrievalError(
                   "budget",
@@ -682,20 +712,7 @@ export function createConversationRetriever(options: {
         }
         timeCheck();
         const output = attach(messages, limits, tools);
-        options.onNotice?.({
-          sources: cache.chunks.map((c) => ({
-            messageId: c.messageId,
-            evidenceId: c.evidence.id,
-            digest: c.evidence.digest,
-            contentId: c.contentId,
-            reason: c.reason,
-            original: canonical(options.originals[c.messageIndex]),
-          })),
-          omitted: cache.omitted,
-          rounds: allowance.conversationRounds,
-          bytes: allowance.bytes,
-          status: cache.status,
-        });
+        publish();
         return output;
       } catch (error) {
         cache = undefined;

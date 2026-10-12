@@ -85,6 +85,11 @@ export type PeerTaskRequestResult =
   | { ok: true; task: PeerTask }
   | { ok: false; code: string; message: string };
 
+function sourceRunIdentity(session: SessionMeta) {
+  const run = session.run?.state === "running" ? session.run : undefined;
+  return JSON.stringify(run ? [run.startedAt, run.agentId, run.modelId, run.workspaceId, run.workspaceRoot, run.peerTaskId] : null);
+}
+
 export async function requestPeerTask(
   request: PeerTaskRequest,
 ): Promise<PeerTaskRequestResult> {
@@ -103,6 +108,8 @@ export async function requestPeerTask(
   if (!validation.ok) return validation;
   const { source, target, parent, rootTaskId, hopCount, dependsOn } =
     validation;
+  const sourceRun = source.run?.state === "running" ? source.run : undefined;
+  const capturedSourceRun = sourceRunIdentity(source);
   const capturedProfiles = JSON.stringify([source.profile, target.profile]);
   const capturedRun = target.run;
   const capturedMessages = getChat(target.id)?.messages;
@@ -132,8 +139,8 @@ export async function requestPeerTask(
       {
         sourceSessionId: source.id,
         sourceTaskId: parent?.id ?? null,
-        sourceAgentId: source.run?.agentId ?? source.profile?.agentId ?? "",
-        sourceModelId: source.run?.modelId ?? source.profile?.modelId ?? "",
+        sourceAgentId: sourceRun?.agentId ?? source.profile?.agentId ?? "",
+        sourceModelId: sourceRun?.modelId ?? source.profile?.modelId ?? "",
         workspaceId: source.profile?.workspaceId ?? "",
         workspaceRoot: source.profile?.workspaceRoot ?? "",
       },
@@ -163,6 +170,7 @@ export async function requestPeerTask(
         currentValidation.target.profile,
       ]) ||
     currentValidation.rootTaskId !== rootTaskId ||
+    sourceRunIdentity(currentValidation.source) !== capturedSourceRun ||
     currentValidation.parent !== parent ||
     (retry && (currentValidation.target.run !== capturedRun || getChat(target.id)?.messages !== capturedMessages))
   )
@@ -185,8 +193,8 @@ export async function requestPeerTask(
     id,
     sourceSessionId: source.id,
     targetSessionId: target.id,
-    sourceAgentId: source.run?.agentId ?? source.profile?.agentId ?? "",
-    sourceModelId: source.run?.modelId ?? source.profile?.modelId ?? "",
+    sourceAgentId: sourceRun?.agentId ?? source.profile?.agentId ?? "",
+    sourceModelId: sourceRun?.modelId ?? source.profile?.modelId ?? "",
     targetAgentId: target.profile?.agentId ?? "",
     targetModelId: target.profile?.modelId ?? "",
     workspaceId: source.profile?.workspaceId ?? "",
@@ -401,6 +409,7 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
     await sendMessageToSession(
       claimed.targetSessionId,
       {
+        id: `peer-handoff:${claimed.id}`,
         role: "user",
         parts: [
           {
@@ -815,7 +824,7 @@ function validateRequest(
       message:
         "Review/correction must follow your own completed task in this workspace.",
     };
-  const parentId = retry?.id ?? followUp?.id ?? source.run?.peerTaskId ?? null;
+  const parentId = retry?.id ?? followUp?.id ?? (source.run?.state === "running" ? source.run.peerTaskId : null) ?? null;
   const parent = parentId
     ? (tasks.find((task) => task.id === parentId) ?? null)
     : null;
@@ -918,10 +927,11 @@ function peerArtifactFailureCode(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/^peer_handoff_[a-z_]+$/.test(message)) return message;
   if (error instanceof Error && "code" in error && typeof error.code === "string" && /^tool-exposure-|^peer-handoff-/.test(error.code)) return error.code;
-  if (/unavailable|not found|cannot find/i.test(message)) {
+  const artifact = /artifact|attachment|immutable content/i.test(message);
+  if (artifact && /unavailable|not found|cannot find/i.test(message)) {
     return "peer_artifact_content_missing";
   }
-  if (/integrity|size changed|hash/i.test(message)) {
+  if (artifact && /integrity|size changed|hash/i.test(message)) {
     return "peer_artifact_integrity_failed";
   }
   if (/capabilit|vision|image input/i.test(message)) {

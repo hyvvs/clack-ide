@@ -255,11 +255,12 @@ fn bind(
             .ok_or("project_unbound_session")?;
     let workspace = identity(&environment, &super::super::fs::to_canon(&canonical));
     let run = &originals.meta["run"];
-    let checkout_root = if run["workspaceId"].as_str() == Some(workspace_id) {
-        run["checkoutRoot"].as_str().unwrap_or(workspace_root)
-    } else {
-        workspace_root
-    };
+    let checkout_root =
+        if run["state"] == "running" && run["workspaceId"].as_str() == Some(workspace_id) {
+            run["checkoutRoot"].as_str().unwrap_or(workspace_root)
+        } else {
+            workspace_root
+        };
     let checkout =
         super::super::workspace::authorize_spawn_cwd(registry, Some(checkout_root), &env)?
             .ok_or("project_missing_checkout")?;

@@ -64,6 +64,7 @@ describe("PeerTask artifact packages", () => {
     expect(packaged[0].contentRef.contentHash).toBe(HASH_A);
     expect(packaged[0].sourcePath).toBe("src/foo.ts");
     expect(normalizePath).toHaveBeenCalledOnce();
+    expect(normalizePath).toHaveBeenCalledWith("src/foo.ts", context.workspaceRoot, { kind: "local" });
   });
 
   it.each([

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Clack backend acceptance</title></head>
+  <body><div id="root"></div><script type="module">
+    try { await import("/src/test/coworkingAcceptance.tsx"); }
+    catch (error) {
+      const configuration = new URL(location.href).searchParams.get("configuration");
+      if (configuration) {
+        const config = await fetch(configuration).then(response => response.json());
+        await fetch(config.report, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: false, error: String(error) }) });
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("coworking_exit");
+      }
+    }
+  </script></body>
+</html>

@@ -8,7 +8,7 @@ import { hashText, validateReadSnapshot } from "../lib/readSnapshot";
 import type { WorkspaceEnv } from "@/modules/workspace/env";
 
 type EditResult =
-  | { ok: true; replacements: number; bytesWritten: number; path: string }
+  | { ok: true; replacements: number; bytesWritten: number; path: string; clackWorkspaceWrite?: true }
   | { error: string; path: string; code?: string };
 
 async function applyEdits(
@@ -110,6 +110,7 @@ async function applyEdits(
     readCache.set(abs, { size: content.length, hash: hashText(content) });
     return {
       ok: true,
+      clackWorkspaceWrite: true,
       replacements: totalReplacements,
       bytesWritten: content.length,
       path: abs,

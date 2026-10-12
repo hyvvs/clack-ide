@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import type { ModelMessage } from "ai";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import type { BudgetLimits } from "@/modules/ai/lib/contextBudget";
@@ -15,17 +16,7 @@ import {
 
 export async function contextDigest(value: unknown): Promise<string> {
   // Match serde_json's ordered object keys, including numeric tool-output keys.
-  const canonical = (input: unknown): string => {
-    if (Array.isArray(input)) return `[${input.map(canonical).join(",")}]`;
-    if (input && typeof input === "object")
-      return `{${Object.entries(input)
-        .filter(([, value]) => value !== undefined)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([key, value]) => `${JSON.stringify(key)}:${canonical(value)}`)
-        .join(",")}}`;
-    return JSON.stringify(input) ?? "null";
-  };
-  const bytes = new TextEncoder().encode(canonical(value));
+  const bytes = new TextEncoder().encode(canonicalJson(value));
   return Array.from(
     new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
     (byte) => byte.toString(16).padStart(2, "0"),

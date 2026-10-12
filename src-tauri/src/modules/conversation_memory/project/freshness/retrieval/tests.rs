@@ -30,6 +30,8 @@ fn request() -> Request {
         max_chunks: 12,
         max_bytes: 65536,
         expected: None,
+        task_ids: None,
+        expected_identity: None,
     }
 }
 
@@ -102,6 +104,52 @@ fn task(id: &str, source: &str, target: &str) -> Value {
 }
 
 #[test]
+fn captured_sources_ignore_new_children_but_reject_changed_selected_results() {
+    let mut f = Fixture::new();
+    let dir = tempfile::tempdir().unwrap();
+    let first = run(&f, &f.snapshot(), &request(), dir.path(), true);
+    let mut child = task("new-child", "a", "b");
+    child["status"] = json!("running");
+    child["result"] = Value::Null;
+    f.originals.tasks.push(child);
+    assert_eq!(
+        first.stamp,
+        run(&f, &f.snapshot(), &request(), dir.path(), true).stamp
+    );
+    f.originals.tasks[0]["status"] = json!("completed");
+    f.originals.tasks[0]["result"] = json!({"targetSessionId":"b","summary":"Port 7351."});
+    let captured = Request {
+        task_ids: Some(first.task_ids),
+        ..request()
+    };
+    assert_eq!(
+        first.stamp,
+        run(&f, &f.snapshot(), &captured, dir.path(), true).stamp
+    );
+    let observed = run(&f, &f.snapshot(), &request(), dir.path(), true);
+    let captured = Request {
+        task_ids: Some(observed.task_ids),
+        ..request()
+    };
+    f.originals.tasks[0]["updatedAt"] = json!(999);
+    f.originals.tasks[0]["archivedAt"] = json!(1000);
+    assert_eq!(
+        observed.stamp,
+        run(&f, &f.snapshot(), &captured, dir.path(), true).stamp
+    );
+    f.originals.tasks[0]["result"]["summary"] = json!("Port 9999.");
+    assert_ne!(
+        observed.identity_stamp,
+        run(&f, &f.snapshot(), &captured, dir.path(), true).identity_stamp
+    );
+    assert_ne!(
+        observed.stamp,
+        run(&f, &f.snapshot(), &captured, dir.path(), true).stamp
+    );
+    assert!(task_source_records(&f.originals, &f.access, &["foreign".into()]).is_err());
+}
+
+#[test]
 fn dependency_results_follow_actual_task_identity_not_workspace_neighbors() {
     let mut f = Fixture::new();
     f.originals.session_ids.insert("c".into());
@@ -117,6 +165,14 @@ fn dependency_results_follow_actual_task_identity_not_workspace_neighbors() {
     assert_eq!(result.chunks.len(), 1);
     assert_eq!(result.chunks[0]["source"]["taskId"], "dep");
     assert_eq!(result.chunks[0]["required"], true);
+    let captured = Request {
+        task_ids: Some(result.task_ids.clone()),
+        ..request()
+    };
+    assert_eq!(
+        result.stamp,
+        run(&f, &f.snapshot(), &captured, dir.path(), true).stamp
+    );
     f.originals.tasks[1]["rootTaskId"] = json!("unrelated");
     assert!(tasks_for(&f.originals, &f.access).is_err());
     f.originals.tasks[1]["rootTaskId"] = json!("root");
@@ -175,10 +231,9 @@ fn file_reference_is_current_bounded_source_linked_and_missed_watcher_changes_st
         .unwrap()
         .set_times(fs::FileTimes::new().set_modified(time))
         .unwrap();
-    assert_ne!(
-        first.stamp,
-        run(&f, &f.snapshot(), &request, dir.path(), true).stamp
-    );
+    let changed = run(&f, &f.snapshot(), &request, dir.path(), true);
+    assert_ne!(first.stamp, changed.stamp);
+    assert_eq!(first.identity_stamp, changed.identity_stamp);
 }
 
 #[test]
@@ -195,6 +250,21 @@ fn artifact_hash_and_policy_are_checked_without_path_fallback() {
     assert!(task_evidence(&task, Some(&artifact), &f.content, &terms("port")).is_err());
     fs::remove_file(f.content.join(&blob.id)).unwrap();
     assert!(task_evidence(&task, Some(&artifact), &f.content, &terms("port")).is_err());
+}
+
+#[test]
+fn captured_patch_artifact_remains_retrievable_after_worktree_removal() {
+    let f = Fixture::new();
+    let blob = put_content_in(&f.content, b"Immutable port 1420").unwrap();
+    let mut task = task("task", "a", "b");
+    task["changeSet"] = json!({"baseSha":"a".repeat(40),"patch":"Immutable port 1420","changedPaths":["config.txt"]});
+    let mut artifact = json!({"id":"artifact","sourceSessionId":"b","workspaceId":"local:/one/project","accessPolicy":"model-input","contentKind":"text","contentRef":{"id":blob.id,"contentHash":blob.id,"byteSize":19},"worktreeProvenance":{"taskId":"task","baseSha":"a".repeat(40),"changedPaths":["config.txt"]}});
+    assert!(task_evidence(&task, Some(&artifact), &f.content, &terms("port")).is_ok());
+    artifact["worktreeProvenance"]["baseSha"] = json!("b".repeat(40));
+    assert!(!artifact_allowed(&task, &artifact));
+    artifact["worktreeProvenance"]["baseSha"] = json!("a".repeat(40));
+    artifact["worktreeProvenance"]["taskId"] = json!("foreign-task");
+    assert!(!artifact_allowed(&task, &artifact));
 }
 
 #[test]

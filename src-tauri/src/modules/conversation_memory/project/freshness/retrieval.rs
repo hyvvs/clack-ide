@@ -19,6 +19,8 @@ pub struct Request {
     max_chunks: usize,
     max_bytes: usize,
     expected: Option<String>,
+    task_ids: Option<Vec<String>>,
+    expected_identity: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -30,6 +32,8 @@ pub struct Retrieved {
     stamp: String,
     reads: usize,
     bytes: usize,
+    task_ids: Vec<String>,
+    identity_stamp: String,
 }
 
 fn terms(query: &str) -> Vec<String> {
@@ -176,10 +180,46 @@ fn validate_request(request: &Request) -> Result<()> {
         || request.max_bytes == 0
         || request.max_bytes > MAX_BYTES
         || request.expected.as_ref().is_some_and(|s| !valid_hash(s))
+        || request
+            .expected_identity
+            .as_ref()
+            .is_some_and(|s| !valid_hash(s))
+        || request.task_ids.as_ref().is_some_and(|ids| {
+            ids.len() > 256
+                || ids.iter().any(|id| valid_id(id).is_err())
+                || ids.iter().collect::<BTreeSet<_>>().len() != ids.len()
+        })
     {
         return Err("scoped_evidence_invalid_request".into());
     }
     Ok(())
+}
+
+fn task_source_record(task: &Value) -> Value {
+    let mut value = task.clone();
+    if let Some(record) = value.as_object_mut() {
+        for key in ["createdAt", "updatedAt", "archivedAt", "handoff"] {
+            record.remove(key);
+        }
+    }
+    value
+}
+
+fn task_source_records(
+    originals: &Originals,
+    access: &Access,
+    ids: &[String],
+) -> Result<Vec<Value>> {
+    let available = tasks_for(originals, access)?;
+    ids.iter()
+        .map(|id| {
+            available
+                .iter()
+                .find(|task| task["id"].as_str() == Some(id))
+                .map(|task| task_source_record(task))
+                .ok_or_else(|| "scoped_evidence_task_unavailable".into())
+        })
+        .collect()
 }
 
 fn recipient(originals: &Originals, request: &Request, profiles: &Value) -> Result<String> {
@@ -248,6 +288,8 @@ fn collect(
         stamp: String::new(),
         reads: 0,
         bytes: 0,
+        task_ids: vec![],
+        identity_stamp: String::new(),
     };
     let mut seen = BTreeSet::new();
     let mut add = |mut chunk: Value, result: &mut Retrieved| -> Result<()> {
@@ -350,9 +392,29 @@ fn collect(
             &mut result,
         )?;
     }
-    let tasks = tasks_for(originals, access)?;
+    let mut tasks = tasks_for(originals, access)?;
+    if let Some(ids) = &request.task_ids {
+        task_source_records(originals, access, ids)?;
+        let active = originals.tasks.iter().find(|task| {
+            originals.meta["run"]["peerTaskId"] == task["id"]
+                && originals.meta["run"]["state"] == "running"
+        });
+        if active.is_some_and(|task| {
+            task["dependsOn"].as_array().is_some_and(|dependencies| {
+                dependencies
+                    .iter()
+                    .any(|id| !ids.iter().any(|captured| id == captured))
+            })
+        }) {
+            return Err("scoped_evidence_dependency_unavailable".into());
+        }
+        tasks.retain(|task| ids.iter().any(|id| task["id"].as_str() == Some(id)));
+    }
     let active_id = originals.meta["run"]["peerTaskId"].as_str();
-    let active = tasks.iter().find(|t| t["id"].as_str() == active_id);
+    let active = originals
+        .tasks
+        .iter()
+        .find(|t| t["id"].as_str() == active_id);
     let mut candidates = vec![];
     for task in &tasks {
         let id = task["id"].as_str().ok_or("scoped_evidence_invalid_task")?;
@@ -421,6 +483,12 @@ fn collect(
             }
         }
     }
+    result.task_ids = candidates
+        .iter()
+        .filter_map(|candidate| candidate.3["id"].as_str().map(String::from))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     candidates.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(b.2.cmp(&a.2)));
     if candidates.iter().skip(MAX_CHUNKS).any(|c| c.0 || c.1) {
         return Err("scoped_evidence_required_no_fit".into());
@@ -433,7 +501,7 @@ fn collect(
             Ok((text, start, end, content_hash)) => {
                 add(
                     json!({"kind":if artifact.is_some() {"artifact"} else {"task-result"},"source":{"taskId":id,"artifactId":artifact.map(|a| &a["id"]),"targetSessionId":task["targetSessionId"],"worktree":task["worktree"],"artifactProvenance":artifact.map(|a| &a["worktreeProvenance"])},
-                    "revision":hash(task)?,"contentHash":content_hash,"start":start,"end":end,"text":text,"required":exact || dependency,
+                    "revision":hash(&task_source_record(task))?,"contentHash":content_hash,"start":start,"end":end,"text":text,"required":exact || dependency,
                     "freshness":"historical-task-evidence-not-current-project-state","qualification":"agent-finding","reason":if dependency {"declared-task-dependency"} else {"authorized-task-relevance"}}),
                     &mut result,
                 )?;
@@ -514,10 +582,15 @@ fn collect(
         }
     }
     result.reads = batch.reads;
+    result.identity_stamp = hash(&json!([
+        snapshot.revision,
+        git,
+        task_source_records(originals, access, &result.task_ids)?
+    ]))?;
     result.stamp = hash(&json!([
         snapshot.revision,
         git,
-        tasks,
+        task_source_records(originals, access, &result.task_ids)?,
         result.chunks,
         result.issues,
         result.omitted
@@ -526,6 +599,9 @@ fn collect(
 }
 
 fn artifact_allowed(task: &Value, artifact: &Value) -> bool {
+    let base = task["worktree"]["baseSha"]
+        .as_str()
+        .or_else(|| task["changeSet"]["baseSha"].as_str());
     artifact["workspaceId"] == task["workspaceId"]
         && [&task["sourceSessionId"], &task["targetSessionId"]]
             .contains(&&artifact["sourceSessionId"])
@@ -536,7 +612,7 @@ fn artifact_allowed(task: &Value, artifact: &Value) -> bool {
             .is_some_and(|id| valid_id(id).is_ok())
         && (artifact["worktreeProvenance"].is_null()
             || (artifact["worktreeProvenance"]["taskId"] == task["id"]
-                && artifact["worktreeProvenance"]["baseSha"] == task["worktree"]["baseSha"]
+                && base.is_some_and(|base| artifact["worktreeProvenance"]["baseSha"] == base)
                 && artifact["worktreeProvenance"]["baseSha"].is_string()))
 }
 
@@ -657,8 +733,16 @@ pub async fn scoped_evidence_retrieve(
         }
         if current != captured
             || recipient(&latest, &request, &profiles()?)? != recipient_stamp
-            || hash(&json!(tasks_for(&latest, &current)?))?
-                != hash(&json!(tasks_for(&originals, &captured)?))?
+            || hash(&json!(task_source_records(
+                &latest,
+                &current,
+                &result.task_ids
+            )?))?
+                != hash(&json!(task_source_records(
+                    &originals,
+                    &captured,
+                    &result.task_ids
+                )?))?
             || load(&root, &captured.scope.workspace)?.revision != snapshot.revision
             || crate::modules::git::operations::project_evidence_revision(&cwd, &env)? != git
         {
@@ -668,6 +752,14 @@ pub async fn scoped_evidence_retrieve(
             return Err("scoped_evidence_timeout".into());
         }
         result.stamp = hash(&json!([recipient_stamp, result.stamp]))?;
+        result.identity_stamp = hash(&json!([recipient_stamp, result.identity_stamp]))?;
+        if request
+            .expected_identity
+            .as_ref()
+            .is_some_and(|stamp| stamp != &result.identity_stamp)
+        {
+            return Err("scoped_evidence_stale_identity".into());
+        }
         if request
             .expected
             .as_ref()

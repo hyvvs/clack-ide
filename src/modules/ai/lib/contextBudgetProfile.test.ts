@@ -219,4 +219,15 @@ describe("budget evidence precedence and freshness", () => {
     current = setProfileOverride(state, profileId, "workingContext", 1000);
     await expect(revalidate()).rejects.toThrow("settings changed");
   });
+  it("native JSON key reconstruction does not change captured settings identity", async () => {
+    let manual = setProfileOverride(state, profileId, "configuredContext", 16000);
+    manual = setProfileOverride(manual, profileId, "maxOutput", 1024);
+    const ordered = (value: unknown): unknown => Array.isArray(value) ? value.map(ordered)
+      : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, ordered(child)])) : value;
+    const native = ordered(manual) as typeof manual;
+    expect(budgetIdentity(native, profileId)).toBe(budgetIdentity(manual, profileId));
+    vi.mocked(invoke).mockImplementation(async cmd => cmd === "self_hosted_profiles_snapshot" ? [["selfHostedInference", native]] : snapshot());
+    const revalidate = await runtime(manual).prepare(body);
+    await expect(revalidate()).resolves.toBeUndefined();
+  });
 });

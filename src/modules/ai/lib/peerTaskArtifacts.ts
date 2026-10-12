@@ -1,4 +1,6 @@
 import type { UIMessage } from "@ai-sdk/react";
+import type { WorkspaceEnv } from "@/modules/workspace";
+import { workspaceEnvironmentFromId } from "@/modules/ai/lib/sessions";
 import {
   ATTACHMENT_LIMITS,
   isDeliverableAttachment,
@@ -63,6 +65,7 @@ type PackageDeps = {
   normalizePath: (
     path: string,
     workspaceRoot: string,
+    workspace: WorkspaceEnv,
   ) => Promise<AttachmentRecord>;
   storeContent: (bytes: Uint8Array) => Promise<AttachmentContentRef>;
   now: () => number;
@@ -70,8 +73,8 @@ type PackageDeps = {
 };
 
 const DEFAULT_DEPS: PackageDeps = {
-  normalizePath: (path, workspaceRoot) =>
-    normalizeWorkspaceAttachment(path, workspaceRoot),
+  normalizePath: (path, workspaceRoot, workspace) =>
+    normalizeWorkspaceAttachment(path, workspaceRoot, undefined, workspace),
   storeContent: storeAttachmentContent,
   now: Date.now,
   newId: newPeerArtifactId,
@@ -108,7 +111,9 @@ export async function packagePeerTaskArtifacts(
     );
   }
   for (const ref of normalizePathRefs(input.pathRefs)) {
-    const record = await deps.normalizePath(ref.path, context.workspaceRoot);
+    const workspace = workspaceEnvironmentFromId(context.workspaceId);
+    if (!workspace) throw new PeerArtifactPackageError("peer_artifact_workspace_unavailable", "The artifact owner has no valid workspace environment.");
+    const record = await deps.normalizePath(ref.path, context.workspaceRoot, workspace);
     try {
       if (!isDeliverableAttachment(record)) {
         throw new PeerArtifactPackageError(

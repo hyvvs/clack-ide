@@ -8,6 +8,7 @@ import {
   type ProbeSnapshot,
 } from "@/modules/ai/lib/selfHostedProbe";
 import { CALIBRATED_FIELDS } from "@/modules/ai/lib/calibrationSchema";
+import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 
 export function profileBudgetLimits(
   state: SelfHostedState,
@@ -73,7 +74,7 @@ export function budgetIdentity(
     (e) => e.id === profile?.endpointId && e.deletedAt == null,
   );
   // Alias and observational evidence changes do not change transport identity.
-  return JSON.stringify([
+  return canonicalJson([
     endpoint?.id,
     endpoint?.configurationRevision,
     profile?.id,

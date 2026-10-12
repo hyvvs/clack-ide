@@ -21,7 +21,8 @@ import {
   dispatcherTaskGroups,
   dispatcherTaskNeighbors,
   dispatcherTaskConversation,
-  dispatcherTaskStatus,
+  dispatcherActiveCount,
+  taskLifecycleTimes,
   availableDispatcherTasks,
 } from "@/modules/ai/lib/dispatcherTasks";
 import { finishedTasksToArchive } from "@/modules/ai/lib/taskArchive";
@@ -33,10 +34,17 @@ import {
 import type { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
+import { usePeerTaskStatus } from "@/modules/ai/hooks/usePeerTaskStatus";
+import type { PeerTask } from "@/modules/ai/lib/peerTasks";
+
 import {
   focusTaskConversationPane,
   useDispatcherNavigation,
 } from "@/modules/ai/store/dispatcherNavigation";
+
+function TaskStatus({ task }: { task: PeerTask }) {
+  return <span className="text-[var(--clack-text-2)]">{usePeerTaskStatus(task)}</span>;
+}
 
 const PeerTaskCard = lazy(() =>
   import("@/modules/ai/components/PeerTaskFeed").then((module) => ({
@@ -80,7 +88,8 @@ export function DispatcherNavigator({
   const archivedWork = visibleDispatcherTasks(tasks, sessions, undefined, true);
   const work = archived ? archivedWork : current;
   const neighbors = dispatcherTaskNeighbors(work, selectedId);
-  const activeCount = work.filter(t => taskWorkGroup(t) === "active").length;
+  const activeCount = dispatcherActiveCount(work, managing);
+  const currentActiveCount = dispatcherActiveCount(current, managing);
   const attentionCount = work.filter(
     (task) => taskWorkGroup(task) === "attention",
   ).length;
@@ -130,8 +139,8 @@ export function DispatcherNavigator({
           type="button"
           data-ai-dispatch-target
           className="inline-flex h-[22px] max-w-[15rem] items-center gap-1.5 rounded-md border border-[color:var(--clack-border-strong)] bg-[var(--clack-accent-soft)] px-2 text-[11px] text-[var(--clack-text-1)] outline-none hover:bg-accent/70 focus-visible:ring-1 focus-visible:ring-[var(--clack-focus)]"
-          title={`Dispatcher: ${current.filter(t => taskWorkGroup(t) === "active").length} active tasks, ${current.filter(t => taskWorkGroup(t) === "attention").length} need attention`}
-          aria-label={`Dispatcher. Choose dispatch target. Current target: ${active?.title || "New chat"}. ${current.filter(t => taskWorkGroup(t) === "active").length} active tasks. ${current.filter(t => taskWorkGroup(t) === "attention").length} need attention`}
+          title={`Dispatcher: ${currentActiveCount} active tasks, ${current.filter(t => taskWorkGroup(t) === "attention").length} need attention`}
+          aria-label={`Dispatcher. Choose dispatch target. Current target: ${active?.title || "New chat"}. ${currentActiveCount} active tasks. ${current.filter(t => taskWorkGroup(t) === "attention").length} need attention`}
         >
           <HugeiconsIcon icon={Message01Icon} size={11} />
           <span className="shrink-0 text-[var(--clack-text-3)]">
@@ -140,9 +149,9 @@ export function DispatcherNavigator({
           <span className="min-w-0 truncate font-medium">
             {active?.title || "New chat"}
           </span>
-          {current.some(t => taskWorkGroup(t) === "active") && (
+          {currentActiveCount > 0 && (
             <span className="shrink-0 text-[10px] tabular-nums">
-              {current.filter(t => taskWorkGroup(t) === "active").length} active
+              {currentActiveCount} active
             </span>
           )}
           <HugeiconsIcon
@@ -247,6 +256,7 @@ export function DispatcherNavigator({
                     </p>
                   )}
                   {entries.map((task) => {
+                    const created = taskLifecycleTimes(task).find(row => row.label === "Created");
                     const parent = sessions.find(
                       (s) =>
                         s.id === task.sourceSessionId &&
@@ -276,9 +286,8 @@ export function DispatcherNavigator({
                         >
                           {task.prompt}
                         </span>
-                        <span className="text-[var(--clack-text-2)]">
-                          {dispatcherTaskStatus(task)}
-                        </span>
+                        <TaskStatus task={task} />
+                        {created && <time dateTime={new Date(created.at).toISOString()} className="text-[10px] tabular-nums text-[var(--clack-text-3)]">{created.text}</time>}
                         <span className="text-[var(--clack-text-3)]">
                           {parent?.title ?? "Deleted conversation"} |{" "}
                           {workspaceLabel(task.workspaceRoot)}

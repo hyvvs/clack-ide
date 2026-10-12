@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { COMPACTION_POLICY } from "@/modules/ai/lib/compactionExtraction";
+import { contextDigest } from "@/modules/ai/lib/targetContext";
+import type { ScopedRequest } from "@/modules/ai/lib/scopedEvidence";
+import { vi } from "vitest";
 import {
   measureRequest,
   resolveContextBudget,
@@ -12,8 +15,148 @@ import {
   limits,
 } from "@/modules/ai/lib/conversationCompaction.fixture";
 afterEach(disposeCompactionFixtures);
+function required<T>(value: T | null | undefined): T {
+  if (value == null) throw new Error("Required fixture state missing");
+  return value;
+}
 
 describe("durable conversation compaction coordinator", () => {
+  it("handles another verified append between rebasing and commit without replaying extraction", async () => {
+    const f = fixture();
+    const commit = required(f.memory.commit.getMockImplementation());
+    const append = () => {
+      const current = f.view();
+      f.originals.push(textMessage(`live-${f.originals.length}`, "assistant", "Current run output"));
+      f.change({ preparation: { ...current.preparation, generation: current.preparation.generation + 1, source: { ...current.preparation.source, transcriptRevision: current.preparation.source.transcriptRevision + 1 } } });
+    };
+    f.memory.commit.mockImplementationOnce(async (candidate, signal) => { append(); return commit(candidate, signal); });
+    const rebase = vi.fn(async () => {
+      const current = f.view();
+      if (rebase.mock.calls.length === 1) append();
+      return current;
+    });
+    const compactor = await f.start({ memory: { ...f.memory, rebase } });
+    await compactor.prepare();
+    expect(rebase).toHaveBeenCalledTimes(2);
+    expect(f.memory.commit.mock.calls.length).toBe(f.call.mock.calls.length + 2);
+    expect(f.view().revision?.coverage.end).toBeLessThan(f.originals.length - 2);
+  });
+  it.each([8192, 16384])("preserves exact operational facts across ten incremental compaction cycles at %s context", async capacity => {
+    const facts = "Current timeoutMs=750, NOT 900. allowRemote=false. Keep port 7351, API v2, schema 3, src/auth.ts, docs/caf\u00e9.md, retries=2, owner=Reviewer and unresolved issue CHECK-19. Architecture: config owns timeout. Depend on original Review-17. External effect UNKNOWN-22 remains unresolved and must never replay. Never promote an assumption to verified evidence.";
+    const cycleLimits = { deployed: capacity, workingTarget: 6000, maxOutput: 1024, outputReserve: 1024 };
+    const f = fixture(history());
+    f.originals[0] = textMessage("user-original", "user", facts);
+    f.originals.splice(1, 0, { id: "failed-tool", role: "assistant", parts: [{ type: "tool-read_file", toolCallId: "denied-read", state: "output-error", input: { path: "src/auth.ts" }, errorText: "Permission denied. Never circumvent secret protections." }] });
+    const extract = required(f.call.getMockImplementation());
+    f.call.mockImplementation(async request => {
+      const output = await extract(request);
+      const value = JSON.parse(output.text);
+      for (const claim of value.claims) { claim.section = "completed-work"; claim.status = "inference"; }
+      return { ...output, text: JSON.stringify(value) };
+    });
+    let revision = 0;
+    for (let cycle = 0; cycle < 10; cycle++) {
+      if (cycle) f.originals.push(
+        textMessage(`observation-${cycle}-a`, "assistant", `Completed observation ${cycle}a.\n${"historical observation ".repeat(150)}`),
+        textMessage(`observation-${cycle}-b`, "assistant", `Completed observation ${cycle}b.\n${"historical observation ".repeat(150)}`),
+        textMessage(`observation-${cycle}-c`, "assistant", `Completed observation ${cycle}c.\n${"historical observation ".repeat(150)}`),
+        textMessage(`request-${cycle}`, "user", "Continue the bounded current task; preserve the corrected requirements."),
+      );
+      const before = JSON.stringify(f.originals);
+      const calls = f.call.mock.calls.length;
+      const compactor = await f.start({ limits: async () => cycleLimits });
+      const result = await compactor.prepare();
+      const saved = required(f.view().revision);
+      expect(saved.revision).toBeGreaterThan(revision);
+      revision = saved.revision;
+      expect(f.call.mock.calls.length - calls).toBeLessThanOrEqual(COMPACTION_POLICY.maxChunks);
+      expect(JSON.stringify(result)).toContain(facts);
+      expect(JSON.stringify(result)).toContain("Permission denied. Never circumvent secret protections.");
+      expect(JSON.stringify(f.originals)).toBe(before);
+      expect(saved.coverage.latestMessageId).toBe(f.originals[saved.coverage.end - 1].id);
+      expect(saved.coverage.end).toBeLessThan(f.originals.length);
+      for (const evidence of saved.evidence) {
+        expect(evidence.relatedSessions).toEqual(["chat-a"]);
+        expect(evidence.locator.kind).toBe("message");
+      }
+      expect(resolveContextBudget(cycleLimits, measureRequest({ messages: result, tools: [] })).fits).toBe(true);
+      compactor.dispose();
+    }
+  });
+  it("resumes after the bounded batch reaches safe headroom even when the ideal target needs more work", async () => {
+    const originals = [textMessage("requirement", "user", "Preserve timeoutMs=750 and allowRemote=false."),
+      ...Array.from({ length: 25 }, (_, index) => textMessage(`result-${index}`, "assistant", `Completed ${index}.\n${"historical observation ".repeat(80)}`)),
+      textMessage("next", "user", "Read config.json."),
+    ];
+    const f = fixture(originals);
+    const extract = required(f.call.getMockImplementation());
+    f.call.mockImplementation(async request => {
+      const output = await extract(request);
+      const value = JSON.parse(output.text);
+      for (const claim of value.claims) { claim.section = "completed-work"; claim.status = "inference"; }
+      return { ...output, text: JSON.stringify(value) };
+    });
+    const result = await (await f.start()).prepare();
+    expect(f.call).toHaveBeenCalledTimes(4);
+    const budget = resolveContextBudget(limits, measureRequest({ messages: result, tools: [] }));
+    expect(budget.fits).toBe(true);
+    expect(budget.cost.conversation).toBeLessThanOrEqual(budget.working * COMPACTION_POLICY.trigger);
+    expect(budget.cost.conversation).toBeGreaterThan(budget.working * COMPACTION_POLICY.target);
+    expect(f.view().revision?.coverage.end).toBeLessThan(originals.length);
+    expect(f.originals).toEqual(originals);
+  });
+  it("refreshes confirmed write observations before extraction transport validates evidence", async () => {
+    const f = fixture();
+    let written = false;
+    let currentLimits = { deployed: 32768, workingTarget: 32768 };
+    const identityStamp = "e".repeat(64);
+    const read = vi.fn(async (request: ScopedRequest) => {
+      const stamp = (written ? "d" : "c").repeat(64);
+      if (request.expected && request.expected !== stamp)
+        throw new Error("scoped_evidence_stale_receipt");
+      return { chunks: [], issues: [], omitted: 0, stamp, identityStamp, taskIds: [], bytes: 0, reads: 1 };
+    });
+    const compactor = await f.start({
+      limits: async () => currentLimits,
+      scopedEvidence: { read, allowed: () => true },
+    });
+    await compactor.prepare();
+    expect(f.call).not.toHaveBeenCalled();
+    const extract = required(f.call.getMockImplementation());
+    f.call.mockImplementation(async request => {
+      await compactor.validateEvidence();
+      return extract(request);
+    });
+    written = true;
+    currentLimits = limits;
+    await compactor.prepare([{ role: "tool", content: [{
+      type: "tool-result", toolName: "write_file", toolCallId: "confirmed-write",
+      output: { type: "json", value: { ok: true, clackWorkspaceWrite: true } },
+    }] }]);
+    expect(f.call).toHaveBeenCalled();
+    expect(read.mock.calls[1][0]).toMatchObject({ expected: null, expectedIdentity: identityStamp });
+    await compactor.validateEvidence();
+    expect(read.mock.lastCall?.[0].expected).toBe("d".repeat(64));
+  });
+  it("rebases a verified append once without replaying extraction or extending source coverage", async () => {
+    const f = fixture();
+    const commit = required(f.memory.commit.getMockImplementation());
+    f.memory.commit.mockImplementationOnce(async (candidate, signal) => {
+      const current = f.view();
+      f.originals.push(textMessage("live-output", "assistant", "Current run output"));
+      f.change({ preparation: { ...current.preparation, generation: current.preparation.generation + 1, source: { ...current.preparation.source, transcriptRevision: 2 } } });
+      return commit(candidate, signal);
+    });
+    const rebase = vi.fn(async (_preparation, count, hash) => {
+      expect(hash).toBe(await contextDigest(f.originals.slice(0, count)));
+      return f.view();
+    });
+    const compactor = await f.start({ memory: { ...f.memory, rebase } });
+    await compactor.prepare();
+    expect(rebase).toHaveBeenCalledOnce();
+    expect(f.view().revision?.coverage.end).toBeLessThan(f.originals.length - 1);
+    expect(f.memory.commit.mock.calls.length).toBe(f.call.mock.calls.length + 1);
+  });
   it("does no memory or inference work below threshold", async () => {
     const f = fixture([textMessage("short", "user", "Hello")]);
     const compactor = await f.start();
@@ -101,7 +244,9 @@ describe("durable conversation compaction coordinator", () => {
       code: "compaction-batch-limit",
     });
     expect(f.call).toHaveBeenCalledTimes(4);
-    expect(f.view().revision?.coverage.end).toBeLessThan(15);
+    const coverage = f.view().revision?.coverage;
+    expect(coverage?.end).toBeLessThan(originals.length);
+    expect(coverage?.latestMessageId).toBe(originals[(coverage?.end ?? 1) - 1].id);
     expect(f.onOptimized).not.toHaveBeenCalled();
     expect(f.originals).toHaveLength(82);
   });

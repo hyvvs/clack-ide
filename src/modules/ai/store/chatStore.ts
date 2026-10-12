@@ -397,6 +397,8 @@ function flushPersistEntry(id: string) {
   if (!entry) return;
   clearTimeout(entry.timer);
   pendingPersist.delete(id);
+  const current = chats.get(id)?.messages;
+  if (current && current !== entry.latest) return;
   void saveMessages(id, entry.latest);
 }
 
@@ -422,7 +424,7 @@ export async function persistCompactionSource(
     clearTimeout(entry.timer);
     pendingPersist.delete(id);
   }
-  // Called before this transport starts streaming, never from a later tool step.
+  // Synchronize at preparation and stop boundaries; the React bridge may be gone.
   await saveMessages(id, messages);
 }
 
@@ -1330,6 +1332,8 @@ export const useChatStore = create<StoreState>((set, get) => ({
   },
 
   persistMessages: (id, messages) => {
+    const current = chats.get(id)?.messages;
+    if (current && current !== messages) return;
     // Debounce the message-blob write so streaming doesn't pound the store.
     const existing = pendingPersist.get(id);
     if (existing) clearTimeout(existing.timer);
@@ -1337,6 +1341,8 @@ export const useChatStore = create<StoreState>((set, get) => ({
       const entry = pendingPersist.get(id);
       if (!entry) return;
       pendingPersist.delete(id);
+      const current = chats.get(id)?.messages;
+      if (current && current !== entry.latest) return;
       void saveMessages(id, entry.latest);
     }, PERSIST_DEBOUNCE_MS);
     pendingPersist.set(id, { latest: messages, timer });
@@ -1503,6 +1509,8 @@ export async function cancelRun(id: string): Promise<void> {
     approvalsPending: 0,
     error: null,
   });
+  if (chat?.messages && chats.get(id) === chat)
+    await persistCompactionSource(id, chat.messages);
 }
 
 export async function interruptAllRunsForShutdown(): Promise<void> {
@@ -1529,7 +1537,9 @@ export async function interruptAllRunsForShutdown(): Promise<void> {
       const draining = cancelSessionInference(id);
       await chats.get(id)?.stop();
       await draining;
-      flushPersist(id);
+      const chat = chats.get(id);
+      if (chat?.messages) await persistCompactionSource(id, chat.messages);
+      else flushPersist(id);
     }),
   );
 }

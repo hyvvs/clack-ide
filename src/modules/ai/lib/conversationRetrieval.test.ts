@@ -179,6 +179,19 @@ describe("automatic same-conversation evidence retrieval", () => {
     expect(await f.prepare()).toEqual(first);
     expect(f.read).toHaveBeenCalledOnce();
   });
+  it("optional history leaves room for required scoped evidence and omission notices", async () => {
+    const f = fixture();
+    const first = await f.prepare();
+    const baseCost = measureRequest({ messages: f.messages });
+    const retrievedCost = measureRequest({ messages: first }).conversation - baseCost.conversation;
+    const limits = { deployed: 32768, workingTarget: baseCost.conversation + retrievedCost + 64 };
+    const optional = f.make();
+    const output = await optional.prepare(f.view, f.groups, f.messages, limits, []);
+    expect(JSON.stringify(output)).not.toContain("deployed proxy requires it");
+    const required = f.make();
+    required.request("port", "early");
+    expect(JSON.stringify(await required.prepare(f.view, f.groups, f.messages, limits, []))).toContain("deployed proxy requires it");
+  });
   it("final envelope metadata omits only optional whole groups at the B1 boundary", async () => {
     const f = fixture();
     const first = await f.prepare();
@@ -349,6 +362,18 @@ describe("automatic same-conversation evidence retrieval", () => {
     });
     f.run.request("original evidence", "e".repeat(64));
     expect(JSON.stringify(await f.prepare())).toContain("deployed proxy");
+  });
+  it("does not mistake a peer policy checksum for a missing conversation source", async () => {
+    const f = fixture();
+    f.originals[3] = text("latest", "user", `<peer-handoff>\n${JSON.stringify({ recipient: { policyRevision: "f".repeat(64) }, objectiveAndRequirements: "Why did we choose port 1420?" })}\n</peer-handoff>`);
+    expect(JSON.stringify(await f.prepare())).toContain("deployed proxy");
+    expect(f.read.mock.calls.flatMap(([request]) => request.messageIds)).not.toContain("f".repeat(64));
+  });
+  it("still fails closed for an explicitly requested unavailable checksum", async () => {
+    const f = fixture();
+    f.run.request(`Read source:${"f".repeat(64)}.`);
+    await expect(f.prepare()).rejects.toMatchObject({ code: "retrieval-missing" });
+    expect(f.read).not.toHaveBeenCalled();
   });
   it("resolves an owned attachment hash without a prior summary citation", async () => {
     const f = fixture();
@@ -578,6 +603,19 @@ describe("automatic same-conversation evidence retrieval", () => {
         [],
       ),
     ).rejects.toMatchObject({ code: "retrieval-budget" });
+  });
+  it.each([false, true])("cached evidence re-sizes whole optional groups but pins explicitly required sources: %s", async required => {
+    const f = fixture();
+    if (required) f.run.request("port", "early");
+    await f.prepare();
+    const tight = { deployed: 32768, workingTarget: measureRequest({ messages: f.messages }).conversation + 1 };
+    const next = f.run.prepare(f.view, f.groups, f.messages, tight, []);
+    if (required) await expect(next).rejects.toMatchObject({ code: "retrieval-budget" });
+    else {
+      expect(await next).toEqual(f.messages);
+      expect(f.read).toHaveBeenCalledOnce();
+      expect(f.originals[1].parts[0]).toEqual({ type: "text", text: "Do NOT use port 8080. Choose port 1420 because the deployed proxy requires it." });
+    }
   });
   it("cancels before lookup and does not accept late results", async () => {
     const f = fixture();

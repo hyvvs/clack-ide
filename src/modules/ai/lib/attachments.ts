@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import { currentWorkspaceEnv, type WorkspaceEnv } from "@/modules/workspace";
+import { resolvePath } from "@/modules/ai/tools/context";
 import {
   type AttachmentContentRef,
   releaseAttachmentContent,
@@ -855,6 +856,7 @@ export async function normalizeWorkspaceAttachment(
   path: string,
   workspaceRoot: string | null,
   deps?: WorkspaceAttachmentDeps,
+  workspaceEnvironment?: WorkspaceEnv,
 ): Promise<AttachmentRecord> {
   const displayName = basename(path);
   const source: AttachmentSource = { kind: "workspace-path", path };
@@ -872,7 +874,7 @@ export async function normalizeWorkspaceAttachment(
       },
     });
   }
-  const workspace = currentWorkspaceEnv();
+  const workspace = workspaceEnvironment ?? currentWorkspaceEnv();
   const activeDeps: WorkspaceAttachmentDeps = deps ?? {
     canonicalize: (candidate) =>
       invoke<string>("fs_canonicalize", { path: candidate, workspace }),
@@ -885,7 +887,7 @@ export async function normalizeWorkspaceAttachment(
       }),
     persistContent: storeAttachmentContent,
   };
-  const safety = await checkReadableCanonical(path, activeDeps.canonicalize);
+  const safety = await checkReadableCanonical(resolvePath(path, workspaceRoot), activeDeps.canonicalize);
   if (!safety.ok) {
     return failureRecord({
       source,

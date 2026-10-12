@@ -2,6 +2,8 @@ import type { PeerTask } from "@/modules/ai/lib/peerTasks";
 import type { SessionMeta } from "@/modules/ai/lib/sessions";
 import { pendingPeerQuestion } from "@/modules/ai/lib/peerCommunication";
 import { taskWorkGroup, type WorkGroup } from "@/modules/ai/lib/taskPresentation";
+import { isPeerTaskActive } from "@/modules/ai/lib/peerTaskCancellation";
+import { inferenceLabel, type InferenceSnapshot } from "@/modules/ai/lib/inferenceLifecycle";
 
 export const dispatcherTaskGroups: [WorkGroup, string][] = [
   ["attention", "Needs attention"], ["active", "Active"], ["completed", "Completed"],
@@ -35,13 +37,32 @@ export function availableDispatcherTasks(tasks: readonly PeerTask[], sessions: r
   return tasks.filter(task => dispatcherTaskConversation(task, sessions) !== null).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
 
-export function dispatcherTaskStatus(task: PeerTask): string {
+export function dispatcherActiveCount(tasks: readonly PeerTask[], managing: readonly string[] = []): number {
+  return tasks.filter(task => isPeerTaskActive(task) || (managing.includes(task.id) && task.changeSet?.patch && !task.changeSet.appliedAt)).length;
+}
+
+export function taskLifecycleTimes(task: PeerTask, locale?: string, timeZone?: string) {
+  const format = new Intl.DateTimeFormat(locale, {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone,
+  });
+  return ([["Created", task.createdAt], ["Started", task.startedAt], ["Ended", task.endedAt], ["Archived", task.archivedAt]] as const)
+    .flatMap(([label, at]) => at !== undefined && Number.isFinite(at) && at >= 0 && at <= 8.64e15 ? [{ label, at, text: format.format(at) }] : []);
+}
+
+export function dispatcherTaskStatus(task: PeerTask, inference?: InferenceSnapshot | null, live: { preparing?: boolean; approval?: boolean; applying?: boolean; finalizing?: boolean } = {}): string {
+  if (live.applying) return "Applying";
   if (pendingPeerQuestion(task)) return "Waiting for clarification";
   switch (task.status) {
     case "queued":
       return "Queued";
     case "running":
-      return "Running";
+      if (live.finalizing) return "Finalizing result";
+      if (live.approval) return "Waiting for approval";
+      if (inference?.phase === "queued" || inference?.phase === "awaiting-admission") return "Waiting for model capacity";
+      if (inference?.phase === "generating") return "In progress";
+      if (inference) return inferenceLabel(inference);
+      return live.preparing ? "Preparing" : "In progress";
     case "waiting":
       return "Waiting for required tasks";
     case "blocked":

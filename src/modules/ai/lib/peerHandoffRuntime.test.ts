@@ -30,6 +30,11 @@ vi.mock("@/modules/ai/lib/sessions", async (original) => ({
   ...(await original<typeof import("@/modules/ai/lib/sessions")>()),
   loadMessages: vi.fn().mockResolvedValue([]),
   saveSessionsList: vi.fn().mockResolvedValue(undefined),
+  awaitSessionWrites: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/modules/ai/lib/conversationMemory", async original => ({
+  ...(await original<typeof import("@/modules/ai/lib/conversationMemory")>()),
+  loadConversationMemory: vi.fn(),
 }));
 vi.mock("@/modules/ai/store/chatRuntime", () => ({
   sessionToolContext: vi.fn(() => ({
@@ -71,6 +76,7 @@ import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
 import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
 import { buildConfiguredLanguageModel } from "@/modules/ai/lib/agent";
 import { sendMessageToSession } from "@/modules/ai/store/chatRuntime";
+import { loadConversationMemory, type MemoryView } from "@/modules/ai/lib/conversationMemory";
 import {
   PEER_TASK_SCHEMA_VERSION,
   savePeerTasks,
@@ -251,6 +257,50 @@ it("reuses identical validated preparation without promoting private memory", as
   const second = await preparePeerTaskHandoff(task, "");
   expect(second.receipt).toBe(first.receipt);
   expect(second.text).not.toContain("PRIVATE INVESTIGATOR");
+});
+it.each(["failed", "cancelled", "interrupted"] as const)("an explicitly requested independent handoff is not cancelled by an old %s source run", async state => {
+  useChatStore.setState(current => ({ sessions: current.sessions.map(item => item.id === "investigator" ? { ...item, run: { state, startedAt: 1 } } : item) }));
+  const prepared = await preparePeerTaskHandoff(task, "");
+  await expect(prepared.validate()).resolves.toBeUndefined();
+});
+it.each(["output-available", "input-available"])("new handoff distinguishes historical resolved tools from %s lifecycle state", async state => {
+  const prior: UIMessage = { id: "old-result", role: "assistant", parts: [{ type: "dynamic-tool", toolName: "request_conversation_evidence", toolCallId: "old-read", state, input: {}, output: { status: "queued" } }] } as UIMessage;
+  const chat = required(chats.get("coder"));
+  chat.messages = [prior];
+  if (state === "output-available") {
+    const prepared = await preparePeerTaskHandoff(task, "");
+    await expect(prepared.validate()).resolves.toBeUndefined();
+    expect(chat.messages).toEqual([prior]);
+  } else await expect(preparePeerTaskHandoff(task, "")).rejects.toThrow(/Required tool/);
+});
+it.each(["valid", "changed-source", "wrong-policy"])("warm handoff reuses only validated durable working context: %s", async state => {
+  const history: UIMessage[] = Array.from({ length: 40 }, (_, index) => ({ id: `history-${index}`, role: "assistant", parts: [{ type: "text", text: index < 36 ? "Historical completed work. ".repeat(100) : "Recent completed work." }] }));
+  required(chats.get("coder")).messages = history;
+  const original = structuredClone(history);
+  vi.mocked(loadConversationMemory).mockResolvedValue({
+    sourceChanged: state === "changed-source", revisionId: "r", uncoveredMessages: 4,
+    revision: { policyVersion: state === "wrong-policy" ? "unknown" : "c1b-extraction-v1", coverage: { start: 0, end: 36 }, claims: [] },
+  } as unknown as MemoryView);
+  if (state === "valid") {
+    const prepared = await preparePeerTaskHandoff(task, "");
+    await expect(prepared.validate()).resolves.toBeUndefined();
+    expect(prepared.previousMessageIds).toHaveLength(40);
+  } else await expect(preparePeerTaskHandoff(task, "")).rejects.toThrow(state === "changed-source" ? /history_changed/ : /policy_changed/);
+  expect(history).toEqual(original);
+  expect(sendMessageToSession).not.toHaveBeenCalled();
+  expect(loadConversationMemory).toHaveBeenCalledWith({ sessionId: "coder", workspaceId: task.workspaceId });
+});
+it("warm memory reuse does not change the captured schema selection during validation", async () => {
+  const history: UIMessage[] = Array.from({ length: 40 }, (_, index) => ({ id: `warm-${index}`, role: "assistant", parts: [{ type: "text", text: index < 36 ? "Completed context ".repeat(200) : "Recent context" }] }));
+  required(chats.get("coder")).messages = history;
+  fixtureTools.mockReturnValue(Object.fromEntries(["read_file", "edit", "list_directory"].map(name => [name, tool({ description: `${name} file contents`, inputSchema: jsonSchema({ type: "object", properties: {} }) })])));
+  vi.mocked(serializedToolSchemas).mockImplementation(async tools => Object.keys(tools).map(name => ({ type: "function", function: { name, description: tools[name].description, parameters: { type: "object", properties: {} } } })));
+  vi.mocked(loadConversationMemory).mockResolvedValue({ sourceChanged: false, revision: { policyVersion: "c1b-extraction-v1", coverage: { start: 0, end: 36 }, claims: [] } } as unknown as MemoryView);
+  const current = { ...task, prompt: "Read file configuration" };
+  usePeerTaskStore.setState({ tasks: [current] });
+  const prepared = await preparePeerTaskHandoff(current, "");
+  await expect(prepared.validate()).resolves.toBeUndefined();
+  expect(history).toHaveLength(40);
 });
 it("actual dispatch survives benign store reconstruction during handoff preparation", async () => {
   let release!: () => void;

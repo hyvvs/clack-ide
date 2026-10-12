@@ -201,7 +201,7 @@ export function buildFsTools(ctx: ToolContext) {
             size: content.length,
             hash: hashText(content),
           });
-          return { path: abs, bytesWritten: content.length, ok: true };
+          return { path: abs, bytesWritten: content.length, ok: true, clackWorkspaceWrite: true };
         } catch (e) {
           return { error: String(e), path: abs };
         }
@@ -234,7 +234,7 @@ export function buildFsTools(ctx: ToolContext) {
         }
         try {
           await native.createDir(abs, workspace());
-          return { path: abs, ok: true };
+          return { path: abs, ok: true, clackWorkspaceWrite: true };
         } catch (e) {
           return { error: String(e), path: abs };
         }

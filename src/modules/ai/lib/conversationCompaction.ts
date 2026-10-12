@@ -16,6 +16,7 @@ import {
 } from "@/modules/ai/lib/compactionExtraction";
 import {
   planCompaction,
+  confirmedWorkspaceWrites,
   type CompactionUnit,
 } from "@/modules/ai/lib/compactionPlan";
 import {
@@ -27,6 +28,7 @@ import {
   loadConversationMemory,
   readCompactionSources,
   commitConversationMemory,
+  rebaseConversationMemory,
   type MemoryOwner,
   type MemorySourceLocator,
   type MemoryView,
@@ -47,6 +49,9 @@ import {
   newRetrievalAllowance,
   type RetrievalAllowance,
 } from "@/modules/ai/lib/retrievalAllowance";
+import { projectCompletedPeerHistory } from "@/modules/ai/lib/peerHistory";
+import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
+import { contextDigest } from "@/modules/ai/lib/targetContext";
 
 export type CompactionNotice = {
   coveredMessages: number;
@@ -66,6 +71,7 @@ const nativeMemory = {
   load: loadConversationMemory,
   read: readCompactionSources,
   commit: commitConversationMemory,
+  rebase: rebaseConversationMemory,
 };
 
 function memoryFailure(error: unknown): never {
@@ -131,6 +137,23 @@ function usable(view: MemoryView): void {
     );
 }
 
+export async function conversationCompactionUnits(originals: UIMessage[], materialized: UIMessage[], sessionId: string, keepReasoning = false): Promise<CompactionUnit[]> {
+  const projected = await projectCompletedPeerHistory(originals, sessionId, usePeerTaskStore.getState().tasks);
+  const units: CompactionUnit[] = [];
+  for (const [index, original] of originals.entries()) {
+    const message = projected[index]?.role !== original.role ? projected[index] : materialized[index];
+    if (!message || message.id !== original.id)
+      throw new CompactionError("source-identity", "Materialized context no longer matches the original conversation.");
+    units.push({
+      messageId: original.id,
+      role: message.role,
+      messages: pruneMessages({ messages: await convertToModelMessages([message]), reasoning: keepReasoning ? "none" : index < originals.length - 1 ? "all" : "before-last-message", emptyMessages: "remove" }),
+      hasContentReferences: original.parts.some(part => part.type === "file" || part.type.startsWith("data-")),
+    });
+  }
+  return units;
+}
+
 export async function createConversationCompactor(options: {
   context: ConversationCompactionContext;
   materialized: UIMessage[];
@@ -144,7 +167,7 @@ export async function createConversationCompactor(options: {
   onStep?: (step: string | null) => void;
   onUsage?: (usage: ExtractionUsage) => void;
   onOptimized?: (notice: CompactionNotice) => void;
-  memory?: typeof nativeMemory;
+  memory?: Omit<typeof nativeMemory, "rebase"> & { rebase?: typeof rebaseConversationMemory };
   call?: ExtractionCall;
   retrieve?: typeof retrieveConversationEvidence;
   onRetrieved?: (notice: RetrievalNotice) => void;
@@ -172,31 +195,8 @@ export async function createConversationCompactor(options: {
       );
   };
   check();
-  const units: CompactionUnit[] = [];
-  for (const [index, original] of context.originals.entries()) {
-    const materialized = options.materialized[index];
-    if (!materialized || materialized.id !== original.id)
-      throw new CompactionError(
-        "source-identity",
-        "Materialized context no longer matches the original conversation.",
-      );
-    units.push({
-      messageId: original.id,
-      role: original.role,
-      messages: pruneMessages({
-        messages: await convertToModelMessages([materialized]),
-        reasoning: options.keepReasoning
-          ? "none"
-          : index < context.originals.length - 1
-            ? "all"
-            : "before-last-message",
-        emptyMessages: "remove",
-      }),
-      hasContentReferences: original.parts.some(
-        (part) => part.type === "file" || part.type.startsWith("data-"),
-      ),
-    });
-  }
+  const units = await conversationCompactionUnits(context.originals, options.materialized, context.owner.sessionId, options.keepReasoning);
+  check();
   let view: MemoryView | undefined;
   let extractor: ReturnType<typeof createBoundedExtractor> | undefined;
   let profileHash: string | undefined;
@@ -204,6 +204,33 @@ export async function createConversationCompactor(options: {
   let published = 0;
   let initialReady = false;
   let targetSeed = options.targetSeed;
+  let rebases = 0;
+  let prefixHash: string | undefined;
+  let retiredCompletedClaims = 0;
+  const withPreparation = async <T,>(operation: (preparation: MemoryView["preparation"]) => Promise<T>): Promise<T> => {
+    for (let retries = 0; ; retries++) {
+      const captured = view;
+      if (!captured) throw new CompactionError("missing-memory", "Conversation memory is unavailable.");
+      try { return await operation(captured.preparation); }
+      catch (error) {
+        check();
+        const rebase = memory.rebase;
+        if (!String(error).includes("memory_stale_preparation") || !rebase || retries >= 2 || rebases >= COMPACTION_POLICY.maxChunks * 2) memoryFailure(error);
+        rebases++;
+        await context.ready();
+        check();
+        prefixHash ??= await contextDigest(context.originals);
+        const hash = prefixHash;
+        const next = await memoryOperation(() => rebase(captured.preparation, context.originals.length, hash));
+        check();
+        usable(next);
+        if (next.preparation.source.profileHash !== captured.preparation.source.profileHash || next.revisionId !== captured.revisionId)
+          throw new CompactionError("stale", "Conversation ownership or memory changed during preparation.");
+        view = next;
+      }
+    }
+  };
+  const observedWrites = new Set<string>();
   const allowance = options.allowance ?? newRetrievalAllowance();
   const scoped =
     options.scopedEvidence && context.owner.workspaceId
@@ -287,6 +314,11 @@ export async function createConversationCompactor(options: {
       allowance.epoch++;
       let limits = await options.limits();
       check();
+      const writes = confirmedWorkspaceWrites(extra).filter(id => !observedWrites.has(id));
+      // Extraction transport also validates receipts, before final context assembly.
+      if (writes.length) await scoped?.validate(true);
+      check();
+      for (const id of writes) observedWrites.add(id);
       const plan = () =>
         planCompaction({
           units,
@@ -352,20 +384,29 @@ export async function createConversationCompactor(options: {
           const start = captured.revision?.coverage.end ?? 0;
           const extractionLimits = await route.limits();
           check();
-          const prior = captured.revision?.claims ?? [];
+          const prior = [
+            ...(captured.revision?.claims ?? []).filter(claim => claim.status === "user-requirement"),
+            ...current.selectedClaims,
+          ];
+          const retired = (captured.revision?.claims.length ?? 0) - prior.length;
           batch.assertCurrent();
+          if (published >= COMPACTION_POLICY.maxChunks && current.budget.fits &&
+            current.budget.cost.conversation <= current.budget.working * COMPACTION_POLICY.trigger)
+            break;
           if (published >= COMPACTION_POLICY.maxChunks)
             throw new CompactionError(
               "batch-limit",
               `Prepared through original message ${start}. Retry to prepare the next bounded batch before sending this request.`,
+              current.budget,
             );
           let end = start;
           let selected: ExtractionSource[] = [];
           let locators: MemorySourceLocator[] = [];
+          const outputAllowance = Math.min(1024, resolveContextBudget(extractionLimits).output);
+          const sourceAllowance = Math.max(1, Math.floor(outputAllowance / COMPACTION_POLICY.claimAllowanceTokens));
           for (const group of current.groups.filter(
             (g) => g.start >= start && g.end <= current.tailStart,
           )) {
-            if (group.end - start > 4 && end > start) break;
             const proposed: MemorySourceLocator[] = units
               .slice(start, group.end)
               .map((unit) => ({ kind: "message", messageId: unit.messageId }));
@@ -376,7 +417,7 @@ export async function createConversationCompactor(options: {
               break;
             let original: Awaited<ReturnType<typeof memory.read>>;
             try {
-              original = await memory.read(captured.preparation, proposed);
+              original = await withPreparation(preparation => memory.read(preparation, proposed));
             } catch (error) {
               if (
                 String(error).includes("memory_evidence_quota") &&
@@ -410,6 +451,7 @@ export async function createConversationCompactor(options: {
                 });
             }
             const request = extractionMessages(sources, prior);
+            if (sources.filter(source => source.role !== "user" && source.role !== "system").length > sourceAllowance && end > start) break;
             const size = new TextEncoder().encode(
               JSON.stringify(sources),
             ).byteLength;
@@ -470,9 +512,8 @@ export async function createConversationCompactor(options: {
             memory: { end, claims },
             threshold: COMPACTION_POLICY.target,
           });
-          const revisionId = await memoryOperation(() =>
-            memory.commit(candidate, batch.signal),
-          );
+          const revisionId = await withPreparation(preparation => memory.commit({ ...candidate, preparation }, batch.signal));
+          retiredCompletedClaims += retired;
           published++;
           check();
           const loaded = await load();
@@ -505,7 +546,7 @@ export async function createConversationCompactor(options: {
               .filter((g) => g.protected || g.end > current.coveredEnd)
               .reduce((n, g) => n + g.end - g.start, 0),
             generatedTokens: batch.snapshot().generatedTokens,
-            omittedCompletedClaims: current.omittedCompletedClaims,
+            omittedCompletedClaims: retiredCompletedClaims + current.omittedCompletedClaims,
           });
         return await finish();
       } finally {

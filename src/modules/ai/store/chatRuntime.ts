@@ -153,9 +153,10 @@ export function sessionToolContext(sessionId: string) {
     useChatStore
       .getState()
       .sessions.find((session) => session.id === sessionId);
+  const activeRun = () => owner()?.run?.state === "running" ? owner()?.run : undefined;
   const ownerWorkspaceRoot = () =>
-    owner()?.run?.checkoutRoot ??
-    owner()?.run?.workspaceRoot ??
+    activeRun()?.checkoutRoot ??
+    activeRun()?.workspaceRoot ??
     owner()?.profile?.workspaceRoot ??
     null;
   const foregroundMatchesOwner = () =>
@@ -172,7 +173,7 @@ export function sessionToolContext(sessionId: string) {
       if (task?.review) await (await import("@/modules/ai/lib/peerReview")).validatePeerReview(task);
     },
     peerRemainingSteps: () => {
-      const run = owner()?.run;
+      const run = activeRun();
       return run &&
         (run.peerTaskId || peerReplySessions.has(sessionId)) &&
         run.budget
@@ -187,13 +188,13 @@ export function sessionToolContext(sessionId: string) {
         : ownerWorkspaceRoot(),
     getWorkspaceRoot: ownerWorkspaceRoot,
     getWorkspaceId: () =>
-      owner()?.run?.checkoutId ??
-      owner()?.run?.workspaceId ??
+      activeRun()?.checkoutId ??
+      activeRun()?.workspaceId ??
       owner()?.profile?.workspaceId ??
       null,
-    getMutationMode: () => owner()?.run?.mutationMode ?? "shared-write",
+    getMutationMode: () => activeRun()?.mutationMode ?? "shared-write",
     getWorkspaceEnv: () =>
-      owner()?.run?.workspaceEnvironment ??
+      activeRun()?.workspaceEnvironment ??
       workspaceEnvironmentFromId(owner()?.profile?.workspaceId) ??
       currentWorkspaceEnv(),
     onWorkspaceWriteWait: ({ agentId }) => {
@@ -240,8 +241,7 @@ export function sessionToolContext(sessionId: string) {
     getAgentId: () => {
       const state = useChatStore.getState();
       return (
-        state.sessions.find((session) => session.id === sessionId)?.run
-          ?.agentId ??
+        activeRun()?.agentId ??
         state.sessions.find((session) => session.id === sessionId)?.profile
           ?.agentId ??
         useAgentsStore.getState().activeId

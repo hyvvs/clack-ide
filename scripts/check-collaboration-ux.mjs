@@ -20,7 +20,7 @@ const mocks = new Map([
   ["src/modules/ai/lib/attachments", `export * from "/src/modules/ai/lib/attachments.ts?u1-original";export const ATTACHMENT_LIMITS={maxTextBytes:65536};export const ACCEPTED_ATTACHMENT_FILES=".txt";export const createPendingPickerAttachment=f=>({id:f.name,displayName:f.name,processingState:"processing"});export const normalizePickerAttachment=async(f,meta)=>({...meta,displayName:f.name,kind:"text",source:{kind:"picker",token:f.name},processingState:"ready",contentRef:{id:"content-"+f.name,contentHash:"a".repeat(64)},extractedText:await f.text()});export const mergeAttachmentRecords=(old,added)=>({records:[...old,...added],rejected:[]});export const isDeliverableAttachment=f=>f.processingState==="ready";export const releaseAttachmentPreview=()=>{};export const releaseAttachmentRecordContent=()=>{};export const createSelectionAttachment=()=>{};export const normalizeWorkspaceAttachment=()=>{};export const persistAttachmentRecord=()=>{};`],
   ["src/modules/ai/lib/attachmentMessages", `export * from "/src/modules/ai/lib/attachmentMessages.ts?u1-original";export const toAttachmentMessagePart=f=>({type:"data-clack-attachment",data:{attachmentId:f.id,displayName:f.displayName,contentRef:f.contentRef}});`],
   ["src/modules/ai/store/agentsStore", `import{create}from"zustand";export const useAgentsStore=create(()=>({customAgents:[],activeId:"builtin:coder",all:()=>[{id:"builtin:coder",name:"Coder"},{id:"builtin:reviewer",name:"Reviewer"}]}));`],
-  ["src/modules/ai/store/peerTaskStore", `import{create}from"zustand";export const usePeerTaskStore=create(()=>({tasks:[]}));`],
+  ["src/modules/ai/store/peerTaskStore", `import{create}from"zustand";export const usePeerTaskStore=create(()=>({tasks:[],managingTaskIds:[],retryingTaskIds:[],hydrated:true,recoveryReady:true,recoveryError:null}));`],
   ["src/modules/settings/preferences", `import{create}from"zustand";export const usePreferencesStore=create(()=>({customEndpoints:[],savedProviderModels:[]}));`],
   ["src/modules/ai/lib/sessions", `export const awaitSessionWrites=async()=>{};export const createConversationProfile=input=>({...input,workspaceId:input.workspaceRoot?"local:"+input.workspaceRoot:null});export const loadAll=async()=>({sessions:window.chat.getState().sessions,activeId:"b"});export const workspaceEnvironmentFromId=()=>({kind:"local"});`],
   ["src/modules/ai/lib/peerTaskCoordinator", `export const applyPeerTaskChangeSet=async id=>window.actions.push(["apply",id]);export const cancelPeerTask=async id=>window.actions.push(["cancel",id]);export const discardPeerTaskWorktree=async()=>{};`],
@@ -74,7 +74,7 @@ const server = await createServer({ root, cacheDir:path.join(os.tmpdir(),`clack-
 let browser;
 try {
   await server.listen(); browser=await chromium.launch({headless:true,executablePath:process.env.BROWSER_EXECUTABLE});
-  for(const [width,zoom,theme] of [[1280,1,"dark"],[640,1,"light"],[320,1,"dark"],[640,2,"light"]]) {
+  for(const [width,zoom,theme] of [[1280,1,"dark"],[390,1,"light"],[320,1,"dark"],[280,1,"light"],[640,2,"light"]]) {
     console.log(`U1 ${width}px / ${zoom*100}% / ${theme}`);
     const page=await browser.newPage({viewport:{width,height:1000}});page.setDefaultTimeout(20000);
     const errors=[];page.on("pageerror",e=>{errors.push(e.message);console.error(e.message);});

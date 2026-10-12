@@ -243,6 +243,13 @@ describe("attachment normalization", () => {
 });
 
 describe("workspace attachment security", () => {
+  it("resolves relative attachment paths against the owning workspace before canonicalization", async () => {
+    const canonicalize = vi.fn(async (path: string) => path);
+    const readBytes = vi.fn(async () => new TextEncoder().encode("current config"));
+    const normalized = await normalizeWorkspaceAttachment("src/config.txt", "/workspace", { canonicalize, readBytes, persistContent: vi.fn(async () => ({ id: "a".repeat(64), contentHash: "a".repeat(64), byteSize: 14 })) });
+    expect(canonicalize).toHaveBeenCalledWith("/workspace/src/config.txt");
+    expect(normalized.source).toMatchObject({ canonicalPath: "/workspace/src/config.txt" });
+  });
   it("blocks secret-denied picker files before loading their contents", async () => {
     const file = new File(["API_KEY=secret"], ".env", {
       type: "text/plain",

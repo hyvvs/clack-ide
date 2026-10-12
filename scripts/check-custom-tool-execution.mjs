@@ -43,7 +43,7 @@ const server = await createServer({root,cacheDir:path.join(os.tmpdir(),"clack-t2
   resolveId(source,importer){if(source==="/tools-entry.jsx")return "\0tools-entry.jsx";if(source==="@tauri-apps/api/core")return "\0mock:core";if(source==="@tauri-apps/api/event")return "\0mock:event";const absolute=source.startsWith("/src/")?path.join(root,source.slice(1)):source.startsWith(".")&&importer?path.resolve(path.dirname(importer),source):source;const relative=path.relative(root,absolute).replaceAll("\\","/").replace(/\.[jt]sx?$/,"");return mocks.has(relative)?"\0mock:"+relative:null;},
   load(id){if(id==="\0tools-entry.jsx")return entry;if(id.startsWith("\0mock:"))return mocks.get(id.slice(6));},
   configureServer(vite){vite.middlewares.use("/tools-fixture",async(_req,res)=>{res.setHeader("Content-Type","text/html");res.end(await vite.transformIndexHtml("/tools-fixture",'<!doctype html><html class="dark"><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:var(--background);color:var(--foreground)"><div id="root"></div><script type="module" src="/tools-entry.jsx"></script></body></html>'));});},
-},react(),tailwindcss()],server:{host:"127.0.0.1",port:0}});
+},react(),tailwindcss()],server:{host:"127.0.0.1",port:0,watch:null,hmr:false}});
 let browser;
 try {
   await server.listen();
@@ -56,6 +56,7 @@ try {
     await page.goto(server.resolvedUrls.local[0]+"tools-fixture",{waitUntil:"networkidle",timeout:120000});
     console.log("T2 fixture loaded");
     const test=page.getByRole("button",{name:/^Test custom_/});
+    await test.waitFor().catch(async error => { console.error((await page.locator("body").innerText()).slice(0, 5000)); throw error; });
     await test.focus();await page.keyboard.press("Enter");
     const dialog=page.getByRole("dialog");await dialog.waitFor();
     await dialog.getByRole("textbox",{name:"Test arguments"}).fill('{');

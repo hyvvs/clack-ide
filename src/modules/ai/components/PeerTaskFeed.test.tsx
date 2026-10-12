@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PEER_TASK_SCHEMA_VERSION,
   type PeerTask,
@@ -9,6 +9,14 @@ import { useChatStore } from "../store/chatStore";
 import { usePeerTaskStore } from "../store/peerTaskStore";
 import { buildPeerTaskLineage, PeerTaskCard } from "./PeerTaskFeed";
 import { beginInference } from "@/modules/ai/lib/inferenceLifecycle";
+vi.mock("@/modules/ai/store/chatStore", async original => {
+  const actual = await original<typeof import("@/modules/ai/store/chatStore")>();
+  return { ...actual, useChatStore: Object.assign((select: (state: ReturnType<typeof actual.useChatStore.getState>) => unknown) => select(actual.useChatStore.getState()), actual.useChatStore) };
+});
+vi.mock("@/modules/ai/store/peerTaskStore", async original => {
+  const actual = await original<typeof import("@/modules/ai/store/peerTaskStore")>();
+  return { ...actual, usePeerTaskStore: Object.assign((select: (state: ReturnType<typeof actual.usePeerTaskStore.getState>) => unknown) => select(actual.usePeerTaskStore.getState()), actual.usePeerTaskStore) };
+});
 
 afterEach(() => {
   usePeerTaskStore.setState({ tasks: [], hydrated: false });
@@ -18,12 +26,12 @@ afterEach(() => {
 describe("PeerTaskFeed", () => {
   it("shows native capacity waiting without changing the durable task ledger", () => {
     const queued = task({ status: "running", result: undefined });
-    useChatStore.setState({ sessions: [session("source", "Planning"), session("target", "Reviewer")] });
+    useChatStore.setState({ sessions: [session("source", "Planning"), { ...session("target", "Reviewer"), run: { state: "running", startedAt: 1, peerTaskId: queued.id } }] });
     usePeerTaskStore.setState({ tasks: [queued] });
-    const attempt = beginInference({ sessionId: "target", runId: "run", label: "AI Server", isCurrent: () => true }, () => {});
+    const attempt = beginInference({ sessionId: "target", runId: "target:1", label: "AI Server", isCurrent: () => true }, () => {});
     attempt.update("queued");
     const html = renderToStaticMarkup(<PeerTaskCard task={queued} viewingSessionId="source" />);
-    expect(html).toContain("Queued: AI Server at capacity");
+    expect(html).toContain("Waiting for model capacity");
     expect(html).toContain("Cancel task");
     expect(usePeerTaskStore.getState().tasks[0].status).toBe("running");
     attempt.settle();
@@ -69,7 +77,7 @@ describe("PeerTaskFeed", () => {
     );
 
     expect(html).toContain("queued");
-    expect(html).toContain("Waiting to start");
+    expect(html).toContain("Currently finishing another task. This one will start next.");
     expect(html).toContain("Cancel task");
     expect(html).not.toContain("Looks safe");
   });
@@ -368,7 +376,7 @@ describe("PeerTaskFeed", () => {
     );
 
     expect(workingHtml).toContain("agent-reviewer is working");
-    expect(workingHtml).toContain("Working");
+    expect(workingHtml).toContain("Preparing");
     expect(returnedHtml).toContain("Returned report.md");
     expect(returnedHtml).toContain("report.md");
     expect(failedHtml).toContain("Delegated by agent-source");

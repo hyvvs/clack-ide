@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ModelMessage } from "ai";
 import {
   groupCompactionUnits,
+  confirmedWorkspaceWrites,
   memoryContextMessage,
   planCompaction,
   type CompactionUnit,
@@ -63,6 +64,27 @@ function result(id: string, failed = false): CompactionUnit {
   };
 }
 const limits = { deployed: 8192, outputReserve: 1024 };
+it("handoff control metadata does not pin every unrelated completed claim through generic source wording", () => {
+  const claims: MemoryClaim[] = Array.from({ length: 50 }, (_, index) => ({
+    id: index.toString(16).padStart(64, "0"), section: "completed-work", status: "inference",
+    text: `Completed unrelated ${index}.\nSource quote: prior observation`, sources: ["a".repeat(64)], observedAt: index, contradicts: [],
+  }));
+  const text = `<peer-handoff>\n${JSON.stringify({ version: 1, taskId: "current", source: { sessionId: "parent" }, objectiveAndRequirements: "Read config.json and report the exact timeout." })}\nRetrieve original source evidence.\n</peer-handoff>`;
+  const result = planCompaction({ units: [unit("latest", "user", text)], limits, system: [], tools: [], memory: { end: 0, claims } });
+  expect(result.omittedCompletedClaims).toBeGreaterThan(0);
+  expect(result.messages).toContainEqual({ role: "user", content: text });
+  expect(result.budget.fits).toBe(true);
+});
+it("recognizes only acknowledged builtin filesystem writes, never shell/MCP/failed/planned effects", () => {
+  const receipt = (toolName: string, value: unknown): ModelMessage => ({ role: "tool", content: [{ type: "tool-result", toolCallId: toolName, toolName, output: { type: "json", value: value as Record<string, boolean> } }] });
+  expect(confirmedWorkspaceWrites([
+    receipt("write_file", { ok: true, clackWorkspaceWrite: true }),
+    receipt("custom_mcp", { ok: true, clackWorkspaceWrite: true }),
+    receipt("bash_run", { ok: true, clackWorkspaceWrite: true }),
+    receipt("edit", { ok: true, queued_for_plan_review: true }),
+    receipt("multi_edit", { error: "uncertain" }),
+  ])).toEqual(["write_file"]);
+});
 const system: ModelMessage[] = [
   { role: "system", content: "Never bypass workspace authorization." },
 ];

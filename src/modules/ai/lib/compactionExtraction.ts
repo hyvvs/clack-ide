@@ -25,6 +25,7 @@ export const COMPACTION_POLICY = Object.freeze({
   maxSourceBytes: 256 * 1024,
   maxClaims: 64,
   maxEvidence: 128,
+  claimAllowanceTokens: 128,
 });
 
 export class CompactionError extends ContextBudgetError {

@@ -33,6 +33,8 @@ export type ScopedChunk = {
   reason: string;
 };
 export type ScopedResult = {
+  identityStamp?: string;
+  taskIds?: string[];
   chunks: ScopedChunk[];
   issues: Array<{ source: string; status: string }>;
   omitted: number;
@@ -41,6 +43,8 @@ export type ScopedResult = {
   bytes: number;
 };
 export type ScopedRequest = {
+  expectedIdentity?: string;
+  taskIds?: string[];
   sessionId: string;
   runId: string;
   query: string;
@@ -118,9 +122,9 @@ export function createScopedRetriever(options: {
       );
   };
   const api = {
-    async validate(): Promise<void> {
+    async validate(confirmedWrite = false): Promise<void> {
       if (cache && last)
-        await api.prepare(last.messages, last.limits, last.tools);
+        await api.prepare(last.messages, last.limits, last.tools, confirmedWrite);
     },
     dispose() {
       disposed = true;
@@ -148,6 +152,7 @@ export function createScopedRetriever(options: {
       messages: ModelMessage[],
       limits: BudgetLimits,
       tools: unknown,
+      confirmedWrite = false,
     ): Promise<ModelMessage[]> {
       last = { messages, limits, tools };
       if (!options.allowed() && !cache && !pending) return messages;
@@ -178,9 +183,10 @@ export function createScopedRetriever(options: {
             .join("\n")
             .slice(0, 4096) ??
           "";
+        const refreshFiles = validating && confirmedWrite && !!cache?.result.identityStamp;
         const request =
           validating && cache
-            ? { ...cache.request, expected: cache.result.stamp }
+            ? { ...cache.request, expected: refreshFiles ? null : cache.result.stamp, expectedIdentity: refreshFiles ? cache.result.identityStamp : undefined, taskIds: cache.result.taskIds }
             : {
                 sessionId: options.scope.sessionId,
                 runId: options.scope.runId,
@@ -231,6 +237,8 @@ export function createScopedRetriever(options: {
         check();
         if (
           !result ||
+          (result.identityStamp !== undefined && !/^[a-f0-9]{64}$/.test(result.identityStamp)) ||
+          (result.taskIds !== undefined && (!Array.isArray(result.taskIds) || result.taskIds.length > 256 || new Set(result.taskIds).size !== result.taskIds.length || result.taskIds.some(id => typeof id !== "string" || !id || id.length > 256))) ||
           !Array.isArray(result.chunks) ||
           !Array.isArray(result.issues) ||
           !/^[a-f0-9]{64}$/.test(result.stamp) ||
@@ -266,7 +274,7 @@ export function createScopedRetriever(options: {
             "malformed",
             "Invalid scoped evidence response.",
           );
-        if (validating && result.stamp !== cache?.result.stamp)
+        if (validating && (refreshFiles ? result.identityStamp !== cache?.result.identityStamp : result.stamp !== cache?.result.stamp))
           throw new RetrievalError(
             "stale",
             "Project/task evidence changed before reuse; retry with current state.",
@@ -274,6 +282,10 @@ export function createScopedRetriever(options: {
         if (!validating) {
           allowance.bytes += result.bytes;
           allowance.chunks += result.chunks.length;
+        } else if (refreshFiles && cache) {
+          allowance.bytes += Math.max(0, result.bytes - cache.result.bytes);
+          allowance.chunks += Math.max(0, result.chunks.length - cache.result.chunks.length);
+          if (allowance.bytes > RETRIEVAL_POLICY.bytes || allowance.chunks > RETRIEVAL_POLICY.chunks) throw new RetrievalError("bounds", "Updated evidence exceeds the existing run allowance.");
         }
         cache = { request, result };
         allowance.scopedCache = cache;
@@ -305,34 +317,43 @@ export function createScopedRetriever(options: {
               throw new RetrievalError(
                 "budget",
                 "Required project/task evidence cannot fit the target model. Narrow the task or select a larger verified context.",
+                resolveContextBudget(limits, measureRequest({ messages: trial, tools })),
               );
             omitted++;
             continue;
           }
           selected.push(chunk);
         }
-        options.onPrepared?.(
-          selected.map((chunk) => chunk.id),
-          omitted,
-          result.issues.length,
-        );
-        if (!selected.length && !result.issues.length && !omitted)
+        if (!selected.length && !result.issues.length && !omitted) {
+          options.onPrepared?.([], 0, 0);
           return messages;
-        const output = [
+        }
+        let output = [
           messages[0],
           envelope(selected, result.issues, omitted),
           ...messages.slice(1),
         ];
-        if (
-          !resolveContextBudget(
-            limits,
-            measureRequest({ messages: output, tools }),
-          ).fits
-        )
+        const fits = (value: ModelMessage[]) => resolveContextBudget(limits, measureRequest({ messages: value, tools })).fits;
+        while (!fits(output)) {
+          const optional = [...selected].reverse().find(chunk => !chunk.required);
+          if (!optional) break;
+          selected.splice(selected.indexOf(optional), 1);
+          omitted++;
+          output = [messages[0], envelope(selected, result.issues, omitted), ...messages.slice(1)];
+        }
+        if (!fits(output) && !selected.length && !result.issues.length && omitted > 0 && request.anchor === null && !result.chunks.some(chunk => chunk.required)) {
+          const notice: ModelMessage = { role: "assistant", content: `Authorized project/task evidence (g1b-lexical-v1). ${omitted} optional sources omitted for context capacity. No verified fact was supplied. Use a bounded evidence request if needed.` };
+          const compact = [messages[0], notice, ...messages.slice(1)];
+          // onPrepared already records the omission in structured runtime activity.
+          output = fits(compact) ? compact : messages;
+        }
+        if (!fits(output))
           throw new RetrievalError(
             "budget",
             "The evidence/omission report does not fit B1.",
+            resolveContextBudget(limits, measureRequest({ messages: output, tools })),
           );
+        options.onPrepared?.(selected.map(chunk => chunk.id), omitted, result.issues.length);
         check();
         return output;
       } catch (error) {

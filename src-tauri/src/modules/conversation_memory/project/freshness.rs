@@ -301,7 +301,7 @@ fn location(originals: &Originals) -> Result<(String, WorkspaceEnv)> {
         }
     };
     let run = &originals.meta["run"];
-    let root = if run["workspaceId"] == profile["workspaceId"] {
+    let root = if run["state"] == "running" && run["workspaceId"] == profile["workspaceId"] {
         run["checkoutRoot"].as_str()
     } else {
         None
