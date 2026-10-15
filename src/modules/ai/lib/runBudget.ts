@@ -15,6 +15,8 @@ export type RunBudgetPhase =
 export type RunBudgetStopReason =
   | "total-steps"
   | "continuations"
+  | "unfinished-work"
+  | "blocked-work"
   | "repeated-failure";
 
 export type RunBudgetState = {
@@ -36,6 +38,8 @@ export type RunBatchResult = {
   hitSoftLimit: boolean;
   finishReason: string;
   repeatedFailureDetected?: boolean;
+  unfinishedWork?: boolean;
+  blockedWork?: boolean;
 };
 
 export type RunStepObservation = {
@@ -44,6 +48,13 @@ export type RunStepObservation = {
   output: unknown;
   failed: boolean;
 };
+
+export function failedCommandOutput(toolName: string | undefined, output: unknown): boolean {
+  if (toolName !== "bash_run" || !output || typeof output !== "object") return false;
+  const result = output as { exit_code?: unknown; timed_out?: unknown };
+  return result.timed_out === true || result.exit_code === null ||
+    (typeof result.exit_code === "number" && result.exit_code !== 0);
+}
 
 export type RunLoopTracker = {
   failureFingerprint: string | null;
@@ -107,7 +118,11 @@ export function recordRunBatch(
     };
   }
 
-  if (!result.hitSoftLimit || result.finishReason !== "tool-calls") {
+  if (result.finishReason === "stop" && result.blockedWork)
+    return { ...next, phase: "soft-limit", stopReason: "blocked-work" };
+
+  const unfinishedWork = result.finishReason === "stop" && result.unfinishedWork === true;
+  if (!unfinishedWork && (!result.hitSoftLimit || result.finishReason !== "tool-calls")) {
     return { ...next, phase: "complete", stopReason: null };
   }
 
@@ -122,7 +137,7 @@ export function recordRunBatch(
   return {
     ...next,
     phase: next.autoContinue ? "auto-continue-pending" : "soft-limit",
-    stopReason: null,
+    stopReason: unfinishedWork ? "unfinished-work" : null,
   };
 }
 

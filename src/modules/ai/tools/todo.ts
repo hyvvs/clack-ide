@@ -1,10 +1,10 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { newTodoId, validateTodos, type Todo } from "../lib/todos";
-import { useTodosStore } from "../store/todoStore";
-import type { ToolContext } from "./context";
+import { newTodoId, validateTodos, type Todo } from "@/modules/ai/lib/todos";
+import { useTodosStore } from "@/modules/ai/store/todoStore";
+import type { ToolContext } from "@/modules/ai/tools/context";
 
-const TodoStatus = z.enum(["pending", "in_progress", "completed"]);
+const TodoStatus = z.enum(["pending", "in_progress", "completed", "blocked"]);
 
 export function buildTodoTools(ctx: ToolContext) {
   return {
@@ -17,15 +17,17 @@ export function buildTodoTools(ctx: ToolContext) {
             z.object({
               id: z
                 .string()
+                .min(1).max(128)
                 .optional()
                 .describe(
                   "Stable id; generated if omitted. Reuse ids across calls to keep UI stable.",
                 ),
-              title: z.string().min(1),
-              description: z.string().optional(),
-              status: TodoStatus,
+              title: z.string().trim().min(1).max(160),
+              description: z.string().max(512).optional(),
+              status: TodoStatus.describe("Use blocked, with a reason in description, when work needs clarification or unavailable access. Completed is reported progress, not proof of successful effects."),
             }),
           )
+          .max(16)
           .describe("The complete list of todos for this task."),
       }),
       execute: async ({ todos }) => {

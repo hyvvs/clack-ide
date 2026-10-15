@@ -465,6 +465,8 @@ export async function dispatchPeerTask(taskId: string): Promise<void> {
     const currentTarget = useChatStore
       .getState()
       .sessions.find((session) => session.id === claimed.targetSessionId);
+    if (currentTarget?.run?.budget && currentTarget.run.budget.phase !== "complete")
+      throw new Error("The task stopped with unfinished required work or an exhausted continuation budget. Review its plan and effects in the task chat before continuing.");
     const summary = latestVisibleAssistantText(
       (getChat(claimed.targetSessionId)?.messages ?? []).filter(
         (message) => !priorMessageIds.has(message.id),

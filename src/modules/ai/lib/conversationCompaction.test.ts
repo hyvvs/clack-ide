@@ -21,6 +21,30 @@ function required<T>(value: T | null | undefined): T {
 }
 
 describe("durable conversation compaction coordinator", () => {
+  it("rebases append-only SDK assistant tails without regenerating extracted evidence", async () => {
+    const f = fixture();
+    const tail = textMessage("active-tail", "assistant", "Verified pending plan and current tool results.");
+    f.originals.push(tail);
+    const prefix = await contextDigest(f.originals.slice(0, -1));
+    const oldParts = await contextDigest(tail.parts);
+    const commit = required(f.memory.commit.getMockImplementation());
+    f.memory.commit.mockImplementationOnce(async (candidate, signal) => {
+      tail.parts.push({ type: "text", text: "New SDK step outside compaction coverage." });
+      const current = f.view();
+      f.change({ preparation: { ...current.preparation, generation: current.preparation.generation + 1, source: { ...current.preparation.source, transcriptRevision: current.preparation.source.transcriptRevision + 1 } } });
+      return commit(candidate, signal);
+    });
+    const rebase = vi.fn(async (_preparation, count, hash, proof) => {
+      expect(count).toBe(f.originals.length - 1);
+      expect(hash).toBe(prefix);
+      expect(proof).toMatchObject({ messageId: "active-tail", partsCount: 1, partsHash: oldParts });
+      expect(await contextDigest(tail.parts.slice(0, proof.partsCount))).toBe(proof.partsHash);
+      return f.view();
+    });
+    await (await f.start({ memory: { ...f.memory, rebase } })).prepare();
+    expect(rebase).toHaveBeenCalledOnce();
+    expect(f.memory.commit.mock.calls.length).toBe(f.call.mock.calls.length + 1);
+  });
   it("handles another verified append between rebasing and commit without replaying extraction", async () => {
     const f = fixture();
     const commit = required(f.memory.commit.getMockImplementation());
@@ -41,7 +65,7 @@ describe("durable conversation compaction coordinator", () => {
     expect(f.memory.commit.mock.calls.length).toBe(f.call.mock.calls.length + 2);
     expect(f.view().revision?.coverage.end).toBeLessThan(f.originals.length - 2);
   });
-  it.each([8192, 16384])("preserves exact operational facts across ten incremental compaction cycles at %s context", async capacity => {
+  it.each([8192, 16384, 32768])("preserves exact operational facts across ten incremental compaction cycles at %s context", async capacity => {
     const facts = "Current timeoutMs=750, NOT 900. allowRemote=false. Keep port 7351, API v2, schema 3, src/auth.ts, docs/caf\u00e9.md, retries=2, owner=Reviewer and unresolved issue CHECK-19. Architecture: config owns timeout. Depend on original Review-17. External effect UNKNOWN-22 remains unresolved and must never replay. Never promote an assumption to verified evidence.";
     const cycleLimits = { deployed: capacity, workingTarget: 6000, maxOutput: 1024, outputReserve: 1024 };
     const f = fixture(history());
@@ -62,6 +86,14 @@ describe("durable conversation compaction coordinator", () => {
         textMessage(`observation-${cycle}-c`, "assistant", `Completed observation ${cycle}c.\n${"historical observation ".repeat(150)}`),
         textMessage(`request-${cycle}`, "user", "Continue the bounded current task; preserve the corrected requirements."),
       );
+      const currentPlan = [
+        { id: "inspect", title: "Inspection finished; do not repeat its effects", status: "completed" },
+        { id: "fix", title: `Resolve failing test CHECK-19 at cycle ${cycle}`, status: "in_progress" },
+        { id: "document", title: "Document verified result only after successful test", status: "pending" },
+      ];
+      f.originals.splice(f.originals.length - 1, 0, {
+        id: `plan-${cycle}`, role: "assistant", parts: [{ type: "tool-todo_write", toolCallId: `plan-call-${cycle}`, state: "output-available", input: { todos: currentPlan }, output: { ok: true, count: 3 } }],
+      });
       const before = JSON.stringify(f.originals);
       const calls = f.call.mock.calls.length;
       const compactor = await f.start({ limits: async () => cycleLimits });
@@ -72,6 +104,7 @@ describe("durable conversation compaction coordinator", () => {
       expect(f.call.mock.calls.length - calls).toBeLessThanOrEqual(COMPACTION_POLICY.maxChunks);
       expect(JSON.stringify(result)).toContain(facts);
       expect(JSON.stringify(result)).toContain("Permission denied. Never circumvent secret protections.");
+      expect(JSON.stringify(result)).toContain(JSON.stringify(currentPlan));
       expect(JSON.stringify(f.originals)).toBe(before);
       expect(saved.coverage.latestMessageId).toBe(f.originals[saved.coverage.end - 1].id);
       expect(saved.coverage.end).toBeLessThan(f.originals.length);

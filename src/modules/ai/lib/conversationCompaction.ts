@@ -206,6 +206,11 @@ export async function createConversationCompactor(options: {
   let targetSeed = options.targetSeed;
   let rebases = 0;
   let prefixHash: string | undefined;
+  // The SDK extends one assistant message across batches. Its prior parts stay
+  // immutable; only appended parts and app-owned activity receipts may advance.
+  const tail = context.originals[context.originals.length - 1];
+  const prefixCount = tail?.role === "assistant" && context.originals.length > 1 ? context.originals.length - 1 : context.originals.length;
+  let tailPrefix: import("@/modules/ai/lib/conversationMemory").MemoryTailPrefix | undefined;
   let retiredCompletedClaims = 0;
   const withPreparation = async <T,>(operation: (preparation: MemoryView["preparation"]) => Promise<T>): Promise<T> => {
     for (let retries = 0; ; retries++) {
@@ -219,9 +224,20 @@ export async function createConversationCompactor(options: {
         rebases++;
         await context.ready();
         check();
-        prefixHash ??= await contextDigest(context.originals);
+        prefixHash ??= await contextDigest(context.originals.slice(0, prefixCount));
+        if (prefixCount < context.originals.length && !tailPrefix) {
+          const header = JSON.parse(JSON.stringify(tail)) as Record<string, unknown>;
+          delete header.parts;
+          const metadata = header.metadata;
+          if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+            delete (metadata as Record<string, unknown>).clackActivity;
+            delete (metadata as Record<string, unknown>).clackAnswer;
+            if (!Object.keys(metadata).length) delete header.metadata;
+          }
+          tailPrefix = { messageId: tail.id, headerHash: await contextDigest(header), partsCount: tail.parts.length, partsHash: await contextDigest(tail.parts) };
+        }
         const hash = prefixHash;
-        const next = await memoryOperation(() => rebase(captured.preparation, context.originals.length, hash));
+        const next = await memoryOperation(() => rebase(captured.preparation, prefixCount, hash, tailPrefix));
         check();
         usable(next);
         if (next.preparation.source.profileHash !== captured.preparation.source.profileHash || next.revisionId !== captured.revisionId)

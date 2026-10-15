@@ -75,6 +75,7 @@ import { retryTaskWithoutEffects } from "@/modules/ai/lib/taskResultActions";
 import { normalizePeerTask } from "@/modules/ai/lib/peerTasks";
 import { executionHistory } from "@/modules/ai/lib/customToolExecution";
 import { loadAttachmentContent } from "@/modules/ai/lib/attachmentStore";
+import { createRunBudget } from "@/modules/ai/lib/runBudget";
 
 const SOURCE = "chat-source";
 const TARGET = "chat-target";
@@ -134,6 +135,20 @@ afterEach(() => {
 });
 
 describe("peer task coordination", () => {
+  it.each(["soft-limit", "hard-limit"] as const)("does not publish a Completed result when a worker stops at %s with unfinished work", async phase => {
+    const pending = task({ id: "unfinished-worker" });
+    usePeerTaskStore.setState({ tasks: [pending] });
+    vi.mocked(sendMessageToSession).mockImplementationOnce(async () => {
+      useChatStore.setState(state => ({ sessions: state.sessions.map(session => session.id === TARGET ? {
+        ...session, run: { state: "running", startedAt: 10, budget: { ...createRunBudget("full-access"), phase, stopReason: "unfinished-work", lastFinishReason: "stop" } },
+      } : session) }));
+    });
+    await dispatchPeerTask(pending.id);
+    const result = usePeerTaskStore.getState().tasks.find(t => t.id === pending.id);
+    expect(result?.status).toBe("failed");
+    expect(result?.result).toBeUndefined();
+    expect(result?.error?.message).toContain("unfinished required work");
+  });
   it.each(["completed", "failed", "cancelled", "interrupted"] as const)("idle %s source uses its current Agent/model and does not inherit an old task chain", async state => {
     const old = task({ id: "old-source", sourceSessionId: TARGET, targetSessionId: SOURCE, status: "completed", hopCount: PEER_TASK_MAX_HOPS });
     usePeerTaskStore.setState({ tasks: [old] });

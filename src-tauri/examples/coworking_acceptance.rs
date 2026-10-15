@@ -1,6 +1,8 @@
 //! Invisible native backend host for the composed acceptance fixture, not a product entry point.
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
-use terax_lib::modules::{attachments, conversation_memory as memory, fs, git, net, workspace};
+use terax_lib::modules::{
+    attachments, conversation_memory as memory, fs, git, net, shell, workspace,
+};
 
 #[tauri::command]
 fn coworking_exit(app: tauri::AppHandle) {
@@ -32,6 +34,7 @@ fn main() {
         .manage(net::inference::InferenceState::default())
         .manage(terax_lib::modules::inference_probe::ProbeState::default())
         .manage(fs::grep::ContentSearchState::default())
+        .manage(shell::ShellState::default())
         .setup(move |app| {
             let app_data = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data)?;
@@ -47,6 +50,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             coworking_exit,
+            shell::shell_session_open,
+            shell::shell_session_run,
+            shell::shell_session_close,
             workspace::workspace_authorize,
             workspace::workspace_current_dir,
             attachments::attachment_store_put,

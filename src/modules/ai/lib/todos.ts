@@ -3,6 +3,7 @@ import { LazyStore } from "@tauri-apps/plugin-store";
 export type TodoStatus =
   | "pending"
   | "in_progress"
+  | "blocked"
   | "completed"
   | "cancelled"
   | "interrupted"
@@ -35,6 +36,7 @@ export async function saveTodos(
   todos: Todo[],
 ): Promise<void> {
   await store.set(todosKey(sessionId), todos);
+  await store.save();
 }
 
 export async function deleteTodos(sessionId: string): Promise<void> {
@@ -52,9 +54,15 @@ export function newTodoId(): string {
  * Returns null on valid, otherwise an error string.
  */
 export function validateTodos(todos: Todo[]): string | null {
+  if (todos.length > 16 || JSON.stringify(todos).length > 8192)
+    return "keep the plan within 16 items and 8192 serialized characters";
+  const ids = new Set<string>();
   let inProgress = 0;
   for (const t of todos) {
-    if (!t.title.trim()) return "todo title cannot be empty";
+    if (!t.id || t.id.length > 128 || ids.has(t.id)) return "todo identities must be bounded and unique";
+    ids.add(t.id);
+    if (!t.title.trim() || t.title.length > 160 || (t.description?.length ?? 0) > 512)
+      return "todo titles and descriptions must be non-empty and bounded";
     if (t.status === "in_progress") inProgress++;
   }
   if (inProgress > 1)
@@ -66,7 +74,8 @@ export function terminalizeTodos(
   todos: readonly Todo[],
   status: TodoTerminalState,
 ): Todo[] {
-  const unfinishedStatus = status === "completed" ? "cancelled" : status;
+  if (status === "completed") return todos.map(todo => ({ ...todo }));
+  const unfinishedStatus = status;
   return todos.map((todo) =>
     todo.status === "completed" ? todo : { ...todo, status: unfinishedStatus },
   );

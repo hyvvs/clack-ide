@@ -297,11 +297,6 @@ export function createConversationRetriever(options: {
           "concurrent",
           "Overlapping retrieval is not permitted for one preparation.",
         );
-      if (allowance.conversationRounds >= RETRIEVAL_POLICY.rounds)
-        throw new RetrievalError(
-          "round-limit",
-          "Conversation sources changed after the retrieval allowance was used. Retry with current state.",
-        );
       const started = now();
       const timeCheck = () => {
         check();
@@ -449,6 +444,14 @@ export function createConversationRetriever(options: {
               !candidates.some((c) => c.group === group)
             )
               candidates.push({ group, anchored: false, score: 0 });
+        }
+        if (allowance.conversationRounds >= RETRIEVAL_POLICY.rounds || allowance.rounds >= RETRIEVAL_POLICY.rounds) {
+          if (request || sourceIds.size || anchors.size || relevant.some(claim =>
+            claim.status === "unresolved" || claim.status === "stale" || claim.contradicts.length > 0))
+            throw new RetrievalError("round-limit", "Required historical evidence exceeds this run's bounded retrieval allowance. Retry explicitly with current state.");
+          cache = { key, chunks: [], omitted: candidates.length, status: "Optional historical evidence omitted: this run's retrieval allowance is exhausted. No stale evidence was reused." };
+          publish();
+          return attach(messages, limits, tools);
         }
         let omitted = 0;
         const selected: typeof candidates = [];

@@ -15,6 +15,8 @@ import {
   requiredUiToolNames,
   selectToolSchemas,
   sameToolRevision,
+  uiExposureQuery,
+  exposureQuery,
 } from "@/modules/ai/lib/toolExposure";
 import { serializedToolSchemas } from "@/modules/ai/lib/requestPreflight";
 import { applyAgentPermissionPolicy } from "@/modules/ai/lib/permissions";
@@ -29,6 +31,21 @@ import type { ToolContext } from "@/modules/ai/tools/context";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
 const preferences = usePreferencesStore.getState();
+it("retains bounded task selection intent across ordinary continuation turns but not new objectives", () => {
+  const original = "Inspect logs/huge.txt using read_file, then implement, test and document using write_file and bash_run.";
+  const history: UIMessage[] = [{ id: "objective", role: "user", parts: [{ type: "text", text: original }] },
+    ...Array.from({ length: 24 }, (_, index) => ({ id: `phase-${index}`, role: "user" as const, parts: [{ type: "text" as const, text: `Continue the same investigation. Phase ${index}` }] })),
+  ];
+  const query = uiExposureQuery(history);
+  expect(query).toContain(original);
+  expect(query.length).toBeLessThanOrEqual(EXPOSURE_LIMITS.rankingCharacters);
+  expect(exposureQuery(history.map(m => ({ role: "user", content: m.parts.filter(p => p.type === "text").map(p => p.text).join("\n") })))).toBe(query);
+  const fresh = [...history, { id: "new", role: "user" as const, parts: [{ type: "text" as const, text: "Describe the stars." }] }];
+  expect(uiExposureQuery(fresh)).toBe("Describe the stars.");
+  expect(uiExposureQuery([...history, { id: "finish", role: "user", parts: [{ type: "text", text: "Finish the original implementation, test and documentation objective." }] }])).toContain(original);
+  const worker = [...history, { id: "worker", role: "user" as const, parts: [{ type: "text" as const, text: `<peer-handoff>\n${JSON.stringify({ version: 1, objectiveAndRequirements: "Continue the bounded review only." })}\n</peer-handoff>` }] }];
+  expect(uiExposureQuery(worker)).not.toContain(original);
+});
 beforeEach(() => clearExposureCache());
 afterEach(() => {
   usePreferencesStore.setState(preferences);

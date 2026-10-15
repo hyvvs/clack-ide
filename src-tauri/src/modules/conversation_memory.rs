@@ -975,6 +975,29 @@ fn paths(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf)> {
     ))
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TailPrefix {
+    message_id: String,
+    header_hash: String,
+    parts_count: usize,
+    parts_hash: String,
+}
+
+fn message_header(message: &Value) -> Result<Value> {
+    let mut header = message.clone();
+    let object = header.as_object_mut().ok_or("memory_invalid_message")?;
+    object.remove("parts");
+    if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.remove("clackActivity");
+        metadata.remove("clackAnswer");
+        if metadata.is_empty() {
+            object.remove("metadata");
+        }
+    }
+    Ok(header)
+}
+
 fn rebase_preparation(
     root: &Path,
     content: &Path,
@@ -982,6 +1005,7 @@ fn rebase_preparation(
     expected: &Preparation,
     message_count: usize,
     prefix_hash: &str,
+    tail_prefix: Option<&TailPrefix>,
 ) -> Result<MemoryView> {
     if expected.runtime_id != *MEMORY_EPOCH
         || !valid_hash(prefix_hash)
@@ -989,6 +1013,23 @@ fn rebase_preparation(
         || message_count > originals.messages.len()
     {
         return Err("memory_stale_preparation".into());
+    }
+    if let Some(proof) = tail_prefix {
+        let tail = originals
+            .messages
+            .get(message_count)
+            .ok_or("memory_stale_preparation")?;
+        let parts = tail["parts"].as_array().ok_or("memory_stale_preparation")?;
+        if tail["role"] != "assistant"
+            || tail["id"].as_str() != Some(proof.message_id.as_str())
+            || !valid_hash(&proof.header_hash)
+            || !valid_hash(&proof.parts_hash)
+            || proof.parts_count > parts.len()
+            || hash(&message_header(tail)?)? != proof.header_hash
+            || hash(&parts[..proof.parts_count])? != proof.parts_hash
+        {
+            return Err("memory_stale_preparation".into());
+        }
     }
     let view = load(root, content, originals, &expected.owner)?;
     let next = &view.preparation;
@@ -1313,6 +1354,7 @@ pub async fn conversation_memory_rebase(
     preparation: Preparation,
     message_count: usize,
     prefix_hash: String,
+    tail_prefix: Option<TailPrefix>,
 ) -> Result<MemoryView> {
     let state = state.inner().clone();
     blocking(move || {
@@ -1328,6 +1370,7 @@ pub async fn conversation_memory_rebase(
             &preparation,
             message_count,
             &prefix_hash,
+            tail_prefix.as_ref(),
         )
     })
     .await

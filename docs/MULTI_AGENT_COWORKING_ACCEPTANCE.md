@@ -2,6 +2,29 @@
 
 ## Status
 
+### Independent Reverification: 2026-10-15
+
+The independent local-agent audit starts from `09f4a69`, not from this document's
+older base. It reran the complete native coworking corpus: **64 scenarios, 135
+tasks, 301 inference requests**, capacity peaks exactly 1/2, original private
+canary isolation, effect identity checks and a second process with zero inference
+replay. The supplemental small-team corpus also passed: **five scenarios, ten
+tasks, 35 requests**, including the 8k isolated edit and explicit 16k review/Apply.
+
+New single-Agent missions exposed and fixed real composition defects in plan
+retention/completion, workspace-instruction freshness, failed shell evidence,
+continuation tool relevance, optional retrieval exhaustion and SDK assistant-tail
+rebase. Those fixes use the existing owners; they do not replace this corpus.
+The new independent report records 16k/32k/128k implement/test/document success,
+a distinct truthfully blocked 8k single-Agent mission, exact request accounting,
+historical checkpoint regression mapping and current verification totals in
+[`LOCAL_AGENT_USABILITY_ACCEPTANCE.md`](LOCAL_AGENT_USABILITY_ACCEPTANCE.md).
+
+This does not upgrade controlled protocol evidence to real model intelligence.
+The configured local endpoint was offline. Native GUI, Linux/macOS native and
+live model/hardware acceptance remain unperformed. The older evidence below is
+retained as its original record rather than rewritten as new measurements.
+
 **Controlled acceptance complete, with the limitations below.** Base is
 `6d770ec767c173ffcc4b0a999e4da36b2d568aea` on `main` (28 commits ahead of origin
 at the start). This is an implementation/acceptance record, not a release claim.

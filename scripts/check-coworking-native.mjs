@@ -6,14 +6,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
 import assert from "node:assert/strict";
+import { createLocalAgentProtocol } from "./local-agent-protocol.mjs";
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
 const smallTeam = process.argv.includes("--small-team");
-if (process.argv.slice(2).some(argument => argument !== "--small-team")) throw new Error("Unknown native acceptance scope");
+const localAgent = process.argv.includes("--local-agent");
+if (smallTeam && localAgent || process.argv.slice(2).some(argument => !["--small-team", "--local-agent"].includes(argument))) throw new Error("Unknown native acceptance scope");
+const localProtocol = createLocalAgentProtocol();
 const temporaryRoot = await realpath(tmpdir());
 const owned = await mkdtemp(path.join(temporaryRoot, "clack-coworking-"));
 const workspace = path.join(owned, "workspace");
-const reports = process.env.CLACK_ACCEPTANCE_REPORT_DIR || path.join(repository, "src-tauri/target/coworking-report");
+const reports = process.env.CLACK_ACCEPTANCE_REPORT_DIR || path.join(repository, `src-tauri/target/${localAgent ? "local-agent" : "coworking"}-report`);
 await mkdir(workspace);
 await mkdir(reports, { recursive: true });
 const git = (...args) => {
@@ -32,6 +35,11 @@ await writeFile(path.join(workspace, "architecture.md"), "Configuration owns tim
 await mkdir(path.join(workspace, "src"));
 await mkdir(path.join(workspace, "tests"));
 await mkdir(path.join(workspace, "logs"));
+if (localAgent) {
+  await writeFile(path.join(workspace, "src/public-api.ts"), "export const port = 1420;\n");
+  for (const size of [8192, 16384, 32768, 131072])
+    await writeFile(path.join(workspace, `src/local-${size}.js`), "export const timeoutMs = 900;\n");
+}
 await writeFile(path.join(workspace, "logs/huge.txt"), Array.from({ length: 60000 }, (_, index) => `Observation ${index}: timeoutMs=750, allowRemote=false`).join("\n"));
 await writeFile(path.join(workspace, "src/timeout.js"), "export const timeoutMs = 900;\n");
 await writeFile(path.join(workspace, "src/small-timeout.js"), "export const timeoutMs = 900;\n");
@@ -39,6 +47,8 @@ await writeFile(path.join(workspace, "tests/timeout.test.js"), "import assert fr
 git("add", ".");
 git("commit", "-qm", "controlled acceptance base");
 const traffic = [];
+const metadataRequests = [];
+const protocolErrors = [];
 let inFlight = 0, maximum = 0, capacity = 1, child, vite, nativeLog = "", viteLog = "";
 const capacityPeaks = { 1: 0, 2: 0 };
 let resolveReport;
@@ -57,11 +67,13 @@ const twoBarrier = new Promise(resolve => { releaseTwo = resolve; });
 const failedTasks = new Map();
 const server = createServer(async (request, response) => {
   try {
+    if (request.url?.startsWith("/v1/") && request.url !== "/v1/chat/completions") metadataRequests.push({ method: request.method, path: request.url });
     if (request.method === "OPTIONS") return json(response, {});
-    if (request.url === "/configuration") return json(response, { root: workspace.replaceAll("\\", "/"), server: `${api}/v1`, report: `${api}/report`, phase, smallTeam });
+    if (request.url === "/configuration") return json(response, { root: workspace.replaceAll("\\", "/"), server: `${api}/v1`, report: `${api}/report`, phase, smallTeam, localAgent });
     let raw = "";
     for await (const chunk of request) { raw += chunk; if (raw.length > (request.url === "/report" ? 16 : 4) * 1024 * 1024) throw new Error("Fixture request exceeds bound"); }
     if (request.url === "/report") { resolveReport(JSON.parse(raw)); return json(response, { ok: true }); }
+    if (request.url === "/finish-local-history" && localAgent) { localProtocol.finishLongHistory(); return json(response, { ok: true }); }
     if (request.url === "/release-parallel") { parallelReleased = true; releaseParallel(); return json(response, { ok: true }); }
     if (request.url === "/capacity-two") { capacity = 2; return json(response, { ok: true }); }
     if (request.url === "/release-two") { releaseTwo(); return json(response, { ok: true }); }
@@ -84,6 +96,13 @@ const server = createServer(async (request, response) => {
       return json(response, { id: `extract-${traffic.length}`, object: "chat.completion", created: 1, model: body.model,
         choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ claims }) }, finish_reason: "stop" }],
       });
+    }
+    if (localAgent) {
+      const delta = localProtocol.respond(body, traffic.length);
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      const chunk = (value, finish_reason = null) => `data: ${JSON.stringify({ id: `local-${traffic.length}`, object: "chat.completion.chunk", created: 1, model: body.model, choices: [{ index: 0, delta: value, finish_reason }] })}\n\n`;
+      response.end(chunk(delta) + chunk({}, delta.tool_calls ? "tool_calls" : "stop") + "data: [DONE]\n\n");
+      return;
     }
     const last = body.messages.at(-1);
     const messageText = message => typeof message.content === "string" ? message.content
@@ -220,7 +239,12 @@ const server = createServer(async (request, response) => {
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     const chunk = (value, finish_reason = null) => `data: ${JSON.stringify({ id: `fixture-${traffic.length}`, object: "chat.completion.chunk", created: 1, model: body.model, choices: [{ index: 0, delta: value, finish_reason }] })}\n\n`;
     response.end(chunk(delta) + chunk({}, delta.tool_calls ? "tool_calls" : "stop") + "data: [DONE]\n\n");
-  } catch (error) { json(response, { error: String(error) }, 500); }
+  } catch (error) {
+    protocolErrors.push(String(error));
+    if (protocolErrors.length > 20) protocolErrors.shift();
+    console.error("Controlled protocol assertion:", String(error));
+    json(response, { error: String(error) }, 400);
+  }
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 api = `http://127.0.0.1:${server.address().port}`;
@@ -232,7 +256,7 @@ try {
   viteLog = JSON.stringify(vite.resolvedUrls);
   const data = path.join(owned, "data");
   await mkdir(data);
-  const environment = Object.fromEntries(["PATH", "SystemRoot", "WINDIR", "COMSPEC", "HOME", "LANG", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []));
+  const environment = Object.fromEntries(["PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "HOME", "LANG", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []));
   Object.assign(environment, { APPDATA: data, LOCALAPPDATA: data, XDG_DATA_HOME: data, XDG_CONFIG_HOME: data, TEMP: owned, TMP: owned, TMPDIR: owned,
     CLACK_ACCEPTANCE_ROOT: owned, CLACK_ACCEPTANCE_URL: `http://127.0.0.1:1438/coworking-acceptance.html?configuration=${encodeURIComponent(`${api}/configuration`)}` });
   const executable = path.join(repository, "src-tauri/target/codex-test/debug/examples", `coworking_acceptance${process.platform === "win32" ? ".exe" : ""}`);
@@ -244,14 +268,29 @@ try {
   const exited = new Promise((_, reject) => child.once("exit", code => reject(new Error(`Native host exited before report (${code}): ${nativeLog}`))));
   let result;
   try { result = await Promise.race([reportPromise, timeout, exited]); } finally { clearTimeout(timer); }
-  await writeFile(path.join(reports, "result.json"), JSON.stringify({ ...result, maximumInferenceConcurrency: maximum, capacityPeaks, inferenceRequests: traffic.length, traffic, nativeLog }, null, 2));
-  if (!result.ok) throw new Error(`${result.error}\n${nativeLog}`);
+  const wireBudgets = [];
+  if (localAgent && result.ok) {
+    const { assertRequestBudget } = await vite.ssrLoadModule("/src/modules/ai/lib/contextBudget.ts");
+    for (const [index, request] of traffic.entries()) {
+      const size = Number(request.body.model.split("-").at(-1));
+      wireBudgets.push({ index: index + 1, stream: !!request.body.stream, model: request.body.model,
+        ...assertRequestBudget({ asserted: size, outputReserve: size === 8192 ? 512 : 1024, maxOutput: size === 8192 ? 512 : 1024 }, request.body),
+      });
+    }
+  }
+  const effects = (result.conversations || []).flatMap(c => (c.messages || []).flatMap(m => m.parts || []).filter(p => p.type === "tool-write_file" && p.output?.clackWorkspaceWrite === true));
+  const effectIds = effects.map(p => p.toolCallId);
+  assert.equal(new Set(effectIds).size, effectIds.length, "Completed write identity replayed");
+  await writeFile(path.join(reports, "result.json"), JSON.stringify({ ...result, writeEffectIds: effectIds, wireBudgets, metadataRequests, protocolMetrics: localProtocol.metrics, maximumInferenceConcurrency: maximum, capacityPeaks, inferenceRequests: traffic.length, traffic, nativeLog }, null, 2));
+  if (!result.ok) throw new Error(`${result.error}\n${protocolErrors.join("\n")}\n${nativeLog}`);
   for (const request of traffic.filter(item => item.body.stream)) {
     const worker = JSON.stringify(request.body.messages).includes("<peer-handoff>");
     if (worker && JSON.stringify(request.body).includes("PRIVATE_PARENT_CANARY_7b32017")) throw new Error("Private parent context reached a worker, including a same-Agent worker");
   }
-  const verification = spawnSync(process.execPath, ["tests/timeout.test.js"], { cwd: workspace, encoding: "utf8", windowsHide: true });
-  if (verification.status) throw new Error(`Real applied-file verification failed: ${verification.stderr}`);
+  for (const test of localAgent ? result.missions.filter(m => m.status === "completed").map(m => `tests/local-${m.size}.mjs`) : ["tests/timeout.test.js"]) {
+    const verification = spawnSync(process.execPath, [test], { cwd: workspace, encoding: "utf8", windowsHide: true });
+    if (verification.status) throw new Error(`Real applied-file verification failed: ${verification.stderr}`);
+  }
   for (const [limit, peak] of Object.entries(capacityPeaks)) if (peak > Number(limit)) throw new Error(`Endpoint exceeded configured capacity ${limit}: ${peak}`);
   if (traffic.some(item => JSON.stringify(item.body).includes("CANCEL_HOLD_QUEUED"))) throw new Error("Cancelled queued task reached inference");
   if (child.exitCode == null) await new Promise(resolve => child.once("exit", resolve));

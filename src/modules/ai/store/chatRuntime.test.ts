@@ -698,7 +698,9 @@ describe("run error state", () => {
       );
       expect(shouldShowHeaderStop("failed")).toBe(false);
       expect(shouldShowTodoStrip("failed", 1)).toBe(false);
-      expect(useTodosStore.getState().bySession[SESSION_ID]).toEqual([]);
+      expect(useTodosStore.getState().bySession[SESSION_ID]).toEqual([
+        { id: "active", title: "Keep working", status: "failed" },
+      ]);
     },
   );
 
@@ -794,7 +796,7 @@ describe("active todo lifecycle", () => {
     "cancelled",
     "interrupted",
     "failed",
-  ] as const)("clears active todos when a run becomes %s", (terminalState) => {
+  ] as const)("retains terminal plan evidence but hides the active strip when a run becomes %s", (terminalState) => {
     useChatStore.setState({
       activeSessionId: SESSION_ID,
       sessions: [
@@ -815,7 +817,11 @@ describe("active todo lifecycle", () => {
 
     useChatStore.getState().finishRun(SESSION_ID, terminalState);
 
-    expect(useTodosStore.getState().bySession[SESSION_ID]).toEqual([]);
+    expect(useTodosStore.getState().bySession[SESSION_ID]).toEqual([
+      { id: "done", title: "Done", status: "completed" },
+      { id: "active", title: "Active", status: terminalState === "completed" ? "in_progress" : terminalState },
+    ]);
+    expect(shouldShowTodoStrip(terminalState, 2)).toBe(false);
     expect(useChatStore.getState().sessions[0].run?.state).toBe(terminalState);
   });
 

@@ -27,6 +27,7 @@ import { BUILTIN_AGENTS } from "../lib/agents";
 import { TERAX_CMD_RE } from "../lib/slashCommands";
 import { useAgentsStore } from "./agentsStore";
 import { usePlanStore } from "./planStore";
+import { getTodos } from "@/modules/ai/store/todoStore";
 import { createContextAwareTransport } from "../lib/transport";
 import {
   describeAiErrorShape,
@@ -409,6 +410,10 @@ function makeChat(sessionId: string): Chat<UIMessage> {
         steps: info.steps,
         hitSoftLimit: info.hitStepCap,
         finishReason: info.finishReason,
+        unfinishedWork: !peerWaitingSessions.has(sessionId) && !peerReplySessions.has(sessionId) &&
+          getTodos(sessionId).some(todo => todo.status === "pending" || todo.status === "in_progress"),
+        blockedWork: !peerWaitingSessions.has(sessionId) && !peerReplySessions.has(sessionId) &&
+          getTodos(sessionId).some(todo => todo.status === "blocked"),
       });
     },
     onUsage: (delta) => {

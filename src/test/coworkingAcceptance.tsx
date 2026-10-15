@@ -70,6 +70,7 @@ type Configuration = {
   report: string;
   phase: "exercise" | "restart";
   smallTeam?: boolean;
+  localAgent?: boolean;
 };
 const outcomes: { name: string; taskIds: string[] }[] = [];
 const lifecycle: { id: string; status: string; at: number }[] = [];
@@ -139,6 +140,7 @@ async function main(config: Configuration) {
   if (config.phase === "restart") {
     await useAgentsStore.getState().hydrate();
     await useChatStore.getState().hydrateSessions();
+    if (config.localAgent) return (await import("@/test/localAgentAcceptance")).localAgentRestart();
     const sessions = useChatStore.getState().sessions;
     const recovery = {
       sessions,
@@ -328,6 +330,8 @@ async function main(config: Configuration) {
       <PeerTaskQueueBridge />
     </>,
   );
+  if (config.localAgent)
+    return (await import("@/test/localAgentAcceptance")).runLocalAgentAcceptance(root, selection, config.report);
   const delegate = async (prompt: string, targetSessionId = "Researcher") => {
     const response = await requestPeerTask({
       sourceSessionId: "Architect",

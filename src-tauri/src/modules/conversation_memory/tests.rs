@@ -83,12 +83,67 @@ fn explicit_append_rebase_requires_exact_prefix_and_preserves_strict_commit_cas(
         .push(json!({"id":"later","role":"assistant","parts":[]}));
     let stale = serde_json::from_value(serde_json::to_value(&candidate).unwrap()).unwrap();
     assert_eq!(f.commit(stale).unwrap_err(), "memory_stale_preparation");
-    let next = rebase_preparation(&f.root, &f.content, &f.originals, &prep, 2, &prefix).unwrap();
+    let next =
+        rebase_preparation(&f.root, &f.content, &f.originals, &prep, 2, &prefix, None).unwrap();
     candidate.preparation = next.preparation;
     f.commit(candidate).unwrap();
     let view = f.view().unwrap();
     assert_eq!(view.revision.unwrap().coverage.end, 2);
     assert_eq!(view.uncovered_messages, 1);
+}
+
+#[test]
+fn active_assistant_rebase_proves_old_parts_and_header_without_trusting_mutable_activity() {
+    for change in [
+        "append", "activity", "answer", "part", "remove", "id", "role", "metadata", "prefix",
+    ] {
+        let mut f = Fixture::new();
+        let prefix = hash(&f.originals.messages).unwrap();
+        let tail = json!({ "id": "active-tail", "role": "assistant", "parts": [{ "type": "text", "text": "Observed original result", "state": "done" }], "metadata": { "clackActivity": {"count": 1}, "clackAnswer": {"state": "streaming"}, "audit": "unchanged" } });
+        f.originals.messages.push(tail.clone());
+        let prep = f.view().unwrap().preparation;
+        let proof = TailPrefix {
+            message_id: "active-tail".into(),
+            header_hash: hash(&message_header(&tail).unwrap()).unwrap(),
+            parts_count: 1,
+            parts_hash: hash(&tail["parts"]).unwrap(),
+        };
+        match change {
+            "append" => f.originals.messages[2]["parts"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"type": "text", "text": "New step"})),
+            "activity" => {
+                f.originals.messages[2]["metadata"]["clackActivity"] = json!({"count": 2})
+            }
+            "answer" => {
+                f.originals.messages[2]["metadata"]["clackAnswer"] = json!({"state": "complete"})
+            }
+            "part" => f.originals.messages[2]["parts"][0]["text"] = json!("Changed evidence"),
+            "remove" => f.originals.messages[2]["parts"] = json!([]),
+            "id" => f.originals.messages[2]["id"] = json!("other"),
+            "role" => f.originals.messages[2]["role"] = json!("user"),
+            "metadata" => f.originals.messages[2]["metadata"]["audit"] = json!("changed"),
+            "prefix" => {
+                f.originals.messages[0]["parts"][0]["text"] = json!("Changed user requirement")
+            }
+            _ => unreachable!(),
+        }
+        let result = rebase_preparation(
+            &f.root,
+            &f.content,
+            &f.originals,
+            &prep,
+            2,
+            &prefix,
+            Some(&proof),
+        );
+        assert_eq!(
+            result.is_ok(),
+            ["append", "activity", "answer"].contains(&change),
+            "accepted/rejected {change}"
+        );
+    }
 }
 
 #[test]
@@ -121,7 +176,16 @@ fn append_rebase_rejects_changed_prefix_owner_run_revision_epoch_and_cancel() {
             _ => unreachable!(),
         }
         assert!(
-            rebase_preparation(&f.root, &f.content, &f.originals, &prep, count, &prefix).is_err(),
+            rebase_preparation(
+                &f.root,
+                &f.content,
+                &f.originals,
+                &prep,
+                count,
+                &prefix,
+                None
+            )
+            .is_err(),
             "accepted {change}"
         );
     }

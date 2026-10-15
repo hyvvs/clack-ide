@@ -20,6 +20,10 @@ type TodosState = {
 
 const persistQueues = new Map<string, Promise<void>>();
 
+export async function flushTodoPersistence(): Promise<void> {
+  await Promise.all([...persistQueues.values()]);
+}
+
 function queuePersistence(
   sessionId: string,
   operation: () => Promise<void>,
@@ -83,13 +87,12 @@ export const useTodosStore = create<TodosState>((set, get) => ({
       const nextHydrated = new Set(state.hydrated);
       nextHydrated.add(sessionId);
       return {
-        bySession: { ...state.bySession, [sessionId]: [] },
+        bySession: { ...state.bySession, [sessionId]: finalized },
         hydrated: nextHydrated,
       };
     });
     void queuePersistence(sessionId, async () => {
       await persistSave(sessionId, finalized);
-      await persistDelete(sessionId);
     });
   },
 

@@ -274,15 +274,26 @@ describe("automatic same-conversation evidence retrieval", () => {
     }
     expect(f.read).toHaveBeenCalledTimes(10);
   });
-  it("does not silently reuse a view after the round cap and source change", async () => {
+  it("omits optional evidence with a receipt instead of reusing a stale view or blocking continuation at the round cap", async () => {
     const f = fixture();
     await f.prepare();
     f.view.preparation.generation++;
     await f.prepare();
     f.view.preparation.generation++;
-    await expect(f.prepare()).rejects.toMatchObject({
-      code: "retrieval-round-limit",
-    });
+    const output = await f.prepare();
+    expect(JSON.stringify(output)).not.toContain("deployed proxy");
+    expect(JSON.stringify(output)).toContain("retrieval allowance is exhausted");
+    expect(f.read).toHaveBeenCalledTimes(2);
+    expect(f.onNotice.mock.calls[f.onNotice.mock.calls.length - 1]?.[0]).toMatchObject({ sources: [], omitted: 1 });
+  });
+  it("still fails closed for an implicit exact source after the round allowance was used", async () => {
+    const f = fixture();
+    await f.prepare();
+    f.view.preparation.generation++;
+    await f.prepare();
+    f.view.preparation.generation++;
+    f.originals[f.originals.length - 1] = text("latest", "user", "Inspect source:early");
+    await expect(f.prepare()).rejects.toMatchObject({ code: "retrieval-round-limit" });
     expect(f.read).toHaveBeenCalledTimes(2);
   });
   it("allows anchored neighboring expansion within two rounds", async () => {

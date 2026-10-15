@@ -10,6 +10,7 @@ import {
 } from "@/modules/ai/lib/compactionExtraction";
 import type { MemoryClaim } from "@/modules/ai/lib/conversationMemory";
 import { handoffObjective } from "@/modules/ai/lib/peerHistory";
+import { failedCommandOutput } from "@/modules/ai/lib/runBudget";
 
 /** A complete original UI message, converted by the existing SDK path. */
 export type CompactionUnit = {
@@ -37,7 +38,7 @@ export function confirmedWorkspaceWrites(messages: readonly ModelMessage[]): str
   }));
 }
 
-function failedOutput(output: unknown): boolean {
+function failedOutput(output: unknown, toolName?: string): boolean {
   if (!output || typeof output !== "object") return false;
   const record = output as Record<string, unknown>;
   return (
@@ -45,7 +46,8 @@ function failedOutput(output: unknown): boolean {
     record.type === "error-json" ||
     record.error != null ||
     record.ok === false ||
-    (record.type === "json" && failedOutput(record.value))
+    failedCommandOutput(toolName, output) ||
+    (record.type === "json" && failedOutput(record.value, toolName))
   );
 }
 
@@ -64,6 +66,7 @@ export function groupCompactionUnits(
   const calls = new Map<string, number>();
   const results = new Map<string, number>();
   const protectedUnits = new Set<number>();
+  let latestPlan: { id: string; index: number } | undefined;
   for (const [index, unit] of units.entries()) {
     if (unit.role !== "assistant" || unit.hasContentReferences)
       protectedUnits.add(index);
@@ -87,12 +90,21 @@ export function groupCompactionUnits(
             "A tool call/result identity is duplicated.",
           );
         entries.set(part.toolCallId, index);
-        if (part.type === "tool-result" && failedOutput(part.output))
+        if (part.type === "tool-result" && part.toolName === "todo_write" &&
+          (part.output as { type?: string; value?: { ok?: boolean } })?.type === "json" &&
+          (part.output as { value?: { ok?: boolean } }).value?.ok === true && !failedOutput(part.output))
+          latestPlan = { id: part.toolCallId, index };
+        if (part.type === "tool-result" && failedOutput(part.output, part.toolName))
           protectedUnits.add(index);
       }
     }
   }
   const ends = units.map((_, index) => index + 1);
+  if (latestPlan) {
+    protectedUnits.add(latestPlan.index);
+    const start = calls.get(latestPlan.id);
+    if (start !== undefined) protectedUnits.add(start);
+  }
   for (const [id, end] of results) {
     const start = calls.get(id);
     if (start === undefined || start > end)

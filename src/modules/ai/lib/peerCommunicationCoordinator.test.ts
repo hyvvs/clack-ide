@@ -176,6 +176,7 @@ beforeEach(() => {
         expect(text).toContain("Use API v2.");
         peerWaitingSessions.delete(id);
         chats.set(id, chat("Implemented API v2."));
+        useChatStore.getState().recordRunBatch(id, { steps: 1, hitSoftLimit: false, finishReason: "stop" });
       }
     },
   );

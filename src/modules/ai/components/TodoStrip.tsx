@@ -103,7 +103,7 @@ function TodoRow({ todo }: { todo: Todo }) {
         )}
       >
         {todo.title}
-        {isTerminal ? (
+        {isTerminal || todo.status === "blocked" ? (
           <span className="ml-1 text-[9.5px] uppercase">{todo.status}</span>
         ) : null}
       </span>

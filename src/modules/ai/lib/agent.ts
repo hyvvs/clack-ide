@@ -91,7 +91,7 @@ import {
   selfHostedTransportIdentity,
   selfHostedCredential,
 } from "@/modules/ai/lib/selfHostedModels";
-import { AGENT_SOFT_STEP_LIMIT, type RunStepObservation } from "./runBudget";
+import { AGENT_SOFT_STEP_LIMIT, failedCommandOutput, type RunStepObservation } from "@/modules/ai/lib/runBudget";
 import {
   AGENT_PROVIDER_MAX_RETRIES,
   withProviderRetryTracking,
@@ -1280,18 +1280,18 @@ function runStepObservation(step: {
     toolName: call.toolName,
     input: call.input,
     output,
-    failed: isFailedToolOutput(result, output),
+    failed: isFailedToolOutput(result, output, call.toolName),
   };
 }
 
-function isFailedToolOutput(result: unknown, output: unknown): boolean {
+function isFailedToolOutput(result: unknown, output: unknown, toolName?: string): boolean {
   if (result && typeof result === "object") {
     const record = result as Record<string, unknown>;
     if (record.error != null || record.errorText != null) return true;
   }
   if (output && typeof output === "object") {
     const record = output as Record<string, unknown>;
-    return record.error != null || record.ok === false;
+    return record.error != null || record.ok === false || failedCommandOutput(toolName, output);
   }
   return false;
 }

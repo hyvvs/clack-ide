@@ -105,8 +105,9 @@ export function loadConversationMemory(
 ): Promise<MemoryView> {
   return invoke("conversation_memory_load", { owner });
 }
-export function rebaseConversationMemory(preparation: MemoryPreparation, messageCount: number, prefixHash: string): Promise<MemoryView> {
-  return invoke("conversation_memory_rebase", { preparation, messageCount, prefixHash });
+export type MemoryTailPrefix = { messageId: string; headerHash: string; partsCount: number; partsHash: string };
+export function rebaseConversationMemory(preparation: MemoryPreparation, messageCount: number, prefixHash: string, tailPrefix?: MemoryTailPrefix): Promise<MemoryView> {
+  return invoke("conversation_memory_rebase", { preparation, messageCount, prefixHash, tailPrefix });
 }
 
 export async function commitConversationMemory(

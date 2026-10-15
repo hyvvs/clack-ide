@@ -95,27 +95,33 @@ export function requiredToolNames(messages: readonly ModelMessage[]): string[] {
   return [...new Set([...pending.values(), ...tail])].sort(compare);
 }
 export function exposureQuery(messages: readonly ModelMessage[]): string {
-  const latest = [...messages].reverse().find((m) => m.role === "user");
-  if (!latest) return "";
-  const text = (
-    typeof latest.content === "string"
-      ? latest.content
-      : latest.content
+  return continuedExposureQuery(messages.filter(m => m.role === "user").slice(-128).map(message => (
+    typeof message.content === "string"
+      ? message.content
+      : message.content
           .filter((p) => p.type === "text")
           .map((p) => p.text)
           .join("\n")
-  );
-  return (handoffObjective(text) ?? text).slice(-EXPOSURE_LIMITS.rankingCharacters);
+  )));
 }
 export function uiExposureQuery(messages: readonly UIMessage[]): string {
-  const latest = [...messages].reverse().find((m) => m.role === "user");
-  const text = (
-    latest?.parts
+  return continuedExposureQuery(messages.filter(m => m.role === "user").slice(-128).map(message => message.parts
       .filter((p) => p.type === "text")
       .map((p) => p.text)
-      .join("\n") ?? ""
-  );
-  return (handoffObjective(text) ?? text).slice(-EXPOSURE_LIMITS.rankingCharacters);
+      .join("\n")));
+}
+function continuedExposureQuery(users: readonly string[]): string {
+  const latest = users[users.length - 1] ?? "";
+  const continuation = (text: string) => !handoffObjective(text) &&
+    /^(?:(?:continue|resume|finish|complete|proceed with)(?:\s+(?:the\s+)?(?:same|current|original|existing)\b[^\n]*|[.!?\s]*)|keep going[.!?\s]*)$/i.test(text.trim().replace(/^<env>[\s\S]*?<\/env>\s*/, ""));
+  if (continuation(latest)) {
+    for (let i = users.length - 2; i >= Math.max(0, users.length - 128); i--) {
+      if (continuation(users[i])) continue;
+      const objective = handoffObjective(users[i]) ?? users[i];
+      return `${latest.slice(-512)}\n${objective.slice(-(EXPOSURE_LIMITS.rankingCharacters - 513))}`;
+    }
+  }
+  return (handoffObjective(latest) ?? latest).slice(-EXPOSURE_LIMITS.rankingCharacters);
 }
 export function requiredUiToolNames(messages: readonly UIMessage[]): string[] {
   const names = new Set<string>();

@@ -1,5 +1,45 @@
 # CoS Comparative Audit
 
+## Independent Re-Investigation: 2026-10-15
+
+Revisited upstream source and tests at
+[`083d22d28fa3546ccea8c5d3810a9feaea5b6855`](https://github.com/totec448-spec/chat-on-steroids/tree/083d22d28fa3546ccea8c5d3810a9feaea5b6855),
+using `git show origin/main:<path>` after refreshing only the existing temporary
+audit checkout. Its working checkout remains pinned to the earlier revision.
+No upstream dependencies or application were executed, and no code was copied.
+
+Additional findings beyond the original audit:
+
+- [Plan tool](https://github.com/totec448-spec/chat-on-steroids/blob/083d22d28fa3546ccea8c5d3810a9feaea5b6855/src/main/mcp/plan-tool.ts)
+  bounds plan steps/details and rejects stale exact-caller updates. The
+  [handoff owner](https://github.com/totec448-spec/chat-on-steroids/blob/083d22d28fa3546ccea8c5d3810a9feaea5b6855/src/main/session/continuation.ts)
+  explicitly identifies saved plans as reported progress, not verification
+  evidence. Clack now protects its latest accepted todo call/result in C1;
+  successful file/test results remain separate evidence, not inferred from ticks.
+- [Finish ownership](https://github.com/totec448-spec/chat-on-steroids/blob/083d22d28fa3546ccea8c5d3810a9feaea5b6855/src/main/session/finish.ts)
+  hashes authored objective/input/context and suppresses duplicate follow-ups.
+  It waits for owned workers before drafting and revokes decisions after new
+  input/settings changes. Its semantic Goal decision calls a helper model;
+  this is not evidence of autonomous local-engine intelligence. Clack adapts
+  only the deterministic unfinished-obligation boundary through its existing
+  run budget. No Goal service, helper model or cloud evaluator was added.
+- [Finish tests](https://github.com/totec448-spec/chat-on-steroids/blob/083d22d28fa3546ccea8c5d3810a9feaea5b6855/test/session-finish.test.ts)
+  distinguish releasing a finish hold from fabricating a final answer or queued
+  instruction. [Continuation tests](https://github.com/totec448-spec/chat-on-steroids/blob/083d22d28fa3546ccea8c5d3810a9feaea5b6855/test/continuation.test.ts)
+  cover partial briefs and destination-recording races. Clack retains strict
+  C1/C2 source CAS, D3 no-replay and exact PeerTask ownership; SDK assistant-tail
+  append proofs are checked natively instead of adopting browser timing gates.
+- [Progress](https://github.com/totec448-spec/chat-on-steroids/blob/083d22d28fa3546ccea8c5d3810a9feaea5b6855/src/main/session/progress.ts)
+  derives worker/tool activity from actual owners. [Head/tail buffering](https://github.com/totec448-spec/chat-on-steroids/blob/083d22d28fa3546ccea8c5d3810a9feaea5b6855/src/main/codex/head-tail-buffer.ts)
+  records omissions separately from retained output. These remain useful
+  principles, not grounds to replace Clack's Dispatcher, bounded file windows,
+  shell lifecycle or content-addressed artifacts.
+
+The inspected current `src/main`/`src/shared` tree still provided no direct
+Ollama/LM Studio/vLLM adapter evidence. None of these findings establishes real
+local-model task quality. See `LOCAL_AGENT_USABILITY_ACCEPTANCE.md` for the
+separate Clack runtime evidence and remaining acceptance limitations.
+
 ## Scope And Evidence
 
 This pass starts from Clack `6d770ec`. The independently inspected public

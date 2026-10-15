@@ -59,17 +59,12 @@ export type PrepareFallback = (request: {
 }) => Promise<FallbackAttempt | null>;
 
 const PROJECT_MEMORY_MAX_BYTES = 32 * 1024;
-type MemoryCacheEntry = { content: string | null; mtime: number };
-const projectMemoryCache = new Map<string, MemoryCacheEntry>();
 
 export async function readProjectMemory(
   workspaceRoot: string | null,
   workspace?: WorkspaceEnv,
 ): Promise<string | null> {
   if (!workspaceRoot) return null;
-  const cacheKey = `${workspace?.kind === "wsl" ? `wsl:${workspace.distro}` : "local"}:${workspaceRoot}`;
-  const cached = projectMemoryCache.get(cacheKey);
-  if (cached && Date.now() - cached.mtime < 30_000) return cached.content;
   for (const name of ["CLACK.md", "TERAX.md"]) {
     const path = `${workspaceRoot.replace(/\/$/, "")}/${name}`;
     try {
@@ -81,13 +76,11 @@ export async function readProjectMemory(
         r.content.length > PROJECT_MEMORY_MAX_BYTES
           ? r.content.slice(0, PROJECT_MEMORY_MAX_BYTES)
           : r.content;
-      projectMemoryCache.set(cacheKey, { content, mtime: Date.now() });
       return content;
     } catch {
       continue;
     }
   }
-  projectMemoryCache.set(cacheKey, { content: null, mtime: Date.now() });
   return null;
 }
 

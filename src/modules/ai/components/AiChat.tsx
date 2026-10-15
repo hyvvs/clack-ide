@@ -380,7 +380,7 @@ export function AiChatView({
           <RunTerminalStatus state={run.state} commandName={run.commandName} />
         ) : null}
         {showContinue && (
-          <ContinueRow onContinue={() => void continueRun(sessionId, false)} />
+          <ContinueRow unfinishedWork={run?.budget?.stopReason === "unfinished-work" || run?.budget?.stopReason === "blocked-work"} blocked={run?.budget?.stopReason === "blocked-work"} onContinue={() => void continueRun(sessionId, false)} />
         )}
         {showHardLimit && run?.budget ? (
           <HardLimitRow
@@ -432,7 +432,7 @@ export function AiChatView({
 export function shouldShowStepContinuation(run: SessionRun | undefined, lastMessage: UIMessage | undefined, busy: boolean): boolean {
   const answer = lastMessage ? readAnswer(lastMessage) : null;
   return !busy && run?.state === "running" && run.budget?.phase === "soft-limit" &&
-    run.budget.lastFinishReason === "tool-calls" && lastMessage?.role === "assistant" &&
+    (run.budget.lastFinishReason === "tool-calls" || run.budget.stopReason === "unfinished-work" || run.budget.stopReason === "blocked-work") && lastMessage?.role === "assistant" &&
     !answer?.watchdog && answer?.segments[answer.segments.length - 1]?.finish !== "length";
 }
 
@@ -511,13 +511,17 @@ const CompactionNotice = memo(function CompactionNotice({
 
 export const ContinueRow = memo(function ContinueRow({
   onContinue,
+  unfinishedWork = false,
+  blocked = false,
 }: {
   onContinue: () => void;
+  unfinishedWork?: boolean;
+  blocked?: boolean;
 }) {
   return (
     <div className="clack-ai-block flex items-center gap-2 px-2.5 py-1.5 text-[11px]">
       <span className="flex-1 text-[var(--clack-text-3)]">
-        Hit the step limit. Continue to keep going.
+        {blocked ? "Required work is blocked. Resolve the blocker or update the task before continuing." : unfinishedWork ? "Required plan work remains unfinished. Continue or update the task." : "Hit the step limit. Continue to keep going."}
       </span>
       <button
         type="button"

@@ -275,6 +275,13 @@ describe("AI provider fallback", () => {
 });
 
 describe("run limit notices", () => {
+  it("explains a known unfinished plan without claiming a step ceiling", () => {
+    const run = { state: "running" as const, startedAt: 1, budget: { ...createRunBudget("ask"), phase: "soft-limit" as const, stopReason: "unfinished-work" as const, lastFinishReason: "stop" } };
+    expect(shouldShowStepContinuation(run, assistantMessage("Done"), false)).toBe(true);
+    const html = renderToStaticMarkup(<ContinueRow unfinishedWork onContinue={() => undefined} />);
+    expect(html).toContain("Required plan work remains unfinished");
+    expect(html).not.toContain("step limit");
+  });
   it("shows the step gate only for a live, genuinely unfinished tool batch", () => {
     const run = { state: "running" as const, startedAt: 1, budget: { ...createRunBudget("ask"), phase: "soft-limit" as const, lastFinishReason: "tool-calls" } };
     const message = assistantMessage("Tool output has been collected");
