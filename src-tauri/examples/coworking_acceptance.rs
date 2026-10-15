@@ -55,6 +55,11 @@ fn main() {
                     shell::shell_session_open,
                     shell::shell_session_run,
                     shell::shell_session_close,
+                    shell::shell_run_command,
+                    shell::shell_bg_spawn,
+                    shell::shell_bg_logs,
+                    shell::shell_bg_kill,
+                    shell::shell_bg_list,
                     workspace::workspace_authorize,
                     workspace::workspace_current_dir,
                     attachments::attachment_store_put,
@@ -112,6 +117,11 @@ fn main() {
                     fs::file::fs_write_file,
                     fs::file::fs_canonicalize,
                     fs::file::fs_stat,
+                    fs::mutate::fs_create_file,
+                    fs::mutate::fs_create_dir,
+                    fs::mutate::fs_rename,
+                    fs::mutate::fs_delete,
+                    fs::mutate::fs_copy,
                     fs::tree::fs_read_dir,
                     fs::grep::fs_grep,
                     fs::grep::fs_glob,
@@ -150,6 +160,25 @@ fn main() {
                             "unexpected inference destination"
                         );
                         eprintln!("CLACK_ACCEPTANCE_INFERENCE {}", value["url"]);
+                        if let Ok(phase) = std::env::var("CLACK_REAL_PRODUCT_PHASE") {
+                            use std::io::Write;
+                            assert!(phase.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+                            let bytes: Vec<u8> = serde_json::from_value(value["body"].clone())
+                                .expect("serialized inference body required");
+                            let body: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON body required");
+                            assert_eq!(body["model"], "qwen38-uncensored:latest");
+                            assert_eq!(body["options"]["num_ctx"], 32768);
+                            let directory = std::env::var("CLACK_ACCEPTANCE_ROOT").expect("owned root");
+                            let mut file = std::fs::OpenOptions::new().create(true).append(true)
+                                .open(std::path::Path::new(&directory).join(format!("{phase}.requests.jsonl")))
+                                .expect("owned audit file");
+                            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_millis();
+                            writeln!(file, "{}", serde_json::json!({"at": at, "requestId": value["requestId"], "url": value["url"], "body": body})).expect("persist request audit");
+                            if phase.starts_with("offline") {
+                                invoke.resolver.reject("Acceptance connection unavailable");
+                                return true;
+                            }
+                        }
                     }
                 }
                 handler(invoke)

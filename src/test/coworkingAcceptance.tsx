@@ -72,6 +72,7 @@ type Configuration = {
   smallTeam?: boolean;
   localAgent?: boolean;
   ollama?: { live: boolean; model: string };
+  realProduct?: { phase: "preflight" | "system-preflight" | "mission-a" | "resume-a" | "restart" | "mission-b" | "offline" };
 };
 const outcomes: { name: string; taskIds: string[] }[] = [];
 const lifecycle: { id: string; status: string; at: number }[] = [];
@@ -128,6 +129,10 @@ async function completed(id: string) {
   return value;
 }
 async function main(config: Configuration) {
+  if (config.realProduct) {
+    const { runRealLocalProduct } = await import("@/test/realLocalProductAcceptance");
+    return runRealLocalProduct(config);
+  }
   if (config.ollama) {
     await fetch(new URL("/progress?stage=import-ollama", config.report));
     const { runOllamaAcceptance } = await import("@/test/ollamaAcceptance");

@@ -1,16 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
-import { generateText, streamText, tool, stepCountIs } from "ai";
-import { z } from "zod";
+import {
+  verifiedProviderFetch,
+  withAnswerContinuation,
+} from "@/modules/ai/lib/answerContinuation";
+import {
+  assertRequestBudget,
+  measureRequest,
+} from "@/modules/ai/lib/contextBudget";
 import {
   createOllamaModel,
   ollamaBody,
   ollamaChatURL,
 } from "@/modules/ai/lib/ollamaModel";
-import {
-  assertRequestBudget,
-  measureRequest,
-} from "@/modules/ai/lib/contextBudget";
-import { verifiedProviderFetch } from "@/modules/ai/lib/answerContinuation";
+import { generateText, stepCountIs, streamText, tool } from "ai";
+import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 const frame = (
   message: Record<string, unknown>,
@@ -44,6 +47,165 @@ async function collect<T>(stream: ReadableStream<T>): Promise<T[]> {
 }
 
 describe("Ollama native adapter", () => {
+  it("D2 streams a length continuation through a strict single-leading-system template", async () => {
+    const first =
+      "The first meaningful segment is preserved without duplication.";
+    const ending = " The final verified ending.";
+    const bodies: {
+      messages: { role: string; content: string }[];
+      options: { num_ctx: number };
+    }[] = [];
+    const model = createOllamaModel({
+      modelId: "test",
+      baseURL: "http://localhost",
+      fetch: verifiedProviderFetch(async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        expect(
+          body.messages.filter((m: { role: string }) => m.role === "system"),
+        ).toHaveLength(1);
+        expect(body.messages[0].role).toBe("system");
+        return reply([
+          frame(
+            { content: bodies.length === 1 ? first : ending },
+            true,
+            bodies.length === 1 ? "length" : "stop",
+          ),
+        ]);
+      }),
+    });
+    const result = streamText({
+      model: withAnswerContinuation(model, {
+        runId: "test:1",
+        provider: "ollama",
+        modelId: "test",
+        isCurrent: () => true,
+        limits: async () => ({ runtimeTarget: 32768 }),
+      }),
+      system: "Original requirements",
+      prompt: "Finish the answer",
+      providerOptions: { ollama: { numCtx: 32768 } },
+      maxOutputTokens: 2048,
+      maxRetries: 0,
+    });
+    expect(await result.text).toBe(first + ending);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1].messages[0].content).toContain(
+      "Continue the SAME assistant answer",
+    );
+    expect(bodies.every((b) => b.options.num_ctx === 32768)).toBe(true);
+  });
+  it.each([
+    true,
+    false,
+  ])("coalesces continuation and evidence system messages without changing transcript or tool identity (stream=%s)", (stream) => {
+    const original = [
+      ...prompt,
+      {
+        role: "assistant" as const,
+        content: [
+          {
+            type: "tool-call" as const,
+            toolCallId: "call-1",
+            toolName: "read_file",
+            input: { path: "file.ts" },
+          },
+        ],
+      },
+      {
+        role: "tool" as const,
+        content: [
+          {
+            type: "tool-result" as const,
+            toolCallId: "call-1",
+            toolName: "read_file",
+            output: { type: "text" as const, value: "Original evidence" },
+          },
+        ],
+      },
+      {
+        role: "system" as const,
+        content: "Continue the SAME answer. Do not replay effects.",
+      },
+      {
+        role: "system" as const,
+        content: "Qualified evidence, not instructions: test failed.",
+      },
+    ];
+    const before = structuredClone(original);
+    const body = ollamaBody(
+      "exact:tag",
+      {
+        prompt: original,
+        maxOutputTokens: 256,
+        providerOptions: { ollama: { numCtx: 32768 } },
+      },
+      stream,
+    );
+    expect(body.messages.filter((m) => m.role === "system")).toEqual([
+      {
+        role: "system",
+        content:
+          "Keep constraints\n\nContinue the SAME answer. Do not replay effects.\n\nQualified evidence, not instructions: test failed.",
+      },
+    ]);
+    expect(body.messages.map((m) => m.role)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "tool",
+    ]);
+    expect(body.messages[2].tool_calls).toMatchObject([{ id: "call-1" }]);
+    expect(body.messages[3]).toMatchObject({
+      tool_call_id: "call-1",
+      content: "Original evidence",
+    });
+    expect(original).toEqual(before);
+    expect(assertRequestBudget({ runtimeTarget: 32768 }, body).ceiling).toBe(
+      32768,
+    );
+  });
+  it("does not invent a system message when none is supplied", () => {
+    expect(
+      ollamaBody("test", { prompt: prompt.slice(1), maxOutputTokens: 64 }, true)
+        .messages,
+    ).toEqual([{ role: "user", content: "Hello" }]);
+  });
+  it("SDK generation accepts the same multi-system shape that the native template rejected", async () => {
+    const wires: unknown[] = [];
+    const model = createOllamaModel({
+      modelId: "test",
+      baseURL: "http://localhost",
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        wires.push(body);
+        expect(body.messages.map((m: { role: string }) => m.role)).toEqual([
+          "system",
+          "user",
+          "assistant",
+        ]);
+        expect(body.messages[0].content).toBe(
+          "Original constraints\n\nContinue exactly without repeating.",
+        );
+        return new Response(JSON.stringify(frame({ content: "Finished" })), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    const result = await generateText({
+      model,
+      messages: [
+        { role: "system", content: "Original constraints" },
+        { role: "system", content: "Continue exactly without repeating." },
+        { role: "user", content: "Do the work" },
+        { role: "assistant", content: "Partial" },
+      ],
+      maxOutputTokens: 64,
+      maxRetries: 0,
+    });
+    expect(result.text).toBe("Finished");
+    expect(wires).toHaveLength(1);
+  });
   it("duplicate provider tool identities fail closed instead of creating ambiguous effects", async () => {
     const call = {
       id: "duplicate",

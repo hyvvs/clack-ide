@@ -43,16 +43,32 @@ pub(crate) fn project_evidence_revision(cwd: &str, workspace: &WorkspaceEnv) -> 
     }
     let head = run_git(workspace, Some(cwd), ["rev-parse", "--verify", "HEAD"], 2)?;
     let branch = run_git(workspace, Some(cwd), ["symbolic-ref", "-q", "HEAD"], 2)?;
-    if head.timed_out
-        || branch.timed_out
-        || head.exit_code != Some(0)
-        || !matches!(branch.exit_code, Some(0 | 1))
-    {
+    if head.timed_out || branch.timed_out || !matches!(branch.exit_code, Some(0 | 1)) {
         return Err(GitError::Spawn("project Git revision unavailable".into()));
     }
+    let head_identity = if head.exit_code == Some(0) {
+        String::from_utf8_lossy(&head.stdout).trim().to_string()
+    } else {
+        let reference = String::from_utf8_lossy(&branch.stdout);
+        let reference = reference.trim();
+        if branch.exit_code != Some(0) || !reference.starts_with("refs/heads/") {
+            return Err(GitError::Spawn("project Git revision unavailable".into()));
+        }
+        // A missing branch ref is an unborn checkout, not an unreadable revision.
+        let missing = run_git(
+            workspace,
+            Some(cwd),
+            ["show-ref", "--verify", "--quiet", reference],
+            2,
+        )?;
+        if missing.timed_out || missing.exit_code != Some(1) {
+            return Err(GitError::Spawn("project Git revision unavailable".into()));
+        }
+        "unborn".to_string()
+    };
     serde_json::to_string(&(
         String::from_utf8_lossy(&root.stdout).trim(),
-        String::from_utf8_lossy(&head.stdout).trim(),
+        head_identity,
         String::from_utf8_lossy(&branch.stdout).trim(),
     ))
     .map_err(|_| GitError::Spawn("project Git identity unavailable".into()))
@@ -1002,6 +1018,71 @@ fn pathspec(repo_root: &Path, absolute: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_git(root: &Path, args: &[&str]) {
+        let output = run_git(&WorkspaceEnv::Local, root.to_str(), args, 5).unwrap();
+        assert_eq!(output.exit_code, Some(0), "{:?}", output.stderr);
+    }
+
+    #[test]
+    fn project_revision_preserves_unborn_identity_and_first_commit_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        fixture_git(dir.path(), &["init", "-b", "initial"]);
+        let first = project_evidence_revision(cwd, &WorkspaceEnv::Local).unwrap();
+        assert!(first.contains("unborn"));
+        assert_eq!(
+            first,
+            project_evidence_revision(cwd, &WorkspaceEnv::Local).unwrap()
+        );
+        fixture_git(dir.path(), &["symbolic-ref", "HEAD", "refs/heads/renamed"]);
+        let renamed = project_evidence_revision(cwd, &WorkspaceEnv::Local).unwrap();
+        assert_ne!(first, renamed);
+        fixture_git(
+            dir.path(),
+            &[
+                "-c",
+                "user.name=Clack test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
+        let committed = project_evidence_revision(cwd, &WorkspaceEnv::Local).unwrap();
+        assert_ne!(renamed, committed);
+        assert!(!committed.contains("unborn"));
+        fixture_git(dir.path(), &["checkout", "--detach"]);
+        assert_ne!(
+            committed,
+            project_evidence_revision(cwd, &WorkspaceEnv::Local).unwrap()
+        );
+    }
+
+    #[test]
+    fn project_revision_rejects_corrupt_branch_instead_of_calling_it_unborn() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture_git(dir.path(), &["init", "-b", "initial"]);
+        std::fs::write(
+            dir.path().join(".git/refs/heads/initial"),
+            "not-an-object\n",
+        )
+        .unwrap();
+        assert!(
+            project_evidence_revision(dir.path().to_str().unwrap(), &WorkspaceEnv::Local).is_err()
+        );
+    }
+
+    #[test]
+    fn project_revision_keeps_non_git_workspace_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            project_evidence_revision(dir.path().to_str().unwrap(), &WorkspaceEnv::Local).unwrap(),
+            "non-git"
+        );
+    }
 
     #[test]
     fn sha_is_safe_accepts_hex() {

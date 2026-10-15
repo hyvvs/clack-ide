@@ -1,6 +1,7 @@
+import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
+import { normalizeEndpointUrl } from "@/modules/ai/lib/selfHostedProfiles";
 import {
   APICallError,
-  UnsupportedFunctionalityError,
   type LanguageModelV3,
   type LanguageModelV3CallOptions,
   type LanguageModelV3Content,
@@ -8,11 +9,10 @@ import {
   type LanguageModelV3StreamPart,
   type LanguageModelV3Usage,
   type SharedV3Warning,
+  UnsupportedFunctionalityError,
 } from "@ai-sdk/provider";
 import { convertUint8ArrayToBase64 } from "@ai-sdk/provider-utils";
 import { z } from "zod";
-import { normalizeEndpointUrl } from "@/modules/ai/lib/selfHostedProfiles";
-import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
 
 export function ollamaChatURL(baseURL: string): string {
   const url = new URL(normalizeEndpointUrl(baseURL));
@@ -24,84 +24,93 @@ const unsupported = (functionality: string): never => {
   throw new UnsupportedFunctionalityError({ functionality });
 };
 function messages(prompt: LanguageModelV3CallOptions["prompt"]) {
-  return prompt.flatMap((message): Record<string, unknown>[] => {
-    if (message.role === "system")
-      return [{ role: "system", content: message.content }];
-    if (message.role === "tool")
-      return message.content.map((part) => {
-        if (part.type !== "tool-result")
-          return unsupported("Ollama provider-executed approvals");
-        const output = part.output;
-        if (
-          output.type === "content" &&
-          output.value.some((p) => p.type !== "text")
-        )
-          return unsupported("Ollama non-text tool results");
-        return {
-          role: "tool",
-          tool_name: part.toolName,
-          tool_call_id: part.toolCallId,
-          content:
-            output.type === "execution-denied"
-              ? (output.reason ?? "Tool execution denied")
-              : output.type === "content"
-                ? output.value
-                    .map((p) => (p.type === "text" ? p.text : ""))
-                    .join("\n")
-                : typeof output.value === "string"
+  const system = prompt.flatMap((message) =>
+    message.role === "system" ? [message.content] : [],
+  );
+  // Native model templates may allow exactly one system message, only at index zero.
+  return [
+    ...(system.length
+      ? [{ role: "system", content: system.join("\n\n") }]
+      : []),
+    ...prompt.flatMap((message): Record<string, unknown>[] => {
+      if (message.role === "system") return [];
+      if (message.role === "tool")
+        return message.content.map((part) => {
+          if (part.type !== "tool-result")
+            return unsupported("Ollama provider-executed approvals");
+          const output = part.output;
+          if (
+            output.type === "content" &&
+            output.value.some((p) => p.type !== "text")
+          )
+            return unsupported("Ollama non-text tool results");
+          return {
+            role: "tool",
+            tool_name: part.toolName,
+            tool_call_id: part.toolCallId,
+            content:
+              output.type === "execution-denied"
+                ? (output.reason ?? "Tool execution denied")
+                : output.type === "content"
                   ? output.value
-                  : JSON.stringify(output.value),
-        };
-      });
-    const text: string[] = [],
-      thinking: string[] = [],
-      images: string[] = [];
-    const calls: Record<string, unknown>[] = [];
-    for (const part of message.content) {
-      switch (part.type) {
-        case "text":
-          text.push(part.text);
-          break;
-        case "reasoning":
-          thinking.push(part.text);
-          break;
-        case "tool-call":
-          calls.push({
-            id: part.toolCallId,
-            function: { name: part.toolName, arguments: part.input },
-          });
-          break;
-        case "file": {
-          if (!part.mediaType.startsWith("image/"))
-            return unsupported("Ollama non-image input");
-          if (part.data instanceof URL) {
-            const match = /^data:image\/[^;,]+;base64,([A-Za-z0-9+/=]+)$/.exec(
-              part.data.href,
-            );
-            if (!match) return unsupported("Ollama remote image URL");
-            images.push(match[1]);
-          } else
-            images.push(
-              typeof part.data === "string"
-                ? part.data
-                : convertUint8ArrayToBase64(part.data),
-            );
-          break;
+                      .map((p) => (p.type === "text" ? p.text : ""))
+                      .join("\n")
+                  : typeof output.value === "string"
+                    ? output.value
+                    : JSON.stringify(output.value),
+          };
+        });
+      const text: string[] = [],
+        thinking: string[] = [],
+        images: string[] = [];
+      const calls: Record<string, unknown>[] = [];
+      for (const part of message.content) {
+        switch (part.type) {
+          case "text":
+            text.push(part.text);
+            break;
+          case "reasoning":
+            thinking.push(part.text);
+            break;
+          case "tool-call":
+            calls.push({
+              id: part.toolCallId,
+              function: { name: part.toolName, arguments: part.input },
+            });
+            break;
+          case "file": {
+            if (!part.mediaType.startsWith("image/"))
+              return unsupported("Ollama non-image input");
+            if (part.data instanceof URL) {
+              const match =
+                /^data:image\/[^;,]+;base64,([A-Za-z0-9+/=]+)$/.exec(
+                  part.data.href,
+                );
+              if (!match) return unsupported("Ollama remote image URL");
+              images.push(match[1]);
+            } else
+              images.push(
+                typeof part.data === "string"
+                  ? part.data
+                  : convertUint8ArrayToBase64(part.data),
+              );
+            break;
+          }
+          default:
+            return unsupported("Ollama assistant-side tool results");
         }
-        default:
-          return unsupported("Ollama assistant-side tool results");
       }
-    }
-    return [
-      {
-        role: message.role,
-        content: text.join("\n"),
-        ...(thinking.length ? { thinking: thinking.join("\n") } : {}),
-        ...(images.length ? { images } : {}),
-        ...(calls.length ? { tool_calls: calls } : {}),
-      },
-    ];
-  });
+      return [
+        {
+          role: message.role,
+          content: text.join("\n"),
+          ...(thinking.length ? { thinking: thinking.join("\n") } : {}),
+          ...(images.length ? { images } : {}),
+          ...(calls.length ? { tool_calls: calls } : {}),
+        },
+      ];
+    }),
+  ];
 }
 
 export function ollamaBody(
