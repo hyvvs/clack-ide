@@ -132,6 +132,7 @@ type Outgoing = {
   headers: Headers;
   messages: unknown[];
   private?: boolean;
+  runtimeContext?: number;
 };
 const requests: Outgoing[] = [];
 const approvals = new Map<string, (approved: boolean) => void>();
@@ -148,6 +149,18 @@ let beforeNativeReply:
 
 function response(model: string) {
   return `data: ${JSON.stringify({ id: "reply", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta: { role: "assistant", content: `Reply from ${model}` }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+}
+function nativeReply(wire: string) {
+  return `${wire.split("\n").filter(line => line.startsWith("data: {")).map(line => {
+    const value = JSON.parse(line.slice(6));
+    const choice = value.choices[0];
+    const delta = choice.delta;
+    return JSON.stringify({ model: value.model, message: { role: "assistant", content: delta.content ?? "",
+      ...(delta.tool_calls ? { tool_calls: delta.tool_calls.map((call: { id: string; function: { name: string; arguments: string } }) => ({
+        id: call.id, function: { name: call.function.name, arguments: JSON.parse(call.function.arguments) },
+      })) } : {}),
+    }, done: choice.finish_reason !== null, ...(choice.finish_reason ? { done_reason: "stop" } : {}) });
+  }).join("\n")}\n`;
 }
 
 beforeEach(() => {
@@ -279,13 +292,14 @@ beforeEach(() => {
       messages: body.messages,
       headers: new Headers(a.headers),
       private: a.allowPrivateNetwork,
+      runtimeContext: body.options?.num_ctx,
     });
     a.onEvent.onmessage({
       requestId: a.requestId,
       kind: "headers",
       status: 200,
       headers: {
-        "content-type": body.stream ? "text/event-stream" : "application/json",
+        "content-type": body.stream ? a.url.endsWith("/api/chat") ? "application/x-ndjson" : "text/event-stream" : "application/json",
       },
     });
     a.onEvent.onmessage({
@@ -293,7 +307,8 @@ beforeEach(() => {
       kind: "chunk",
       bytes: [
         ...new TextEncoder().encode(
-          !body.stream
+          a.url.endsWith("/api/chat") ? !body.stream ? JSON.stringify({ model: body.model, message: { role: "assistant", content: "child complete" }, done: true, done_reason: "stop" })
+            : nativeReply(requests.length === 1 && firstReply ? firstReply : response(body.model)) : !body.stream
             ? JSON.stringify({
                 id: "child",
                 object: "chat.completion",
@@ -333,6 +348,26 @@ afterEach(() => {
 });
 
 describe("self-hosted actual chat routing", () => {
+  it("C2 captures an unloaded Ollama target's working context and sends the same native allocation", async () => {
+    const state = setProfileOverride(hosted, hosted.profiles[0].id, "workingContext", 32768);
+    usePreferencesStore.setState({ selfHostedInference: state });
+    const now = Date.now();
+    snapshot = { endpointId: "a", configurationRevision: 1, selectedModelId: "shared-model", observedAt: now,
+      connected: true, reachable: true, credentialUsed: true, stale: false, refreshing: false, inventoryTtlMs: 300000, instanceTtlMs: 30000, errors: [],
+      models: [{ id: "shared-model", name: null, chat: "supported", evidence: [
+        profileEvidence(state, state.profiles[0].id, "probe.runtimeContext", "per-request", "backend-reported", now, "reported"),
+        profileEvidence(state, state.profiles[0].id, "probe.advertisedContext", 262144, "advertised", now, "reported"),
+        profileEvidence(state, state.profiles[0].id, "probe.loaded", false, "backend-reported", now, "reported"),
+      ] }] };
+    const change = await prepareModelSwitch("a-chat", idA);
+    expect(change.assessment.status).not.toBe("blocked");
+    expect(await change.commit(true)).toEqual({ ok: true });
+    await sendMessageToSession("a-chat", { text: "Hello from this captured Ollama target" });
+    expect(getOrCreateChat("a-chat").error).toBeUndefined();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ url: "http://100.64.1.2:11434/proxy/api/chat", model: "shared-model", runtimeContext: 32768 });
+    expect(usePreferencesStore.getState().selfHostedInference.profiles[1].overrides.workingContext).toBeUndefined();
+  });
   it("actual PeerTask dispatch budgets only delivered target context and refuses overflow before HTTP", async () => {
     const { usePeerTaskStore } = await import(
       "@/modules/ai/store/peerTaskStore"
@@ -792,7 +827,7 @@ describe("self-hosted actual chat routing", () => {
         undefined,
       ],
       [
-        "http://100.64.1.2:11434/proxy/v1/chat/completions",
+        "http://100.64.1.2:11434/proxy/api/chat",
         "shared-model",
         "Bearer a-key",
         true,

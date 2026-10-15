@@ -28,6 +28,7 @@ import {
 } from "@/modules/ai/lib/selfHostedProbe";
 import {
   readSelfHostedState,
+  effectiveProfileValue,
   type SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
 import { probeEvidenceIsFresh } from "@/modules/ai/lib/selfHostedProbe";
@@ -116,6 +117,13 @@ export function createRequestPreflight(options: {
       ? { reasoningBudget: effortBudget(options.reasoning) }
       : {}),
   });
+  const runtimeTarget = () => {
+    if (options.providerId !== "ollama" || !profile || !state) return undefined;
+    const target = effectiveProfileValue(state, profile.id, "workingContext").value;
+    if (typeof target !== "number") return undefined;
+    limits();
+    return target;
+  };
   const refresh = async () => {
     await options.validateRouting?.();
     if (!options.local && !profile)
@@ -171,10 +179,10 @@ export function createRequestPreflight(options: {
         canonicalJson(
           current.profiles
             .find((p) => p.id === profile.id)
-            ?.evidence.filter((e) => e.metric === "reasoning.effort"),
+            ?.evidence.filter((e) => ["reasoning.effort", "probe.thinking", "probe.thinkingControls"].includes(e.metric)),
         ) !==
           canonicalJson(
-            profile.evidence.filter((e) => e.metric === "reasoning.effort"),
+            profile.evidence.filter((e) => ["reasoning.effort", "probe.thinking", "probe.thinkingControls"].includes(e.metric)),
           ))
     )
       throw new ContextBudgetError(
@@ -216,6 +224,9 @@ export function createRequestPreflight(options: {
                 ...settings,
               };
             }
+            if (options.providerId === "ollama") {
+              providerOptions.ollama = { ...providerOptions.ollama, numCtx: runtimeTarget() };
+            }
             return {
               ...params,
               providerOptions,
@@ -238,6 +249,9 @@ export function createRequestPreflight(options: {
       if (options.reasoning) effortProviderOptions(options.reasoning);
       await refresh();
       const measured = assertRequestBudget(limits(), body, schemaKinds, availableSchemas);
+      if (options.providerId === "ollama" && (body.model !== options.modelId ||
+        (body.options as { num_ctx?: unknown } | undefined)?.num_ctx !== runtimeTarget()))
+        throw new ContextBudgetError("ollama-context-route", "Ollama runtime context/model does not match the captured profile.");
       return async () => {
         if (options.reasoning) effortProviderOptions(options.reasoning);
         await checkIdentity();
@@ -247,6 +261,7 @@ export function createRequestPreflight(options: {
             snapshot = await createSelfHostedProbeClient().read({
               endpointId: endpoint.id,
               selectedModelId: profile.transportModelId,
+              allowPrivateNetwork: endpointAllowsPrivate(endpoint),
             });
           } catch {
             snapshot = null;
@@ -262,6 +277,24 @@ export function createRequestPreflight(options: {
         assertMeasuredRequestBudget(limits(), measured.cost, measured.output);
         await options.validateEvidence?.();
       };
+    },
+    async observeOllamaRuntime() {
+      if (options.providerId !== "ollama" || !endpoint || !profile) return;
+      const target = runtimeTarget();
+      const current = snapshot?.models.find(m => m.id === profile.transportModelId);
+      if (snapshot && Date.now() - snapshot.observedAt < PROBE_INSTANCE_TTL_MS &&
+        (target === undefined ? current?.evidence.some(e => e.metric === "probe.loaded" && e.value === true)
+          : current?.evidence.some(e => e.metric === "probe.requestedContext" && e.value === target) &&
+            current.evidence.some(e => e.metric === "probe.loadedContext" && e.value === target))) return;
+      try {
+        await checkIdentity();
+        snapshot = await createSelfHostedProbeClient().refresh({
+          endpointId: endpoint.id, selectedModelId: profile.transportModelId,
+          allowPrivateNetwork: endpointAllowsPrivate(endpoint), requestedContext: target,
+        });
+      } catch {
+        // Optional metadata never retries or changes the already-sent inference.
+      }
     },
   };
 }

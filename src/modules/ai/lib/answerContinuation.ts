@@ -236,7 +236,9 @@ export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: ()
   return async (input, init) => {
     const response = await fetcher(input, init);
     if (!response.ok || !response.body) return response;
-    if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+    const nativeOllama = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url).pathname.endsWith("/api/chat") &&
+      response.headers.get("content-type")?.includes("ndjson");
+    if (!nativeOllama && !response.headers.get("content-type")?.includes("text/event-stream")) {
       onResponseBody?.();
       return response;
     }
@@ -247,7 +249,7 @@ export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: ()
           ? input.href
           : input.url;
     const path = new URL(url).pathname;
-    const protocol = path.endsWith("/chat/completions")
+    const protocol = nativeOllama ? "ollama" : path.endsWith("/chat/completions")
       ? "chat"
       : path.endsWith("/messages")
         ? "messages"
@@ -291,6 +293,13 @@ export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: ()
           break;
         const line = buffer.slice(0, newline.index);
         buffer = buffer.slice(newline.index + newline[0].length);
+        if (protocol === "ollama") {
+          if (line.trim()) {
+            const value = JSON.parse(line);
+            if (value.done === true) complete = true;
+          }
+          continue;
+        }
         eventSize += line.length;
         if (eventSize > 1_048_576)
           throw new InferenceTransportError("remote-disconnect");
@@ -318,6 +327,11 @@ export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: ()
               return;
             }
             buffer += decoder.decode();
+            if (protocol === "ollama" && buffer.trim()) {
+              const value = JSON.parse(buffer);
+              if (value.done === true) complete = true;
+              buffer = "";
+            }
             scan();
             if (protocol && !complete)
               throw new InferenceTransportError("missing-final-event");

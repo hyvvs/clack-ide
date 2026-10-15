@@ -71,6 +71,38 @@ pub struct ProbeOptions {
     force: bool,
     #[serde(default)]
     restart: bool,
+    #[serde(default)]
+    requested_context: Option<u64>,
+}
+fn annotate_requested_context(
+    endpoint: &Endpoint,
+    snapshot: &mut Snapshot,
+    selected: Option<&str>,
+    requested: Option<u64>,
+) {
+    if endpoint.backend_hint != Some(Backend::Ollama) {
+        return;
+    }
+    if let (Some(model), Some(requested)) = (
+        snapshot
+            .models
+            .iter_mut()
+            .find(|m| Some(m.id.as_str()) == selected),
+        requested,
+    ) {
+        model.add(
+            endpoint,
+            snapshot.observed_at,
+            None,
+            "requestedContext",
+            json!(requested),
+            false,
+        );
+        if let Some(receipt) = model.evidence.last_mut() {
+            receipt.source = "measured".into();
+            receipt.confidence = "observed".into();
+        }
+    }
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -297,7 +329,38 @@ fn merge_evidence(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeErr
         .iter_mut()
         .filter(|p| p["endpointId"] == snapshot.endpoint_id)
     {
+        let requested = profile["evidence"].as_array().and_then(|items| {
+            items
+                .iter()
+                .find(|e| {
+                    e["metric"] == "probe.requestedContext"
+                        && e["scope"]["endpointId"] == snapshot.endpoint_id
+                        && e["scope"]["transportModelId"] == profile["transportModelId"]
+                        && e["scope"]["deploymentId"] == profile["deploymentId"]
+                        && e["scope"]["configurationRevision"] == snapshot.configuration_revision
+                })
+                .cloned()
+        });
         clear_probe_evidence(profile);
+        let requested = snapshot
+            .models
+            .iter()
+            .find(|m| p_string(profile, "transportModelId") == m.id)
+            .and_then(|model| {
+                model.evidence.iter().find(|e| {
+                    e.metric == "probe.requestedContext"
+                        && e.scope.deployment_id.as_deref() == profile["deploymentId"].as_str()
+                })
+            })
+            .map(|e| json!(e))
+            .or(requested);
+        if let Some(requested) = requested {
+            let existing = profile["evidence"].as_array_mut().ok_or_else(internal)?;
+            if existing.len() >= 64 {
+                return Err(internal());
+            }
+            existing.push(requested);
+        }
         if let Some(model) = snapshot
             .models
             .iter()
@@ -307,7 +370,10 @@ fn merge_evidence(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeErr
             let evidence: Vec<_> = model
                 .evidence
                 .iter()
-                .filter(|e| e.scope.deployment_id.as_deref() == deployment)
+                .filter(|e| {
+                    e.scope.deployment_id.as_deref() == deployment
+                        && e.metric != "probe.requestedContext"
+                })
                 .map(|e| json!(e))
                 .collect();
             let existing = profile["evidence"].as_array_mut().ok_or_else(internal)?;
@@ -437,10 +503,31 @@ pub async fn self_hosted_probe(
     if let Some(selected) = &options.selected_model_id {
         name(&json!(selected))?;
     }
-    let (endpoint, begin) = {
+    let (endpoint, begin, requested_context) = {
         let _guard = WRITE_LOCK.lock().map_err(|_| internal())?;
         let store = app.store("terax-settings.json").map_err(|_| internal())?;
-        let endpoint = configured(&store.get(KEY).unwrap_or(Value::Null), &options.endpoint_id)?;
+        let value = store.get(KEY).unwrap_or(Value::Null);
+        let endpoint = configured(&value, &options.endpoint_id)?;
+        let requested_context = options.requested_context.or_else(|| {
+            value["profiles"].as_array()?.iter().find(|p| {
+                p["endpointId"] == endpoint.id
+                    && p["transportModelId"].as_str() == options.selected_model_id.as_deref()
+            })?["evidence"]
+                .as_array()?
+                .iter()
+                .find(|e| {
+                    e["metric"] == "probe.requestedContext"
+                        && e["scope"]["configurationRevision"] == endpoint.configuration_revision
+                })?["value"]
+                .as_u64()
+        });
+        if requested_context.is_some_and(|v| v == 0 || v > 2_000_000)
+            || (options.requested_context.is_some()
+                && (endpoint.backend_hint != Some(Backend::Ollama)
+                    || options.selected_model_id.is_none()))
+        {
+            return Err(ProbeError::new(ErrorCode::InvalidConfiguration));
+        }
         endpoint.account()?;
         transport::route_url(&endpoint, Route::CompatibleModels)?;
         let begin = app
@@ -456,7 +543,7 @@ pub async fn self_hosted_probe(
                 options.restart,
                 now(),
             )?;
-        (endpoint, begin)
+        (endpoint, begin, requested_context)
     };
     match begin {
         Begin::Cached(snapshot) => Ok(snapshot),
@@ -469,14 +556,21 @@ pub async fn self_hosted_probe(
             tauri::async_runtime::spawn(async move {
                 let work = deadline(HANDSHAKE_TIMEOUT, async {
                     let secret = credential(&app, &endpoint).await?;
-                    handshake(
+                    let mut snapshot = handshake(
                         &app.state::<ProbeState>().transport,
                         &endpoint,
                         options.selected_model_id.as_deref(),
                         secret.as_deref(),
                         options.allow_private_network,
                     )
-                    .await
+                    .await?;
+                    annotate_requested_context(
+                        &endpoint,
+                        &mut snapshot,
+                        options.selected_model_id.as_deref(),
+                        requested_context,
+                    );
+                    Ok(snapshot)
                 });
                 let outcome = Abortable::new(work, registration)
                     .await

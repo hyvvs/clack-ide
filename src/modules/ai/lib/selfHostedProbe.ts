@@ -53,6 +53,7 @@ export type ProbeOptions = {
   endpointId: string;
   selectedModelId?: string;
   allowPrivateNetwork?: boolean;
+  requestedContext?: number;
 };
 type ProbeInvoker = <T>(
   command: string,

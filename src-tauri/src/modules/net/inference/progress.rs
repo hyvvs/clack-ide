@@ -17,6 +17,14 @@ fn text(value: Option<&Value>) -> bool {
         .is_some_and(|v| !v.trim().is_empty())
 }
 fn meaningful(value: &Value) -> bool {
+    if text(value["message"].get("content"))
+        || text(value["message"].get("thinking"))
+        || value["message"]["tool_calls"]
+            .as_array()
+            .is_some_and(|calls| !calls.is_empty())
+    {
+        return true;
+    }
     if value["choices"].as_array().is_some_and(|choices| {
         choices.iter().any(|c| {
             let delta = c.get("delta").or_else(|| c.get("message")).unwrap_or(c);
@@ -108,15 +116,18 @@ impl Progress {
         let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
             return false;
         };
-        self.complete |= value["choices"].as_array().is_some_and(|c| {
-            c.iter()
-                .any(|c| c["finish_reason"].as_str().is_some_and(|s| !s.is_empty()))
-        }) || matches!(
-            value["type"].as_str(),
-            Some("message_stop" | "response.completed")
-        ) || value["candidates"]
-            .as_array()
-            .is_some_and(|c| c.iter().any(|c| c.get("finishReason").is_some()));
+        self.complete |= value["done"] == true
+            || value["choices"].as_array().is_some_and(|c| {
+                c.iter()
+                    .any(|c| c["finish_reason"].as_str().is_some_and(|s| !s.is_empty()))
+            })
+            || matches!(
+                value["type"].as_str(),
+                Some("message_stop" | "response.completed")
+            )
+            || value["candidates"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|c| c.get("finishReason").is_some()));
         meaningful(&value)
     }
     pub fn finish(&mut self) {

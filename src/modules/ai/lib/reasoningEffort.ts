@@ -8,7 +8,9 @@ export type EffortMapping =
   | "chat"
   | "anthropic"
   | "google-level"
-  | "google-budget";
+  | "google-budget"
+  | "ollama-boolean"
+  | "ollama-level";
 export type EffortCapability = {
   status: "supported" | "unsupported" | "unknown";
   levels: string[];
@@ -39,6 +41,7 @@ const labels: Record<string, string> = {
   low: "Low",
   medium: "Medium",
   high: "High",
+  on: "On",
   xhigh: "Extra high",
   max: "Maximum",
   "0": "Off",
@@ -184,6 +187,31 @@ export function effortCapability(
       profile.transportModelId !== identity.transportModelId
     )
       return unknown;
+    if (endpoint.backendHint === "ollama") {
+      const thinking = profile.evidence.filter(e => ["probe.thinking", "probe.thinkingControls"].includes(e.metric) &&
+        e.scope.endpointId === endpoint.id && e.scope.transportModelId === profile.transportModelId &&
+        e.scope.configurationRevision === endpoint.configurationRevision && e.scope.deploymentId === profile.deploymentId &&
+        e.observedAt !== null && e.observedAt <= now && now - e.observedAt < 30_000 && e.confidence === "reported" &&
+        ["backend-reported", "advertised"].includes(e.source));
+      const controls = thinking.filter(e => e.metric === "probe.thinkingControls");
+      const declared = thinking.filter(e => e.metric === "probe.thinking");
+      let levels: string[], mapping: EffortMapping = "ollama-boolean";
+      if (controls.length === 1 && typeof controls[0].value === "string") {
+        try {
+          const values = z.array(z.union([z.boolean(), z.string().min(1).max(32)])).min(1).max(16).parse(JSON.parse(controls[0].value));
+          if (new Set(values).size !== values.length) return unknown;
+          if (values.every(v => typeof v === "boolean")) levels = values.map(v => v ? "on" : "none");
+          else if (values.every(v => typeof v === "string")) { levels = values as string[]; mapping = "ollama-level"; }
+          else return unknown;
+        } catch { return unknown; }
+      } else if (controls.length) return unknown;
+      else if (declared.length === 1 && typeof declared[0].value === "boolean") levels = declared[0].value ? ["none", "on"] : [];
+      else return unknown;
+      return { status: levels.length ? "supported" : "unsupported", levels, mapping,
+        evidence: "Ollama native thinking contract; boolean controls are not effort levels",
+        revision: JSON.stringify([revision, endpoint.configurationRevision, profile.id, levels, mapping]),
+        expiresAt: Math.min(...thinking.map(e => (e.observedAt ?? now) + 30_000)) };
+    }
     const evidence = profile.evidence.filter(
       (e) =>
         e.metric === "reasoning.effort" &&
@@ -289,7 +317,7 @@ export function captureEffort(
     version: 1,
     key,
     provider: identity.providerId,
-    adapter: identity.selfHosted ? "openai-compatible" : identity.providerId,
+    adapter: identity.selfHosted && identity.providerId !== "ollama" ? "openai-compatible" : identity.providerId,
     model: identity.transportModelId,
     choice,
     capability,
@@ -308,6 +336,10 @@ export function effortProviderOptions(capture: EffortCapture): ProviderOptions {
       "Reasoning effort evidence changed or expired. Start a new request.",
     );
   switch (c.mapping) {
+    case "ollama-boolean":
+      return { ollama: { think: choice === "on" } };
+    case "ollama-level":
+      return { ollama: { think: choice } };
     case "responses":
       return { openai: { reasoningEffort: choice } };
     case "anthropic":

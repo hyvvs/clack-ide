@@ -838,6 +838,23 @@ fn oversized_progress_frame_is_ignored_without_unbounded_allocation() {
     assert!(parser.feed(&delta()));
 }
 
+#[test]
+fn ollama_ndjson_text_thinking_and_tools_advance_progress_but_empty_frames_do_not() {
+    let mut parser = Progress::default();
+    assert!(!parser.feed(b"{\"message\":{\"content\":\"\"},\"done\":false}\n"));
+    for line in [
+        r#"{"message":{"content":"hello"},"done":false}"#,
+        r#"{"message":{"thinking":"thinking"},"done":false}"#,
+        r#"{"message":{"tool_calls":[{"function":{"name":"echo","arguments":{"n":7}}}]},"done":false}"#,
+    ] {
+        assert!(parser.feed(format!("{line}\n").as_bytes()));
+    }
+    assert!(!parser.complete);
+    assert!(!parser.feed(b"{\"done\":true,\"done_reason\":\"stop\"}\n"));
+    assert!(parser.complete);
+    assert!(!parser.sse);
+}
+
 #[tokio::test]
 async fn preflight_refusal_makes_zero_http_calls_and_successor_sends_once() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

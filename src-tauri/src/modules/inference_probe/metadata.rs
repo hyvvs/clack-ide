@@ -150,7 +150,7 @@ impl Model {
             evidence: vec![],
         }
     }
-    fn add(
+    pub(super) fn add(
         &mut self,
         endpoint: &Endpoint,
         at: u64,
@@ -418,7 +418,11 @@ pub fn ollama_show(
         if caps.len() > 32 || caps.iter().any(|v| name(v).is_err()) {
             return Err(ProbeError::metadata());
         }
-        for (cap, metric) in [("vision", "vision"), ("tools", "trainedForTools")] {
+        for (cap, metric) in [
+            ("vision", "vision"),
+            ("tools", "trainedForTools"),
+            ("thinking", "thinking"),
+        ] {
             model.add(
                 endpoint,
                 at,
@@ -435,6 +439,35 @@ pub fn ollama_show(
         };
     }
     let info = &value["model_info"];
+    if let Some(values) = value["thinking"]["values"].as_array() {
+        if values.is_empty()
+            || values.len() > 16
+            || values.iter().any(|v| {
+                !v.is_boolean()
+                    && !v.as_str().is_some_and(|s| {
+                        !s.is_empty() && s.len() <= 32 && !s.chars().any(char::is_control)
+                    })
+            })
+        {
+            return Err(ProbeError::metadata());
+        }
+        model.add(
+            endpoint,
+            at,
+            None,
+            "thinkingControls",
+            json!(values).to_string().into(),
+            false,
+        );
+    }
+    model.add(
+        endpoint,
+        at,
+        None,
+        "runtimeContext",
+        json!("per-request"),
+        false,
+    );
     if let Some(arch) = info["general.architecture"].as_str() {
         name(&json!(arch))?;
         numeric(

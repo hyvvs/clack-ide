@@ -71,6 +71,7 @@ type Configuration = {
   phase: "exercise" | "restart";
   smallTeam?: boolean;
   localAgent?: boolean;
+  ollama?: { live: boolean; model: string };
 };
 const outcomes: { name: string; taskIds: string[] }[] = [];
 const lifecycle: { id: string; status: string; at: number }[] = [];
@@ -127,6 +128,11 @@ async function completed(id: string) {
   return value;
 }
 async function main(config: Configuration) {
+  if (config.ollama) {
+    await fetch(new URL("/progress?stage=import-ollama", config.report));
+    const { runOllamaAcceptance } = await import("@/test/ollamaAcceptance");
+    return runOllamaAcceptance(config);
+  }
   await usePreferencesStore.getState().init();
   const root = await native.workspaceAuthorize(config.root);
   useChatStore

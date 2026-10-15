@@ -168,7 +168,7 @@ describe("real installed adapters serialize shared output/preflight", () => {
     ["anthropic", "claude-sonnet-4-6", "max_tokens"],
     ["openai", "gpt-4.1-mini", "max_output_tokens"],
     ["openai-compatible", "custom", "max_tokens"],
-    ["ollama", "local", "max_tokens"],
+    ["ollama", "local", "options"],
     ["lmstudio", "local", "max_tokens"],
     ["mlx", "local", "max_tokens"],
     ["google", "gemini-2.5-flash", "generationConfig"],
@@ -189,6 +189,7 @@ describe("real installed adapters serialize shared output/preflight", () => {
     expect(
       key === "generationConfig"
         ? (bodies[0][key] as { maxOutputTokens: number }).maxOutputTokens
+        : key === "options" ? (bodies[0][key] as { num_predict: number }).num_predict
         : bodies[0][key],
     ).toBe(123);
     expect(
@@ -197,6 +198,7 @@ describe("real installed adapters serialize shared output/preflight", () => {
         "max_output_tokens",
         "max_completion_tokens",
         "generationConfig",
+        "options",
       ].filter((field) => bodies[0][field] !== undefined),
     ).toHaveLength(1);
   });

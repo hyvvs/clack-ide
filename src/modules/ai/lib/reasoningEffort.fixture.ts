@@ -14,7 +14,7 @@ export function hostedEffortFixture(
     {
       alias: "Local",
       baseURL: "http://localhost:9999/v1",
-      backendHint: "ollama",
+      backendHint: "openai-compatible",
     },
     "server",
   );
@@ -39,7 +39,7 @@ export function hostedEffortFixture(
   );
   profile.evidence.push(evidence);
   const identity: ModelTransportIdentity = {
-    providerId: "ollama",
+    providerId: "openai-compatible",
     transportModelId: profile.transportModelId,
     endpointBaseURL: endpoint.baseURL,
     selfHosted: {

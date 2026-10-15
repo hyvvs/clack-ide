@@ -230,7 +230,7 @@ export async function optimizeInferenceProfile(options: Options) {
         );
         if (!identity) throw new Error("Model identity unavailable.");
         const model = await buildLanguageModel(
-          "openai-compatible",
+          endpoint.backendHint === "ollama" ? "ollama" : "openai-compatible",
           EMPTY_PROVIDER_KEYS,
           profile.transportModelId,
           {
@@ -244,6 +244,7 @@ export async function optimizeInferenceProfile(options: Options) {
             ),
             allowPrivateNetwork: endpointAllowsPrivate(endpoint),
             openaiCompatibleBaseURL: compatibleServerBaseURL(endpoint),
+            ollamaBaseURL: endpoint.baseURL,
             calibration: { requestClass: "optimization", record, onQueued },
           },
           selfHostedCredential(identity, keys, endpointKeys),

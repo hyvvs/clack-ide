@@ -41,11 +41,13 @@ export function ProfileAdvancedControls({
   const [saving, setSaving] = useState(false);
   if (!profile || !endpoint) return null;
   let budget: ReturnType<typeof resolveContextBudget> | null = null;
+  let contextError = "";
   try {
     budget = resolveContextBudget(
       profileBudgetLimits(state, profileId, snapshot ?? null),
     );
-  } catch {
+  } catch (error) {
+    contextError = error instanceof Error ? error.message : "Invalid context settings";
     /* Invalid pins remain editable; B1 still blocks requests. */
   }
   const details = serverModelDetails(
@@ -84,6 +86,7 @@ export function ProfileAdvancedControls({
   return (
     <details
       className="server-details"
+      open={endpoint.backendHint === "ollama" ? true : undefined}
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           e.preventDefault();
@@ -93,8 +96,12 @@ export function ProfileAdvancedControls({
         }
       }}
     >
-      <summary>Advanced model settings</summary>
+      <summary>{endpoint.backendHint === "ollama" ? "Context and model settings" : "Advanced model settings"}</summary>
       <dl>
+        <dt>Model maximum</dt>
+        <dd>{details.advertisedContext}</dd>
+        <dt>Server context</dt>
+        <dd>{details.serverContext}</dd>
         <dt>Endpoint</dt>
         <dd>{endpoint.alias}</dd>
         <dt>Model / deployment</dt>
@@ -121,6 +128,8 @@ export function ProfileAdvancedControls({
           / Vision {details.capabilities.image}
         </dd>
       </dl>
+      {endpoint.backendHint === "ollama" ? <p>Clack requests the working context from Ollama when the model runs. Automatic leaves the server default unchanged unless a recommendation is available.</p> : null}
+      {contextError ? <p className="server-warning" role="alert">{contextError}</p> : null}
       {fields.map(([field, label]) => {
         const effective = effectiveProfileValue(state, profileId, field);
         const mode =

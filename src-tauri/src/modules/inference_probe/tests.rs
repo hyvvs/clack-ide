@@ -283,6 +283,79 @@ fn ollama_unloaded_has_no_runtime_context() {
     assert_eq!(evidence(&list[0], "loaded").unwrap().value, false);
     assert!(evidence(&list[0], "loadedContext").is_none());
 }
+
+#[test]
+fn ollama_native_controls_remain_separate_from_loaded_or_advertised_capacity() {
+    let mut model = parse(Backend::Ollama, models()).remove(0);
+    ollama_show(
+        &endpoint(Backend::Ollama),
+        &mut model,
+        &json!({"capabilities":["completion","thinking"], "thinking":{"values":["low","high"]}}),
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        evidence(&model, "runtimeContext").unwrap().value,
+        "per-request"
+    );
+    assert_eq!(evidence(&model, "thinking").unwrap().value, true);
+    assert_eq!(
+        evidence(&model, "thinkingControls").unwrap().value,
+        "[\"low\",\"high\"]"
+    );
+    assert!(evidence(&model, "loadedContext").is_none());
+    assert!(evidence(&model, "advertisedContext").is_none());
+    assert!(ollama_show(
+        &endpoint(Backend::Ollama),
+        &mut model,
+        &json!({"capabilities":["completion"], "thinking":{"values":[123]}}),
+        10
+    )
+    .is_err());
+}
+
+#[test]
+fn requested_ollama_context_is_scoped_and_survives_existing_probe_persistence() {
+    let ep = endpoint(Backend::Ollama);
+    let mut snapshot = snapshot();
+    let selected = snapshot.models.first().unwrap().id.clone();
+    super::annotate_requested_context(&ep, &mut snapshot, Some(&selected), Some(32768));
+    assert_eq!(
+        evidence(&snapshot.models[0], "requestedContext")
+            .unwrap()
+            .value,
+        32768
+    );
+    super::annotate_requested_context(
+        &endpoint(Backend::Vllm),
+        &mut snapshot,
+        Some("other"),
+        Some(65536),
+    );
+    snapshot.selected_model_id = Some(selected);
+    let mut value = json!({"version":1,"revision":1,"endpoints":[],"profiles":[]});
+    merge_evidence(&mut value, &snapshot).unwrap();
+    assert!(value["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["metric"] == "probe.requestedContext" && e["value"] == 32768)));
+    let mut other = snapshot.clone();
+    other.selected_model_id = Some("model-b".into());
+    other.models[0]
+        .evidence
+        .retain(|e| e.metric != "probe.requestedContext");
+    merge_evidence(&mut value, &other).unwrap();
+    assert!(value["profiles"][0]["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["metric"] == "probe.requestedContext" && e["value"] == 32768));
+}
 #[tokio::test]
 async fn ollama_optional_route_missing_keeps_inventory_and_never_generates() {
     let server = Server::new(vec![

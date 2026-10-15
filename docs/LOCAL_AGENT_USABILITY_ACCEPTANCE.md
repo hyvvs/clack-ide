@@ -389,3 +389,151 @@ and originals are intact. It requires no transcript rewrite, knowledge promotion
 model call replay or database migration. The new tail proof is ephemeral RPC
 state, not a replacement memory format. Further live-model/hardware/platform and
 native GUI acceptance remains separate work, not a silently started checkpoint.
+
+## Focused Ollama Runtime Context Correction (2026-10-15)
+
+Baseline verified: `1aa20f6`, clean `main`, 30 ahead / zero behind `origin/main`.
+This focused correction supersedes the earlier no-live-Ollama statement only
+for the acceptance below. It does not establish general local-model engineering
+quality, other engines, native GUI acceptance or new roadmap work.
+
+### Root Cause And Owners
+
+`workingContext` previously limited Clack's conversation planning but did not
+configure Ollama. Both saved profiles and `ollama-local` used the compatible
+`/v1/chat/completions` adapter. Model maximum and asserted context were not proof
+of runner allocation. The supplied deployment ignored compatible `options.num_ctx`
+and loaded at 4096; native `/api/chat` supports runtime options.
+
+`lib/ollamaModel.ts` now implements SDK v3 directly, without a new dependency,
+proxy protocol, model alias or second Agent runtime. `agent.ts` routes saved,
+migrated and legacy Ollama through it; E2's explicit optimization path uses the
+same adapter. Shared native proxy/preflight, credentials, consent, SSRF/DNS
+validation, E1 admission, D1 ownership, F1, F2, tool approvals/effects and D2/D3
+remain the existing owners. Native progress inspection now recognizes NDJSON
+text, thinking, tool events and completion, rather than timing out active output.
+
+The existing profile `workingContext`, including an effective recommendation,
+owns `options.num_ctx`. Positive integral targets up to 2,000,000 are bounded by
+known advertised/asserted/configured ceilings and a fresh native API contract.
+Manual values win. `configuredContext` is a ceiling assertion, never an automatic
+runtime-allocation request. Automatic without guidance sends no `num_ctx` and
+does not assume an earlier larger loaded allocation is the next server default;
+without configured/default evidence it retains B1's conservative policy.
+
+For controlled Ollama requests, B1 treats the target as the total context ceiling,
+not merely conversation space. It still accounts for instructions, tools, history,
+output reserve and unchanged safety margin. `source: requested` distinguishes a
+supported per-request contract from `source: deployed` after matching loaded
+evidence. Native output is bounded with `options.num_predict`; native JSON schemas
+are counted and unknown image cost still fails closed. Endpoint/model/profile
+identity is revalidated after queueing. The native acceptance caught and fixed
+an existing pre-admission cache read that omitted private-network consent scope.
+
+After normal inference, bounded A2 metadata probes observe `/api/ps`, without
+warm-up generation, keep-warm calls or automatic retries. Fresh matching evidence
+is reused for 30 seconds. A scoped `probe.requestedContext` receipt is persisted
+with existing version-1 profile evidence and native cache/CAS/event ownership.
+Probing another model on the endpoint does not discard the first model's receipt.
+It is client-observed request intent, not a server-reported allocation. Subsequent
+probes retain that comparison target. A reported 4096 allocation following a
+32768 request remains visible and blocks subsequent B1 preparation with an
+actionable mismatch error. Lowering the target or obtaining reconciled server
+evidence can recover; the already-sent request is never replayed. Missing metadata
+does not fabricate loaded capacity. Unloaded models show "Not currently loaded".
+
+### Native API Parity And UX
+
+- Text/system/assistant/tool history, structured arguments and stable call/result
+  identity, multi-step loops, usage, text/thinking deltas and finish reasons map
+  directly to SDK v3. Missing final events and duplicate tool identities fail
+  closed; cancellation reaches the owned reader/native request.
+- Native `format` maps JSON/schema output. Image-capable fixtures serialize native
+  `images` correctly, while preserving B1's unknown-media guard. Unsupported files,
+  provider-defined tools and non-text tool results are rejected, not dropped.
+- Fresh exact `/api/show` thinking values are used when supplied. Older thinking
+  capability metadata maps the documented native Boolean on/off contract, not
+  fabricated low/high levels. Automatic sends no thinking override. Existing
+  structured reasoning presentation remains in charge; no private trace is
+  included in the acceptance report.
+- Ollama does not force `tool_choice`. Named choice restricts exposed tools;
+  required/named forcing emits an unsupported warning and may still return text.
+- Root, `/v1`, trailing-slash, HTTPS and reverse-proxy prefixes normalize by
+  removing only a terminal version marker. Only the referenced credential is
+  sent, with original private-network consent and scheduler endpoint identity.
+  LM Studio/vLLM/MLX/generic compatible/cloud transports retain their semantics.
+- The existing model controls expose model maximum, server context and working
+  context separately. Ollama context controls are initially expanded and explain
+  the runtime request concisely. There is no Modelfile/alias/global environment
+  requirement, new Settings architecture, or change to server keep-alive defaults.
+
+### Deterministic And Live Evidence
+
+Focused frontend: **166 passed / eight files** (overlapping the full suite).
+New native Ollama/probe/progress subset: **10 passed**, including existing tests.
+Production C2 switching into an unloaded 32K target, exact outgoing body/B1,
+Automatic/asserted distinction, invalid ceilings, queued stale settings,
+recommendation/manual ownership, caching, native thinking contracts, streaming,
+tool-result roundtrips, schema/images, malformed/partial output and cancellation
+are covered. Existing full D1/D2/D3/E1/E2/F1/F2/G3/PeerTask regressions pass.
+
+`node scripts/check-ollama-native.mjs` uses the existing invisible native Tauri
+test host and real Rust networking, isolated app data, and owned fake Ollama
+`tags/show/ps/chat` routes. It proves cold 262144 maximum / 32768 request / 32768
+loaded evidence, then a 4096 reported mismatch retained across probe persistence
+and blocked without another inference. Four actual native inference destinations
+are audited; tool execution occurs once across two steps. This is not GUI evidence.
+
+Final `node scripts/check-ollama-native.mjs --live` **passed** through production
+Clack `runAgentStream`, shared preflight and native IPC/HTTP, not a substitute curl:
+
+| Observation | Final live evidence |
+|---|---|
+| Exact model | `qwen38-uncensored:latest` (no replacement/download/alias) |
+| Initial state | Unloaded, `/api/ps` empty |
+| Model maximum | 262144 advertised tokens |
+| Captured working target / native wire | 32768 / `options.num_ctx: 32768` |
+| Refreshed native cache / `/api/ps` | 32768 loaded tokens |
+| Normal Agent | 10 text deltas, expected answer, normal `stop` |
+| Synthetic tool | `clack_echo({value:"clack-echo-7"})`, exactly once, result roundtrip and final response in two steps |
+| Reasoning | Captured None, native `think:false`; no private trace reported |
+| Output | Agent 256; both tool steps 512; bounded non-streaming check 64 |
+| Inference destinations | All four audited native calls: `http://127.0.0.1:11435/api/chat` |
+| Cloud inference / fallback | 0 / Never; no cloud credentials loaded |
+
+This live pass was run twice successfully, including a final cold run with native
+destination assertions. No service, firewall, listener/bind address, model
+definition, alias, secondary-PC project or unrelated process/model was changed.
+No SSH/service integration was added. No unload was sent because concurrent use
+of this shared model could not be independently excluded; normal server-default
+keep-alive was retained rather than disrupting another workload. Owned local
+test hosts/servers were stopped and data cleaned. Early harness-only missing
+CORS headers were diagnosed and corrected; no product test assertion was weakened.
+
+### Final Gates And Limitations
+
+- `npm.cmd run check-types`: passed.
+- `npm.cmd run lint -- --max-diagnostics=0`: passed, unchanged **71 warnings /
+  two infos / zero errors**.
+- `npm.cmd test -- --maxWorkers=2`: **2683 passed / 196 files**.
+- `npm.cmd run build`: passed; four preexisting ineffective-dynamic-import
+  warnings and existing plugin-time advisory remain.
+- `cargo fmt --check`, strict `cargo clippy --all-targets --locked -- -D warnings`:
+  passed, using isolated `--target-dir target/codex-test` for Clippy/tests.
+- `cargo test --locked --target-dir target/codex-test`: **649 passed** (596
+  library, 25 FS, 25 Git, three real-world); zero failures/ignored.
+- `git diff --check`: passed.
+- Existing automated headless self-hosted setup/layout fixture passed at
+  1100/390/320/280px, keyboard/focus, discovery/private-auth/binding regressions.
+  Boundaries are mocked. No Computer Use or native GUI interaction was performed.
+
+Native host evidence is Windows only. No Linux/macOS native, live vision,
+destructive OOM test, broad real-model coding mission or other deployment is
+claimed. Successful 32K on this deployment is not a universal recommendation.
+Selected-model metadata uses the existing bounded cache; an absent/expired native
+contract requires metadata refresh rather than silently assuming support.
+E2 recommendations/manual ownership remain unchanged; engine OOM errors retain
+resource classification and are not silently retried or converted to cloud calls.
+No new schema/store, server manager, installer, tuning suite or roadmap was added.
+Rollback is a normal revert; original conversations/profiles remain intact,
+but the prior compatible route must no longer be described as runtime-controlled.

@@ -9,6 +9,9 @@ import {
 } from "@/modules/ai/lib/selfHostedProbe";
 import { CALIBRATED_FIELDS } from "@/modules/ai/lib/calibrationSchema";
 import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
+import { ContextBudgetError, UNKNOWN_CONTEXT_POLICY } from "@/modules/ai/lib/contextBudget";
+
+export const MAX_OLLAMA_CONTEXT = 2_000_000;
 
 export function profileBudgetLimits(
   state: SelfHostedState,
@@ -51,7 +54,7 @@ export function profileBudgetLimits(
     const value = field(name).value;
     return typeof value === "number" ? value : undefined;
   };
-  return {
+  const limits: BudgetLimits = {
     deployed: bound("probe.loadedContext") ?? bound("probe.configuredContext"),
     advertised: bound("probe.advertisedContext"),
     asserted:
@@ -63,6 +66,33 @@ export function profileBudgetLimits(
     outputReserve: number("outputReserve"),
     maxOutput: number("maxOutput"),
   };
+  if (endpoint.backendHint === "ollama" && limits.workingTarget === undefined) {
+    const loaded = bound("probe.loadedContext");
+    // A previous allocation does not establish the next request's server default.
+    limits.deployed = bound("probe.configuredContext") ??
+      (loaded !== undefined && loaded <= UNKNOWN_CONTEXT_POLICY ? loaded : undefined);
+  }
+  if (endpoint.backendHint === "ollama" && limits.workingTarget !== undefined) {
+    const target = limits.workingTarget;
+    if (!Number.isSafeInteger(target) || target <= 0 || target > MAX_OLLAMA_CONTEXT)
+      throw new ContextBudgetError("invalid-context-settings", "Ollama working context must be a positive whole number within the application limit.");
+    for (const ceiling of [limits.advertised, limits.asserted, bound("probe.configuredContext")])
+      if (ceiling !== undefined && target > ceiling)
+        throw new ContextBudgetError("invalid-context-settings", "Ollama working context exceeds the known model/configured ceiling. Lower it in model settings.");
+    const controllable = evidence.some(e => e.metric === "probe.runtimeContext" && e.value === "per-request");
+    if (!controllable)
+      throw new ContextBudgetError("ollama-context-unverified", "Refresh this Ollama model's metadata before requesting a runtime context. No inference was sent.");
+    const requested = bound("probe.requestedContext");
+    if (requested === target && bound("probe.loadedContext") !== undefined && bound("probe.loadedContext") !== target)
+      throw new ContextBudgetError("ollama-context-mismatch", `Ollama reported ${bound("probe.loadedContext")} loaded tokens after Clack requested ${target}. Lower the working context or verify the server/proxy supports runtime context control, then refresh metadata. The previous inference was not retried.`);
+    // This is a per-request allocation contract, not an inference from model maximum.
+    limits.runtimeTarget = target;
+    limits.deployed = bound("probe.loadedContext") === target ? target : undefined;
+    limits.workingTarget = undefined;
+    // An asserted ceiling bounds the requested allocation; it is not the allocation itself.
+    limits.asserted = undefined;
+  }
+  return limits;
 }
 
 export function budgetIdentity(

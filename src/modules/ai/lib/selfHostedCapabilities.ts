@@ -99,7 +99,10 @@ export function serverModelDetails(
       ? `${format(loaded)} tokens (loaded)`
       : configured.length
         ? `${format(configured)} tokens (reported)`
-        : "Unknown",
+        : evidence.some(e => e.metric === "probe.loaded" && e.value === false)
+          ? "Not currently loaded" : "Unknown",
+    runtimeContext: evidence.some(e => e.metric === "probe.runtimeContext" && e.value === "per-request")
+      ? "per-request" as const : endpoint.backendHint ? "server-managed" as const : "unknown" as const,
     advertisedContext: advertised.length
       ? `${format(advertised)} tokens (model maximum, not current server context)`
       : "Unknown",

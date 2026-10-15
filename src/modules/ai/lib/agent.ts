@@ -444,14 +444,16 @@ export async function buildLanguageModel(
       break;
     }
     case "ollama": {
-      const { createOpenAICompatible } = await import(
-        "@ai-sdk/openai-compatible"
-      );
-      built = createOpenAICompatible({
-        name: "ollama",
-        baseURL: ollamaURL,
-        fetch: scopedLocalFetch,
-      })(resolvedModelId);
+      const { createOllamaModel } = await import("@/modules/ai/lib/ollamaModel");
+      built = createOllamaModel({
+        modelId: resolvedModelId, baseURL: ollamaURL,
+        apiKey: options.selfHosted ? customEndpointKey || undefined : undefined,
+        fetch: options.selfHosted ? verifiedProviderFetch(createProxyFetch({
+          allowPrivateNetwork: options.allowPrivateNetwork === true, selfHosted: true,
+          scope: options.inferenceScope, admission, preflight, onAdmission: calibration?.observe,
+        }), options.inferenceScope?.onResponseBody) : scopedLocalFetch,
+        onFinish: preflight.observeOllamaRuntime,
+      });
       break;
     }
     default: {
@@ -494,7 +496,7 @@ export function buildConfiguredLanguageModel(
     selfHostedTransportIdentity(modelId, local.selfHostedInference);
   if (hosted?.selfHosted) {
     return buildLanguageModel(
-      "openai-compatible",
+      hosted.providerId === "ollama" ? "ollama" : "openai-compatible",
       keys,
       hosted.transportModelId,
       {
@@ -508,6 +510,7 @@ export function buildConfiguredLanguageModel(
         ),
         inferenceScope: local.inferenceScope,
         openaiCompatibleBaseURL: hosted.endpointBaseURL,
+        ollamaBaseURL: hosted.endpointBaseURL,
         allowPrivateNetwork: hosted.selfHosted.allowPrivateNetwork,
       },
       selfHostedCredential(hosted, keys, local.customEndpointKeys ?? {}),

@@ -286,11 +286,19 @@ explicit user action and a small budget; a successful sample is evidence for
 that route, not a universal reliability guarantee. Never use generated test
 tool calls to execute shell/file/network actions.
 
-Ollama's compatible API does not offer a general context-size setting. Keep
-the compatible transport initially, budget below known server context, and do
-not pretend a Clack slider reconfigures the engine. A future native adapter is
-justified only by a separately tested payload/cancellation need; no silently
-created Modelfile or server launch edits. [Ollama compatibility](https://docs.ollama.com/api/openai-compatibility).
+Ollama's compatible API does not offer a general context-size setting. The
+2026-10-15 focused runtime-context correction now uses an embedded SDK v3 native
+`/api/chat` adapter for saved, migrated and legacy Ollama routes. Existing
+`workingContext` requests `options.num_ctx`; B1 uses the same total allocation,
+with requested allocation distinguished from observed loaded context. Automatic
+without a recommendation leaves server defaults untouched. Bounded post-request
+probes retain actual loaded context and fail closed on a reported mismatch.
+There are no automatic aliases, Modelfiles or server launch edits. See the
+focused record in `docs/LOCAL_AGENT_USABILITY_ACCEPTANCE.md` for real cold 32K,
+streaming/tool evidence and limitations. The baseline audit and checkpoint
+ledgers elsewhere in this document remain historical, not rewritten claims of
+current transport behavior. [Ollama compatibility](https://docs.ollama.com/api/openai-compatibility),
+[native chat](https://docs.ollama.com/api/chat).
 
 ## Connection and Health UX
 

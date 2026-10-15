@@ -16,6 +16,7 @@ export type ReportedContextEvidence = {
 export type BudgetLimits = {
   reportedEvidence?: ReportedContextEvidence;
   deployed?: number;
+  runtimeTarget?: number;
   asserted?: number;
   reported?: number;
   theoretical?: number;
@@ -52,7 +53,7 @@ export type ContextSection =
 export type ContextBudget = {
   reportedEvidence?: ReportedContextEvidence;
   ceiling: number;
-  source: "deployed" | "manual" | "reported" | "unknown-policy";
+  source: "deployed" | "requested" | "manual" | "reported" | "unknown-policy";
   output: number;
   reserve: number;
   margin: number;
@@ -120,7 +121,7 @@ export function resolveContextBudget(
     invalid(
       "Configured context pin exceeds the known server/model limit. Correct it in model settings.",
     );
-  const source = limits.deployed
+  const source = limits.runtimeTarget && limits.deployed !== limits.runtimeTarget ? "requested" : limits.deployed
     ? "deployed"
     : limits.asserted
       ? "manual"
@@ -128,6 +129,7 @@ export function resolveContextBudget(
         ? "reported"
         : "unknown-policy";
   let ceiling =
+    limits.runtimeTarget ??
     limits.deployed ??
     limits.asserted ??
     limits.reported ??
@@ -325,7 +327,9 @@ export function measureRequest(
           "file_id",
           "audio",
           "input_audio",
+          "images",
         ].some((field) => field in record)) ||
+      "images" in record ||
       "inlineData" in record ||
       "fileData" in record
     ) {
@@ -370,6 +374,7 @@ export function measureRequest(
         "text",
         "functions",
         "function_call",
+        "format",
       ].includes(key)
     ) {
       const isSchemas = key === "tools" || key === "functions";
@@ -421,6 +426,7 @@ export function assertRequestBudget(
     body.max_completion_tokens,
     body.max_output_tokens,
     generation?.maxOutputTokens,
+    (body.options as { num_predict?: unknown } | undefined)?.num_predict,
   ].filter((v) => v !== undefined);
   if (values.length !== 1 || typeof values[0] !== "number")
     invalid("The adapter must serialize exactly one output token limit.");
@@ -476,6 +482,7 @@ export function contextBudgetPresentation(budget: ContextBudget) {
   };
   const provenance = {
     deployed: "Verified deployed/server evidence",
+    requested: "Requested per-inference runtime allocation (supported Ollama native API); not an observed loaded context",
     reported: budget.reportedEvidence
       ? `${budget.reportedEvidence.origin === "provider-metadata" ? "Provider-supplied context metadata" : "Installed provider/model metadata"} (${budget.reportedEvidence.providerId}, ${budget.reportedEvidence.modelId}${budget.reportedEvidence.lookup ? `; ${budget.reportedEvidence.lookup}` : ""})`
       : "Installed provider/model metadata",
