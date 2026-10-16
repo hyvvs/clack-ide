@@ -59,8 +59,16 @@ import {
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { generateText } from "ai";
 import { createRoot } from "react-dom/client";
+import { createOllamaStreamTrace, ollamaDiagnosticMetrics, ollamaReplayParams } from "@/test/ollamaStreamTrace";
+import { createOllamaModel, ollamaBody } from "@/modules/ai/lib/ollamaModel";
+import { createProxyFetch } from "@/modules/ai/lib/proxyFetch";
+import { verifiedProviderFetch } from "@/modules/ai/lib/answerContinuation";
+import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
+import { assertRequestBudget } from "@/modules/ai/lib/contextBudget";
+import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
 
 type Phase =
+  | "stream-diagnostic"
   | "stability"
   | "preflight"
   | "system-preflight"
@@ -74,6 +82,7 @@ type Configuration = {
   server: string;
   report: string;
   realProduct?: { phase: Phase; maxOutput?: number; singleSpec?: boolean; reasoningChoice?: "automatic" | "none" };
+  streamDiagnostic?: { body: Record<string, unknown>; sourceRequestId: string };
 };
 type Part = {
   type: string;
@@ -98,7 +107,7 @@ function assert(value: unknown, message: string): asserts value {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Observe native response channels without replacing routing or provider responses.
-function audit(report: string) {
+function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace>) {
   type Event = { kind: string; bytes?: number[]; [key: string]: unknown };
   const descriptor = Object.getOwnPropertyDescriptor(
     Channel.prototype,
@@ -134,6 +143,7 @@ function audit(report: string) {
           return;
         }
         if (event.kind === "chunk" && event.bytes) {
+          trace?.receive(event.bytes, Date.now());
           if (!first) {
             first = true;
             emit({
@@ -156,7 +166,7 @@ function audit(report: string) {
                   kind: "engine-finish",
                   at: Date.now(),
                   requestId: event.requestId,
-                  metrics,
+                  metrics: trace ? ollamaDiagnosticMetrics(metrics) : metrics,
                 });
               }
             } catch {
@@ -164,6 +174,8 @@ function audit(report: string) {
             }
           }
           if (line.length > 4 * 1024 * 1024) line = "";
+        } else if (trace && event.kind === "headers") {
+          emit({ kind: "diagnostic-headers", at: Date.now(), requestId: event.requestId, status: event.status });
         } else if (["settled", "phase", "admission"].includes(event.kind))
           emit({ ...event, at: Date.now() });
         previous.call(this, event);
@@ -176,7 +188,49 @@ function audit(report: string) {
 export async function runRealLocalProduct(config: Configuration) {
   assert(config.realProduct, "Missing real product phase");
   const phase = config.realProduct.phase;
-  const evidence = audit(config.report);
+  const trace = config.realProduct.phase === "stream-diagnostic" ? createOllamaStreamTrace() : undefined;
+  const evidence = audit(config.report, trace);
+  if (trace) {
+    assert(config.streamDiagnostic, "Missing explicit diagnostic replay body");
+    const { body, sourceRequestId } = config.streamDiagnostic;
+    const params = ollamaReplayParams(body);
+    assert(canonicalJson(ollamaBody("qwen38-uncensored:latest", params, true)) === canonicalJson(body),
+      "Diagnostic serialization changed the captured request");
+    const limits = { runtimeTarget: 32768, maxOutput: 2048, outputReserve: 2048 };
+    assertRequestBudget(limits, body);
+    const controller = new AbortController();
+    const boundMs = 180_000;
+    const timer = setTimeout(() => {
+      evidence.emit({ kind: "diagnostic-cancel", at: Date.now(), reason: "evaluator-bound", boundMs });
+      controller.abort();
+    }, boundMs);
+    let outcome = "completed";
+    let errorCode: string | null = null;
+    const startedAt = Date.now();
+    const model = createOllamaModel({ modelId: "qwen38-uncensored:latest", baseURL: config.server,
+      fetch: verifiedProviderFetch(createProxyFetch({ selfHosted: true, allowPrivateNetwork: true,
+        admission: { endpointId: "real-qwen", profileId: '["real-qwen","qwen38-uncensored:latest",null]', capacity: 1 } })) });
+    try {
+      const response = await model.doStream({ ...params, abortSignal: controller.signal });
+      const reader = response.stream.getReader();
+      try {
+        while (true) {
+          const part = await reader.read();
+          if (part.done) { trace.end(Date.now()); break; }
+          trace.sdkPart(part.value.type, Date.now());
+          if (part.value.type === "error") throw part.value.error;
+        }
+      } finally { reader.releaseLock(); }
+    } catch (error) {
+      outcome = controller.signal.aborted ? "evaluator-bound" : "failed";
+      errorCode = error instanceof InferenceTransportError ? error.code : "adapter-error";
+    } finally { clearTimeout(timer); }
+    const summary = trace.summary();
+    evidence.emit({ kind: "stream-diagnostic-summary", at: Date.now(), sourceRequestId, outcome, errorCode, summary });
+    await evidence.flush();
+    return { phase: "stream-diagnostic", sourceRequestId, diagnosticStartedAt: startedAt, elapsedMs: Date.now() - startedAt,
+      limits, outcome, errorCode, summary, toolExecutionCount: 0, cloudInference: 0, boundMs };
+  }
   await usePreferencesStore.getState().init();
   const root = await native.workspaceAuthorize(config.root);
   if (phase === "stability") {

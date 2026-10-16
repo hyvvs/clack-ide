@@ -72,7 +72,8 @@ type Configuration = {
   smallTeam?: boolean;
   localAgent?: boolean;
   ollama?: { live: boolean; model: string };
-  realProduct?: { phase: "preflight" | "system-preflight" | "mission-a" | "resume-a" | "restart" | "mission-b" | "offline" | "stability"; maxOutput?: number; singleSpec?: boolean; reasoningChoice?: "automatic" | "none" };
+  realProduct?: { phase: "stream-diagnostic" | "preflight" | "system-preflight" | "mission-a" | "resume-a" | "restart" | "mission-b" | "offline" | "stability"; maxOutput?: number; singleSpec?: boolean; reasoningChoice?: "automatic" | "none" };
+  streamDiagnostic?: { body: Record<string, unknown>; sourceRequestId: string };
 };
 const outcomes: { name: string; taskIds: string[] }[] = [];
 const lifecycle: { id: string; status: string; at: number }[] = [];

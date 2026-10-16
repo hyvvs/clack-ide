@@ -1056,3 +1056,230 @@ all-model conclusions do not follow from this attempt.
 - Only the reasoning lifecycle, its regression tests and this report are in
   scope. No subsequent checkpoint, unrelated delegation/autonomous-tracker work,
   stash operation or push was performed.
+
+## Request 13 Stream-Idle Forensics, 2026-10-16
+
+Continued from clean `main` at `0ea839a`, 34 ahead / 0 behind the recorded
+remote. This investigation does not supersede any historical acceptance grade.
+In particular, `forgeboard-none-20261016-02` remains **PRODUCT RUNTIME / STREAM
+IDLE TIMEOUT / INCOMPLETE**. No Automatic experiment or ForgeBoard mission was
+rerun. No production source, timeout, reasoning TTL, model setting, memory or
+context architecture was changed.
+
+### Preserved Request and Missing Observations
+
+The complete native body, persisted transcript/settings/todos, event log and
+native-host log were inspected. Request `inference-13` went to
+`http://127.0.0.1:11435/api/chat`, exact model `qwen38-uncensored:latest`,
+`num_ctx=32768`, `num_predict=2048`, `think:false`. Its 30 messages were one
+system message, the one original user specification, 12 assistant messages and
+16 tool results. All 16 normal production tool schemas remained available.
+The system required hands-on implementation, truthful PowerShell syntax and
+read-before-edit, not a special reasoning-only response.
+
+The most recent results said `package.json` and `.gitignore` did not exist,
+following refused blind edits. Qwen was expected to continue after those tool
+results, with text or a valid tool call; explicit None still applied. The active
+plan had scaffold in progress and eight items pending, including implementation,
+tests, builds and README. No user correction was added. Last prior tools were
+the two failed reads, completed at 15:41:38.172 Europe/Paris. No tool/approval or
+effect was pending when request 13 timed out.
+
+| Historical Observation | Recorded Value, Europe/Paris |
+| --- | --- |
+| Serialized request audit | 15:41:38.531 (`1792158098531`) |
+| Queue entered / admitted | 15:41:38.544 / same timestamp, capacity 1 |
+| Native HTTP attempt started | 15:41:38.828 |
+| Connecting / waiting-first-output delivery | 15:41:38.829 / 15:41:38.830 |
+| Native `generating` phase delivered | 15:41:39.690; proves Rust recognized at least one meaningful frame |
+| First native chunk delivered to JS | 15:41:39.691; **not** the final raw byte timestamp |
+| SDK text-start receipt | 15:41:39.691, transcript part 32 |
+| Final raw socket byte / final native chunk timestamp | **not recorded** |
+| Final parsed NDJSON frame / text delta / reasoning delta timestamp | **not recorded** |
+| Every idle timer reset / exact last reset timestamp | **not recorded** |
+| Native attempt settlement | 15:42:40.798 |
+| Native terminal event delivered | 15:42:40.799, `timed-out`, `stream-idle-timeout` |
+| Session failed | 15:42:40.804, terminal/non-retrying |
+| Provider final `done` / `done_reason` / usage | No final event or usage received; values **not recorded**, not zero |
+| HTTP/socket open status and subsequent read activity | **not recorded** at socket level; native code was waiting for stream progress when its timer won |
+| Engine log / engine cancellation acknowledgement / GPU activity | **not recorded**; the remote engine's logs were not available in these artifacts |
+
+The incomplete assistant part is preserved: "Now I'll start building out the
+server implementation." followed by two newlines. Its answer segment has no
+pending calls and finish `interrupted`. Stored zero token placeholders are not
+provider usage. The native-host log contains no Ollama error, only inference
+destinations and a post-report WebView class-unregister diagnostic. Final
+`/api/ps` still reported the exact digest loaded with context 32768. Loaded
+status does not prove active generation or network progress.
+
+The passive calibration sample records SDK first-output 863 ms, observed
+first-to-last SDK output span 1229 ms, and largest observed SDK output gap
+129 ms. These aggregates omit the trailing no-output wait and do not record
+raw receive/NDJSON timestamps. They cannot establish that no bytes arrived
+afterward, nor supply a missing last-byte timestamp by subtraction.
+
+### Timeout and Progress Ownership
+
+`src-tauri/src/modules/net/inference/mod.rs` owns the host-side timeout. For
+`self-hosted`, defaults are connect 10 seconds, first output 120 seconds,
+stream idle **60 seconds**, overall **600 seconds**. Queue waiting and the
+separate five-second admission acknowledgement precede `execute`; they do not
+spend its transport budget. First-output includes connection, header wait,
+model load and prefill; there is no separate enforced model-load stopwatch.
+After meaningful provider progress, idle replaces first-output and the earlier
+of idle/overall wins. No deadline was raised or disabled.
+
+`progress.rs` examines bounded 256 KiB NDJSON/SSE frames independently of the
+SDK, without changing delivered bytes. Complete native `message.content` or
+`message.thinking` strings containing non-whitespace, and nonempty
+`message.tool_calls`, reset idle. Reasoning is not omitted. Raw network bytes,
+incomplete JSON fragments, whitespace-only text, empty message frames,
+`done:false` alone, metadata/usage-only frames and SSE keepalives do not reset
+it. Native `done:true` marks completion; it is not by itself meaningful output.
+NDJSON EOF is handled by native completion and the adapter, while SSE `[DONE]`
+also ends native reading. No authenticated Ollama generation heartbeat contract
+was present in the retained evidence, so empty frames were not promoted to
+fake progress.
+
+Native chunks are delivered to `proxyFetch`, then `verifiedProviderFetch`
+validates final framing, and `ollamaModel` emits SDK text/reasoning/tool/final
+parts. Both wrappers preserve body bytes. They do not own a second stream-idle
+timer. F2 checks pathological text/reasoning/whitespace/tool loops, not this
+60-second stopwatch. D2 only continues eligible actual length finishes; request
+13 had none. D3 preserves partial output and requires explicit safe recovery;
+it did not replay the request or effects. D1 native timeout drops the request
+future/client/stream before capacity release. Cancellation/socket-drop behavior
+is covered by native tests; a wire-level cancellation acknowledgement for this
+historical request is **not recorded**.
+
+### Exact Profile Guidance Versus Enforcement
+
+The before-run profile had no timeout overrides or recommendations.
+`loadTimeoutMs` remained unspecified, Automatic, without a recommendation.
+At 15:39:33.593 E2 published `prefillTimeoutMs=108000` and
+`idleTimeoutMs=54000`, Automatic observed recommendations from five successful
+mission samples, with seven-day expiry. No manual timeout pin existed.
+Those were the effective inspectable profile guidance values by request 13.
+They did **not** become native deadlines. The E2 ledger explicitly says timeout
+fields are guidance-only and do not change D1 deadlines. Actual enforcement was
+therefore the expected generic 120000 ms first-output / 60000 ms idle policy,
+not an E2 recommendation bug. No settings were mutated during inspection.
+
+Representative successful requests, using actual engine metrics and separately
+labelled SDK calibration, are below. All had `done:true`, `done_reason=stop`.
+Longest raw inter-frame gaps and precise first tool-chunk gaps are **not
+recorded** for these requests; SDK gaps are not substituted for those metrics.
+
+| Request | Native Attempt to First Chunk, ms | Engine Total, ms | Largest Observed SDK Output Gap, ms | Provider Output Tokens |
+| --- | --- | --- | --- | --- |
+| 1 | 9601 | 20307.324 | 9244 | 102 |
+| 2 | 952 | 37962.807 | 34907 | 345 |
+| 3 | 35906 | 35856.276 | 0 | 323 |
+| 9 | 687 | 29537.598 | 26467 | 259 |
+| 11 | 50550 | 50479.810 | 0 | 379 |
+| 12 | 13201 | 13150.502 | 0 | 103 |
+
+A zero SDK gap means no pair of separated SDK output observations, not proof of
+instant engine generation. Some tool responses reached JS only after tens of
+seconds. This makes buffering or a long silent generation plausible, but does
+not prove what happened in request 13. That request's approximately 61.971-second
+native lifetime and partial text are consistent with an idle interval; missing
+byte/frame evidence prevents a definitive engine-versus-parser attribution.
+
+### One Controlled Diagnostic, Not a Mission Restart
+
+Reusable, acceptance-only tracing was added in `src/test/ollamaStreamTrace.ts`
+and the existing fixture/runner. It records native IPC chunk delivery separately
+from parsed text, whitespace, reasoning, tools, empty/metadata and final frames,
+plus SDK event categories. It retains counts, last timestamps, maximum gaps,
+256 recent events and a bounded 256 KiB frame buffer. Content, tool arguments,
+credentials and arbitrary server strings are excluded; final numeric metrics
+are allowlisted. Timestamps are explicitly **IPC delivery, not socket receive**.
+There is no permanent telemetry service or production instrumentation.
+
+The opt-in runner phase is `stream-diagnostic`, requiring a fresh
+`CLACK_PRODUCT_RUN_ID`, Git-only `CLACK_PRODUCT_WORKSPACE`, and absolute
+`CLACK_STREAM_REQUESTS` pointing to the preserved audit. An explicit attempt
+number preserves earlier evidence. An observed EOF can flush a final line
+without a newline; it never fabricates a later raw-byte receive timestamp.
+
+- Fresh diagnostic evidence ID: `ollama-stream-20261016-01`, under
+  `src-tauri/target/real-qwen-product/ollama-stream-20261016-01/`.
+  Fresh Git-only scratch directory: that directory's `workspace/` child.
+  Original ForgeBoard files/evidence were not reused as writable app state.
+- `stream-diagnostic-1` is a preserved **TEST_HARNESS / SETUP REFUSAL**: the first
+  diagnostic fixture omitted required capacity admission. Native self-hosted
+  validation returns `invalid-capacity` before HTTP, surfaced by the wrapper
+  as `native-transport`. One IPC invocation was audited, but zero provider HTTP,
+  raw chunks, SDK output or model load occurred. This is not an Ollama result.
+  Only the test fixture was corrected; no production guard was weakened.
+- `stream-diagnostic-2` is the **one actual provider reproduction**. Process
+  checks found no competing Clack/Cargo/Rust/Vite/Vitest/harness run. Type checks
+  completed before launch. No source changes occurred while it ran.
+- The production `createOllamaModel` / `verifiedProviderFetch` / `createProxyFetch`
+  and native self-hosted transport handled the request, with capacity 1, exact
+  captured request-13 prompt/tool schemas and unchanged controls. Serialization
+  was checked before inference and the actual native body was compared afterward
+  for deep equality. B1 verified the body. No Agent loop/tool executors were
+  attached: this cannot execute a proposed effect, create ForgeBoard, or resume
+  the previous mission. No READY, warm-up or other inference was sent.
+- A separate 180000 ms evaluator cancellation bound was armed but did not fire.
+  Production 60/120/600-second timeouts stayed unchanged. No settings, sampling,
+  reasoning, context, output or fallback changes were made. Cloud inference: 0.
+- Diagnostic started at 16:05:23.187. Native attempt started at 16:05:23.216.
+  HTTP 200 arrived at 16:05:51.095. Exactly **one chunk, 535 bytes, one complete
+  frame** arrived at **16:05:51.097** (`1792159551097`), containing a tool call
+  and final `done:true`, `done_reason=stop`. Raw delivery and parsed-final
+  timestamps coincide. No text/reasoning/empty/invalid frames were observed.
+- SDK tool events followed at 16:05:51.098; native settlement was completed at
+  16:05:51.114; SDK finish at 16:05:51.115. Elapsed diagnostic time: 27933 ms.
+  Actual provider usage: 10518 input, 49 output tokens. Engine metrics report
+  27792.318 ms total, 4794.761 ms load, 17011.745 ms prefill, 5935.287 ms eval.
+  No tool was executed, and no continuation/retry or deadline fired.
+- Initial `/api/ps` had no loaded model; final `/api/ps` had the same exact
+  digest/context as the historical run. Cold versus warm state differs from
+  the historical request and is an explicit comparison limitation, not a model
+  setting change. The model/server remained unmodified.
+
+Diagnostic classification: **COMPLETED / STALL NOT REPRODUCED**. Native and SDK
+parsing agreed on the observed tool/final frame. This does not recover the
+original last raw-byte timestamp or prove that its engine stopped computing.
+No concrete production progress-detection/read-loop defect was demonstrated.
+The correct historical result remains unresolved at the underlying stream
+boundary, not retroactively **ENGINE / GENERATION STALL** or model failure.
+No second provider reproduction or timeout-tuning experiment was run.
+
+### Shell, Edit Safety and Verification
+
+All four historical shell commands matched the advertised `pwsh.exe` PowerShell
+contract and exited 0 without evaluator correction. This positively exercises
+`9e8f7ae`; `bash_run` did not falsely imply Bash. The four edits targeted the
+root directory or nonexistent/unread `.gitignore`/`package.json`, with invented
+old content and no successful read-cache entry. The described read-before-edit
+guard correctly refused them. Directory/missing-file reads returned accurate OS
+errors. These are model tool-use errors, not permission/schema/tooling defects;
+no edit guard or shell code was changed. ForgeBoard still has ten empty
+directories, zero source/root files, tests, builds or commits. Scratch Git is
+also unborn and empty.
+
+Focused frontend: **221 passed in 6 files** (trace, Ollama adapter, proxy,
+continuation, recovery, output watchdog). After metadata-redaction and EOF
+coverage additions, the diagnostic file passed **9 tests**; seven overlap the
+earlier group, for **223 distinct focused cases**. Focused native inference/parser/timeout/
+cancellation tests: **34 passed**, using `target/codex-test`. Type checking,
+focused lint (four test/fixture files), runner syntax and `git diff --check`
+passed. Full frontend/build/Clippy/Rust suites were intentionally not rerun:
+only acceptance scripts/tests and this report changed, with no production or
+Rust source edits. Windows native IPC was exercised, not native GUI/Computer
+Use or Linux/macOS live testing.
+
+The three original primary evidence hashes matched before/after investigation:
+`mission-a-1.json` =
+`038410C36D2D6303DEEFFFC0E7637E96B6161C03B7E89004121405E85A29F2FC`,
+`mission-a-1.jsonl` =
+`52DFB8022D48258DFD2294DB0B38F447655C919B8AD8C38A2148C34B5534120D`,
+`mission-a-1.requests.jsonl` =
+`E7F4A9A787CB59AECABCCCC016D1075640E83E31AD6D5939CDD27C9674F66DC3`.
+Post-run process inspection found no acceptance/build/test host left. All prior
+grades/artifacts, stashes and unrelated work were preserved. No push or next
+checkpoint was started.

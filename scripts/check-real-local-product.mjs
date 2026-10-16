@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdir, readFile, writeFile, appendFile, readdir, cp } from "node:fs/promises";
+import { mkdir, readFile, writeFile, appendFile, readdir, cp, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { createServer as createViteServer } from "vite";
 
 const phase = process.argv[2];
-assert(["preflight", "system-preflight", "mission-a", "resume-a", "restart", "mission-b", "offline", "stability"].includes(phase), "Specify one explicit acceptance phase");
+assert(["stream-diagnostic", "preflight", "system-preflight", "mission-a", "resume-a", "restart", "mission-b", "offline", "stability"].includes(phase), "Specify one explicit acceptance phase");
 const repository = fileURLToPath(new URL("../", import.meta.url));
 const runId = process.env.CLACK_PRODUCT_RUN_ID;
 assert(!runId || /^[a-z0-9][a-z0-9-]{0,63}$/.test(runId), "Use a bounded run ID, not a path");
@@ -22,6 +23,22 @@ const reasoningChoice = process.env.CLACK_PRODUCT_REASONING || undefined;
 assert(reasoningChoice === undefined || ["automatic", "none"].includes(reasoningChoice), "Reasoning choice must be automatic or none");
 assert(reasoningChoice === undefined || phase === "mission-a", "Reasoning override is only supported for a fresh Mission A acceptance run");
 const endpoint = "http://127.0.0.1:11435";
+let streamDiagnostic, replaySource;
+if (phase === "stream-diagnostic") {
+  const source = process.env.CLACK_STREAM_REQUESTS;
+  assert(runId && source && path.isAbsolute(source), "Diagnostic requires fresh run ID and an explicit preserved request audit");
+  assert((await stat(source)).size < 4 * 1024 * 1024, "Diagnostic request audit exceeded bound");
+  const text = await readFile(source, "utf8");
+  assert(Buffer.byteLength(text) < 4 * 1024 * 1024, "Diagnostic request audit exceeded bound");
+  const request = text.trim().split("\n").map(line => JSON.parse(line)).find(item => item.requestId === "inference-13");
+  assert(request && request.url === `${endpoint}/api/chat`, "Expected captured native request 13");
+  assert.equal(request.body.model, "qwen38-uncensored:latest");
+  assert.deepEqual(request.body.options, { num_ctx: 32768, num_predict: 2048 });
+  assert.equal(request.body.think, false);
+  assert.equal(request.body.stream, true);
+  streamDiagnostic = { body: request.body, sourceRequestId: request.requestId };
+  replaySource = { file: source, sha256: createHash("sha256").update(text).digest("hex"), requestId: request.requestId };
+}
 await mkdir(owned, { recursive: true });
 assert((await readdir(root)).includes(".git"), "Prepare the fresh external Git workspace first");
 const attempt = process.argv[3] ?? "1";
@@ -42,7 +59,7 @@ const server = createServer(async (request, response) => {
   const json = value => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(value)); };
   try {
     if (request.method === "OPTIONS") { response.statusCode = 204; response.end(); return; }
-    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, maxOutput, singleSpec, reasoningChoice } });
+    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, maxOutput, singleSpec, reasoningChoice }, streamDiagnostic });
     if (!["/report", "/evidence"].includes(request.url)) { response.statusCode = 404; return json({ error: "Unknown acceptance route" }); }
     let body = "";
     for await (const chunk of request) { body += chunk; assert(body.length < 64 * 1024 * 1024, "Acceptance payload exceeded bound"); }
@@ -90,6 +107,10 @@ try {
   let requests = [];
   try { requests = (await readFile(`${output}.requests.jsonl`, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (streamDiagnostic) {
+    assert.equal(requests.length, 1, "Diagnostic must send exactly one inference and never execute a tool loop");
+    assert.deepEqual(requests[0].body, streamDiagnostic.body, "Diagnostic changed captured wire content");
+  }
   const { assertRequestBudget } = await vite.ssrLoadModule("/src/modules/ai/lib/contextBudget.ts");
   const wireBudgets = requests.map(request => ({ at: request.at, requestId: request.requestId,
     ...assertRequestBudget(result.limits ?? { runtimeTarget: 32768 }, request.body),
@@ -100,7 +121,7 @@ try {
     numCtx: request.body.options.num_ctx, numPredict: request.body.options.num_predict,
     think: request.body.think ?? "server-default",
   }));
-  await writeFile(`${output}.json`, JSON.stringify({ ...result, runId, singleSpec, maxOutput, reasoningChoice, startedAt, endedAt: Date.now(), root, initialModels, finalModels, destinations, wireBudgets, nativeLog }, null, 2));
+  await writeFile(`${output}.json`, JSON.stringify({ ...result, runId, singleSpec, maxOutput, reasoningChoice, replaySource, startedAt, endedAt: Date.now(), root, initialModels, finalModels, destinations, wireBudgets, nativeLog }, null, 2));
   assert(result.ok, result.error || JSON.stringify(result));
   console.log(`PRESERVED ${phase}: ${destinations.length} native inference attempts; result ${output}.json`);
 } catch (error) {
