@@ -577,6 +577,12 @@ INCONCLUSIVE**. Its specification was not replayed or resent.
   or counted as this pass's experiment. Ollama/tunnel bindings, firewall, and
   secondary-host configuration were not changed.
 
+Historical scope: the preceding "no Automatic/8192 rerun" statement describes
+only the guidance-checkpoint pass. It is not the latest acceptance state. The
+subsequent isolated Automatic/8192 run documented below passed stability and
+reached the production overall deadline; it supersedes the harness-blocked
+state for that configuration. The earlier interrupted attempts remain separate.
+
 ### Verification
 
 Focused frontend: **150 tests passed in five files** (`answerContinuation`,
@@ -620,3 +626,433 @@ it is not a GUI or model acceptance pass. Production guidance implementation
 and automated gates are complete; live ForgeBoard acceptance remains deferred
 until the native-host interruption is understood or an adequate stability gate
 passes. No ForgeBoard implementation, checkpoint beyond this scope, or push.
+
+## Fresh Isolated Automatic / 8192 Acceptance: 2026-10-16
+
+This follow-up used the committed, clean `main` state at `9e8f7ae` and was run
+only after process inspection found no active Clack acceptance host, Cargo/Rust
+build, Vite test run, or other Clack harness. No source edit or test suite ran
+concurrently with the experiment.
+
+### Stability gate passed
+
+- A new Git-only scratch workspace was created at
+  `C:/Users/Hayden/Documents/forgeboard-qwen-20261016-02`. It remained unborn
+  and contained only `.git/` throughout the stability phase.
+- Evidence is preserved under
+  `src-tauri/target/real-qwen-product/startup-harness-20261016-02/`.
+- `stability-1` completed all 23 native IPC heartbeats at 30-second intervals,
+  spanning 660.182 seconds, with exit code 0 and zero inference destinations.
+  This passed well beyond the earlier approximately 79-second host exit and
+  satisfied the documented no-inference stability gate.
+
+### Automatic / 8192 preflight
+
+- Fresh run evidence is preserved under
+  `src-tauri/target/real-qwen-product/forgeboard-20261016-02/`.
+- Native preflight completed successfully against the same
+  `qwen38-uncensored:latest` digest
+  `0e163794a8b9cdd6e234013b1a27d2e58f06f48d20413a0c2e3e370faaef5505`.
+- The audited preflight request used `num_ctx=32768`, `num_predict=8192`, an
+  8192 output reserve, and no outgoing `think` field, preserving Automatic
+  reasoning. `/api/ps` reported loaded context 32768. There was one local
+  Ollama inference destination and zero cloud inference.
+
+### Single-specification result: product deadline, incomplete
+
+The full ForgeBoard specification was then sent exactly once in single-spec
+mode. No correction, manual Continue, requirement reminder, peer mission, or
+in-flight setting change was sent.
+
+- The audited mission contains exactly one inference request, one user message,
+  `num_ctx=32768`, `num_predict=8192`, 16 exposed tools, and no outgoing
+  `think` field. Cloud inference count is zero.
+- The native host remained alive and produced a normal final acceptance report.
+  First response output arrived about 9.4 seconds after the request began, so
+  this result is not the earlier native-host/process-lifetime failure.
+- The only assistant content was a streaming reasoning part. It accumulated
+  19,202 characters of preserved reasoning text describing requirements and a
+  prospective implementation plan, but no answer text, tool call, structured
+  todo, file write, test execution, commit, or automatic continuation occurred.
+- At 600.662 seconds of mission-run time, the native inference transport ended
+  the request with `overall-deadline`: `The inference request exceeded its
+  overall deadline.` The native self-hosted transport has a fixed 600-second
+  overall request deadline. No engine-finish event or provider token-usage
+  total was received, so generated-token count and intrinsic model finish cause
+  must not be inferred from the partial stream.
+- The scratch repository remained `.git/` only and unborn after the run. There
+  is no ForgeBoard implementation to test or build.
+
+Classification: **PRODUCT RUNTIME / OVERALL DEADLINE / INCOMPLETE**. The fresh
+stability evidence removes the prior harness-interruption blocker for this run,
+but Automatic/8192 still did not reach a usable coding action under the current
+production 600-second request deadline. This does not prove that the model could
+never finish with a different reasoning choice, output allocation, or request
+deadline. None of those controls was changed here, because doing so would be a
+separate experiment rather than a continuation of this controlled run.
+
+## Controlled Experiment A: None / 2048, 2026-10-16
+
+### Isolation and Ownership
+
+Continued from `9e8f7ae` on `main`. At the start only this acceptance document
+was modified, including the valid isolated Automatic/8192 report above. That
+report and its primary JSON were inspected before this experiment. Automatic/
+8192 was **not** rerun in this pass.
+
+- Process inspections at 14:04:39 and immediately before mission launch at
+  14:06:58 Europe/Paris found zero Clack acceptance hosts, Clack processes,
+  Cargo/rustc/rustdoc processes, or matching Clack/Vite/Vitest/acceptance Node
+  processes. No other editing, test suite, or build was started during the run;
+  only the owned harness's normal native-example preparation ran.
+- Fresh empty repository:
+  `C:/Users/Hayden/Documents/forgeboard-qwen-none-20261016-01`.
+  Created once as unborn `main`, with `.git/` only and no seeded source.
+- Fresh run ID: `forgeboard-none-20261016-01`. Evidence directory:
+  `src-tauri/target/real-qwen-product/forgeboard-none-20261016-01/`.
+  Primary files: `preflight-1.json`, `mission-a-1.json`,
+  `mission-a-1.requests.jsonl`, `mission-a-1.jsonl`, and isolated `data/`.
+- The existing separate READY-only preflight initialized the fresh profile and
+  confirmed readiness. It did not contain ForgeBoard. The full 2086-character
+  ForgeBoard specification was then submitted exactly once to `real-mission-a`.
+  Its serialized specification matches the valid Automatic run byte for byte
+  after the workspace environment block; the durable transcript has one user
+  message. Later tool-loop wire history naturally retains that same message;
+  it was not resubmitted as another user instruction.
+- No reminder, manual Continue, correction, requirement resend, peer mission,
+  runtime setting change, or evaluator implementation occurred.
+
+### Serialized Controls
+
+Both actual mission requests use exactly:
+
+```json
+{
+  "model": "qwen38-uncensored:latest",
+  "options": { "num_ctx": 32768, "num_predict": 2048 },
+  "think": false
+}
+```
+
+Destination: `http://127.0.0.1:11435/api/chat`, through the existing tunnel.
+Initial/final loaded model digest remained
+`0e163794a8b9cdd6e234013b1a27d2e58f06f48d20413a0c2e3e370faaef5505`;
+final loaded context was 32768. Captured reasoning choice was `none`, with
+supported `ollama-boolean` mapping; it was not an automatic fallback. The
+output allowance/reserve were 2048, B1 ceiling 32768, and both serialized
+requests fit B1. The production 600-second overall request deadline was
+unchanged. Fallback remained effectively Never (no fallback authorization or
+destination configured); all two mission destinations were the local Ollama
+endpoint, and cloud inference was zero.
+
+The normal production selector exposed the same 16 tools as the valid Automatic
+first request: `read_file`, `list_directory`, `create_directory`, `edit`,
+`multi_edit`, `grep`, `glob`, `bash_run`, `bash_list`, `open_preview`,
+`todo_write`, `read_agent_output`, `communicate_peer_task`, `request_peer_task`,
+`cancel_peer_task`, `propose_custom_tool`. No evaluator-added tool or tool bypass
+was used. The captured native shell was `PowerShell (pwsh.exe)`, syntax
+`PowerShell; not POSIX Bash`. The earlier valid Automatic run advertised
+`Windows PowerShell (powershell.exe)`, with the same PowerShell syntax. This
+environment detail is retained explicitly; neither shell selection was changed
+mid-run, and this attempt never reached a shell command.
+
+### Chronology and Complete Effects
+
+Times below use the evaluator's local event timestamps, Europe/Paris, not the
+remote engine's `created_at` clock. Relative time starts at the mission's
+14:07:10.489 run start.
+
+| Time / Elapsed | Observed Evidence |
+| --- | --- |
+| 14:07:10.896 / +0.407s | First serialized native request, with the controls above. |
+| 14:07:20.678 / +10.189s | First response bytes observed. This is a stream timing marker, not a token-count estimate. |
+| 14:07:27.327 / +16.838s | First engine response completed normally: `done_reason=stop`, `eval_count=63`. Public answer: "I'll start by inspecting the workspace and planning the build." No reasoning part was recorded. |
+| By 14:07:27.681 / +17.192s | Successful `list_directory` result was included in request two: exact fresh workspace path, `entries: []`. Thus useful public answer and completed tool work are independently confirmed by 17.2 seconds; the exact first streamed public-character timestamp was not separately instrumented. |
+| 14:08:24.743 / +74.254s | Second response completed normally: `done_reason=stop`, `eval_count=522`. It called `todo_write` with nine structured items. |
+| 14:08:25.323 / +74.834s | Clack ended the run with a terminal reasoning-evidence error before a third native request. |
+| 14:08:27.702 | Harness persisted its final report and exited successfully. Its `ok:true` means reporting succeeded, not that ForgeBoard was completed. |
+
+Exactly two tools executed:
+
+1. `list_directory`: read the fresh repository; returned an empty visible tree.
+2. `todo_write`: persisted a nine-item plan, returned `ok:true`, count 9. It
+   covered scaffold, backend/validation/SSE/JSON persistence/filtering/search,
+   backend tests/debugging, frontend/debounce, frontend tests/debugging,
+   production build, and README. Initially scaffold was in progress and eight
+   items pending. Clack's terminal failure handling subsequently marked all
+   nine failed; no item was completed. Exact inputs/results and stable tool IDs
+   remain in the final transcript and request audit.
+
+No shell command was issued, so first-command syntax correctness is **not
+tested**, not passed. No source file/directory was written, test/install/build
+command executed, server launched, or Git commit made by Qwen. Independent Git
+and disk inspection after the run confirms `.git/` only, zero commits, and no
+app to test or build. The plan is a Clack state effect, not implemented software.
+Production run-budget and answer continuations were both zero. There was no
+compaction/memory revision, missing-evidence recovery, or requirement reminder.
+
+### Final Boundary and Classification
+
+Clack's exact terminal message was:
+
+```text
+The AI run failed for an unexpected reason. Reasoning effort evidence changed or expired. Start a new request.
+```
+
+The retained run is `failed`, terminal/non-retryable, two completed steps, last
+finish `tool-calls`. Both native requests settled `completed` with real engine
+finish/usage, and neither reached the 600-second deadline or output limit. The
+recorded reasoning capability deadline was 14:07:40.264, while request two took
+56.671 seconds and finished at 14:08:24.743. The saved endpoint evidence still
+reports thinking support for the same exact model/configuration.
+
+This exposes a remaining Clack explicit-reasoning evidence/lease-lifetime
+defect after successful startup: a later tool-loop step is refused by the
+reasoning-evidence guard. `effortProviderOptions` enforces the expiry;
+`observeOllamaRuntime` attempts renewal only after identity validation and
+swallows optional observation failures. These are follow-up inspection points,
+not a repaired or fully traced renewal race in this pass. No third inference
+was sent and no production source, expiry policy, or deadline was changed to
+continue. The acceptance run was left stopped, without replay or retry.
+
+Classification: **PRODUCT RUNTIME / REASONING-EVIDENCE EXPIRY / INCOMPLETE**.
+Startup is useful; end-to-end product acceptance is blocked by Clack's later
+policy/runtime error. This is not MODEL failure, reasoning-only output
+exhaustion, a context-window block, an overall transport deadline, or a native
+host interruption. ForgeBoard did not reach a materially working implementation.
+
+### Comparison and Repository State
+
+Against the valid isolated Automatic/8192 result (19,202 preserved reasoning
+characters, no useful answer/tool work before the 600.662-second overall
+deadline), None/2048 produced a public answer and successful tools by 17.2
+seconds. **Reasoning mode is the dominant observed startup bottleneck for this
+model under the current production controls.** This does not prove the model
+can complete ForgeBoard: the separate later reasoning-evidence runtime defect
+prevented the coding phase. The Automatic run still has no final provider usage
+total; no generated-token count is inferred for it. The None run's 63 and 522
+output counts are actual engine-reported values, not estimates.
+
+Content and timestamp fingerprints of all 930 tracked source/configuration
+files matched before/after the experiment. Source content aggregate SHA-256:
+`C72702245B61AD0FCD40D6671A1263083D86A3B0A9D8F741E5F173005FC00DDA`.
+No Clack source or configuration file changed. A 14:11:17 post-run process
+inspection found zero matching acceptance/build/test/Clack processes left.
+Only this report changed, preserving its pre-existing Automatic/8192 section.
+HEAD remains `9e8f7ae`; no commit or push was performed. No full Clack suite was
+rerun for this documentation-only pass, and no native GUI/Computer Use or
+Linux/macOS verification was claimed.
+
+## Reasoning Evidence Lifecycle Fix and One Fresh Rerun, 2026-10-16
+
+This checkpoint began at `9e8f7ae` on `main`, 33 commits ahead of the locally
+recorded `origin/main`, with only this report modified. Its existing changes
+were preserved. All historical grades above remain unchanged, including
+Automatic/2048 **MODEL-INCOMPLETE**, the original interrupted Automatic/8192
+**TEST_HARNESS / INTERRUPTED / INCONCLUSIVE**, the later isolated Automatic/8192
+**PRODUCT RUNTIME / OVERALL DEADLINE / INCOMPLETE**, and the first None/2048
+**PRODUCT RUNTIME / REASONING-EVIDENCE EXPIRY / INCOMPLETE**. The valid isolated
+Automatic/8192 result, not the earlier harness interruption, remains the
+comparison baseline. No Automatic/8192 experiment was repeated here.
+
+### Proven Owner and Correction
+
+`effortCapability` accepts only exact, revision/deployment-scoped backend
+evidence younger than 30 seconds. `effortProviderOptions` also rejects an
+expired captured capability. Previously `requestPreflight` serialized that
+capture before refreshing metadata. Its optional post-response
+`observeOllamaRuntime` called `checkIdentity` before renewing the local deadline;
+that identity check also required fresh capability evidence. Once evidence
+aged out, the check failed, optional observation swallowed the error, and the
+next step could not renew. Merely extending a local deadline after a successful
+response was neither reliable nor fresh proof of the reasoning contract.
+The first None run's 56.671-second response crossed the captured expiry before
+its later tool-loop step, without a model/configuration change.
+
+The shared `requestPreflight` owner now distinguishes material identity from
+freshness. It clones the captured reasoning choice, checks current native
+endpoint/profile identity, and reads the existing native evidence. Stale,
+unknown, or nearly expiring explicit controls use the existing bounded
+`self_hosted_probe` metadata refresh for the same endpoint and exact model
+(`force:true`, `restart:false`). Only the same supported contract, revision,
+mapping and complete choice set can rebind fresh evidence for serialization.
+The original run capture is not mutated or silently recaptured. None remains
+`think:false` for the Boolean Ollama contract.
+
+The new reasoning validation wait is bounded to 3000 ms, within native
+admission's five-second acknowledgement budget. It also runs after queue
+waiting, immediately before approval. Existing native five-second route and
+20-second handshake limits, native cache/single-flight ownership, and 30-second
+evidence TTL remain unchanged. Failed refresh attempts retain the existing
+30-second retry throttle; no late completion authorizes inference. Cached-only
+paths do not force metadata HTTP. No inference, warm-up, hidden reasoning
+prompt, automatic retry, or token spend is added by capability revalidation.
+
+Changed material settings still stop before the next inference. Changed
+reasoning contracts stop with `reasoning-evidence-changed`; unavailable fresh
+proof stops with `reasoning-evidence-unavailable`. Both are terminal,
+non-retrying **Reasoning controls** errors, not a context-window diagnosis.
+Static/cloud mappings retain their existing behavior. Compatible, LM Studio,
+vLLM and MLX controls use the shared contract lifecycle without Ollama fields.
+D2's single-leading-system serialization, captured selection, no-replay/effect
+guards and B1 checks are preserved. No Rust, memory, retrieval, project memory,
+PeerTask, scheduler, shell-identity, tool-selection or deadline code changed.
+
+### Fresh Run Isolation and Controls
+
+- Fresh empty Git repository:
+  `C:/Users/Hayden/Documents/forgeboard-qwen-none-20261016-02`.
+  It began as unborn `main`, `.git/` only; no evaluator source was seeded.
+- Fresh run/evidence ID: `forgeboard-none-20261016-02`.
+  Evidence directory:
+  `src-tauri/target/real-qwen-product/forgeboard-none-20261016-02/`.
+  `preflight-1.json` is the separate existing READY-only readiness check;
+  `mission-a-1.json`, `mission-a-1.requests.jsonl`, `mission-a-1.jsonl` and
+  isolated `data/` contain the mission, actual native wire audit, timeline,
+  persisted transcript, plan and settings.
+- Pre-launch process inspection found no competing Clack acceptance host,
+  Clack process, Cargo/Rust build, or matching Clack/Vite/Vitest/acceptance
+  Node process. No source edits, builds or tests ran during the mission.
+  The owned runner/native host exited normally; the post-run process check
+  found no matching Clack/acceptance/build/test process left.
+- All 13 actual mission requests used `qwen38-uncensored:latest`,
+  `options.num_ctx=32768`, `options.num_predict=2048`, `think:false`, the same
+  16 normal production-selected tools, and
+  `http://127.0.0.1:11435/api/chat`. All serialized bodies fit B1.
+  Fallback remained effectively Never; cloud inference was **0**.
+- The captured native shell was `PowerShell (pwsh.exe)`, syntax
+  `PowerShell; not POSIX Bash`. Model digest remained
+  `0e163794a8b9cdd6e234013b1a27d2e58f06f48d20413a0c2e3e370faaef5505`;
+  initial/final loaded context was 32768. The 600-second overall request
+  deadline and existing 60-second self-hosted stream-idle timeout were not
+  changed. No temperature/model/output/context tuning occurred.
+- The full 2086-character ForgeBoard specification was submitted exactly once,
+  matching the preceding None attempt after its workspace environment block.
+  There is one durable user message, retained as history in subsequent requests.
+  No reminder, correction, requirement resend, manual Continue, delegation,
+  mid-run setting change or evaluator implementation occurred.
+
+The pre/post-run fingerprints of all 930 tracked source/configuration files
+matched in both content and timestamps. Content aggregate SHA-256:
+`5F55EE276811E99D8C0C7DDC83B33945471A86C89FF69410A5B464A9D339E354`.
+Timestamp aggregate:
+`1A92380CF084D98F828AD3AC40D68FCAE940300CA5A04C7BC5FE40EEBD71D196`.
+This covers the tested production fix; only a test fixture was subsequently
+updated in response to final-suite assertions, not production source.
+
+### Chronology and Every Tool Effect
+
+Times are relative to the persisted mission start, 15:37:43.069 Europe/Paris.
+Tool times below are persisted input/output receipts, not guessed token timing.
+First native request was at +0.403s; first response bytes at +10.290s. Public
+text was confirmed by the first normal engine finish at +21.141s. Its text-start
+receipt is at +10.292s; exact first nonempty-character time was not separately
+instrumented. There were 296 public answer characters and no reasoning part.
+
+| Call | Completed At | Tool / Actual Result |
+| --- | --- | --- |
+| 1 | +21.230s | `list_directory` root: empty visible tree. |
+| 2 | +22.157s | `bash_run`: `node -v; npm -v; git --version`, exit 0; Node 22.20.0, npm 10.9.3, Git 2.53.0.windows.2. Started at +21.227s; valid advertised PowerShell syntax. |
+| 3 | +61.344s | `todo_write`: nine-item plan, `ok:true`, all pending. |
+| 4 | +98.023s | `todo_write`: scaffold in progress, eight pending, `ok:true`. This is beyond the previous approximately 75-second blocker. |
+| 5 | +103.378s | `bash_run`: `npm config get registry`, exit 0, npm registry URL returned. No install was attempted. |
+| 6 | +110.021s | `read_file` on root directory: OS access-denied error, no content read. |
+| 7 | +116.591s | `list_directory` root: still empty. |
+| 8 | +123.690s | `read_file server/src/db.ts`: missing path. |
+| 9 | +131.537s | `bash_run`: `Test-Path` on the exact workspace, exit 0, `True`. |
+| 10 | +161.860s | `edit` on root directory with imagined package content: refused by read-before-edit invariant. |
+| 11 | +161.862s | `edit .gitignore`: refused by read-before-edit invariant. |
+| 12 | +169.932s | `bash_run`: PowerShell `mkdir` comma-array of server/client directories, exit 0; ten directories actually created. |
+| 13 | +221.212s | `edit package.json` with imagined old content: refused by read-before-edit invariant. |
+| 14 | +221.212s | `edit .gitignore`: refused by read-before-edit invariant. |
+| 15 | +235.103s | `read_file package.json`: missing file. |
+| 16 | +235.103s | `read_file .gitignore`: missing file. |
+
+The successful directory command was:
+
+```powershell
+mkdir server, server/src, server/src/routes, server/src/lib, server/test, client, client/src, client/src/components, client/src/lib, client/test
+```
+
+No POSIX-only shell syntax was attempted. Four shell calls returned exit 0.
+Four reads and four edits returned explicit errors; none produced a file.
+The two list calls and two plan updates succeeded. Independent disk/Git
+inspection confirms ten empty directories, **zero source/root files**, unborn
+`main`, zero commits. No install, test, production build, server launch or
+materially working ForgeBoard implementation occurred. No first source-write
+timestamp exists. The native shell guidance is verified for these commands,
+not for a full coding workflow. Tool names, IDs, inputs, outputs and errors are
+preserved in the transcript and subsequent native request bodies.
+
+### Final Boundary and Interpretation
+
+The mission lasted 297.735 seconds. Requests 1 through 12 each completed with
+actual engine `done_reason=stop`, then their tool steps executed. Actual output
+counts were 102, 345, 323, 30, 49, 49, 53, 55, 259, 58, 379, 103: 1805 reported
+tokens across those completed responses, not a final whole-run usage estimate.
+Request 13 was sent at +235.462s and produced first bytes at +236.622s, but
+no engine finish/usage total. At +297.730s it settled `timed-out` with
+`stream-idle-timeout`; at +297.735s the run became failed, terminal/non-retrying:
+
+```text
+Inference timed out
+Timed out waiting for generation progress.
+```
+
+Native policy selected its existing stream-idle deadline, not the 600-second
+overall deadline, output exhaustion, evidence expiry or host termination.
+Why the final response stopped providing recognized generation progress cannot
+be established from these client-side artifacts. This is a distinct observed
+runtime boundary, not proof of an Ollama/model crash or a newly diagnosed Clack
+implementation defect. No timeout was changed, repair attempted, request
+replayed or new experiment started. Budget and answer continuations were both
+zero; all nine unfinished todos became failed under existing terminal cleanup.
+The harness reported successfully (`ok:true`, runner exit 0), not product success.
+
+Classification: **PRODUCT RUNTIME / STREAM IDLE TIMEOUT / INCOMPLETE**.
+Separately, the model repeatedly chose invalid read/edit targets and imagined
+existing files; those are observed **MODEL / TOOL USAGE** errors, correctly
+refused by the tools, not a reason to weaken editing safeguards. This attempt
+does not establish whether the model would eventually recover and finish.
+
+The reasoning-evidence blocker is fixed and live steps continued past its
+previous boundary through 13 admissions and 16 tools. Persisted native settings
+retain fresh exact `probe.thinking=true` evidence at +221.198s while the original
+captured expiry remains +29.954s, demonstrating revalidation without mutating
+the capture. The run reached shell/directory scaffolding and attempted coding,
+**not a successful source implementation**. Useful None startup remains in
+sharp contrast with the valid Automatic/8192 reasoning-only 600.662-second
+overall-deadline result. The deployment-specific startup conclusion stands;
+ForgeBoard completion, memory reliability under a long completed project, and
+all-model conclusions do not follow from this attempt.
+
+### Verification and Scope
+
+- Focused lifecycle/adapter/D2/error/preferences group: **214 passed, 7 files**.
+  Final updated admission-fixture group: **8 passed, 1 additional file**.
+  Total distinct focused cases: **222**. Tests include slow responses plus
+  40-second tools, unchanged/changed/unsupported contracts, model/deployment/
+  configuration changes, offline/missing/hung metadata, late completion,
+  post-queue/near-expiry refresh, capture reuse, no replay, same None controls,
+  compatible/LM Studio/vLLM/MLX serialization, and D2 single-system continuation.
+- `npm.cmd run check-types`: passed. `npm.cmd run lint`: passed at the existing
+  **71 warnings, 2 informational notices, zero errors** baseline. The later
+  modified admission fixture also passed a focused lint check.
+- `npm.cmd test`: **2725 passed, 196 files**. The first sandbox invocation could
+  not import any tests because Windows denied temporary-cache renames (`EPERM`);
+  it was rerun outside that sandbox. That run exposed two older TTL-immediate-
+  failure expectations. Their native metadata fixtures/assertions were updated
+  to the required bounded-revalidation semantics, keeping changed/unavailable
+  proof denied; the focused eight and final full suite then passed. No
+  production fix or threshold weakening was required after the live run.
+- `npm.cmd run build`: passed, including TypeScript on the final test sources.
+  Existing ineffective-dynamic-import and plugin-timing notices remain.
+  `git diff --check`: passed.
+- No Rust source changed; Rust gates were not rerun. The Windows native IPC
+  host/production adapter was exercised; native GUI/Computer Use and Linux/macOS
+  live verification were not performed. Previous evidence directories remain
+  intact. No Ollama/network/firewall configuration changed, no cloud inference
+  occurred, and no Automatic experiment or tuning ladder was run.
+- Only the reasoning lifecycle, its regression tests and this report are in
+  scope. No subsequent checkpoint, unrelated delegation/autonomous-tracker work,
+  stash operation or push was performed.

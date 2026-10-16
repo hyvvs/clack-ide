@@ -184,7 +184,8 @@ export function normalizeAiError(
     return {
       kind: "bad_request",
       disposition: "terminal",
-      title: "Context preflight",
+      title: String(budget.code).startsWith("reasoning-evidence-")
+        ? "Reasoning controls" : "Context preflight",
       message: sanitizeAiErrorText(budget.message),
       ...(budgetNode?.value instanceof ContextBudgetError &&
       budgetNode.value.budget && !budgetNode.value.budget.fits &&

@@ -355,6 +355,19 @@ export function effortProviderOptions(capture: EffortCapture): ProviderOptions {
   }
 }
 
+export function sameEffortContract(
+  captured: EffortCapture,
+  current: EffortCapability,
+): boolean {
+  return captured.capability.status === "supported" &&
+    current.status === "supported" &&
+    current.revision === captured.capability.revision &&
+    current.mapping === captured.capability.mapping &&
+    current.levels.length === captured.capability.levels.length &&
+    current.levels.every(level => captured.capability.levels.includes(level)) &&
+    current.levels.includes(captured.choice);
+}
+
 export function effortBudget(capture?: EffortCapture): number | undefined {
   return capture?.capability.mapping === "google-budget" &&
     capture.choice !== "automatic"

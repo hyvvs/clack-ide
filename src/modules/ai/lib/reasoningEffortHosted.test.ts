@@ -5,6 +5,7 @@ import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
 import { createRequestPreflight } from "@/modules/ai/lib/requestPreflight";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
+import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
 afterEach(() => {
@@ -117,7 +118,7 @@ describe("R2 self-hosted actual requests and admission revalidation", () => {
     "revoked",
     "expired",
     "configuration",
-  ])("%s evidence fails after waiting for a capacity-one slot, without inference or metadata HTTP", async (failure) => {
+  ])("%s evidence fails safely after waiting when fresh proof is unavailable", async (failure) => {
     const fixture = hostedEffortFixture();
     const now = Date.now();
     vi.spyOn(Date, "now").mockReturnValue(now);
@@ -126,11 +127,24 @@ describe("R2 self-hosted actual requests and admission revalidation", () => {
       choice: "high",
     };
     const current = structuredClone(fixture.state);
-    vi.mocked(invoke).mockImplementation(async (command) =>
-      command === "self_hosted_profiles_snapshot"
-        ? [["selfHostedInference", current]]
-        : null,
-    );
+    const snapshot: ProbeSnapshot = {
+      endpointId: fixture.endpoint.id,
+      configurationRevision: fixture.endpoint.configurationRevision,
+      selectedModelId: fixture.profile.transportModelId,
+      observedAt: now,
+      connected: true, reachable: true, credentialUsed: false,
+      stale: false, refreshing: false, errors: [],
+      inventoryTtlMs: 300_000, instanceTtlMs: 30_000,
+      models: [{ id: fixture.profile.transportModelId, name: null,
+        chat: "supported", evidence: fixture.profile.evidence }],
+    };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "self_hosted_profiles_snapshot")
+        return [["selfHostedInference", current]];
+      if (command === "self_hosted_probe_cache") return snapshot;
+      if (command === "self_hosted_probe") throw new Error("Metadata unavailable");
+      throw new Error(`Unexpected IPC: ${command}`);
+    });
     const preflight = createRequestPreflight({
       modelId: reasoning.model,
       local: true,
@@ -152,13 +166,12 @@ describe("R2 self-hosted actual requests and admission revalidation", () => {
     if (failure === "revoked") current.profiles[0].evidence = [];
     if (failure === "configuration")
       current.endpoints[0].configurationRevision++;
-    await expect(revalidate()).rejects.toThrow(/expired|settings changed/);
-    expect(
-      vi
-        .mocked(invoke)
-        .mock.calls.every(
-          ([command]) => command === "self_hosted_profiles_snapshot",
-        ),
-    ).toBe(true);
+    await expect(revalidate()).rejects.toThrow(failure === "configuration"
+      ? /settings changed/ : /could not be revalidated/);
+    const calls = vi.mocked(invoke).mock.calls;
+    expect(calls.filter(([command]) => command === "self_hosted_probe"))
+      .toHaveLength(failure === "configuration" ? 0 : 1);
+    expect(calls.every(([command]) => ["self_hosted_profiles_snapshot",
+      "self_hosted_probe_cache", "self_hosted_probe"].includes(command))).toBe(true);
   });
 });

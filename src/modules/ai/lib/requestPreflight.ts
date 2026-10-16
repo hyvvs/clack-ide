@@ -40,8 +40,27 @@ import {
   effortBudget,
   effortCapability,
   effortProviderOptions,
+  sameEffortContract,
   type EffortCapture,
 } from "@/modules/ai/lib/reasoningEffort";
+
+// Native admission allows five seconds for its acknowledgement.
+const REASONING_REVALIDATION_MS = 3_000;
+const reasoningUnavailable = () => new ContextBudgetError(
+  "reasoning-evidence-unavailable",
+  "The captured reasoning control could not be revalidated with fresh model metadata. No inference was sent. Check the endpoint and retry explicitly; reasoning was not changed.",
+);
+
+async function boundedReasoning<T>(work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(reasoningUnavailable()), REASONING_REVALIDATION_MS);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const modelBudgets = new WeakMap<object, () => Promise<BudgetLimits>>();
 const modelDiagnostics = new WeakMap<
@@ -106,21 +125,8 @@ export function createRequestPreflight(options: {
   let schemaKinds: Record<string, SchemaKind> = {};
   let availableSchemas: number | undefined;
   let providerLimits: BudgetLimits = {};
-  let reasoningExpiresAt = options.reasoning?.capability.expiresAt;
-  const reasoningOptions = () => {
-    if (!options.reasoning) return {};
-    return effortProviderOptions(
-      reasoningExpiresAt === undefined
-        ? options.reasoning
-        : {
-            ...options.reasoning,
-            capability: {
-              ...options.reasoning.capability,
-              expiresAt: reasoningExpiresAt,
-            },
-          },
-    );
-  };
+  const reasoning = options.reasoning ? structuredClone(options.reasoning) : undefined;
+  let reasoningValidation: Promise<ReturnType<typeof effortProviderOptions>> | undefined;
   const limits = (): BudgetLimits => ({
     ...(options.optimization ? { inputCap: 1365, outputCap: 170 } : {}),
     ...(profile && state
@@ -144,6 +150,8 @@ export function createRequestPreflight(options: {
   };
   const refresh = async () => {
     await options.validateRouting?.();
+    if (reasoning?.choice !== "automatic" && reasoning?.capability.expiresAt !== undefined)
+      await checkIdentity();
     if (!options.local && !profile)
       providerLimits = await resolveProviderContext(
         options.modelId,
@@ -190,42 +198,65 @@ export function createRequestPreflight(options: {
     const current = readSelfHostedState(
       new Map(entries).get("selfHostedInference"),
     );
-    const currentProfile = current.profiles.find((p) => p.id === profile.id);
-    const currentEndpoint = current.endpoints.find(
-      (e) => e.id === currentProfile?.endpointId && !e.deletedAt,
-    );
-    const currentReasoningIdentity =
-      currentProfile && currentEndpoint
-        ? {
-            providerId: endpointProvider(currentEndpoint),
-            transportModelId: currentProfile.transportModelId,
-            selfHosted: {
-              endpointId: currentEndpoint.id,
-              profileId: currentProfile.id,
-              configurationRevision: currentEndpoint.configurationRevision,
-              allowPrivateNetwork: endpointAllowsPrivate(currentEndpoint),
-              credentialRef: currentEndpoint.credentialRef,
-              credentialRequired:
-                !!currentEndpoint.credentialRef && !currentEndpoint.legacy,
-            },
-          }
-        : null;
-    const currentReasoning = currentReasoningIdentity
-      ? effortCapability(currentReasoningIdentity, current)
-      : null;
-    if (
-      budgetIdentity(current, profile.id) !== identity ||
-      (options.reasoning?.choice !== "automatic" &&
-        options.reasoning?.capability.expiresAt !== undefined &&
-        (currentReasoning?.status !== "supported" ||
-          currentReasoning.revision !== options.reasoning.capability.revision ||
-          currentReasoning.mapping !== options.reasoning.capability.mapping ||
-          !currentReasoning.levels.includes(options.reasoning.choice)))
-    )
+    if (budgetIdentity(current, profile.id) !== identity)
       throw new ContextBudgetError(
         "context-settings-changed",
         "Endpoint/model/profile settings changed while this request was waiting. Start a new request with the current settings.",
       );
+    return current;
+  };
+  const reasoningOptions = async () => {
+    if (!reasoning) return {};
+    if (reasoning.choice === "automatic" || reasoning.capability.expiresAt === undefined)
+      return effortProviderOptions(reasoning);
+    if (!endpoint || !profile) throw reasoningUnavailable();
+    if (!reasoningValidation) {
+      const inspect = (current: SelfHostedState | undefined) => effortCapability({
+        providerId: endpointProvider(endpoint),
+        transportModelId: profile.transportModelId,
+        selfHosted: {
+          endpointId: endpoint.id, profileId: profile.id,
+          configurationRevision: endpoint.configurationRevision,
+          allowPrivateNetwork: endpointAllowsPrivate(endpoint),
+          credentialRef: endpoint.credentialRef, credentialRequired: !!endpoint.credentialRef && !endpoint.legacy,
+        },
+      }, current);
+      const work = async () => {
+        let capability = inspect(await checkIdentity());
+        let refreshed: ProbeSnapshot | undefined;
+        const expiring = () => capability.expiresAt !== undefined &&
+          capability.expiresAt - Date.now() <= REASONING_REVALIDATION_MS;
+        if ((capability.status === "unknown" || expiring()) && !options.cachedMetadataOnly &&
+            (expiring() || Date.now() - refreshAttemptedAt >= PROBE_INSTANCE_TTL_MS)) {
+          refreshAttemptedAt = Date.now();
+          try {
+            refreshed = await createSelfHostedProbeClient().refresh({
+              endpointId: endpoint.id, selectedModelId: profile.transportModelId,
+              allowPrivateNetwork: endpointAllowsPrivate(endpoint),
+            });
+          } catch {
+            throw reasoningUnavailable();
+          }
+          if (!refreshed.connected || refreshed.stale ||
+              refreshed.endpointId !== endpoint.id ||
+              refreshed.configurationRevision !== endpoint.configurationRevision ||
+              refreshed.selectedModelId !== profile.transportModelId)
+            throw reasoningUnavailable();
+          capability = inspect(await checkIdentity());
+        }
+        if (capability.status === "unknown" || expiring()) throw reasoningUnavailable();
+        if (!sameEffortContract(reasoning, capability))
+          throw new ContextBudgetError("reasoning-evidence-changed",
+            "The endpoint's reasoning-control contract changed. No inference was sent. Review this model's reasoning settings and start a new request; the captured choice was not changed.");
+        effortProviderOptions({ ...reasoning, capability });
+        return { capability, refreshed };
+      };
+      reasoningValidation = boundedReasoning(work()).then(result => {
+        if (result.refreshed) snapshot = result.refreshed;
+        return effortProviderOptions({ ...reasoning, capability: result.capability });
+      }).finally(() => { reasoningValidation = undefined; });
+    }
+    return reasoningValidation;
   };
   return {
     thermal(): "cold" | "warm" | "unknown" {
@@ -249,12 +280,13 @@ export function createRequestPreflight(options: {
           specificationVersion: "v3",
           async transformParams({ params }) {
             await refresh();
+            const reasoningSettings = await reasoningOptions();
             const output = resolveContextBudget(limits(), undefined, params.maxOutputTokens).output;
             if (options.requireRequestedOutput && params.maxOutputTokens !== undefined && output < params.maxOutputTokens)
               throw new ContextBudgetError("fallback-output", "Fallback cannot preserve the requested output allowance.");
             const providerOptions = { ...params.providerOptions };
             for (const [provider, settings] of Object.entries(
-              reasoningOptions(),
+              reasoningSettings,
             )) {
               providerOptions[provider] = {
                 ...providerOptions[provider],
@@ -283,16 +315,15 @@ export function createRequestPreflight(options: {
       return wrapped;
     },
     async prepare(body: Record<string, unknown>) {
-      reasoningOptions();
       await refresh();
+      await reasoningOptions();
       const measured = assertRequestBudget(limits(), body, schemaKinds, availableSchemas);
       if (options.providerId === "ollama" && (body.model !== options.modelId ||
         (body.options as { num_ctx?: unknown } | undefined)?.num_ctx !== runtimeTarget()))
         throw new ContextBudgetError("ollama-context-route", "Ollama runtime context/model does not match the captured profile.");
       return async () => {
-        reasoningOptions();
         await checkIdentity();
-        // Admission revalidation is bounded/local only. Never hold capacity for metadata HTTP.
+        // Only stale explicit controls may use bounded metadata revalidation here.
         if (endpoint && profile) {
           try {
             snapshot = await createSelfHostedProbeClient().read({
@@ -313,6 +344,7 @@ export function createRequestPreflight(options: {
           );
         assertMeasuredRequestBudget(limits(), measured.cost, measured.output);
         await options.validateEvidence?.();
+        await reasoningOptions();
       };
     },
     async observeOllamaRuntime() {
@@ -321,16 +353,6 @@ export function createRequestPreflight(options: {
       const current = snapshot?.models.find(m => m.id === profile.transportModelId);
       try {
         await checkIdentity();
-        // A successful Ollama response is part of one captured run. Keep an
-        // explicit reasoning choice usable across its tool loop without
-        // turning the 30s discovery TTL into a 30s Agent lifetime. Queue-time
-        // admission still uses the original/renewed deadline, and any profile
-        // or reasoning-evidence change still fails checkIdentity before send.
-        if (
-          options.reasoning?.choice !== "automatic" &&
-          options.reasoning?.capability.expiresAt !== undefined
-        )
-          reasoningExpiresAt = Date.now() + PROBE_INSTANCE_TTL_MS;
         if (snapshot && Date.now() - snapshot.observedAt < PROBE_INSTANCE_TTL_MS &&
           (target === undefined ? current?.evidence.some(e => e.metric === "probe.loaded" && e.value === true)
             : current?.evidence.some(e => e.metric === "probe.requestedContext" && e.value === target) &&

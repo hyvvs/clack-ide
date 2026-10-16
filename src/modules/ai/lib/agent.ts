@@ -65,6 +65,7 @@ import { recordPassiveCalibration } from "@/modules/ai/lib/inferenceCalibration"
 import {
   captureEffort,
   effortCapability,
+  sameEffortContract,
   type EffortCapture,
 } from "@/modules/ai/lib/reasoningEffort";
 import {
@@ -205,7 +206,8 @@ export async function buildLanguageModel(
     throw new Error(
       "Captured reasoning effort belongs to another model route.",
     );
-  if (reasoning && reasoning.choice !== "automatic") {
+  if (reasoning && reasoning.choice !== "automatic" &&
+      !(options.selfHosted && admission && reasoning.capability.expiresAt !== undefined)) {
     const endpoint = options.selfHostedInference?.endpoints.find(
       (e) => e.id === admission?.endpointId,
     );
@@ -231,12 +233,7 @@ export async function buildLanguageModel(
       },
       options.selfHostedInference,
     );
-    if (
-      current.status !== "supported" ||
-      current.revision !== reasoning.capability.revision ||
-      current.mapping !== reasoning.capability.mapping ||
-      !current.levels.includes(reasoning.choice)
-    )
+    if (!sameEffortContract(reasoning, current))
       throw new Error(
         "Captured reasoning effort evidence is no longer valid. Start a new request.",
       );

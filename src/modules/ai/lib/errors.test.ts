@@ -9,6 +9,7 @@ import {
 import { APICallError, RetryError } from "ai";
 import { describe, expect, it } from "vitest";
 import { ReasoningOutputExhaustedError } from "@/modules/ai/lib/answerContinuation";
+import { ContextBudgetError } from "@/modules/ai/lib/contextBudget";
 
 function apiError(
   statusCode: number,
@@ -32,6 +33,11 @@ const OPENROUTER = {
 };
 
 describe("normalizeAiError", () => {
+  it.each(["reasoning-evidence-changed", "reasoning-evidence-unavailable"])("presents %s as a non-retrying reasoning-control error, not a context-window diagnosis", code => {
+    const error = normalizeAiError(new ContextBudgetError(code, "Review this model's reasoning settings before retrying explicitly."));
+    expect(error).toMatchObject({ title: "Reasoning controls", errorCode: code, retryable: false, disposition: "terminal" });
+    expect(error.message).not.toMatch(/context|window/);
+  });
   it("presents reasoning-only output exhaustion as an actionable terminal diagnosis", () => {
     const error = normalizeAiError(
       new ReasoningOutputExhaustedError(2048, 2048),

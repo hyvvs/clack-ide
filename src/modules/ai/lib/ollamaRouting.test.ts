@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { generateText, jsonSchema, stepCountIs, streamText, tool } from "ai";
+import { withAnswerContinuation } from "@/modules/ai/lib/answerContinuation";
 import { invoke } from "@tauri-apps/api/core";
 import { buildConfiguredLanguageModel } from "@/modules/ai/lib/agent";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
@@ -40,6 +42,9 @@ let current = state;
 let snapshot: ProbeSnapshot;
 let loadedAfter = 32768;
 let beforeAdmission: (() => void) | undefined;
+let beforeResponse: (() => void) | undefined;
+let refreshProbe: ((value: ProbeSnapshot) => ProbeSnapshot | Promise<ProbeSnapshot>) | undefined;
+let reply: ((index: number) => { message: Record<string, unknown>; done_reason: string }) | undefined;
 const sent: {
   url: string;
   body: Record<string, unknown>;
@@ -126,6 +131,9 @@ beforeEach(() => {
   snapshot = metadata();
   loadedAfter = 32768;
   beforeAdmission = undefined;
+  beforeResponse = undefined;
+  refreshProbe = undefined;
+  reply = undefined;
   sent.length = 0;
   approvals.clear();
   vi.clearAllMocks();
@@ -140,10 +148,13 @@ beforeEach(() => {
       return snapshot;
     }
     if (command === "self_hosted_probe") {
-      snapshot = metadata(
+      const next = metadata(
         loadedAfter,
         (args.options as { requestedContext?: number }).requestedContext,
       );
+      snapshot = refreshProbe ? await refreshProbe(next) : next;
+      current = structuredClone(current);
+      current.profiles[0].evidence = snapshot.models[0]?.evidence ?? [];
       return snapshot;
     }
     if (command === "ai_http_open") return crypto.randomUUID();
@@ -183,6 +194,7 @@ beforeEach(() => {
       admission: a.admission,
       headers: a.headers,
     });
+    beforeResponse?.();
     a.onEvent.onmessage({
       kind: "headers",
       requestId: a.requestId,
@@ -199,6 +211,9 @@ beforeEach(() => {
             message: { role: "assistant", content: "done" },
             done: true,
             done_reason: "stop",
+            prompt_eval_count: 20,
+            eval_count: 64,
+            ...reply?.(sent.length),
           }),
         ),
       ],
@@ -210,6 +225,7 @@ beforeEach(() => {
     });
   });
 });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 const params = {
   prompt: [
     {
@@ -484,7 +500,7 @@ describe("production Ollama route, B1 and runtime evidence", () => {
       ollama: { think: "low" },
     });
   });
-  it.each(["expired admission", "changed controls"])("rejects an explicit reasoning choice with %s", async (scenario) => {
+  it("rejects changed reasoning controls during admission", async () => {
     const now = Date.now();
     vi.spyOn(Date, "now").mockReturnValue(now);
     snapshot = metadata(32768, 32768);
@@ -495,15 +511,178 @@ describe("production Ollama route, B1 and runtime evidence", () => {
     const reasoning = { ...captureEffort("selection", identity, undefined, state), choice: "none" };
     const built = await model(false, reasoning);
     beforeAdmission = () => {
-      if (scenario === "expired admission") vi.mocked(Date.now).mockReturnValue(now + 31_000);
-      else {
-        current = structuredClone(current);
-        current.profiles[0].evidence.push(profileEvidence(state, state.profiles[0].id,
-          "probe.thinkingControls", '["low","high"]', "backend-reported", now, "reported"));
-      }
+      current = structuredClone(current);
+      current.profiles[0].evidence.push(profileEvidence(state, state.profiles[0].id,
+        "probe.thinkingControls", '["low","high"]', "backend-reported", now, "reported"));
     };
     await expect(built.doGenerate(params)).rejects.toThrow();
     expect(sent).toHaveLength(0);
     expect(invoke).toHaveBeenCalledWith("ai_http_preflight", expect.objectContaining({ approved: false }));
+  });
+});
+
+async function explicitNoneModel() {
+  snapshot = metadata(32768, 32768);
+  state.profiles[0].evidence = snapshot.models[0].evidence;
+  current = state;
+  const identity = selfHostedTransportIdentity(selfHostedSelectionId(state.profiles[0]), state);
+  if (!identity) throw new Error("Missing fixture identity");
+  const captured = { ...captureEffort("selection", identity, undefined, state), choice: "none" };
+  return { built: await model(false, captured), captured };
+}
+
+describe("captured reasoning evidence across real adapter steps", () => {
+  it("revalidates an expired capture when rebuilding the same model for a later run segment", async () => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { captured } = await explicitNoneModel();
+    const original = structuredClone(captured);
+    now += 40_000;
+    const rebuilt = await model(false, captured);
+    await rebuilt.doGenerate(params);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body.think).toBe(false);
+    expect(captured).toEqual(original);
+  });
+  it("revalidates the same contract after slow model responses and 40-second tool work without replay", async () => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { built, captured } = await explicitNoneModel();
+    const original = structuredClone(captured);
+    beforeResponse = () => { now += 56_000; };
+    reply = index => ({
+      message: index < 3
+        ? { role: "assistant", content: "Inspecting.", tool_calls: [{ function: { name: "inspect_workspace", arguments: {} } }] }
+        : { role: "assistant", content: "Verified." },
+      done_reason: "stop",
+    });
+    let effects = 0;
+    const result = await generateText({
+      model: built, prompt: "Inspect twice, then report.", maxOutputTokens: 2048,
+      tools: { inspect_workspace: tool({ inputSchema: jsonSchema({ type: "object", properties: {} }), execute: async () => {
+        now += 40_000;
+        return { observation: ++effects };
+      } }) },
+      stopWhen: stepCountIs(4), maxRetries: 0,
+    });
+    expect(result.text).toBe("Verified.");
+    expect(effects).toBe(2);
+    expect(result.steps).toHaveLength(3);
+    expect(sent).toHaveLength(3);
+    for (const request of sent) expect(request.body).toMatchObject({ model: "exact:latest", think: false, options: { num_ctx: 32768, num_predict: 2048 } });
+    expect(captured).toEqual(original);
+    expect(invoke).toHaveBeenCalledWith("self_hosted_probe", expect.objectContaining({ options: expect.objectContaining({ selectedModelId: "exact:latest", force: true, restart: false }) }));
+  });
+
+  it("refreshes after an expired queue wait before approving the original think:false body", async () => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { built } = await explicitNoneModel();
+    beforeAdmission = () => { now += 40_000; };
+    await built.doGenerate(params);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body.think).toBe(false);
+    const calls = vi.mocked(invoke).mock.calls;
+    const waiting = calls.findIndex(([command]) => command === "ai_http_stream");
+    const refreshed = calls.findIndex(([command], index) => index > waiting && command === "self_hosted_probe");
+    const approved = calls.findIndex(([command, args]) => command === "ai_http_preflight" && (args as { approved: boolean }).approved);
+    expect(refreshed).toBeGreaterThan(waiting);
+    expect(approved).toBeGreaterThan(refreshed);
+  });
+  it("refreshes near expiry instead of racing the unchanged TTL at admission", async () => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { built } = await explicitNoneModel();
+    beforeAdmission = () => { now += 29_999; };
+    await built.doGenerate(params);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body.think).toBe(false);
+  });
+
+  it.each(["unsupported", "different mapping", "different model", "different deployment", "endpoint revision"])("fails closed when refresh reveals %s", async scenario => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { built } = await explicitNoneModel();
+    await built.doGenerate(params);
+    now += 40_000;
+    refreshProbe = next => {
+      current = structuredClone(current);
+      if (scenario === "unsupported") {
+        const thinking = next.models[0].evidence.find(e => e.metric === "probe.thinking");
+        if (!thinking) throw new Error("Missing fixture evidence");
+        thinking.value = false;
+      }
+      if (scenario === "different mapping") next.models[0].evidence.push(profileEvidence(state, state.profiles[0].id,
+        "probe.thinkingControls", '["none","on"]', "backend-reported", now, "reported"));
+      if (scenario === "different model") current.profiles[0].transportModelId = "other:latest";
+      if (scenario === "different deployment") current.profiles[0].deploymentId = "other";
+      if (scenario === "endpoint revision") current.endpoints[0].configurationRevision++;
+      return next;
+    };
+    await expect(built.doGenerate(params)).rejects.toThrow(/reasoning-control contract changed|settings changed/);
+    expect(sent).toHaveLength(1);
+  });
+
+  it.each(["unavailable", "missing support"])("does not manufacture support or repeatedly probe when refresh is %s", async scenario => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { built } = await explicitNoneModel();
+    await built.doGenerate(params);
+    now += 40_000;
+    refreshProbe = next => {
+      if (scenario === "unavailable") throw new Error("Metadata offline");
+      next.models[0].evidence = next.models[0].evidence.filter(e => e.metric !== "probe.thinking");
+      return next;
+    };
+    for (let attempt = 0; attempt < 2; attempt++)
+      await expect(built.doGenerate(params)).rejects.toThrow(/could not be revalidated/);
+    expect(sent).toHaveLength(1);
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "self_hosted_probe")).toHaveLength(1);
+  });
+
+  it("bounds a stalled post-queue metadata refresh without sending or replaying after late completion", async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    const { built } = await explicitNoneModel();
+    let release: (value: ProbeSnapshot) => void = () => {};
+    beforeAdmission = () => {
+      vi.setSystemTime(now + 40_000);
+      refreshProbe = () => new Promise(resolve => { release = resolve; });
+    };
+    const pending = expect(built.doGenerate(params)).rejects.toThrow(/could not be revalidated/);
+    await vi.advanceTimersByTimeAsync(3001);
+    await pending;
+    expect(sent).toHaveLength(0);
+    release(metadata(32768, 32768));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sent).toHaveLength(0);
+    expect(invoke).toHaveBeenCalledWith("ai_http_preflight", expect.objectContaining({ approved: false }));
+  });
+
+  it("D2 revalidates after a slow length segment and retains one leading system message and think:false", async () => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { built } = await explicitNoneModel();
+    beforeResponse = () => { now += 40_000; };
+    reply = index => ({
+      message: { role: "assistant", content: index === 1 ? "A meaningful first answer segment with useful progress. " : "Its continuation." },
+      done_reason: index === 1 ? "length" : "stop",
+    });
+    const errors: unknown[] = [];
+    const result = streamText({
+      model: withAnswerContinuation(built, {
+        runId: "same-run", provider: "ollama", modelId: "exact:latest", isCurrent: () => true,
+        limits: () => modelBudgetLimits(built),
+      }),
+      system: "Retain all constraints.", prompt: "Answer fully.", maxOutputTokens: 2048, maxRetries: 0,
+      onError: ({ error }) => { errors.push(error); },
+    });
+    expect(await result.text).toContain("Its continuation.");
+    expect(errors).toHaveLength(0);
+    expect(sent).toHaveLength(2);
+    for (const request of sent) {
+      expect(request.body.think).toBe(false);
+      expect((request.body.messages as { role: string }[]).filter(m => m.role === "system")).toHaveLength(1);
+    }
   });
 });

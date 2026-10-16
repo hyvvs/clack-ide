@@ -12,6 +12,10 @@ import {
   knownTransportContextLimit,
   modelBudgetLimits,
 } from "@/modules/ai/lib/requestPreflight";
+import { hostedEffortFixture } from "@/modules/ai/lib/reasoningEffort.fixture";
+import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
+import { selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
+import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -96,6 +100,50 @@ async function model(provider: ProviderId, id: string) {
   return built;
 }
 describe("real installed adapters serialize shared output/preflight", () => {
+  it.each(["openai-compatible", "lmstudio", "vllm", "mlx"] as const)("revalidates the existing explicit contract for %s without using Ollama controls", async backend => {
+    let now = Date.now();
+    const date = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const fixture = hostedEffortFixture();
+      fixture.endpoint.backendHint = backend;
+      const captured = { ...captureEffort("selection", fixture.identity, undefined, fixture.state), choice: "high" };
+      const original = structuredClone(captured);
+      let current = structuredClone(fixture.state);
+      let metadataCalls = 0;
+      const snapshot = (): ProbeSnapshot => ({
+        endpointId: fixture.endpoint.id, configurationRevision: 1, selectedModelId: fixture.profile.transportModelId,
+        observedAt: now, connected: true, reachable: true, credentialUsed: false, stale: false, refreshing: false,
+        inventoryTtlMs: 300000, instanceTtlMs: 30000, errors: [],
+        models: [{ id: fixture.profile.transportModelId, name: null, chat: "supported", evidence: current.profiles[0].evidence }],
+      });
+      const baseInvoke = vi.mocked(invoke).getMockImplementation();
+      vi.mocked(invoke).mockImplementation(async (command, args) => {
+        if (command === "self_hosted_profiles_snapshot") return [["selfHostedInference", current]];
+        if (command === "self_hosted_probe_cache") return snapshot();
+        if (command === "self_hosted_probe") {
+          metadataCalls++;
+          current = structuredClone(current);
+          current.profiles[0].evidence[0].observedAt = now;
+          return snapshot();
+        }
+        return baseInvoke?.(command, args);
+      });
+      const built = await buildConfiguredLanguageModel(selfHostedSelectionId(fixture.profile), EMPTY_PROVIDER_KEYS,
+        { selfHostedInference: fixture.state, capturedModelIdentity: fixture.identity, reasoning: captured });
+      if (typeof built === "string" || built.specificationVersion !== "v3") throw new Error("Unexpected model");
+      const request = { prompt: [{ role: "user" as const, content: [{ type: "text" as const, text: "Hello" }] }], maxOutputTokens: 256 };
+      await Promise.resolve(built.doGenerate(request)).catch(() => undefined);
+      now += 40_000;
+      await Promise.resolve(built.doGenerate(request)).catch(() => undefined);
+      expect(bodies).toHaveLength(2);
+      for (const body of bodies) {
+        expect(body.reasoning_effort).toBe("high");
+        expect(body).not.toHaveProperty("think");
+      }
+      expect(metadataCalls).toBe(1);
+      expect(captured).toEqual(original);
+    } finally { date.mockRestore(); }
+  });
   it("provider-qualified exact metadata does not infer capacity from names or another provider", () => {
     expect(
       knownTransportContextLimit("anthropic/claude-sonnet-4.6", "openrouter"),

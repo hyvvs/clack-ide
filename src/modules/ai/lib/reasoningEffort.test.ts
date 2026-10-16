@@ -5,6 +5,7 @@ import {
   effortCapability,
   effortKey,
   effortProviderOptions,
+  sameEffortContract,
   type EffortPreferences,
 } from "@/modules/ai/lib/reasoningEffort";
 import type { ModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
@@ -29,6 +30,18 @@ function preferences(choice = "high"): EffortPreferences {
 }
 
 describe("evidenced reasoning effort", () => {
+  it("separates semantic contract identity from freshness without making an expired capture sendable", () => {
+    const fixture = hostedEffortFixture();
+    const captured = { ...captureEffort("selection", fixture.identity, undefined, fixture.state), choice: "high" };
+    const expired = { ...captured, capability: { ...captured.capability, expiresAt: 1 } };
+    const fresh = { ...captured.capability, expiresAt: Date.now() + 30_000 };
+    expect(sameEffortContract(expired, fresh)).toBe(true);
+    expect(() => effortProviderOptions(expired)).toThrow(/expired/);
+    expect(effortProviderOptions({ ...expired, capability: fresh })).toEqual({ "openai-compatible": { reasoningEffort: "high" } });
+    expect(sameEffortContract(expired, { ...fresh, levels: ["high"] })).toBe(false);
+    expect(sameEffortContract(expired, { ...fresh, mapping: "ollama-level" })).toBe(false);
+    expect(sameEffortContract(expired, { ...fresh, revision: "different" })).toBe(false);
+  });
   it("distinguishes supported, unsupported and unknown without prefix guesses", () => {
     expect(effortCapability(identity).status).toBe("supported");
     expect(
