@@ -36,7 +36,7 @@ export function buildShellTools(ctx: ToolContext) {
   return {
     bash_run: tool({
       description:
-        "Run a foreground shell command in this session's persistent agent shell. cwd persists across calls (so `cd foo` then `bash_run pwd` works). Use for short-lived commands (lint, test, search, build). For long-running or daemon processes (dev servers, watch tasks), use `bash_background`. NEVER invoke interactive tools (vim, less, top) — they will hang. Approval follows the active agent policy.",
+        "Run a foreground command in this session's persistent native shell. Despite the historical tool id `bash_run`, this is NOT necessarily Bash: obey the current <env> shell and shell_syntax fields exactly. cwd persists across calls. Use for short-lived commands (lint, test, search, build). For long-running or daemon processes (dev servers, watch tasks), use `bash_background`. NEVER invoke interactive tools (vim, less, top) — they will hang. Approval follows the active agent policy.",
       inputSchema: z.object({
         command: z.string(),
         timeout_secs: z.number().int().min(1).max(300).optional(),
@@ -78,7 +78,7 @@ export function buildShellTools(ctx: ToolContext) {
 
     bash_background: tool({
       description:
-        "Spawn a long-running background process (e.g. `npm run dev`, `cargo watch`, log tailers). Returns a handle; use `bash_logs` to read its output and `bash_kill` to stop it. Output is captured into a 4MB ring buffer. Approval follows the active agent policy.",
+        "Spawn a long-running process using the native shell declared by the current <env> shell and shell_syntax fields. Despite the historical `bash_` tool ids, do not assume POSIX Bash syntax. Returns a handle; use `bash_logs` to read output and `bash_kill` to stop it. Output is captured into a 4MB ring buffer. Approval follows the active agent policy.",
       inputSchema: z.object({
         command: z.string(),
         cwd: z.string().nullable().optional(),

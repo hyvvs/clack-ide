@@ -34,6 +34,54 @@ pub struct CommandOutput {
     pub truncated: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ShellIdentity {
+    pub name: String,
+    pub syntax: String,
+}
+
+#[tauri::command]
+pub fn shell_identity(workspace: Option<WorkspaceEnv>) -> Result<ShellIdentity, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    if workspace.is_wsl() {
+        return Ok(ShellIdentity {
+            name: "WSL /bin/sh".into(),
+            syntax: "POSIX sh".into(),
+        });
+    }
+    #[cfg(unix)]
+    {
+        Ok(ShellIdentity {
+            name: "/bin/sh".into(),
+            syntax: "POSIX sh".into(),
+        })
+    }
+    #[cfg(windows)]
+    {
+        let shell = crate::modules::pty::shell_init::windows_shell_path();
+        let executable = shell
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if executable.eq_ignore_ascii_case("pwsh.exe") {
+            Ok(ShellIdentity {
+                name: "PowerShell (pwsh.exe)".into(),
+                syntax: "PowerShell; not POSIX Bash".into(),
+            })
+        } else if executable.eq_ignore_ascii_case("powershell.exe") {
+            Ok(ShellIdentity {
+                name: "Windows PowerShell (powershell.exe)".into(),
+                syntax: "PowerShell; not POSIX Bash".into(),
+            })
+        } else {
+            Ok(ShellIdentity {
+                name: "Command Prompt (cmd.exe)".into(),
+                syntax: "cmd.exe; not POSIX Bash".into(),
+            })
+        }
+    }
+}
+
 /// Runs a one-shot command via the user's login shell. Output is capped and
 /// the process is force-killed on timeout. We deliberately do NOT pipe into
 /// the user's interactive PTY — that would fight their input. AI tool calls
@@ -355,6 +403,65 @@ fn drain<R: Read>(reader: &mut R) -> (Vec<u8>, bool) {
         }
     }
     (out, truncated)
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn wsl_shell_identity_is_explicitly_posix() {
+        let identity = shell_identity(Some(WorkspaceEnv::Wsl {
+            distro: "Ubuntu".into(),
+        }))
+        .unwrap();
+        assert_eq!(identity.name, "WSL /bin/sh");
+        assert_eq!(identity.syntax, "POSIX sh");
+        assert_eq!(
+            serde_json::to_value(&identity).unwrap(),
+            serde_json::json!({
+                "name": "WSL /bin/sh", "syntax": "POSIX sh"
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_unix_shell_identity_matches_launcher() {
+        let identity = shell_identity(Some(WorkspaceEnv::Local)).unwrap();
+        assert_eq!(identity.name, "/bin/sh");
+        assert_eq!(identity.syntax, "POSIX sh");
+        assert_eq!(
+            serde_json::to_value(&identity).unwrap(),
+            serde_json::json!({
+                "name": "/bin/sh", "syntax": "POSIX sh"
+            })
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_windows_shell_identity_matches_launcher() {
+        let identity = shell_identity(Some(WorkspaceEnv::Local)).unwrap();
+        let json = serde_json::to_value(&identity).unwrap();
+        assert_eq!(json["name"], identity.name);
+        assert_eq!(json["syntax"], identity.syntax);
+        let shell = crate::modules::pty::shell_init::windows_shell_path();
+        let executable = shell
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if executable.eq_ignore_ascii_case("pwsh.exe") {
+            assert_eq!(identity.name, "PowerShell (pwsh.exe)");
+            assert_eq!(identity.syntax, "PowerShell; not POSIX Bash");
+        } else if executable.eq_ignore_ascii_case("powershell.exe") {
+            assert_eq!(identity.name, "Windows PowerShell (powershell.exe)");
+            assert_eq!(identity.syntax, "PowerShell; not POSIX Bash");
+        } else {
+            assert_eq!(identity.name, "Command Prompt (cmd.exe)");
+            assert_eq!(identity.syntax, "cmd.exe; not POSIX Bash");
+        }
+    }
 }
 
 #[cfg(all(test, unix))]

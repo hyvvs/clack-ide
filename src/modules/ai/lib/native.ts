@@ -241,6 +241,11 @@ export const native = {
       workspace: workspace ?? currentWorkspaceEnv(),
     }),
 
+  shellIdentity: (workspace?: WorkspaceEnv) =>
+    invoke<{ name: string; syntax: string }>("shell_identity", {
+      workspace: workspace ?? currentWorkspaceEnv(),
+    }),
+
   shellSessionOpen: (cwd?: string | null, workspace?: WorkspaceEnv) =>
     invoke<number>("shell_session_open", {
       cwd: cwd ?? null,

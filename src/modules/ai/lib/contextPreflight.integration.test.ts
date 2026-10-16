@@ -29,6 +29,8 @@ import {
 } from "@/modules/ai/lib/selfHostedModels";
 import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
 import { CORE_SYSTEM_PROMPT, DEFAULT_CLACK_BEHAVIOR } from "@/modules/ai/config";
+import { SYSTEM_PROMPT_LITE } from "@/modules/ai/config";
+import { buildShellTools } from "@/modules/ai/tools/shell";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
 const project = readFileSync("CLACK.md", "utf8");
@@ -113,6 +115,10 @@ async function hello(
     getCustomInstructions: () => "Never remove required safety instructions.",
     getAgentPersona: () => persona,
     getLive: () => live,
+    getShellIdentity: () => ({
+      name: "Windows PowerShell (powershell.exe)",
+      syntax: "PowerShell; not POSIX Bash",
+    }),
     onError: (error) => {
       errors.push(normalizeAiError(error));
       return "blocked fixture";
@@ -124,6 +130,39 @@ async function hello(
   while (!(await reader.read()).done) {}
   expect(originals).toEqual(before);
 }
+
+it.each([
+  [
+    { name: "Windows PowerShell (powershell.exe)", syntax: "PowerShell; not POSIX Bash" },
+    "shell: Windows PowerShell (powershell.exe)",
+    "shell_syntax: PowerShell; not POSIX Bash",
+  ],
+  [
+    { name: "/bin/sh", syntax: "POSIX sh" },
+    "shell: /bin/sh",
+    "shell_syntax: POSIX sh",
+  ],
+  [
+    { name: "WSL /bin/sh", syntax: "POSIX sh" },
+    "shell: WSL /bin/sh",
+    "shell_syntax: POSIX sh",
+  ],
+])("formats the native shell contract before tool use", (identity, name, syntax) => {
+  const block = formatEnvBlock(live, identity);
+  expect(block).toContain(name);
+  expect(block).toContain(syntax);
+});
+
+it("keeps native-shell syntax explicit in core/lite prompts and both shell tool contracts", () => {
+  for (const prompt of [CORE_SYSTEM_PROMPT, SYSTEM_PROMPT_LITE]) {
+    expect(prompt).toMatch(/(?:does|do) not imply Bash/);
+    expect(prompt).toContain("shell");
+  }
+  const tools = buildShellTools(context);
+  expect(tools.bash_run.description).toContain("NOT necessarily Bash");
+  expect(tools.bash_run.description).toContain("shell_syntax");
+  expect(tools.bash_background.description).toContain("do not assume POSIX Bash syntax");
+});
 
 it("records the production schema overhead caused by using environment metadata as task relevance", async () => {
   const tools = await buildRuntimeTools(context);
@@ -164,6 +203,8 @@ it("sends a fresh cloud Hello through the real transport, selector, adapter and 
   expect(serialized.match(/## PROJECT MEMORY/g)).toHaveLength(1);
   expect(serialized.match(/## ACTIVE AGENT/g)).toHaveLength(1);
   expect(serialized.match(/workspace_root:/g)).toHaveLength(1);
+  expect(serialized.match(/shell: Windows PowerShell/g)).toHaveLength(1);
+  expect(serialized.match(/shell_syntax: PowerShell; not POSIX Bash/g)).toHaveLength(1);
   expect(serialized).toContain("Never remove required safety instructions.");
   const messages = body.messages as { role: string; content: string }[];
   expect(messages.filter((m) => m.role === "system")).toHaveLength(1);

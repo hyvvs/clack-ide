@@ -88,6 +88,8 @@ beforeEach(() => {
   capturedSelfHostedRuns.clear();
   history.mockReset().mockResolvedValue([]);
   invoke.mockReset().mockImplementation(async (command, args) => {
+    if (command === "shell_identity")
+      return { name: "/bin/sh", syntax: "POSIX sh" };
     if (command === "conversation_source_set") {
       disk.set(args.key, structuredClone(args.value));
       return;

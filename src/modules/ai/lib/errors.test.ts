@@ -8,6 +8,7 @@ import {
 } from "@/modules/ai/lib/errors";
 import { APICallError, RetryError } from "ai";
 import { describe, expect, it } from "vitest";
+import { ReasoningOutputExhaustedError } from "@/modules/ai/lib/answerContinuation";
 
 function apiError(
   statusCode: number,
@@ -31,6 +32,34 @@ const OPENROUTER = {
 };
 
 describe("normalizeAiError", () => {
+  it("presents reasoning-only output exhaustion as an actionable terminal diagnosis", () => {
+    const error = normalizeAiError(
+      new ReasoningOutputExhaustedError(2048, 2048),
+      { provider: "Ollama", model: "qwen38-uncensored:latest" },
+    );
+    expect(error).toMatchObject({
+      kind: "bad_request",
+      disposition: "terminal",
+      title: "Reasoning used the output allowance",
+      errorCode: "reasoning-output-exhausted",
+      retryable: false,
+      provider: "Ollama",
+      model: "qwen38-uncensored:latest",
+    });
+    expect(error.message).toContain("lower/no reasoning");
+    expect(error.message).toContain("output allowance");
+    expect(error.details).toContain("did not automatically retry");
+    expect(error.message).not.toContain("context");
+  });
+  it("retains terminal reasoning guidance through a wrapped stream error", () => {
+    const error = normalizeAiError(Object.assign(new Error("Stream failed"), {
+      cause: new ReasoningOutputExhaustedError(2048, 2048),
+    }));
+    expect(error.errorCode).toBe("reasoning-output-exhausted");
+    expect(error.retryable).toBe(false);
+    expect(error.disposition).toBe("terminal");
+    expect(error.message).toContain("lower/no reasoning");
+  });
   it("classifies 401 responses as authentication failures", () => {
     const error = normalizeAiError(
       apiError(

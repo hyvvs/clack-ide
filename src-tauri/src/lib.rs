@@ -289,6 +289,7 @@ pub fn run() {
             git::commands::git_agent_worktree_remove,
             git::commands::git_agent_patch_apply,
             shell::shell_run_command,
+            shell::shell_identity,
             shell::shell_session_open,
             shell::shell_session_run,
             shell::shell_session_close,

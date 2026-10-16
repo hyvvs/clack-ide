@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import {
   asSchema,
   wrapLanguageModel,
@@ -33,9 +32,13 @@ import {
 } from "@/modules/ai/lib/selfHostedProfiles";
 import { probeEvidenceIsFresh } from "@/modules/ai/lib/selfHostedProbe";
 import type { InferenceAdmission } from "@/modules/ai/lib/inferenceAdmission";
-import { endpointAllowsPrivate } from "@/modules/ai/lib/selfHostedModels";
+import {
+  endpointAllowsPrivate,
+  endpointProvider,
+} from "@/modules/ai/lib/selfHostedModels";
 import {
   effortBudget,
+  effortCapability,
   effortProviderOptions,
   type EffortCapture,
 } from "@/modules/ai/lib/reasoningEffort";
@@ -103,6 +106,21 @@ export function createRequestPreflight(options: {
   let schemaKinds: Record<string, SchemaKind> = {};
   let availableSchemas: number | undefined;
   let providerLimits: BudgetLimits = {};
+  let reasoningExpiresAt = options.reasoning?.capability.expiresAt;
+  const reasoningOptions = () => {
+    if (!options.reasoning) return {};
+    return effortProviderOptions(
+      reasoningExpiresAt === undefined
+        ? options.reasoning
+        : {
+            ...options.reasoning,
+            capability: {
+              ...options.reasoning.capability,
+              expiresAt: reasoningExpiresAt,
+            },
+          },
+    );
+  };
   const limits = (): BudgetLimits => ({
     ...(options.optimization ? { inputCap: 1365, outputCap: 170 } : {}),
     ...(profile && state
@@ -172,18 +190,37 @@ export function createRequestPreflight(options: {
     const current = readSelfHostedState(
       new Map(entries).get("selfHostedInference"),
     );
+    const currentProfile = current.profiles.find((p) => p.id === profile.id);
+    const currentEndpoint = current.endpoints.find(
+      (e) => e.id === currentProfile?.endpointId && !e.deletedAt,
+    );
+    const currentReasoningIdentity =
+      currentProfile && currentEndpoint
+        ? {
+            providerId: endpointProvider(currentEndpoint),
+            transportModelId: currentProfile.transportModelId,
+            selfHosted: {
+              endpointId: currentEndpoint.id,
+              profileId: currentProfile.id,
+              configurationRevision: currentEndpoint.configurationRevision,
+              allowPrivateNetwork: endpointAllowsPrivate(currentEndpoint),
+              credentialRef: currentEndpoint.credentialRef,
+              credentialRequired:
+                !!currentEndpoint.credentialRef && !currentEndpoint.legacy,
+            },
+          }
+        : null;
+    const currentReasoning = currentReasoningIdentity
+      ? effortCapability(currentReasoningIdentity, current)
+      : null;
     if (
       budgetIdentity(current, profile.id) !== identity ||
       (options.reasoning?.choice !== "automatic" &&
         options.reasoning?.capability.expiresAt !== undefined &&
-        canonicalJson(
-          current.profiles
-            .find((p) => p.id === profile.id)
-            ?.evidence.filter((e) => ["reasoning.effort", "probe.thinking", "probe.thinkingControls"].includes(e.metric)),
-        ) !==
-          canonicalJson(
-            profile.evidence.filter((e) => ["reasoning.effort", "probe.thinking", "probe.thinkingControls"].includes(e.metric)),
-          ))
+        (currentReasoning?.status !== "supported" ||
+          currentReasoning.revision !== options.reasoning.capability.revision ||
+          currentReasoning.mapping !== options.reasoning.capability.mapping ||
+          !currentReasoning.levels.includes(options.reasoning.choice)))
     )
       throw new ContextBudgetError(
         "context-settings-changed",
@@ -217,7 +254,7 @@ export function createRequestPreflight(options: {
               throw new ContextBudgetError("fallback-output", "Fallback cannot preserve the requested output allowance.");
             const providerOptions = { ...params.providerOptions };
             for (const [provider, settings] of Object.entries(
-              options.reasoning ? effortProviderOptions(options.reasoning) : {},
+              reasoningOptions(),
             )) {
               providerOptions[provider] = {
                 ...providerOptions[provider],
@@ -246,14 +283,14 @@ export function createRequestPreflight(options: {
       return wrapped;
     },
     async prepare(body: Record<string, unknown>) {
-      if (options.reasoning) effortProviderOptions(options.reasoning);
+      reasoningOptions();
       await refresh();
       const measured = assertRequestBudget(limits(), body, schemaKinds, availableSchemas);
       if (options.providerId === "ollama" && (body.model !== options.modelId ||
         (body.options as { num_ctx?: unknown } | undefined)?.num_ctx !== runtimeTarget()))
         throw new ContextBudgetError("ollama-context-route", "Ollama runtime context/model does not match the captured profile.");
       return async () => {
-        if (options.reasoning) effortProviderOptions(options.reasoning);
+        reasoningOptions();
         await checkIdentity();
         // Admission revalidation is bounded/local only. Never hold capacity for metadata HTTP.
         if (endpoint && profile) {
@@ -282,12 +319,22 @@ export function createRequestPreflight(options: {
       if (options.providerId !== "ollama" || !endpoint || !profile) return;
       const target = runtimeTarget();
       const current = snapshot?.models.find(m => m.id === profile.transportModelId);
-      if (snapshot && Date.now() - snapshot.observedAt < PROBE_INSTANCE_TTL_MS &&
-        (target === undefined ? current?.evidence.some(e => e.metric === "probe.loaded" && e.value === true)
-          : current?.evidence.some(e => e.metric === "probe.requestedContext" && e.value === target) &&
-            current.evidence.some(e => e.metric === "probe.loadedContext" && e.value === target))) return;
       try {
         await checkIdentity();
+        // A successful Ollama response is part of one captured run. Keep an
+        // explicit reasoning choice usable across its tool loop without
+        // turning the 30s discovery TTL into a 30s Agent lifetime. Queue-time
+        // admission still uses the original/renewed deadline, and any profile
+        // or reasoning-evidence change still fails checkIdentity before send.
+        if (
+          options.reasoning?.choice !== "automatic" &&
+          options.reasoning?.capability.expiresAt !== undefined
+        )
+          reasoningExpiresAt = Date.now() + PROBE_INSTANCE_TTL_MS;
+        if (snapshot && Date.now() - snapshot.observedAt < PROBE_INSTANCE_TTL_MS &&
+          (target === undefined ? current?.evidence.some(e => e.metric === "probe.loaded" && e.value === true)
+            : current?.evidence.some(e => e.metric === "probe.requestedContext" && e.value === target) &&
+              current.evidence.some(e => e.metric === "probe.loadedContext" && e.value === target))) return;
         snapshot = await createSelfHostedProbeClient().refresh({
           endpointId: endpoint.id, selectedModelId: profile.transportModelId,
           allowPrivateNetwork: endpointAllowsPrivate(endpoint), requestedContext: target,

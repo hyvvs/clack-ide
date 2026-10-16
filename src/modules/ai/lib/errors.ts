@@ -153,6 +153,24 @@ export function normalizeAiError(
     kind: "watchdog", disposition: "terminal", title: "Output watchdog",
     message: describeWatchdog(watchdog.reason), errorCode: watchdog.reason, retryable: false,
   };
+  const reasoningExhaustion = chain.find(
+    (node) => node.record?.reasoningOutputExhaustion === true,
+  );
+  if (reasoningExhaustion)
+    return {
+      kind: "bad_request",
+      disposition: "terminal",
+      title: "Reasoning used the output allowance",
+      message:
+        sanitizeAiErrorText(reasoningExhaustion.record?.message) ||
+        "The model used its output allowance for reasoning before producing an answer or tool call. Retry explicitly with lower/no reasoning if supported, or increase this model profile's output allowance.",
+      provider: sanitizeAiErrorText(context.provider) || undefined,
+      model: sanitizeAiErrorText(context.model) || undefined,
+      endpoint: sanitizeAiEndpoint(context.endpoint),
+      errorCode: "reasoning-output-exhausted",
+      retryable: false,
+      details: "Clack did not automatically retry the request or change reasoning settings.",
+    };
   const retryAttempts = chain.some(
     (node) => node.record?.providerAttempts === 2,
   )

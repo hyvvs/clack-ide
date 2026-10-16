@@ -52,6 +52,7 @@ fn main() {
             let handler: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> =
                 Box::new(tauri::generate_handler![
                     coworking_exit,
+                    shell::shell_identity,
                     shell::shell_session_open,
                     shell::shell_session_run,
                     shell::shell_session_close,

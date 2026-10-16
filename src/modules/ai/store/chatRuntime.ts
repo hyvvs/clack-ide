@@ -39,6 +39,7 @@ import {
 } from "../lib/errors";
 import type { ProviderRetryEvent } from "../lib/providerRetry";
 import { findSavedProviderModel } from "../lib/savedProviderModels";
+import { native } from "@/modules/ai/lib/native";
 import {
   loadMessages,
   workspaceEnvironmentFromId,
@@ -349,6 +350,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
         activeFile: matches ? live.getActiveFile() : null,
       };
     },
+    getShellIdentity: () => native.shellIdentity(toolContext.getWorkspaceEnv?.()),
     getPlanMode: () => usePlanStore.getState().active,
     getLmstudioBaseURL: () => usePreferencesStore.getState().lmstudioBaseURL,
     getLmstudioModelId: () => usePreferencesStore.getState().lmstudioModelId,

@@ -38,6 +38,7 @@ import {
   prepareSessionChat,
   sendMessageToSession,
 } from "@/modules/ai/store/chatRuntime";
+import { setSessionEffort } from "@/modules/ai/store/reasoningEffort";
 import {
   cancelRun,
   chats,
@@ -60,6 +61,7 @@ import { generateText } from "ai";
 import { createRoot } from "react-dom/client";
 
 type Phase =
+  | "stability"
   | "preflight"
   | "system-preflight"
   | "mission-a"
@@ -71,7 +73,7 @@ type Configuration = {
   root: string;
   server: string;
   report: string;
-  realProduct?: { phase: Phase };
+  realProduct?: { phase: Phase; maxOutput?: number; singleSpec?: boolean; reasoningChoice?: "automatic" | "none" };
 };
 type Part = {
   type: string;
@@ -177,6 +179,18 @@ export async function runRealLocalProduct(config: Configuration) {
   const evidence = audit(config.report);
   await usePreferencesStore.getState().init();
   const root = await native.workspaceAuthorize(config.root);
+  if (phase === "stability") {
+    const startedAt = Date.now();
+    let heartbeats = 0;
+    for (let step = 0; step <= 22; step++) {
+      const shell = await native.shellIdentity();
+      evidence.emit({ kind: "harness-heartbeat", elapsedMs: Date.now() - startedAt, shell });
+      await evidence.flush();
+      heartbeats++;
+      if (step < 22) await new Promise(resolve => setTimeout(resolve, 30_000));
+    }
+    return { phase, heartbeats, elapsedMs: Date.now() - startedAt, cloudInference: 0 };
+  }
   useChatStore.getState().setLive({
     ...useChatStore.getState().live,
     getCwd: () => root,
@@ -214,6 +228,22 @@ export async function runRealLocalProduct(config: Configuration) {
       "concurrentGenerations",
       1,
     );
+    const maxOutput = config.realProduct.maxOutput;
+    if (maxOutput !== undefined) {
+      assert(
+        Number.isSafeInteger(maxOutput) &&
+          maxOutput >= 256 &&
+          maxOutput <= 16384,
+        "Invalid acceptance output allowance",
+      );
+      for (const field of ["maxOutput", "outputReserve"] as const)
+        state = setProfileOverride(
+          state,
+          state.profiles[0].id,
+          field,
+          maxOutput,
+        );
+    }
     const saved = await updateSelfHostedProfiles(() => state);
     usePreferencesStore.setState({ selfHostedInference: saved });
     const agents = [
@@ -296,7 +326,14 @@ export async function runRealLocalProduct(config: Configuration) {
     await saveSessionsList(useChatStore.getState().sessions);
   };
   if (phase === "preflight") await add("real-preflight", "builtin:coder");
-  if (phase === "mission-a") await add("real-mission-a", "builtin:coder");
+  if (phase === "mission-a") {
+    await add("real-mission-a", "builtin:coder");
+    if (config.realProduct.reasoningChoice)
+      await setSessionEffort(
+        "real-mission-a",
+        config.realProduct.reasoningChoice,
+      );
+  }
   if (phase === "offline") await add("real-offline", "builtin:coder");
   await usePeerTaskStore.getState().hydrate({
     sessions: useChatStore.getState().sessions,
@@ -442,7 +479,13 @@ export async function runRealLocalProduct(config: Configuration) {
           JSON.stringify(planSnapshots[planSnapshots.length - 1])
         )
           planSnapshots.push(plan);
-        if (!alreadyCorrected && !correcting && writes.length >= 3 && old) {
+        if (
+          !config.realProduct?.singleSpec &&
+          !alreadyCorrected &&
+          !correcting &&
+          writes.length >= 3 &&
+          old
+        ) {
           correcting = true;
           correctionEvidence = {
             at: Date.now(),

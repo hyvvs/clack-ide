@@ -7,10 +7,20 @@ import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
 
 const phase = process.argv[2];
-assert(["preflight", "system-preflight", "mission-a", "resume-a", "restart", "mission-b", "offline"].includes(phase), "Specify one explicit acceptance phase");
+assert(["preflight", "system-preflight", "mission-a", "resume-a", "restart", "mission-b", "offline", "stability"].includes(phase), "Specify one explicit acceptance phase");
 const repository = fileURLToPath(new URL("../", import.meta.url));
-const owned = path.join(repository, "src-tauri/target/real-qwen-product");
-const root = "C:/Users/Hayden/Documents/clack-qwen-live-acceptance";
+const runId = process.env.CLACK_PRODUCT_RUN_ID;
+assert(!runId || /^[a-z0-9][a-z0-9-]{0,63}$/.test(runId), "Use a bounded run ID, not a path");
+const owned = path.join(repository, "src-tauri/target/real-qwen-product", runId ?? "");
+const root = process.env.CLACK_PRODUCT_WORKSPACE ?? "C:/Users/Hayden/Documents/clack-qwen-live-acceptance";
+assert(path.isAbsolute(root), "Acceptance workspace must be absolute");
+const maxOutput = process.env.CLACK_PRODUCT_MAX_OUTPUT ? Number(process.env.CLACK_PRODUCT_MAX_OUTPUT) : undefined;
+assert(maxOutput === undefined || (Number.isSafeInteger(maxOutput) && maxOutput >= 256 && maxOutput <= 16384), "Output allowance must be 256-16384 whole tokens");
+const singleSpec = process.env.CLACK_PRODUCT_SINGLE_SPEC === "1";
+assert(!singleSpec || !["resume-a", "mission-b"].includes(phase), "Single-spec runs forbid manual continuation and peer missions");
+const reasoningChoice = process.env.CLACK_PRODUCT_REASONING || undefined;
+assert(reasoningChoice === undefined || ["automatic", "none"].includes(reasoningChoice), "Reasoning choice must be automatic or none");
+assert(reasoningChoice === undefined || phase === "mission-a", "Reasoning override is only supported for a fresh Mission A acceptance run");
 const endpoint = "http://127.0.0.1:11435";
 await mkdir(owned, { recursive: true });
 assert((await readdir(root)).includes(".git"), "Prepare the fresh external Git workspace first");
@@ -21,7 +31,7 @@ for (const suffix of [".json", ".jsonl", ".requests.jsonl", ".failure.json"]) {
   try { await readFile(`${output}${suffix}`); throw new Error(`Phase ${phase} attempt ${attempt} already has evidence; choose an explicit new attempt`); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
 }
-let local, vite, child, nativeLog = "";
+let local, vite, child, nativeLog = "", childExit;
 let complete;
 const report = new Promise(resolve => { complete = resolve; });
 let events = 0;
@@ -32,7 +42,7 @@ const server = createServer(async (request, response) => {
   const json = value => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(value)); };
   try {
     if (request.method === "OPTIONS") { response.statusCode = 204; response.end(); return; }
-    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase } });
+    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, maxOutput, singleSpec, reasoningChoice } });
     if (!["/report", "/evidence"].includes(request.url)) { response.statusCode = 404; return json({ error: "Unknown acceptance route" }); }
     let body = "";
     for await (const chunk of request) { body += chunk; assert(body.length < 64 * 1024 * 1024, "Acceptance payload exceeded bound"); }
@@ -41,9 +51,9 @@ const server = createServer(async (request, response) => {
       assert(++events < 100000, "Acceptance event limit");
       evidenceWrites = evidenceWrites.then(() => appendFile(`${output}.jsonl`, `${JSON.stringify(value)}\n`));
       await evidenceWrites;
-      if (["request", "engine-finish", "correction-boundary", "peer-result"].includes(value.kind)) {
+      if (["request", "engine-finish", "correction-boundary", "peer-result", "harness-heartbeat"].includes(value.kind)) {
         const body = value.body;
-        console.log(JSON.stringify({ event: value.kind, at: new Date().toISOString(), requestId: value.requestId, model: body?.model, context: body?.options?.num_ctx, output: body?.options?.num_predict, tools: body?.tools?.length, metrics: value.metrics, taskStatus: value.task?.status }));
+        console.log(JSON.stringify({ event: value.kind, at: new Date().toISOString(), requestId: value.requestId, model: body?.model, context: body?.options?.num_ctx, output: body?.options?.num_predict, tools: body?.tools?.length, metrics: value.metrics, taskStatus: value.task?.status, elapsedMs: value.elapsedMs }));
       }
     } else complete(value);
     json({ ok: true });
@@ -67,6 +77,8 @@ try {
   const env = Object.fromEntries(["PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "HOME", "LANG"].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []));
   Object.assign(env, { APPDATA: data, LOCALAPPDATA: data, TEMP: owned, TMP: owned, CLACK_ACCEPTANCE_ROOT: owned, CLACK_REAL_PRODUCT_PHASE: `${phase}-${attempt}`, CLACK_ACCEPTANCE_OLLAMA_URL: `${endpoint}/api/chat`, CLACK_ACCEPTANCE_URL: `${vite.resolvedUrls.local[0]}coworking-acceptance.html?configuration=${encodeURIComponent(`${local}/configuration`)}` });
   child = spawn(path.join(repository, "src-tauri/target/codex-test/debug/examples", `coworking_acceptance${process.platform === "win32" ? ".exe" : ""}`), [], { cwd: root, env, windowsHide: true });
+  child.once("exit", (code, signal) => { childExit = { pid: child.pid, code, signal, at: Date.now() }; });
+  console.log(JSON.stringify({ event: "native-host-start", pid: child.pid, runnerPid: process.pid, at: Date.now(), boundMs: 90 * 60 * 1000 }));
   child.stdout.on("data", b => { nativeLog = (nativeLog + b).slice(-256 * 1024); });
   child.stderr.on("data", b => { nativeLog = (nativeLog + b).slice(-256 * 1024); });
   let timer;
@@ -88,12 +100,12 @@ try {
     numCtx: request.body.options.num_ctx, numPredict: request.body.options.num_predict,
     think: request.body.think ?? "server-default",
   }));
-  await writeFile(`${output}.json`, JSON.stringify({ ...result, startedAt, endedAt: Date.now(), root, initialModels, finalModels, destinations, wireBudgets, nativeLog }, null, 2));
+  await writeFile(`${output}.json`, JSON.stringify({ ...result, runId, singleSpec, maxOutput, reasoningChoice, startedAt, endedAt: Date.now(), root, initialModels, finalModels, destinations, wireBudgets, nativeLog }, null, 2));
   assert(result.ok, result.error || JSON.stringify(result));
   console.log(`PRESERVED ${phase}: ${destinations.length} native inference attempts; result ${output}.json`);
 } catch (error) {
   await evidenceWrites.catch(() => {});
-  await writeFile(`${output}.failure.json`, JSON.stringify({ error: String(error), startedAt, endedAt: Date.now(), root, nativeLog, initialModels }, null, 2));
+  await writeFile(`${output}.failure.json`, JSON.stringify({ error: String(error), startedAt, endedAt: Date.now(), root, nativeLog, initialModels, childExit }, null, 2));
   throw error;
 } finally {
   if (child?.exitCode === null) {

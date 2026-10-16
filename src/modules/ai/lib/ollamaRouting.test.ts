@@ -219,12 +219,16 @@ const params = {
   ],
   maxOutputTokens: 256,
 };
-async function model(legacy = false) {
+async function model(
+  legacy = false,
+  reasoning?: ReturnType<typeof captureEffort>,
+) {
   const built = await buildConfiguredLanguageModel(
     legacy ? "ollama-local" : selfHostedSelectionId(state.profiles[0]),
     EMPTY_PROVIDER_KEYS,
     {
       selfHostedInference: state,
+      reasoning,
       customEndpointKeys: { "proxy-credential": "only-this-credential" },
       ...(legacy
         ? {
@@ -428,6 +432,34 @@ describe("production Ollama route, B1 and runtime evidence", () => {
       effortProviderOptions({ ...automatic, choice: "high" }),
     ).toThrow();
   });
+  it("keeps an explicit reasoning choice alive across successful Ollama tool-loop steps", async () => {
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    snapshot = metadata(32768, 32768);
+    state.profiles[0].evidence = snapshot.models[0].evidence;
+    current = state;
+    const identity = selfHostedTransportIdentity(
+      selfHostedSelectionId(state.profiles[0]),
+      state,
+    );
+    if (!identity) throw new Error("Missing fixture identity");
+    const reasoning = {
+      ...captureEffort("selection", identity, undefined, state),
+      choice: "none",
+    };
+    const built = await model(false, reasoning);
+    beforeAdmission = () => vi.mocked(Date.now).mockReturnValue(now + 20_000);
+    await built.doGenerate(params);
+    expect(sent[0].body.think).toBe(false);
+
+    beforeAdmission = undefined;
+    vi.mocked(Date.now).mockReturnValue(now + 45_000);
+    snapshot = metadata(32768, 32768);
+    current.profiles[0].evidence = snapshot.models[0].evidence;
+    await built.doGenerate(params);
+    expect(sent).toHaveLength(2);
+    expect(sent[1].body.think).toBe(false);
+  });
   it("newer exact thinking levels override legacy boolean capabilities", () => {
     state.profiles[0].evidence = [
       ...snapshot.models[0].evidence,
@@ -451,5 +483,27 @@ describe("production Ollama route, B1 and runtime evidence", () => {
     expect(effortProviderOptions({ ...captured, choice: "low" })).toEqual({
       ollama: { think: "low" },
     });
+  });
+  it.each(["expired admission", "changed controls"])("rejects an explicit reasoning choice with %s", async (scenario) => {
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    snapshot = metadata(32768, 32768);
+    state.profiles[0].evidence = snapshot.models[0].evidence;
+    current = state;
+    const identity = selfHostedTransportIdentity(selfHostedSelectionId(state.profiles[0]), state);
+    if (!identity) throw new Error("Missing fixture identity");
+    const reasoning = { ...captureEffort("selection", identity, undefined, state), choice: "none" };
+    const built = await model(false, reasoning);
+    beforeAdmission = () => {
+      if (scenario === "expired admission") vi.mocked(Date.now).mockReturnValue(now + 31_000);
+      else {
+        current = structuredClone(current);
+        current.profiles[0].evidence.push(profileEvidence(state, state.profiles[0].id,
+          "probe.thinkingControls", '["low","high"]', "backend-reported", now, "reported"));
+      }
+    };
+    await expect(built.doGenerate(params)).rejects.toThrow();
+    expect(sent).toHaveLength(0);
+    expect(invoke).toHaveBeenCalledWith("ai_http_preflight", expect.objectContaining({ approved: false }));
   });
 });

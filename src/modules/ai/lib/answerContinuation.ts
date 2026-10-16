@@ -6,6 +6,7 @@ import {
 } from "ai";
 import type {
   LanguageModelV3,
+  LanguageModelV3CallOptions,
   LanguageModelV3StreamPart,
   LanguageModelV3Usage,
 } from "@ai-sdk/provider";
@@ -33,6 +34,38 @@ export const ANSWER_LIMITS = {
   segments: 256,
   overlap: 256,
 } as const;
+
+export class ReasoningOutputExhaustedError extends Error {
+  readonly reasoningOutputExhaustion = true;
+
+  constructor(
+    readonly maxOutputTokens: number,
+    readonly outputTokens: number,
+  ) {
+    super(
+      "The model used its entire output allowance for reasoning before producing an answer or tool call. Retry explicitly with lower/no reasoning if supported, or increase this model profile's output allowance.",
+    );
+    this.name = "ReasoningOutputExhaustedError";
+  }
+}
+
+function currentTurnHasProgress(
+  prompt: LanguageModelV3CallOptions["prompt"],
+): boolean {
+  let lastUser = -1;
+  for (let i = 0; i < prompt.length; i++)
+    if (prompt[i].role === "user") lastUser = i;
+  return prompt.slice(lastUser + 1).some((message) => {
+    if (message.role === "tool") return true;
+    return (
+      message.role === "assistant" &&
+      message.content.some((part) =>
+        part.type === "tool-call" ||
+        (part.type === "text" && part.text.trim().length > 0),
+      )
+    );
+  });
+}
 export type AnswerFinish =
   | "stop"
   | "length"
@@ -605,6 +638,7 @@ export function withAnswerContinuation(
                 state.state = "streaming";
                 publish();
                 let text = "",
+                  reasoningCharacters = 0,
                   generatedCharacters = 0,
                   finish: FinishPart | undefined,
                   failed = false;
@@ -754,6 +788,8 @@ export function withAnswerContinuation(
                     part.type === "text-delta" ||
                     part.type === "reasoning-delta"
                   ) {
+                    if (part.type === "reasoning-delta")
+                      reasoningCharacters += part.delta.length;
                     generatedCharacters += part.delta.length;
                     characters += part.delta.length;
                     if (characters > ANSWER_LIMITS.characters)
@@ -917,6 +953,23 @@ export function withAnswerContinuation(
                 }
                 state.state = "preparing";
                 publish();
+                const requestedOutput = params.maxOutputTokens;
+                if (
+                  typeof requestedOutput === "number" &&
+                  Number.isSafeInteger(requestedOutput) &&
+                  requestedOutput > 0 &&
+                  segment.usageReported === true &&
+                  segment.outputTokens >= requestedOutput &&
+                  reasoningCharacters > 0 &&
+                  text.trim().length === 0 &&
+                  state.segments.length === 1 &&
+                  calls.size === 0 &&
+                  !currentTurnHasProgress(params.prompt)
+                )
+                  throw new ReasoningOutputExhaustedError(
+                    requestedOutput,
+                    segment.outputTokens,
+                  );
                 if (!timer) {
                   if (elapsed >= ANSWER_LIMITS.milliseconds)
                     throw new Error("Answer continuation time limit reached.");

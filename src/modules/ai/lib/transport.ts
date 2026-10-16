@@ -91,6 +91,11 @@ type LiveSnapshot = {
   activeFile: string | null;
 };
 
+export type ShellIdentity = {
+  name: string;
+  syntax: string;
+};
+
 type Deps = {
   prepareFallback?: PrepareFallback;
   getActivityOwner?: () => ActivityOwner | undefined;
@@ -107,6 +112,7 @@ type Deps = {
   getCustomInstructions: () => string;
   getAgentPersona: () => { name: string; instructions: string } | null;
   getLive: () => LiveSnapshot;
+  getShellIdentity?: () => Promise<ShellIdentity> | ShellIdentity;
   getLmstudioBaseURL?: () => string | undefined;
   getLmstudioModelId?: () => string | undefined;
   getMlxBaseURL?: () => string | undefined;
@@ -213,7 +219,8 @@ export function createContextAwareTransport(deps: Deps) {
       live.workspaceRoot,
       deps.toolContext.getWorkspaceEnv?.(),
     );
-    const envBlock = formatEnvBlock(live);
+    const shellIdentity = await deps.getShellIdentity?.();
+    const envBlock = formatEnvBlock(live, shellIdentity);
     const hostedState = recovery
       ? captured?.configuration.selfHostedInference
       : deps.getSelfHostedInference?.();
@@ -466,12 +473,19 @@ function injectEnvIntoLastUser(
   return messages;
 }
 
-export function formatEnvBlock(live: LiveSnapshot): string | null {
+export function formatEnvBlock(
+  live: LiveSnapshot,
+  shellIdentity?: ShellIdentity,
+): string | null {
   const lines: string[] = [];
   if (live.workspaceRoot) lines.push(`workspace_root: ${live.workspaceRoot}`);
   if (live.cwd) lines.push(`active_terminal_cwd: ${live.cwd}`);
   if (live.activeFile) lines.push(`active_file: ${live.activeFile}`);
   if (live.terminalPrivate) lines.push("active_terminal_mode: private");
+  if (shellIdentity) {
+    lines.push(`shell: ${shellIdentity.name}`);
+    lines.push(`shell_syntax: ${shellIdentity.syntax}`);
+  }
   if (lines.length === 0) return null;
   return `<env>\n${lines.join("\n")}\n</env>`;
 }
