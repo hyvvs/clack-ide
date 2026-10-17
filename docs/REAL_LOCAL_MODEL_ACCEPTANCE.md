@@ -2055,3 +2055,164 @@ full Rust gates were not redundantly rerun. The cached native test host compiled
 and ran through production IPC. No Computer Use, native GUI, Linux/macOS or WSL
 acceptance was performed. No unrelated files, stashes, `autonomous_tracker/` or
 prior evidence were touched. No push or subsequent checkpoint.
+
+## Persisted Approval Audit and Resumption Boundary, 2026-10-17
+
+This is an evidence-only follow-up to `97148e9`, not another ForgeBoard mission.
+Baseline: clean `main`, **38 ahead / 0 behind** recorded `origin/main`.
+Process inspection found no active Clack acceptance host, Clack application,
+Cargo/Rust build, Vite test/build or competing Clack harness. No process was
+terminated. The original evidence and scratch repository still exist.
+
+### Exact Effect and Safety Audit
+
+- Evidence ID: `forgeboard-none-20261017-03`.
+- Evidence directory:
+  `C:\Users\Hayden\Documents\clack\src-tauri\target\real-qwen-product\forgeboard-none-20261017-03`.
+- Session: `real-mission-a`; run: `real-mission-a:1792218441049`.
+- Tool call: `qKZ3HxykzTI2l19mvDilIVCnWDIpLNao` (`bash_run`).
+- Approval: `aitxt-INbPvoWhtpe1KIqkLcGyeX1W`, still `approval-requested`.
+- Exact command:
+
+```powershell
+Set-Content -Path 'test.txt' -Value 'hello' -Encoding utf8; Test-Path 'test.txt'; Remove-Item 'test.txt'
+```
+
+The authoritative persisted profile and run both bind the workspace to
+`C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-03`.
+The preceding completed native shell results report that same `cwd_after`;
+there is no intervening command changing directory. All three literal operands
+resolve to the single target
+`C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-03\test.txt`.
+The native host is no longer alive, so this is the last evidenced cwd, not a
+claim that its former persistent shell can still be queried.
+
+The target does not exist. The workspace and inspected parents through Hayden's
+home are not reparse points or links. No wildcard, recursion or force flag is
+present. The command does not target Clack, another project, home data outside
+the scratch repository, credentials, models or system data. Its write/read/delete
+sequence is a disposable shell-write probe following a failed unread-target edit
+and missing root manifest; that purpose is inferred from the adjacent transcript,
+not a fabricated model explanation. It would create `hello` and remove the same
+new file, not erase user/evaluator source. No tracked file would be removed;
+the probe is recreatable but not Git-recoverable because it is untracked.
+
+**The exact effect passes the requested safety policy.** Production
+`isStrictPermissionRequest` classifies its `Remove-Item` segment as strict;
+`canPersistPermission` rejects a lasting grant. Coder remains Trusted Workspace
+with no category overrides. No configuration, permission mode or grant changed.
+However, **no approval response was sent**, for the lifecycle reason below.
+The write portion and deletion both remain unexecuted.
+
+### Confirmed Harness Resumption Blocker
+
+The previous report's `running` metadata is not a surviving process or executable
+continuation. The harness observation loop in
+`src/test/realLocalProductAcceptance.tsx` returns when a pending approval appears.
+After recording the report, `scripts/check-real-local-product.mjs` closes its
+owned native host in `finally`. The previous host **42248** and runner **20356**
+are absent. The shell and SDK approval responder belonged to that exited host.
+
+Normal `hydrateSessions()` calls `recoverInterruptedSessions()`: every persisted
+`running` run becomes `interrupted`, retaining its original identity. It clears
+the runtime approval maps. `AgentRunBridge.pendingApprovalsForRun()` returns no
+actionable approvals for an interrupted run, and its effect removes the approval
+responder unless the run is `running`. `respondToApproval()` delegates only to a
+registered live responder. These are existing deliberate no-replay protections,
+not evidence that the model failed or the safety classifier was wrong.
+
+A read-only execution of the production recovery helper against the actual saved
+session confirmed `running -> interrupted`, unchanged run start/identity,
+idempotent repeated recovery and no mutation of the original JSON. This was an
+in-memory diagnostic, **not a native restart** and not a persisted state change.
+The existing bridge regression test confirms interrupted approvals are not
+revived. Restarting this host cannot provide the requested same-running-approval
+continuation through the current production path.
+
+The existing `resume-a` harness phase is also unsuitable: it explicitly sends
+`Continue the original ForgeBoard project from the existing state.` through
+`sendMessageToSession()`. It was **not invoked**. No approval was forced into
+saved JSON, no run state changed to running, no stale SDK response injected and
+no replay protection bypassed. No harness or production repair was attempted.
+The acceptance stopped at this concrete resumption limitation as instructed.
+
+Follow-up classification: **TEST_HARNESS / APPROVAL HOST TEARDOWN /
+SAME-RUN RESUMPTION UNAVAILABLE**. The original attempt's **PRODUCT POLICY /
+AWAITING DESTRUCTIVE-COMMAND APPROVAL / INCOMPLETE** classification above remains
+historically correct. Neither result is a model failure. Live passage of the
+request-19 protected-budget boundary remains **INCONCLUSIVE**, not verified fixed
+by this follow-up. This does not invalidate the earlier deterministic/replay fix.
+
+### Request, Context and Project Evidence
+
+There were **zero new inference requests**, effects, approvals or messages.
+Request 14's effect remains pending; requests 15-18 and request 19 preparation
+and sending did not occur. No new compaction, summary extraction, retrieval or
+project-evidence preparation ran. A post-resumption protected budget therefore
+does not exist and must not be substituted with the offline replay budget.
+
+The last actual request, still request 14, measured system **3617**, schemas
+**7250**, conversation **5413**, input **16280**, output **2048**, margin **1628**,
+total **19956**, ceiling **32768**. This is the recorded wire-budget estimate,
+not a request-19 protected estimate. Memory revision remains null. All three
+original accepted plan pairs remain in the durable transcript. Reinspection of
+the actual request-14 body found only the latest plan call
+`keS1NwWeWHrOhwj2yMUeIcklPHbeJcSe`; older calls
+`r2ExLMWHZE9XWD948NSy8KS0lAvSEyZz` and
+`fFwQpUOj7SVgh5Gh1zfBMKhMNk4BWLS8` are absent from that hot request.
+
+The one original user specification in request 14 retains ForgeBoard, port
+**4317**, page size **50**, title max **120**, debounce **750 ms**, SSE,
+persistence and no telemetry/cloud. The current plan and edit/read failures
+remain as previously recorded. **No post-compaction context or model continuity
+was observed** in this follow-up. The 50-to-25 correction condition was not met:
+zero successful file writes/edits and no page-size implementation. No correction,
+Continue, reminder, requirement resend or evaluator implementation was supplied.
+
+Read-only project inspection found only `.git/`, empty `packages/` and empty
+`packages/shared/`; `test.txt` and root `package.json` are absent. Git reports
+`No commits yet on main`, no tracked/untracked project files. No manifests,
+application source, dependencies, README, test or build artifacts exist. Qwen
+ran no additional commands, tests, installs or build. No additional approval
+appeared; the blocker is the lost live approval lifecycle, not a new budget error.
+
+All 14 preserved native request bodies were revalidated: exact
+`qwen38-uncensored:latest`, `num_ctx=32768`, `num_predict=2048`, `think:false`,
+16 production tools. Fallback remains the original Never policy; no settings
+were changed. Original native idle **60 s** and overall **600 s** deadlines were
+not changed or newly exercised. Cloud inference remains **0**. No Automatic run,
+fresh repository, fresh mission or native GUI interaction occurred.
+
+### Validation and Preservation
+
+Focused existing tests: **103 passed / 5 files**, covering bridge approval
+ownership/no-revival, restart recovery, run lifecycle, strict permissions and
+chat runtime. Command:
+
+```text
+npm.cmd test -- src/modules/ai/components/AgentRunBridge.test.ts src/modules/ai/lib/restartRecovery.test.ts src/modules/ai/lib/runLifecycle.test.ts src/modules/ai/lib/permissions.test.ts src/modules/ai/store/chatRuntime.test.ts --maxWorkers=2
+```
+
+The first sandboxed Vitest attempt executed no tests because its temporary-cache
+rename failed with EPERM; the same command passed outside that restriction.
+An initial ad-hoc SSR diagnostic importing the React bridge hit Vite's CSS-loader
+initialization error, not native application execution. The narrowed read-only
+production recovery/permission audit passed; bridge behavior was verified using
+the existing Vitest fixture instead. These tooling attempts made no inference or
+workspace effects. Full gates were intentionally not rerun for a docs-only update.
+`git diff --check` passed with an LF/CRLF notice. An append-only report check
+confirmed every byte of prior report text remains unchanged after normalizing
+line endings, and the report is the only tracked modification.
+
+Preserved SHA-256 evidence fingerprints:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `data/terax-ai-sessions.json` | `E06C8CC5B6774D418AC6856908FCC40369C3C9F703B99E059CE3BF3D64B4FFFF` |
+| `mission-a-1.json` | `DF42D2F8400CFBA907BC93B36DD2FF47EC263D773B38E420C7D9C5F46EAC7B0B` |
+| `mission-a-1.jsonl` | `C61999C4D64D7B6E75ED3C2AA891A8CA9D06974610DEC080ED486DFF569DDAD0` |
+| `mission-a-1.requests.jsonl` | `600689C7C90957598D23089B22D686F6111C382357EBB70C79205B51E255B105` |
+
+Only this report changes. Production source, harness source, original evidence,
+session/settings data, scratch project, unrelated user work, stashes and
+`autonomous_tracker/` remain untouched. No push. No later checkpoint started.
