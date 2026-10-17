@@ -3,6 +3,7 @@ import { COMPACTION_POLICY } from "@/modules/ai/lib/compactionExtraction";
 import { contextDigest } from "@/modules/ai/lib/targetContext";
 import type { ScopedRequest } from "@/modules/ai/lib/scopedEvidence";
 import { newRetrievalAllowance } from "@/modules/ai/lib/retrievalAllowance";
+import { multilineRefusal, refusedShellHistory } from "@/modules/ai/lib/toolFailureRetention.fixture";
 import { vi } from "vitest";
 import {
   measureRequest,
@@ -22,6 +23,103 @@ function required<T>(value: T | null | undefined): T {
 }
 
 describe("durable conversation compaction coordinator", () => {
+  it("prepares refusal receipts and restores exact current-run originals through existing evidence requests without effects", async () => {
+    const f = fixture([textMessage("objective", "user", "Preserve the current objective.")]);
+    const extra = refusedShellHistory();
+    const before = structuredClone(extra);
+    const compactor = await f.start({ limits: async () => ({ deployed: 32768, maxOutput: 512 }) });
+    const prepared = JSON.stringify(await compactor.prepare(extra));
+    expect(prepared).toContain("refused-before-execution");
+    expect(prepared).not.toContain("unexecuted draft");
+    expect(compactor.requestEvidence("Inspect the exact failed input", "refused")).toMatchObject({ status: "queued" });
+    const restored = JSON.stringify(await compactor.prepare(extra));
+    expect(restored).toContain("unexecuted draft");
+    expect(restored).not.toContain("Clack tool-history receipt");
+    expect(extra).toEqual(before);
+    expect(f.call).not.toHaveBeenCalled();
+    expect(f.memory.commit).not.toHaveBeenCalled();
+    compactor.dispose();
+    expect(() => compactor.requestEvidence("Inspect", "refused")).toThrow(/no longer current/);
+  });
+
+  it("does not trim exact restored evidence to evade B1", async () => {
+    const f = fixture([textMessage("objective", "user", "Preserve requirements.")]);
+    const extra = refusedShellHistory();
+    let capacity = 32768;
+    const compactor = await f.start({ limits: async () => ({ deployed: capacity, maxOutput: 512 }) });
+    const compact = await compactor.prepare(extra);
+    const cost = measureRequest({ messages: compact, tools: [] });
+    const budget = resolveContextBudget({ deployed: capacity, maxOutput: 512 }, cost);
+    capacity = cost.system + cost.tools + cost.conversation + budget.reserve + budget.margin + 1;
+    expect(compactor.requestEvidence("Original", "refused")).toMatchObject({ status: "queued" });
+    await expect(compactor.prepare(extra)).rejects.toMatchObject({ code: "compaction-protected-budget" });
+    expect(f.call).not.toHaveBeenCalled();
+    expect(f.memory.commit).not.toHaveBeenCalled();
+  });
+
+  it("rebuilds receipts after session serialization without replacing durable tool records", async () => {
+    const command = (refusedShellHistory()[0].content as Array<{ input: { command: string } }>)[0].input.command;
+    const originals: import("ai").UIMessage[] = [textMessage("objective", "user", "Keep the objective."), {
+      id: "durable-assistant", role: "assistant", parts: [
+        { type: "step-start" },
+        { type: "tool-bash_run", toolCallId: "refused", state: "output-available", input: { command }, output: { error: multilineRefusal } },
+        { type: "step-start" },
+        { type: "tool-bash_run", toolCallId: "adapted", state: "output-available", input: { command: "echo adapted" }, output: { command: "echo adapted", stdout: "adapted", stderr: "", exit_code: 0, timed_out: false } },
+      ],
+    }];
+    const serialized = JSON.stringify(originals);
+    const f = fixture(JSON.parse(serialized));
+    const compactor = await f.start({ limits: async () => ({ deployed: 32768, maxOutput: 512 }), alwaysLoad: true });
+    expect(JSON.stringify(await compactor.prepare())).toContain("refused-before-execution");
+    compactor.requestEvidence("Original input", "refused");
+    expect(JSON.stringify(await compactor.prepare())).toContain("unexecuted draft");
+    const restarted = fixture(JSON.parse(serialized));
+    expect(JSON.stringify(await (await restarted.start({ limits: async () => ({ deployed: 32768, maxOutput: 512 }) })).prepare())).toContain("refused-before-execution");
+    expect(JSON.stringify(f.originals)).toBe(serialized);
+    expect(f.memory.commit).not.toHaveBeenCalled();
+    expect(f.call).not.toHaveBeenCalled();
+  });
+
+  it("uses the existing shared retrieval bounds and does not disclose another coordinator's originals", async () => {
+    const f = fixture([textMessage("objective", "user", "Keep scope.")]);
+    const allowance = newRetrievalAllowance();
+    const compactor = await f.start({ allowance, limits: async () => ({ deployed: 32768, maxOutput: 512 }) });
+    await compactor.prepare(refusedShellHistory());
+    const other = await fixture([textMessage("different", "user", "Independent context.")]).start();
+    expect(other.requestEvidence("Other source", "refused")).toMatchObject({ status: "unavailable" });
+    allowance.rounds = 2;
+    expect(compactor.requestEvidence("Original", "refused")).toMatchObject({ status: "limit" });
+    allowance.rounds = 0;
+    allowance.bytes = 65536;
+    expect(compactor.requestEvidence("Original", "refused")).toMatchObject({ status: "queued" });
+    await expect(compactor.prepare(refusedShellHistory())).rejects.toMatchObject({ code: "retrieval-limit" });
+    expect(f.memory.commit).not.toHaveBeenCalled();
+  });
+
+  it("fails closed if the existing session-write barrier fails before receipt preparation", async () => {
+    const f = fixture([textMessage("objective", "user", "Keep originals.")]);
+    const compactor = await f.start({ limits: async () => ({ deployed: 32768, maxOutput: 512 }) });
+    f.ready.mockRejectedValueOnce(new Error("Session persistence unavailable"));
+    await expect(compactor.prepare(refusedShellHistory())).rejects.toThrow("Session persistence unavailable");
+    expect(f.call).not.toHaveBeenCalled();
+    expect(f.memory.commit).not.toHaveBeenCalled();
+  });
+
+  it.each(["stale", "cancelled"])("rejects original-source requests after the scope becomes %s", async kind => {
+    const f = fixture([textMessage("objective", "user", "Keep scope.")]);
+    const controller = new AbortController();
+    let current = true;
+    const compactor = await f.start({
+      limits: async () => ({ deployed: 32768, maxOutput: 512 }), signal: controller.signal,
+      scope: { sessionId: "chat-a", runId: "captured-run", isCurrent: () => current },
+    });
+    await compactor.prepare(refusedShellHistory());
+    if (kind === "stale") current = false;
+    else controller.abort();
+    expect(() => compactor.requestEvidence("Original", "refused")).toThrow();
+    await expect(compactor.prepare(refusedShellHistory())).rejects.toThrow();
+    expect(f.call).not.toHaveBeenCalled();
+  });
   it("projects only superseded acknowledged plans through the coordinator without rewriting originals or committing memory", async () => {
     const f = fixture([textMessage("mission", "user", "Build ForgeBoard. Keep port 4317, page size 50, title max 120, debounce 750ms, SSE, persistence and no cloud.")]);
     const before = JSON.stringify(f.originals);

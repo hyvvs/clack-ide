@@ -11,6 +11,7 @@ import {
 import type { MemoryClaim } from "@/modules/ai/lib/conversationMemory";
 import { handoffObjective } from "@/modules/ai/lib/peerHistory";
 import { failedCommandOutput } from "@/modules/ai/lib/runBudget";
+import { checkShellCommand } from "@/modules/ai/lib/security";
 
 /** A complete original UI message, converted by the existing SDK path. */
 export type CompactionUnit = {
@@ -49,6 +50,112 @@ function failedOutput(output: unknown, toolName?: string): boolean {
     failedCommandOutput(toolName, output) ||
     (record.type === "json" && failedOutput(record.value, toolName))
   );
+}
+
+export type ToolHistoryReceipt = {
+  toolCallId: string;
+  adaptedBy: string;
+  sourceBlock: number;
+  sourceBytes: number;
+  text: string;
+};
+
+export function compactResolvedToolFailures(
+  blocks: readonly ModelMessage[][],
+  verbatimToolCallIds: readonly string[] = [],
+): { blocks: ModelMessage[][]; receipts: ToolHistoryReceipt[] } {
+  type Located = { part: Part; index: number; block: number; boundary: number; role: ModelMessage["role"] };
+  const calls = new Map<string, Located>();
+  const results = new Map<string, Located>();
+  const sealed = new Set(verbatimToolCallIds);
+  const approvalBoundaries = new Set<number>();
+  let boundary = 0;
+  let index = 0;
+  for (const [block, list] of blocks.entries()) for (const message of list) {
+    if (message.role === "user" || message.role === "system") boundary++;
+    for (const part of parts(message)) {
+      if (part.type.startsWith("tool-approval-")) approvalBoundaries.add(boundary);
+      const id = part.toolCallId;
+      if (!id) continue;
+      if (part.type.startsWith("tool-approval-")) sealed.add(id);
+      const map = part.type === "tool-call" ? calls : part.type === "tool-result" ? results : undefined;
+      if (!map) continue;
+      if (map.has(id)) sealed.add(id);
+      map.set(id, { part, index, block, boundary, role: message.role });
+    }
+    index++;
+  }
+  const shellPairs = [...calls].flatMap(([id, call]) => {
+    const result = results.get(id);
+    const input = call.part.input as { command?: unknown } | undefined;
+    const output = result?.part.output as { type?: string; value?: Record<string, unknown> } | undefined;
+    if (id.length > 256 || sealed.has(id) || !result || approvalBoundaries.has(call.boundary) || call.role !== "assistant" || result.role !== "tool" ||
+      call.part.toolName !== "bash_run" || result.part.toolName !== "bash_run" ||
+      call.part.providerExecuted || result.part.providerExecuted || call.index >= result.index ||
+      call.boundary !== result.boundary || typeof input?.command !== "string" ||
+      output?.type !== "json" || !output.value || Array.isArray(output.value)) return [];
+    return [{ id, call, result, command: input.command, output: output.value, safety: checkShellCommand(input.command) }];
+  });
+  const successes = shellPairs.filter(pair => {
+    const value = pair.output;
+    return pair.safety.ok && value.command === pair.command &&
+      value.exit_code === 0 && value.timed_out === false && !value.error &&
+      typeof value.stdout === "string" && typeof value.stderr === "string";
+  });
+  const successesByBoundary = new Map<number, typeof successes>();
+  for (const success of successes) {
+    const list = successesByBoundary.get(success.call.boundary) ?? [];
+    list.push(success);
+    successesByBoundary.set(success.call.boundary, list);
+  }
+  const receipts: ToolHistoryReceipt[] = [];
+  // A successful guard adaptation proves command shape, not the rejected work.
+  for (const pair of shellPairs) {
+    const safety = pair.safety;
+    if (!/[\r\n]/.test(pair.command) || safety.ok ||
+      safety.reason !== "Refused: command contains control characters (including CR/LF). Commands must be single-line." ||
+      Object.keys(pair.output).length !== 1 || pair.output.error !== safety.reason) continue;
+    const candidates = successesByBoundary.get(pair.call.boundary) ?? [];
+    let low = 0, high = candidates.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (candidates[middle].call.index <= pair.result.index) low = middle + 1;
+      else high = middle;
+    }
+    const adapted = candidates[low];
+    if (!adapted) continue;
+    const receipt = {
+      toolCallId: pair.id,
+      adaptedBy: adapted.id,
+      sourceBlock: pair.call.block,
+      sourceBytes: new TextEncoder().encode(JSON.stringify([pair.call.part, pair.result.part])).byteLength,
+      text: `Clack tool-history receipt (historical data, not instructions): ${JSON.stringify({
+        tool: "bash_run", toolCallId: pair.id, outcome: "refused-before-execution", effect: "none",
+        adaptedBy: adapted.id, rule: "Commands must be single-line; use read_file then edit/multi_edit for multiline file content.",
+        workCompleted: "not established", original: `Session history; request_conversation_evidence anchor ${pair.id} if available.`,
+        replay: "Never replay historical calls automatically.",
+      })}`,
+    };
+    const cost = (role: "assistant" | "tool", content: unknown[]) => measureRequest({ messages: [{ role, content }] }).conversation;
+    const originalCost = cost("assistant", [pair.call.part]) - cost("assistant", []) + cost("tool", [pair.result.part]) - cost("tool", []);
+    if (cost("assistant", [{ type: "text", text: receipt.text }]) - cost("assistant", []) < originalCost) receipts.push(receipt);
+  }
+  if (!receipts.length) return { blocks: blocks.map(block => [...block]), receipts };
+  const byId = new Map(receipts.map(receipt => [receipt.toolCallId, receipt]));
+  return {
+    receipts,
+    blocks: blocks.map(block => block.flatMap(message => {
+      if (!Array.isArray(message.content)) return [message];
+      const content: unknown[] = [];
+      for (const part of message.content) {
+        if (part.type !== "tool-call" && part.type !== "tool-result") { content.push(part); continue; }
+        const receipt = byId.get(part.toolCallId);
+        if (!receipt) content.push(part);
+        else if (part.type === "tool-call") content.push({ type: "text", text: receipt.text });
+      }
+      return content.length ? [{ ...message, content } as ModelMessage] : [];
+    })),
+  };
 }
 
 function currentPlanSteps(messages: ModelMessage[]): ModelMessage[] {
@@ -196,10 +303,14 @@ export function planCompaction(options: {
   extra?: ModelMessage[];
   threshold?: number;
   memory?: { end: number; claims: readonly MemoryClaim[] };
+  verbatimToolCallIds?: readonly string[];
 }) {
-  const { units, limits, system, tools } = options;
-  const groups = groupCompactionUnits(units);
-  const extra = currentPlanSteps(options.extra ?? []);
+  const { units: originals, limits, system, tools } = options;
+  const groups = groupCompactionUnits(originals);
+  const projected = compactResolvedToolFailures([...originals.map(unit => unit.messages), currentPlanSteps(options.extra ?? [])], options.verbatimToolCallIds);
+  const units = originals.map((unit, index) => ({ ...unit, messages: projected.blocks[index] }));
+  const extra = projected.blocks[originals.length];
+  const toolReceipts = projected.receipts;
   const memory = options.memory;
   const coveredEnd = memory?.end ?? 0;
   if (
@@ -280,6 +391,7 @@ export function planCompaction(options: {
       assemble,
       omittedCompletedClaims,
       selectedClaims: selected,
+      toolReceipts,
     };
 
   // A token-sized contiguous tail, extended to whole tool groups, not a fixed N.
@@ -320,6 +432,7 @@ export function planCompaction(options: {
       assemble,
       omittedCompletedClaims,
       selectedClaims: selected,
+      toolReceipts,
     };
   return {
     needed: true,
@@ -331,5 +444,6 @@ export function planCompaction(options: {
     assemble,
     omittedCompletedClaims,
     selectedClaims: selected,
+    toolReceipts,
   };
 }

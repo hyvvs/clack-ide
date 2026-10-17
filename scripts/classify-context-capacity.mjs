@@ -32,6 +32,15 @@ assert.equal(session.run.error.errorCode, "compaction-protected-budget");
 const conversation = report.conversations.find(c => c.id === session.id);
 const original = conversation.messages;
 assert.equal(original.length, 2);
+const durable = JSON.parse(await read("data/terax-ai-sessions.json"));
+const persistedParts = durable[`messages:${session.id}`].flatMap(message => message.parts).filter(part => part.type.startsWith("tool-"));
+const recordedParts = original[1].parts.filter(part => part.type.startsWith("tool-"));
+assert.equal(persistedParts.length, 27);
+for (const part of recordedParts) {
+  const persisted = persistedParts.find(item => item.toolCallId === part.toolCallId);
+  assert(persisted);
+  assert.deepEqual([persisted.type,persisted.state,persisted.input,persisted.output], [part.type,part.state,part.input,part.output]);
+}
 const ui = structuredClone(original);
 ui[0].parts[0].text = requests[0].body.messages.find(m => m.role === "user").content;
 const history = pruneMessages({ messages: await convertToModelMessages(ui), reasoning: "before-last-message", emptyMessages: "remove" });
@@ -71,11 +80,12 @@ try {
   const { planCompaction } = await vite.ssrLoadModule("/src/modules/ai/lib/compactionPlan.ts");
   const { measureRequest, resolveContextBudget } = await vite.ssrLoadModule("/src/modules/ai/lib/contextBudget.ts");
   const historical = await vite.ssrLoadModule("clack-historical-budget");
+  const verbatimToolCallIds = extra.flatMap(message => message.content.filter(part => part.type === "tool-call").map(part => part.toolCallId));
   // Inspect the public history projection without fixed system/schema cost. This
   // is cost decomposition only, not a provider request or tool selection override.
-  const projection = planCompaction({ units, extra, limits, system: [], tools: [] });
+  const projection = planCompaction({ units, extra, limits, system: [], tools: [], verbatimToolCallIds });
   let failure;
-  try { planCompaction({ units, extra, limits, system, tools: schemas }); }
+  try { planCompaction({ units, extra, limits, system, tools: schemas, verbatimToolCallIds }); }
   catch (error) { failure = error; }
   const measured = resolveContextBudget(limits, measureRequest({ messages: [...system, ...projection.messages], tools: schemas }));
   const body = { messages: [...system, ...projection.messages], tools: schemas };
@@ -177,6 +187,50 @@ try {
     usedThisRun:(uses[s.function.name]??0)>0 })).sort((a,b)=>b.tokens-a.tokens || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   assert.equal(sum(schemaRows)+2+schemas.length,7250);
   const shell = pairRows.filter(p=>p.name==="bash_run"), successfulShell=shell.filter(p=>!p.failure), failures=shell.filter(p=>p.failure);
+  const retainedSource = JSON.stringify({ units, extra });
+  const retained = planCompaction({ units, extra, limits, system, tools: schemas });
+  const repeated = planCompaction({ units, extra, limits, system, tools: schemas });
+  assert.deepEqual(repeated.messages, retained.messages);
+  assert.deepEqual(repeated.budget, retained.budget);
+  assert.deepEqual(repeated.toolReceipts, retained.toolReceipts);
+  assert.equal(JSON.stringify({ units, extra }), retainedSource);
+  const receiptRows = retained.toolReceipts.map(receipt => {
+    const pair = pairRows.find(pair => pair.id === receipt.toolCallId);
+    assert(pair && pair.failure === "multiline-refusal");
+    const receiptTokens = newCost([{ role: "assistant", content: [{ type: "text", text: receipt.text }] }]) - newCost([{ role: "assistant", content: [] }]);
+    return { ...receipt, oldPairTokens: pair.correctedAccountingTokens, receiptTokens, payloadSavings: pair.correctedAccountingTokens - receiptTokens };
+  });
+  const afterParts = retained.messages.flatMap(message => Array.isArray(message.content) ? message.content : []);
+  const afterCalls = afterParts.filter(part => part.type === "tool-call");
+  const afterResults = afterParts.filter(part => part.type === "tool-result");
+  assert.deepEqual(afterCalls.map(part => part.toolCallId).sort(), afterResults.map(part => part.toolCallId).sort());
+  const demotedIds = new Set(receiptRows.map(receipt => receipt.toolCallId));
+  for (const pair of pairRows.filter(pair => !demotedIds.has(pair.id))) {
+    assert(afterCalls.some(part => part.toolCallId === pair.id));
+    assert(afterResults.some(part => part.toolCallId === pair.id));
+  }
+  const multilineBefore = sum(failures.filter(pair => pair.failure === "multiline-refusal"), "correctedAccountingTokens");
+  const multilineAfter = multilineBefore - sum(receiptRows, "oldPairTokens") + sum(receiptRows, "receiptTokens");
+  const framesAfter = retained.messages.filter(message => message.role !== "system" && message.role !== "user").reduce((n,message) => n + newCost([{ ...message, content: [] }]),0);
+  const budgetSavings = total(measured) - total(retained.budget);
+  assert.equal(total(retained.budget),30326);
+  assert.equal(multilineAfter,2734);
+  assert.equal(receiptRows.length,7);
+  assert(afterCalls.some(part=>part.toolCallId==="VacZqVXOuuOI4AbxlExbACZ2uWbHLAJ4"));
+  assert(afterCalls.some(part=>part.toolCallId==="VJcy05bzWoDOVLzkUDfX5C79HXt4W5D4"));
+  const { createConversationCompactor } = await vite.ssrLoadModule("/src/modules/ai/lib/conversationCompaction.ts");
+  let readyCalls=0;
+  const forbidden = async () => { throw new Error("Offline preparation must not invoke inference or memory IO"); };
+  const coordinator = await createConversationCompactor({
+    context:{ owner:{sessionId:session.id,workspaceId:session.profile.workspaceId},originals:[original[0]],
+      ready:async()=>{readyCalls++;},remainingCalls:()=>0,chargeCall:forbidden },
+    materialized:[ui[0]],system,tools:schemas,model:{},limits:async()=>limits,
+    scope:{sessionId:session.id,runId:report.runId,isCurrent:()=>true},
+    memory:{load:forbidden,read:forbidden,commit:forbidden},call:forbidden,
+  });
+  try { assert.deepEqual(await coordinator.prepare(extra),retained.messages); }
+  finally { coordinator.dispose(); }
+  assert.equal(readyCalls,1);
   console.log(JSON.stringify({ baseline:"7d1cf23", hashes, historicalBudget:before, historicalRequired:total(before),
     jsonEquivalentBudget:serialized, jsonEquivalentRequired:total(serialized), currentBudget:measured, currentRequired:total(measured),
     ghostFields, currentFailure:{code:failure?.code,budget:failure?.budget},
@@ -194,5 +248,13 @@ try {
     plans:planRows,toolSelection:{initial:initial.names,initialMetrics:initial.metrics,terminalMetrics:terminal.metrics,
       schemas:schemaRows,outerArray:18},
     projectTaskEvidence:0,retrievalEvidence:0,memory:0,extraction:0,objectiveCarry:0,
+    retention:{ before:measured, after:retained.budget, requiredBefore:total(measured), requiredAfter:total(retained.budget), budgetSavings,
+      receiptRows,multilineBefore,multilineAfter,framesBefore:frames,framesAfter,
+      quotingBefore:sum(failures.filter(pair=>pair.failure==="quoting-failure"),"correctedAccountingTokens"),
+      quotingAfter:sum(failures.filter(pair=>pair.failure==="quoting-failure"),"correctedAccountingTokens"),
+      writePairsBefore:sum(pairRows.filter(pair=>authoredWrites.has(pair.id)),"correctedAccountingTokens"),
+      writePairsAfter:sum(pairRows.filter(pair=>authoredWrites.has(pair.id)),"correctedAccountingTokens"),
+      originalCalls:verbatimToolCallIds.length,retainedCalls:afterCalls.length,demoted:receiptRows.length},
+    coordinatorReplay:{matchesProjection:true,readyCalls,inference:0,memoryIO:0,originalDurableToolRecords:persistedParts.length},
     newInference:0,nativeEffects:0 },null,2));
 } finally { await vite.close(); }

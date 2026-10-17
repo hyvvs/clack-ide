@@ -3440,3 +3440,231 @@ Only the shared estimator, its regression tests, offline audit script and this
 additive acceptance report change. No Rust/native code, ForgeBoard source,
 delegation work, safety stash, `autonomous_tracker/`, other checkpoint, push, or
 live inference is part of this correction.
+
+## Resolved Tool Refusal Retention (2026-10-17)
+
+Starting checkpoint: `ac1c8ed`, clean `main`. Before any retention change, the
+existing offline reconstruction passed and reproduced **33171 / 32768** in
+`forgeboard-none-20261017-05/retention-before.json`. No inference or effects ran.
+
+### Invariants Recorded Before Implementation
+
+- Original session messages, tool inputs/results, source identities and durable
+  source-group boundaries must remain unchanged.
+- Uncertain mutations, generic process/runtime errors, permission/approval
+  evidence and the latest debugging failure must remain verbatim and hot.
+- Successful writes and probes cannot be retired merely from matching paths,
+  a zero exit code, elapsed turns or later overwrites.
+- The active plan, original requirements, schemas, output reserve, safety margin,
+  existing accounting correction and workspace/conversation boundaries stay intact.
+- Only independently reproducible builtin pre-execution rejection may be replaced
+  by a protected receipt; a later guard-accepted success proves syntax adaptation,
+  not completion of the rejected command's intended work.
+- Receipt provenance must retain the original tool-call identity and the later
+  successful adaptation identity. Originals remain in session history. Requesting
+  an exact demoted source must restore its original pair or fail B1 conservatively;
+  restoration must never execute or replay the tool.
+- The latest/current failure and a genuine uncertain-effect overflow must still
+  produce `compaction-protected-budget` when they cannot fit.
+
+### Failure Inventory and Proof Boundary
+
+The preserved terminal has **9 failure/refusal pairs**: **8 confirmed no-effect
+multiline refusals**, **1 process-launched quoting failure with conservatively
+unknown effects**. The old numbers 5350/683/6652 included the already-fixed
+undefined-field charges. All before/after measurements below use the corrected
+estimator: multiline **5230**, quoting **668**, successful write pairs **6502**.
+No accounting, reserve or margin policy was changed again.
+
+`buildShellTools().bash_run.execute` calls `checkShellCommand` before session
+lookup, `shellSessionOpen` or `shellSessionRun`. A CR/LF control-byte refusal returns
+exactly `{error: <deterministic reason>}` from that branch. The projection independently
+reruns the same validator against the original input, requires that exact reason
+and error-only result shape, builtin name, ordered local call/result pair, no
+provider execution and no approval evidence in the source boundary. Thus this
+proof does not rely on an arbitrary tool's error prose or an invented effect flag.
+A test invokes the real builtin and proves neither native shell operation is called.
+
+Source for every row is assistant `Qa8IMCFduZBsVcDt` in conversation
+`real-mission-a`; exact inputs/outputs remain in `mission-a-1.json` and
+`data/terax-ai-sessions.json` under the existing -05 evidence directory. Command
+descriptions below identify the operation; they do not replace those full originals.
+All nine were hot under the former full-SDK-tail policy. Costs exclude shared
+message frames, and rows are sorted by corrected pair cost.
+
+| Original call ID | Command/input and class | Effect certainty | Later response and unfinished-work dependency | Before -> after |
+| --- | --- | --- | --- | ---: |
+| `4mrHAmtrBrEY7P7O2blXuyKj1m0uEO9l` | Multiline `node -e` draft of domain.ts; control-byte refusal | Confirmed none; never launched | Later `cfF5...` writes test content using an accepted command shape. Domain implementation remains unverified; receipt does not call it completed | 831 -> 283 |
+| `nB07jpwpkOPNi5Br9nT2qaNB45tGI70C` | Multiline PowerShell here-string for domain.ts; same guard | Confirmed none; never launched | Same later syntax adaptation `cfF5...`; intended domain work not established | 778 -> 283 |
+| `VacZqVXOuuOI4AbxlExbACZ2uWbHLAJ4` | Final multiline `node -e` domain draft; same guard | Confirmed none; never launched | No later accepted command; current debugging failure stays verbatim, including its exact input/error | 753 -> 753 |
+| `I9a0kUwUbbh0St9ASCMaxulUQ32q6fta` | Multiline `Set-Content` domain draft; same guard | Confirmed none; never launched | Later `nsNL...` writes line placeholders. Syntax adaptation, not a semantic repair of the domain | 752 -> 283 |
+| `tePJmQfuLtuxUS04NbOoWy2bND6idHMM` | Multiline server configuration writes; same guard | Confirmed none; never launched | Later `7nYL...` writes the scaffold configuration; original refusal prose is not a current blocker | 742 -> 283 |
+| `VJcy05bzWoDOVLzkUDfX5C79HXt4W5D4` | Node helper quoting/syntax error after shell launch | Unknown, conservatively retained; no confirmed mutation from this call | A later hello/world probe does not prove all possible effects absent or that the intended helper works. Exact runtime stderr remains hot | 668 -> 668 |
+| `ajNM3cn3nrW5FRNTmZmBm2770JZgWdrT` | Multiline root manifest here-string; control-byte refusal | Confirmed none; never launched | Later `ckhI...` writes root scaffold using an accepted shape | 532 -> 283 |
+| `qYt5bF8eEHLfOjVXw759WAytT2c2fU9x` | Second multiline root manifest string; same guard | Confirmed none; never launched | Same subsequent `ckhI...` scaffold write | 528 -> 283 |
+| `mhuqJ7HXtpfnwSJ6lV05ZYLHhaKxO3Qi` | Multiline generic file-helper draft; same guard | Confirmed none; never launched | Later `rzbg...` writes a different copy helper with single-line syntax; exact original helper completion is not established | 314 -> 283 |
+
+There are **7 later successful guard adaptations**, not seven proven completed
+implementation repairs. Three refusals were followed by successful writes to the
+same scaffold targets; four domain/helper objectives still lack verified semantic
+repairs. Together with the current refusal and uncertain quoting failure, **six
+failure records still lack verified semantic resolution**. The receipts explicitly
+retain that distinction. They protect the no-effect failure fact and syntax rule
+without preserving every old rejected implementation draft verbatim. No inference
+of correction is made from a filename, number of turns or token size alone.
+
+### Retention Policy and Replacement Representation
+
+The existing `compactionPlan.ts` history projection now emits deterministic
+`ToolHistoryReceipt`s for the narrow class above. Eligibility requires a later,
+ordered, same-user/system-boundary builtin shell success with the same executed
+command as its input, exit 0, `timed_out:false`, and native stdout/stderr fields.
+That proves the model had feedback and subsequently passed this guard; it does
+not prove that the refused operation was completed. A fresh/recurrent refusal
+without later adaptation stays verbatim. Duplicate IDs, out-of-order pairs,
+provider-executed/custom/MCP tools, additional error/result fields, generic shell
+errors, timeouts and permission/approval evidence are ineligible. Tiny refusals
+are also retained if a receipt would increase their size, after semantic checks.
+Lookup uses ordered per-boundary successes rather than a quadratic history scan.
+
+Each replacement is protected historical assistant text, not a fabricated new
+tool result or edited tool-call input. It contains:
+
+- Original builtin name and tool-call ID, outcome `refused-before-execution`,
+  `effect:none`, and the exact later `adaptedBy` tool-call identity.
+- The single-line shell rule and read_file/edit/multi_edit route for multiline
+  file content, not an unsupported claim that `bash_run` is Bash.
+- `workCompleted:"not established"`, an explicit no-automatic-replay instruction,
+  and a session-history / `request_conversation_evidence` source anchor.
+
+Both old protocol parts are replaced together. No dangling tool-call or result
+is left. Other parts and messages remain unchanged; empty result envelopes are
+removed. Original source-unit indexes and `groupCompactionUnits` boundaries are
+computed before projection, so existing failure/coverage groups stay protected.
+Active SDK-tail receipts stay in the always-retained tail. The original plan
+projection still excludes only acknowledged superseded accepted plans.
+
+This is **smaller protected receipt representation**, not silent deletion of
+failure memory, another summary model call, a new memory tier, effect ledger or
+vector index. Receipts are recomputed from originals; no session schema or memory
+revision is overwritten. Existing session writes are awaited before returning a
+receipt-bearing preparation. A write-barrier failure blocks preparation.
+
+### Original Evidence, Bounded Restoration and Effect Safety
+
+All **27 original tool records**, including the old accepted plan and all nine
+failures, match the isolated persisted session store's tool IDs, inputs, outputs
+and states. Store SHA-256 at this audit:
+`b0f8d935a7ac7bdba69c43a9ec4b0c2d0ce88b7b46b72c1072a1eddf3323615a`.
+The preceding report/wire hashes still verify. No originals or existing evidence
+files were rewritten. Serialized-session tests rebuild the same receipts after
+restart and recover the original input without a memory commit or extraction.
+
+The existing compactor evidence-request entry point recognizes exact receipt
+tool-call IDs belonging to that coordinator. It pins the original pair from the
+same existing source history for the next preparation, never executing it. This
+uses the existing shared **2-round / 12-chunk / 65536-byte** allowance and B1; an
+oversized restoration blocks rather than truncating the source. Cancellation,
+stale/disposed scope and another coordinator cannot access these originals.
+The pin contains only IDs/byte counts, not another transcript copy or persistent
+index. Other conversation/project/task retrieval remains on its existing path.
+
+Evidence-tool availability is still governed by existing authorization and F1
+exposure. No schema was added or forced into the captured 16-tool set. The receipt
+therefore says to request source evidence **if available**, with original session
+history remaining accessible regardless. The offline experiment demonstrates the
+existing API's exact-source pin/restore behavior; it does not claim that every
+model already exposes that tool in every phase.
+
+**Successful shell writes, overwritten probes and the quoting failure are not
+demoted.** A successful shell exit and later matching path are not sufficient
+proof of complete effect identity/current file state or replay safety. No new
+authoritative file snapshot was fabricated or read to justify dropping them.
+The existing D1/D2 retry, cancellation, uncertain-effect and approval gates are
+unchanged. This projection invokes no executor, inference, retry or continuation;
+restoring source is history preparation only. New model-chosen actions still use
+the existing execution/approval safeguards.
+
+There were **0 read-before-edit calls/refusals in this -05 transcript**: its 27
+tools are shell, directory creation and todo calls. Existing read-before-edit
+refusals are confirmed pre-write in their actual builtin path, including a new
+test that no content read/write runs on an unread edit. Their hot representation is
+unchanged here: no authoritative later read/create/write supersession proof was
+established for them in this replay. The checkpoint does not generalize shell
+receipt eligibility to all error-shaped output.
+
+### Exact Savings and Preparation Replay
+
+The seven demotions and their exact payload savings appear in the inventory
+above. Each receipt costs **283**, replacing **4477** corrected call/result tokens
+with **1981** receipt tokens: **2496 payload tokens saved**. Message framing drops
+**713 -> 623**, another **90**. Total input saving **2586**, plus the unchanged
+margin calculation decreases by **259**; total required saving **2845**.
+
+| Corrected-estimator component | Before | After |
+| --- | ---: | ---: |
+| System | 3617 | 3617 |
+| All 16 schemas | 7250 | 7250 |
+| Protected conversation | 17426 | 14840 |
+| Input | 28293 | 25707 |
+| Output reserve | 2048 | 2048 |
+| Safety margin, max(128, ceil(input x 0.1)) | 2830 | 2571 |
+| **Required** | **33171** | **30326** |
+| Ceiling | 32768 | 32768 |
+| **Headroom** | **-403** | **2442** |
+
+After-conversation decomposition: original user/envelope **1196**, unchanged
+remaining tool pairs **10045**, protected refusal receipts **1981**, unchanged
+assistant text **995**, message framing **623** = **14840**.
+Multiline evidence is **5230 -> 2734**, including the unchanged latest refusal
+**753** plus seven receipts **1981**. Quoting failure **668 -> 668**; ten successful
+write pairs **6502 -> 6502**. No successful write/probe payload saving is claimed.
+
+`scripts/classify-context-capacity.mjs` keeps the historic 33600 reconstruction and
+corrected pre-retention **33171** reproducible by explicitly pinning all original
+tool IDs for that baseline. A separate normal retention pass asserts **30326**,
+seven receipt identities, matching retained call/result sets, unchanged sources,
+current-refusal/quoting preservation, all schema costs and stable repeated output.
+Its additional read-only **production compaction-coordinator** replay produces
+the same messages as the planner, with a preflushed saved store, one readiness
+barrier, **0 inference, 0 memory IO/write/extraction and 0 tool effects**. Adapters
+throw if any inference or memory operation is attempted. Result:
+`forgeboard-none-20261017-05/retention-after.json`, `coordinatorReplay`.
+
+**32K now fits this deterministic preparation.** This is not a provider tokenizer
+measurement or a fresh native/model acceptance mission. No ForgeBoard inference,
+tool execution, correction, coding, larger-context request, model/output setting
+change or cloud call was performed.
+
+### Verification and Unchanged Model-Quality Finding
+
+Focused verification: **261 tests in 8 files passed**, covering the builtin shell
+guard before native dispatch, unread edit safety, no-effect receipts, unresolved/current
+failures, recurrence, unknown effects, superseded successful writes remaining
+verbatim, approvals, duplicate/reversed IDs, provider/MCP impersonation, user
+boundaries, original source-group integrity, serialization/restart, exact source
+restoration, shared retrieval bounds, scope isolation, persistence-barrier failure,
+and genuine protected overflow. Existing accounting, accepted-plan projection,
+retrieval and F1 tests remain green. **28 new regression cases** were added.
+
+Final gates:
+
+- `npm.cmd run check-types`: passed after correcting a test-fixture-only JSON
+  value type; final build also compiles all TypeScript.
+- `npm.cmd run lint`: passed, unchanged baseline **71 warnings / 2 informational
+  notices**, no new diagnostics.
+- `npm.cmd test`: **2822 passed in 201 files**, no failures.
+- `npm.cmd run build`: passed, including final TypeScript compilation. Existing
+  ineffective-dynamic-import notices for customExecution/agent/transport/
+  chatRuntime and the plugin-timing notice remain; no new build failure.
+- `git diff --check`: passed; only normal Windows LF/CRLF conversion notices.
+- No Rust files changed; Rust gates were not repeated. No native GUI, live
+  provider, Linux/macOS host or larger-context verification is claimed.
+
+The live -05 engineering result is unchanged: about **10m54s**, **23 completed
+inferences**, **27 tools**, **10 successful write-bearing shell calls**, but no
+working backend/frontend, persistence, SSE, application tests or successful
+production build. This fixes unnecessary hot representation of proven no-effect
+history; it does **not** demonstrate improved Qwen engineering ability or a working
+ForgeBoard. No subsequent mission/checkpoint, unrelated work/stash/delegation/
+`autonomous_tracker/` change, native GUI interaction, larger-context test or push.

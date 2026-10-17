@@ -5,6 +5,7 @@ import { usePlanStore } from "../store/planStore";
 import { buildEditTools } from "./edit";
 import { buildFsTools } from "./fs";
 import type { ToolContext } from "./context";
+import { buildShellTools } from "@/modules/ai/tools/shell";
 
 function context(): ToolContext {
   return {
@@ -44,6 +45,24 @@ describe("file mutation snapshot safety", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     usePlanStore.setState({ active: false, queue: [] });
+  });
+
+  it("rejects multiline shell input before opening a session or launching any command", async () => {
+    const open = vi.spyOn(native, "shellSessionOpen");
+    const run = vi.spyOn(native, "shellSessionRun");
+    const result = await executeTool(buildShellTools(context()).bash_run, { command: "echo first\necho second" });
+    expect(result).toEqual({ error: "Refused: command contains control characters (including CR/LF). Commands must be single-line." });
+    expect(open).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("rejects unread edits before reading or mutating the target", async () => {
+    const read = vi.spyOn(native, "readFile");
+    const write = vi.spyOn(native, "writeFile");
+    const result = await executeTool(buildEditTools(context()).edit, { path: "/work/unread.ts", old_string: "before", new_string: "after" });
+    expect(result).toMatchObject({ error: "must call read_file on this path first (read-before-edit invariant).", path: "/work/unread.ts" });
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
   });
 
   it("rejects an edit when another run changed the file after it was read", async () => {

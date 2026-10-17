@@ -39,6 +39,8 @@ import {
   createConversationRetriever,
   type retrieveConversationEvidence,
   type RetrievalNotice,
+  RETRIEVAL_POLICY,
+  RetrievalError,
 } from "@/modules/ai/lib/conversationRetrieval";
 import {
   createScopedRetriever,
@@ -47,6 +49,7 @@ import {
 } from "@/modules/ai/lib/scopedEvidence";
 import {
   newRetrievalAllowance,
+  claimRetrievalRound,
   type RetrievalAllowance,
 } from "@/modules/ai/lib/retrievalAllowance";
 import { projectCompletedPeerHistory } from "@/modules/ai/lib/peerHistory";
@@ -186,9 +189,10 @@ export async function createConversationCompactor(options: {
 }) {
   const { context } = options;
   const memory = options.memory ?? nativeMemory;
+  let disposed = false;
   const check = () => {
     options.signal?.throwIfAborted();
-    if (!options.scope.isCurrent())
+    if (disposed || !options.scope.isCurrent())
       throw new CompactionError(
         "stale",
         "The captured conversation run is no longer current.",
@@ -247,6 +251,9 @@ export async function createConversationCompactor(options: {
     }
   };
   const observedWrites = new Set<string>();
+  const verbatimToolCallIds = new Set<string>();
+  let receiptSources = new Map<string, number>();
+  let pendingOriginal: string | undefined;
   const allowance = options.allowance ?? newRetrievalAllowance();
   const scoped =
     options.scopedEvidence && context.owner.workspaceId
@@ -311,23 +318,47 @@ export async function createConversationCompactor(options: {
   return {
     validateEvidence: () => scoped?.validate() ?? Promise.resolve(),
     dispose: () => {
+      disposed = true;
+      pendingOriginal = undefined;
+      receiptSources.clear();
+      verbatimToolCallIds.clear();
       extractor?.dispose();
       retriever?.dispose();
       scoped?.dispose();
     },
-    requestEvidence: (query: string, anchor?: string, expand?: boolean) =>
-      (isScopedAnchor(anchor)
+    requestEvidence: (query: string, anchor?: string, expand?: boolean) => {
+      check();
+      if (anchor && !isScopedAnchor(anchor) && receiptSources.has(anchor)) {
+        if (query.length > 4096 || anchor.length > 256) return { status: "invalid", message: "Use a bounded query and original tool-call ID." };
+        if (pendingOriginal || allowance.rounds >= RETRIEVAL_POLICY.rounds) return { status: "limit", message: "The shared evidence allowance is exhausted or an original-source request is pending." };
+        pendingOriginal = anchor;
+        return { status: "queued", message: "The original tool pair will be restored from this conversation before the next response, subject to B1. No tool will be replayed." };
+      }
+      return (isScopedAnchor(anchor)
         ? scoped?.request(query, anchor)
         : retriever?.request(query, anchor, expand)) ?? {
         status: "unavailable",
         message: "Conversation retrieval is unavailable.",
-      },
+      };
+    },
     async prepare(
       extra: ModelMessage[] = [],
       tools: unknown = options.tools,
     ): Promise<ModelMessage[]> {
       check();
       allowance.epoch++;
+      if (pendingOriginal) {
+        const anchor = pendingOriginal;
+        pendingOriginal = undefined;
+        const bytes = receiptSources.get(anchor);
+        if (bytes === undefined || allowance.bytes + bytes > RETRIEVAL_POLICY.bytes || allowance.chunks >= RETRIEVAL_POLICY.chunks)
+          throw new RetrievalError("limit", "The original tool pair exceeds the shared evidence allowance; inspect session history.");
+        claimRetrievalRound(allowance);
+        allowance.bytes += bytes;
+        allowance.chunks++;
+        allowance.conversationRounds++;
+        verbatimToolCallIds.add(anchor);
+      }
       let limits = await options.limits();
       check();
       const writes = confirmedWorkspaceWrites(extra).filter(id => !observedWrites.has(id));
@@ -335,13 +366,14 @@ export async function createConversationCompactor(options: {
       if (writes.length) await scoped?.validate(true);
       check();
       for (const id of writes) observedWrites.add(id);
-      const plan = () =>
-        planCompaction({
+      const plan = () => {
+        const result = planCompaction({
           units,
           limits,
           system: options.system,
           tools,
           extra,
+          verbatimToolCallIds: [...verbatimToolCallIds],
           threshold: prepared
             ? COMPACTION_POLICY.target
             : COMPACTION_POLICY.trigger,
@@ -349,8 +381,15 @@ export async function createConversationCompactor(options: {
             ? { end: view.revision.coverage.end, claims: view.revision.claims }
             : undefined,
         });
+        receiptSources = new Map(result.toolReceipts.map(receipt => [receipt.toolCallId, receipt.sourceBytes]));
+        return result;
+      };
       // Without shared evidence, small conversations retain the no-disk fast path.
       let current = plan();
+      if (current.toolReceipts.length) {
+        await context.ready();
+        check();
+      }
       if (
         !current.needed &&
         !view &&
