@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { createServer as createViteServer } from "vite";
 import { evaluateAcceptanceApproval } from "./acceptance-approval.mjs";
+import { createCorrectionObserver } from "./acceptance-correction.mjs";
 
 const phase = process.argv[2];
 assert(["stream-diagnostic", "preflight", "system-preflight", "mission-a", "resume-a", "restart", "mission-b", "offline", "stability"].includes(phase), "Specify one explicit acceptance phase");
@@ -64,6 +65,7 @@ let approvalOwner;
 const pendingApprovals = new Map();
 const evaluatedApprovals = new Set();
 let evidenceWrites = Promise.resolve();
+const observeCorrection = createCorrectionObserver(root, path.join(owned, "correction-state.json"));
 const server = createServer(async (request, response) => {
   response.setHeader("access-control-allow-origin", "*");
   response.setHeader("access-control-allow-headers", "content-type");
@@ -71,10 +73,14 @@ const server = createServer(async (request, response) => {
   try {
     if (request.method === "OPTIONS") { response.statusCode = 204; response.end(); return; }
     if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, maxOutput, singleSpec, reasoningChoice, traceStreams, prepareOnly }, streamDiagnostic });
-    if (!["/report", "/evidence", "/approval"].includes(request.url) || request.method !== "POST") { response.statusCode = 404; return json({ error: "Unknown acceptance route" }); }
+    if (!["/report", "/evidence", "/approval", "/correction"].includes(request.url) || request.method !== "POST") { response.statusCode = 404; return json({ error: "Unknown acceptance route" }); }
     let body = "";
     for await (const chunk of request) { body += chunk; assert(body.length < 64 * 1024 * 1024, "Acceptance payload exceeded bound"); }
     const value = JSON.parse(body);
+    if (request.url === "/correction") {
+      assert(["mission-a", "resume-a"].includes(phase) && child?.exitCode === null, "Correction observation requires the live Mission A host");
+      return json(await observeCorrection(value));
+    }
     if (request.url === "/approval") {
       assert(phase === "mission-a" && child?.exitCode === null, "Approval requires the live Mission A host");
       assert(!evaluatedApprovals.has(value.id), "Acceptance approval was already evaluated");

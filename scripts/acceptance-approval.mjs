@@ -45,7 +45,7 @@ const contracts = {
   "test-path": { operation: "test", switches: [], values: ["path", "literalpath", "erroraction"] },
   "out-file": { operation: "write", switches: ["force", "append", "nonewline", "noclobber"], values: ["filepath", "literalpath", "encoding", "erroraction"] },
 };
-function bind(elements) {
+function bind(elements, includeContent = false) {
   if (elements[0]?.kind !== "literal") throw new Error("Literal cmdlet required");
   const name = elements[0].value.toLowerCase();
   const contract = Object.hasOwn(contracts, name) ? contracts[name] : undefined;
@@ -78,7 +78,16 @@ function bind(elements) {
   if (contract.operation === "create" && !["file", "directory"].includes(args.itemtype?.toLowerCase())) throw new Error("Only ordinary file/directory creation supported");
   return { command: name, operation: args.append ? "append" : contract.operation, operand: args.path ?? args.filepath ?? args.literalpath,
     recursive: args.recurse === true, force: args.force === true, itemType: args.itemtype?.toLowerCase(),
-    contentBytes: pipelineInput ? Buffer.byteLength(pipelineInput.join("\n")) : args.value === undefined ? undefined : Buffer.byteLength(args.value) };
+    contentBytes: pipelineInput ? Buffer.byteLength(pipelineInput.join("\n")) : args.value === undefined ? undefined : Buffer.byteLength(args.value),
+    ...(includeContent ? { literalContent: pipelineInput ? pipelineInput.join(args.nonewline ? "" : "\n") : args.value ?? "", noNewline: args.nonewline === true, errorAction: args.erroraction } : {}) };
+}
+
+// Read-only reuse of the same bounded AST parser; this does not approve or execute.
+export async function inspectAcceptanceShellEffects(command) {
+  if (typeof command !== "string" || !command.length || command.length > 16384 || /[\x00-\x1f]/.test(command)) throw new Error("Invalid observation command");
+  const parsed = await inspectPowerShell({ mode: "parse", command });
+  if (!Array.isArray(parsed.commands) || !parsed.commands.length || parsed.commands.length > 16) throw new Error("Invalid parsed operations");
+  return parsed.commands.map(elements => bind(elements, true));
 }
 
 // A point-in-time decision for a paused, isolated scratch run, not an OS sandbox.

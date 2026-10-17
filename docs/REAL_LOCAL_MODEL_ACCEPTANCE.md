@@ -4288,3 +4288,231 @@ Live evidence hashes:
 
 Commit scope: **`test(ai): generalize safe live approvals`**, harness/tests/docs
 only. Exactly one fresh mission, no resume, no further checkpoint and no push.
+
+## 2026-10-17: Corrected Write/Plan Canary and Fresh -08 Terminal Run
+
+### Scope and Detector
+
+Baseline: clean **main at `47aab89600ec2cc03d294cfc7c5d8bc80cfb61a2`**, recorded
+origin/main **47 ahead / 0 behind**, without fetch or push. Native process
+inventories before preparation, before inference and after teardown found no
+competing/abandoned Clack acceptance host, Cargo/Rust build, Vite test or Clack
+harness. No unrelated process was terminated. Safety stashes, delegation work
+and `autonomous_tracker/` were not touched.
+
+The old correction fixture counted only completed `write_file`/`edit`/`multi_edit`
+parts and searched those inputs for 50. It ignored shell writes and the current
+accepted plan. The replacement is **acceptance-only**:
+
+- Preserve historical **three successful write EVENTS**, not three distinct
+  paths. One completed tool call counts once even if it writes multiple files;
+  three confirmed calls writing the same path count three times. Real probes,
+  placeholders and malformed authored content have no subjective quality filter.
+- Native file/edit results require the production `ok`, `clackWorkspaceWrite`
+  and `bytesWritten` confirmation, plus scoped ordinary-file evidence. Queued
+  plan-review proposals and directory creation do not count.
+- Shell results require the completed production command, exit 0, explicit
+  non-timeout/non-truncation, captured stdout/stderr and no stderr, with a known
+  root cwd. Read-only reuse of the existing bounded PowerShell AST parser
+  identifies literal Set-Content/Add-Content/Out-File/New-Item File effects;
+  ordinary workspace content must match the literal write/append, including
+  encoding/newline normalization. File identity, SHA256 and tool-call identity
+  are recorded. Command text alone, failed/refused/pending/uncertain operations,
+  dry runs, missing evidence and silently suppressed write errors cannot count.
+  A changed, newly confirmed result can be observed later. Unknown effect forms
+  are not guessed or executed; this is not a general shell interpreter.
+- Current accepted todo title/description or actual authored project code/config
+  can establish page-size 50. Only the current plan is examined, not historical
+  snapshots. Original user text, evaluator text, arbitrary 50, cancelled plans,
+  unexecuted inputs and superseded current values do not establish this half.
+  Missing/changed files are not substituted with historical write input.
+- A bounded, run-local `correction-state.json` is atomically replaced. Completed
+  tool identities deduplicate observations. The boundary includes the third
+  confirmed event and current page evidence. A serialized compare-and-claim
+  persists dispatch intent **before** sending. A second observer/continuation
+  cannot claim again. Observed user-message ID/time are persisted and emitted
+  as `correction-sent`. An uncertain dispatch is never automatically replayed;
+  corrupt state fails closed. Original session messages also guard against
+  resending. This is harness state, not another product memory store.
+- The exact authorized correction remains unchanged. No other evaluator message
+  was added; no production Agent, context, memory, retrieval, adapter, execution,
+  permission, approval or scheduling behavior was changed.
+
+Before inference, **132 tests in five files passed**, along with types, focused
+lint and syntax checks. A read-only replay of preserved -07 recognized its three
+actual shell-write events and accepted page-size-50 plan, with third event
+`SLX9KmmvhFBUqCx7WFLsjZIZJKbk8DOE` (`tsconfig.base.json`). Nothing was sent to or
+executed in that old conversation.
+
+**Post-teardown hardening, not mid-run repair:** -08's plan used the synonymous
+`pagination (50/page)` form, which the frozen detector did not recognize. Added
+deterministic coverage for that form, `50 per page`, `pagination: 50`, `pageSize:
+50` and `page size of 50` after teardown. Also tightened incomplete/suppressed
+shell-result handling and literal array NoNewline confirmation. No second live
+run was performed. These changes cannot turn -08 into a positive canary result;
+they did not alter its terminal interpretation because **no file write occurred**
+and the first required half remained false throughout.
+
+### Fresh Run and Controls
+
+- Workspace: `C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-08`.
+- Evidence ID: **`forgeboard-none-20261017-08`**, under
+  `src-tauri/target/real-qwen-product/forgeboard-none-20261017-08/` (ignored local
+  raw captures). No prior workspace/evidence directory was reused.
+- Metadata-only preflight completed with **zero inference** and built the locked
+  native acceptance example using the existing isolated target directory.
+- Mission: **2026-10-17 17:38:04.630-17:44:33.374 UTC**, **388.744 seconds**.
+  Native host PID **36508**, owned runner **35400**. **1023 source fingerprints
+  remained unchanged during the entire mission**; verified before any later edit.
+- All **25** captured native requests used exact `qwen38-uncensored:latest`,
+  `http://127.0.0.1:11435/api/chat`, `num_ctx:32768`, `num_predict:2048`,
+  `think:false`, streaming, fallback Never and **zero cloud inference**.
+  Production idle **60s** / overall **600s** limits were unchanged. Automatic
+  reasoning was **not** run. Ollama metadata version **0.40.5**, model digest
+  `0e163794a8b9cdd6e234013b1a27d2e58f06f48d20413a0c2e3e370faaef5505`,
+  final native loaded context **32768**.
+- The unchanged full specification was submitted **once**, message
+  **`JkSey58FLAADOTSX`**. It is the only user message. No reminders, manual
+  Continue, correction, requirements resend, tuning or evaluator implementation.
+  Normal production selection exposed 16 tools initially, 13 during natural
+  continuation; no test-only execution tool was added.
+
+Chronology:
+
+| Requests | Observed Work |
+| --- | --- |
+| 1 | Empty workspace inspected; accepted 11-step plan, including pagination (50/page), port 4317, title 120, persistence/SSE, 750ms debounce and tests/build/README. First answer output after **13.247s**; first tool batch after **69.797s**, measured from the first captured request. |
+| 2 | First shell command `node --version; npm --version; npm config get registry`, valid native PowerShell, exit 0. Node 22.20.0, npm 10.9.3. |
+| 3-4 | `npm ping 2>&1 \| head -5` failed because PowerShell has no `head`; Qwen independently retried `npm ping`, which succeeded. |
+| 5-9 | Sixteen directory creations, no file content. |
+| 10-11 | Edit of nonexistent, unread `package.json` refused by read-before-edit; subsequent read reported missing file. |
+| 12-13 | Two multiline shell inputs refused before execution. The second attempted base64 generation but still contained literal newlines. No file write. |
+| 14-15 | Repeated reads of still-missing `package.json`. PowerShell exit 0 with explicit Get-Content errors in stderr: **not** successful file-write evidence. |
+| 16 | Prose proposing a helper, but no helper/tool effect. Included a model-generated receipt-shaped string with an invented source identity. |
+| 17-25 | Nine production auto-continuations received empty provider responses, each final `done_reason:stop`, `eval_count:1`. No new tools or effects. Production continuation budget stopped further requests. |
+
+Terminal budget is **`phase:hard-limit`, `stopReason:continuations`, totalSteps:25,
+continuationCount:9/maxAutoContinuations:9`**. Captured run metadata retains
+`state:running`, but its stopped budget phase and inactive inference are explicit;
+this is a paused, unfinished task, not successful completion or a live abandoned
+request. All 11 todos remain unfinished, not falsely completed. There was no
+evaluator stop, timeout increase, manual resume or tool-effect replay.
+
+Totals: **27 tool calls, all 27 with output**: 16 create_directory, 7 bash_run,
+1 list_directory, 1 todo_write, 1 edit, 1 read_file. **Zero successful file-write
+events. Zero approvals encountered/granted/rejected.** The -07 literal file-output
+pipeline did **not** occur, so no live approval success for it is claimed.
+The existing approval parser/lifecycle regression tests still pass unchanged.
+
+**Correction:** no boundary and no correction message ID/timestamp: the
+three-write threshold was never reached. This is a valid negative boundary
+observation, **not** proof of live 50 -> 25 continuity. Current requirement
+remained 50; later 25 retention is **not exercised**. Positive boundary and
+exactly-once dispatch have deterministic evidence, not live acceptance evidence.
+
+### Retention, Streaming and Independent Delivery Audit
+
+Two **genuine production** resolved-refusal receipts occur in requests **15-25**:
+
+| Original Call | Adaptation | Pair Cost | Receipt Cost | Payload Saving |
+| --- | --- | ---: | ---: | ---: |
+| `u5nOKiCAL8RQpV4Zxar0DZDywv5nTuXc` | `wCb9cpmXLgOI5yRZB3Tvavw1hAcaisZ8` | 611 | 283 | 328 |
+| `Evtn9FGt4su73HB8J1kIW1l557A1BqIX` | `wCb9cpmXLgOI5yRZB3Tvavw1hAcaisZ8` | 577 | 283 | 294 |
+
+Total marginal payload **1188 -> 566**, saving **622 estimated tokens**. Offline
+SDK transcript reconstruction through `convertToModelMessages` and production
+`compactResolvedToolFailures` gives conversation cost **10914 -> 10262**,
+saving **652 including message framing**. These are shared-estimator costs, not
+additional inference or provider usage. Guard adaptation proves only that the
+later command was single-line, not successful Get-Content or implementation;
+receipts explicitly retain effect `none`, work completed `not established`.
+
+Qwen's request-16 text copied receipt syntax with invented ID
+`X37v40z8b6X937nG1zQwX9Qx9w7Q9Xq`. It has no matching original tool call and is
+**unverified model-authored text**, not a third durable/generated receipt, source
+proof or completed work. The original tool calls/results remain in session
+history. Raw assistant text is preserved rather than rewritten by the evaluator.
+
+Minimum exact native-wire headroom **8498** at request **16**: system **3617**,
+tools **7250**, conversation **9334**, input **20201**, margin **2021**, reserve
+**2048**, required **24270 / 32768**. All 25 budgets fit. No memory revision,
+rolling compaction, extraction, historical source restoration or context-pressure
+boundary occurred. Empty startup scoped retrieval was not a retrieval failure.
+
+All **25 native streams** received provider final `stop` and completed HTTP-body
+delivery, IPC forwarding and parsed-frame traces. **Zero invalid frames**, no
+stream stall/idle/overall timeout. Maximum observed IPC chunk gap **54.501s**
+(first request), below the unchanged idle limit; first request total approximately
+69.8s. Actual provider-reported total output **2901 tokens**, including nine
+one-token empty responses. No inferred token count or hidden reasoning claim.
+Final `/api/version` and `/api/ps` returned 200. Host teardown left no competing
+or abandoned acceptance process.
+
+Independent inspection, without repair, found **zero project files outside .git**,
+only the 16 empty directories. Git is unborn **master**, no tracked/untracked
+project files or commits. Package manifests, backend/frontend source, project/task
+CRUD, real persistence, SSE, filters/search, actual port 4317 behavior, title 120
+validation, page-size behavior, 750ms debounce, README and .gitignore are all
+**NOT IMPLEMENTED**. No first substantive backend/frontend/test timestamp exists.
+Qwen wrote/ran **zero application tests and zero builds**. Evaluator test/build
+commands were **not run**, because no package, tests or build scripts exist; no
+dependencies were installed or source authored by the evaluator.
+
+Detailed immutable-run evidence, budgets, shell results, hashes, receipt costs,
+unverified-ID distinction and chronology are in local `continuity-run-audit.json`,
+`frozen-source.json`, `source-freeze-after.json` and the original captures.
+
+### Classification and Final Verification
+
+- **HARNESS:** healthy for the observed negative boundary and ordinary production
+  tool progression; no evaluator block or added message. Positive live correction
+  and live destructive approval remain **unexercised**, not passed. The post-run
+  page-plan spelling hardening is explicitly separate from the frozen live code.
+- **CLACK:** healthy for this observed run, no confirmed new production defect,
+  context/transport/memory blocker or stream interruption. Existing guard and
+  bounded continuation policy remained enforced.
+- **MODEL:** **MODEL-INCOMPLETE / CONTINUATION LIMIT**. After 25 successful
+  inference requests and 27 tool calls, no file and no meaningful application.
+  This is not a host-interrupted, transport-deadline or context-window failure.
+  **Further Clack architecture changes are not justified by this model's observed
+  engineering behavior.** No further Qwen ForgeBoard attempt was started.
+
+Recommend a **separate controlled comparison** with already-installed
+**`qwen3-coder:30b`**, confirmed by metadata-only `/api/tags` (digest
+`06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca`).
+Use the same Clack controls with serialized capability verification. That model
+was **not run**, and nothing was downloaded in this checkpoint.
+
+Final focused verification, no skips on this Windows host:
+
+- **139 tests passed / 5 files:** **24** correction-boundary cases, **56** approval
+  evaluator cases, **13** acceptance lifecycle cases, **35** production security
+  cases and **11** stream-tracing cases. Covers three confirmed shell-write events,
+  failed/refused/pending/uncertain/directory/dry-run exclusion, later confirmation,
+  native edit/write evidence, current accepted plan/code, prompt/old-plan/unrelated
+  50 exclusion, synonymous pagination forms, atomic state/restart, concurrent
+  exactly-once dispatch claim, duplicate-message rejection and corrupt state.
+- `npm.cmd run check-types`: passed on final TypeScript. Focused Biome lint for
+  all five changed code/test files: **zero diagnostics**, no rewritten output.
+  All four JS files pass `node --check`; unchanged PowerShell helper AST syntax
+  check passed. `git diff --check`: passed.
+- Locked native acceptance example build and native preflight/mission passed.
+  Rust/example and production source unchanged; no full product/Rust suites were
+  redundantly rerun. No Computer Use/native GUI verification, Linux/macOS native
+  verification, Automatic run, comparison run or new checkpoint was performed.
+- Only acceptance harness/tests and this additive report are committed. Raw
+  evidence remains local/ignored; no push, permissions or production controls
+  were changed.
+
+| Original -08 Capture | SHA256 |
+| --- | --- |
+| `mission-a-1.json` | `4b20c6203b209f2450b4daab0387f69d995033680b8d9b2c494769e3fa1abc79` |
+| `mission-a-1.requests.jsonl` | `ab5b45ca59fdf7b7da62281eff671a29e4160839b3027a13bc3e92deba9ade47` |
+| `mission-a-1.jsonl` | `3f0a0ffff8d2607197e9dadf4d9a6edc49931016798f432aa19abc160aa76dca` |
+| `mission-a-1.receive.jsonl` | `8b168bf9973db3ab87a95f8d1689d657e3158f0f3f810675b352fa49c87bc0f3` |
+| `data/terax-ai-sessions.json` | `3f93893e30adb73e6cbe6237c9dd298e9fe4c8e1874791ce9857da73bbfd820f` |
+
+Commit scope: **`test(ai): exercise corrected local agent continuity`**.
+Exactly one fresh mission. No resume, additional Qwen run, architecture checkpoint
+or push. Correction implementation complete; live positive continuity is not
+claimed for a model that never reached the write boundary.

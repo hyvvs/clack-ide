@@ -441,10 +441,20 @@ export async function runRealLocalProduct(config: Configuration) {
     }),
   );
   let harnessStop: { classification: string; reason: string } | undefined;
-  const run = async (id: string, text: string) => {
+  const run = async (id: string, text: string, onSent?: () => Promise<void>) => {
     await prepareSessionChat(id);
     useChatStore.setState({ activeSessionId: id });
-    await sendMessageToSession(id, { text });
+    let notification: Promise<void> | undefined;
+    let notificationError: unknown;
+    const notify = () => {
+      if (!onSent || notification || !chats.get(id)?.messages.some(m => m.role === "user" && m.parts.some(p => p.type === "text" && p.text === text))) return;
+      notification = onSent().catch(error => { notificationError = error; });
+    };
+    const sentMonitor = onSent ? setInterval(notify, 25) : undefined;
+    try { await sendMessageToSession(id, { text }); }
+    finally { clearInterval(sentMonitor); notify(); await notification; }
+    if (notificationError) throw notificationError;
+    assert(!onSent || notification, "Correction message was not observed");
     const read = (): AcceptanceSnapshot => {
       const session = useChatStore.getState().sessions.find((s) => s.id === id);
       const chat = chats.get(id);
@@ -541,49 +551,52 @@ export async function runRealLocalProduct(config: Configuration) {
             m.role === "user" &&
             m.parts.some((p) => p.type === "text" && p.text === correction),
         ) ?? false;
-      const monitor = setInterval(() => {
+      const correctionRequest = async (value: Record<string, unknown>) => {
+        const response = await fetch(new URL("/correction", config.report), {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: "real-mission-a", ...value }), signal: AbortSignal.timeout(30000),
+        });
+        assert(response.ok, "Correction observation failed");
+        return response.json();
+      };
+      let observation: Promise<void> | undefined;
+      let observed = "";
+      const observeCorrection = async () => {
         const parts = chats
           .get("real-mission-a")
-          ?.messages.flatMap((m) => m.parts) as Part[] | undefined;
-        const writes =
-          parts?.filter(
-            (p) =>
-              ["tool-write_file", "tool-edit", "tool-multi_edit"].includes(
-                p.type,
-              ) &&
-              p.state === "output-available" &&
-              !(p.output as { error?: unknown })?.error,
-          ) ?? [];
-        const old = writes.find((p) =>
-          /(?:page|limit|size|perPage)[^\n]{0,70}\b50\b/i.test(
-            JSON.stringify(p.input),
-          ),
-        );
+          ?.messages.flatMap((m) => m.parts).filter(p => p.type.startsWith("tool-") && "state" in p && p.state === "output-available") as Part[] | undefined;
         const plan = getTodos("real-mission-a");
         if (
           JSON.stringify(plan) !==
           JSON.stringify(planSnapshots[planSnapshots.length - 1])
         )
           planSnapshots.push(plan);
-        if (
-          !config.realProduct?.singleSpec &&
-          !alreadyCorrected &&
-          !correcting &&
-          writes.length >= 3 &&
-          old
-        ) {
+        if (config.realProduct?.singleSpec || alreadyCorrected || correcting || harnessStop) return;
+        const snapshot = JSON.stringify({ parts: parts ?? [], plan });
+        if (observed === snapshot) return;
+        observed = snapshot;
+        const result = await correctionRequest({ action: "observe", parts: parts ?? [], plan });
+        if (result.boundary && result.status === "pending" && !harnessStop) {
           correcting = true;
-          correctionEvidence = {
-            at: Date.now(),
-            writes: writes.length,
-            source: old,
-          };
+          correctionEvidence = result.boundary;
           evidence.emit({
             kind: "correction-boundary",
             evidence: correctionEvidence,
           });
-          void cancelRun("real-mission-a");
+          await evidence.flush();
+          await cancelRun("real-mission-a");
         }
+      };
+      const observe = () => {
+        if (observation) return;
+        observation = observeCorrection().catch(async error => {
+          harnessStop = { classification: "HARNESS-BLOCKED", reason: String(error) };
+          evidence.emit({ kind: "harness-blocked", at: Date.now(), ...harnessStop });
+          await cancelRun("real-mission-a");
+        }).finally(() => { observation = undefined; });
+      };
+      const monitor = setInterval(() => {
+        observe();
       }, 250);
       try {
         await run(
@@ -594,10 +607,21 @@ export async function runRealLocalProduct(config: Configuration) {
         );
       } finally {
         clearInterval(monitor);
+        await observation;
+        await observeCorrection();
       }
       if (correcting && !harnessStop) {
+        const claim = await correctionRequest({ action: "dispatch" });
+        assert(claim.claimed, "Correction was already dispatched; never replay uncertain sends");
         correctionSent = true;
-        await run("real-mission-a", correction);
+        await run("real-mission-a", correction, async () => {
+          const messages = chats.get("real-mission-a")?.messages.filter(m => m.role === "user" && m.parts.some(p => p.type === "text" && p.text === correction)) ?? [];
+          assert(messages.length === 1, "Correction must be sent exactly once");
+          const messageId = messages[0].id;
+          const sent = await correctionRequest({ action: "observe", messageId });
+          evidence.emit({ kind: "correction-sent", at: sent.sentAt, messageId, text: correction, count: messages.length });
+          await evidence.flush();
+        });
       }
     }
     if (phase === "offline") {
