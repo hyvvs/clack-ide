@@ -25,7 +25,7 @@ export type CompactionGroup = {
   protected: boolean;
 };
 
-type Part = { type: string; toolCallId?: string; toolName?: string; output?: unknown };
+type Part = { type: string; toolCallId?: string; toolName?: string; input?: unknown; output?: unknown; providerExecuted?: boolean };
 function parts(message: ModelMessage): Part[] {
   return Array.isArray(message.content) ? (message.content as Part[]) : [];
 }
@@ -49,6 +49,52 @@ function failedOutput(output: unknown, toolName?: string): boolean {
     failedCommandOutput(toolName, output) ||
     (record.type === "json" && failedOutput(record.value, toolName))
   );
+}
+
+function currentPlanSteps(messages: ModelMessage[]): ModelMessage[] {
+  type Located = { part: Part; index: number; boundary: number };
+  const calls = new Map<string, Located>();
+  const results = new Map<string, Located>();
+  const sealed = new Set<string>();
+  let boundary = 0;
+  for (const [index, message] of messages.entries()) {
+    if (message.role === "user" || message.role === "system") boundary++;
+    for (const part of parts(message)) {
+      const id = part.toolCallId;
+      if (!id) continue;
+      if (part.type.startsWith("tool-approval-")) sealed.add(id);
+      const map = part.type === "tool-call" ? calls : part.type === "tool-result" ? results : undefined;
+      if (!map) continue;
+      if (map.has(id)) sealed.add(id);
+      map.set(id, { part, index, boundary });
+    }
+  }
+  const accepted = [...results].flatMap(([id, result]) => {
+    const call = calls.get(id);
+    const input = call?.part.input as { todos?: unknown } | undefined;
+    const output = result.part.output as { type?: string; value?: { ok?: boolean; count?: number } } | undefined;
+    const todos = input?.todos;
+    if (!call || sealed.has(id) || call.part.toolName !== "todo_write" || result.part.toolName !== "todo_write" ||
+      call.part.providerExecuted || result.part.providerExecuted || call.index >= result.index ||
+      call.boundary !== boundary || result.boundary !== boundary || !Array.isArray(todos) || todos.length > 16 ||
+      todos.some(todo => !todo || typeof todo.title !== "string" || !todo.title.trim() || todo.title.length > 160 ||
+        !["pending", "in_progress", "completed", "blocked"].includes(todo.status)) ||
+      output?.type !== "json" || output.value?.ok !== true || output.value.count !== todos.length || failedOutput(output)) return [];
+    return [{ id, call, result }];
+  }).sort((a, b) => a.result.index - b.result.index);
+  const latest = accepted[accepted.length - 1];
+  if (!latest) return messages;
+  // todo_write replaces the complete plan. Retire only acknowledged, strictly
+  // sequential predecessors; keep every other tool/effect and the raw transcript.
+  const retired = new Set(accepted.filter(plan => plan.result.index < latest.call.index).map(plan => plan.id));
+  if (!retired.size) return messages;
+  return messages.flatMap(message => {
+    if (!Array.isArray(message.content)) return [message];
+    const content = message.content.filter(part => !(
+      (part.type === "tool-call" || part.type === "tool-result") && retired.has(part.toolCallId)
+    ));
+    return content.length ? [{ ...message, content } as ModelMessage] : [];
+  });
 }
 
 /** Close boundaries over all tool pairs, including calls split across UI messages. */
@@ -153,7 +199,7 @@ export function planCompaction(options: {
 }) {
   const { units, limits, system, tools } = options;
   const groups = groupCompactionUnits(units);
-  const extra = options.extra ?? [];
+  const extra = currentPlanSteps(options.extra ?? []);
   const memory = options.memory;
   const coveredEnd = memory?.end ?? 0;
   if (

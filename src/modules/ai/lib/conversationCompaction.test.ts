@@ -22,6 +22,25 @@ function required<T>(value: T | null | undefined): T {
 }
 
 describe("durable conversation compaction coordinator", () => {
+  it("projects only superseded acknowledged plans through the coordinator without rewriting originals or committing memory", async () => {
+    const f = fixture([textMessage("mission", "user", "Build ForgeBoard. Keep port 4317, page size 50, title max 120, debounce 750ms, SSE, persistence and no cloud.")]);
+    const before = JSON.stringify(f.originals);
+    const extra: import("ai").ModelMessage[] = ["first", "current"].flatMap((id, index) => [
+      { role: "assistant" as const, content: [{ type: "tool-call" as const, toolName: "todo_write", toolCallId: id, input: { todos: [{ title: "Implement and verify", status: index ? "in_progress" : "pending" }] } }] },
+      { role: "tool" as const, content: [{ type: "tool-result" as const, toolName: "todo_write", toolCallId: id, output: { type: "json" as const, value: { ok: true, count: 1 } } }] },
+    ]);
+    const source = JSON.stringify(extra);
+    const compactor = await f.start({ limits: async () => ({ deployed: 32768 }), alwaysLoad: true });
+    const output = JSON.stringify(await compactor.prepare(extra));
+    expect(output).not.toContain('"toolCallId":"first"');
+    expect(output).toContain('"toolCallId":"current"');
+    expect(output).toContain("Keep port 4317");
+    expect(f.memory.commit).not.toHaveBeenCalled();
+    expect(f.call).not.toHaveBeenCalled();
+    expect(f.view().revision).toBeNull();
+    expect(JSON.stringify(f.originals)).toBe(before);
+    expect(JSON.stringify(extra)).toBe(source);
+  });
   it("does not revalidate an empty optional lookup across long-running mutations and transport checks", async () => {
     vi.useFakeTimers();
     try {

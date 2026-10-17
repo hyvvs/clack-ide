@@ -1785,3 +1785,273 @@ PeerTask/scheduler, native
 stream deadline or tool protection changed. No safety stash, unrelated delegation
 file, `autonomous_tracker/`, previous workspace or evidence was touched. Post-run
 process inspection found no owned acceptance/build/test process left. No push.
+
+## Protected Context Reconstruction and Plan Supersession, 2026-10-17
+
+### Baseline and Classification
+
+Started from clean `main` at `3bceda0`, **37 ahead / 0 behind** recorded
+`origin/main`. No competing Clack acceptance, editing, test or build process was
+found before editing. Previous workspaces/evidence and all historical grades
+remain intact. This checkpoint is **CASE C: superseded material remained
+protected**, specifically older acknowledged full `todo_write` snapshots inside
+the current SDK step batch. It does not establish an inherent model/task
+requirement for more than 32K. No context increase, model tuning, timeout change,
+Automatic rerun, B1 margin reduction or new memory architecture was used.
+
+### Recorded Request-19 Budget
+
+The authoritative `forgeboard-none-20261017-02/mission-a-1.json` records the
+following terminal **estimates**, not tokenizer/provider measurements:
+
+| Component | Recorded tokens |
+| --- | ---: |
+| Context ceiling | 32768 |
+| Output reserve / output maximum | 2048 |
+| Reasoning reserve | 0 |
+| Input estimate | 28290 |
+| Safety margin: ceil(input * 0.1) | 2829 |
+| Maximum input with that recorded margin | 27891 |
+| Total input + output + margin | 33167 |
+| Excess | 399 |
+| System frame | 3617 |
+| Core system attribution | 3175 |
+| Active Coder attribution | 442 |
+| Schemas/options | 7250 |
+| Built-in schema attribution | 7134 |
+| Conversation/tool state total | 17423 |
+| Available working conversation with recorded frame/margin | 17024 |
+| History attribution | 17154 |
+| Environment attribution | 123 |
+| Other structure/options attribution, across request | 262 |
+
+System text was **6753 characters**, with one stable core/persona/default-behavior
+frame, not repeated concatenated system fragments. Tools were the same **16**
+normal F1 schemas, **14814 UTF-8 bytes / 14798 characters**. They are material:
+approximately 22% of the ceiling before output/margin. Initial relevance selection
+and same-batch pinning explain the stable set. No F1 regression or expanded
+catalog was demonstrated; no tool was removed to improve the result.
+
+The original specification is **2086 characters**, present once as an authoritative
+user request. Its materialized message is **2325 characters** with the single
+native workspace/shell environment block. There was no correction: page size
+remained **50**. Logical run/answer continuations, substantive objective carry,
+project instructions, project memory, derived conversation memory, extraction
+summary, retrieval/project/task evidence and attachment contributions were **0**.
+There was no PeerTask dependency or active retrieval anchor. Memory revision was
+null and coverage had not advanced. All history was still uncompacted original
+task/tool material. No summarization model call was attempted.
+
+### Exact Owner and Protected Classes
+
+`planCompaction()` in `src/modules/ai/lib/compactionPlan.ts` emits
+`CompactionError("protected-budget", ...)`, whose constructor produces the exact
+code `compaction-protected-budget`. Chain:
+`runAgentStream.prepareStep` -> `createConversationCompactor.prepare` ->
+`planCompaction` -> `groupCompactionUnits`, protected/tail assembly ->
+`measureRequest` -> `resolveContextBudget` -> failure before extraction/HTTP.
+The safety test is reached before `createBoundedExtractor`; "compaction attempted"
+here means deterministic planning, not a failed hidden summarization request.
+
+There were two source classes in that preparation:
+
+1. Captured original user unit **`9MAiUOIZH9J1PZh5`**, role user. Requirements
+   are protected verbatim. Reconstructed materialized cost **1196 tokens**,
+   including environment and message framing. All port/page/title/debounce,
+   SSE/persistence/testing/no-cloud requirements remain authoritative.
+2. Current in-flight assistant/tool steps, persisted under assistant message
+   **`7abdd7e7-9b7e-4241-91b1-5b77331b1858`**. The captured compactor source units
+   came from the initial user message; these generated steps arrive separately
+   as `extra`, outside its existing original-message coverage. All **36 model
+   messages / 19 calls / 19 results** were appended verbatim and unconditionally
+   retained. This was not 19 separately selected required historical sources.
+   The planner cannot claim that a live effect has been archived merely because
+   its UI transcript is already persisted. Broadly summarizing/dropping this tail
+   would require a separately proven source-coverage change and was not done.
+
+Within the live tail, the following are individual call/result identities.
+Costs are **offline reconstructed estimates**, with per-pair framing, not
+additive exact historical sub-budgets. All were retained because they were in
+`extra`, irrespective of their semantic requirement status:
+
+| Tool call ID | Content / protection significance | Chars | Tokens |
+| --- | --- | ---: | ---: |
+| jOh87rnbpTHgKGQXzBOB4UpNQVVcccHF | Empty directory observation | 452 | 223 |
+| TJVUhKdvotCsLnsbkJdsKqjJRXp6MixD | Older full accepted plan, superseded | 1672 | 803 |
+| RlGYs3841W9Fy8bKQlU4DzN8Wd3ybzhS | Successful Node/npm environment check | 540 | 267 |
+| RkURqL1syopgNmqp3F5QkuaxDlZVNT86 | Latest accepted plan, must retain | 1701 | 823 |
+| 4UxZ8UQx2jSXmZkOE8zm8a5nnuXHcgi6 | Acknowledged server directory effect | 502 | 242 |
+| QBThdJObHP5n21nwBfrkfviJOJT2z8UQ | Acknowledged client directory effect | 502 | 242 |
+| hqAaEhsnbiyaJEjQFoHOveMVixGoXExZ | Registry inspection; missing-head stderr despite exit 0 | 1109 | 574 |
+| HFzpUHR3rrS4NIRRCoki89Qz3AbIRGw0 | Invalid timeout argument; no execution | 741 | 372 |
+| BOipl01jl2jvx4l0guiqukbXDJuhbacs | Corrected registry command succeeds | 758 | 384 |
+| TDG9d8UTZt3eVfkOFwfjye6pSMdiChtI | Empty root manifest created | 592 | 294 |
+| YE4jjBkzKpOQeDqd9gckH3LFoNBLbwYC | Actual empty manifest read | 493 | 246 |
+| vG0KOcAEP6EnBRjUKEfc6LeGAcqT1HOj | Multiline-command refusal | 1127 | 560 |
+| RZepbnuF7grj2QMeW3iWpd5Y267zIDdS | PowerShell Set-Content exit 1 | 2089 | 1147 |
+| CihGwbKqj68pygwV0uPsZQ5bI4DqyWSG | Successful root manifest, corrects earlier quoting attempt | 3047 | 1652 |
+| QFAhHBbkKOQRiNFpL0fRO5gfikNcB7G0 | Successful server manifest | 3000 | 1728 |
+| sjkhDEfAjmVvBXhdaEVU1Mgzz2TbGK6l | Successful client manifest | 3580 | 2072 |
+| vyVF7JgqqfPIpzJAJVpTwky9DaKhBXeq | Successful base tsconfig | 1520 | 808 |
+| Qr7Lotg02eF5IcfE41eGYaU76TIwp6rI | Successful server tsconfig | 1946 | 1054 |
+| CQ6WufxamAvLeoeGrnvTSBca9CUnkhfh | Most recent successful server-manifest update | 3120 | 1802 |
+
+The largest groups are shell writes, whose requested command, returned command
+and sometimes stdout repeat source text. Those are distinct call/observation
+fields actually present on the wire, not a B1 double-add of a source group.
+They were not stripped. Reconstructed narrative-only messages cost **789**,
+call-bearing messages **7575**, result messages **7687**, with shared framing
+that prevents simply summing independently measured slices.
+
+### Duplication, Supersession and Accounting Findings
+
+Both accepted plans contain eight bounded items. The older input is **1286
+characters**; the current one **1279**. The newer accepted full replacement marks
+environment inspection completed, scaffolding active and six later phases
+pending. This is explicit tool-contract supersession, not fuzzy text matching.
+`buildTodoTools().todo_write` replaces the entire list, never applies a delta.
+The current plan was retained exactly. Older plans in ordinary captured history
+were already eligible to leave the protected set; generated SDK steps lacked the
+equivalent qualification. No five-copy original-specification problem was found:
+plan items refer to requirements, but there is no second full objective carry,
+extracted summary, project-memory or retrieval copy of the specification.
+
+The timeout-argument error was corrected by a valid timeout, and the malformed
+Set-Content attempt by a successful root write. The multiline restriction still
+matters operationally. Missing `head` is not reported as a nonzero exit by the
+native shell. None of these failure groups was removed or declared resolved by
+the fix; neither successful effects nor uncertain effects are inferred merely
+from a model's plan status. Optional retrieval was not elevated: there was none.
+
+The offline tool `scripts/diagnose-protected-context.mjs` reads the preserved
+bounded artifacts and replays 18 responses through the installed SDK using
+**stubbed observed tool results, zero native effects and zero inference**. It
+stops before a 19th mock generation. It reconstructs 36 messages and the exact
+recorded call/result identities. The pre-fix replay also emitted
+`compaction-protected-budget`, but measured conversation **17071**, not the
+recorded **17423**. The original in-memory SDK frame was **not recorded**;
+the remaining **352-token representation difference is not recorded** and must
+not be invented. Recorded totals above remain authoritative. The replay's
+raw input 27938 plus 2048 output and 2794 margin exceeds 32768 by 12.
+
+The same replay after the fix measures conversation **16284**, input **27151**,
+margin **2716**, output **2048**, total **31915**, fitting with 853 headroom.
+Retiring the obsolete pair removes **787 net estimated tokens**, without altering
+the current plan, specification, failure evidence or any mutation. This is more
+than the recorded frame's 399-token excess, even retaining its unexplained
+352-token difference. This is a counterfactual/replay, not a captured request 19.
+
+B1 is conservative, not a matching tokenizer. SDK optional own-properties set to
+undefined still have estimator overhead; JSON serialization discards them. The
+replay's JSON-only conversation estimate is **16709**. This diagnostic is not a
+wire request and does not prove real provider capacity. No estimator adjustment,
+metadata stripping, tokenizer guess or reduced safety policy was used to fit.
+No source group was charged twice by the planner. Its selection of a superseded
+plan, rather than the original user authority, is the corrected ownership defect.
+
+### Fix and Deterministic Reproduction
+
+Only the existing `planCompaction` working projection changes. It retires a prior
+`todo_write` call/result only when both it and a later replacement have unique,
+paired, non-provider-executed calls and successful JSON acknowledgments with
+`count` matching the bounded full todo list. The old result must precede the new
+call, in the same user/system boundary. Parallel calls, duplicate IDs, malformed
+or failed replacements, unresolved calls and approval-linked calls are retained.
+Both parts of a retired pair leave hot context together; accompanying text and
+every other tool/effect stay untouched. No UI message, transcript, project memory,
+coverage pointer or durable revision is rewritten. It is not summarization and
+does not claim completed workspace work from a completed todo.
+
+The new deterministic production-planner fixture reproduces **exactly the
+recorded component totals**: system 3617, schemas 7250, protected conversation
+17423, reserve 2048, margin 2829 and ceiling 32768. It has a protected user task,
+two eight-item plans, failed shell evidence, a successful effect, uncertain-effect
+evidence and a recent intact tool group. Filler is explicitly test data used to
+match size, not purported missing live evidence. Before the fix it failed with
+the exact protected-budget code. Afterward it fits while preserving every
+required constraint, current plan, failure, completed/uncertain effect and original
+input object. No historical 8K test or threshold was weakened.
+
+Additional tests cover narrative preservation; unsuccessful/unresolved/wrong-count
+replacements; provider-executed, duplicate, concurrent and approval-linked calls;
+new user boundaries; genuine overflow at **8K and 32K**; and production compactor
+integration with no extraction, memory commit or original mutation.
+
+### One Fresh Live Retest and Its Limit
+
+Fresh workspace:
+`C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-03`.
+Evidence ID **`forgeboard-none-20261017-03`**, in the existing native evidence
+directory. Metadata-only `preflight-1` made **zero inference requests**. The
+original full specification was sent **once** in `mission-a-1`, with no reminders,
+resends, manual Continue, correction, tuning or evaluator implementation.
+
+No competing Clack process was active. An unrelated Talus Cargo/Rust test/build
+was observed under `Desktop/talus/talusbackend/talus_sfu`; it was not Clack and
+was left untouched. Source was frozen during inference: **934 source/config
+files**, including the two new files, with identical before/after content hash
+`201F2EA492BED260CF9DC2943285E7397BEEE9213C195BAACC56474A786ECD39`
+and timestamp/length hash
+`FC639902213E88E6B3EAE39C0AA973192939781F87126714E5CB27B309F08FAC`.
+Owned host PID **42248**, runner **20356**; no owned host remained afterward.
+
+All **14** actual native requests used exact model `qwen38-uncensored:latest`,
+`num_ctx=32768`, `num_predict=2048`, explicit None / `think:false`, fallback Never,
+the same 16 production tools and original 60-second idle / 600-second overall
+deadlines. **Cloud inference 0; Automatic reruns 0.** Every request received a
+normal final provider frame. One scoped lookup took **267 ms**, returning no
+evidence; no old evidence timeout occurred.
+
+Run start `1792218441049` (08:27:21.049 Europe/Paris). First useful native tool
+frame **47.208 s**, first completed tool (nine-item plan) **47.325 s**. The first
+shell `node --version; npm --version` succeeded at **57.796 s** under PowerShell.
+The model made **15 tool calls**: three full nine-item plan updates, a directory
+listing, a native directory creation, eight shell calls (seven executed exit 0,
+one pending approval), an unread-target edit refusal and a missing-file read.
+It created empty `packages/` and `packages/shared/` directories but no tracked or
+untracked files. No tests, dependency install, build or application implementation.
+The evaluator did not rescue its scaffold or reinterpret exit 0 as app completion.
+
+The preserved original assistant contains **all three** plan snapshots. Later
+native requests contain **only the latest** complete plan and its paired result.
+The exact original specification remains present once, including port **4317**,
+page size **50**, title maximum **120**, debounce **750 ms**, SSE, persistence,
+no telemetry/cloud and verification requirements. The current unfinished plan
+and subsequent edit/read failures remain in the final request. No requirement,
+failure or tool effect was discarded to reach a favorable size. No actual memory
+compaction/extraction occurred, so post-compaction model intelligence is not tested.
+
+At **232.708 s**, the model requested:
+
+`Set-Content -Path 'test.txt' -Value 'hello' -Encoding utf8; Test-Path 'test.txt'; Remove-Item 'test.txt'`
+
+Tool call **`qKZ3HxykzTI2l19mvDilIVCnWDIpLNao`** entered
+**`approval-requested`**, approval **`aitxt-INbPvoWhtpe1KIqkLcGyeX1W`**.
+The command was **not executed**, including its write portion. Existing
+`isStrictPermissionRequest` requires approval for `Remove-Item` even in Trusted
+Workspace; persistence cannot bypass that gate. The harness intentionally ends
+its observation when a pending approval requires user action. It retained run
+state `running`, budget phase `complete`, 14 steps and no terminal error, then
+closed its owned host. No approval was granted and the attempt was not resumed.
+
+Classification: **PRODUCT POLICY / AWAITING DESTRUCTIVE-COMMAND APPROVAL /
+INCOMPLETE**. Protected-budget live acceptance is **INCONCLUSIVE**: this fresh
+trajectory never reached request 19. Final actual request 14 fit B1 with input
+**16280**, output **2048**, margin **1628**; it did not stop on protected capacity.
+The planned projection is exercised in actual requests, but passage of the prior
+request-19 boundary is established only by deterministic fixture/replay, **not
+by this live retest**. No second attempt or silent policy repair was performed.
+
+### Verification and Scope
+
+Focused planner/compactor/installed-SDK/retrieval/B1/F1: **210 tests / 7 files
+passed**. Full frontend: **2758 tests / 198 files passed**, two workers, 64.42 s,
+no raised timeouts or skipped tests. Type checking passed after correcting two
+new test-fixture types. Full lint passed at **71 existing warnings / 2 infos**.
+Runner syntax and the offline SDK replay passed. `npm.cmd run build` passed
+(TypeScript and 1252 Vite modules, existing dynamic-import/plugin-timing warnings).
+`git diff --check` passed with existing LF/CRLF notices. No Rust source changed;
+full Rust gates were not redundantly rerun. The cached native test host compiled
+and ran through production IPC. No Computer Use, native GUI, Linux/macOS or WSL
+acceptance was performed. No unrelated files, stashes, `autonomous_tracker/` or
+prior evidence were touched. No push or subsequent checkpoint.
