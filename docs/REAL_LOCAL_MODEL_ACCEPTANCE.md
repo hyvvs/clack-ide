@@ -2870,3 +2870,269 @@ capture and this report changed. Existing context/memory/retrieval/PeerTask/F1/
 approval and D3 no-blind-replay behavior remain untouched. No ForgeBoard effects,
 unrelated work, stashes, delegation changes or `autonomous_tracker/` changes.
 No push or subsequent checkpoint.
+
+## Fresh Sustained ForgeBoard Mission A (-05), 2026-10-17
+
+### Baseline, Isolation and Controls
+
+Started from clean `main` at **`3149577`**, **42 ahead / 0 behind** recorded
+`origin/main`. No competing Clack application, acceptance host/harness, Vite test
+process or Cargo/Rust build was active. Unrelated processes were not disturbed.
+
+Fresh workspace: **`C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-05`**.
+The evaluator created only the directory and empty Git repository on branch
+`main`; the directory contained only `.git` before the model started.
+Fresh evidence ID: **`forgeboard-none-20261017-05`**, under
+`src-tauri/target/real-qwen-product/forgeboard-none-20261017-05/`.
+No earlier ForgeBoard workspace was reused or changed.
+
+Before the experiment, the acceptance example's existing debug-only receive trace
+was enabled for `mission-a-*` as well as provider-only diagnostics, and the runner
+enabled its existing post-run health capture for traced missions. Those were
+**harness-only** changes. No production Clack source or runtime policy changed.
+The system under test was then frozen: hashes of **936 tracked source/harness/
+native/configuration files** compare unchanged after the mission. No source,
+harness, configuration or timeout edits occurred during live inference.
+
+Metadata-only preparation made **zero inference calls**. The full original
+ForgeBoard specification was sent exactly once, without evaluator instructions,
+previous-failure hints, reminders, manual Continue, requirement resend or code
+rescue. The durable conversation has **one user message**, with the unchanged
+2086-character task inside its 2325-character production envelope.
+
+All **23 native requests**, `inference-1` through `inference-23`, retained:
+
+- Exact model `qwen38-uncensored:latest` and native `/api/chat` route through the
+  existing authorized `http://127.0.0.1:11435` SSH tunnel.
+- `options:{num_ctx:32768,num_predict:2048}`, `stream:true`, explicit None /
+  **`think:false`**, no sampling overrides, and captured configuration revision 1.
+- Fallback Never, **zero cloud inference**, normal production tools/permissions,
+  and unchanged **60-second meaningful idle / 600-second overall** deadlines.
+
+No Automatic reasoning experiment, tuning ladder, replay, model/quantization
+change, permission bypass or extra mission occurred. The normal isolated
+trusted-workspace acceptance profile was not broadened or changed globally.
+
+Native host PID **41720**, runner PID **10780**. Both were cleaned up; the
+post-run isolation snapshot shows no competing Clack process. Existing SSH PID
+**8352** owned the same localhost listener before and after.
+
+### Chronology and Actual Effects
+
+Logical run: `real-mission-a:1792235410754`, workspace-owned Coder conversation
+`real-mission-a`. It ran from **11:10:10.754Z to 11:21:04.990Z**, **654.236 s**
+(10 min 54.236 s). All times in this section are UTC on 2026-10-17.
+
+| Milestone | Observed result |
+| --- | --- |
+| First native request capture, `11:10:11.272` | Original task once; exact requested controls |
+| First provider completion, `11:10:55.842` IPC | Tool-bearing response, 291 measured output tokens |
+| First plan effect, `11:10:56.031` | Structured scaffold/backend/frontend/test plan |
+| First shell effect, `11:10:56.780` | PowerShell inspection, Node v22.20.0, npm 10.9.3; correct workspace |
+| `11:12:54.785` | Root manifest written after two multiline-command refusals |
+| `11:13:46.566` | Backend and frontend manifests written |
+| `11:15:14.066-093` | Three TS configurations and `.gitignore` written |
+| `11:16:26.715` | `npm install --no-audit --no-fund` succeeded: 375 packages in 18 s |
+| `11:16:40.112` onward | Source-directory placeholders and file-writing/quoting probes, not application logic |
+| `11:21:04.693` IPC | Request 23 provider final, tool call, measured usage |
+| `11:21:04.990` | Protected-context preflight blocked the next step before inference |
+
+**27 finalized tool calls**, all unique and all with a resolved output:
+**23 `bash_run`, 2 `create_directory`, 2 `todo_write`**. Of these, **18 succeeded**;
+**8** shell inputs were refused for real CR/LF control characters despite the
+single-line rule, and **1** executed Node command failed from invalid nested
+quoting. These are distinct model input/command errors, not transport failures.
+The first shell command used the advertised PowerShell syntax correctly.
+
+There were **10 successful write-bearing shell calls**, affecting **12 distinct
+authored paths** through scaffold/configuration/probe writes and rewrites. This
+count excludes npm's generated lockfile/dependency tree and Git configuration.
+There were **zero `edit`, `multi_edit` or `write_file` calls**. Available edit tools
+remained exposed, but Qwen kept attempting shell-based file generation instead.
+No commands, source or plan corrections were supplied by the evaluator.
+
+No production approvals were requested, so no evaluator approval/denial was
+needed. The existing exact-effect approval mechanism remained installed; no
+category-wide approval or permission increase was added.
+
+**First real application source time: not reached.** Before independent
+verification there were **13 non-dependency files**: three package manifests,
+three TS configs, `.gitignore`, npm lockfile, `server/_copy.js`, `server/_test.txt`,
+`server/src/_write.js`, `server/src/copy-out.txt`, `server/src/domain.ts`.
+The domain file is only `line1`, `line2`, `line3`; `_write.js` is `hello`/`world`;
+`_copy.js` is a generic file-copy probe. These are not a task/project backend or
+frontend. `web/src` is empty. No API server, repository/persistence layer,
+validation, filters/search, SSE implementation, React application, application
+tests, HTML entry, README or working application was produced.
+
+### Terminal Boundary, Compaction and Retrieval
+
+Terminal classification: **`CLACK-BLOCKED / compaction-protected-budget`**.
+This identifies the actual stopping owner, not a newly proven implementation bug
+or an engine failure. The preceding phase also shows substantial **MODEL**
+underperformance: repeated invalid inputs, quoting experiments and no application
+implementation despite correct tool feedback and available edit tools.
+
+The last provider response completed normally with another multiline tool input,
+which was refused. The subsequent protected-context plan failed closed. No
+request 24 was dispatched. Exact terminal budget receipt:
+
+| Estimated budget component | Tokens |
+| --- | --- |
+| System | 3617 |
+| Tool/schema/options | 7250 |
+| Conversation | 17816 |
+| Input total | **28683** |
+| Output reserve | **2048** |
+| Reasoning reserve, included in output | **0** |
+| Safety margin | **2869** |
+| Required total | **33600** |
+| Verified effective ceiling | **32768** |
+| Excess under current estimator/policy | **832** |
+
+The detailed receipt attributes 17530 to conversation/tool history, 3175 to core
+instructions, 442 to agent instructions, 7134 to built-in schemas, 123 to
+environment metadata, and 279 to other required structure/options. Derived
+memory, retrieved evidence, attachments, project/custom instructions, custom
+schemas and MCP schemas are zero. These are **estimates**, not observed provider
+usage for an unissued request. The last sent request's estimate still fit:
+27181 input + 2048 reserve + 2719 margin = **31948**, with provider prompt usage
+**13197** for that earlier request. That is not a tokenizer measurement of the
+blocked next context.
+
+The original user (`CeQv5vywKPItosmd`) and active assistant/tool transcript
+(`Qa8IMCFduZBsVcDt`) remain intact. The earlier accepted todo call
+`r4bnxuWwHbYkGQy0wXeaBLYjzLNR88ub` is **absent** from the last wire history;
+the newer `DPTverVC1RxYVTb5Z3nSXmHDlCvScf1S` remains. Thus the saved evidence does
+not reproduce the fixed superseded-plan duplication. Formal protected group IDs
+and a separate tail-index receipt were not emitted by this harness and are not
+fabricated here.
+
+No extraction/summary model request or committed memory revision was produced.
+Memory load returns `revisionId:null`, generation **42**, two uncovered messages;
+source transcript revision **40**, profile revision **3**, transcript hash
+`52f451419e822d23a3febed67d3583b6fe9a400dcd5c248221c2502a2c63ae05` and
+profile hash `0b4b1feafac53a62a4da1e47713c1e3c373fce2c09acba9911d11b7f3027db4e`.
+There is no resulting extraction/snapshot identity to report. Compaction planning
+hit the protected-budget boundary before extraction. The run stopped at **23**
+steps, before the normal 24-step automatic continuation boundary; continuation
+count **0**. It was not manually resumed or optimized.
+
+One normal optional project/task discovery ran at startup: `files:[]`,
+`anchor:null`, no task IDs, 2086-character task query. It completed in **360 ms**
+with **0 chunks, 0 reads, 0 bytes, 0 issues, 0 omissions**. No anchor or evidence
+existed to revalidate; no retrieval stall, fabricated evidence, same-conversation
+historical retrieval or useful project/task evidence injection was observed.
+
+F1 exposed **16 tools on all 23 requests**. There was no reduction or unavailable
+required write/edit tool; estimated schema cost **7250**, serialized schema bytes
+**14814**. No F1 change was made.
+
+### Transport and Health Evidence
+
+Every request has a native receive snapshot, webview IPC trace, parsed-frame
+summary, captured wire body/budget, provider final and usage. Across all 23:
+**245 HTTP body chunks / 57593 bytes**, **245 IPC chunks**, **245 parsed frames**;
+zero invalid/dropped frames, pending bytes or dropped diagnostic events. Ordered
+sequence/byte-length correlation succeeds for every native body and IPC delivery.
+Maximum native receive-to-forward interval **634 microseconds**, maximum
+body-to-webview wall-clock delta **3 ms**. All **23** streams settled completed;
+all **23** provider finals reported `stop`. No stream-idle, first-output or overall
+timeout, missing IPC forward, parser loss or missed-progress symptom was observed.
+Reported usage totals: **219187 input / 5016 output tokens** across requests,
+including repeated/cached prompt work; not unique-context token counts.
+
+Last request 23: native body/forward **11:21:04.692**, webview IPC/parsed/meaningful
+frame **11:21:04.693**; provider final usage **13197 input / 371 output**. Its
+largest body-to-IPC gap was **2 ms**. The next-step block was local context policy,
+not an incomplete inference stream. The historical request-26 stall remains
+unchanged and was not rerun.
+
+Post-run `/api/ps`: HTTP **200 in 23 ms** at **11:21:06.024**, exact model loaded
+at context **32768**; `/api/version`: HTTP **200 in 113 ms** at **11:21:06.047**,
+version **0.40.4**. The SSH listener survived. No extra inference, direct labpc
+comparison, service restart, model tuning or network/firewall change was needed.
+
+### Independent Project Verification
+
+The evaluator inspected files/scripts without implementing or repairing them.
+`npm.cmd ls --depth=0` exited **0**: dependencies are installed, including Express
+4.22.3, React 18.3.1, TypeScript 5.9.3, Vite 6.4.4 and Vitest 2.1.9.
+Qwen itself ran **no project tests or production build**.
+
+| Independent command | Actual result |
+| --- | --- |
+| `npm.cmd test` | Exit 1; root semicolon script routes extra arguments into frontend Vitest; no test files |
+| `npm.cmd run build` | Exit 1; malformed root script arguments, then frontend TS18003: no inputs |
+| `npm.cmd test --workspace server` | Exit 1; `test/` missing |
+| `npm.cmd test --workspace web` | Exit 1; no test files found |
+| `npm.cmd run build --workspace server` | Exit 2; TS2304 for placeholder `line1`, `line2`, `line3` |
+| `npm.cmd run build --workspace web` | Exit 1; TS18003: no inputs |
+
+These are **six failed commands, zero defined/executed application test cases**,
+not six failed test assertions. Before/after hashes show no existing project
+source was changed by verification. TypeScript emitted a 35-byte
+`server/dist/domain.js` despite errors during the independent backend build;
+that compiler output is explicitly **not Qwen's implementation** and is retained.
+
+The project remains on unborn `main`, no commits, with untracked `.gitignore`,
+`node_modules/`, lockfile, manifest, `server/` and `web/`. `.gitignore` is one
+comma-separated line, not separate patterns. `git check-ignore --no-index`
+confirms dependency, build-output and runtime-data examples are **not ignored**.
+No backend listener exists on **4317**. Persistence/restart, SSE, combined filters,
+validation/not-found responses, task/project CRUD and README commands cannot be
+demonstrated because their implementation is absent. They are not marked passed.
+
+The 50 -> 25 correction was **not sent**. No material page-size-50 implementation
+or accepted implementation plan meeting the existing boundary was produced, and
+the harness observed zero qualifying `write_file`/`edit`/`multi_edit` results.
+Shell-created manifests/probes do not satisfy that existing boundary. Initial
+page size remains 50 in the original task; there is no claim of a tested 25 change.
+
+### Continuity Scorecard
+
+This scores observable retention/exercise, **not product completion**. Unexercised
+requirements are not labeled lost merely because code is missing.
+
+| Item | Score | Evidence and limitation |
+| --- | --- | --- |
+| Core ForgeBoard objective | PASS | Manifests and plan retain the objective; application not implemented |
+| Backend port 4317 | NOT EXERCISED | Appears in original plan intent; no server/listener |
+| Current page size | NOT EXERCISED | Original 50 retained in task; correction boundary not reached |
+| Title maximum 120 | PASS | Repeated attempted domain definitions retain 120; writes refused, enforcement unimplemented |
+| Debounce 750 ms | NOT EXERCISED | No frontend behavior |
+| SSE | NOT EXERCISED | Planned, not implemented |
+| Persistence | NOT EXERCISED | Planned, not implemented |
+| No telemetry/cloud | PASS | Zero cloud inference; no telemetry implementation or observed telemetry call |
+| Test/build obligation | NOT EXERCISED | Retained in plan; Qwen never ran either, independent commands fail |
+| Unfinished plan | PASS | Scaffold completed; backend/frontend/test/README tasks persisted as failed |
+| Recent command failures | NOT EXERCISED | Feedback remained visible but invalid multiline attempts recurred; no proof of memory loss, no successful repair |
+
+No RETRIEVED score is claimed for the empty discovery. No requirement is called
+LOST without evidence of actual forgetting/contradiction.
+
+### Verification, Evidence and Scope
+
+**43 focused tracing/approval tests in 3 files passed** before the mission:
+`ollamaStreamTrace.test.ts`, `acceptanceApprovalLifecycle.test.ts`,
+`scripts/acceptance-approval.test.mjs`. The modified invisible native acceptance
+example built successfully with the locked isolated target, and its traces were
+verified against all 23 real Windows native IPC streams. Type checking, focused
+Biome lint (three acceptance/tracing TypeScript files), Rust formatting,
+runner syntax and `git diff --check` passed. Full Clack frontend/Rust suites,
+product build and Clippy were not repeated: no production code changed.
+No native GUI/Computer Use or Linux/macOS acceptance claim.
+
+Local evidence includes the standard preflight/mission reports, event/wire/
+receive JSONL, isolated stores and before-data snapshot, source freeze/check,
+`acceptance-summary.json`, `tool-effects.json`, project verification hashes and
+logs, runtime/ignore checks, isolation snapshots and `evidence-manifest.json`.
+Raw prompts/tool history stay in ignored local evidence, not Git. No hidden
+reasoning was collected by the metadata-only receive trace.
+
+Only harness trace/health activation and this additive report changed. No Clack
+memory/context/compaction/retrieval/F1/approval/recovery fix, new architecture,
+ForgeBoard repair, subsequent mission or checkpoint, unrelated work/stash/
+delegation/`autonomous_tracker/` change, or push. Final result is intentionally
+incomplete: **CLACK-BLOCKED at protected-context policy, with preceding model
+tool-use underperformance; no materially working ForgeBoard.**

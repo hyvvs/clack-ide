@@ -62,7 +62,7 @@ fn main() {
     let builder = if std::env::var("CLACK_ACCEPTANCE_RECEIVE_TRACE").as_deref() == Ok("1") {
         use std::io::Write;
         let phase = std::env::var("CLACK_REAL_PRODUCT_PHASE").expect("diagnostic phase");
-        assert!(phase.starts_with("stream-diagnostic-"));
+        assert!(phase.starts_with("stream-diagnostic-") || phase.starts_with("mission-a-"));
         assert!(phase
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-'));

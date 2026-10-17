@@ -119,7 +119,7 @@ try {
     const response = await fetch(`${endpoint}/api/ps`, { signal: AbortSignal.timeout(5000) });
     assert(response.ok, "Ollama metadata unavailable"); initialModels = await response.json();
   }
-  if (streamDiagnostic) initialHealth = await metadataHealth("/api/version");
+  if (streamDiagnostic || traceStreams) initialHealth = await metadataHealth("/api/version");
   const build = spawnSync("cargo", ["build", "--example", "coworking_acceptance", "--locked", "--target-dir", "target/codex-test"], { cwd: path.join(repository, "src-tauri"), windowsHide: true, encoding: "utf8", timeout: 300000 });
   assert.equal(build.status, 0, build.stderr || String(build.error));
   vite = await createViteServer({ root: repository, server: { host: "127.0.0.1", port: 0, strictPort: true, hmr: false, watch: null, forwardConsole: false } });
@@ -128,7 +128,7 @@ try {
   await cp(data, `${output}.data-before`, { recursive: true, errorOnExist: true, force: false });
   const env = Object.fromEntries(["PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "HOME", "LANG"].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []));
   Object.assign(env, { APPDATA: data, LOCALAPPDATA: data, TEMP: owned, TMP: owned, CLACK_ACCEPTANCE_ROOT: owned, CLACK_REAL_PRODUCT_PHASE: `${phase}-${attempt}`, CLACK_ACCEPTANCE_OLLAMA_URL: `${endpoint}/api/chat`, CLACK_ACCEPTANCE_URL: `${vite.resolvedUrls.local[0]}coworking-acceptance.html?configuration=${encodeURIComponent(`${local}/configuration`)}` });
-  if (streamDiagnostic) env.CLACK_ACCEPTANCE_RECEIVE_TRACE = "1";
+  if (streamDiagnostic || (traceStreams && phase === "mission-a")) env.CLACK_ACCEPTANCE_RECEIVE_TRACE = "1";
   child = spawn(path.join(repository, "src-tauri/target/codex-test/debug/examples", `coworking_acceptance${process.platform === "win32" ? ".exe" : ""}`), [], { cwd: root, env, windowsHide: true });
   child.once("exit", (code, signal) => { childExit = { pid: child.pid, code, signal, at: Date.now() }; });
   console.log(JSON.stringify({ event: "native-host-start", pid: child.pid, runnerPid: process.pid, at: Date.now(), boundMs: 90 * 60 * 1000 }));
@@ -138,7 +138,7 @@ try {
   const result = await Promise.race([report, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Real product acceptance reached 90-minute bound")), 90 * 60 * 1000); }), new Promise((_, reject) => child.once("exit", code => reject(new Error(`Native host exited before report: ${code}`))))]).finally(() => clearTimeout(timer));
   await evidenceWrites;
   const destinations = [...nativeLog.matchAll(/CLACK_ACCEPTANCE_INFERENCE ("[^"\r\n]+")/g)].map(m => JSON.parse(m[1]));
-  const finalHealth = streamDiagnostic ? { ps: await metadataHealth("/api/ps"), version: await metadataHealth("/api/version") } : undefined;
+  const finalHealth = streamDiagnostic || traceStreams ? { ps: await metadataHealth("/api/ps"), version: await metadataHealth("/api/version") } : undefined;
   const finalModels = finalHealth ? finalHealth.ps.body : await (await fetch(`${endpoint}/api/ps`, { signal: AbortSignal.timeout(5000) })).json();
   let requests = [];
   try { requests = (await readFile(`${output}.requests.jsonl`, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); }
