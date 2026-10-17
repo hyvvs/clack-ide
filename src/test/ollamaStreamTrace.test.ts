@@ -20,10 +20,11 @@ describe("acceptance-only Ollama stream diagnostics", () => {
     trace.receive(bytes({ done: true, done_reason: "stop", eval_count: 7, prompt_eval_count: 12, credential: "SECRET" }), 60);
     trace.sdkPart("text-delta", 31);
     const summary = trace.summary();
-    expect(summary).toMatchObject({ chunks: 6, frames: 6, lastRawAt: 60, lastFrameAt: 60, lastMeaningfulAt: 50,
+    expect(summary).toMatchObject({ chunks: 6, frames: 6, lastRawAt: 60, firstFrameAt: 10, lastFrameAt: 60, lastMeaningfulAt: 50,
       maxRawGapMs: 10, final: { at: 60, reason: "stop", outputTokens: 7, inputTokens: 12 },
       categories: { "empty-or-metadata": 1, "whitespace-text": 1, text: 1, reasoning: 1, tools: 1, final: 1 },
       sdk: { "text-delta": { count: 1, lastAt: 31 } } });
+    expect(summary.categoryTimes).toMatchObject({ "raw-chunk": { firstAt: 10, lastAt: 60 }, text: { firstAt: 30, lastAt: 30 } });
     expect(JSON.stringify(summary)).not.toMatch(/SECRET|CREDENTIAL|arguments|credential/);
   });
   it("handles arbitrary UTF-8 splits without treating partial raw bytes as parsed progress", () => {
@@ -31,6 +32,18 @@ describe("acceptance-only Ollama stream diagnostics", () => {
     for (const [i, byte] of input.entries()) trace.receive([byte], i);
     expect(trace.summary()).toMatchObject({ chunks: input.length, frames: 1, invalid: 0,
       lastFrameAt: input.length - 1, categories: { text: 1 } });
+  });
+  it("isolates request traces and retains first/last category timestamps after event-ring eviction", () => {
+    const first = createOllamaStreamTrace(), second = createOllamaStreamTrace();
+    for (let i = 0; i < 400; i++) first.receive(bytes({ message: { content: "ok" } }), i + 1);
+    second.receive(bytes({ message: { thinking: "private" } }), 1000);
+    expect(first.summary()).toMatchObject({ chunks: 400, firstRawAt: 1, lastRawAt: 400,
+      firstFrameAt: 1, categoryTimes: { text: { firstAt: 1, lastAt: 400 } } });
+    expect(first.summary().events).toHaveLength(256);
+    expect(first.summary().categories).not.toHaveProperty("reasoning");
+    expect(second.summary()).toMatchObject({ chunks: 1, firstFrameAt: 1000,
+      categories: { reasoning: 1 }, categoryTimes: { reasoning: { firstAt: 1000, lastAt: 1000 } } });
+    expect(second.summary().categories).not.toHaveProperty("text");
   });
   it("does not invent a final frame, usage or a trailing idle gap", () => {
     const trace = createOllamaStreamTrace();

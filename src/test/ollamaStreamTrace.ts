@@ -23,14 +23,16 @@ export function createOllamaStreamTrace() {
   let line: number[] = [], oversized = false;
   let chunks = 0, bytes = 0, frames = 0, invalid = 0, droppedFrames = 0;
   let firstRawAt: number | null = null, lastRawAt: number | null = null;
-  let lastFrameAt: number | null = null, lastMeaningfulAt: number | null = null;
+  let firstFrameAt: number | null = null, lastFrameAt: number | null = null, lastMeaningfulAt: number | null = null;
   let maxRawGapMs = 0, maxFrameGapMs = 0, droppedEvents = 0;
   let final: { at: number; reason: string; inputTokens: number | null; outputTokens: number | null } | null = null;
   const events: Stamp[] = [];
   const categories: Record<string, number> = {};
+  const categoryTimes: Record<string, { firstAt: number; lastAt: number }> = {};
   const sdk: Record<string, { count: number; lastAt: number }> = {};
   const record = (category: string, at: number, size?: number) => {
     categories[category] = (categories[category] ?? 0) + 1;
+    categoryTimes[category] = { firstAt: categoryTimes[category]?.firstAt ?? at, lastAt: at };
     if (events.length === MAX_EVENTS) { events.shift(); droppedEvents++; }
     events.push({ at, category, ...(size === undefined ? {} : { size }) });
   };
@@ -42,6 +44,7 @@ export function createOllamaStreamTrace() {
       frame = object(value);
     } catch { invalid++; record("invalid-frame", at); return; }
     frames++;
+    firstFrameAt ??= at;
     if (lastFrameAt !== null) maxFrameGapMs = Math.max(maxFrameGapMs, at - lastFrameAt);
     lastFrameAt = at;
     const message = object(frame.message);
@@ -94,9 +97,9 @@ export function createOllamaStreamTrace() {
     },
     summary() {
       return { timestampLayer: "native IPC chunk delivery, not socket receive", chunks, bytes, frames, invalid,
-        droppedFrames, pendingBytes: line.length, firstRawAt, lastRawAt, lastFrameAt, lastMeaningfulAt,
+        droppedFrames, pendingBytes: line.length, firstRawAt, lastRawAt, firstFrameAt, lastFrameAt, lastMeaningfulAt,
         maxRawGapMs, maxFrameGapMs, final, categories: { ...categories },
-        sdk: structuredClone(sdk), events: events.slice(), droppedEvents };
+        categoryTimes: structuredClone(categoryTimes), sdk: structuredClone(sdk), events: events.slice(), droppedEvents };
     },
   };
 }

@@ -18,6 +18,9 @@ assert(path.isAbsolute(root), "Acceptance workspace must be absolute");
 const maxOutput = process.env.CLACK_PRODUCT_MAX_OUTPUT ? Number(process.env.CLACK_PRODUCT_MAX_OUTPUT) : undefined;
 assert(maxOutput === undefined || (Number.isSafeInteger(maxOutput) && maxOutput >= 256 && maxOutput <= 16384), "Output allowance must be 256-16384 whole tokens");
 const singleSpec = process.env.CLACK_PRODUCT_SINGLE_SPEC === "1";
+const traceStreams = process.env.CLACK_PRODUCT_TRACE === "1";
+const prepareOnly = process.env.CLACK_PRODUCT_PREPARE_ONLY === "1";
+assert(!prepareOnly || phase === "preflight", "Metadata-only preparation must use preflight");
 assert(!singleSpec || !["resume-a", "mission-b"].includes(phase), "Single-spec runs forbid manual continuation and peer missions");
 const reasoningChoice = process.env.CLACK_PRODUCT_REASONING || undefined;
 assert(reasoningChoice === undefined || ["automatic", "none"].includes(reasoningChoice), "Reasoning choice must be automatic or none");
@@ -59,7 +62,7 @@ const server = createServer(async (request, response) => {
   const json = value => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(value)); };
   try {
     if (request.method === "OPTIONS") { response.statusCode = 204; response.end(); return; }
-    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, maxOutput, singleSpec, reasoningChoice }, streamDiagnostic });
+    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, maxOutput, singleSpec, reasoningChoice, traceStreams, prepareOnly }, streamDiagnostic });
     if (!["/report", "/evidence"].includes(request.url)) { response.statusCode = 404; return json({ error: "Unknown acceptance route" }); }
     let body = "";
     for await (const chunk of request) { body += chunk; assert(body.length < 64 * 1024 * 1024, "Acceptance payload exceeded bound"); }

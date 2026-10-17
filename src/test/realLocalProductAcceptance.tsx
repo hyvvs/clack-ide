@@ -81,7 +81,7 @@ type Configuration = {
   root: string;
   server: string;
   report: string;
-  realProduct?: { phase: Phase; maxOutput?: number; singleSpec?: boolean; reasoningChoice?: "automatic" | "none" };
+  realProduct?: { phase: Phase; maxOutput?: number; singleSpec?: boolean; reasoningChoice?: "automatic" | "none"; traceStreams?: boolean; prepareOnly?: boolean };
   streamDiagnostic?: { body: Record<string, unknown>; sourceRequestId: string };
 };
 type Part = {
@@ -107,7 +107,7 @@ function assert(value: unknown, message: string): asserts value {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Observe native response channels without replacing routing or provider responses.
-function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace>) {
+function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace>, traceStreams = false) {
   type Event = { kind: string; bytes?: number[]; [key: string]: unknown };
   const descriptor = Object.getOwnPropertyDescriptor(
     Channel.prototype,
@@ -131,6 +131,8 @@ function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace
   Object.defineProperty(Channel.prototype, "onmessage", {
     ...descriptor,
     set(previous: (event: Event) => void) {
+      const requestTrace = trace ?? (traceStreams ? createOllamaStreamTrace() : undefined);
+      const observerStartedAt = Date.now();
       const decoder = new TextDecoder();
       let line = "";
       let first = false;
@@ -143,7 +145,7 @@ function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace
           return;
         }
         if (event.kind === "chunk" && event.bytes) {
-          trace?.receive(event.bytes, Date.now());
+          requestTrace?.receive(event.bytes, Date.now());
           if (!first) {
             first = true;
             emit({
@@ -166,7 +168,7 @@ function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace
                   kind: "engine-finish",
                   at: Date.now(),
                   requestId: event.requestId,
-                  metrics: trace ? ollamaDiagnosticMetrics(metrics) : metrics,
+                  metrics: requestTrace ? ollamaDiagnosticMetrics(metrics) : metrics,
                 });
               }
             } catch {
@@ -174,10 +176,16 @@ function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace
             }
           }
           if (line.length > 4 * 1024 * 1024) line = "";
-        } else if (trace && event.kind === "headers") {
+        } else if (requestTrace && event.kind === "headers") {
           emit({ kind: "diagnostic-headers", at: Date.now(), requestId: event.requestId, status: event.status });
         } else if (["settled", "phase", "admission"].includes(event.kind))
           emit({ ...event, at: Date.now() });
+        if (traceStreams && event.kind === "settled" && requestTrace) {
+          const at = Date.now();
+          if (event.phase === "completed") requestTrace.end(at);
+          emit({ kind: "native-stream-trace", requestId: event.requestId, observerStartedAt, at,
+            phase: event.phase, error: event.error ?? null, summary: requestTrace.summary() });
+        }
         previous.call(this, event);
       });
     },
@@ -189,7 +197,7 @@ export async function runRealLocalProduct(config: Configuration) {
   assert(config.realProduct, "Missing real product phase");
   const phase = config.realProduct.phase;
   const trace = config.realProduct.phase === "stream-diagnostic" ? createOllamaStreamTrace() : undefined;
-  const evidence = audit(config.report, trace);
+  const evidence = audit(config.report, trace, config.realProduct.traceStreams);
   if (trace) {
     assert(config.streamDiagnostic, "Missing explicit diagnostic replay body");
     const { body, sourceRequestId } = config.streamDiagnostic;
@@ -493,7 +501,7 @@ export async function runRealLocalProduct(config: Configuration) {
         "Native multi-system transport probe did not complete",
       );
     }
-    if (phase === "preflight")
+    if (phase === "preflight" && !config.realProduct.prepareOnly)
       await run(
         "real-preflight",
         "Reply with exactly READY. Do not use tools or modify any files.",
@@ -644,6 +652,8 @@ export async function runRealLocalProduct(config: Configuration) {
       conversations,
       tasks: usePeerTaskStore.getState().tasks,
       correctionSent,
+      traceStreams: config.realProduct.traceStreams ?? false,
+      prepareOnly: config.realProduct.prepareOnly ?? false,
       correctionEvidence,
       systemProbe,
       planSnapshots,

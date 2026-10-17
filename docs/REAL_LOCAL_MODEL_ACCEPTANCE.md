@@ -1283,3 +1283,250 @@ The three original primary evidence hashes matched before/after investigation:
 Post-run process inspection found no acceptance/build/test host left. All prior
 grades/artifacts, stashes and unrelated work were preserved. No push or next
 checkpoint was started.
+
+## Fresh Traced ForgeBoard Acceptance, 2026-10-17
+
+Outcome: **CLACK-BLOCKED / PROJECT-TASK EVIDENCE RETRIEVAL TIMEOUT**.
+The model made partial scaffolding progress and several independently observed
+tool-use errors, but the terminal boundary was Clack preflight, not model
+completion, output exhaustion, engine failure or a stream watchdog. No repair,
+retry, manual Continue, or replacement experiment followed this stop.
+All earlier acceptance sections and grades remain unchanged.
+
+### Isolation and Frozen Baseline
+
+- Started from `efb9f34`, clean `main`, 35 ahead / 0 behind recorded remote.
+  Process inspections before preparation and mission launch found no competing
+  Clack host, editing/test/harness process, Vite test runner, or Cargo/Rust build.
+  Only the owned runner's native-example preparation was allowed.
+- Fresh workspace:
+  `C:/Users/Hayden/Documents/forgeboard-qwen-none-20261017-01`.
+  It began as unborn `main`, with `.git/` only. No evaluator application files,
+  manifests or implementation were seeded.
+- Evidence ID: `forgeboard-none-20261017-01`; directory:
+  `src-tauri/target/real-qwen-product/forgeboard-none-20261017-01/`.
+  Primary evidence is `preflight-1.json`, `mission-a-1.json`,
+  `mission-a-1.requests.jsonl`, `mission-a-1.jsonl` and isolated `data/`.
+- The tunnel initially refused connections. No inference/specification was sent
+  then. After the user restored it, the exact `/api/tags` digest and Q4_K_M
+  quantization matched the established model. Metadata-only native preparation
+  completed with **zero inference destinations**; no Automatic/READY/warm-up
+  call was made. The loaded-model list was initially empty.
+- Before launch, only five acceptance harness/test files were modified to enable
+  the existing bounded trace on each mission request, retain first-frame and
+  category endpoint timestamps, and allow metadata-only preparation. No product
+  module, Rust source, model/tool ranking, permission, correction boundary,
+  timeout or runtime behavior was changed.
+- All 932 tracked source/configuration files matched before/after the run in
+  both content and timestamps. Content aggregate SHA-256:
+  `F18414C187A3133736B7DCBAF895258A4A1CD6CB3324744836F5DB0A0CFCAE91`.
+  Timestamp aggregate:
+  `275232D0ED0F9BC5FA0EA359100650E598AF61D0CA1E0D02431E702D6D620D1B`.
+  No source, test or harness edit occurred while the experiment was running.
+
+### Exact Controls and Input
+
+All **16 actual native requests** used exactly:
+
+```json
+{
+  "model": "qwen38-uncensored:latest",
+  "options": { "num_ctx": 32768, "num_predict": 2048 },
+  "think": false
+}
+```
+
+All destinations were `http://127.0.0.1:11435/api/chat` through the authorized
+tunnel. Fallback was effectively Never, with no fallback authorization/cloud
+destination and **zero cloud inference**. All serialized requests fit B1.
+The same 16 normal production-selected tools were exposed, including `edit`,
+`create_directory` and `bash_run`, without evaluator-added tools. No temperature,
+top-p, top-k, model, quantization, context, output or timeout tuning occurred.
+Native idle remained **60 seconds**, first-output 120 seconds and overall
+**600 seconds per request**. The separate existing 90-minute harness bound
+was not reached. Initial/final exact model digest:
+`0e163794a8b9cdd6e234013b1a27d2e58f06f48d20413a0c2e3e370faaef5505`;
+final `/api/ps` reported loaded context 32768.
+
+The full original 2086-character specification was submitted exactly once,
+byte-identical after the environment block to the preceding valid None run.
+Specification SHA-256:
+`f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`.
+It retained port 4317, page size 50, maximum title 120, 750 ms debounce,
+React/TypeScript, Node/TypeScript, SSE, local persistence, no cloud/telemetry,
+tests, production build and README. One durable user message remains. The model
+received no prior-failure history, tracing notice, evaluator classification,
+tool advice, correction reminder or other rescue instruction.
+
+### Chronology and All Tool Calls
+
+Times below are relative to the mission start at **07:31:21.787 Europe/Paris**,
+using local event/receipt timestamps. First request audit: +0.392s. First raw
+chunk and first parsed public-text frame: **+17.630s / 07:31:39.417**; SDK
+text-start receipt: +17.632s. No reasoning frames were observed. The first
+provider tool-call frame arrived at +27.904s; the first completed useful tool
+was the directory listing at +27.989s. Initial public output described inspecting
+the workspace and planning the build, not an implementation-complete claim.
+
+| Call | Completed, Seconds | Tool / Actual Result |
+| --- | --- | --- |
+| 1 | 27.989 | `list_directory` root: empty visible tree. |
+| 2 | 28.902 | `bash_run`: `node --version; npm --version`, exit 0, Node 22.20.0 / npm 10.9.3. First shell command matched advertised `PowerShell (pwsh.exe)` / `PowerShell; not POSIX Bash`. |
+| 3 | 71.018 | `todo_write`: six-item plan, scaffold in progress, backend/tests/frontend/build/README pending. |
+| 4 | 84.883 | `bash_run`: `npm init -y`, exit 0; initial root `package.json` created. First confirmed file creation, not application implementation. |
+| 5 | 79.954 | `bash_run`: `npm config get registry`, exit 0. Calls 4/5 completed out of order; table retains transcript order. No install occurred. |
+| 6 | 105.241 | `create_directory server`: success, workspace-write receipt. |
+| 7 | 105.242 | `create_directory client`: success, workspace-write receipt. |
+| 8 | 105.242 | `create_directory data`: success, workspace-write receipt. |
+| 9 | 149.807 | `edit package.json`: refused because it had not been read in the session; no write. |
+| 10 | 156.824 | `read_file package.json`: succeeded, returned actual npm-generated content. |
+| 11 | 200.869 | `edit package.json`: succeeded after read, replaced exact actual content with root workspaces/scripts; workspace-write receipt. |
+| 12 | 213.374 | `bash_run`: POSIX `cat ... << 'EOF'` heredoc for `.gitignore`; refused before execution because commands must be single-line. Also contrary to advertised PowerShell syntax. |
+| 13 | 227.209 | `bash_run`: single-line PowerShell `Set-Content` / `Add-Content`; exit 0, `.gitignore` created without evaluator correction. |
+| 14 | 267.258 | `bash_run`: multiline PowerShell here-string for server manifest; refused by the single-line guard, not a native PowerShell parser failure. |
+| 15 | 279.346 | `bash_run`: `Set-Content _scaffold.ps1 ...`, exit 0; helper file created, not invoked. |
+| 16 | 293.512 | `bash_run`: Node read of `server/package.json`, exit 1 because that manifest still did not exist. |
+| 17 | 349.585 | `bash_run`: single-line Node `JSON.stringify` / `writeFileSync`, exit 0; valid `server/package.json` and `client/package.json` created. |
+| 18 | 397.239 | `bash_run`: Node command for server tsconfig, exit 1, invalid string escape; no tsconfig/source directory created. |
+| 19 | 397.219 | `bash_run`: Node command for client tsconfig, exit 1, quoting/syntax error; no tsconfig/source directory created. |
+| 20 | 410.468 | `bash_run`: Node writes `_w.js`, exit 0; another unused scaffolding helper. |
+| 21 | 441.068 | `edit server/tsconfig.json`: refused because target was unread and nonexistent; no write. |
+
+All 21 stable tool-call IDs, full inputs, outputs and errors remain in the
+transcript and subsequent request bodies. The three directory effects and root
+edit carry `clackWorkspaceWrite:true`; shell effects are evidenced separately by
+their commands/results and actual disk files, not fabricated per-file native
+effect IDs. Totals: 12 shell calls (**7 exit 0, 3 exit 1, 2 refused before
+execution**), 3 directory creates, 3 edits (**1 success, 2 unread-target
+refusals**), 1 read, 1 listing and 1 todo write. Refusals were correct safety
+behavior, not permission denials or tool-schema failures.
+
+Qwen did recover from the first edit refusal by reading then editing, and from
+the POSIX heredoc by using PowerShell. It nevertheless later repeated an unread
+new-file edit and failed multiple Node quoting attempts. This demonstrates
+partial recovery, not reliable mastery. The initial shell command was correct;
+later POSIX/multiline/quoting mistakes are model tool-use evidence. No shell
+guidance or safety rule was repaired during the run.
+
+The 50-to-25 correction was **not sent**. Page size 50 never entered application
+implementation or the structured plan, and the existing monitor saw only one
+successful write/edit tool result rather than three plus a qualifying page-size
+write. Shell-created files are reported separately; they are not silently
+counted as native edit receipts. Neither correction condition was met under the
+unchanged acceptance boundary. No early correction, resend or manual Continue
+occurred. Production budget and answer continuations were both zero.
+
+### Complete Stream Evidence and Final Boundary
+
+Each request has an independent `native-stream-trace` with observer/start and
+settlement times, first/last raw chunk and parsed frame timestamps, text/
+reasoning/tool/final category timings, counts, maximum gaps and reported usage.
+These are **native IPC chunk-delivery timestamps, not socket-receive timestamps**.
+The existing 256-event/256 KiB bounds were retained. In this run no events or
+frames were dropped; there were zero invalid frames or pending bytes. All
+frame/category timestamps fit within the retained event rings. No prompt,
+tool-argument, credential or hidden reasoning content was added to the trace.
+
+All 16 HTTP requests settled **completed**, with actual provider `done:true`
+and `done_reason=stop`; all were normal tool-loop steps, not project completion.
+There were **331 parsed frames, 61,792 delivered bytes**, and **3387 provider-
+reported output tokens** across completed requests. No token total was inferred.
+Reasoning-frame count was zero. The largest observed raw/frame gap was
+**51.001 seconds** in request 13, below idle enforcement. Neither stream-idle,
+overall-deadline nor first-output timeout occurred.
+
+Final request `inference-16`:
+
+| Observation | Europe/Paris / Recorded Value |
+| --- | --- |
+| Native attempt start | 07:38:12.983 |
+| First raw chunk / first parsed frame | 07:38:13.695 |
+| Last non-whitespace text frame | 07:38:16.641 |
+| Last whitespace-text frame | 07:38:16.764 |
+| Last raw chunk / last parsed frame / tool-call frame | **07:38:42.790**, epoch `1792215522790` |
+| Provider final | Same frame, `done:true`, `done_reason=stop` |
+| Reported usage | **11,673 input / 230 output tokens** |
+| Trace totals | 26 chunks, 26 frames, 4605 bytes; no reasoning, invalid or dropped frames |
+| Longest raw/frame gap | 26.026 seconds; not an expired idle interval |
+| Native settlement / observed EOF | 07:38:42.800, completed |
+| Last tool result | 07:38:42.855, refused unread/nonexistent tsconfig edit |
+| Session terminal error | **07:38:42.939**, `retrieval-timeout` before a seventeenth native request |
+
+The exact terminal Clack message was:
+
+```text
+Context preflight
+Project/task evidence lookup timed out. Original conversation and memory are unchanged.
+```
+
+The persisted run is failed, terminal/non-retryable, 16 steps, last finish
+`tool-calls`. The bounded scoped-evidence preflight owner in `scopedEvidence.ts`
+emits this timeout while preparing the next working context. The lookup's
+underlying cause/remaining allowance was not instrumented in this attempt;
+neither memory corruption nor a specific timeout-bookkeeping defect is proved.
+No context-capacity failure was recorded: all actual bodies fit B1. No native
+stream was pending when this new preflight error occurred. No compaction/memory
+revision was committed, and no manual evidence request or recovery was sent.
+Original transcript, tool results and model work were preserved. The six
+unfinished todos were marked failed by normal terminal cleanup.
+
+This is a new **Clack-side acceptance blocker**, with earlier **MODEL / TOOL
+USAGE** errors retained as separate phase evidence. The normal stream finals
+rule out a stream-idle/overall-deadline termination for this run. It does not
+retroactively explain the previous request-13 timeout. The run was left stopped;
+no retrieval/memory/context/timeout fix or follow-on experiment was started.
+
+### Independent Project Inspection
+
+Read-only disk/Git inspection and strict Node JSON parsing confirmed these six
+files, all created/modified by the model, not the evaluator:
+
+- `package.json` (623 bytes): valid root workspaces and dev/test/build scripts;
+  created by npm and later revised by the successful edit.
+- `.gitignore` (58 bytes): ignores `node_modules/`, `dist/`, `data/`, logs,
+  coverage and `.DS_Store`.
+- `server/package.json` (503 bytes): valid Express/CORS/TypeScript manifest;
+  scripts refer to missing `src/index.ts` and missing tsconfig.
+- `client/package.json` (650 bytes): valid React/TypeScript/Vite manifest;
+  no frontend source was created.
+- `_scaffold.ps1` (73 bytes) and `_w.js` (52 bytes): unused model-generated
+  scaffolding helpers, not ForgeBoard application implementation.
+
+There are no `server/src` or `client/src` trees, tsconfigs, tests, dependency
+installation, lockfile, backend listener, SSE implementation, persistence
+implementation, filters/search, title validation, debounce behavior or README.
+Port 4317 and page size 50/25 therefore have no effective application behavior
+to test. No npm install/test/build was executed by the model. No independent
+install/test/build was attempted on this manifest-only scaffold: that would not
+establish missing application behavior and could alter preserved evidence.
+Git remains unborn `main`, no commits; six untracked files under root/server/
+client and three created directories (`data/` is empty and ignored).
+**No materially working implementation was produced.**
+
+### Comparison, Verification and Scope
+
+Explicit None again produced useful public/tool activity promptly, unlike the
+already-valid Automatic/8192 reasoning-only 600.662-second overall-deadline run.
+Compared with the first None run's approximately 75-second evidence-expiry stop,
+and the second None run's approximately 298-second idle stop, this run lasted
+**441.152 seconds**, made manifests/helpers and recovered from some tool errors.
+It still did not reach application implementation/tests, and stopped at a
+different Clack preflight boundary. No broader model-capability or memory-
+reliability conclusion follows. None remains the better observed startup
+configuration for this deployment; no Automatic comparison was repeated.
+
+Focused tracing tests: **10 passed in 1 file**, including per-request isolation,
+first/last category timestamps after ring eviction, redaction, UTF-8/frame
+boundaries, EOF, no fabricated progress and exact replay serialization. Type
+checking, focused lint on four test/fixture files, runner syntax, and
+`git diff --check` passed. The actual metadata-only preparation and all 16
+request traces independently exercised the harness integration. Full Clack
+frontend/build/Rust suites were intentionally not rerun because production
+source did not change. Windows native IPC was used; no Computer Use/native GUI
+or Linux/macOS live testing was performed.
+
+Post-run process checks found no acceptance/build/test host left. Previous
+workspaces, evidence, grades, safety stashes and unrelated user work remain
+untouched. Only acceptance harness/tests and this appended report are committed
+for this checkpoint. No production fix, model tuning, push or subsequent
+checkpoint was started.
