@@ -52,6 +52,22 @@ describe("acceptance-only Ollama stream diagnostics", () => {
     expect(trace.summary()).toEqual(before);
     expect(before).toMatchObject({ lastRawAt: 100, lastMeaningfulAt: 100, maxRawGapMs: 0, final: null });
   });
+  it("distinguishes the final whitespace delivery from the following request-26 idle interval", () => {
+    const trace = createOllamaStreamTrace();
+    const meaningfulAt = 1792222527073;
+    const whitespaceAt = 1792222527196;
+    const settledAt = 1792222587075;
+    trace.receive(bytes({ message: { content: "partial answer" }, done: false }), meaningfulAt);
+    trace.receive(bytes({ message: { content: "\n\n" }, done: false }), whitespaceAt);
+    const summary = trace.summary();
+    expect(summary).toMatchObject({ frames: 2, lastRawAt: whitespaceAt,
+      lastFrameAt: whitespaceAt, lastMeaningfulAt: meaningfulAt, maxRawGapMs: 123,
+      categories: { text: 1, "whitespace-text": 1 }, final: null });
+    expect(summary.events.filter(e => e.at >= settledAt - 60_000).map(e => e.category)).toEqual(["raw-chunk", "whitespace-text"]);
+    expect(settledAt - (summary.lastRawAt ?? 0)).toBe(59879);
+    expect(settledAt - (summary.lastMeaningfulAt ?? 0)).toBe(60002);
+    expect(summary.categories).not.toHaveProperty("stream-eof");
+  });
   it("parses an unterminated final line only on observed EOF without inventing later raw delivery", () => {
     const trace = createOllamaStreamTrace();
     const input = bytes({ done: true, done_reason: "stop", eval_count: 1 });

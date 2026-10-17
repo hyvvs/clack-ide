@@ -2417,3 +2417,242 @@ Only acceptance harness/tests and this report changed. No Computer Use, native
 GUI interaction or Linux/macOS native verification. Unrelated work, stashes,
 delegation files, `autonomous_tracker/` and previous attempts remain untouched.
 No push, no subsequent checkpoint and no production repair.
+
+## Request-26 Forensics and Tool Selection, 2026-10-17
+
+Baseline: `f812806`, clean `main`, **40 ahead / 0 behind** recorded `origin/main`.
+Process inspection found no competing Clack acceptance, editing, test/build,
+Cargo/Rust or native harness process. This checkpoint used preserved `-04`
+evidence only. No ForgeBoard mission, request-26 inference replay, model tuning,
+Automatic run, requirement resend, correction or Continue was performed. No
+production source, 60-second idle policy or 600-second overall deadline changed.
+All prior historical grades remain intact; this section refines their diagnosis.
+
+### Exact Timeline and Recording Layer
+
+Request **`inference-26`** belongs to `real-mission-a:1792221985087`.
+The preserved native dispatch audit reconstructs the complete structural JSON
+body: model, messages, 10 tool schemas, stream flag and controls. Its JSON
+reserialization SHA-256 is
+`417A318B04952FC800BC391AAA70220394881FDC0C7C3E23AC89B813F9B3515F`;
+this fingerprints captured structured JSON, not physical network packet bytes.
+The original evidence files retain the hashes in the preceding section.
+
+**Instrumentation layer: native IPC chunk delivery to the webview, not socket
+receive or Ollama's generation clock.** The existing acceptance observer inspects
+each native channel chunk without changing bytes, and timestamps completed NDJSON
+frames. No additional tracing was needed to classify delivered progress.
+
+All times below are UTC, with Unix epoch milliseconds. Europe/Paris was UTC+02.
+
+| Event | UTC, 2026-10-17 | Epoch ms |
+| --- | --- | ---: |
+| Channel observer created | 07:35:21.320 | 1792222521320 |
+| Native request dispatch captured | 07:35:21.336 | 1792222521336 |
+| Native admitted attempt start | 07:35:21.361 | 1792222521361 |
+| HTTP 200 headers delivered | 07:35:22.041 | 1792222522041 |
+| First raw IPC chunk / first parsed frame | 07:35:22.042 | 1792222522042 |
+| Separate first-byte receipt | 07:35:22.043 | 1792222522043 |
+| Last meaningful text delta | 07:35:27.073 | 1792222527073 |
+| Last raw IPC chunk / last parsed frame | 07:35:27.196 | 1792222527196 |
+| Native admission capacity settled | 07:36:27.074 | 1792222587074 |
+| Timed-out transport event delivered | 07:36:27.075 | 1792222587075 |
+| Partial-answer segment finalized interrupted | 07:36:27.076 | 1792222587076 |
+| Logical run finalized failed | 07:36:27.079 | 1792222587079 |
+
+Final reasoning delta: **not recorded**, with zero reasoning-category frames.
+Final tool-call-related frame: **not recorded**, with zero tool-category frames.
+Final empty/provider-metadata NDJSON frame: **not recorded**, with zero such
+category frames. The last frame was whitespace **text**, not provider metadata.
+Exact native monotonic idle-watchdog start/reset timestamps: **not recorded**.
+Explicit cancellation timestamp: **not recorded**. Physical socket close timestamp:
+**not recorded**. No stream EOF was recorded; terminal IPC settlement is not a
+socket-close measurement. Per-SDK-part timestamps were not instrumented in this
+live mode (`sdk: {}`); persisted answer/activity metadata supplies the distinct
+segment-finalization timestamps above.
+
+### Raw, Parsed and Meaningful Activity
+
+The bounded trace has **43 chunks, 6189 bytes, 43 valid NDJSON frames**, zero
+invalid/oversized/dropped frames, zero pending bytes, and zero evicted trace
+events. There are **42 non-whitespace text frames** and one **2-character
+whitespace-text frame**. No reasoning, tool call, provider error or final category
+appears. Internal maximum received-chunk/frame gap was 130 ms; that statistic
+does not include the later silent interval and must not be presented as evidence
+of continuous delivery through timeout.
+
+The final-60-second window starts at `1792222527075`. It contains exactly one
+raw-delivery event and its one parsed whitespace frame, at `1792222527196`:
+**123 ms after the last meaningful text**, **121 ms inside** that window.
+There was no later delivered chunk or parsed frame for **59879 ms**. There was
+no meaningful delivered progress for **60002 ms**. Therefore a literal statement
+that absolutely no raw activity occurred in the entire final 60 seconds would
+be wrong. The distinction does not indicate a missed valid progress delta.
+
+Native/socket receive times, TCP/SSH tunnel activity and server-side generation
+timestamps are **not recorded**. No claim is made that IPC timing proves exactly
+when Ollama or the socket stopped producing bytes. What is directly established
+is the absence of further native-IPC-delivered progress, without trace eviction,
+unfinished parser bytes or an observed unparsed frame.
+
+### Timeout Owner and Classification
+
+The existing native owner is `src-tauri/src/modules/net/inference/mod.rs`:
+`execute()` feeds each received byte chunk into `progress::Progress`, resets the
+idle deadline only when `Progress::feed()` returns meaningful progress, then emits
+the unchanged chunk. `guarded()` races work against cancellation and the earlier
+progress/overall deadline. The parser in `progress.rs` recognizes non-whitespace
+Ollama text/thinking and nonempty tool calls; whitespace does **not** reset idle.
+Its source does not require the webview observer to acknowledge a reset.
+
+The observed 60002-ms interval is consistent with that owner correctly timing
+out absent meaningful generation progress. The final whitespace frame is not a
+valid reason to reset the watchdog. No evidence supports Case B (raw activity
+discarded by parsing), Case C (valid progress ignored), or Case D (delivered final
+frame lost). This is the meaningful-progress form of a provider-stream stall,
+not the stricter Case-A assertion that every raw byte was absent for >=60 seconds.
+
+Refined classification: **PROVIDER-STREAM / DELIVERED MEANINGFUL-PROGRESS STALL /
+STREAM-IDLE-TIMEOUT / INCOMPLETE**. **No Clack transport/progress-accounting defect
+is demonstrated; the watchdog behaved consistently with its intended policy.**
+Whether the upstream cause was engine generation, server, tunnel/network or a
+pre-IPC delivery issue remains **unconfirmed**. An engine-internal hang is not
+proven by this trace. That limitation does not require replay to answer whether
+the recorded Clack stream missed real progress. No new reproduction was run.
+
+No `done:true` or final usage frame was **observed**. `done_reason` and final
+request-26 token usage are **not recorded**. This does not prove the server never
+emitted a frame outside the recorded delivery path. The interrupted answer
+segment's provisional input/output zeros lack `usageReported`; they are not
+provider measurements and must not be reported as zero generated tokens.
+The timeout was idle, not overall: request dispatch to settlement was **65739 ms**.
+
+### Request Structure and Preserved Work
+
+The request continued the original ForgeBoard implementation objective: local
+React/TypeScript + Node/TypeScript, npm, backend port 4317, page size 50, title max
+120, 750-ms debounce, SSE, restart-safe local persistence, validation/tests/build
+and no telemetry/cloud. The last and only user message remains the original
+2086-character specification, with the same production shell/workspace envelope
+on the wire. No 50-to-25 correction occurred. The system contains the normal
+logical-batch continuation instruction, not a new user request.
+
+The sole accepted seven-item plan had scaffolding `in_progress`; backend core,
+backend tests, frontend core/tests, verification and README were `pending`.
+After the terminal error Clack finalized unfinished todo statuses as `failed`;
+that does not mean Qwen declared all work failed or completed it.
+
+Recent results show the empty-`old_string` edit refusal, then a successful
+PowerShell placeholder write, a read of its 30-byte prefix, then successful
+`edit` **`UMbEuB2NMEKxnsk6bKcoYztnqe3qXV9a`** writing **1259 bytes** to
+`packages/backend/src/domain.ts`. Request 26 was an implementation continuation
+after those file-creation difficulties, not a request for a final prose answer.
+It began **168 characters of partial answer text** about its workflow but made
+no tool call. No private reasoning text is reproduced here.
+
+The assistant part remained `streaming`; durable answer metadata says `incomplete`
+with the last segment `interrupted`. All **29 distinct** earlier tool calls have
+one durable output part each. No tool/approval/effect was pending at termination;
+the last successful write remains intact. No project files were changed by this
+audit, and no inference/effect was replayed.
+
+### Why 16 Became 10
+
+Request 24 schemas:
+
+```text
+read_file, list_directory, create_directory, edit, multi_edit, grep, glob,
+bash_run, bash_list, open_preview, todo_write, read_agent_output,
+communicate_peer_task, request_peer_task, cancel_peer_task, propose_custom_tool
+```
+
+Requests 25 and 26 schemas, identical to each other:
+
+```text
+read_file, list_directory, create_directory, edit, multi_edit, bash_run,
+bash_list, open_preview, todo_write, request_peer_task
+```
+
+The six omitted schemas were **`grep`, `glob`, `read_agent_output`,
+`communicate_peer_task`, `cancel_peer_task`, `propose_custom_tool`**.
+The owner is F1 `prepareToolExposure()` / `selectToolSchemas()` in
+`src/modules/ai/lib/toolExposure.ts`, called by `runAgentStream()` in `agent.ts`.
+The initial selection stays pinned within an SDK batch. When the 24-step batch
+ends in tool calls, the existing budget owner schedules one authorized automatic
+continuation. A new agent batch recomputes selection using the same objective and
+the accumulated SDK/UI history, rather than permanently pinning all first-batch
+optional schemas. Seven previously used tool types are mandatory and retained:
+`bash_run`, `create_directory`, `edit`, `list_directory`, `multi_edit`, `read_file`,
+`todo_write`. Optional schemas are ranked deterministically, with stable name
+tie-breaking, dependencies and a history-sensitive bounded schema allowance.
+This is not permission loss, model switching, stale approval state or a B1 block.
+
+The read-only diagnostic `scripts/diagnose-ollama-stall.mjs` reconstructs the
+pre-request-25 UI prefix through the installed SDK, including typed JSON tool
+results, and runs the production selector against the **16 captured schemas**.
+It reproduces **exactly the observed ten names**, including after candidate-order
+reversal and repeated evaluation. Using only the original user history admits
+all 16; the accumulated history changes optional-schema headroom. The actual
+full candidate pool, historical cache key/hit and exact in-memory selection frame
+were not logged, so this reconstruction is explicitly limited to recorded schemas
+and SDK-derived history; it does not fabricate those missing runtime observations.
+
+Schema estimates fall **7250 -> 4419**, saving **2831** estimated tokens, with
+serialized schema bytes **14814 -> 9016**. This is successful context-efficiency
+behavior for the observed implementation step. None of the omitted tools was
+previously called, pending or explicitly required for request 26. Direct
+read/edit/directory/shell tools remained available; the task prohibited delegation,
+and no custom-tool proposal was needed. `write_file` was already absent from
+request 24, so its absence is not caused by this reduction. Search tools might
+be relevant later, but no observed requirement at this boundary was lost.
+There is **no evidence** that the reduction caused the provider-stream stall;
+this audit does not claim to prove a counterfactual causal effect. No tools were
+restored merely to keep a fixed count. The earlier control-deviation observation
+remains historically accurate, now explained as intentional production selection.
+
+### Continuation and Engine State
+
+At `1792222448025`, run budget state became `auto-continue-pending` at 24 steps;
+at `1792222448027`, continuation count became 1 with the same run start
+`1792221985087`. No user message was injected. Requests 24-26 each contain exactly
+one unchanged user envelope/specification; historical tool calls/results are
+paired once per ID: **27/27**, **28/28**, **29/29**, respectively. Those repeated
+historical observations are not repeated execution. Request 25 executed only its
+new edit; request 26 executed no tool. There is no observed inference replay.
+
+All native bodies retain exact `qwen38-uncensored:latest`, context **32768**,
+output **2048**, explicit None / `think:false`, original profile identity and
+configuration revision 1, fallback Never and cloud inference **0**. Agent
+permission profiles before/after the mission compare equal. The only count change
+is the explained F1 exposure decision; objective/model/reasoning stayed correct.
+No D2/D3 or context/compaction change is needed by this evidence.
+
+The already-recorded post-timeout `/api/ps` fetch completed and returned the exact
+model loaded with `context_length: 32768` and runner `llamacpp`. That establishes
+metadata/control-plane responsiveness, **not successful generation recovery**.
+Exact metadata-fetch timestamp/status and server-side request status are
+**not recorded**. There was no captured Ollama provider-error frame or native
+inference error other than `stream-idle-timeout`. The later Chrome window-class
+unregistration message belongs to host teardown, not an Ollama error. No GPU
+utilization claim is used, and no new metadata or inference call was made here.
+
+### Verification and Scope
+
+**138 focused frontend tests / 5 files passed**: acceptance stream tracing,
+F1 selection, logical-run budget/runtime and interrupted/no-replay recovery.
+The added trace regression specifically distinguishes 123-ms whitespace delivery,
+59879-ms raw silence and 60002-ms meaningful silence without inventing EOF/usage.
+**34 native Windows transport/parser tests passed** using the isolated Cargo
+target, including true idle, whitespace/metadata, thinking/tools, slow progress,
+overall deadline, cancellation, completion and cleanup. These use deterministic
+local test fixtures, not Ollama or a live ForgeBoard mission.
+
+Type checking, focused Biome lint, diagnostic script syntax, the read-only actual
+evidence/selector audit, and `git diff --check` passed. Full suites/build/Clippy
+were intentionally not repeated: no production source or Rust source changed.
+The diagnostic bounds every input file below 4 MiB, emits structural/timestamp
+metadata without private reasoning, closes its temporary module loader and makes
+zero inference calls or native tool effects. Preserved evidence hashes match.
+No native GUI/Computer Use or Linux/macOS native verification. Unrelated work,
+stashes, delegation files, `autonomous_tracker/` and ForgeBoard remain untouched.
+No push, timeout adjustment, live replay, or subsequent checkpoint.
