@@ -3668,3 +3668,304 @@ production build. This fixes unnecessary hot representation of proven no-effect
 history; it does **not** demonstrate improved Qwen engineering ability or a working
 ForgeBoard. No subsequent mission/checkpoint, unrelated work/stash/delegation/
 `autonomous_tracker/` change, native GUI interaction, larger-context test or push.
+
+## Post-retention sustained live acceptance
+
+### Isolation and Frozen Controls
+
+2026-10-17, baseline **`c01786e fix(ai): compact resolved tool failures`**,
+clean `main`, **45 ahead / 0 behind recorded `origin/main`**, without fetching or
+pushing. This is one fresh mission, not a continuation of -05:
+
+- Workspace: `C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-06`.
+- Evidence ID: **`forgeboard-none-20261017-06`**.
+- Local preserved evidence:
+  `src-tauri/target/real-qwen-product/forgeboard-none-20261017-06/`.
+- Only an empty Git repository was initialized; no source was seeded. Metadata
+  preflight also confirmed that the project still contained only `.git`.
+- Win32 process inventory immediately before the mission found no competing
+  Clack acceptance host, Cargo/rustc/rustfmt, Clack/Vitest Node worker or acceptance
+  runner. No other Clack editing run was reported by the user. Unrelated processes
+  were not terminated. The preflight host had exited before mission startup.
+- `frozen-source.json` and `source-freeze-after.json` checked **1,019 tracked
+  files**, with **zero changes** during the mission. Production, harness, tests,
+  prompts, approvals and timeouts were not edited while Qwen was running.
+- The tunnel initially refused connections. After the user's restoration,
+  metadata requests and the **prepare-only preflight passed with zero inference**.
+  The server reported **Ollama 0.40.5**. This is an observed server version, not a
+  Clack tuning change or a claim that the deployment version was held constant
+  across earlier experiments.
+
+All **12 native inference requests** preserve the exact model
+**`qwen38-uncensored:latest`**, `options.num_ctx=32768`,
+`options.num_predict=2048`, **`think:false`**, `stream:true`, and destination
+**`http://127.0.0.1:11435/api/chat`**. The saved model digest is
+`0e163794a8b9cdd6e234013b1a27d2e58f06f48d20413a0c2e3e370faaef5505`.
+Reasoning was explicitly **None**, fallback remained **Never**, cloud inference
+was **0**, and the production **60s meaningful-progress idle / 600s overall**
+request limits were unchanged. All 16 normally selected tool schemas were
+unchanged across the requests; no retrieval tool was forced into the F1 surface.
+
+The full existing ForgeBoard specification equals the fixture's `mission`
+constant byte-for-byte in the saved original user message. It was submitted
+**exactly once**. Normal later requests carry that same conversation history;
+they are not new user submissions. No reminder, manual Continue, requirement
+resend, setting change, evaluator-written application code, model download,
+Automatic reasoning run or comparison-model experiment occurred.
+
+### Chronology and Approval Stop
+
+Harness wall time: **17:52:10.200 to 17:56:27.400 Europe/Paris**, **257.200s**.
+The original production run began at 17:52:14.778; its cancellation was recorded
+at 17:56:26.015. The native host remained healthy until the controlled teardown.
+
+| Request | Observed model action / result |
+| --- | --- |
+| 1 | Answer text at **16.942s** after recorded native request start; tool calls at **30.125s**. Listed processes/workspace and ran `$PSVersionTable.PSVersion; node --version; npm --version`, valid PowerShell, exit 0. |
+| 2 | Repeated directory and Node/npm checks. |
+| 3 | Accepted a ten-item structured plan: inspection completed, scaffolding active, implementation/testing/build/documentation pending. |
+| 4 | Created `shared`, `server/src`, `web/src`, and `data`. |
+| 5 | Checked the npm registry; no inference outside the authorized local endpoint. |
+| 6-8 | Created `shared/src`, then redundantly ensured that directory twice using successful single-line PowerShell. |
+| 9 | Tried a multiline POSIX heredoc despite the advertised PowerShell/single-line contract. The builtin guard refused it before native shell execution. |
+| 10 | Adapted to one single-line `Set-Content` and wrote `shared/package.json`. Its result appears in request 11 at 17:55:32.482. This is a manifest, not substantive application source. |
+| 11 | Called `npm create vite@latest web -- --template react-ts`; output explicitly said **Operation cancelled**, despite exit 0. No frontend scaffold appeared. |
+| 12 | Proposed recursive forced deletion of `web`, followed by writing/reading a probe inside that removed directory. This required approval. The existing acceptance evaluator rejected it and stopped the mission. |
+
+The exact pending tool ID was **`44bIMzXw5gl0d7C63noXzFF1FN75c1yD`**,
+approval **`aitxt-AB93jhZCc5dHld6cAqWb9MPw`**. Its proposed command was:
+
+```powershell
+Remove-Item -Recurse -Force "C:/Users/Hayden/Documents/forgeboard-qwen-none-20261017-06/web" -ErrorAction SilentlyContinue; Set-Content -Path "C:/Users/Hayden/Documents/forgeboard-qwen-none-20261017-06/web/wf-probe.txt" -Value "probe"; Get-Content "C:/Users/Hayden/Documents/forgeboard-qwen-none-20261017-06/web/wf-probe.txt"
+```
+
+Decision: **`Command is outside the explicitly reviewed disposable probe grammar`**.
+The policy deliberately accepts only its existing absent-literal-`test.txt`
+write/read/delete probe, not arbitrary recursive deletion. This compound command
+did not match. **It was not approved or executed**: the saved part has a false
+approval response and no output; `web/src` remains, and `wf-probe.txt` does not
+exist. No permission mode was changed, policy expanded, correction injected or
+attempt resumed. This follows the instructed unsafe/ambiguous approval STOP rule.
+
+Final classification: **`HARNESS-BLOCKED / APPROVAL POLICY / INCONCLUSIVE`**.
+`harnessStop.classification` is `HARNESS-BLOCKED`; the production run is
+`cancelled`, not a provider/model completion. Report `ok:true` means the harness
+successfully preserved its report, **not** that ForgeBoard passed acceptance.
+Neither a deadline, native host exit, context overflow nor exhausted run budget
+caused this stop. Do not label this safety-limited attempt `MODEL-INCOMPLETE`
+under the sustained-budget criterion or claim end-to-end acceptance passed.
+
+Counts: **12 completed inference requests; 18 distinct tool calls**, comprising
+9 `bash_run`, 5 `create_directory`, 2 `list_directory`, 1 `bash_list`, and
+1 `todo_write`. **17 have outputs**: 7 native shell exits of 0, 1 pre-execution
+refusal, 5 successful directory calls, 3 inspection calls and 1 accepted plan.
+The eighteenth call is the unexecuted approval stop. There were **8 successful
+filesystem-write-capable calls**: 5 directory calls and 3 shell calls (2 redundant
+directory ensures plus 1 real file write). These are not eight substantive file
+writes. Actual file creation was **1 manifest**. Plan state was an additional
+non-filesystem effect. Approval counts: **1 evaluated/rejected, 0 approved**.
+
+### Live Receipt and Context Evidence
+
+**One distinct protected failure receipt occurred naturally**, in requests
+**11 and 12**. It was not prompted or artificially requested. Ownership/source:
+
+| Field | Evidence |
+| --- | --- |
+| Conversation | `real-mission-a` in the fresh -06 workspace |
+| Original assistant message | `OqBKF2XOcMBH78UD` |
+| Refused original call | `M1HMGEpj6HJRWNWIoy1VdYcRYLEGsZq0` |
+| Successful later guard adaptation | `F0TYGV6UHh1iATwaPPw5yh3baCWeFFNF` |
+| Receipt classification | `refused-before-execution`, effect `none`, work completed `not established` |
+| Original SDK source-pair bytes | **720** |
+| Original SDK call/result payload estimate | **350** |
+| Protected receipt payload estimate | **283** |
+| Payload saving | **67 estimated tokens** |
+| Audit-derived receipt SHA256 | `9ac69e469b76683768439e4ee06949d964e021f1313c6623ecc7da4c7aa8ffcb` |
+
+Receipt ownership is the conversation plus original call ID and adaptation ID;
+the hash is an audit identity, **not** an invented additional durable record.
+The original full heredoc/error and every other tool input/output/approval remain
+unchanged in the persisted session. Before the successful adaptation, request 10
+retains the unresolved refusal verbatim. Thereafter only its working-context
+representation becomes a receipt. Successful directory/write calls, accepted
+plan and the cancelled initializer's actual output remain intact. There is no
+additional uncertain quoting failure or superseded plan in this attempt, so
+their live supersession behavior is **NOT EXERCISED**, not newly proven.
+All 18 original tool identities are unique; none was replayed by preparation.
+
+The read-only offline auditor reconstructs each actual step using the installed
+SDK's `toResponseMessages`, production `planCompaction`, shared B1 estimator and
+native Ollama serializer. Every projected history matches its recorded request,
+with JSON key order and parallel tool-result completion order normalized only
+for comparison. Original source objects are asserted unchanged. Tool IDs,
+arguments/results, message boundaries and historical order outside each parallel
+result group are not discarded. It makes **zero inference or tool/effect calls**.
+
+At first live receipt preparation, SDK required estimate **21927 -> 21836**,
+saving **91** including framing/margin. At request 12, **22770 -> 22680**, saving
+**90** because of margin rounding. Converting the same pinned-original
+counterfactual to the exact native wire representation gives **21367 -> 21282**
+and **22180 -> 22095**, saving **85** each. These are reproducible conservative
+estimates, **not provider tokenization measurements**. The smaller receipt
+occurred live; the before values are read-only counterfactuals, not extra sent
+requests. The -05 deterministic saving of 2845 is not claimed for this new run.
+
+No compaction-pressure boundary was reached. The following are the captured
+native-wire B1 budgets, revalidated by the offline audit. Constant components:
+system **3617**, schemas **7250**, reserve **2048**, ceiling **32768**.
+
+| Request | Conversation | Input | Margin | Required | Headroom | Receipts |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1181 | 12048 | 1205 | 15301 | 17467 | 0 |
+| 2 | 1984 | 12851 | 1286 | 16185 | 16583 | 0 |
+| 3 | 2454 | 13321 | 1333 | 16702 | 16066 | 0 |
+| 4 | 3297 | 14164 | 1417 | 17629 | 15139 | 0 |
+| 5 | 4136 | 15003 | 1501 | 18552 | 14216 | 0 |
+| 6 | 4600 | 15467 | 1547 | 19062 | 13706 | 0 |
+| 7 | 4884 | 15751 | 1576 | 19375 | 13393 | 0 |
+| 8 | 5293 | 16160 | 1616 | 19824 | 12944 | 0 |
+| 9 | 5675 | 16542 | 1655 | 20245 | 12523 | 0 |
+| 10 | 6093 | 16960 | 1696 | 20704 | 12064 | 0 |
+| 11 | 6618 | 17485 | 1749 | 21282 | 11486 | 1 |
+| 12 | 7357 | 18224 | 1823 | 22095 | **10673** | 1 |
+
+Lowest native-wire headroom was **10673**; reconstructed SDK planner headroom
+was **10088** (required 22680). Both layers fit, but this run **did not cross the
+previous sustained 32K failure point**, demonstrate extraction under pressure,
+or exercise a new `compaction-protected-budget` failure. The preserved memory
+snapshot has **no committed revision**. Extraction **0**, exact-source restoration
+**0**, historical retrieval calls **0**, automatic continuations **0**. Normal
+tool-step continuation did execute; the 24-step automatic batch boundary was not
+reached. The normal startup scoped evidence search ran with no files/task IDs and
+returned **0 reads / 0 bytes / 0 chunks**; that is not a successful retrieval.
+No original was observed missing, and no restoration was requested artificially.
+
+All 12 engine frames ended `done:true`, `done_reason:stop`, with actual provider
+usage available (**1901 output tokens total**). There were **no stream stalls**,
+idle/overall-deadline errors, malformed frames or reasoning-only exhaustion.
+Largest observed IPC body gap was **39.171s**, below the 60s policy. Bounded native
+HTTP receive and IPC/parsed-frame traces are preserved for all 12 requests.
+Final `/api/ps` and `/api/version` both returned 200, with the exact model loaded
+at context **32768**. The captured WebView diagnostic
+`Failed to unregister class Chrome_WidgetWin_0. Error = 1412` occurred at teardown
+after the recorded approval stop/report; it is not evidence of the earlier
+unconfirmed host-exit class recurring. The owned native host and runner exited;
+post-run Win32 inventory found no Clack/Cargo/test/harness leftovers.
+
+### Project Verification and Continuity
+
+Independent inspection, without changing application source, finds only
+**`shared/package.json`** and empty scaffolding directories. The manifest points
+to `shared/src/index.ts`, which does not exist, and has no scripts/dependencies.
+The external repository remains unborn `main`, with only `shared/` untracked.
+There is no root/server/web package, lockfile, installed workspace dependency
+tree, application source, test or executable build target. Therefore no install,
+test, build or server was launched by the evaluator: there is no appropriate
+application command to execute without manufacturing missing work.
+
+| Application milestone | Result |
+| --- | --- |
+| First substantive backend source/API | **NOT IMPLEMENTED**; no request/timestamp |
+| First substantive React frontend | **NOT IMPLEMENTED**; no request/timestamp |
+| Persistence and runtime-data ignore rules | **NOT IMPLEMENTED** |
+| SSE and live frontend updates | **NOT IMPLEMENTED** |
+| Project/task CRUD, search/combined filtering, validation/JSON errors | **NOT IMPLEMENTED** |
+| Port 4317, page size, title validation and debounce in working code | **NOT IMPLEMENTED** |
+| Application tests written / run | **0 / 0** |
+| Production build / README / `.gitignore` | **NOT IMPLEMENTED** |
+
+The conditional **50 -> 25 correction was not sent**. There was only one real
+file write, no successful `write_file`/`edit`/`multi_edit`, and page size 50 had
+not entered implementation or the accepted plan. Directory/probe calls do not
+satisfy the three-file-write rule. The current requirement is therefore **50**.
+
+Continuity scorecard below scores retained requirements/evidence, **not completed
+features**. The original full user specification is present in every request;
+no reminder or retrieved substitute was used to improve the score.
+
+| Continuity item | Score | Evidence / limit |
+| --- | --- | --- |
+| Core objective | **PASS** | Original ForgeBoard objective retained; not implemented. |
+| Backend port 4317 | **PASS** | Original and accepted backend plan; no listener implemented. |
+| Current page size 50 | **PASS** | Original retained; correction eligibility not reached. |
+| Title max 120 | **PASS** | Original retained; no validation implemented. |
+| Debounce 750 ms | **PASS** | Original retained; no frontend implemented. |
+| SSE | **PASS** | Original and accepted plan retained; not implemented. |
+| Persistence | **PASS** | Original and accepted plan retained; not implemented. |
+| No telemetry/cloud | **PASS** | Requirement retained, zero cloud inference; no product implementation to verify. |
+| Tests/build obligation | **PASS** | Original and explicit unfinished plan retained; neither executed. |
+| Active unfinished work | **PASS** | One inspection item complete; nine unfinished items persisted, marked cancelled on the safety stop, not falsely completed. |
+| Relevant latest failures | **PASS** | Original refusal preserved; adaptation receipt is qualified; initializer cancellation appears in request 12. Final denied approval is persisted, not sent back as a fabricated model continuation. |
+| Superseding 25 requirement / natural source restoration | **NOT EXERCISED** | Neither was triggered; no RETRIEVED claim. |
+
+### Assessment, Verification and Decision
+
+**Clack runtime:** task, original requirements, plan, effects and failure evidence
+survived; all 12 context preparations and streams fit/completed, and a qualified
+no-effect receipt occurred live. Approval enforcement stopped the ambiguous
+destructive command as instructed. No confirmed new Clack defect was established.
+Actual compaction extraction, exact restoration and continuation across a batch
+boundary remain untested by this short run. Do not convert healthy early tool
+loops into a claim that sustained end-to-end context acceptance has passed.
+
+**Qwen engineering:** valid initial PowerShell, a useful structured plan and one
+guard adaptation were observed, but also repeated empty-workspace probes, a
+POSIX multiline mistake after explicit PowerShell guidance, cancelled scaffolding
+and an unproductive destructive/probe proposal. There was no substantive
+ForgeBoard implementation. The approval stop prevents a fair final-budget model
+completion verdict; these observed choices do not become context-runtime defects.
+
+**Further Clack architecture changes are not justified by this evidence.**
+The earlier -05 model-quality evidence remains intact; this new attempt neither
+repairs ForgeBoard nor proves the stronger sustained `MODEL-INCOMPLETE` threshold.
+It must not be silently resumed with broader approval rules. Any later acceptance
+or coding-specialized local-model comparison requires a separate authorization
+and fresh experiment; none was performed here.
+
+Verification actually performed:
+
+- Pre-run acceptance/tracing/approval tests: **43 passed in 3 files**:
+  `src/test/ollamaStreamTrace.test.ts`,
+  `src/test/acceptanceApprovalLifecycle.test.ts`,
+  `scripts/acceptance-approval.test.mjs`.
+- Post-run receipt/compaction verification: **74 passed in 3 files**:
+  `compactionPlan.test.ts`, `conversationCompaction.test.ts`,
+  `agentCompaction.integration.test.ts`. The first sandbox invocation failed
+  before collecting tests because temporary-cache rename returned **EPERM**;
+  the same unchanged focused command passed outside the sandbox. This was not
+  a product regression or live inference failure. **117 focused tests total**.
+- Native acceptance example build with `--locked --target-dir target/codex-test`:
+  passed. Windows native IPC/provider/tool-loop evidence was obtained, not native
+  GUI interaction or Linux/macOS verification.
+- `npm.cmd run check-types`: passed. No Rust or production TypeScript changed;
+  full Clack tests/build/lint and Rust suites were not redundantly repeated.
+- `node --check scripts/audit-post-retention-run.mjs`: passed. Focused Biome
+  lint through its configured `src/` stdin path passed with unchanged text and
+  no diagnostics; no broad formatting or baseline-warning churn.
+- `scripts/audit-post-retention-run.mjs <absolute -06 evidence directory>`:
+  passed. Hash-pinned bounded inputs, exact one-time spec, all 12 native controls,
+  all 18 persisted tool/approval records, no replay, live receipt identity/cost,
+  every SDK projection/native-wire budget, final file inventory and completed
+  native receive traces were checked. Its JSON output is preserved locally as
+  `post-retention-audit.json`. Normalized comparison accounts for optional
+  undefined JSON diagnostic fields and parallel result arrival order; raw
+  evidence is not rewritten.
+- `git diff --check`: passed. No production changes before/during/after the
+  mission; only this additive report and an offline evidence-audit script changed.
+  No unrelated work, stashes, delegation files or `autonomous_tracker/` were touched.
+
+Evidence integrity anchors (full captures remain local under the ID above, not
+committed as large transcript artifacts):
+
+| Capture | SHA256 |
+| --- | --- |
+| `mission-a-1.json` | `1cc951ac9e7e4a34d702b66b5e33512d7eaef1af849f774efe25b8c3e8e3d8de` |
+| `mission-a-1.requests.jsonl` | `7b386ee20e03e405887bac4a8ca89ae112608f1562838fac63e9776836e15e5d` |
+| `mission-a-1.jsonl` | `8a8d86add819d600f8e013de79654759f81f5994ba6d1d3ee6dbd52d18aeb2d0` |
+| `mission-a-1.receive.jsonl` | `282f266d6ce5c14b85afe478c757e2f70f51ed57e86853d8d8f1f413698d56fc` |
+| `data/terax-ai-sessions.json` | `d8047ac6e336e99c2b07ea573b9647de8177ffb4fd376dd41a65b83a005a595f` |
+
+Completion scope: evidence/docs/offline audit only,
+`test(ai): verify post-retention local agent run`. No subsequent implementation,
+Automatic rerun, larger-context test, model comparison or push.
