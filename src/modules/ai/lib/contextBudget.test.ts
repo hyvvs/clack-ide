@@ -15,6 +15,7 @@ import {
   formatAiErrorDetails,
 } from "@/modules/ai/lib/errors";
 import { CompactionError } from "@/modules/ai/lib/compactionExtraction";
+import { planCompaction } from "@/modules/ai/lib/compactionPlan";
 
 describe("shared budget arithmetic", () => {
   it("a zero extra reserve pin still leaves meaningful response capacity", () => {
@@ -103,6 +104,83 @@ describe("shared budget arithmetic", () => {
 });
 
 describe("actual request material", () => {
+  it("does not charge for SDK object properties omitted by JSON serialization", () => {
+    const body = {
+      messages: [{
+        role: "assistant",
+        content: [{
+          type: "tool-call",
+          toolCallId: "call",
+          toolName: "read_file",
+          input: { path: "src/app.ts", absent: undefined },
+          providerExecuted: undefined,
+          providerOptions: undefined,
+        }],
+      }],
+      tools: [{
+        type: "function",
+        function: {
+          name: "read_file",
+          description: undefined,
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        },
+      }],
+    };
+    const serialized = JSON.parse(JSON.stringify(body));
+    expect(measureRequest(body)).toEqual(measureRequest(serialized));
+    expect(Object.keys(body.messages[0].content[0])).toContain("providerOptions");
+  });
+  it("keeps present false, zero, empty and null values while skipping only undefined fields", () => {
+    const output = { executed: false, count: 0, text: "", missing: null, absent: undefined };
+    const body = { messages: [{
+      role: "tool",
+      content: [{
+        type: "tool-result",
+        toolCallId: "call",
+        toolName: "inspect",
+        output: { type: "json", value: output },
+      }],
+    }] };
+    expect(measureRequest(body)).toEqual(measureRequest(JSON.parse(JSON.stringify(body))));
+    for (const key of ["executed", "count", "text", "missing"] as const) {
+      const reduced = structuredClone(body);
+      delete (reduced.messages[0].content[0].output.value as Partial<typeof output>)[key];
+      expect(measureRequest(body).conversation).toBeGreaterThan(measureRequest(reduced).conversation);
+    }
+  });
+  it("uses serialized SDK accounting in protected preparation without dropping tool/effect evidence", () => {
+    const requirement: ModelMessage = { role: "user", content: "Preserve all existing files." };
+    const extra: ModelMessage[] = [{
+      role: "assistant",
+      content: [{
+        type: "tool-call", toolCallId: "write", toolName: "bash_run",
+        input: { command: "write source", cwd: "/project" },
+        providerExecuted: undefined, providerOptions: undefined,
+      }],
+    }, {
+      role: "tool",
+      content: [{
+        type: "tool-result", toolCallId: "write", toolName: "bash_run",
+        output: { type: "json", value: { exit_code: 0, stdout: "written", stderr: "" } },
+      }],
+    }];
+    const preserved = structuredClone(extra);
+    const messages = [requirement, ...extra];
+    const cost = measureRequest(JSON.parse(JSON.stringify({ messages, tools: [] })));
+    const broad = resolveContextBudget({ deployed: 32768, maxOutput: 512 }, cost);
+    const required = cost.system + cost.tools + cost.conversation + broad.margin + broad.reserve;
+    const input = {
+      units: [{ messageId: "original", role: "user" as const, messages: [requirement], hasContentReferences: false }],
+      extra, system: [], tools: [], limits: { deployed: required, maxOutput: 512 },
+    };
+    const plan = planCompaction(input);
+    expect(plan.budget).toMatchObject({ fits: true, cost, margin: broad.margin, reserve: 512 });
+    expect(plan.messages).toEqual(messages);
+    expect(plan.needed).toBe(false);
+    expect(() => planCompaction({ ...input, limits: { ...input.limits, deployed: required - 1 } }))
+      .toThrow(/cannot fit/);
+    expect(extra).toEqual(preserved);
+  });
   it("early protected-context refusal retains the same B1 accounting and primary guidance", () => {
     const budget = resolveContextBudget(
       { reported: 4096 },

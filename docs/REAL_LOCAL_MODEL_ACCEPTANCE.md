@@ -3136,3 +3136,307 @@ ForgeBoard repair, subsequent mission or checkpoint, unrelated work/stash/
 delegation/`autonomous_tracker/` change, or push. Final result is intentionally
 incomplete: **CLACK-BLOCKED at protected-context policy, with preceding model
 tool-use underperformance; no materially working ForgeBoard.**
+
+## Sustained -05 Capacity Classification and Accounting Correction (2026-10-17)
+
+Baseline: `7d1cf23 test(ai): verify sustained local ForgeBoard run`, clean `main`
+before this checkpoint. This is an **offline classification of the existing
+`forgeboard-none-20261017-05` evidence**, not another mission. No model request,
+cloud inference, ForgeBoard rerun, larger-context test, project repair, native GUI
+interaction, or provider/service/network configuration change was performed.
+All preceding acceptance records remain historical evidence, including their
+then-unresolved classification. This audit now establishes a narrow accounting
+defect; it does not retroactively turn the last completed inference into a failure.
+
+### Exact Reconstruction
+
+`scripts/classify-context-capacity.mjs` reads bounded existing artifacts, rebuilds
+the recorded active SDK response history with the installed AI SDK's actual
+`toResponseMessages`, and invokes the existing pure compaction projection and B1
+estimator. It also loads the historical estimator from `7d1cf23` through an
+in-memory TypeScript transpilation, so the original result remains reproducible
+after the correction. No inference, tools, persistence writes, or memory
+extraction are invoked. Its JSON stdout is a metadata/cost receipt, not a copy of
+raw command inputs or outputs. Local receipt:
+`src-tauri/target/real-qwen-product/forgeboard-none-20261017-05/capacity-classification.json`.
+
+Input SHA-256:
+
+- `mission-a-1.json`: `79d81c1b791101c4184a03139949c00b5ed3892de14fb8d2e4f05d17126fb364`
+- `mission-a-1.requests.jsonl`: `9df05301f9e8c03dfe419b9259d9478707189d135396d739ea7d8b2f3c11be4c`
+
+The public UI-history converter alone is insufficient to reproduce the exact
+in-memory SDK response shape: optional undefined fields differ. Using the SDK's
+response-message builder reproduces **33600 exactly**, including every tool pair,
+the superseded-plan projection and section attribution. These remain conservative
+estimates, not tokenizer counts or invented usage for an unissued request.
+
+The following rows are disjoint; subcomponents are not added twice:
+
+| Terminal preparation component | Historical estimate | Corrected estimate |
+| --- | ---: | ---: |
+| Core system instructions/structure | 3175 | 3175 |
+| Active agent instructions | 442 | 442 |
+| Tool schemas and their structure | 7250 | 7250 |
+| Original ForgeBoard objective text | 1044 | 1044 |
+| User environment envelope content | 123 | 123 |
+| Remaining user-message structure | 29 | 29 |
+| Current accepted plan call/result | 337 | 322 |
+| Other hot tool call/result parts | 14575 | 14200 |
+| Assistant text parts and metadata | 995 | 995 |
+| Active-tail message framing | 713 | 713 |
+| Project/task evidence | 0 | 0 |
+| Retrieved original evidence | 0 | 0 |
+| Memory/extraction/objective carry | 0 | 0 |
+| **Input** | **28683** | **28293** |
+| Output allowance/reserve | 2048 | 2048 |
+| Safety margin | 2869 | 2830 |
+| **Required total** | **33600** | **33171** |
+| Effective ceiling | 32768 | 32768 |
+| **Excess** | **832** | **403** |
+
+System total is **3617**, protected conversation total **17816 -> 17426**,
+available conversation working budget **16984 -> 17023**. Historical diagnostic
+sections remain exactly core 3175, agent 442, history 17530, environment 123,
+builtin schemas 7134, other framing/options 279; their sum is 28683. Corrected
+history is 17140; other sections are unchanged. Section labels are diagnostic,
+not source provenance. No attachment, project/custom instruction, custom/MCP
+schema, hidden memory snapshot or extraction contribution was found.
+
+### Ownership, Protection and Every Retained Component
+
+There is **one formal source group**, original user message
+`CeQv5vywKPItosmd`, source range `[0,1)`, **1196** tokens including the environment
+and message wrapper. It is current, unsuperseded authoritative requirements and
+workspace/shell context; no tool effect or pending tool result. Keeping its
+authority and source identity is required. It is not three copies of the spec.
+
+The remaining **16620 -> 16230** tokens are the active SDK tail under assistant
+`Qa8IMCFduZBsVcDt`. They are not 26 separate C1a source groups. At batch start only
+the original user was a compaction unit. The live SDK accumulated the assistant
+steps as `extra`, which `planCompaction.assemble()` preserves after the existing
+accepted-plan projection. There are **46 projected SDK messages**, **26 hot tool
+pairs**, **9 text parts**, and **713** message-frame tokens. No incomplete tool
+call/result relationship remains; all calls settled. Operationally unresolved
+errors are distinct from unresolved protocol calls.
+
+Every hot pair is enumerated below, largest first. Identity is the assistant ID
+above plus the exact tool-call ID. Historical costs include 15 phantom field
+tokens per call; corrected pair cost is therefore **each listed cost minus 15**.
+Frames are separate rather than arbitrarily assigned to pairs that share a
+message. All pairs remain hot under the existing active-tail contract, with calls
+and results intact; none is declared a superseded plan or authoritative user
+requirement. The retention rule preserves effect/debug provenance and avoids
+unsupported effect/history substitution; it is not a claim that every old probe
+is semantically necessary for the next coding decision.
+
+| Tool-call identity | Tokens | Effect/evidence and current relevance |
+| --- | ---: | --- |
+| `yf2BXLHp22TUoCGnvYgBccl92U7aIITD` | 1702 | Shell: server/web package manifests; existing scaffold write evidence |
+| `ckhIS2eXV78KC510QtJMtQvVKtrPqrri` | 972 | Shell: root manifest/gitignore scaffold writes; existing effects |
+| `4mrHAmtrBrEY7P7O2blXuyKj1m0uEO9l` | 846 | Refused multiline domain write; intended implementation still absent |
+| `nB07jpwpkOPNi5Br9nT2qaNB45tGI70C` | 793 | Refused multiline domain here-string; intended implementation still absent |
+| `rAwxIn13d5pu5SzyjUNBEhnpkldjGs8T` | 772 | Shell: web configuration writes; existing scaffold effects |
+| `VacZqVXOuuOI4AbxlExbACZ2uWbHLAJ4` | 768 | Final refused multiline domain write; unresolved at stop |
+| `I9a0kUwUbbh0St9ASCMaxulUQ32q6fta` | 767 | Refused domain write; later placeholders do not implement the intended domain |
+| `tePJmQfuLtuxUS04NbOoWy2bND6idHMM` | 757 | Refused multiline configs; later successful scaffold write, no longer an operational blocker |
+| `7nYLfcQfIpVHCBij2vFh5Clvc4ugDmAJ` | 754 | Shell: server configuration writes; existing scaffold effects |
+| `VJcy05bzWoDOVLzkUDfX5C79HXt4W5D4` | 683 | Node helper quoting failure; later hello/world probe is not a verified repair of that helper |
+| `ajNM3cn3nrW5FRNTmZmBm2770JZgWdrT` | 547 | Refused multiline root manifest; later scaffold write, no longer an operational blocker |
+| `qYt5bF8eEHLfOjVXw759WAytT2c2fU9x` | 543 | Second refused root manifest; later scaffold write, no longer an operational blocker |
+| `v9kXiVa8Q3hNU40xlm1iHVUvPxKQN5l4` | 528 | Shell: overwrote domain.ts with line1/line2/line3; current placeholder effect |
+| `rzbgLuzy7F9GSfd3TP4bfqg6bcWrfdRi` | 511 | Shell: generic copy helper probe; current file effect, not application code |
+| `cAMVX6KwLPoZmPmcHATIjD7OOmVxQcVF` | 428 | Shell: dependency installation, 375 packages; retained dependency effect/result |
+| `nsNLCEAgIZAqUaEraag7pUnmCgWieaV7` | 405 | Shell: line-writing domain probe; content subsequently overwritten, historical effect |
+| `mwmwTwcfwuJC5YqzCDgOkDUupHjorpZD` | 403 | Shell: copy-out and text probes; existing file effects |
+| `rj1gPQ5EkrbzlcdXerlQ8gfbGOVhwNLt` | 381 | Shell: environment/tool-version inspection; historical observation |
+| `PxYjsOYpciTDo0sY7dGVFMViWrJhBa61` | 347 | Shell: read helper probe; historical observation, no new write |
+| `DPTverVC1RxYVTb5Z3nSXmHDlCvScf1S` | 337 | Current accepted todo replacement, not another original specification |
+| `mhuqJ7HXtpfnwSJ6lV05ZYLHhaKxO3Qi` | 329 | Refused multiline helper; later alternative copy probe does not prove exact helper repair |
+| `zbdzhdwwbrWbzoZYksRge8O30KmvViM4` | 325 | Shell: hello/world helper probe; existing file effect |
+| `VqIZmzIudDFDikL4vdrPLSPZkIifFnd3` | 314 | Shell: local Git config/init; historical effect |
+| `cfF5BncPwxmizjvv4130OfbqhAJDKLf9` | 280 | Shell: temporary test-content domain write; subsequently overwritten, historical effect |
+| `NMLG1D0HypefdXZznSF8YCsuJMl8mnjz` | 211 | create_directory: server tree creation; existing effect |
+| `accUIncHE6ND6ImofHga1V3nvRAUHjcr` | 209 | create_directory: web tree creation; existing effect |
+
+The nine text-part identities are zero-based projected-tail message indices under
+the same assistant ID, sorted by cost: **38:213, 44:145, 30:117, 32:111, 42:93,
+20:88, 34:88, 22:77, 8:63**, total **995**. They are historical model narrative,
+not authoritative requirements, tool acknowledgements or separate promoted
+knowledge. They remain in the active tail; not every statement is a current fact.
+Message envelopes/array framing add **713**. This exhausts the conversation total:
+**1196 + 14912 + 995 + 713 = 17816**. Corrected:
+**1196 + 14522 + 995 + 713 = 17426**.
+
+The largest five independently attributable protected components are: manifests
+pair **1702 -> 1687**, original user **1196**, root scaffold pair **972 -> 957**,
+domain refusal `4mr...` **846 -> 831**, domain refusal `nB07...` **793 -> 778**.
+These are component costs, not five fabricated formal compaction-group records.
+
+### Plans, Failures, Effects and Probes
+
+The old accepted plan `r4bnxuWwHbYkGQy0wXeaBLYjzLNR88ub` remains **durable only,
+not hot (0 tokens)**. Its full call/result is excluded. The latest accepted plan
+`DPTverVC1RxYVTb5Z3nSXmHDlCvScf1S` remains **337 -> 322** hot tokens. Thus
+`97148e9` has not regressed. Current plan: one completed scaffold item, one
+in-progress backend item, three pending frontend/test/README items, **zero blocked
+items**. The completed detail is one short title, within the existing maximum of
+16 items/160 characters per title, not an accumulated journal. Planned tasks are
+not evidence that their implementation or tests exist.
+
+Historical non-overlapping tool pair accounting:
+
+- **14912** total: **8624 call/input + 6288 result** tokens, excluding shared frames.
+- **8122** successful shell pairs: **3514 call + 4608 result**; the 10
+  write-bearing shell pairs are a subset costing **6652**. This includes manifests,
+  configuration and overwriting/probe actions, not just final surviving bytes.
+- **6033** failed/refused shell pairs: **5350** for eight multiline refusals,
+  **683** for the quoting failure. Outputs alone **1361**; refused outputs
+  **8 x 108 = 864**, quoting output **497**. Most refusal cost is the attempted
+  input, not repeated error prose. Corrected failure pairs total **5898**.
+- Successful directories cost **420**, current accepted plan **337**.
+- The 10 write-bearing shell pairs split into **4200** for four scaffold/config
+  calls and **2452** for six successful placeholder/helper/copy probes. Including
+  the helper quoting failure, refused helper and read-back probe brings that
+  exploratory subset to **3811** tokens; these are overlapping views of the totals
+  above, not additional budget. The probes did not produce application logic.
+- Returned-command echo fields contribute **2680**; stdout fields **221**, stderr
+  fields **494**. These are marginal field costs including key/structure, not raw
+  text-only costs, and are subsets of the result totals above. The command echo
+  repeats intent but also records the backend's executed-command receipt. No
+  existing safe reference substitution was established; it was not stripped.
+
+The three scaffold refusals identified in the table are no longer immediate
+operational blockers. Earlier overwritten placeholders and read probes likewise
+do not all guide the next decision. However the current architecture does **not**
+declare those active SDK entries safely superseded/retrievable: no committed
+memory coverage exists for this batch, and the only precise replacement rule
+here is for acknowledged whole-plan snapshots. The six other failures do not have
+verified semantic repairs of their intended implementation. No failure is
+permanently reclassified as a fact or retrievable summary in this checkpoint.
+Dropping active effect/debug history or adding such a retirement mechanism would
+be a compaction-policy change, not correction of the proven accounting owner.
+The protected set is therefore **policy-retained**, not a proof of the smallest
+possible semantic representation. No originals were erased or rewritten.
+
+### Schema Selection and Specification Duplication Audit
+
+**7250 estimated tokens / 14814 serialized bytes / 16 schemas**. Per-schema rows
+exclude the shared array's **18** tokens; row sum **7232**. All 23 captured requests
+have the same set. Offline replay over the captured candidates selects the same
+16 initially; the terminal selection explicitly makes all initially exposed
+names mandatory. The full unexposed candidate set and live ranking/cache receipt
+were not logged, so this does not fabricate an exact historic score for tools
+that never appeared on the wire.
+
+| Schema | Tokens | Uses | Selection reason/current relevance |
+| --- | ---: | ---: | --- |
+| request_peer_task | 1204 | 0 | Initial broad lexical relevance, then pinned; no current delegated task, delegation prohibited by mission |
+| propose_custom_tool | 681 | 0 | Initial broad relevance, then pinned; no custom-tool proposal/current binding |
+| todo_write | 611 | 2 | Explicit tool name in objective; current accepted plan, pinned |
+| communicate_peer_task | 591 | 0 | Initial broad relevance, then pinned; no current peer conversation |
+| grep | 573 | 0 | Coding/search relevance, then pinned; available, not exercised |
+| read_file | 470 | 0 | Coding/read relevance and editing dependency, then pinned; available, not exercised |
+| bash_run | 400 | 23 | Install/build/test/shell relevance; active command history, pinned |
+| cancel_peer_task | 378 | 0 | Initial broad lexical relevance, then pinned; no active peer task |
+| multi_edit | 375 | 0 | Coding/file-edit relevance, then pinned; available, not exercised |
+| open_preview | 368 | 0 | Server/frontend relevance, then pinned; no running app to preview |
+| edit | 343 | 0 | Coding/edit relevance, then pinned; available, not exercised |
+| read_agent_output | 309 | 0 | Initial broad relevance, then pinned; no agent output to inspect |
+| glob | 293 | 0 | Coding/search relevance, then pinned; available, not exercised |
+| bash_list | 289 | 0 | Shell/server relevance, then pinned; no background server started |
+| list_directory | 191 | 0 | Coding relevance/directory dependency, then pinned; shell inspection used instead |
+| create_directory | 156 | 2 | Coding/directory relevance; existing directory effects, pinned |
+
+These 16 are **contractually justified at terminal preparation by SDK-run
+pinning**, not all semantically needed at that instant. F1's implementation ledger
+explicitly requires already exposed schemas to remain pinned for the SDK run;
+`agent.ts` carries `pinnedTools` into every `prepareStep`. Tests forbid dropping
+mandatory schemas simply to fit. The selector's lexical ranking is not a semantic
+understanding of negative delegation instructions; making a forbidden action
+visible does not authorize using it. No F1 regression or stale cache was proven.
+The previous -04 **16 -> 10 / 2831-token saving** occurred at a **new SDK batch**
+with narrower optional allowance; -05 stopped after 23 steps, before the 24-step
+continuation boundary and fresh selection. These are different lifecycle points.
+No tools, assignments, permissions or schema versions were changed to force fit.
+
+The complete ForgeBoard objective occurs **once authoritatively**, in the original
+user message, **1044 raw text tokens**. Its envelope is not another specification.
+There is no substantive-objective carry, memory summary, extraction result,
+retrieval chunk or project evidence repeating it. The five terse plan titles
+refer to work areas without reproducing the full requirements. No incorrectly
+protected optional retrieval/project memory or second authoritative spec was
+found. There is representation overhead in tool history, but no independently
+proven safe duplication-removal defect beyond the accounting issue below.
+
+### Classification D: Accounting Defect, Not a Forced 32K Pass
+
+The SDK response-message builder creates optional `providerExecuted` and
+`providerOptions` keys with **undefined values** on tool calls. JSON omits those
+object fields. `measureRequest` nevertheless charged their names and field
+structure even though it charged zero for their absent values:
+
+- 26 `providerExecuted` fields x 8 = **208** phantom input tokens.
+- 26 `providerOptions` fields x 7 = **182** phantom input tokens.
+- **390** excess input; the unchanged margin formula adds **39** more.
+
+The correction skips **only undefined object properties** in the shared recursive
+estimator. It does not mutate messages or serialize away their metadata. Present
+false, zero, empty strings and null fields still count; real tools/results,
+requirements, source authority, schema pinning and effect safeguards remain.
+No tokenizer heuristic, output reserve, 10%/minimum-128 safety rule, context limit,
+request continuation, extraction, source coverage, memory, F1 or scheduler policy
+was changed. The report's original **33600** is exactly reconciled; it was not
+double-counted output, an extra spec, or a repeated accepted plan.
+
+Corrected B1 accounting equals measurement of the same JSON-serializable body:
+**28293 input + 2048 output reserve + max(128, ceil(28293 x 0.1)) = 33171**.
+It remains **403 over**, and protected preparation still rejects before another
+inference or effect. This checkpoint chooses **D**, not A/B/C. The residual
+policy-capacity stop is acknowledged, but the conditional Case A hardware test
+is **not authorized by this result and was not run**. No 49152/65536 request, new
+load/completion, or new VRAM/RAM measurement exists to report.
+
+### Model Quality, Verification and Scope
+
+The pre-limit engineering result remains poor independently of the final
+**832-token original / 403-token corrected** excess. In **10m54s**, Qwen received
+**23 completed inference responses**, made **27 tool calls** and **10 successful
+write-bearing shell calls**, yet produced no real backend, frontend, persistence,
+SSE, application tests, production build or materially working ForgeBoard.
+It repeatedly attempted refused multiline commands and wrote placeholders/probes,
+despite useful error feedback and available edit tools. The terminal event was a
+local preflight capacity rejection, not provider/transport failure. Neither fixing
+390 phantom tokens nor merely increasing context demonstrates coding competence.
+The prior six independent project verification commands still fail; none was
+rerun or repaired for this classification.
+
+Deterministic evidence:
+
+- Red reproduction before the fix: original focused context-budget file **52
+  passed / 2 failed**, both new undefined-field serialization assertions.
+- After correction: **199 focused tests in 6 files passed** (`contextBudget`,
+  `compactionPlan`, `protectedPlan`, `toolExposure`, `conversationCompaction`,
+  `requestPreflight`). Three new tests cover undefined SDK/schema/nested fields,
+  preservation of false/zero/empty/null and original objects, and actual protected
+  preparation at the exact fit/one-token-over boundary with paired tool/effect
+  evidence intact.
+- Offline audit asserts historical **33600**, corrected/JSON-equivalent **33171**,
+  the exact 26+26 phantom fields, protected rejection, the 26 retained pairs,
+  excluded old plan, current plan, all additive components, and schema costs/pins.
+- Final frontend gates: `npm.cmd run check-types` **passed**; `npm.cmd run lint`
+  **passed, existing baseline 71 warnings / 2 informational notices**;
+  `npm.cmd test` **2794 passed / 200 files, no failures**;
+  `npm.cmd run build` **passed** (including final TypeScript compilation), with
+  existing ineffective-dynamic-import notices for `customExecution`, `agent`,
+  `transport`, `chatRuntime`, and the plugin-timing notice; `git diff --check`
+  **passed**. An initial new-test-only `Object.hasOwn` TypeScript compatibility
+  error and its lint-incompatible replacement were corrected using `Object.keys`
+  before the full tests/build; no project compiler target or lint rule changed.
+  No Rust files changed, so Rust gates were not repeated. No native/live-provider
+  verification or Linux/macOS run is claimed.
+
+Only the shared estimator, its regression tests, offline audit script and this
+additive acceptance report change. No Rust/native code, ForgeBoard source,
+delegation work, safety stash, `autonomous_tracker/`, other checkpoint, push, or
+live inference is part of this correction.

@@ -355,9 +355,11 @@ export function measureRequest(
       add(section, 2) +
       Object.entries(record).reduce(
         (sum, [key, item]) =>
-          sum +
-          add(section, estimateTextTokens(key) + 2) +
-          measure(item, section),
+          item === undefined
+            ? sum
+            : sum +
+              add(section, estimateTextTokens(key) + 2) +
+              measure(item, section),
         0,
       )
     );
