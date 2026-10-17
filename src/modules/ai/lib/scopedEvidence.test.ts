@@ -91,6 +91,77 @@ function setup(
 afterEach(() => vi.useRealTimers());
 
 describe("authorized project/task working evidence", () => {
+  it("retains an empty discovery across SDK batches without reusing a fact or consuming more time", async () => {
+    const f = setup();
+    f.read.mockResolvedValue({ ...response([]), taskIds: [] });
+    expect(await f.retriever.prepare(messages, limits, [])).toEqual(messages);
+    f.retriever.dispose();
+    const next = setup({ allowance: f.allowance });
+    f.allowance.elapsed = 10000;
+    expect(await next.retriever.prepare(messages, limits, [], true)).toEqual(messages);
+    await next.retriever.validate();
+    expect(next.read).not.toHaveBeenCalled();
+    expect(f.allowance.scopedRounds).toBe(1);
+    expect(f.allowance.elapsed).toBe(10000);
+  });
+  it("does not let an empty discovery suppress a later explicit source request or permission check", async () => {
+    let allowed = true;
+    const f = setup({ allowed: () => allowed });
+    f.read.mockResolvedValue({ ...response([]), taskIds: [] });
+    await f.retriever.prepare(messages, limits, []);
+    f.retriever.request("port", "project:record");
+    f.read.mockResolvedValue(response([chunk({ required: true })]));
+    expect(JSON.stringify(await f.retriever.prepare(messages, limits, []))).toContain("7351");
+    expect(f.read).toHaveBeenCalledTimes(2);
+    allowed = false;
+    await expect(f.retriever.validate()).rejects.toMatchObject({ code: "retrieval-denied" });
+  });
+  it.each([
+    { ...response([]), issues: [{ source: "file:missing.ts", status: "missing" }], taskIds: [] },
+    { ...response([]), omitted: 1, taskIds: [] },
+    { ...response([]), taskIds: ["dependency"] },
+    { ...response([chunk({ required: true })]), taskIds: [] },
+    { ...response([chunk({ freshness: "conflicting" })]), taskIds: [] },
+    { ...response([chunk({ freshness: "needs-revalidation" })]), taskIds: [] },
+  ])("never exempts selected, missing, conflicting, omitted or task evidence from validation: %j", async result => {
+    const f = setup();
+    f.read.mockResolvedValue(result);
+    await f.retriever.prepare(messages, limits, []);
+    f.allowance.elapsed = 10000;
+    await expect(f.retriever.validate()).rejects.toMatchObject({ code: "retrieval-timeout" });
+    expect(f.allowance.scopedCache).toBeUndefined();
+  });
+  it("still blocks required anchored evidence on timeout without publishing a partial receipt", async () => {
+    vi.useFakeTimers();
+    const before = JSON.stringify(originals);
+    const onPrepared = vi.fn();
+    const f = setup({ onPrepared });
+    f.retriever.request("port", "task:dependency");
+    let finish: (result: ScopedResult) => void = () => {};
+    f.read.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const attempt = f.retriever.prepare(messages, limits, []);
+    const failed = expect(attempt).rejects.toMatchObject({ code: "retrieval-timeout", message: expect.stringContaining("Project/task evidence lookup timed out.") });
+    await vi.advanceTimersByTimeAsync(10000);
+    await failed;
+    finish(response([chunk({ required: true })]));
+    await Promise.resolve();
+    expect(onPrepared).not.toHaveBeenCalled();
+    expect(f.allowance.scopedCache).toBeUndefined();
+    expect(JSON.stringify(originals)).toBe(before);
+  });
+  it("checks run ownership and cancellation even when the cached discovery supplied nothing", async () => {
+    let current = true;
+    const controller = new AbortController();
+    const f = setup({ signal: controller.signal, scope: { sessionId: "target", runId: "run", isCurrent: () => current } });
+    f.read.mockResolvedValue({ ...response([]), taskIds: [] });
+    await f.retriever.prepare(messages, limits, []);
+    current = false;
+    await expect(f.retriever.validate()).rejects.toMatchObject({ code: "retrieval-stale" });
+    current = true;
+    controller.abort();
+    await expect(f.retriever.prepare(messages, limits, [])).rejects.toMatchObject({ name: "AbortError" });
+    expect(f.read).toHaveBeenCalledOnce();
+  });
   it("final omission-count growth re-sizes only optional sources and publishes the actual selection", async () => {
     const first = chunk();
     const base = setup();

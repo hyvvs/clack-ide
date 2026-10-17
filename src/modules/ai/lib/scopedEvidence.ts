@@ -162,6 +162,14 @@ export function createScopedRetriever(options: {
           "concurrent",
           "Overlapping project evidence preparation is not permitted.",
         );
+      // An empty discovery supplied no facts to revalidate. Keep its bounded
+      // lookup round, but never turn it into every-step Git/filesystem work.
+      if (!pending && cache && cache.request.anchor === null &&
+        cache.result.chunks.length === 0 && cache.result.issues.length === 0 &&
+        cache.result.omitted === 0 && cache.result.taskIds?.length === 0) {
+        options.onPrepared?.([], 0, 0);
+        return messages;
+      }
       busy = true;
       const started = now();
       let timer: ReturnType<typeof setTimeout> | undefined;

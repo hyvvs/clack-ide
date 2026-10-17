@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { COMPACTION_POLICY } from "@/modules/ai/lib/compactionExtraction";
 import { contextDigest } from "@/modules/ai/lib/targetContext";
 import type { ScopedRequest } from "@/modules/ai/lib/scopedEvidence";
+import { newRetrievalAllowance } from "@/modules/ai/lib/retrievalAllowance";
 import { vi } from "vitest";
 import {
   measureRequest,
@@ -21,6 +22,52 @@ function required<T>(value: T | null | undefined): T {
 }
 
 describe("durable conversation compaction coordinator", () => {
+  it("does not revalidate an empty optional lookup across long-running mutations and transport checks", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture([textMessage("mission", "user", "Build ForgeBoard in this empty repository and finish the current plan.")]);
+      const before = JSON.stringify(f.originals);
+      const memoryBefore = f.view();
+      const allowance = newRetrievalAllowance();
+      const read = vi.fn(async () => {
+        await new Promise(resolve => setTimeout(resolve, 158));
+        return { chunks: [], issues: [], omitted: 0, stamp: "c".repeat(64), identityStamp: "e".repeat(64), taskIds: [], bytes: 0, reads: 0 };
+      });
+      const compactor = await f.start({
+        allowance,
+        limits: async () => ({ deployed: 32768 }),
+        scopedEvidence: { read, allowed: () => true },
+      });
+      const complete = async <T,>(operation: Promise<T>) => {
+        let settled = false;
+        const outcome = operation.then(value => ({ value }), error => ({ error })).finally(() => { settled = true; });
+        for (let tick = 0; !settled && tick < 10; tick++) await vi.advanceTimersByTimeAsync(158);
+        expect(settled).toBe(true);
+        const result = await outcome;
+        if ("error" in result) throw result.error;
+        return result.value;
+      };
+      for (let step = 0; step < 17; step++) {
+        const prepared = await complete(compactor.prepare([
+          { role: "assistant", content: "Current plan: scaffold, implement, test, build." },
+          { role: "tool", content: [{ type: "tool-result", toolName: "write_file", toolCallId: `write-${step}`, output: { type: "json", value: { ok: true, clackWorkspaceWrite: true } } }] },
+        ]));
+        expect(JSON.stringify(prepared)).toContain("Current plan");
+        await complete(compactor.validateEvidence());
+        await complete(compactor.validateEvidence());
+        // Inference/tool latency does not consume local evidence work allowance.
+        vi.advanceTimersByTime(28000);
+      }
+      expect(read).toHaveBeenCalledOnce();
+      expect(allowance.elapsed).toBe(158);
+      expect(allowance.scopedRounds).toBe(1);
+      expect(f.memory.commit).not.toHaveBeenCalled();
+      expect(f.view()).toEqual(memoryBefore);
+      expect(JSON.stringify(f.originals)).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("rebases append-only SDK assistant tails without regenerating extracted evidence", async () => {
     const f = fixture();
     const tail = textMessage("active-tail", "assistant", "Verified pending plan and current tool results.");
@@ -147,7 +194,9 @@ describe("durable conversation compaction coordinator", () => {
       const stamp = (written ? "d" : "c").repeat(64);
       if (request.expected && request.expected !== stamp)
         throw new Error("scoped_evidence_stale_receipt");
-      return { chunks: [], issues: [], omitted: 0, stamp, identityStamp, taskIds: [], bytes: 0, reads: 1 };
+      const text = written ? "Current file after confirmed write." : "Current file before write.";
+      const chunks = [{ id: "a".repeat(64), kind: "file" as const, workspaceId: "local:/workspace-a", checkout: "local:/workspace-a", source: { path: "src/config.ts" }, revision: 1, contentHash: (written ? "d" : "b").repeat(64), text, start: 0, end: text.length, required: false, freshness: "current-file-observation", qualification: "file-evidence", reason: "explicit-file-reference" }];
+      return { chunks, issues: [], omitted: 0, stamp, identityStamp, taskIds: [], bytes: new TextEncoder().encode(JSON.stringify(chunks[0])).byteLength, reads: 1 };
     });
     const compactor = await f.start({
       limits: async () => currentLimits,

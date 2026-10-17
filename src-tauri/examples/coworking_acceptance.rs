@@ -9,6 +9,37 @@ fn coworking_exit(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+#[tauri::command]
+async fn scoped_evidence_retrieve(
+    app: tauri::AppHandle,
+    request: memory::project::freshness::retrieval::Request,
+) -> Result<memory::project::freshness::retrieval::Retrieved, String> {
+    let started = std::time::Instant::now();
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis();
+    let captured = serde_json::to_value(&request).expect("request metadata");
+    eprintln!(
+        "CLACK_ACCEPTANCE_SCOPED_START {}",
+        serde_json::json!({"at":at,"anchor":captured["anchor"],"files":captured["files"],"queryChars":captured["query"].as_str().map(str::len),"expected":captured["expected"],"taskIds":captured["taskIds"]})
+    );
+    let result =
+        memory::project::freshness::retrieval::scoped_evidence_retrieve(app, request).await;
+    let summary = match &result {
+        Ok(value) => {
+            let value = serde_json::to_value(value).expect("result metadata");
+            serde_json::json!({"chunks":value["chunks"].as_array().map(Vec::len),"issues":value["issues"].as_array().map(Vec::len),"omitted":value["omitted"],"reads":value["reads"],"bytes":value["bytes"],"taskIds":value["taskIds"]})
+        }
+        Err(error) => serde_json::json!({"error":error}),
+    };
+    eprintln!(
+        "CLACK_ACCEPTANCE_SCOPED_FINISH {}",
+        serde_json::json!({"startedAt":at,"elapsedMs":started.elapsed().as_millis(),"result":summary})
+    );
+    result
+}
+
 fn main() {
     let root = std::env::var("CLACK_ACCEPTANCE_ROOT").expect("owned fixture root required");
     let root = std::fs::canonicalize(root).expect("fixture root must exist");
@@ -98,7 +129,7 @@ fn main() {
                     memory::project::project_memory_inspect,
                     memory::project::freshness::project_memory_verify,
                     memory::project::freshness::project_memory_revalidate,
-                    memory::project::freshness::retrieval::scoped_evidence_retrieve,
+                    scoped_evidence_retrieve,
                     memory::custom_tools::custom_tools_load,
                     memory::custom_tools::custom_tools_validate,
                     memory::custom_tools::custom_tools_change,

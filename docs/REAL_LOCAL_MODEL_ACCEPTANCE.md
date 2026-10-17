@@ -1530,3 +1530,258 @@ workspaces, evidence, grades, safety stashes and unrelated user work remain
 untouched. Only acceptance harness/tests and this appended report are committed
 for this checkpoint. No production fix, model tuning, push or subsequent
 checkpoint was started.
+
+## Long-Running Empty Evidence Lookup Fix, 2026-10-17
+
+### Scope and Historical Diagnosis
+
+Baseline: clean `main` at `d9cecf5`, **36 ahead / 0 behind** recorded
+`origin/main`. Process inspection found no competing Clack host, acceptance
+runner, Vite/test runner or Cargo/Rust build. Unrelated Codex processes were
+left alone. This checkpoint changes only the empty scoped-evidence reuse path,
+its tests, native acceptance timing instrumentation and this report. All earlier
+grades remain unchanged, including `forgeboard-none-20261017-01` as
+**CLACK-BLOCKED / project-task evidence preflight / INCOMPLETE**, not model failure.
+
+The exact error owner is `createScopedRetriever().prepare()` in
+`src/modules/ai/lib/scopedEvidence.ts`. Its `Promise.race` timer creates
+`RetrievalError("timeout", "Project/task evidence lookup timed out.")`;
+`RetrievalError` appends the originals/memory guarantee. Production call chain:
+`runAgentStream.prepareStep` -> `createConversationCompactor.prepare` ->
+`scoped.validate(true)` after confirmed writes and/or `scoped.prepare` at final
+assembly. Transport preflight also calls `InferenceScope.validateEvidence` ->
+`compactor.validateEvidence` -> `scoped.validate` -> the same `prepare`.
+The SDK propagates the exception; `normalizeAiError` presents the
+`retrieval-timeout` as terminal Context preflight. No request 17 was sent in the
+old run. This was not the native inference idle/overall timeout owner.
+
+The automatic query was the latest user objective: the original **2,086-character
+ForgeBoard specification**, with `anchor=null` and **no relative file hints**.
+Neither Qwen nor a user requested additional evidence. The recipient was
+`real-mission-a`, Coder, in the original `...20261017-01` workspace. The task ledger
+was empty; no PeerTask/dependency, explicit source anchor, conflicting claim or
+promoted project fact was required. The preserved native data has no
+`ai-project-memory` store and an empty PeerTask ledger. Both first and final
+preserved request bodies contain **no scoped evidence envelope**. The successful initial native selection
+therefore supplied no facts, issues or omission report. The fresh instrumented
+run below confirms the same query's empty selection. No durable memory revision
+existed in the old run; its one user and one growing assistant message retained
+the original task, six-item plan, paired tool results and live scaffold state.
+After request 16 the latest edit was correctly refused for an unread/nonexistent
+`server/tsconfig.json`. That tool failure did not request historical evidence.
+
+**Root cause: unnecessary repeated validation of a successful empty discovery.**
+An empty result was cached like delivered evidence. Every reuse, confirmed-write
+refresh and transport validation re-ran the native composite lookup even though
+there was no fact to revalidate or inject. `runRetrievalAllowance` preserves one
+allowance across SDK steps/batches. Its policy is **10,000 ms cumulative local
+work per logical run**, shared by conversation and scoped lanes, not ten seconds
+per inference or 441 seconds of wall time. Every redundant validation charged
+`allowance.elapsed`; the next timer received only `10000 - elapsed` milliseconds.
+The round and byte allowances did not stop read-only validation.
+
+Historical per-IPC timings were not recorded, so the exact remaining milliseconds
+and slowest historical sub-operation cannot be reconstructed. The old last tool
+receipt and terminal error were only **84 ms apart**. There is no evidence of one
+ten-second filesystem hang, lock deadlock or inference timeout. Deterministic
+production-coordinator reproduction below establishes the cumulative failure
+mechanism rather than attributing an unobserved duration to one native read.
+
+Native command: `scoped_evidence_retrieve`, using `spawn_blocking`, authorized
+session/project loading, recipient/PeerTask checks, bounded M2/file reads and two
+`project_evidence_revision` checks. In an unborn repo each revision check launches
+four bounded Git commands, eight per lookup. There is no recursive repository
+scan. It holds the existing **shared** content-collection read guard, not an
+exclusive conversation/project lock. Git runs noninteractively with optional
+locks disabled and two-second per-command kill/wait bounds. Native ten-second
+elapsed checking is cooperative and occurs before publication. Frontend timeout
+or cancellation rejects/discards late results but does not preempt the native
+blocking function. Whether the final old native call continued after its caller
+timed out is **unrecorded**; it could finish until the owned host exited. No
+persisting host/Git orphan or held lock was observed. This checkpoint does not
+claim a new native cancellation guarantee. The corrected empty-reuse path starts
+no native work, so it cannot abandon another validation operation.
+
+### Narrow Fix and Deterministic Evidence
+
+After normal permission, active-run, cancellation and overlap checks, a cached
+lookup with **no pending request, null anchor, zero chunks, zero issues, zero
+omissions and an explicitly empty native task-source set** returns the current
+messages unchanged. It retains its charged discovery round and counters across
+internal batches. It does not assert that a file/fact is absent or current,
+inject cached facts, rerank a project or create a durable receipt/revision.
+There is no evidence to refresh just because a workspace write occurred.
+
+Explicit follow-up queries still use the remaining bounded discovery round.
+Any delivered chunk, task source, missing-source issue, omission, exact anchor,
+conflict or stale qualification remains on the original native validation path.
+Unknown/failed initial lookups still block: a timeout is not proof that required
+evidence is absent. Required/dependency failures are not relabelled optional.
+This is **Case C (unnecessary trigger)**, not a universal best-effort timeout
+fallback. Existing optional capacity-omission receipts remain unchanged; no
+omission receipt is needed for a genuinely empty successful selection. Selected
+evidence that fails validation is never silently reused or stripped after body
+serialization. Mixed project/task lookup and required-priority semantics are
+unchanged.
+
+The new deterministic test uses the production conversation compactor and scoped
+retriever, a persistent conversation/current plan, repeated confirmed writes,
+two transport checks per step, and a native-read fixture taking 158 ms. Sixteen
+steps perform 63 redundant validations on the old implementation: **9,954 ms**
+of charged local work. The next lookup receives only **46 ms**, reproducing the
+exact `Project/task evidence lookup timed out` before a 17th response. The test
+was run red before the production fix. Afterward, 17 steps plus simulated model
+latency pass with **one read / 158 ms / one discovery round**, no extraction or
+memory commit, unchanged original messages and unchanged memory view.
+
+Additional regressions cover empty reuse across SDK batches even after shared
+allowance exhaustion, explicit anchored follow-up after empty discovery,
+permission revocation, run replacement/Stop, and refusal to exempt selected,
+missing, omitted, task, conflicting or stale evidence. Anchored timeout still
+fails with the exact error and no prepared/partial receipt; late results cannot
+populate the cache. The existing write-freshness fixture now supplies an actual
+file chunk instead of an empty response, so it continues testing real evidence
+refresh before extraction/admission. Existing native tests cover mandatory task
+priority over optional project sources and missing dependency/anchor denial.
+
+### One Fresh Native Re-Acceptance
+
+- Workspace: `C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-02`,
+  freshly initialized unborn `main`, only `.git` before the experiment.
+- Evidence ID: `forgeboard-none-20261017-02`; preserved under
+  `src-tauri/target/real-qwen-product/forgeboard-none-20261017-02/`.
+- Evidence: `preflight-1.json` / `.failure.json` (observer setup failure,
+  zero inference/specifications); corrected metadata-only `preflight-2.json`
+  (zero inference); `mission-a-1.json`, `.jsonl`, `.requests.jsonl` and isolated
+  `data/`. The rejected JavaScript observer attempted to assign Tauri's frozen
+  invoke property. It was removed before inference. The native example now wraps
+  the same production command solely to log request shape, duration and result
+  counts, without altering routing, returned data or security behavior.
+- Fresh process check immediately before inference found no competing Clack
+  host/test/build/harness. The owned host PID was **37780**, runner **16896**.
+- Exact model `qwen38-uncensored:latest`, native
+  `http://127.0.0.1:11435/api/chat`, **32768 / 2048 / `think:false`**, fallback
+  Never, empty provider keys, **zero cloud inference**. All **18** captured bodies
+  retain those controls and the same normal **16 production tools**. The 60-second
+  idle and 600-second overall inference deadlines were not changed or reached.
+- Full original specification sent **once**, one user message; no resend,
+  reminder, manual Continue, setting change or evaluator implementation. The
+  existing conditional correction boundary remained enabled but was not reached:
+  no successful native edit/write trio with a qualifying page-size-50 write.
+  No correction, answer continuation, automatic run continuation or delegation.
+- Source frozen during inference: **932 tracked source/config files**, content
+  fingerprint `88C7F4C78BD3394C75E07E7D824E6901142788D972F7D1E316EB25D5456C92EC`,
+  timestamp/length fingerprint
+  `8F97BEE3E983C99E5DDD037740C53EF6EA3E2CE359ED5EEA1B7A8CD8BE2CBFC9`,
+  identical before/after. Later native observer edits were formatting only and
+  occurred after the host exited.
+
+Run start: `1792216609637` (07:56:49.637 Europe/Paris).
+First native public text **13.914 s**, SDK text-start **13.916 s**; first native
+tool frame **20.695 s**, completed directory listing **21.013 s**. Eight-item
+structured plan **61.052 s**. First shell `node --version; npm --version`
+completed successfully under PowerShell at **66.292 s**. First actual file
+creation (`New-Item package.json`) **157.407 s**.
+
+The only scoped lookup started at `1792216609755` and completed in **315 ms**:
+query 2086 characters, null anchor, no file hints; **0 chunks, 0 issues,
+0 omissions, 0 file reads, 0 bytes, taskIds=[]**. There was no later scoped IPC
+operation or stale evidence injection, including after directory/file writes.
+Request 17 was captured at native transport at **395.139 s**; request 18 at
+**424.668 s** and completed
+normally at **480.629 s**. Its final shell write completed at **481.124 s**.
+Thus the old request-17 evidence blocker did not recur, and useful effects
+continued past 441.152 s. A successful *post-441-second inference preflight*
+cannot be claimed: the next preparation encountered the distinct budget boundary
+below before request 19. No further experiment was run to hide that limitation.
+
+All **19 tool calls** are retained in the transcript and captured request history:
+
+| Completion (s) | Tool/effect | Actual result |
+| --- | --- | --- |
+| 21.013 | list_directory | Empty workspace |
+| 61.052 | todo_write | Eight-item current plan |
+| 66.292 | bash_run: Node/npm versions | Exit 0, correct PowerShell syntax |
+| 109.295 | todo_write | Environment completed, scaffold active |
+| 121.491 | create_directory x2 | server/src and client/src created |
+| 134.147 | bash_run: registry inspection | Exit 0 but `head` missing in stderr |
+| 142.252 | bash_run with timeout_secs=30000 | Schema rejected; no execution |
+| 149.463 | bash_run: npm view express | Exit 0 with timeout_secs=25 |
+| 157.407 | bash_run: New-Item package.json | Empty file created, exit 0 |
+| 163.823 | read_file | Actual empty root manifest read |
+| 192.537 | bash_run: multiline here-string | Refused before execution |
+| 222.940 | bash_run: malformed Set-Content | Exit 1, quoting/argument error |
+| 259.514 | bash_run: single-line redirections | Root manifest written, exit 0 |
+| 310.658 | bash_run: redirections | Server manifest written, exit 0 |
+| 370.432 | bash_run: redirections | Client manifest written, exit 0 |
+| 395.067 | bash_run: redirections | Base tsconfig written, exit 0 |
+| 424.598 | bash_run: redirections | Server tsconfig written, exit 0 |
+| 481.124 | bash_run: redirections | Server manifest updated, exit 0 |
+
+Thirteen shell calls: **10 exit 0**, **1 exit 1**, **1 multiline refusal**,
+**1 invalid-argument nonexecution**. Exit 0 does not erase the missing-`head`
+stderr. No tools were retried/replayed by the evaluator; Qwen's corrective
+commands are distinct captured calls. No read-before-edit protection changed.
+
+### Distinct Stop and Preserved Product State
+
+**CLACK-BLOCKED / PROTECTED CONTEXT BUDGET / INCOMPLETE**, at **481.159 s**.
+All 18 provider requests returned normal final frames and usage; no request 19
+was sent. Exact terminal code: **`compaction-protected-budget`**. The next context
+estimate was **28,290 input + 2,048 output + 2,829 safety = 33,167**, exceeding
+32,768 by 399. Breakdown: system 3,617; schemas/options 7,250; conversation
+17,423; retrieved evidence **0**, derived memory **0**. The original user message
+and one growing, paired assistant/tool group remained protected; memory
+`revisionId=null`, no extraction/compaction revision. This is Clack's conservative
+preflight boundary, **not a provider-reported exhausted window or model finish**.
+It was not repaired, bypassed or resumed in this checkpoint.
+
+Actual files: root `package.json` **573 bytes**, `tsconfig.base.json` **245**,
+`server/package.json` **605**, `server/tsconfig.json` **338**,
+`client/package.json` **748**. Two source directories exist but are empty.
+No application `.ts`/`.tsx`, backend/frontend implementation, tests, README,
+lockfile, installed dependencies, SSE/persistence/server or production build.
+No npm install/test/build was executed, and the evaluator did not run one on the
+incomplete scaffold. Git remains unborn with no commits. Qwen created additional
+configuration types compared with the earlier attempt, **not more application
+source or a materially working ForgeBoard**. One plan item completed; seven
+unfinished items were marked failed by normal terminal cleanup.
+
+This fixes the proven redundant empty-evidence path, not long-task completion
+overall. None still starts useful work, unlike the already-valid Automatic/8192
+reasoning-only deadline result; **Automatic was not rerun**. No inference replay,
+cloud fallback, source rewrite or stale evidence was observed. Original
+conversation/project memory and historical attempts remain preserved.
+
+### Verification and Boundaries
+
+Focused frontend evidence/compaction/real-SDK/preflight/plan group:
+**179 tests / 6 files passed** with two workers. Initial focused execution had
+one unchanged model-switch integration timeout under concurrency; rerunning the
+group with two workers passed without raising thresholds. The updated real-file
+freshness fixture and reproduced-empty-discovery test both pass. Native scoped
+retrieval **21 passed**, unborn/non-Git/corrupt-branch regressions **3 passed**.
+Windows native IPC and actual local inference were exercised. Computer Use,
+native GUI acceptance, Linux/macOS and WSL live runs were **not performed**.
+
+Final gates on Windows:
+
+- `npm.cmd run check-types`: passed; final build also reruns TypeScript.
+- `npm.cmd run lint`: passed, **71 existing warnings / 2 infos / 0 errors**.
+- `npm.cmd test -- --maxWorkers=2`: **2,746 tests / 197 files passed**, 62.41 s,
+  no skipped tests or raised thresholds.
+- `npm.cmd run build`: passed, 1,252 modules; existing ineffective dynamic-import
+  and plugin-timing warnings remain.
+- `cargo fmt --check`: passed after formatting only the new native observer.
+- `cargo clippy --all-targets --locked --target-dir target/codex-test -- -D warnings`:
+  passed.
+- `cargo test --locked --target-dir target/codex-test`: **654 passed**
+  (601 library + 25 filesystem + 25 Git + 3 real-world integration); no failures
+  or ignored tests. Main/shell-background/doc test targets have zero tests here.
+- `git diff --check`: passed; existing Git LF/CRLF notices remain.
+
+No model settings, reasoning revalidation, B1, C1/G1/M1/M2 architecture,
+PeerTask/scheduler, native
+stream deadline or tool protection changed. No safety stash, unrelated delegation
+file, `autonomous_tracker/`, previous workspace or evidence was touched. Post-run
+process inspection found no owned acceptance/build/test process left. No push.
