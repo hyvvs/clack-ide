@@ -61,6 +61,8 @@ let complete;
 const report = new Promise(resolve => { complete = resolve; });
 let events = 0;
 let approvalOwner;
+const pendingApprovals = new Map();
+const evaluatedApprovals = new Set();
 let evidenceWrites = Promise.resolve();
 const server = createServer(async (request, response) => {
   response.setHeader("access-control-allow-origin", "*");
@@ -75,7 +77,10 @@ const server = createServer(async (request, response) => {
     const value = JSON.parse(body);
     if (request.url === "/approval") {
       assert(phase === "mission-a" && child?.exitCode === null, "Approval requires the live Mission A host");
-      const decision = await evaluateAcceptanceApproval(value, approvalOwner);
+      assert(!evaluatedApprovals.has(value.id), "Acceptance approval was already evaluated");
+      assert(evaluatedApprovals.size < 64, "Acceptance approval count exceeded bound");
+      evaluatedApprovals.add(value.id);
+      const decision = await evaluateAcceptanceApproval(value, approvalOwner ? { ...approvalOwner, approvals: [...pendingApprovals.values()] } : undefined);
       evidenceWrites = evidenceWrites.then(() => appendFile(`${output}.jsonl`, `${JSON.stringify({ kind: "evaluator-approval", at: Date.now(), subject: value, decision, hostPid: child.pid })}\n`));
       await evidenceWrites;
       return json(decision);
@@ -83,11 +88,18 @@ const server = createServer(async (request, response) => {
     if (request.url === "/evidence") {
       if (value.kind === "state" && phase === "mission-a") {
         const session = value.sessions?.find(s => s.id === "real-mission-a");
+        const previousOwner = approvalOwner;
         approvalOwner = undefined;
         if (session?.run?.state === "running") {
           assert.equal(path.resolve(session.run.workspaceRoot), path.resolve(root));
           approvalOwner = { sessionId: session.id, runId: `${session.id}:${session.run.startedAt}`, workspaceRoot: session.run.workspaceRoot };
         }
+        if (JSON.stringify(previousOwner) !== JSON.stringify(approvalOwner)) { pendingApprovals.clear(); evaluatedApprovals.clear(); }
+      }
+      if (value.kind === "approval-pending" && phase === "mission-a") {
+        assert(approvalOwner && value.sessionId === approvalOwner.sessionId && value.runId === approvalOwner.runId && value.workspaceRoot === approvalOwner.workspaceRoot, "Pending approval owner mismatch");
+        assert(pendingApprovals.size < 64 && value.approval?.id && !pendingApprovals.has(value.approval.id), "Duplicate or excessive pending approval");
+        pendingApprovals.set(value.approval.id, structuredClone(value.approval));
       }
       assert(++events < 100000, "Acceptance event limit");
       evidenceWrites = evidenceWrites.then(() => appendFile(`${output}.jsonl`, `${JSON.stringify(value)}\n`));

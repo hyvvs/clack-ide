@@ -3969,3 +3969,322 @@ committed as large transcript artifacts):
 Completion scope: evidence/docs/offline audit only,
 `test(ai): verify post-retention local agent run`. No subsequent implementation,
 Automatic rerun, larger-context test, model comparison or push.
+
+## Canonical Acceptance Approval Evaluation and Fresh -07 Run
+
+### Exact -06 Reconstruction
+
+2026-10-17 checkpoint baseline: **`c1fc6d4 test(ai): verify post-retention local
+agent run`**, clean `main`, **46 ahead / 0 behind recorded `origin/main`**.
+The preceding -06 record is preserved as the outcome actually observed at that
+time: **HARNESS-BLOCKED / APPROVAL POLICY / INCONCLUSIVE**. The following is a
+retrospective safety determination, not a resumed run or execution of its command.
+
+- Session: **`real-mission-a`**; run: **`real-mission-a:1792252334778`**.
+- Approval: **`aitxt-AB93jhZCc5dHld6cAqWb9MPw`**.
+- Tool: **`bash_run`**, call **`44bIMzXw5gl0d7C63noXzFF1FN75c1yD`**.
+- Exact cwd: **`C:/Users/Hayden/Documents/forgeboard-qwen-none-20261017-06`**.
+- Exact command:
+
+```powershell
+Remove-Item -Recurse -Force "C:/Users/Hayden/Documents/forgeboard-qwen-none-20261017-06/web" -ErrorAction SilentlyContinue; Set-Content -Path "C:/Users/Hayden/Documents/forgeboard-qwen-none-20261017-06/web/wf-probe.txt" -Value "probe"; Get-Content "C:/Users/Hayden/Documents/forgeboard-qwen-none-20261017-06/web/wf-probe.txt"
+```
+
+| Sequence | Canonical target and effect | State established from preserved evidence and independent inspection |
+| --- | --- | --- |
+| 1 | Delete `C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-06\web`, recursively, with `-Force` | Existed; contained only empty `src`. Both were ordinary directories, no junction/reparse/symlink. No preceding operation in this command. |
+| 2 | Write literal `probe` to `C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-06\web\wf-probe.txt` | Did not exist. The preceding deletion removes its parent; there is no recreation step. This is likely to fail, not to access an outside location. |
+| 3 | Read that same `...\web\wf-probe.txt` | Did not exist. The same missing-parent issue applies. |
+
+No wildcard, dynamic path, external target, outside-workspace traversal or nested
+repository was found. Root/canonical ancestry and the entire existing deletion
+subtree were checked. No authored file would have been deleted: Qwen's only
+authored file was `shared/package.json`, outside this subtree. The directories
+were model-created scaffolding. The repository was unborn `main`; nothing was
+committed. Replacing failed frontend scaffolding was plausibly task-related.
+Strategic foolishness and likely subsequent file errors do not make the effect
+unsafe. No original -06 command was replayed during this investigation.
+
+The old evaluator's rejecting predicate was exactly its failed regex match for
+the previously reviewed three-command literal `test.txt` probe, followed by
+`if (!match) return deny("Command is outside the explicitly reviewed disposable
+probe grammar")`. This happened **before** path resolution, leaving `targets:[]`.
+Recursion itself was **not** the reached predicate. General sequencing was not
+supported; only the one historical sequence was matched. Its later absent-file
+check deliberately blocked existing content at `test.txt`, but that check was
+not reached for this command. The proposed effect was not intrinsically unsafe
+or unresolved once actually inspected.
+
+**Root-cause classification: TEST_HARNESS / APPROVAL EVALUATOR TOO NARROW.**
+Production Clack correctly required approval. The evaluator failed to simulate
+an informed user decision for a safely confined destructive effect. Offline
+evidence: `forgeboard-none-20261017-06/approval-safety-reconstruction.json`.
+That record qualifies the scope only; its original live approval remains denied.
+
+### Harness Policy and Bounds
+
+Only harness/tests/docs changed. **No production AI, permission, context,
+retention, transport, shell, session or native Rust source changed.** In
+particular, ac1c8ed, 97148e9 and c01786e remain unchanged, including reserve,
+margin, schema policy, current/uncertain effects and no-replay protection.
+
+`scripts/acceptance-approval.mjs` now makes an explicit per-approval effect
+decision using `scripts/acceptance-powershell-effects.ps1`:
+
+- Uses PowerShell's **AST parser**, not a `Remove-Item` regex, and never executes
+  the proposed command to evaluate it. It binds literal parameters to recognized
+  `Remove-Item`, `Set-Content`, `Add-Content`, `New-Item` (ordinary File/Directory),
+  `Get-Content`, `Test-Path`, and `Out-File` operations.
+- Accepts sequential recognized operations and, in the final tested version,
+  bounded **literal string/string-array -> file writer** pipelines. Command-fed
+  pipelines, expression evaluation, substitutions, functions, using/requirement
+  directives, redirections, aliases, unknown operations/parameters and dynamic
+  paths fail closed. This is deliberately not a general shell interpreter.
+- Requires the current session/run/workspace and an **exact registered pending
+  production approval ID, tool-call ID and input**. The runner records pending
+  approvals from the live fixture, rejects duplicate evaluations, and clears
+  registrations when ownership changes. The existing observer rechecks ownership,
+  cwd, responder readiness and unchanged input immediately before submission.
+- Resolves **every** effect, including operations after a deletion. Checks the
+  exact disposable root's canonical identity and own ordinary `.git`, lexical and
+  canonical containment, existing ancestry, and the complete deletion subtree,
+  even when the command omitted `-Recurse`. Missing write targets remain tied to
+  verified ancestry; supported operations cannot introduce links.
+- Rejects scratch-root deletion, parent/drive-relative/provider/UNC/device/stream
+  ambiguities, wildcard targets, secret/model-data paths, links/reparse points,
+  hard-linked effect files and nested repositories. Native FileAttributes checks
+  cover reparse points before descending. Recursive inspection remains complete
+  if an earlier read/test operation already visited the same directory.
+- Bounds: **16384 command characters**, **16 operations**, **512 literal pipeline
+  strings**, **8192 inspected entries**, **1 MiB helper output**, **5 seconds per
+  parser/filesystem helper**, and the existing **64 approvals / 30s lifecycle**
+  bounds. No model/context/inference timeout setting changed.
+- Reports exact sequential effects, canonical targets, pre-approval existence,
+  recursion/force, inspected count, decision and reason. Approved execution still
+  goes through production **`respondToApproval`**. No direct evaluator execution,
+  permission override, global Full Access, chat message or Continue is used.
+
+These are **point-in-time safety decisions for an isolated paused scratch run**,
+not a new OS sandbox or proof against arbitrary concurrent hostile filesystem
+mutation. Production permission enforcement remains responsible for execution.
+The helper uses the existing Windows PowerShell installation; it does not add a
+production runtime dependency. Off-Windows native parser tests require available
+`pwsh`, otherwise they are explicitly skipped; unavailability fails approval
+closed. Only Windows native execution was verified here.
+
+### One Fresh -07 Mission
+
+Fresh workspace: **`C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-07`**.
+Evidence ID: **`forgeboard-none-20261017-07`**, preserved under
+`src-tauri/target/real-qwen-product/forgeboard-none-20261017-07/`.
+Only an empty Git repository was initialized. Before startup, process inventory
+found no competing Clack acceptance/editing/test/build/Cargo process. Tests and
+the metadata-only preflight had ended; preflight sent **zero inference**. No
+unrelated process was terminated. The live freeze checked **1021 tracked/new
+harness files**, excluding the unrelated autonomous_tracker tree, with **zero
+changes during the mission**. No source, test, harness, prompt or control was
+edited until the native host and runner had fully exited.
+
+Every one of **20 recorded native requests** retained:
+
+```text
+model: qwen38-uncensored:latest
+route: http://127.0.0.1:11435/api/chat
+num_ctx: 32768
+num_predict: 2048
+think: false
+fallback: Never
+cloud inference: 0
+meaningful-progress idle: 60s
+overall deadline: 600s
+```
+
+The same 16 normally selected schemas were preserved. Ollama reported 0.40.5;
+the final exact model digest remained
+`0e163794a8b9cdd6e234013b1a27d2e58f06f48d20413a0c2e3e370faaef5505`.
+The unchanged full ForgeBoard specification was submitted **once**, as the only
+original user message. No reminders, manual Continue, evaluator implementation,
+settings change, Automatic run, second mission or model download occurred.
+
+Wall time: **18:56:43.177 to 19:03:30.211 Europe/Paris**, **407.034s**.
+First answer text arrived **13.133s** after the recorded native request start;
+first tool call at **19.916s**. The first shell command,
+`node --version; npm --version`, used correct PowerShell syntax and exited 0.
+
+Qwen made a seven-item plan retaining port 4317, page size 50, title limit 120,
+debounce 750ms, persistence, SSE, tests/build and README. It created directories,
+wrote a root manifest, `.gitignore` and `tsconfig.base.json`, then repeatedly
+failed to write the server manifest: multiline guard refusals, a missing-file
+read and a malformed quoted PowerShell command. A successful helper-function
+declaration did not create application files.
+
+At request **20**, approval **`aitxt-jaYkQ14o2groDEQKZyzQdvHe`**, tool call
+**`B9ezYiYAf0ICXUeDArGCs1bq0z0qKZBU`**, proposed:
+
+```powershell
+Remove-Item -Force server/package.json -ErrorAction SilentlyContinue; '{' | Out-File -Encoding utf8 -FilePath server/package.json
+```
+
+Both targets resolve to
+**`C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-07\server\package.json`**,
+which did not exist. The version frozen for this mission rejected the second
+statement's pipeline AST before target resolution:
+**`Only sequential literal cmdlets are supported`**. There was **one approval
+evaluated, zero granted, zero submitted/executed**, and the original production
+run was cancelled safely. The new -06 recursive-delete rule was not exercised
+naturally in this fresh mission. The native host stayed healthy; the evaluator,
+not Clack, Ollama, a context failure or a deadline, ended the run.
+
+After teardown and successful freeze verification, the **static literal file
+output** AST form described above was added and tested. It now qualifies this
+exact command in a **no-execution offline** check, preserving both effects and
+their common scoped target. It would merely write an invalid one-character JSON
+file, which is bad engineering, not an outside-workspace effect. Proof:
+`post-run-literal-pipeline-safety.json`. **The command was not executed, the run
+was not resumed, and no replacement experiment was performed.** The final parser
+extension has automated/native-test evidence, not a fresh live approval success.
+
+### Receipts, Budgets and Project Outcome
+
+Counts: **20 inference requests**, **20 distinct tool calls**, **19 outputs**;
+11 shell calls (6 exits of 0, 3 guard refusals, 1 parser error, 1 denied pending
+call), 5 directory calls, 2 file reads (one missing), 1 directory listing and
+1 plan update. There were **8 successful filesystem-write-capable effects**:
+5 directory calls and **3 actual authored scaffolding files**. The function
+declaration and plan are separate non-file state effects, not application writes.
+
+**Three distinct no-effect failure receipts occurred live.** Source conversation
+`real-mission-a`, original assistant message **`R1O7mN9xT5h3cl3h`**:
+
+| Original call | Adaptation | Original SDK pair | Receipt | Payload saving |
+| --- | --- | ---: | ---: | ---: |
+| `dcaW2JZhig5CX9HvXBk8urnmDUXeBnO9` | `thNXSA3X2FKoltxoDoBsh0R4qkqKrJq7` | 665 | 283 | 382 |
+| `yXRrZbEauhJC2dQxPWbIJva57eSUPWB5` | `lumHH5ITqPipZJkRs91H8pzx7cCYsmJh` | 586 | 283 | 303 |
+| `r8S4C9UcZuEb7klZZGvDPPdVsYTgaDkz` | `lumHH5ITqPipZJkRs91H8pzx7cCYsmJh` | 586 | 283 | 303 |
+
+The first receipt occurs in requests **12-20**, the other two in request **20**.
+Total payload estimate **1837 -> 849**, saving **988**. At the final routine
+preparation, SDK required **27726 -> 26589**, saving **1137**, while exact native
+wire representation gives **27692 -> 26572**, saving **1120**, including framing
+and margin. These before values are offline counterfactuals, not additional
+requests or provider token counts. A successful function definition proves a
+single-line guard adaptation only, **not** completed server code; the receipts
+retain effect `none` and work completed `not established`.
+
+All original call/result/approval records remain unchanged in the persisted
+session; there is no replay or missing original. The read-only audit matched
+all 20 SDK projections through the production serializer to their actual native
+requests and shared B1 costs. Current failures remained full until guard
+adaptation, and the quoting failure/successful writes remained full. Detailed
+per-request budgets, original evidence hashes, receipt IDs/costs, source checks,
+usage and plans are in local **`approval-run-audit.json`**.
+
+Minimum native-wire headroom **5951** at request 19; reconstructed SDK minimum
+**5982**. Constant system **3617**, schemas **7250**, reserve **2048**. Request 19
+wire conversation **11650**, input **22517**, margin **2252**, required **26817**;
+request 20 conversation **11427**, input **22294**, margin **2230**, required
+**26572**. All fit **32768**. No compaction pressure/previous 32K failure boundary
+was reached. Extraction **0**, historical retrieval/source restoration **0**,
+batch auto-continuation **0** (20 < 24 steps), memory revision **none**. Normal
+tool loops ran; the empty startup scoped evidence search retrieved no source.
+
+All 20 native streams completed with provider final `done_reason:stop`; actual
+provider output total **3173**. No stall, timeout, malformed frame or hidden
+reasoning was observed. Maximum IPC raw gap **39.560s**. Native HTTP-body, IPC and
+parsed-frame traces were preserved. Final metadata endpoints returned 200 and
+reported the exact model loaded at 32768. Post-run process inventory found no
+abandoned Clack/Cargo/test/harness process.
+
+Independent project inspection found only **`package.json`**, **`.gitignore`**
+and **`tsconfig.base.json`**, plus empty directories. The manifest is valid JSON
+with scripts referring to missing server/web workspace packages. The TypeScript
+config is **invalid JSON**, starting with `[compilerOptions]` and ending with
+`include: []`. No dependencies were installed by the evaluator, and no source
+was repaired. Actual evaluator commands, unchanged:
+
+- `npm.cmd test`: **exit 1**, `No workspaces found: --workspace=server`.
+- `npm.cmd run build`: **exit 1**, the same missing-workspace error.
+
+Their npm logs were copied as `independent-test.log` and `independent-build.log`.
+Qwen itself wrote/run **zero application tests** and ran **no application build**.
+Backend/frontend, project/task CRUD, persistence, SSE, validation, search/filter,
+working port/page/title/debounce behavior and README are **NOT IMPLEMENTED**.
+There is no first substantive source request/timestamp to report. Git remains
+unborn `main`, with the three scaffolding files untracked.
+
+**Correction limitation, not a model continuity result:** the existing unchanged
+fixture did **not** send 50 -> 25. It counts only `write_file`/`edit`/`multi_edit`
+outputs and looks for 50 in those write inputs, ignoring successful shell writes
+and the accepted plan's page-size reference. The broader requested condition
+(three authored files plus page size 50 in the plan) was present, but that
+counter did not recognize it. This separate harness limitation is recorded, not
+silently fixed during the run or disguised as unmet model-memory behavior. The
+current actual user requirement remained **50**. No correction/restore continuity
+score is claimed; the requirements, active unfinished plan and failure evidence
+were retained, with all seven unfinished plan items cancelled rather than
+falsely completed after the stop.
+
+### Classification and Verification
+
+**-06 root cause:** safe, fully resolved scratch effects rejected by a literal
+probe allowlist: **TEST_HARNESS / APPROVAL EVALUATOR TOO NARROW**. Corrected.
+
+**-07 terminal classification:** **HARNESS-BLOCKED / UNSUPPORTED STATIC
+FILE-OUTPUT PIPELINE / INCONCLUSIVE**. The post-run parser extension is tested,
+but the preserved original outcome does not become a live approval success.
+The additional correction-fixture limitation also prevents a supersession-memory
+acceptance claim. No extra mission was run to force an approval or correction.
+
+**Clack runtime:** healthy for the observed 20-request run, source/effect
+retention and budgets verified, no new confirmed production Clack blocker.
+Destructive operations still require production approval; they were never
+bypassed. Sustained extraction and end-to-end acceptance are not proven.
+
+**Qwen engineering:** **MODEL-INCOMPLETE as observed delivery**: after 20 normal
+inference/tool cycles and nearly seven minutes, only manifests/config/probes and
+repeated shell-format mistakes, no substantive application. This is explicitly
+**not** a final-budget model failure verdict: an evaluator limitation stopped
+the run before its normal completion/budget boundary. Poor early decisions and
+incomplete engineering are real observations; the terminal cause remains the
+harness. **Further Clack architecture changes are not justified by this evidence.**
+
+Final verification:
+
+- **115 tests passed in 4 files**: **56** approval evaluator cases,
+  **13** acceptance lifecycle cases, **35** production security cases, **11**
+  stream-tracing cases. Covers safe recursive deletion, delete/recreate/write,
+  exact -06 and -07 commands, literal pipelines vs executable pipelines, all
+  operands, escapes/root/absolute/wildcard paths, native junctions/reparse
+  traversal, UTF-8/Unicode path identity, hard links, nested repos, foreign IDs/owner/input, bounded decisions,
+  one actual native scratch delete/recreate through the production responder,
+  exactly one execution, zero added user messages, stale decisions and unchanged
+  restart/no-revival behavior. No tests skipped on this Windows host.
+- `npm.cmd run check-types`: passed. All subsequent changes were harness
+  JavaScript/PowerShell/tests/docs, no production or compiled TypeScript changes.
+- Focused Biome lint through its configured source stdin path: all three changed
+  JS files passed, **no diagnostics or text changes**. JS `node --check` and
+  native PowerShell `Parser.ParseFile` syntax checks passed.
+- The existing locked isolated native acceptance example build and both native
+  host phases passed. Rust/example source was untouched; no full Clack/Rust suite
+  was redundantly rerun. Windows native IPC/tool evidence and native test effects
+  are distinct from GUI interactions: **no Computer Use/native GUI verification**,
+  Linux/macOS native verification or alternate-model test was performed.
+- Frozen-source validation: **1021 files unchanged during the mission**.
+  Final static-pipeline support was added only after teardown. Raw live evidence
+  and prior -06 hashes were preserved. `git diff --check`: passed.
+- Unrelated work, safety stashes, delegation files and `autonomous_tracker/`
+  were not modified, staged or committed. No production setting or permission
+  semantics changed. No push.
+
+Live evidence hashes:
+
+| Capture | SHA256 |
+| --- | --- |
+| `mission-a-1.json` | `f7c1002484055c12d2e4d16123156c6034cab325921067158ca97e33060d5243` |
+| `mission-a-1.requests.jsonl` | `a37e3281b4039a46182db1dec72798596f3bdd1220d4176de7d8d737c4bc1fb4` |
+| `mission-a-1.jsonl` | `60fe1f39c4be3d9c9c7f56b6b1f451ffe902594094ba62f30779398f8fb99549` |
+| `mission-a-1.receive.jsonl` | `07e62baeb855f30c1fc929a8cd41b6547b63d173fb9701f5ddbc5e8c576dc71e` |
+| `data/terax-ai-sessions.json` | `bfa6670ee0e54b647c9244d21639dc0577e8911ed89cdcd82059fd49a82c993c` |
+
+Commit scope: **`test(ai): generalize safe live approvals`**, harness/tests/docs
+only. Exactly one fresh mission, no resume, no further checkpoint and no push.
