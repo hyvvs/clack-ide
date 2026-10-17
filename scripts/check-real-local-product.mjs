@@ -34,8 +34,12 @@ if (phase === "stream-diagnostic") {
   assert((await stat(source)).size < 4 * 1024 * 1024, "Diagnostic request audit exceeded bound");
   const text = await readFile(source, "utf8");
   assert(Buffer.byteLength(text) < 4 * 1024 * 1024, "Diagnostic request audit exceeded bound");
-  const request = text.trim().split("\n").map(line => JSON.parse(line)).find(item => item.requestId === "inference-13");
-  assert(request && request.url === `${endpoint}/api/chat`, "Expected captured native request 13");
+  const requestId = process.env.CLACK_STREAM_REQUEST_ID ?? "inference-13";
+  assert(/^inference-[1-9][0-9]{0,5}$/.test(requestId), "Explicit bounded native request ID required");
+  const matches = text.trim().split("\n").map(line => JSON.parse(line)).filter(item => item.requestId === requestId);
+  assert.equal(matches.length, 1, "Expected exactly one preserved native request");
+  const request = matches[0];
+  assert(request.url === `${endpoint}/api/chat`, "Unexpected preserved request destination");
   assert.equal(request.body.model, "qwen38-uncensored:latest");
   assert.deepEqual(request.body.options, { num_ctx: 32768, num_predict: 2048 });
   assert.equal(request.body.think, false);
@@ -48,7 +52,7 @@ assert((await readdir(root)).includes(".git"), "Prepare the fresh external Git w
 const attempt = process.argv[3] ?? "1";
 assert(/^\d{1,2}$/.test(attempt));
 const output = path.join(owned, `${phase}-${attempt}`);
-for (const suffix of [".json", ".jsonl", ".requests.jsonl", ".failure.json"]) {
+for (const suffix of [".json", ".jsonl", ".requests.jsonl", ".receive.jsonl", ".failure.json"]) {
   try { await readFile(`${output}${suffix}`); throw new Error(`Phase ${phase} attempt ${attempt} already has evidence; choose an explicit new attempt`); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
 }
@@ -99,12 +103,23 @@ const server = createServer(async (request, response) => {
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 local = `http://127.0.0.1:${server.address().port}`;
 const startedAt = Date.now();
-let initialModels;
+async function metadataHealth(route) {
+  const at = Date.now();
+  try {
+    const response = await fetch(`${endpoint}${route}`, { signal: AbortSignal.timeout(5000) });
+    const body = await response.json();
+    return { at, elapsedMs: Date.now() - at, status: response.status, body };
+  } catch (error) {
+    return { at, elapsedMs: Date.now() - at, status: null, error: error.name };
+  }
+}
+let initialModels, initialHealth;
 try {
   if (phase !== "restart") {
     const response = await fetch(`${endpoint}/api/ps`, { signal: AbortSignal.timeout(5000) });
     assert(response.ok, "Ollama metadata unavailable"); initialModels = await response.json();
   }
+  if (streamDiagnostic) initialHealth = await metadataHealth("/api/version");
   const build = spawnSync("cargo", ["build", "--example", "coworking_acceptance", "--locked", "--target-dir", "target/codex-test"], { cwd: path.join(repository, "src-tauri"), windowsHide: true, encoding: "utf8", timeout: 300000 });
   assert.equal(build.status, 0, build.stderr || String(build.error));
   vite = await createViteServer({ root: repository, server: { host: "127.0.0.1", port: 0, strictPort: true, hmr: false, watch: null, forwardConsole: false } });
@@ -113,6 +128,7 @@ try {
   await cp(data, `${output}.data-before`, { recursive: true, errorOnExist: true, force: false });
   const env = Object.fromEntries(["PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "HOME", "LANG"].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []));
   Object.assign(env, { APPDATA: data, LOCALAPPDATA: data, TEMP: owned, TMP: owned, CLACK_ACCEPTANCE_ROOT: owned, CLACK_REAL_PRODUCT_PHASE: `${phase}-${attempt}`, CLACK_ACCEPTANCE_OLLAMA_URL: `${endpoint}/api/chat`, CLACK_ACCEPTANCE_URL: `${vite.resolvedUrls.local[0]}coworking-acceptance.html?configuration=${encodeURIComponent(`${local}/configuration`)}` });
+  if (streamDiagnostic) env.CLACK_ACCEPTANCE_RECEIVE_TRACE = "1";
   child = spawn(path.join(repository, "src-tauri/target/codex-test/debug/examples", `coworking_acceptance${process.platform === "win32" ? ".exe" : ""}`), [], { cwd: root, env, windowsHide: true });
   child.once("exit", (code, signal) => { childExit = { pid: child.pid, code, signal, at: Date.now() }; });
   console.log(JSON.stringify({ event: "native-host-start", pid: child.pid, runnerPid: process.pid, at: Date.now(), boundMs: 90 * 60 * 1000 }));
@@ -122,8 +138,8 @@ try {
   const result = await Promise.race([report, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Real product acceptance reached 90-minute bound")), 90 * 60 * 1000); }), new Promise((_, reject) => child.once("exit", code => reject(new Error(`Native host exited before report: ${code}`))))]).finally(() => clearTimeout(timer));
   await evidenceWrites;
   const destinations = [...nativeLog.matchAll(/CLACK_ACCEPTANCE_INFERENCE ("[^"\r\n]+")/g)].map(m => JSON.parse(m[1]));
-  const finalResponse = await fetch(`${endpoint}/api/ps`, { signal: AbortSignal.timeout(5000) });
-  const finalModels = await finalResponse.json();
+  const finalHealth = streamDiagnostic ? { ps: await metadataHealth("/api/ps"), version: await metadataHealth("/api/version") } : undefined;
+  const finalModels = finalHealth ? finalHealth.ps.body : await (await fetch(`${endpoint}/api/ps`, { signal: AbortSignal.timeout(5000) })).json();
   let requests = [];
   try { requests = (await readFile(`${output}.requests.jsonl`, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -141,7 +157,7 @@ try {
     numCtx: request.body.options.num_ctx, numPredict: request.body.options.num_predict,
     think: request.body.think ?? "server-default",
   }));
-  await writeFile(`${output}.json`, JSON.stringify({ ...result, runId, singleSpec, maxOutput, reasoningChoice, replaySource, startedAt, endedAt: Date.now(), root, initialModels, finalModels, destinations, wireBudgets, nativeLog }, null, 2));
+  await writeFile(`${output}.json`, JSON.stringify({ ...result, runId, singleSpec, maxOutput, reasoningChoice, replaySource, startedAt, endedAt: Date.now(), root, initialModels, initialHealth, finalModels, finalHealth, destinations, wireBudgets, nativeLog }, null, 2));
   assert(result.ok, result.error || JSON.stringify(result));
   console.log(`PRESERVED ${phase}: ${destinations.length} native inference attempts; result ${output}.json`);
 } catch (error) {

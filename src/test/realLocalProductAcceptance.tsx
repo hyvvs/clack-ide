@@ -208,7 +208,8 @@ export async function runRealLocalProduct(config: Configuration) {
     const limits = { runtimeTarget: 32768, maxOutput: 2048, outputReserve: 2048 };
     assertRequestBudget(limits, body);
     const controller = new AbortController();
-    const boundMs = 180_000;
+    // Leave production's 600s request deadline authoritative, plus teardown slack.
+    const boundMs = 630_000;
     const timer = setTimeout(() => {
       evidence.emit({ kind: "diagnostic-cancel", at: Date.now(), reason: "evaluator-bound", boundMs });
       controller.abort();

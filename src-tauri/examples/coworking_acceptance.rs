@@ -57,7 +57,35 @@ fn main() {
     context.config_mut().identifier = fs::to_canon(root.join("data"));
     context.config_mut().build.dev_url = Some(url.clone());
     let data = root.join("webview");
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(debug_assertions)]
+    let builder = if std::env::var("CLACK_ACCEPTANCE_RECEIVE_TRACE").as_deref() == Ok("1") {
+        use std::io::Write;
+        let phase = std::env::var("CLACK_REAL_PRODUCT_PHASE").expect("diagnostic phase");
+        assert!(phase.starts_with("stream-diagnostic-"));
+        assert!(phase
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+        let destination = root.join(format!("{phase}.receive.jsonl"));
+        builder.manage(net::inference::diagnostics::AcceptanceDiagnostics::new(
+            move |snapshot| {
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&destination)
+                    .expect("owned receive audit");
+                writeln!(
+                    file,
+                    "{}",
+                    serde_json::to_string(snapshot).expect("receive metadata")
+                )
+                .expect("persist receive audit");
+            },
+        ))
+    } else {
+        builder
+    };
+    builder
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(workspace::WorkspaceRegistry::default())
         .manage(memory::MemoryState::default())

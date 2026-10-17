@@ -2656,3 +2656,217 @@ zero inference calls or native tool effects. Preserved evidence hashes match.
 No native GUI/Computer Use or Linux/macOS native verification. Unrelated work,
 stashes, delegation files, `autonomous_tracker/` and ForgeBoard remain untouched.
 No push, timeout adjustment, live replay, or subsequent checkpoint.
+
+## Native Receive-Boundary Diagnostic, 2026-10-17
+
+### Scope and Preserved Baseline
+
+Resumed clean `main` at `669dc25`, **41 ahead / 0 behind** recorded `origin/main`.
+This is one provider-only transport replay, not a resumed/fresh ForgeBoard mission
+or a D3 effects replay. No Computer Use, new user message, Continue, correction,
+delegation, Automatic experiment, tuning ladder or implementation by the evaluator.
+
+The request-26 historical classification and timestamps above remain unchanged.
+Its three original artifacts still match their recorded SHA-256 values:
+
+| Original `forgeboard-none-20261017-04` artifact | SHA-256 |
+| --- | --- |
+| `mission-a-1.json` | `0051ac5153fbc6793f7dfd6314f0e3f6d080a4fe7440fb487b93620707863cad` |
+| `mission-a-1.jsonl` | `5f10d27de8e4a2e9f18e4b5f414563e26658097c21cb7ce8956cac7140bc2f65` |
+| `mission-a-1.requests.jsonl` | `2c01abebc104d0794cbd538000cc6bdf1768f22595772f69fdddc5f3ad18711f` |
+
+Fresh evidence ID: **`request26-receive-20261017-01`**, directory
+`src-tauri/target/real-qwen-product/request26-receive-20261017-01/`.
+Artifacts: `stream-diagnostic-1.json`, `.jsonl`, `.requests.jsonl`,
+`.receive.jsonl`, `isolation-before.json`, `isolation-after.json`,
+`correlation.json`, `labpc-clock.json`, and the two bounded
+`labpc-{historical,replay}.journal.log` excerpts. These local evidence files stay
+outside Git; no prompts, original transcript, tool arguments or private reasoning
+are added to this document or the new receive trace.
+
+### Instrumentation and Boundaries
+
+The lowest new timestamp is immediately after
+`reqwest::Response::bytes_stream().next()` yields bytes in the production native
+inference owner, **before** `Progress::feed` and channel forwarding. This is
+**HTTP body delivery to Clack**, not a physical TCP/socket read or packet timestamp.
+It cannot observe bytes buffered inside the OS, SSH, hyper or reqwest. Header
+receipt establishes that an HTTP response exists; a separate TCP establishment
+instant is not observable here and is not invented.
+
+The debug-only `AcceptanceDiagnostics` state is installed only by the invisible
+acceptance example, with an explicit flag restricted to `stream-diagnostic-*`.
+There is no IPC enable command or normal application registration. Release builds
+use a zero-sized no-op trace; ordinary debug requests have no recorder, timestamp
+reads, event allocation or sink invocation. There is no new dependency.
+
+Per request the recorder retains at most **8192 metadata stamps**, aggregate byte
+and chunk counts, independent last-body/last-forwarded stamps, and a dropped-event
+count. A stamp contains only an allowlisted enum category, epoch milliseconds,
+monotonic elapsed microseconds, chunk sequence and byte length. No response data,
+headers, URLs, credentials, prompts or reasoning enter this API. The completed
+bounded snapshot is written once to the owned acceptance file; it is volatile
+until settlement/drop and is not claimed to survive forcible process termination.
+
+Categories distinguish dispatch, headers, each body chunk, meaningful progress,
+IPC attempt/success/rejection, provider-final recognition, actual HTTP EOF, outcome
+(completion, transport error, observed cancellation/deadline, other failure), and
+future drop. Cancellation/deadline timestamps are native observations of the
+guarded outcome, not an invented timestamp of an external Stop command. Final
+body identity is retained independently in `lastBody`; EOF is not fabricated on
+timeout or on the SSE `[DONE]` early-stop path.
+
+Native sequence numbers correlate body receipt to channel enqueue/return. The
+existing acceptance observer timestamps actual webview channel delivery separately;
+ordered per-request chunk lengths/counts join these observations. A successful
+native channel send is **not** mislabeled as confirmed webview delivery.
+
+The diagnostic chain now distinguishes:
+
+1. No delivered HTTP body bytes: upstream of this body reader, potentially
+   Ollama/model, server, SSH/network or buffering below the hook; not proof of
+   which upstream component is responsible.
+2. Body delivered but not forwarded/delivered over IPC: native forwarding/IPC
+   boundary; retain attempt, success/rejection and webview observations separately.
+3. IPC delivered but valid frames not parsed: adapter/parser boundary.
+4. Parsed meaningful frames without native progress recognition and correct idle
+   behavior: progress-accounting boundary.
+
+Raw bytes, whitespace and metadata still do **not** reset meaningful progress.
+Production connect/first-output/idle/overall limits remain **10/120/60/600 seconds**.
+Only the provider-only evaluator's former 180-second outer bound becomes 630
+seconds, leaving production's 600-second deadline authoritative with teardown
+slack. No recovery, retry, F1, context, memory, compaction or approval policy changed.
+
+### One Replay and Timeline
+
+Before launch there were no Clack acceptance hosts, Clack test/Vite runners,
+Cargo/rustc/rustfmt builds or Clack application processes. Unrelated processes
+were left alone. The existing SSH tunnel PID **8352**, started at
+`2026-10-17T05:29:32.257Z`, owned `127.0.0.1:11435` before and after the replay.
+Native host PID **40388**, harness PID **9576**. Both owned processes were absent
+after cleanup; no competing Clack process was found afterward.
+
+The runner used the Clack checkout only as a working directory, with app/store/
+webview data isolated under the fresh evidence directory. Its diagnostic branch
+returns before session/workspace initialization and has no tool executors or agent
+loop. No ForgeBoard directory, task/session, source file, test or build was changed
+or executed by a returned tool.
+
+Exactly **one** native inference, fresh ID `inference-1`, replayed preserved
+`inference-26`. Native captured JSON compares structurally equal, including all
+messages, tool-result relationships and the exact ten schemas. Its serde JSON
+reserialization SHA-256 is unchanged:
+`417a318b04952fc800bc391aaa70220394881fdc0c7c3e23ac89b813f9b3515f`.
+This is not a physical-packet hash.
+
+Controls: `qwen38-uncensored:latest`, existing endpoint
+`http://127.0.0.1:11435/api/chat`, `stream:true`,
+`options:{num_ctx:32768,num_predict:2048}`, explicit `think:false`, no sampling
+overrides, no trusted fallback, **zero cloud inference**. B1 still accepts the
+unchanged request and the 10-tool F1 selection is not modified.
+
+All following times are UTC, 2026-10-17:
+
+| Event | Time |
+| --- | --- |
+| Provider-only fixture start | `10:36:22.124` |
+| Native admitted attempt | `10:36:22.162` |
+| Native HTTP dispatch | `10:36:22.163` |
+| Native response headers | `10:36:45.419` |
+| First native body / meaningful text | `10:36:45.420` |
+| First webview IPC delivery / parsed text | `10:36:45.421` |
+| Last native body / meaningful tool / provider final | `10:36:52.086` |
+| Last native successful channel forward | `10:36:52.086` |
+| Last webview IPC delivery / parsed frame | `10:36:52.087` |
+| SDK tool-call part, not execution | `10:36:52.088` |
+| Native HTTP EOF / completed outcome | `10:36:52.109` |
+| SDK finish / consumed stream end | `10:36:52.112` |
+
+First useful text arrived **23.297 seconds after fixture start**. The provider-only
+fixture completed in **29.994 seconds**. All body-to-IPC correlations were checked:
+
+| Sequence | Bytes | Native body | Native forward | Webview delivery |
+| --- | --- | --- | --- | --- |
+| 1 | 144 | `10:36:45.420` | `10:36:45.420` | `10:36:45.421` |
+| 2 | 141 | `10:36:45.547` | `10:36:45.548` | `10:36:45.548` |
+| 3 | 144 | `10:36:45.675` | `10:36:45.675` | `10:36:45.675` |
+| 4 | 144 | `10:36:45.803` | `10:36:45.803` | `10:36:45.803` |
+| 5 | 145 | `10:36:45.916` | `10:36:45.917` | `10:36:45.917` |
+| 6 | 146 | `10:36:46.043` | `10:36:46.044` | `10:36:46.044` |
+| 7 | 141 | `10:36:46.167` | `10:36:46.167` | `10:36:46.167` |
+| 8 | 143 | `10:36:46.290` | `10:36:46.290` | `10:36:46.290` |
+| 9 | 556 | `10:36:52.086` | `10:36:52.086` | `10:36:52.087` |
+
+**9 chunks / 1704 bytes** at native body and webview IPC boundaries, nine parsed
+frames, zero invalid/dropped frames, zero pending bytes and zero dropped trace
+events at either layer. Maximum body-to-forward duration **219 microseconds**;
+maximum body-to-webview wall-clock delta **1 ms**. No unforwarded body chunks or
+valid unparsed frames. Native recognized eight meaningful chunks, matching seven
+text frames plus the tool frame; the whitespace-only eighth chunk did not reset
+progress. No watchdog fired or missed-reset symptom was observed. Deterministic
+tests, not this short replay, verify the 60-second policy's shortened-fixture idle
+and cancellation behavior.
+
+One tool call reached the SDK; **zero tool calls executed**. No second inference
+followed. The provider returned `done:true`, `done_reason:stop`, measured prompt
+usage **10868**, output usage **55**, cached prompt count **0**. Native-reported
+durations: total **29.827208195 s**, load **5.413725394 s**, prompt evaluation
+**17.690315 s**, generation **6.665044 s**. These are received provider metrics,
+not inferred token totals for the old interrupted request.
+
+### Tunnel, Existing Logs and Classification
+
+After the request, `/api/ps` returned HTTP **200 in 7 ms** at
+`10:36:52.119`, with the exact model loaded at context **32768** and runner
+`llamacpp`; `/api/version` returned HTTP **200 in 141 ms** at `10:36:52.126`,
+version **0.40.4**. The pre-run version check was also HTTP 200. These are
+post-request/control-plane observations, not aggressive generation polling.
+
+Read-only SSH journal inspection required no service/config/model/logging change.
+The existing labpc journal at `10:36:52Z` records the replay's `/api/chat` HTTP
+200 after **29.827267775 s**, normal slot release, 10868 prompt and 55 generation
+tokens, agreeing with the provider final metrics. No error/panic/disconnect was
+shown in that bounded excerpt; CUDA allocation messages alone are not errors.
+A separate clock check bounded remote UTC `10:37:35.232615730` between local
+`10:37:34.966` and `10:37:35.245`; it is not a historical clock-sync proof.
+
+The historical `07:35-07:37Z` excerpt contains generation timings and multiple
+`/api/chat` completions, but no Clack request IDs or payload fingerprint. Those
+entries cannot safely be attributed to original request 26. They establish no
+specific historical engine, tunnel, forwarding or parser cause. Its lack of a
+provider final frame and 59.879-second IPC silence remain the preserved facts.
+
+**Classification: `INTERMITTENT UPSTREAM STALL - NOT REPRODUCED`.**
+This is the requested non-reproduction category, **not a claim that the old stall
+was fixed or conclusively localized upstream**. This replay establishes a healthy
+body -> forwarding -> delivery -> parser -> progress chain. The historical
+Ollama/model versus SSH/network versus below-IPC cause remains unconfirmed.
+The conditions for a direct-on-labpc comparison were not met, so **none was run**.
+No additional provider replay or Automatic request was made.
+
+### Focused Verification and Completion
+
+- **54 native Windows tests passed** in `modules::net::inference::` (552 filtered
+  out), including five new diagnostic tests and the existing transport, parser,
+  admission, whitespace, idle, overall, cancellation, shutdown and cleanup tests.
+  New cases cover bounded/content-free metadata, disabled recording, real
+  body/IPC sequence/length correlation, whitespace not extending idle, channel
+  rejection/cancellation, provider final versus actual EOF, and SSE early stop.
+  One initial new-test assertion incorrectly equated an Ollama final frame with
+  early body stop; it was corrected to test existing semantics, not change them.
+- **60 frontend tests / 3 files passed**: `ollamaStreamTrace.test.ts`,
+  `proxyFetch.test.ts`, `ollamaModel.test.ts`. An initial sandbox EPERM
+  during temporary transform-file rename ran zero tests; rerun with access passed.
+- `npm.cmd run check-types`, focused Biome lint, runner `node --check`, native
+  acceptance example build and `git diff --check` passed. Formatting checked.
+- Full frontend/Rust suites, product build and full Clippy were deliberately not
+  rerun for this diagnostic-only checkpoint. Native source has opt-in diagnostic
+  hooks, but no production behavior fix was established or made. No Linux/macOS
+  native run or native GUI/Computer Use verification is claimed.
+
+Only receive diagnostics, their native fixture coverage, acceptance replay/health
+capture and this report changed. Existing context/memory/retrieval/PeerTask/F1/
+approval and D3 no-blind-replay behavior remain untouched. No ForgeBoard effects,
+unrelated work, stashes, delegation changes or `autonomous_tracker/` changes.
+No push or subsequent checkpoint.

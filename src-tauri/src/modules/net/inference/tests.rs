@@ -21,6 +21,7 @@ fn request(url: String) -> Request {
         body: Some(b"{}".to_vec()),
         allow_private: true,
         fallback: None,
+        trace: diagnostics::Trace::default(),
     }
 }
 
@@ -129,6 +130,153 @@ fn paced_server(parts: Vec<Vec<u8>>, close: bool, heartbeat: bool, pace: Duratio
 }
 fn headers() -> Vec<u8> {
     b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n".to_vec()
+}
+
+#[cfg(debug_assertions)]
+async fn traced_fixture(mode: &str) -> (Result<(), Failure>, serde_json::Value, usize) {
+    let mut parts = vec![b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nX-Private: SECRET_HEADER\r\nConnection: close\r\n\r\n".to_vec(),
+        b"{\"message\":{\"content\":\"SECRET_TEXT\"},\"done\":false}\n".to_vec()];
+    if mode == "idle" {
+        for _ in 0..4 {
+            parts.push(b"{\"message\":{\"content\":\"  \"},\"done\":false}\n".to_vec());
+        }
+    } else if mode == "done" {
+        parts.push(b"{\"done\":true,\"done_reason\":\"stop\"}\n".to_vec());
+    } else if mode == "sse-done" {
+        parts.push(b"data: [DONE]\n\n".to_vec());
+    }
+    let fixture = paced_server(
+        parts,
+        mode == "eof" || mode == "done",
+        false,
+        Duration::from_millis(15),
+    );
+    let captured = Arc::new(Mutex::new(None));
+    let output = captured.clone();
+    let diagnostics = diagnostics::AcceptanceDiagnostics::new(move |snapshot| {
+        *output.lock().unwrap() = Some(serde_json::to_value(snapshot).unwrap());
+    });
+    let state = InferenceState::default();
+    let id = state.open("main").unwrap();
+    let lease = state.start("main", &id).unwrap();
+    let mut req = request(fixture.url);
+    req.headers = Some(HashMap::from([(
+        "Authorization".into(),
+        "SECRET_CREDENTIAL".into(),
+    )]));
+    req.body = Some(b"SECRET_PROMPT".to_vec());
+    req.trace = diagnostics.request(&id);
+    let emitted = Mutex::new(0);
+    let result = execute(&lease, req, limits(), &|payload| {
+        if matches!(payload, Payload::Chunk { .. }) {
+            if mode == "reject" {
+                return false;
+            }
+            *emitted.lock().unwrap() += 1;
+            if mode == "cancel" {
+                state.close_owner("main");
+            }
+        }
+        true
+    })
+    .await;
+    drop(lease);
+    tokio::time::timeout(Duration::from_secs(4), fixture.closed)
+        .await
+        .unwrap()
+        .unwrap();
+    fixture.thread.join().unwrap();
+    let snapshot = captured.lock().unwrap().take().unwrap();
+    assert!(!snapshot.to_string().contains("SECRET"));
+    let count = *emitted.lock().unwrap();
+    (result, snapshot, count)
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn acceptance_body_and_ipc_sequences_track_real_delivery_not_whitespace_progress() {
+    use diagnostics::Kind;
+    let (result, snapshot, emitted) = traced_fixture("idle").await;
+    assert_eq!(result.unwrap_err().code, "stream-idle-timeout");
+    let events = snapshot["events"].as_array().unwrap();
+    let kind =
+        |event: &serde_json::Value, k: Kind| event["kind"] == serde_json::to_value(k).unwrap();
+    let received: Vec<_> = events.iter().filter(|e| kind(e, Kind::Body)).collect();
+    let forwarded: Vec<_> = events
+        .iter()
+        .filter(|e| kind(e, Kind::IpcForwarded))
+        .collect();
+    assert_eq!(received.len(), emitted);
+    assert_eq!(received.len(), 5);
+    assert_eq!(forwarded.len(), emitted);
+    for (i, (body, ipc)) in received.iter().zip(forwarded).enumerate() {
+        assert_eq!(body["sequence"], i + 1);
+        assert_eq!(body["sequence"], ipc["sequence"]);
+        assert_eq!(body["bytes"], ipc["bytes"]);
+        assert!(body["elapsedUs"].as_u64().unwrap() <= ipc["elapsedUs"].as_u64().unwrap());
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| kind(e, Kind::MeaningfulProgress))
+            .count(),
+        1
+    );
+    assert_eq!(events.last().unwrap()["kind"], "deadline-observed");
+    assert!(!events.iter().any(|e| kind(e, Kind::Eof)));
+    assert!(events.iter().any(|e| kind(e, Kind::Headers)));
+    let progress = events
+        .iter()
+        .find(|e| kind(e, Kind::MeaningfulProgress))
+        .unwrap();
+    let idle_us = events.last().unwrap()["elapsedUs"].as_u64().unwrap()
+        - progress["elapsedUs"].as_u64().unwrap();
+    assert!(
+        (95_000..190_000).contains(&idle_us),
+        "byte-only activity must not extend idle: {idle_us}"
+    );
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn acceptance_trace_preserves_cancellation_and_reports_ipc_rejection() {
+    for mode in ["cancel", "reject"] {
+        let (result, snapshot, emitted) = traced_fixture(mode).await;
+        assert_eq!(result.unwrap_err().code, "cancelled");
+        let events = snapshot["events"].as_array().unwrap();
+        assert_eq!(events.last().unwrap()["kind"], "cancellation-observed");
+        assert_eq!(emitted, usize::from(mode == "cancel"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e["kind"] == "ipc-rejected")
+                .count(),
+            usize::from(mode == "reject")
+        );
+        assert!(!events.iter().any(|e| e["kind"] == "eof"));
+    }
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn acceptance_trace_distinguishes_provider_done_from_observed_http_eof() {
+    for mode in ["done", "eof", "sse-done"] {
+        let (result, snapshot, _) = traced_fixture(mode).await;
+        result.unwrap();
+        let events = snapshot["events"].as_array().unwrap();
+        assert_eq!(events.last().unwrap()["kind"], "completed");
+        assert_eq!(
+            events.iter().filter(|e| e["kind"] == "eof").count(),
+            usize::from(mode != "sse-done")
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e["kind"] == "provider-done")
+                .count(),
+            usize::from(mode != "eof")
+        );
+    }
 }
 fn delta() -> Vec<u8> {
     b"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n".to_vec()

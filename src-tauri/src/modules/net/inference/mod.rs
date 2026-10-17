@@ -1,4 +1,5 @@
 mod admission;
+pub mod diagnostics;
 mod progress;
 mod registry;
 #[cfg(test)]
@@ -195,13 +196,27 @@ struct Request {
     body: Option<Vec<u8>>,
     allow_private: bool,
     fallback: Option<(tauri::AppHandle, String)>,
+    trace: diagnostics::Trace,
 }
 async fn execute(
+    lease: &Lease,
+    mut request: Request,
+    limits: Timeouts,
+    emit: &impl Fn(Payload) -> bool,
+) -> Result<(), Failure> {
+    let mut trace = std::mem::take(&mut request.trace);
+    let result = execute_traced(lease, request, limits, emit, &mut trace).await;
+    trace.finish(&result);
+    result
+}
+async fn execute_traced(
     lease: &Lease,
     request: Request,
     limits: Timeouts,
     emit: &impl Fn(Payload) -> bool,
+    trace: &mut diagnostics::Trace,
 ) -> Result<(), Failure> {
+    use diagnostics::Kind;
     let start = Instant::now();
     let mut deadline = Deadline {
         overall: start + limits.overall,
@@ -258,10 +273,12 @@ async fn execute(
     }) {
         return Err(Failure::new("cancelled"));
     }
+    trace.record(Kind::Dispatch, 0);
     let response = guarded(lease, deadline.next(), async {
         req.send().await.map_err(network_error)
     })
     .await?;
+    trace.record(Kind::Headers, 0);
     let status = response.status().as_u16();
     let headers = header_map_to_strings(response.headers());
     let mut progress = Progress::default();
@@ -273,15 +290,22 @@ async fn execute(
     }
     let mut stream = response.bytes_stream();
     let mut generating = false;
-    while let Some(bytes) = guarded(lease, deadline.next(), async {
-        stream.next().await.transpose().map_err(network_error)
-    })
-    .await?
-    {
+    loop {
+        let Some(bytes) = guarded(lease, deadline.next(), async {
+            stream.next().await.transpose().map_err(network_error)
+        })
+        .await?
+        else {
+            trace.record(Kind::Eof, 0);
+            break;
+        };
+        trace.record(Kind::Body, bytes.len());
+        let was_complete = progress.complete;
         if progress.feed(&bytes) {
             deadline.progress = limits
                 .idle
                 .map(|d| (Instant::now() + d, "stream-idle-timeout"));
+            trace.record(Kind::MeaningfulProgress, bytes.len());
             if !generating {
                 generating = true;
                 if !emit(Payload::Phase {
@@ -291,13 +315,20 @@ async fn execute(
                 }
             }
         }
-        if lease.cancelled()
-            || !emit(Payload::Chunk {
-                bytes: bytes.to_vec(),
-            })
-        {
+        if !was_complete && progress.complete {
+            trace.record(Kind::ProviderDone, bytes.len());
+        }
+        if lease.cancelled() {
             return Err(Failure::new("cancelled"));
         }
+        trace.record(Kind::IpcAttempt, bytes.len());
+        if !emit(Payload::Chunk {
+            bytes: bytes.to_vec(),
+        }) {
+            trace.record(Kind::IpcRejected, bytes.len());
+            return Err(Failure::new("cancelled"));
+        }
+        trace.record(Kind::IpcForwarded, bytes.len());
         if progress.done {
             break;
         }
@@ -483,6 +514,7 @@ pub async fn ai_http_stream(
         &state,
         &lease,
         Request {
+            trace: diagnostics::Trace::from_app(&app, &request_id),
             url,
             method,
             headers,
