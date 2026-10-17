@@ -66,6 +66,7 @@ import { verifiedProviderFetch } from "@/modules/ai/lib/answerContinuation";
 import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import { assertRequestBudget } from "@/modules/ai/lib/contextBudget";
 import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
+import { AcceptanceApprovalBlocked, observeAcceptanceRun, type AcceptanceSnapshot } from "@/test/acceptanceApprovalLifecycle";
 
 type Phase =
   | "stream-diagnostic"
@@ -104,7 +105,7 @@ const feature = `Add durable activity history to ForgeBoard: task created/update
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // Observe native response channels without replacing routing or provider responses.
 function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace>, traceStreams = false) {
@@ -438,25 +439,47 @@ export async function runRealLocalProduct(config: Configuration) {
         .sessions.map((s) => ({ id: s.id, inference: sessionInference(s.id) })),
     }),
   );
+  let harnessStop: { classification: string; reason: string } | undefined;
   const run = async (id: string, text: string) => {
     await prepareSessionChat(id);
     useChatStore.setState({ activeSessionId: id });
     await sendMessageToSession(id, { text });
-    // Let production automatic continuations and bridge persistence settle.
-    for (;;) {
-      await sleep(1000);
+    const read = (): AcceptanceSnapshot => {
       const session = useChatStore.getState().sessions.find((s) => s.id === id);
       const chat = chats.get(id);
-      if (
-        (session?.run?.state && session.run.state !== "running") ||
-        useChatStore.getState().pendingApprovalsBySession[id]?.length ||
-        !chat ||
-        (chat.status !== "submitted" &&
-          chat.status !== "streaming" &&
-          session?.run?.budget?.phase !== "auto-continue-pending" &&
-          session?.run?.budget?.phase !== "running")
-      )
-        break;
+      assert(session?.run && chat, "Live acceptance run disappeared");
+      const parts = chat.messages.flatMap(m => m.parts) as Array<Part & { approval?: { id?: string } }>;
+      const approvals = parts.filter(p => p.state === "approval-requested" && p.approval?.id).map(p => ({
+        id: p.approval?.id ?? "", toolCallId: p.toolCallId ?? "", toolName: p.type.slice(5), input: p.input as Record<string, unknown>,
+      }));
+      return {
+        sessionId: id, runId: `${id}:${session.run.startedAt}`, workspaceRoot: session.run.workspaceRoot ?? "",
+        cwd: useChatStore.getState().live.getCwd(), state: session.run.state,
+        active: chat.status === "submitted" || chat.status === "streaming" ||
+          session.run.budget?.phase === "auto-continue-pending" || session.run.budget?.phase === "running",
+        responderReady: !!useChatStore.getState().approvalRespondersBySession[id] &&
+          approvals.every(a => useChatStore.getState().pendingApprovalsBySession[id]?.some(p => p.id === a.id)),
+        approvals,
+        effects: parts.filter(p => p.toolCallId).map(p => ({ toolCallId: p.toolCallId ?? "", state: p.state ?? "", output: p.output })),
+      };
+    };
+    const first = read();
+    try {
+      await observeAcceptanceRun({ expected: { sessionId: first.sessionId, runId: first.runId, workspaceRoot: first.workspaceRoot }, read, sleep: () => sleep(250), emit: evidence.emit,
+        evaluate: async (subject, signal) => {
+          await evidence.flush();
+          const response = await fetch(new URL("/approval", config.report), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(subject), signal });
+          assert(response.ok, "Evaluator approval route failed");
+          return response.json();
+        },
+        respond: (approvalId, sessionId) => useChatStore.getState().respondToApproval(approvalId, true, sessionId),
+      });
+    } catch (error) {
+      if (!(error instanceof AcceptanceApprovalBlocked)) throw error;
+      harnessStop = { classification: error.classification, reason: error.message };
+      evidence.emit({ kind: "harness-blocked", at: Date.now(), ...first, ...harnessStop });
+      await evidence.flush();
+      await cancelRun(id);
     }
   };
   let correctionSent = false;
@@ -571,7 +594,7 @@ export async function runRealLocalProduct(config: Configuration) {
       } finally {
         clearInterval(monitor);
       }
-      if (correcting) {
+      if (correcting && !harnessStop) {
         correctionSent = true;
         await run("real-mission-a", correction);
       }
@@ -652,6 +675,7 @@ export async function runRealLocalProduct(config: Configuration) {
       conversations,
       tasks: usePeerTaskStore.getState().tasks,
       correctionSent,
+      harnessStop,
       traceStreams: config.realProduct.traceStreams ?? false,
       prepareOnly: config.realProduct.prepareOnly ?? false,
       correctionEvidence,

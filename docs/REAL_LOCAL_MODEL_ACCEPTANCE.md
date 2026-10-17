@@ -2216,3 +2216,204 @@ Preserved SHA-256 evidence fingerprints:
 Only this report changes. Production source, harness source, original evidence,
 session/settings data, scratch project, unrelated user work, stashes and
 `autonomous_tracker/` remain untouched. No push. No later checkpoint started.
+
+## Live Approval Harness and Fresh -04 Acceptance, 2026-10-17
+
+Checkpoint baseline: `83de782`, clean `main`, **39 ahead / 0 behind** recorded
+`origin/main`. No competing Clack application, acceptance, editing, Cargo/Rust,
+Vite test/build or harness process was found before preparation or immediately
+before the mission. Unrelated processes were not stopped. The dead `-03` run was
+neither resumed nor overwritten; its session and request-audit SHA-256 hashes
+still match the preceding section. That **TEST_HARNESS** result remains intact.
+
+### Lifecycle Correction
+
+The root cause was the observation loop in
+`src/test/realLocalProductAcceptance.tsx`: a pending approval caused it to return,
+which finalized the report. The browser entry then called `coworking_exit`;
+the Node runner also tears down its owned native child in `finally`. A valid
+permission pause consequently destroyed the responder needed to resolve it.
+
+The fixture now awaits `observeAcceptanceRun()` in
+`src/test/acceptanceApprovalLifecycle.ts`. Pending approval is nonterminal,
+including the React interval before the responder/pending store has settled.
+The mounted AgentRunBridge, PeerTask bridge, Wry host, Vite server and evidence
+stream remain owned by the unfinished phase. Terminal run states still return.
+Every approval emits pending, evaluation, submission and observed effect evidence.
+There is no report/child teardown merely because an approval exists.
+
+The Node runner's acceptance-only `/approval` route invokes
+`scripts/acceptance-approval.mjs` and records its decision and live host PID.
+Its expected owner comes from ordered production session/run state observations
+for `real-mission-a`, bound to the configured scratch root. Terminal state clears
+that owner; a normal authorized correction can establish its new live run owner.
+The browser rechecks run, workspace, cwd, exact input and responder immediately
+before calling the existing production
+`respondToApproval(id, true, sessionId)`. AgentRunBridge remains the owner of
+`addToolApprovalResponse`. No persisted approval/session state is manufactured.
+
+The evaluator is deliberately **not** a general PowerShell parser, destructive
+command allow rule or sandbox. It qualifies only this complete reviewed probe:
+
+```powershell
+Set-Content -Path 'test.txt' -Value 'hello' -Encoding utf8; Test-Path 'test.txt'; Remove-Item 'test.txt'
+```
+
+All three operands must be the literal `test.txt` in the exact live disposable
+ForgeBoard repository root. The root must resolve without a link/alias and have
+its own `.git` directory; the target must be absent, including no existing link.
+Unknown commands, additional effects/flags, other filenames, nested/escaping or
+absolute operands, wildcards, existing files, changed cwd and foreign ownership
+fail closed. This is task-related disposable write/read/delete diagnosis, not
+permission to delete application files or other data. No permission profile,
+Full Access setting or persistent grant changes. The old `-03` command remains
+safe but unexecuted; its destroyed responder is not recreated.
+
+Each approval has a **30-second acceptance-only lifecycle bound**, including
+responder availability, evaluator response and observed tool resolution. A stalled
+evaluation is aborted. A bound failure or refused/ambiguous effect records
+**HARNESS-BLOCKED**, flushes evidence and calls normal `cancelRun` before report
+completion, denying pending effects through production cancellation. No retry.
+The overall existing 90-minute harness bound remains; production **60-second idle
+and 600-second per-request overall** deadlines are unchanged.
+
+Decisions are per effect, with at most 64 tracked approval identities. A submitted
+ID is never submitted twice. Changed inputs/owners and reusing one tool call
+under another approval ID are rejected. Inputs are captured independently of
+mutable SDK objects. The original correction predicate and wording are unchanged;
+a harness refusal cannot accidentally trigger a subsequent correction run.
+
+### Deterministic and Native Verification
+
+**135 tests / 7 files passed**, including **32 new tests**: 13 lifecycle/SDK
+tests and 19 filesystem-policy cases. The actual installed SDK Chat fixture
+requests approval through `needsApproval`, remains paused without execution,
+then resumes through Clack's production store responder into SDK approval
+resolution. Its tool executes **exactly once**, the same chat/run ownership is
+retained, and its original user message remains the only user message. Additional
+cases cover an unresolved evaluator keeping the phase logically active, unsafe
+paths with zero execution, foreign session/run/workspace, stale/in-place input
+changes, duplicate/reused IDs, delayed bridge settlement, bounded missing
+responder/evaluator and unchanged restart no-revival. Filesystem tests reject
+wildcards, extra commands, force/recursive flags, existing data and root junctions.
+
+The 103 existing bridge/recovery/lifecycle/permission/runtime tests remain passing.
+Native Windows `cargo test --locked --lib modules::shell:: --target-dir
+target/codex-test` passed **11 tests**, including Windows/WSL identity serialization
+and sentinel isolation. WSL execution itself was not tested. Type checking passed
+after correcting only new fixture usage types and the harness sleep return type.
+Focused Biome lint passed with no diagnostics; all three changed/new `.mjs` files
+passed `node --check`; `git diff --check` passed with LF/CRLF notices. No full
+production suite/build/Clippy rerun was needed for harness/tests/docs-only scope.
+No Rust source, approval/recovery semantics, compaction logic, memory architecture,
+model profile or production runtime setting was changed.
+
+### One Fresh Native Mission
+
+Workspace: `C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-04`.
+Evidence ID: **`forgeboard-none-20261017-04`** under
+`C:\Users\Hayden\Documents\clack\src-tauri\target\real-qwen-product`.
+It was verified unused and initialized as an empty Git repository. Metadata-only
+`preflight-1` made zero inference requests. `mission-a-1` sent the unchanged
+**2086-character** original specification exactly once. Persisted user-message
+count is **1**; no Continue, reminder, correction, requirement resend, tuning or
+evaluator implementation was supplied. No Automatic rerun or second fresh mission.
+
+Owned native host **10680**, runner **20432**. Session `real-mission-a`, run
+**`real-mission-a:1792221985087`**. The source was frozen during inference: **938
+source/config files**, identical before/after content hash
+`1A543644782B8055699AB749236A79CC7DE84CF351E89161E3033A914D39861A`
+and timestamp/length hash
+`D27A829F97920C07FD9BF5FA91A75D5F7DD839253BD06824265773DA12347E16`.
+Final-review harness-only stale-input/replay guards and their tests were added
+after this mission ended; the mission was not repaired, resumed or repeated.
+
+All **26** native bodies retain exact `qwen38-uncensored:latest`,
+`num_ctx=32768`, `num_predict=2048`, explicit None / `think:false` and the
+authorized localhost tunnel. Fallback remains Never; **cloud inference 0**.
+**Control deviation:** requests 1-24 expose 16 tools, but the existing production
+tool selection exposes **10** on automatic continuation requests 25-26. This was
+identified in the final wire audit, not prevented or silently corrected. Therefore
+the complete trajectory cannot be claimed to preserve the requested 16-tool
+control. This checkpoint did not change or repair production tool selection.
+
+First completed useful tool (directory inspection): **24.222 seconds** after run
+start. The first shell command `node --version; npm --version` completed under
+the advertised PowerShell syntax. Qwen made **29 tool calls**: directory inspection,
+10 shell calls, one seven-item plan, one multi-edit, seven edits, six reads and
+three directory creations. Unread/missing-target and empty-old-string refusals
+were preserved. Four edits succeeded after the model created/read placeholders.
+One normal production automatic continuation followed the 24-step batch without
+a new user message. **No pending approval appeared**, so no live approval ID,
+decision, approved effect or native post-approval resumption was observed. Native
+approval acceptance remains unexercised in this model trajectory; the explicit
+approval path is supported by deterministic/SDK tests, not claimed native evidence.
+
+### Request 19, Budget and Continuity
+
+Request **19 was prepared, sent and completed**, native send timestamp
+`1792222328231`, engine finish `1792222362639`. Its seven-item accepted plan
+`Sj17jhnIdBpfg6jGBtYbRT7JZ5jDF9If` remains present with unresolved obligations,
+along with the original task, failures and successful effects. Actual outgoing
+requests 19, 25 and 26 retain port **4317**, page size **50**, title max **120**,
+debounce **750 ms**, SSE, persistence and no telemetry/cloud requirements.
+
+| Request | System | Schemas | Conversation | Input | Output | Margin | Total | Ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 19 | 3617 | 7250 | 9902 | 20769 | 2048 | 2077 | 24894 | 32768 |
+| 24 | 3617 | 7250 | 12214 | 23081 | 2048 | 2309 | 27438 | 32768 |
+| 25 | 3702 | 4419 | 12465 | 20586 | 2048 | 2059 | 24693 | 32768 |
+| 26 | 3702 | 4419 | 13385 | 21506 | 2048 | 2151 | 25705 | 32768 |
+
+These are actual captured wire-budget **estimates**, not provider token counts or
+post-compaction protected estimates. Unlike the old failing trajectory, this
+mission did not reach comparable context pressure. There was only **one** accepted
+plan, so superseded-plan exclusion was not exercised. No summary extraction or
+memory commit occurred; memory revision remains null. Extraction cost **0**;
+the initial scoped lookup took **356 ms**, returning zero chunks/reads/bytes.
+No retrieved/project evidence was injected. No protected-budget error occurred.
+Passing request number 19 alone is **not** live verification of `97148e9`.
+
+### Exact Stop and Actual Project
+
+Requests 1-25 have normal final provider frames. Request 26 delivered HTTP 200,
+then **43 native IPC frames / 6189 bytes**: 42 non-whitespace text frames and one
+whitespace frame. It produced **no tool call or final provider frame**. Last
+meaningful frame: `1792222527073`; last raw frame: `1792222527196`; native timeout:
+`1792222587075`, exactly **60002 ms** after meaningful progress. The runtime
+recorded `stream-idle-timeout`, retained partial text, finalized the run as failed
+and preserved evidence. The idle cause upstream of observed IPC delivery remains
+unconfirmed; final generated-token usage for request 26 is unavailable and is not
+inferred from frames/bytes/text. Total mission time **608.163 seconds** is not a
+per-request 600-second overall timeout: request 26 lasted about **65.739 seconds**.
+
+Classification: **PRODUCT RUNTIME / STREAM-IDLE-TIMEOUT / INCOMPLETE**.
+Harness report `ok:true` means report execution completed, not ForgeBoard success.
+No harness approval timeout/teardown failure occurred. The native host stayed
+alive until reporting and exited; no owned host/runner/Vite process remained.
+Compaction-pressure live acceptance remains **INCONCLUSIVE**. The 16-to-10 tool
+control deviation and stream stall are separate follow-up findings, not repaired
+or retried in this mission. This is not an established model-only failure.
+
+Actual files: root `package.json` (721 bytes), `packages/backend/package.json`
+(546), `packages/backend/tsconfig.json` (583), `packages/backend/src/domain.ts`
+(1259). Empty backend test/frontend source directories exist. The source defines
+task types and a title-limit constant, but no API/server, persistence, SSE runtime,
+frontend app, installed dependencies, tests, build output or README exists.
+Project Git remains unborn `main`, with untracked `package.json` and `packages/`.
+Four edits succeeded but no page-size-50 implementation met the unchanged
+correction predicate; **50-to-25 correction count 0**. No project tests/build,
+dependency install or Git commit was performed by Qwen or the evaluator.
+
+Fresh evidence SHA-256:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `mission-a-1.json` | `0051AC5153FBC6793F7DFD6314F0E3F6D080A4FE7440FB487B93620707863CAD` |
+| `mission-a-1.jsonl` | `5F10D27DE8E4A2E9F18E4B5F414563E26658097C21CB7CE8956CAC7140BC2F65` |
+| `mission-a-1.requests.jsonl` | `2C01ABEBC104D0794CBD538000CC6BDF1768F22595772F69FDDDC5F3AD18711F` |
+
+Only acceptance harness/tests and this report changed. No Computer Use, native
+GUI interaction or Linux/macOS native verification. Unrelated work, stashes,
+delegation files, `autonomous_tracker/` and previous attempts remain untouched.
+No push, no subsequent checkpoint and no production repair.

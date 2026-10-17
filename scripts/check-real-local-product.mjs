@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { createServer as createViteServer } from "vite";
+import { evaluateAcceptanceApproval } from "./acceptance-approval.mjs";
 
 const phase = process.argv[2];
 assert(["stream-diagnostic", "preflight", "system-preflight", "mission-a", "resume-a", "restart", "mission-b", "offline", "stability"].includes(phase), "Specify one explicit acceptance phase");
@@ -55,6 +56,7 @@ let local, vite, child, nativeLog = "", childExit;
 let complete;
 const report = new Promise(resolve => { complete = resolve; });
 let events = 0;
+let approvalOwner;
 let evidenceWrites = Promise.resolve();
 const server = createServer(async (request, response) => {
   response.setHeader("access-control-allow-origin", "*");
@@ -63,17 +65,32 @@ const server = createServer(async (request, response) => {
   try {
     if (request.method === "OPTIONS") { response.statusCode = 204; response.end(); return; }
     if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, maxOutput, singleSpec, reasoningChoice, traceStreams, prepareOnly }, streamDiagnostic });
-    if (!["/report", "/evidence"].includes(request.url)) { response.statusCode = 404; return json({ error: "Unknown acceptance route" }); }
+    if (!["/report", "/evidence", "/approval"].includes(request.url) || request.method !== "POST") { response.statusCode = 404; return json({ error: "Unknown acceptance route" }); }
     let body = "";
     for await (const chunk of request) { body += chunk; assert(body.length < 64 * 1024 * 1024, "Acceptance payload exceeded bound"); }
     const value = JSON.parse(body);
+    if (request.url === "/approval") {
+      assert(phase === "mission-a" && child?.exitCode === null, "Approval requires the live Mission A host");
+      const decision = await evaluateAcceptanceApproval(value, approvalOwner);
+      evidenceWrites = evidenceWrites.then(() => appendFile(`${output}.jsonl`, `${JSON.stringify({ kind: "evaluator-approval", at: Date.now(), subject: value, decision, hostPid: child.pid })}\n`));
+      await evidenceWrites;
+      return json(decision);
+    }
     if (request.url === "/evidence") {
+      if (value.kind === "state" && phase === "mission-a") {
+        const session = value.sessions?.find(s => s.id === "real-mission-a");
+        approvalOwner = undefined;
+        if (session?.run?.state === "running") {
+          assert.equal(path.resolve(session.run.workspaceRoot), path.resolve(root));
+          approvalOwner = { sessionId: session.id, runId: `${session.id}:${session.run.startedAt}`, workspaceRoot: session.run.workspaceRoot };
+        }
+      }
       assert(++events < 100000, "Acceptance event limit");
       evidenceWrites = evidenceWrites.then(() => appendFile(`${output}.jsonl`, `${JSON.stringify(value)}\n`));
       await evidenceWrites;
-      if (["request", "engine-finish", "correction-boundary", "peer-result", "harness-heartbeat"].includes(value.kind)) {
+      if (["request", "engine-finish", "correction-boundary", "peer-result", "harness-heartbeat"].includes(value.kind) || value.kind.startsWith("approval-") || value.kind === "harness-blocked") {
         const body = value.body;
-        console.log(JSON.stringify({ event: value.kind, at: new Date().toISOString(), requestId: value.requestId, model: body?.model, context: body?.options?.num_ctx, output: body?.options?.num_predict, tools: body?.tools?.length, metrics: value.metrics, taskStatus: value.task?.status, elapsedMs: value.elapsedMs }));
+        console.log(JSON.stringify({ event: value.kind, at: new Date().toISOString(), requestId: value.requestId, model: body?.model, context: body?.options?.num_ctx, output: body?.options?.num_predict, tools: body?.tools?.length, metrics: value.metrics, taskStatus: value.task?.status, elapsedMs: value.elapsedMs, approvalId: value.approvalId ?? value.approval?.id, reason: value.reason, targets: value.targets }));
       }
     } else complete(value);
     json({ ok: true });
