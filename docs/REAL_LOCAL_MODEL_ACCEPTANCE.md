@@ -4979,3 +4979,305 @@ context budgeting, reasoning, continuation and effect safeguards are unchanged.
   rerun, tool execution, subsequent checkpoint or push.
 - Commit scope: **`test(ai): classify qwen coder tool protocol`**. Raw captures
   remain local/ignored; no credentials, model blobs or unrelated work staged.
+
+## Sustained qwen3-coder ForgeBoard comparison
+
+### Isolation, Workspace and Controls (2026-10-18)
+
+Started at **`1198becb26aa05699ce0fa1516c538bfbb7a235a`**, clean `main`,
+**50 ahead / 0 behind** recorded `origin/main`. No fetch or push. Initial
+process inspection found an unrelated Talus Cargo/rustc build, which was not
+disturbed; the final pre-mission inventory found no Clack host, harness,
+Node/Vite/Vitest, Cargo or rustc process. No competing Clack run was observed.
+
+Fresh workspace: **`C:\Users\Hayden\Documents\forgeboard-qwen3coder-20261018-02`**.
+Fresh evidence ID: **`forgeboard-qwen3coder-20261018-02`**, under
+`src-tauri/target/real-qwen-product/` in Clack. Only the directory and fresh Git
+repository were initialized; the project contained **only .git** before the
+mission. The prior coder workspace and all protocol evidence remain untouched.
+
+Read-only metadata confirmed:
+
+- Exact **`qwen3-coder:30b`**, digest
+  **`06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca`**.
+- Ollama **0.40.5**, advertised context **262144**, completion/tools,
+  thinking `values:[false], default:false`; installed template unchanged.
+- Native **`http://127.0.0.1:11435/api/chat`**, existing authorized tunnel.
+- Every captured request: **num_ctx 32768 / num_predict 2048 / think:false /
+  stream:true**. Explicit reasoning **None**, not Automatic. Fallback **Never**,
+  cloud inference **0**. `/api/ps` verified loaded context **32768** at outcome.
+- Production meaningful-progress idle **60s**, overall request **600s**,
+  context/compaction/retrieval/memory/tool-selection/approval/continuation policy
+  unchanged. Schemas exposed normally increased from **16 to 17**, including
+  write_file as the conversation progressed; no evaluator selection override.
+
+One metadata-only preparation phase configured the isolated native profile and
+sent **zero inference requests**. No READY, compatibility, protocol, direct
+native, alternate API or other-model probe was repeated. The mission received
+the exact original full task **once**, SHA256
+`f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`.
+Its one user message contains the original 4317/50/120/750ms/no-cloud constraints.
+No model/protocol/evaluation hints, reminders, manual Continue, requirement
+resend, settings change or model-specific prompt tuning was supplied.
+
+All **878 tracked source/harness/config files** in the pre-run freeze matched
+after the mission; Git remained clean before this report edit. No production,
+harness, model, template, timeout, permission-mode or architecture edit occurred
+during the run. The evaluator did not implement or repair ForgeBoard.
+
+### Productivity and Native Tool Reliability
+
+Times below are observed from the first native request capture at
+**2026-10-18T16:04:01.806Z**. Tool-effect times come from persisted activity
+receipts, not an assumption that generating tool input changed a file.
+
+| Milestone | Elapsed | Evidence |
+| --- | ---: | --- |
+| First public text | 10.146s | Native text frame / assistant text |
+| First structured tool call | 11.531s | list_directory in native tool field |
+| First successful file write | 22.775s | backend/package.json, request 4 |
+| Third successful file write | 41.158s | backend/tsconfig.json, request 6 |
+| Backend bootstrap | 53.745s | backend/src/index.ts; not counted as substantive backend |
+| First substantive backend/persistence source | 80.476s | backend/src/datastore.ts, request 10 |
+| API and partial SSE source | 110.412s | backend/src/api.ts, request 11 |
+| Frontend bootstrap | 115.004s | frontend/src/main.tsx; not counted as substantive frontend |
+| First substantive frontend | 132.680s | frontend/src/App.tsx, request 14 |
+| Last successful write | 161.126s | frontend/src/components/ProjectList.tsx, request 17 |
+| Runtime terminal error | 161.156s | compaction-protected-budget before request 18 |
+
+**17 mission inference requests, 17 provider-native structured calls.** Every
+response contains one structured call; 11 also contain ordinary explanatory
+text and six are tool-only. All 17 have native **done_reason:stop**; none ended
+on output length. **Malformed textual tool intents 0**, empty responses **0**,
+automatic continuations **0**, manual continuations **0**. There was no tool
+format deviation to recover from, and no XML/text fallback was added or used.
+Clack's adapter preserved the structured calls normally.
+
+Actual effects: **16 successful tool executions**, **1 failed**, **0 refused**.
+Successes comprise one directory listing, **5 directory creations** and **10
+file writes**. Request 15 attempted ProjectList.tsx before its parent directory
+existed and returned native filesystem error 3. Without evaluator assistance,
+request 16 created that directory and request 17 wrote the component successfully.
+This is a recovered filesystem/tool-use mistake, not a protocol failure.
+
+There were **no model shell commands**, dependency installs, test commands,
+build commands, commits or todo_write calls. Shell syntax correctness was thus
+**unexercised**, despite normal native shell identity being supplied. No
+application-test or successful-build milestone was reached by the agent.
+
+The generalized safe approval evaluator/responder was available, but the normal
+trusted-workspace path generated **0 pending approval cards**, **0 evaluator
+approval decisions** and **0 approval refusals**. No permission escalation or
+approval chat message was used. All model effects stayed inside the fresh root.
+
+### Terminal Context Boundary
+
+**Final classification: CLACK_CONTEXT / PROTECTED-BUDGET PREFLIGHT / INCOMPLETE.**
+
+The native host remained alive through reporting and the harness runner exited
+**0** after preserving the terminal state. Harness `ok:true` means evidence
+collection completed, **not that ForgeBoard was completed**. The session's
+actual run state is **failed**, error **compaction-protected-budget**, terminal
+and non-retryable. Budget totalSteps **17**, continuationCount **0**. No
+eighteenth inference request was dispatched and no manual resume was attempted.
+
+The blocking diagnostic records estimated protected request cost:
+
+| Component | Estimated Tokens |
+| --- | ---: |
+| System | 3617 |
+| Schemas/options | 7502 |
+| Conversation | 17837 |
+| Input total | 28956 |
+| Output reserve | 2048 |
+| Reasoning reserve, included in output | 0 |
+| Safety margin | 2896 |
+| Required total | **33900** |
+| Effective ceiling | **32768** |
+| Deficit | **1132** |
+
+Core/agent instructions are 3175/442; history/tool state 17598; environment 121;
+other structure/options 239; built-in schemas 7381. Derived memory, retrieved
+evidence, attachments, custom schemas and MCP schemas are **0** in this
+diagnostic. The last sent request had estimated input **26722**, reserve
+**2048**, margin **2673**, required **31443**, headroom **1325**, the minimum
+across all sent requests. First-request headroom was **17472**. Exact bodies
+and per-request wire budgets are preserved.
+
+These are **Clack estimates**, not provider-measured occupancy. Ollama's last
+completed request reported **12853 input / 586 output** tokens. There was no
+provider context rejection or proof that its actual 32768-token window filled.
+The immediate stop owner is Clack's protected-budget/context-preparation gate,
+not a model refusal, malformed-tool response, harness exit or transport deadline.
+Whether this estimate/protected projection represents a new defect requires a
+separate investigation; it was **not diagnosed, patched or bypassed here**.
+
+The original transcript is two UI messages: the complete user task and the
+growing assistant/tool turn. The active structured plan remained **empty**.
+The failed component write is retained in the source, followed by the successful
+directory creation and same-path write; no uncertain effect was hidden or
+declared safely elidable just from error prose. Refusal receipts **0**, original
+pair/receipt cost comparison not applicable, observed savings **0**. No failures
+were manufactured to exercise receipt handling.
+
+Durable memory has **no committed revision**; preparation/source metadata is
+preserved. No successful rolling compaction, extraction inference, historical
+retrieval tool call or restored evidence was observed. All 17 inference requests
+are the ordinary tool-producing mission responses. The terminal guard ran before
+another model request; no summarization was forced or context enlarged. Empty
+or zero-source preparation is not reported as retrieval success or failure.
+
+Native HTTP-body/IPC tracing completed for all requests, **0 stream stalls,
+0 timeout terminations, 0 invalid/dropped frames**. Maximum measured inter-chunk
+gap was **28.728s**, below the unchanged 60s idle bound. Provider usage/final
+reasons exist for all 17 completed requests. No missing usage was inferred.
+
+### Correction Continuity
+
+The unchanged 14f88bd observer recorded **10 successful file-write events**.
+However, page size **50 never materially appeared in current code or an
+accepted plan**; pagination was not implemented and no structured plan existed.
+The original prompt's 50 alone does not satisfy that trigger.
+
+Therefore the full two-part correction boundary was **not reached**. The
+correction was sent **0 times**, not once; no dispatch was claimed, and
+correction-state remains pending. No 25 requirement was delivered. Retention of
+25 is **unexercised**, not passed or a demonstrated memory failure. There was
+no additional chat message, cancellation/resume at a correction boundary or
+post-stop reminder.
+
+### Independent Project Audit, Without Repairs
+
+At terminal outcome the project contained **10 model-authored files**: four
+package/config files, three backend TS files and three frontend TSX files.
+The backend has substantive JSON-file persistence and project/task API code.
+The frontend has substantive App/ProjectList code, but **TaskBoard, CSS and
+index.html are missing**, making it unusable as a complete frontend. README,
+.gitignore, authored application tests, pagination and 750ms debounce are
+**NOT IMPLEMENTED**. No useful finished application or final completion claim
+was produced before the runtime error.
+
+Independent verification ran only **after** that terminal outcome:
+
+| Check | Result |
+| --- | --- |
+| Backend dependency install | Exit 0, 395 packages |
+| Frontend dependency install | Exit 0, 65 packages |
+| Backend npm test -- --runInBand | Exit 1, no tests found, 0 authored tests |
+| Frontend npm test -- --runInBand | Exit 1, missing test script |
+| Backend npm run build | Exit 2: unused req, incomplete return paths, missing cors declaration |
+| Frontend npm run build | Exit 2: JSX compiler option absent, TaskBoard missing; Vite stage not reached |
+
+Installs used **--ignore-scripts --package-lock=false --no-audit --no-fund**;
+no manifest, source, test or config was repaired, no missing declaration or
+component was added. Backend dependencies emitted deprecation warnings for
+inflight/rimraf/glob/uuid. Registry downloads are not inference. No application
+tests or build success is credited to the model from these evaluator commands.
+
+Backend tsc emitted JavaScript **despite** its failing exit status. Running the
+unchanged generated **node dist/index.js** allowed a separate bounded runtime
+audit, without transpile-only flags or a source fix: **22 independent checks,
+17 passed / 5 failed**. This is partial runtime evidence, **not a successful
+TypeScript production build** and not model-authored tests.
+
+Passed: port **4317**; project create/list/edit/delete; task create/edit/delete
+and timestamps; combined project/status/priority/tag/description search;
+title **120 accepted / 121 rejected**; missing-title JSON 400; known task-update
+JSON 404; initial SSE response; project/task persistence across an actual
+backend stop/restart; project deletion removing its tasks.
+
+Failed: individual task-view route (404); invalid status/priority accepted (201);
+tasks accepted under a nonexistent project (201); malformed JSON returning an
+HTML/stack-bearing response instead of deterministic JSON; mutation SSE delivery.
+The SSE connection delivered initial data but no event during a successful
+mutation and a **1.8s** subsequent observation. Code inspection confirms only
+initial data and a periodic ping, with **no mutation broadcasting**. Thus
+required realtime project/task synchronization is **NOT IMPLEMENTED**, although
+an SSE transport scaffold exists. There was no polling substitute.
+
+Runtime data was created **only through the application/API**, never manually
+edited. Both evaluator-owned backend processes (40936, 38956) were stopped.
+Real Git inspection reports an unborn repository with untracked backend/ and
+frontend/ trees and no tracked files; **backend/data/*.json is not ignored**.
+No app commit was manufactured. Dependencies, compiler outputs and API-created
+data are explicitly evaluator-generated additions, not model productivity.
+All **10 original files remain byte-identical** to the terminal snapshot.
+
+Frontend loading/error/empty elements and basic buttons exist in source, but
+UI runtime/accessibility and full project/task workflows are **unverified**
+because the frontend does not build. No GUI success is claimed.
+
+### Direct Qwen3.8 Comparison and Decision
+
+| Metric | qwen38-uncensored (-08) | qwen3-coder:30b (-02) |
+| --- | ---: | ---: |
+| Mission requests | 25 | 17 |
+| Structured tool calls | 27 | 17 |
+| Malformed textual tool intents | Not the primary historical metric | 0 |
+| Successful file writes | 0 | 10 |
+| Substantive backend | No | Partial; API/storage code |
+| Substantive frontend | No | Partial; missing TaskBoard/assets |
+| Persistence | No | Implemented; independent restart checks passed |
+| Required mutation SSE | No | No; initial/ping scaffold only |
+| Application tests authored/run by model | No | No |
+| Successful production build | No | No; both independent builds failed |
+| Empty-response continuations | 9 | 0 |
+| Stream stalls | 0 | 0 |
+| Context blocker | No | Yes, protected-budget preflight |
+| Minimum sent-wire headroom | 8498 | 1325 |
+| Cloud inference | 0 | 0 |
+| Final classification | MODEL-INCOMPLETE / CONTINUATION LIMIT | CLACK_CONTEXT / PROTECTED-BUDGET PREFLIGHT / INCOMPLETE |
+
+Coder **materially outperformed that Qwen3.8 run in implementation output**:
+real code and functional partial persistence instead of only directories.
+Its native structured-tool formatting was reliable for these **17/17** observed
+responses, with natural recovery from one filesystem mistake. The earlier
+malformed first coder mission remains a separate valid ENGINE-BLOCKED result;
+it is not erased or reclassified as success by this run.
+
+However, **ForgeBoard is not finished**. The limiting terminal boundary now
+implicates Clack's context preparation, so this run cannot establish that all
+long-running local-agent infrastructure is functioning or assign incompletion
+solely to model quality. No general formatting reliability or end-to-end
+preferred-model recommendation follows from one partial run and the earlier
+contrary format event. **Do not promote coder to preferred local coding model
+yet. Qwen3.8 ForgeBoard testing remains stopped.** No additional model, tuning
+ladder, protocol rerun, architecture redesign or subsequent checkpoint was
+started. Any investigation of this specific context gate requires separate
+authorization; no production repair was attempted in this acceptance.
+
+### Verification and Preserved Evidence
+
+- Focused **144 tests passed / 8 files**, **0 skips**: acceptanceComparison,
+  acceptance-correction, acceptance-approval, acceptanceApprovalLifecycle,
+  reasoningEffortHosted, ollamaModel, ollamaStreamTrace, ollamaToolProtocol.
+  Initial sandbox cache-rename EPERM blocked all suites before any test ran;
+  the identical focused command passed when rerun with approved native access.
+- **npm.cmd run check-types passed**. Focused Biome lint of the existing runner,
+  acceptance fixture and protocol test produced zero diagnostics/rewrites;
+  runner/approval/correction scripts passed **node --check**. **git diff --check
+  passed**. No full Clack/build/Rust suites were redundantly rerun under the
+  evidence-only policy. No Rust/TS/JS production or harness source changed.
+- The locked isolated native example build and metadata-only preparation
+  passed. Native acceptance ran on this Windows host against the existing Linux
+  Ollama service. No Computer Use, native GUI interaction, Linux/macOS Clack GUI
+  or complete application acceptance is claimed.
+- Local ignored records: setup/model metadata, frozen-source/source-freeze-after,
+  preflight-1.*, mission-a-1.* including actual native requests and receive trace,
+  correction-state, sustained-run-audit (per-response classes/effects/times),
+  project-before-independent-verification, project-git-audit,
+  project-source-preservation, independent install/test/build/runtime reports and
+  checkpoint-verification. No transcript or large artifact was copied into Git.
+
+| Preserved Capture | SHA256 |
+| --- | --- |
+| mission-a-1.json | `c31bb518cdc2927046ec9e385921824a97625ffbafda919db6fada2936a7f8cb` |
+| mission-a-1.requests.jsonl | `e520380729932b6980891b9b666dbf173cdcfd8c24ef5415b83a06a5a20582ac` |
+| mission-a-1.jsonl | `cb420323fc1ecb9e033d969c4ebe989ba7dec80e902b96ee4d96672932d5b3bd` |
+| mission-a-1.receive.jsonl | `0d8fbdb4e6d224cdc41f456f0e76827046c75a96979838201c54ae99f6e69c92` |
+| data/terax-ai-sessions.json | `cb72a3400ccaa9b4f05f57bf1e3546421d742e3caeb54125e7d8b765e5a7b80d` |
+| independent-runtime.json | `b13783af08a9803a2ffc638f76c1b089b0c4e010ea2f4653d074e277451edd47` |
+
+- Only this additive acceptance record is committed, as
+  **test(ai): run sustained qwen coder comparison**. Existing reports, safety
+  stashes, delegation work and autonomous_tracker/ were not modified. No push.
