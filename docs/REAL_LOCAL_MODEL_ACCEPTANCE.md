@@ -4516,3 +4516,249 @@ Commit scope: **`test(ai): exercise corrected local agent continuity`**.
 Exactly one fresh mission. No resume, additional Qwen run, architecture checkpoint
 or push. Correction implementation complete; live positive continuity is not
 claimed for a model that never reached the write boundary.
+
+## 2026-10-18: qwen3-coder controlled ForgeBoard comparison
+
+### Baseline, Scope and Model Metadata
+
+Started from clean **main at `14f88bd7b3b1cf65e4a43fc8ed17363be4deee3a`**,
+**48 ahead / 0 behind** recorded origin/main. No fetch or push. Native process
+inventories before setup, before the mission and after teardown found no
+competing/abandoned Clack acceptance host, Cargo/Rust build or Clack test/harness.
+No unrelated process, safety stash, delegation work or `autonomous_tracker/`
+was modified or terminated.
+
+The -08 baseline remains unchanged: **25 completed requests, 27 tool calls,
+zero successful file writes, 16 empty directories, no application, no stall or
+context/approval/retrieval/compaction blocker, minimum wire headroom 8498,
+zero cloud calls, nine empty continuations**, terminal **MODEL-INCOMPLETE /
+CONTINUATION LIMIT**. Its conclusion remains:
+**Further Clack architecture changes are not justified by this model's observed
+engineering behavior.** This comparison did not establish a shared Clack defect.
+
+Read-only `/api/tags`, `/api/show`, `/api/ps` and `/api/version` confirmed:
+
+- Exact installed model **`qwen3-coder:30b`**, digest
+  **`06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca`**.
+- Installed file size **18,556,700,761 bytes**; **30.5B**, qwen3moe, Q4_K_M,
+  Qwen3-Coder Instruct. Advertised context **262144**, not the requested runtime.
+- Initial loaded state **unloaded**, `/api/ps.models:[]`. After inference,
+  `/api/ps` reported the exact model loaded at **context_length:32768**,
+  loaded size **15,449,152,550**, VRAM **15,223,163,452 bytes**.
+- Ollama **0.40.5**, capabilities **completion/tools**. Importantly, full show
+  metadata also explicitly declares **`thinking:{values:[false],default:false}`**.
+  Absence of a general thinking capability did not mean off-control was
+  unsupported: existing Clack probing resolved **supported levels `[none]`**.
+  Both valid preflight and mission selected **None**, serialized **`think:false`**.
+  No Automatic reasoning or synthetic capability override was used.
+- Existing model sampling defaults were merely recorded: temperature 0.7,
+  top_k 20, top_p 0.8, repeat_penalty 1.05. No sampling fields were added to the
+  requests and no model/global Ollama settings, Modelfile or template were edited.
+  No pull, update, download or other model inference occurred.
+
+Fresh workspace, deliberately retaining the user-requested date in its name:
+**`C:\Users\Hayden\Documents\forgeboard-qwen3coder-20261017-01`**.
+Evidence ID **`forgeboard-qwen3coder-20261017-01`**, under local ignored
+`src-tauri/target/real-qwen-product/forgeboard-qwen3coder-20261017-01/`.
+It did not exist before setup. Only directory and Git metadata were initialized;
+the evaluator authored no project implementation.
+
+### Setup Incompatibilities and Preflight Accounting
+
+Only setup/compatibility harness changes were made before the mission:
+
+- An explicit selector accepts only the old model or this installed coder model,
+  retaining the old default. The native example verifies the selected exact
+  model, destination and 32768 context instead of asserting the old model only.
+- The approval evaluator recognizes the new explicitly disposable workspace
+  name, with **identical** registered-owner, AST, containment, link, repository,
+  scope and effect checks. No general approval policy/parser extension.
+- The existing system preflight captures normal session reasoning, includes one
+  schema with **no execute function**, uses the same production Ollama adapter
+  and records its response/finish/usage. The unchanged mission/correction text
+  is locked by a test; mission SHA256
+  **`f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`**.
+
+Accounting is explicit, not compressed into a claim of exactly one setup attempt:
+
+| Phase | Native Inference | Actual Result |
+| --- | ---: | --- |
+| `preflight-1` | 0 | Metadata-only preparation and isolated locked native example build passed. |
+| `system-preflight-1` | 0 | Test host exited 101 before inference: its receive-trace phase guard omitted system-preflight. Failure log preserved. Added only that test phase to the allowlist before proceeding. |
+| `system-preflight-2` | 1 | `READY`, exact model/32768/2048/think:false and schema accepted, zero tool executions. Audit showed **stream:false** because the old fixture used generateText. This is supplementary non-streaming evidence, **not** the requested streaming pass. |
+| `system-preflight-3` | 1 | Corrected fixture uses streamText. **stream:true**, exact model/32768/2048/**think:false**, one schema accepted, `READY`, provider final **done/stop**, zero returned/executed tool calls, zero cloud. Required streaming preflight passed. |
+
+Thus **two compatibility inference requests**, one valid streaming preflight,
+plus **one** subsequent mission request: **three total inference requests in this
+checkpoint**, not three ForgeBoard attempts. Each preflight reported 303 input /
+2 output provider tokens. No ForgeBoard specification was sent in preparation.
+The streaming preflight proves schema acceptance and streaming, **not** successful
+generation of a structured tool call. This distinction matters to the result.
+All setup corrections occurred before the mission/source freeze.
+
+### Mission Controls and Chronology
+
+Exactly one fresh mission: **2026-10-18 15:15:46.049-15:15:59.652 UTC**,
+**13.603s wall time**, native host **33388**, owned runner **32660**.
+The evaluator did not stop it early based on the older model's duration.
+Production returned a natural terminal response after one step.
+All **1024 source fingerprints were unchanged during the mission**, verified
+after teardown. No mid-run harness/product fix, resend or resume.
+
+The unchanged full ForgeBoard specification was submitted once, user-message
+**`PWNkXGmRawtv5DF7`**. The captured native user content contains the normal
+workspace/shell environment followed by that exact specification; no hints about
+other models, special file tools, architecture or prior outcomes were added.
+PowerShell/pwsh and non-POSIX syntax were advertised normally.
+
+The single mission request used:
+
+- Exact **`qwen3-coder:30b`**, native **`http://127.0.0.1:11435/api/chat`**.
+- **num_ctx 32768, num_predict 2048, think:false, stream:true**.
+- Fallback Never, **cloud 0**, normal trusted-workspace permissions and production
+  tool selection, idle **60s** and overall **600s** unchanged.
+- The **same 16 tool names** as the -08 first request, same parameter schemas/selection
+  policy and system instructions. A read-only body comparison after normalizing
+  model/workspace IDs found only the normal request_peer_task description's
+  fresh conversation ID and selected-model label differed. This accounts for
+  the small schema-cost difference; no special model/tool advice was inserted.
+- Same compaction, retrieval, memory, continuation, approval and corrected
+  50 -> 25 fixture. No evaluator message beyond the one specification was sent.
+
+First public text arrived after **6.486s** from native request capture.
+There was **no actual first tool, first successful file write, first package
+manifest, substantive backend/frontend, persistence/SSE implementation or test**.
+The response said it would inspect the workspace, then emitted:
+
+```text
+<function=list_directory>
+<parameter=path>
+C:/Users/Hayden/Documents/forgeboard-qwen3coder-20261017-01
+</parameter>
+</function>
+</tool_call>
+```
+
+This was **text content**, not a structured native `message.tool_calls` frame.
+The independent raw-IPC frame observer recorded **69 valid frames**: 68 text,
+one final, **zero tool-call frames**, zero invalid/dropped frames. Native HTTP
+body delivery/IPC forwarding completed, provider **done_reason:stop**, actual
+provider usage **5640 input / 72 output** tokens. Maximum IPC gap **112ms**.
+No stream stall, timeout, malformed JSON frame or output exhaustion occurred.
+
+Clack preserved the text and did not reinterpret it as an authorized action.
+That is distinct from losing a structured call in the adapter. The captured
+budget has **totalSteps:1, phase:complete, continuationCount:0** and the run is
+marked completed because the nonempty provider answer stopped with no open
+plan/tools. This is **run termination, not ForgeBoard acceptance/completion**.
+There were zero empty responses or automatic/manual continuations. No model
+output was executed by the evaluator to make the comparison look productive.
+
+**Terminal classification: ENGINE-BLOCKED / NATIVE TOOL-PROTOCOL BOUNDARY.**
+This names the observed boundary, **not a proven Ollama implementation bug**:
+whether the weights' malformed output, installed template, backend parser or
+their interaction caused the unstructured markup remains **unconfirmed**.
+No model/template/parser repair, alternate endpoint test, forced-tool request,
+prompt intervention or second mission was attempted. A final answer containing
+tool intent is not a completed call and is not scored as coding work.
+
+### Context, Effects and Independent Audit
+
+The single native wire budget fits: system **3617**, schemas **7247** (16),
+conversation **1179**, input **12043**, reserve **2048**, margin **1205**,
+required **15296 / 32768**, headroom **17472**. Per-request estimates and
+original bodies are preserved. No context blocker, pressure compaction,
+extraction, restoration, memory revision or failed retrieval was observed.
+The empty startup scoped evidence lookup is not a retrieval failure.
+
+**Actual tool calls/executions: 0. Successful writes: 0. Failed/refused tools: 0.**
+The one textual list_directory intent does not count as any of those.
+No shell command, shell syntax failure or unread-target edit occurred.
+Approvals encountered/granted/rejected **0/0/0**. Refusal receipts **0**, savings
+**0**; no failures were manufactured. No correction boundary, correction message
+or subsequent page-size-25 retention: three writes and authored plan/code never
+existed. These positive live checks are **unexercised**, not passed.
+
+Independent read-only project inspection found **only .git**, no application
+files or empty project directories. Git is unborn **master**, clean. There is
+no package manifest, backend/frontend, tests/build scripts, README, .gitignore
+or runtime data. Port 4317 behavior, page-size behavior, title 120 validation,
+750ms debounce, CRUD/status/priority fields, JSON errors, filtering/search,
+persistence and SSE are all **not implemented or tested**. Backend restart and
+SSE-client mutation tests were not applicable because no backend exists.
+Application tests/build were **not run** because none exist, not reported as
+passing. No dependencies installed or generated project files repaired.
+
+### Direct Comparison and Decision
+
+| Metric | qwen38-uncensored (-08) | qwen3-coder:30b |
+| --- | ---: | ---: |
+| Completed mission inference requests | 25 | 1 |
+| Actual tool calls | 27 | 0 |
+| Successful file-write events | 0 | 0 |
+| Empty project directories only | 16 | 0 |
+| Substantive backend | No | No |
+| Substantive frontend | No | No |
+| Persistence | No | No |
+| SSE | No | No |
+| Application tests | No | No |
+| Application build | No | No |
+| Empty-response continuations | 9 | 0 |
+| Stream stalls | 0 | 0 |
+| Context blocker | No | No |
+| Minimum wire headroom | 8498 | 17472 |
+| Mission cloud inference | 0 | 0 |
+| Final classification | MODEL-INCOMPLETE / CONTINUATION LIMIT | ENGINE-BLOCKED / NATIVE TOOL-PROTOCOL BOUNDARY |
+
+**No coder-model win or preferred-model recommendation is established.** The
+coder model never crossed the structured-tool boundary, so this is not a valid
+comparison of sustained engineering productivity. It neither proves that model
+selection explains the prior poor outcome nor establishes a shared Clack
+context/memory defect. The observed failures differ: repeated real tools and
+empty continuations in -08, versus textual tool markup/no execution here.
+
+Clack transport, authorization, context and source preservation behaved normally
+in the captured request, with no confirmed new production defect. End-to-end
+coder-agent infrastructure is **not** declared functional from a READY preflight.
+A **separate, narrow native tool-protocol/template compatibility investigation**
+is justified before another coding comparison. It was **not started here**.
+Do not promote qwen3-coder to preferred local coder on this evidence, do not
+download other models, and stop further Qwen3.8 ForgeBoard attempts. The older
+engineering-quality conclusion remains preserved; no memory redesign is proposed.
+
+### Verification and Preservation
+
+- Final focused **141 tests passed / 7 files**, no skips on this Windows host:
+  acceptanceComparison, acceptance-correction, acceptance-approval,
+  acceptanceApprovalLifecycle, reasoningEffortHosted, ollamaModel,
+  ollamaStreamTrace. Includes unchanged mission hash, explicit model/phase
+  guards, same confined policy for the comparison root, exactly-once correction,
+  lifecycle/security, reasoning and native adapter behavior.
+- `npm.cmd run check-types`: passed on the final source. Focused Biome lint for
+  five changed JS/TS files: zero diagnostics/rewrites. All three changed JS
+  files passed `node --check`. `git diff --check`: passed.
+- Locked isolated native acceptance-example builds passed, including the final
+  streaming preflight and mission. Only Rust **example harness** changed; no
+  production Rust/TS or architecture changed and no full Clack/Rust suite was
+  redundantly rerun. No Computer Use, native GUI, Linux/macOS native, real app
+  persistence/SSE or successful coding-model acceptance is claimed.
+- Only pre-mission harness setup/tests and this additive report are committed.
+  The 14f88bd correction detector/approval-effect parser and all old acceptance
+  figures are preserved. No source edits during mission, no push, model download,
+  Automatic experiment, additional mission or next investigation.
+- Local raw records include `model-metadata.json`, all preflight attempts,
+  `mission-a-1.*`, `comparison-run-audit.json`, `control-comparison.json`,
+  `frozen-source.json` and `source-freeze-after.json`. Raw evidence stays ignored;
+  no credentials or model bytes were committed.
+
+| Original Coder Capture | SHA256 |
+| --- | --- |
+| `mission-a-1.json` | `621a4725dc40507b806d16a375bfb94e4fa4fe97c6bf15d9e5b56ace8c1b7651` |
+| `mission-a-1.requests.jsonl` | `40ee9106fc676a847eb83a701a67c9787ffb76bbc4f2674afc396c95b7e47eb8` |
+| `mission-a-1.jsonl` | `47d9ea6c090c669580f5d53d1c3f65e770f00fb801eb5106d17148150bdb0d49` |
+| `mission-a-1.receive.jsonl` | `24d2984c1d545310d87e0ff7a3d06b15bf87e7b25110bf21ae4eb330f6add991` |
+| `data/terax-ai-sessions.json` | `f9f2400eb4aa3d62218bc86fdb9f160148d33e0aa8fe95cb513c40f0ec9225fd` |
+| `model-metadata.json` | `9fea7e91ab0f06245623cba435610c5742fc678cf32b1c1f0af7a9b50dbbe983` |
+
+Commit scope: **`test(ai): compare local coding model`**. One fresh ForgeBoard
+mission, natural terminal state, comparison limitations documented. No push.

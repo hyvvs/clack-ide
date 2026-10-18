@@ -38,7 +38,7 @@ import {
   prepareSessionChat,
   sendMessageToSession,
 } from "@/modules/ai/store/chatRuntime";
-import { setSessionEffort } from "@/modules/ai/store/reasoningEffort";
+import { sessionEffort, setSessionEffort } from "@/modules/ai/store/reasoningEffort";
 import {
   cancelRun,
   chats,
@@ -57,7 +57,8 @@ import {
   updateSelfHostedProfiles,
 } from "@/modules/settings/store";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { generateText } from "ai";
+import { streamText, tool } from "ai";
+import { z } from "zod";
 import { createRoot } from "react-dom/client";
 import { createOllamaStreamTrace, ollamaDiagnosticMetrics, ollamaReplayParams } from "@/test/ollamaStreamTrace";
 import { createOllamaModel, ollamaBody } from "@/modules/ai/lib/ollamaModel";
@@ -82,7 +83,7 @@ type Configuration = {
   root: string;
   server: string;
   report: string;
-  realProduct?: { phase: Phase; maxOutput?: number; singleSpec?: boolean; reasoningChoice?: "automatic" | "none"; traceStreams?: boolean; prepareOnly?: boolean };
+  realProduct?: { phase: Phase; modelId?: string; maxOutput?: number; singleSpec?: boolean; reasoningChoice?: "automatic" | "none"; traceStreams?: boolean; prepareOnly?: boolean };
   streamDiagnostic?: { body: Record<string, unknown>; sourceRequestId: string };
 };
 type Part = {
@@ -197,6 +198,8 @@ function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace
 export async function runRealLocalProduct(config: Configuration) {
   assert(config.realProduct, "Missing real product phase");
   const phase = config.realProduct.phase;
+  const modelId = config.realProduct.modelId ?? "qwen38-uncensored:latest";
+  assert(["qwen38-uncensored:latest", "qwen3-coder:30b"].includes(modelId), "Unauthorized comparison model");
   const trace = config.realProduct.phase === "stream-diagnostic" ? createOllamaStreamTrace() : undefined;
   const evidence = audit(config.report, trace, config.realProduct.traceStreams);
   if (trace) {
@@ -278,7 +281,7 @@ export async function runRealLocalProduct(config: Configuration) {
         ),
       ),
       "real-qwen",
-      "qwen38-uncensored:latest",
+      modelId,
     );
     state = setProfileOverride(
       state,
@@ -340,7 +343,7 @@ export async function runRealLocalProduct(config: Configuration) {
   if (phase !== "restart") {
     const probed = await createSelfHostedProbeClient().refresh({
       endpointId: "real-qwen",
-      selectedModelId: "qwen38-uncensored:latest",
+      selectedModelId: modelId,
       allowPrivateNetwork: true,
     });
     assert(probed.connected, "Authorized Ollama tunnel unavailable");
@@ -355,7 +358,7 @@ export async function runRealLocalProduct(config: Configuration) {
   }
   const state = usePreferencesStore.getState().selfHostedInference;
   const profile = state.profiles.find(
-    (p) => p.transportModelId === "qwen38-uncensored:latest",
+    (p) => p.transportModelId === modelId,
   );
   assert(profile, "Persisted exact model profile missing");
   const selection = selfHostedSelectionId(profile);
@@ -367,7 +370,7 @@ export async function runRealLocalProduct(config: Configuration) {
           profile.id,
           await createSelfHostedProbeClient().read({
             endpointId: "real-qwen",
-            selectedModelId: "qwen38-uncensored:latest",
+            selectedModelId: modelId,
             allowPrivateNetwork: true,
           }),
         );
@@ -392,11 +395,16 @@ export async function runRealLocalProduct(config: Configuration) {
   if (phase === "preflight") await add("real-preflight", "builtin:coder");
   if (phase === "mission-a") {
     await add("real-mission-a", "builtin:coder");
-    if (config.realProduct.reasoningChoice)
-      await setSessionEffort(
-        "real-mission-a",
-        config.realProduct.reasoningChoice,
-      );
+  }
+  let reasoningControl: unknown;
+  if (["mission-a", "system-preflight"].includes(phase) && config.realProduct.reasoningChoice) {
+    const id = phase === "mission-a" ? "real-mission-a" : "real-preflight";
+    const session = useChatStore.getState().sessions.find(s => s.id === id);
+    assert(session, "Reasoning preflight session unavailable");
+    const captured = sessionEffort(session);
+    await setSessionEffort(id, config.realProduct.reasoningChoice);
+    reasoningControl = { requested: config.realProduct.reasoningChoice, effective: config.realProduct.reasoningChoice, capability: captured.capability };
+    evidence.emit({ kind: "reasoning-control", at: Date.now(), sessionId: id, control: reasoningControl });
   }
   if (phase === "offline") await add("real-offline", "builtin:coder");
   await usePeerTaskStore.getState().hydrate({
@@ -498,11 +506,14 @@ export async function runRealLocalProduct(config: Configuration) {
   let systemProbe: string | undefined;
   try {
     if (phase === "system-preflight") {
+      const preflightSession = useChatStore.getState().sessions.find(s => s.id === "real-preflight");
+      assert(preflightSession, "Preflight session missing");
       const model = await buildConfiguredLanguageModel(
         selection,
         EMPTY_PROVIDER_KEYS,
         {
           selfHostedInference: state,
+          reasoning: sessionEffort(preflightSession),
           capturedModelIdentity:
             selfHostedTransportIdentity(selection, state) ?? undefined,
           inferenceScope: {
@@ -512,7 +523,7 @@ export async function runRealLocalProduct(config: Configuration) {
           },
         },
       );
-      const result = await generateText({
+      const result = streamText({
         model,
         messages: [
           {
@@ -524,16 +535,19 @@ export async function runRealLocalProduct(config: Configuration) {
             content:
               "Continue the same answer without repeating prior text. This is a bounded transport check, with no tools or file changes.",
           },
-          { role: "user", content: "Reply with exactly READY." },
+          { role: "user", content: "Reply with exactly READY. Do not call tools." },
         ],
+        tools: { acceptance_probe: tool({ description: "Compatibility schema only; must not be called.", inputSchema: z.object({ value: z.string() }) }) },
         maxOutputTokens: 2048,
         maxRetries: 0,
       });
-      systemProbe = result.text;
+      systemProbe = await result.text;
       assert(
         systemProbe.trim().length > 0,
         "Native multi-system transport probe did not complete",
       );
+      assert((await result.toolCalls).length === 0, "Compatibility preflight returned a tool call; nothing was executed");
+      evidence.emit({ kind: "compatibility-preflight", at: Date.now(), modelId, text: systemProbe, finishReason: await result.finishReason, usage: await result.usage, toolExecutionCount: 0, reasoningControl });
     }
     if (phase === "preflight" && !config.realProduct.prepareOnly)
       await run(
@@ -704,6 +718,7 @@ export async function runRealLocalProduct(config: Configuration) {
       traceStreams: config.realProduct.traceStreams ?? false,
       prepareOnly: config.realProduct.prepareOnly ?? false,
       correctionEvidence,
+      reasoningControl,
       systemProbe,
       planSnapshots,
       limits,

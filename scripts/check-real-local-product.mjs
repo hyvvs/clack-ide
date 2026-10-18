@@ -21,12 +21,14 @@ const maxOutput = process.env.CLACK_PRODUCT_MAX_OUTPUT ? Number(process.env.CLAC
 assert(maxOutput === undefined || (Number.isSafeInteger(maxOutput) && maxOutput >= 256 && maxOutput <= 16384), "Output allowance must be 256-16384 whole tokens");
 const singleSpec = process.env.CLACK_PRODUCT_SINGLE_SPEC === "1";
 const traceStreams = process.env.CLACK_PRODUCT_TRACE === "1";
+const modelId = process.env.CLACK_PRODUCT_MODEL ?? "qwen38-uncensored:latest";
+assert(["qwen38-uncensored:latest", "qwen3-coder:30b"].includes(modelId), "Use an explicitly authorized installed comparison model");
 const prepareOnly = process.env.CLACK_PRODUCT_PREPARE_ONLY === "1";
 assert(!prepareOnly || phase === "preflight", "Metadata-only preparation must use preflight");
 assert(!singleSpec || !["resume-a", "mission-b"].includes(phase), "Single-spec runs forbid manual continuation and peer missions");
 const reasoningChoice = process.env.CLACK_PRODUCT_REASONING || undefined;
 assert(reasoningChoice === undefined || ["automatic", "none"].includes(reasoningChoice), "Reasoning choice must be automatic or none");
-assert(reasoningChoice === undefined || phase === "mission-a", "Reasoning override is only supported for a fresh Mission A acceptance run");
+assert(reasoningChoice === undefined || ["mission-a", "system-preflight"].includes(phase), "Reasoning override requires Mission A or its compatibility preflight");
 const endpoint = "http://127.0.0.1:11435";
 let streamDiagnostic, replaySource;
 if (phase === "stream-diagnostic") {
@@ -72,7 +74,7 @@ const server = createServer(async (request, response) => {
   const json = value => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(value)); };
   try {
     if (request.method === "OPTIONS") { response.statusCode = 204; response.end(); return; }
-    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, maxOutput, singleSpec, reasoningChoice, traceStreams, prepareOnly }, streamDiagnostic });
+    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, modelId, maxOutput, singleSpec, reasoningChoice, traceStreams, prepareOnly }, streamDiagnostic });
     if (!["/report", "/evidence", "/approval", "/correction"].includes(request.url) || request.method !== "POST") { response.statusCode = 404; return json({ error: "Unknown acceptance route" }); }
     let body = "";
     for await (const chunk of request) { body += chunk; assert(body.length < 64 * 1024 * 1024, "Acceptance payload exceeded bound"); }
@@ -145,8 +147,8 @@ try {
   const data = path.join(owned, "data"); await mkdir(data, { recursive: true });
   await cp(data, `${output}.data-before`, { recursive: true, errorOnExist: true, force: false });
   const env = Object.fromEntries(["PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "HOME", "LANG"].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []));
-  Object.assign(env, { APPDATA: data, LOCALAPPDATA: data, TEMP: owned, TMP: owned, CLACK_ACCEPTANCE_ROOT: owned, CLACK_REAL_PRODUCT_PHASE: `${phase}-${attempt}`, CLACK_ACCEPTANCE_OLLAMA_URL: `${endpoint}/api/chat`, CLACK_ACCEPTANCE_URL: `${vite.resolvedUrls.local[0]}coworking-acceptance.html?configuration=${encodeURIComponent(`${local}/configuration`)}` });
-  if (streamDiagnostic || (traceStreams && phase === "mission-a")) env.CLACK_ACCEPTANCE_RECEIVE_TRACE = "1";
+  Object.assign(env, { APPDATA: data, LOCALAPPDATA: data, TEMP: owned, TMP: owned, CLACK_ACCEPTANCE_ROOT: owned, CLACK_REAL_PRODUCT_PHASE: `${phase}-${attempt}`, CLACK_ACCEPTANCE_MODEL: modelId, CLACK_ACCEPTANCE_OLLAMA_URL: `${endpoint}/api/chat`, CLACK_ACCEPTANCE_URL: `${vite.resolvedUrls.local[0]}coworking-acceptance.html?configuration=${encodeURIComponent(`${local}/configuration`)}` });
+  if (streamDiagnostic || (traceStreams && ["mission-a", "system-preflight"].includes(phase))) env.CLACK_ACCEPTANCE_RECEIVE_TRACE = "1";
   child = spawn(path.join(repository, "src-tauri/target/codex-test/debug/examples", `coworking_acceptance${process.platform === "win32" ? ".exe" : ""}`), [], { cwd: root, env, windowsHide: true });
   child.once("exit", (code, signal) => { childExit = { pid: child.pid, code, signal, at: Date.now() }; });
   console.log(JSON.stringify({ event: "native-host-start", pid: child.pid, runnerPid: process.pid, at: Date.now(), boundMs: 90 * 60 * 1000 }));

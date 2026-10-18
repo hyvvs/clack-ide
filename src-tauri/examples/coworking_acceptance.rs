@@ -62,7 +62,7 @@ fn main() {
     let builder = if std::env::var("CLACK_ACCEPTANCE_RECEIVE_TRACE").as_deref() == Ok("1") {
         use std::io::Write;
         let phase = std::env::var("CLACK_REAL_PRODUCT_PHASE").expect("diagnostic phase");
-        assert!(phase.starts_with("stream-diagnostic-") || phase.starts_with("mission-a-"));
+        assert!(phase.starts_with("stream-diagnostic-") || phase.starts_with("mission-a-") || phase.starts_with("system-preflight-"));
         assert!(phase
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-'));
@@ -226,7 +226,10 @@ fn main() {
                             let bytes: Vec<u8> = serde_json::from_value(value["body"].clone())
                                 .expect("serialized inference body required");
                             let body: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON body required");
-                            assert_eq!(body["model"], "qwen38-uncensored:latest");
+                            let model = std::env::var("CLACK_ACCEPTANCE_MODEL")
+                                .unwrap_or_else(|_| "qwen38-uncensored:latest".into());
+                            assert!(matches!(model.as_str(), "qwen38-uncensored:latest" | "qwen3-coder:30b"));
+                            assert_eq!(body["model"], model);
                             assert_eq!(body["options"]["num_ctx"], 32768);
                             let directory = std::env::var("CLACK_ACCEPTANCE_ROOT").expect("owned root");
                             let mut file = std::fs::OpenOptions::new().create(true).append(true)

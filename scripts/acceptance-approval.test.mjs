@@ -33,6 +33,16 @@ afterEach(async () => {
 
 const nativeParserAvailable = process.platform === "win32" || spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { timeout: 5000, windowsHide: true }).status === 0;
 describe.skipIf(!nativeParserAvailable)("native per-approval literal workspace effect policy", () => {
+  it("uses the same confined effect policy for the explicitly authorized coder comparison root", async () => {
+    root = path.join(directory, "forgeboard-qwen3coder-20261017-01");
+    await mkdir(path.join(root, ".git"), { recursive: true });
+    expected.workspaceRoot = root;
+    subject.workspaceRoot = root;
+    subject.cwd = root;
+    const result = await decide("Set-Content probe.txt -Value 'probe'");
+    expect(result).toMatchObject({ approved: true, targets: [path.join(root, "probe.txt")] });
+    expect((await decide("Set-Content ../outside -Value 'no'")).approved).toBe(false);
+  });
   it("keeps the earlier disposable probe and resolves every sequential operation", async () => {
     const decision = await decide();
     expect(decision).toMatchObject({ approved: true, targets: Array(3).fill(path.join(root, "test.txt")) });
