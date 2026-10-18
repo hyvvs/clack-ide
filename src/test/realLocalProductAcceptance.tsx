@@ -57,7 +57,7 @@ import {
   updateSelfHostedProfiles,
 } from "@/modules/settings/store";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { streamText, tool } from "ai";
+import { streamText, tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { createRoot } from "react-dom/client";
 import { createOllamaStreamTrace, ollamaDiagnosticMetrics, ollamaReplayParams } from "@/test/ollamaStreamTrace";
@@ -83,7 +83,7 @@ type Configuration = {
   root: string;
   server: string;
   report: string;
-  realProduct?: { phase: Phase; modelId?: string; maxOutput?: number; singleSpec?: boolean; reasoningChoice?: "automatic" | "none"; traceStreams?: boolean; prepareOnly?: boolean };
+  realProduct?: { phase: Phase; modelId?: string; toolProtocol?: boolean; maxOutput?: number; singleSpec?: boolean; reasoningChoice?: "automatic" | "none"; traceStreams?: boolean; prepareOnly?: boolean };
   streamDiagnostic?: { body: Record<string, unknown>; sourceRequestId: string };
 };
 type Part = {
@@ -109,7 +109,7 @@ function assert(value: unknown, message: string): asserts value {
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // Observe native response channels without replacing routing or provider responses.
-function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace>, traceStreams = false) {
+function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace>, traceStreams = false, captureProtocol = false) {
   type Event = { kind: string; bytes?: number[]; [key: string]: unknown };
   const descriptor = Object.getOwnPropertyDescriptor(
     Channel.prototype,
@@ -138,6 +138,7 @@ function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace
       const decoder = new TextDecoder();
       let line = "";
       let first = false;
+      let capturedBytes = 0;
       descriptor.set?.call(this, (event: Event) => {
         if (
           typeof event?.requestId !== "string" ||
@@ -147,6 +148,12 @@ function audit(report: string, trace?: ReturnType<typeof createOllamaStreamTrace
           return;
         }
         if (event.kind === "chunk" && event.bytes) {
+          if (captureProtocol) {
+            capturedBytes += event.bytes.length;
+            if (capturedBytes <= 1024 * 1024)
+              emit({ kind: "tool-protocol-raw-chunk", requestId: event.requestId, at: Date.now(), bytes: event.bytes });
+            else emit({ kind: "tool-protocol-capture-overflow", requestId: event.requestId, at: Date.now(), capturedBytes });
+          }
           requestTrace?.receive(event.bytes, Date.now());
           if (!first) {
             first = true;
@@ -201,7 +208,7 @@ export async function runRealLocalProduct(config: Configuration) {
   const modelId = config.realProduct.modelId ?? "qwen38-uncensored:latest";
   assert(["qwen38-uncensored:latest", "qwen3-coder:30b"].includes(modelId), "Unauthorized comparison model");
   const trace = config.realProduct.phase === "stream-diagnostic" ? createOllamaStreamTrace() : undefined;
-  const evidence = audit(config.report, trace, config.realProduct.traceStreams);
+  const evidence = audit(config.report, trace, config.realProduct.traceStreams, config.realProduct.toolProtocol);
   if (trace) {
     assert(config.streamDiagnostic, "Missing explicit diagnostic replay body");
     const { body, sourceRequestId } = config.streamDiagnostic;
@@ -503,6 +510,7 @@ export async function runRealLocalProduct(config: Configuration) {
   };
   let correctionSent = false;
   let correctionEvidence: unknown;
+  let protocolResult: unknown;
   let systemProbe: string | undefined;
   try {
     if (phase === "system-preflight") {
@@ -523,30 +531,41 @@ export async function runRealLocalProduct(config: Configuration) {
           },
         },
       );
-      const result = streamText({
-        model,
-        messages: [
+      const probeMessages = config.realProduct.toolProtocol ? [
+        { role: "system" as const, content: "You are a tool-using assistant. Follow the user's tool request." },
+        { role: "user" as const, content: 'Call get_test_value exactly once with value "protocol-check". Do not answer in prose.' },
+      ] : [
           {
-            role: "system",
+            role: "system" as const,
             content: "Follow the user request. Preserve original constraints.",
           },
           {
-            role: "system",
+            role: "system" as const,
             content:
               "Continue the same answer without repeating prior text. This is a bounded transport check, with no tools or file changes.",
           },
-          { role: "user", content: "Reply with exactly READY. Do not call tools." },
-        ],
-        tools: { acceptance_probe: tool({ description: "Compatibility schema only; must not be called.", inputSchema: z.object({ value: z.string() }) }) },
+          { role: "user" as const, content: "Reply with exactly READY. Do not call tools." },
+        ];
+      const tools: ToolSet = config.realProduct.toolProtocol
+        ? { get_test_value: tool({ description: "Harmless diagnostic value lookup; no filesystem, shell or external effects.", inputSchema: z.object({ value: z.string() }) }) }
+        : { acceptance_probe: tool({ description: "Compatibility schema only; must not be called.", inputSchema: z.object({ value: z.string() }) }) };
+      if (config.realProduct.toolProtocol) evidence.emit({ kind: "tool-protocol-input", at: Date.now(), modelId, messages: probeMessages, toolName: "get_test_value", toolExecutionCount: 0 });
+      const result = streamText({
+        model,
+        messages: probeMessages,
+        tools,
         maxOutputTokens: 2048,
         maxRetries: 0,
       });
       systemProbe = await result.text;
-      assert(
-        systemProbe.trim().length > 0,
-        "Native multi-system transport probe did not complete",
-      );
-      assert((await result.toolCalls).length === 0, "Compatibility preflight returned a tool call; nothing was executed");
+      const calls = await result.toolCalls;
+      if (config.realProduct.toolProtocol) {
+        protocolResult = { text: systemProbe, calls, finishReason: await result.finishReason, usage: await result.usage, toolExecutionCount: 0 };
+        evidence.emit({ kind: "tool-protocol-result", at: Date.now(), modelId, result: protocolResult });
+      } else {
+        assert(systemProbe.trim().length > 0, "Native multi-system transport probe did not complete");
+        assert(calls.length === 0, "Compatibility preflight returned a tool call; nothing was executed");
+      }
       evidence.emit({ kind: "compatibility-preflight", at: Date.now(), modelId, text: systemProbe, finishReason: await result.finishReason, usage: await result.usage, toolExecutionCount: 0, reasoningControl });
     }
     if (phase === "preflight" && !config.realProduct.prepareOnly)
@@ -720,6 +739,7 @@ export async function runRealLocalProduct(config: Configuration) {
       correctionEvidence,
       reasoningControl,
       systemProbe,
+      protocolResult,
       planSnapshots,
       limits,
       outcomes: [{ name: `real-product-${phase}`, taskIds: [] }],

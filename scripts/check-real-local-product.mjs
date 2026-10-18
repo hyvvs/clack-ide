@@ -23,6 +23,8 @@ const singleSpec = process.env.CLACK_PRODUCT_SINGLE_SPEC === "1";
 const traceStreams = process.env.CLACK_PRODUCT_TRACE === "1";
 const modelId = process.env.CLACK_PRODUCT_MODEL ?? "qwen38-uncensored:latest";
 assert(["qwen38-uncensored:latest", "qwen3-coder:30b"].includes(modelId), "Use an explicitly authorized installed comparison model");
+const toolProtocol = process.env.CLACK_PRODUCT_TOOL_PROTOCOL === "1";
+assert(!toolProtocol || phase === "system-preflight", "Tool protocol diagnostics require the non-executing preflight phase");
 const prepareOnly = process.env.CLACK_PRODUCT_PREPARE_ONLY === "1";
 assert(!prepareOnly || phase === "preflight", "Metadata-only preparation must use preflight");
 assert(!singleSpec || !["resume-a", "mission-b"].includes(phase), "Single-spec runs forbid manual continuation and peer missions");
@@ -74,7 +76,7 @@ const server = createServer(async (request, response) => {
   const json = value => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(value)); };
   try {
     if (request.method === "OPTIONS") { response.statusCode = 204; response.end(); return; }
-    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, modelId, maxOutput, singleSpec, reasoningChoice, traceStreams, prepareOnly }, streamDiagnostic });
+    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, modelId, toolProtocol, maxOutput, singleSpec, reasoningChoice, traceStreams, prepareOnly }, streamDiagnostic });
     if (!["/report", "/evidence", "/approval", "/correction"].includes(request.url) || request.method !== "POST") { response.statusCode = 404; return json({ error: "Unknown acceptance route" }); }
     let body = "";
     for await (const chunk of request) { body += chunk; assert(body.length < 64 * 1024 * 1024, "Acceptance payload exceeded bound"); }
@@ -163,6 +165,15 @@ try {
   let requests = [];
   try { requests = (await readFile(`${output}.requests.jsonl`, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (toolProtocol) {
+    assert.equal(requests.length, 1, "Tool protocol probe must send exactly one inference");
+    const body = requests[0].body;
+    assert.equal(body.model, modelId);
+    assert.deepEqual(body.options, { num_ctx: 32768, num_predict: 2048 });
+    assert.equal(body.think, false);
+    assert.equal(body.stream, true);
+    assert.deepEqual(body.tools.map(t => t.function.name), ["get_test_value"]);
+  }
   if (streamDiagnostic) {
     assert.equal(requests.length, 1, "Diagnostic must send exactly one inference and never execute a tool loop");
     assert.deepEqual(requests[0].body, streamDiagnostic.body, "Diagnostic changed captured wire content");

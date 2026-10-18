@@ -4762,3 +4762,220 @@ engineering-quality conclusion remains preserved; no memory redesign is proposed
 
 Commit scope: **`test(ai): compare local coding model`**. One fresh ForgeBoard
 mission, natural terminal state, comparison limitations documented. No push.
+
+## qwen3-coder native tool protocol investigation
+
+### Scope and Isolation (2026-10-18)
+
+Started from **`1407d4e660baf2779026c679638a80747e6064db`**, clean `main`,
+**49 ahead / 0 behind** the recorded `origin/main`, without fetching/pushing.
+An elevated process inventory found no competing Clack acceptance host, Clack
+Node/Vite/Vitest run, Cargo or rustc process. Existing SSH forwarding was reused;
+no unrelated process was terminated. No ForgeBoard specification was sent and
+no ForgeBoard experiment was run in this checkpoint.
+
+Exactly **three harmless inference requests** were sent, sequentially: Qwen3.8
+through Clack, coder through Clack, then one direct coder native request. Two
+metadata-only preparation phases made **zero inference requests**. Both native
+hosts exited normally. No returned tool was executed, no tool follow-up was
+sent, and both diagnostic workspaces still contain **only .git**, with clean
+unborn Git state. Cloud inference **0**, fallback **Never** throughout.
+
+Local ignored evidence is under `src-tauri/target/real-qwen-product/`:
+
+- `tool-protocol-control-20261018-01/`: Qwen3.8 metadata preparation, single
+  `system-preflight-1.*`, reconstructed raw `.response.ndjson` and
+  `tool-protocol-summary.json`; workspace `workspace/`.
+- `tool-protocol-coder-20261018-01/`: corresponding coder records/workspace.
+- `tool-protocol-20261018/`: `coder-metadata.json`, `control-metadata.json`,
+  exact relevant `*-template-excerpts.txt`, direct request/response/result at
+  `direct-coder-stream.*`, and bounded existing Ollama journal captures.
+
+No production TS/Rust, model, Modelfile, parser, global configuration, network
+binding or service was changed. No logging was enabled and Ollama was not
+restarted. Only non-executing acceptance instrumentation/tests and this additive
+report changed. Prior acceptance results above remain historical evidence.
+
+### Installed Model and Template Evidence
+
+Read-only `/api/version`, `/api/tags` and `/api/show` report **Ollama 0.40.5**.
+Existing service logs independently identify its selected rendering paths.
+
+| Property | qwen3-coder:30b | qwen38-uncensored:latest |
+| --- | --- | --- |
+| Digest | `06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca` | `0e163794a8b9cdd6e234013b1a27d2e58f06f48d20413a0c2e3e370faaef5505` |
+| Architecture | qwen3moe, 30.5B, Q4_K_M | qwen35, 27.3B, Q4_K_M |
+| Advertised context | 262144 | 262144 |
+| Capabilities | completion, tools | tools, thinking, completion |
+| Selected template route in journal | renderer_parser, renderer=qwen3-coder, parser=qwen3-coder | gguf_chat_template |
+| Visible `/api/show.template` | `{{ .Prompt }}` | 170-line Jinja template |
+| Exposed parent name | Empty | Empty |
+
+Coder's Modelfile explicitly declares **RENDERER qwen3-coder / PARSER
+qwen3-coder**. The placeholder template is therefore **not evidence of missing
+tool support**. No system prompt is exposed. Installed defaults: repeat_penalty
+**1.05**, temperature **0.7**, top_k **20**, top_p **0.8**; stop strings
+`<|im_start|>`, `<|im_end|>`, `<|endoftext|>`. FROM exposes a local content blob,
+not a named parent; its bytes were not inspected. Coder thinking metadata is
+`values:[false], default:false`.
+
+Qwen3.8's installed Jinja tool section (lines 57-68) serializes JSON tool
+definitions inside `<tools>`, then requires an outer `<tool_call>` around the
+inner `<function=...>` / `<parameter=...>` blocks. Tool history (lines 121-143)
+uses that same wrapper. It also handles `<think>` and chat boundary tokens.
+It does **not** instruct a fundamentally different JSON-only call syntax.
+
+The official version-matched coder renderer likewise inserts tool definitions
+inside `<tools>`, but renders their definitions as function/parameter tags rather
+than Qwen3.8's JSON definitions. It requires the same outer call wrapper, permits
+prose before a call, and renders wrapped call history. This is an existing
+official implementation for this exact renderer, not a proposed replacement.
+[Ollama v0.40.5 coder renderer](https://github.com/ollama/ollama/blob/v0.40.5/model/renderers/qwen3coder.go).
+Installed selection plus successful probes do not support a claim that the
+model is packaged incorrectly or lacks a compatible template.
+
+### Exact Serialized Request
+
+The normal Clack configured native model/AI SDK path sent this captured JSON.
+For the Qwen3.8 control, **only model differs**; an exact object comparison of
+the captured native bodies established that messages, schema and controls match.
+The direct coder control reused the coder body without changing any field.
+
+```json
+{
+  "messages": [
+    { "content": "You are a tool-using assistant. Follow the user's tool request.", "role": "system" },
+    { "content": "Call get_test_value exactly once with value \"protocol-check\". Do not answer in prose.", "role": "user" }
+  ],
+  "model": "qwen3-coder:30b",
+  "options": { "num_ctx": 32768, "num_predict": 2048 },
+  "stream": true,
+  "think": false,
+  "tools": [{
+    "function": {
+      "description": "Harmless diagnostic value lookup; no filesystem, shell or external effects.",
+      "name": "get_test_value",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": { "value": { "type": "string" } },
+        "required": ["value"],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  }]
+}
+```
+
+Destination **`http://127.0.0.1:11435/api/chat`**, existing localhost tunnel to
+native Ollama. Reasoning **None / think:false**, context **32768**, output
+**2048**, stream **true**; no forced tool choice, alternate API, seed, sampling
+override or prompt hints. Normal native idle **60s** / overall **600s** bounds
+were preserved; direct observation used those same bounds. `/api/ps` verified
+loaded **32768** context for both models. No conversation content or credentials
+were included, only the diagnostic prompt/schema.
+
+### Native Results and Adapter Comparison
+
+| Probe | Native valid frames | Native calls | Assistant text | Provider input/output tokens | Provider total duration |
+| --- | ---: | ---: | --- | --- | --- |
+| Qwen3.8 through Clack | 1 | 1 | Empty | 311 / 27 | 19.006664836s, including 15.296485865s load |
+| Coder through Clack | 2 | 1 | Empty | 298 / 23 | 9.822699028s, including 8.820028158s load |
+| Coder direct native | 2 | 1 | Empty | 298 / 23 | 0.392327295s, warm; 297 cached input tokens |
+
+Every native call is **get_test_value({value:"protocol-check"})**. All final
+frames have **done:true / done_reason:stop** with actual provider usage, no
+stall, malformed/dropped frame, reasoning output or textual markup. Clack
+preserved each observed call's name, arguments and native ID and correctly
+reported SDK **finishReason:tool-calls**. Native `stop` versus SDK `tool-calls`
+is expected adapter normalization, not a lost call. Tool executions **0**.
+
+The direct POST finished in **525ms** observed client wall time, HTTP **200**;
+the raw response contains the structured call, independently of Clack's parser.
+No structured provider field was lost by Clack. These are protocol checks,
+not comparative performance or engineering-quality measurements; load/cache
+state differs. The test tool has **no execute implementation**, and there is
+no agent tool loop in this diagnostic phase.
+
+Non-streaming and OpenAI-compatible controls were **not performed**: native
+streaming succeeded through both routes, resolving the primary question without
+additional inference. This checkpoint establishes no streaming/non-streaming
+difference and does not propose switching production to OpenAI compatibility.
+
+| Evidence | SHA256 |
+| --- | --- |
+| Captured coder body / direct POST JSON serialization | `376b4590b8e16e94c4660c696287d33ccaf6262ddf636962d7d886ea1503e148` |
+| Qwen3.8 reconstructed raw native response | `e492c6d7e929ace5c0f3d8bb5c2b8154ade3a773272674d23fa87140f4caa603` |
+| Coder through Clack reconstructed raw native response | `a70731ab49f092765ac0fc1e47c8fc38b4cb3b564c5cff5a9ff1371341b707a9` |
+| Direct coder raw native response | `ea3378df7911bb942b8d5fdae6458b2f0740dd43c94bde52e327f8c006fa876e` |
+
+### Earlier Markup, Parser Contract and Ownership
+
+The prior mission remains **ENGINE-BLOCKED / NATIVE TOOL-PROTOCOL BOUNDARY**,
+with zero executed tools or coding work. Its text has a `<function=list_directory>`
+and `<parameter=path>` block, followed by `</function></tool_call>`, **without
+the opening `<tool_call>`**. That exact structural defect is preserved above.
+It is not JSON, a structured native call, or the complete expected wrapper.
+
+The official version-matched parser enters call parsing only after the literal
+opening wrapper. Without it, the function-looking fragment follows its ordinary
+content path; a dangling closing tag does not establish a call. Invalid content
+inside a recognized call can generate a warning, but the no-opening-tag content
+path need not. This explains the observed native text without requiring a
+Clack response defect.
+[Ollama v0.40.5 coder parser](https://github.com/ollama/ollama/blob/v0.40.5/model/parsers/qwen3coder.go).
+
+Existing read-only journal evidence contains successful HTTP 200 completions,
+32768-token slots and the expected template routes. No tool-parser warning,
+template error or generation error appears in the inspected original-mission
+window (62 lines) or probe-window capture (bounded to 500 lines, including all
+three completions). This absence is consistent with ordinary-content fallback;
+it does not prove every internal parser step. Server timestamps are about two
+hours ahead of local capture timestamps even after timezone normalization.
+Original raw timestamps were preserved; request duration, token counts and
+request order provide the correlation. No clock was changed.
+
+**Outcome: native qwen3-coder structured tool calls WORK through Clack and
+direct Ollama.** The earlier failure is narrowed to **ENGINE / MODEL-TEMPLATE
+TOOL-FORMAT DEVIATION (missing required opening wrapper)** at/before Ollama's
+native tool-interpretation boundary, not the Clack request or response parser.
+This is a classification of the observed mission output, **not a claim that
+all coder calls are incompatible**. No valid wrapped call rejected by Ollama
+was observed, so an Ollama parser/template implementation defect is not proven.
+Pre-parser token output was not logged; whether model generation or another
+internal engine step omitted the opener cannot be further separated here.
+
+The two identical coder minimal bodies both succeeded. The earlier mission is
+a different payload, so **identical-request intermittent behavior is not
+established**. No general model reliability or sustained coding success is
+inferred from a trivial success. It is sufficient to unblock a separately
+authorized future coding comparison, which was **not started**.
+
+Executing XML/prose as a Clack fallback is **not justified**. Ordinary assistant
+content is untrusted data, and promoting it into an action would bypass the
+structured-tool/approval boundary. No text parser, XML recovery, model/template
+repair or provider switch was added. Memory, retrieval, scheduler, PeerTasks,
+context budgeting, reasoning, continuation and effect safeguards are unchanged.
+
+### Verification and Completion
+
+- Focused **42 tests passed / 4 files**, no skips: `ollamaToolProtocol` (3),
+  `ollamaModel`, `ollamaStreamTrace`, `acceptanceComparison`. New cases retain
+  malformed text as text, preserve structured calls for both exact models,
+  capture serialized native controls/schema, and prove no executor/follow-up.
+- `npm.cmd run check-types`: passed after the harness tools map was explicitly
+  typed as the SDK ToolSet. Initial harness-only type error was corrected
+  before any diagnostic inference; no production fix was needed.
+- Focused Biome lint on the changed runner, acceptance fixture and protocol
+  test: zero diagnostics/rewrites. Runner `node --check` and `git diff --check`:
+  passed. Native acceptance-example builds/preparation and both single-inference
+  native probes passed on this Windows host; one direct native probe passed
+  against the existing Linux Ollama service. No native GUI interaction or
+  macOS/Linux Clack-native verification is claimed.
+- No Rust files changed, no full frontend/build/Rust suites were redundantly
+  rerun under this evidence-only checkpoint's focused verification policy.
+  No installed model changes, extra model downloads, cloud inference, ForgeBoard
+  rerun, tool execution, subsequent checkpoint or push.
+- Commit scope: **`test(ai): classify qwen coder tool protocol`**. Raw captures
+  remain local/ignored; no credentials, model blobs or unrelated work staged.
