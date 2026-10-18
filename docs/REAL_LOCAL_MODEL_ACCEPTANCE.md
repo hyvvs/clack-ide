@@ -5703,3 +5703,313 @@ still throw compaction-protected-budget. B1 remains a hard gate.
   They are preserved untouched and excluded from staging/commit. Verification
   results above are the actual completed runs for this checkpoint, not a claim
   that later concurrent edits or the unrelated Rust example were verified.
+
+## Post-315b568 qwen3-coder Sustained Validation: 2026-10-18
+
+### Scope, Isolation and Controls
+
+This is Stage 1 of the requested multi-stage local-model validation. Starting
+HEAD was **315b568**, main, 52 ahead / 0 behind recorded origin/main. Six
+pre-existing tracked modifications were preserved: this report's separate
+Qwen3.8 IQ4_XS section and the five acceptance-harness files listed above. They
+were used as found, not reverted, edited or included in this checkpoint's commit.
+No Computer Use or native GUI interaction was performed.
+
+Fresh evidence ID: **forgeboard-qwen3coder-post315b568-01**.
+Fresh workspace: **C:/Users/Hayden/Documents/forgeboard-qwen3coder-20261018-03**.
+The requested evidence ID was retained; a dated workspace name was necessary
+for the existing disposable-workspace approval guard. Initialization created
+only .git, with no seed implementation or commit. Metadata-only preparation
+sent **zero inference requests**. Process inspection found no other Clack,
+acceptance host, Cargo/Rust build or Vite/test runner before the mission.
+
+The existing SSH tunnel was reachable, localhost-only on port 11435. Ollama
+remained **0.40.5**. Exact model **qwen3-coder:30b**, digest
+**06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca**,
+Q4_K_M / 30.5B / qwen3moe, advertised maximum 262144, completion/tools
+capabilities and no advertised thinking capability. It was initially unloaded;
+the terminal loaded-runtime report confirmed **context_length=32768**.
+Loaded size was 15449152550 bytes, size_vram 15223163452 bytes. These are
+observed allocation values, not proof that larger contexts are hardware-safe.
+
+All **27** actual native requests used /api/chat through the existing tunnel,
+num_ctx **32768**, num_predict **2048**, reasoning **None**, think:false,
+fallback **Never**, and zero cloud inference. No sampling, timeout, template,
+model, installed tag, service, firewall, permissions architecture or global
+configuration changed. The normal production 60-second stream-idle and
+600-second request deadlines, tool selection, trusted-workspace acceptance
+profile, approval responder, memory/retrieval and continuation behavior remained.
+No approval was requested; no evaluator approval or user-message injection was
+needed. The first shell command used the advertised PowerShell (pwsh.exe)
+environment and succeeded: cd to this workspace followed by && npm install.
+
+The identical complete ForgeBoard specification was sent **once**, SHA256
+**f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801**.
+No benchmark/context-fix hints, reminder, manual Continue, requirement resend,
+model-specific prompt, evaluator implementation or mid-run setting/source edit
+occurred. Source-freeze checks cover **1265 tracked files**, all unchanged
+through the live mission. Isolated native/Vite processes exited after the final
+report; no abandoned acceptance process was found.
+
+### Outcome and Chronology
+
+**Primary: CLACK_CONTEXT / PROTECTED-BUDGET AFTER AUTOMATIC CONTINUATION /
+INCOMPLETE.** The native host stayed healthy and produced the final report;
+this is not TEST_HARNESS/host interruption or a provider/model deadline failure.
+The fixture's ok:true means it recorded the terminal state, not that ForgeBoard
+passed. The captured product run state is failed.
+
+| Measurement | Observed Result |
+| --- | --- |
+| First response text | 17.055 seconds after first native request |
+| First structured tool call | 18.429 seconds |
+| First file write observed | 28.351 seconds |
+| Persistence-source write observed | 85.610 seconds; not yet runtime-verified |
+| First App.tsx observed | 171.351 seconds; placeholder UI, not a working task board |
+| Total runner elapsed | 230.735 seconds |
+| Completed native requests / structured calls | **27 / 27** |
+| Successful / failed tool executions | **27 / 0** |
+| File writes | **18**, all completed with native result identity |
+| Other tools | 7 create_directory, 1 list_directory, 1 bash_run |
+| Malformed textual tool intents / empty responses | **0 / 0** observed |
+| Stream failures / stalls / provider deadline terminations | **0 / 0 / 0** |
+| Normal same-agent automatic continuations | **1**, after step 24 |
+| Approvals / delegation / cloud inference | **0 / 0 / 0** |
+| Provider final responses | 27 done_reason=stop; **7654** reported output tokens total |
+| Model-executed tests / builds | **0 / 0** |
+
+The run passed the prior request-18 ordinal, completed ten more requests than
+the old 17-request run, and naturally exercised verified-write projection at
+requests 23 and 24. It then failed **before request 28**. The new request was
+never sent; its provider usage is unknown. Minimum headroom among requests
+actually sent was **1348** at request 22. Last sent request 27 required
+**30355**, headroom **2413**. These are native-wire estimates, distinct from
+the SDK preparation that blocked the next request.
+
+### Live Successful-Effect Receipts and Savings
+
+Both pressured requests carried the same **ten** distinct historical-write
+receipts. The offline audit checks every actual receipt's session, message,
+part index, completed tool result and SHA256 against the unchanged durable
+transcript. Each original native pair is also recovered from earlier captured
+requests. Restoring those pairs for measurement does not execute them.
+
+| Pressure Boundary | SDK Required Before | SDK Required After | SDK Input Saved | Native Required Before / After | Native Input / Required Saved |
+| --- | ---: | ---: | ---: | --- | --- |
+| Request 23 | **32979** | **25469** | **6828** | **31803 / 24288** | **6832 / 7515** |
+| Request 24 | **34104** | **26593** | **6828** | **32855 / 25340** | **6832 / 7515** |
+
+These are alternative representations of the **same request**, with the same
+schemas, context, output reserve and margin formula. The SDK and native layers
+have different envelope/serialization costs. Request 23's native representation
+without receipts would fit, but its SDK preparation would not. Savings must not
+be summed across the two requests as if twenty distinct effects were retired.
+
+Actual native pressure-boundary components:
+
+| Boundary | System | Schemas | Conversation | Output Reserve | Margin | Required | Headroom | Receipts |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 23 | 3617 | 7502 | 9099 | 2048 | 2022 | **24288** | **8480** | 10 |
+| 24 | 3617 | 7502 | 10055 | 2048 | 2118 | **25340** | **7428** | 10 |
+
+No current failure, uncertain effect, pending approval or repeated-target write
+existed at either pressure boundary. The latest write remained verbatim:
+call_oqrvck6l (frontend main) at 23; call_eoqcijgl (App) at 24. No effect was
+replayed or superseded. All 18 final authored-file hashes match their original
+write inputs and remain unchanged after independent verification.
+
+Thus **315b568's pressure-only current-turn path works in a real mission**.
+This does not establish that its representations survive every continuation
+ownership boundary or that compaction as a whole is sufficient end to end.
+
+### New Continuation Boundary
+
+Requests 25-27 contain **zero** write receipts. Normal continuation starts a new
+agent preparation with the previous assistant UI turn in originals; that turn
+contains the first 24 tool steps. The original user message stays protected.
+The previous assistant turn is not intrinsically protected, but is the latest
+intact tool group and is retained as the mandatory recent tail. Its old write
+bodies return to hot context. The current implementation projects verified
+writes only inside extra, not inside that original-message tail.
+
+Exact offline production-planner reconstruction of the blocked preparation:
+
+| Mandatory Material | Estimated Tokens |
+| --- | ---: |
+| Core / agent system | 3260 / 442 = **3702** |
+| Schemas/options, 8 exposed | **2803**, 5668 schema bytes |
+| Original user/environment envelope | **1194** |
+| Previous assistant original unit, first 24 steps | **17633** |
+| Current extra, steps 25-27 | **2677** |
+| Conversation total | **21504** |
+| Input total | **28009** |
+| Output reserve | **2048** |
+| Safety margin | **2801** |
+| Required / ceiling | **32858 / 32768**, excess **90** |
+
+Original groups are [0,1) user/protected and [1,2) assistant/not intrinsically
+protected. Covered end is 0; reconstructed tailStart is **1**, tail target
+4282. The intact assistant group alone is 17633, but the existing rule always
+retains the latest intact group. All 21504 conversation tokens consequently
+remain mandatory. No older eligible assistant group exists outside that tail.
+The planner throws compaction-protected-budget before extraction can run.
+No memory revision, successful memory extraction or retrieved evidence exists
+in this run. The ten receipt-bearing pairs remain durable and digest-valid;
+no evidence corruption or model/context identity change caused the stop.
+
+Owners: chatRuntime.ts makeChat captures originals for the next transport;
+agent.ts prepareStep separates original finalMessages from stepMessages extra;
+conversationCompaction.ts creates original units and confirms candidate sources
+from extra after protected pressure; compactionPlan.ts projects verified writes
+only from projected.blocks[originals.length] and retains the intact recent tail.
+This is a specific unresolved continuation/history-representation boundary,
+not proof of provider context exhaustion or a reason to redesign memory.
+**No repair, context increase, relaxed B1 margin, continuation bypass or rerun
+was attempted.** This checkpoint stops at the user's new-blocker gate.
+
+### Correction Trigger Limitation
+
+The fixed correction observer was enabled, not single-spec suppression mode.
+It recorded **16** qualifying write events, but never detected page size 50.
+The authored tasks route materially contains multiline req.query destructuring
+with a standalone **limit = 50** line. Offline replay of the unchanged
+currentPage50 detector returns no match for that form; there was no accepted
+todo plan to supply a match. This is a **secondary TEST_HARNESS / CORRECTION
+DETECTION false negative**. The two small model-definition files sit in a models
+directory excluded by the observer's existing evidence-path guard; the remaining
+16 writes already exceed the three-write threshold, so that exclusion did not
+cause this missed page-size trigger.
+
+The correction was sent **zero** times. Durable history contains exactly one
+user specification, and current code still says 50. **Retention of 25 is
+untested, not failed.** This is not a completed corrected comparison. No reminder,
+manual correction or detector repair was injected to salvage the same attempt.
+
+### Independent Project Verification
+
+Verification used a byte/hash-identical copy under the isolated evidence
+directory, not repairs to the original workspace. Only declared npm dependencies
+were installed; no missing dependency was added to a manifest. All 18 authored
+files in both original and copy still match their pre-verification hashes.
+
+| Surface | Factual Result |
+| --- | --- |
+| Backend source | Port 4317, project/task CRUD, filters/search and JSON persistence source exist; partial, not an accepted working backend |
+| Backend tests | One model-authored file with two cases; independent Jest run failed to load undeclared supertest, **0 tests executed** |
+| Backend build/start | tsc fails on missing supertest/socket.io and implicit socket type; start fails on MODULE_NOT_FOUND socket.io |
+| API CRUD/filter/search runtime | Not verified: unchanged entry point cannot start; no substitute evaluator server implemented |
+| Persistence across restart | Source exists; **not verified** because backend cannot start |
+| SSE | **Not implemented**: socket.io is not SSE, no text/event-stream endpoint or mutation event wiring observed |
+| Frontend | Mock Project Alpha/Beta cards, loading/error skeleton; no working project/task workflow |
+| Frontend tests/build | No test files; Vitest exits 1. Vite production build fails because index.html is missing; App also imports missing App.css |
+| Model test/build execution | None; the only model shell effect was successful root npm install |
+| Canary state | Port 4317 and title check >120 in source; page size remains 50; no 750ms debounce implementation found |
+| README | Present with setup/dev/test/build/architecture text, but claims more than the unfinished implementation delivers |
+| Runtime data/source control | .gitignore absent; runtime JSON data not ignored; repository remains unborn, no project commit |
+
+Independent commands: root npm ci and backend/frontend npm install succeeded;
+backend npm test -- --runInBand --forceExit exited 1; frontend npm test -- --run
+exited 1; root npm run build exited 1; backend npm run start exited 1.
+These are unfinished-project failures, not Clack repository gate failures or
+proof the interrupted model could not subsequently debug them. Missing
+socket.io/supertest, HTML/CSS, tests, realtime and actual frontend behavior were
+not repaired. No API mutation/restart/SSE pass is claimed.
+
+The first read-only Git ignore/history probes were sandbox-denied; the separately
+preserved independent-git-verification.json rerun with approved access confirms
+check-ignore exit 1 and commit count 0. It supersedes only the denied Git fields
+in independent-project-verification.json, not the successful file-hash checks
+or actual command logs.
+
+### Write-File Guidance Fix
+
+**Deferred at the Stage-1 stop gate; no production change or guidance tests in
+this checkpoint.** The inconsistency remains observable in the fresh request 1:
+the system recommends write_file for new files and a parent listing before it,
+while the 16 advertised tool schemas omit write_file. A later native model call
+to the permitted SDK tool did succeed and expanded selection; this distinction
+does not make the initial advertised guidance contract accurate. No Qwen-specific
+prompt patch or permissive tool-selection workaround was introduced.
+
+### Installed-Model Comparison and Preferred Model
+
+**Stage 3 not started.** Metadata listed all requested installed candidates:
+qwen3-coder:30b, Qwen3.6 35B-A3B Q4_K_M, Gemma4 26B-A4B Q4_K_M and Qwen3.6
+27B IQ3_M, plus the two pre-existing Qwen3.8 tags. Exact tag names, digests,
+sizes and discovered capabilities are preserved in model-metadata-before.json.
+No new model was downloaded, imported, modified or overwritten. No other model
+received a smoke test or ForgeBoard mission in this checkpoint.
+
+| Candidate | New Structured-Tool Evidence | New ForgeBoard Result | Ranking Status |
+| --- | --- | --- | --- |
+| qwen3-coder:30b | 27/27 native structured calls during Stage 1; no separate smoke inference | 27 requests, 18 writes, then Clack continuation-context block | Strongest observed coding candidate; preferred/default designation deferred |
+| Qwen3.6 35B-A3B Q4_K_M | Not run | Not run | Deferred |
+| Gemma4 26B-A4B Q4_K_M | Not run | Not run | Deferred |
+| Qwen3.6 27B IQ3_M | Not run | Not run | Deferred |
+
+No winner of an unperformed shootout is declared. qwen3-coder's earlier
+material advantage over qwen38-uncensored remains valid and this mission adds
+reliable sustained tool use; the Clack stop must not be reassigned as a model
+exhaustion failure. It is **not yet promoted to preferred/default local coder**
+on a healthy completed baseline. Qwen3.8 ForgeBoard testing remains retired.
+
+### Larger Context and Normal-User UX
+
+Stages 4-6 are **deferred**, not passed. The prompt's nominated new-download
+candidate devstral-small-2:24b remains a candidate only; this checkpoint adds no
+download recommendation, measurement or disk/VRAM safety claim. Downloads: **0**.
+The prompt's possible next **49152** context test was **not run**: no preferred
+model was established on a healthy 32K baseline. No 48K/64K or larger-context
+recommendation is inferred from the 262144 advertisement or current allocation.
+
+Normal-user Local AI settings, ease of context adjustment, per-model persistence,
+Automatic default readiness, capability labels and output/context separation
+were **not audited in this gated checkpoint**. No UX change or native interaction
+was attempted. These remain pending assessment, not newly verified deficiencies
+or completed controls. The acceptance harness remains developer infrastructure.
+
+### Readiness, Verification and Handoff
+
+Final classification: **LOCAL AI BLOCKED**, specifically for the requested
+sustained autonomous completion claim. Native tools/streaming, zero-cloud
+operation, initial verified receipts and automatic continuation all made real
+progress, but the unresolved continuation-context boundary still stops this
+mission. The correction detector also needs a bounded future repair before a
+valid corrected model comparison. Do not benchmark other models on this blocked
+baseline or call this end-to-end healthy merely because request 18 was passed.
+
+- Focused **179 tests passed / 8 files**, zero skips: verifiedWriteHistory,
+  compactionPlan, toolFailureRetention, conversationCompaction, contextBudget,
+  agentCompaction.integration, acceptanceComparison and acceptanceApprovalLifecycle.
+- **npm.cmd run check-types passed**; new offline diagnostic **node --check**
+  and focused Biome lint passed with zero diagnostics/rewrites. **git diff --check
+  passed**. No production TS/Rust source changed; full frontend/build/lint/Rust
+  gates were not rerun under the evidence-only policy. The unchanged baseline
+  remains 2905 frontend tests and lint 71 warnings / 2 infos from 315b568, not a
+  new full-suite result. The isolated native acceptance-example build passed.
+- New script scripts/check-post-effect-coder-run.mjs performs offline assertions,
+  receipt/source validation, exact blocked-budget reconstruction and source-copy
+  verification, with network disabled. It neither executes agent tools nor
+  performs inference. Local ignored evidence includes setup/model metadata,
+  source freezes, preflight, actual native request/receive/stream captures,
+  durable session data, correction state, post-effect-run-audit-2.json,
+  independent command/verification/Git reports and evidence manifests.
+- Exact next work is the **continuation original-tail/verified-receipt boundary**
+  and the **multiline page-size correction detector**, in a separately authorized
+  bounded fix. Stage-2 guidance alignment, installed-model comparison, preferred
+  model decision, context feasibility and normal-user UX remain unstarted.
+- Evidence-only commit: **test(ai): verify post-effect-compaction coder run**.
+  Only this additive record and the new offline audit are staged. Pre-existing
+  report edits, five harness-file modifications, safety stashes, delegation work
+  and autonomous_tracker/ remain untouched/uncommitted. No push. No resumed
+  mission, second inference attempt, later stage or production repair followed
+  the observed new-blocker gate.
+
+| Primary Preserved Record | SHA256 |
+| --- | --- |
+| mission-a-1.json | `ecd474d4bf8926cb230c92ca673113f8c742abd0b015cd1702411f1eb27473c7` |
+| mission-a-1.requests.jsonl | `2e8440948ad04a1ac58c9fb1f1619950bcf07e73aa244c2c96f16ba9a2deb4ce` |
+| mission-a-1.jsonl | `3a089b86c8d77670c0e063e5151c69834f191a7b8ce96e81c8755903135068be` |
+| mission-a-1.receive.jsonl | `54178f6d767cf582b6729b57a1a5153f9d132e664aff33b2deabdef95f98e9f2` |
+| data/terax-ai-sessions.json | `7ffc5c1a8baaee9791670e229ac87f0b1a6d61b3a364c930c073407545088c00` |
+| post-effect-run-audit-2.json | `d160b5b897bf7d2efb985b25597512299b529d653abfa11d1fbeb874d123971a` |
