@@ -5281,3 +5281,425 @@ authorization; no production repair was attempted in this acceptance.
 - Only this additive acceptance record is committed, as
   **test(ai): run sustained qwen coder comparison**. Existing reports, safety
   stashes, delegation work and autonomous_tracker/ were not modified. No push.
+
+## qwen3-coder protected-budget investigation
+
+### Successful-Effect Representation Invariants
+
+Written before production implementation in this checkpoint. The offline
+baseline exactly reproduces protected request 18 at **33900 / 32768**. There
+is one original protected user group and no extractable older assistant group;
+the current SDK turn is mandatory extra material. Successful write pairs cost
+**12927** estimated tokens, including **10541** of embedded source text.
+
+The existing write_file host result confirms completed execution, but not that
+the file remains unchanged now. Existing native conversation source persistence
+and source inspection provide ownership, revision and digest validation. A
+receipt must preserve historical effect evidence, not assert current disk state.
+
+- Only settled host-executed write_file pairs with unique original IDs, exact
+  literal absolute input/result path equality, complete content-length result,
+  ok:true and clackWorkspaceWrite:true may qualify. No shell/edit/custom/provider
+  execution, partial/error result or unknown output shape is generalized.
+- Production must first persist the original UI source and inspect its existing
+  native owner/revision-bound part locator/digest. The SDK pair must equal that
+  source. Missing, stale, mismatched or inaccessible evidence is not proof.
+- Only pressure-triggered projection is allowed. A later confirmed file write
+  must exist; the latest successful file write remains verbatim. All repeated
+  target paths remain verbatim because filename equality cannot establish
+  authoritative revision supersession in this result format.
+- Current failures, unresolved pairs, provider-executed effects, duplicate IDs,
+  approval-bearing boundaries and explicitly restored originals stay verbatim.
+- The receipt retains original call/tool identity, exact historical result,
+  canonical target, execution order, source message/part/digest, effect certainty,
+  explicit no-replay language and the fact that current state/supersession are
+  not established. No approval identity is dropped: such boundaries do not qualify.
+- Original call/result remain durable and unchanged. Existing same-conversation
+  source restoration pins and returns the original pair without executing it;
+  B1 and the shared retrieval allowance still bound that restoration.
+- Receipts activate only when smaller than the original pair. No context/output,
+  margin, timeout, tool-selection or continuation safety is relaxed. Irreducible
+  protected overflow must still throw compaction-protected-budget.
+- No model, tool execution, ForgeBoard continuation or larger-context experiment
+  is permitted during diagnosis, implementation or offline verification.
+
+### Evidence and Primary Classification
+
+Starting point: **db0f836**, clean main, 51 ahead / 0 behind the recorded
+origin/main. This is an offline investigation of the preserved
+**forgeboard-qwen3coder-20261018-02** run, not another model acceptance run.
+Primary classification: **B - CLACK_CONTEXT / SUCCESSFUL EFFECT HISTORY**.
+The old policy preserved large, settled write inputs as mandatory current-turn
+history even when trusted historical results plus exact durable source anchors
+could represent them safely in less space. The retention question is B: replay
+safety does not require every old full file body in every hot request, but this
+successful-write case lacked a narrowly validated receipt. Existing persistence,
+source inspection and original-pair restoration can support that representation.
+
+Diagnostic owner: scripts/check-coder-protected-context.mjs. It imports the
+production SDK conversion, planner, estimator and native serializer; global fetch
+throws on any attempted request. It reads the preserved transcript, captured
+requests and finish frames, checks the original session-store SHA256 and exact
+UI-message equality, and reads/hashes the ten authored files without changing
+them. Native source verification is replayed offline against that validated
+snapshot using the existing part-digest semantics; this is **not live native IPC
+verification**. No model, agent tool, shell command in ForgeBoard, continuation
+or new context-size experiment occurred. Read-only Git status is diagnostic.
+
+Local ignored output directory:
+src-tauri/target/protected-context-20261018/. Final records are analysis-5.json,
+analysis-5-request-18.native.json and analysis-5-request-18.optimized.json.
+Earlier diagnostic iterations are preserved, not overwritten. Full source bodies
+and transcripts remain local, not copied into Git.
+
+| Final Offline Record | SHA256 |
+| --- | --- |
+| analysis-5.json | `4a724f97f2c10dfedc2c2eae9060efad35cf3dfd77e333ee0f54fc08aaad914f` |
+| analysis-5-request-18.native.json | `33881f48414e57c20a69f0044b2dd7fce4b009a850dddb2cc16f49b5152c6b70` |
+| analysis-5-request-18.optimized.json | `e07cf60bea145ba869c6ce2e103c80ab01042e74b4a77c7fc2f2efaf23ddeda8` |
+
+### Exact Request Budgets and Delta
+
+These are conservative estimates, not provider token counts. Two stages must
+be kept separate: the SDK messages measured by compaction before the adapter,
+and the native Ollama body measured at final transport preflight. Request 17's
+minimum sent headroom of 1325 belongs to the latter, not the former.
+
+| Component | SDK Preparation 17 | Blocked SDK Preparation 18 | Delta |
+| --- | ---: | ---: | ---: |
+| Core instructions | 3175 | 3175 | 0 |
+| Captured agent instructions | 442 | 442 | 0 |
+| System total | 3617 | 3617 | 0 |
+| Exposed tool schemas/options | 7502 | 7502 | 0 |
+| Original user envelope, specification and environment | 1194 | 1194 | 0 |
+| Current SDK turn, including tool history | 15236 | 16643 | 1407 |
+| Conversation total | 16430 | 17837 | 1407 |
+| Estimated input total | **27549** | **28956** | **1407** |
+| Output reserve | 2048 | 2048 | 0 |
+| Safety margin, unchanged 10% formula | 2755 | 2896 | 141 |
+| Required total | **32352** | **33900** | **1548** |
+| Headroom against 32768 | 416 | **-1132** | -1548 |
+
+The entire transition is the final ProjectList.tsx successful write pair
+**call_bu6zmxr3**: call 1266 + result 141 = 1407, plus 141 additional margin.
+No new original-message CompactionGroup appeared. That pair joined the
+mandatory SDK current-turn extra. No schema, plan, memory or environment growth
+caused this transition.
+
+| Component | Captured Native 17 | Hypothetical Native 18 | Delta |
+| --- | ---: | ---: | ---: |
+| System | 3617 | 3617 | 0 |
+| Tools/options | 7502 | 7502 | 0 |
+| Conversation | 15603 | 16996 | 1393 |
+| Estimated input | **26722** | **28115** | **1393** |
+| Margin | 2673 | 2812 | 139 |
+| Output reserve | 2048 | 2048 | 0 |
+| Required | **31443** | **32975** | **1532** |
+| Headroom | **1325** | **-207** | -1532 |
+| Compact serialized JSON bytes | **54066** | **57170** | **3104** |
+| Actual Ollama input/output | **12853 / 586** | **Not sent; unknown** | Not comparable |
+
+The preserved UI snapshot and production conversion reproduce request 17
+semantically. Rust persistence sorts tool-result object keys, changing only the
+order inside reserialized JSON result strings; the regenerated full request is
+not claimed byte-identical to the original capture. The original captured native
+17 body supplies the exact prefix for hypothetical native 18, with the final
+tool result in production field order. Its bytes and estimates are measured
+offline, never transmitted. SDK envelope/providerOptions overhead is 827 input
+tokens at 17 and 841 at 18. Even removing this stage difference would leave
+native 18 over the conservative ceiling by 207; it is not a sole-cause estimator
+fix.
+
+### Non-Overlapping Request-18 Accounting
+
+- Original specification text: **1044**. It occurs once as the original user
+  requirement. Environment/workspace payload: **121**. Remaining user envelope,
+  separator and framing cost: **29**. Together: **1194**.
+- Assistant prose text: **445**; its SDK text-part/provider metadata and array
+  contribution add **572**, for **1017**. These are narration, not an accepted
+  structured plan or additional copies of the specification.
+- All 17 structured call messages including their allocated message framing:
+  **13418**. All 17 result messages including framing: **2208**. Sum: **15626**.
+  Together with prose/metadata: **16643** current-turn extra. Add the user 1194
+  for **17837** conversation. Framing allocated to tool pairs is **527** of
+  that sum, not an extra addition.
+- System 3617 + schemas/options 7502 + conversation 17837 = **28956 input**;
+  add 2048 reserve + 2896 margin = **33900**, exactly the reported failure.
+- Current accepted plan, completed/in-progress/pending plan items and superseded
+  plan cost: **0**. No todo_write occurred. The currentPlanSteps projection from
+  97148e9 remains unchanged and its superseded-plan regressions pass.
+- Memory, retrieval, objective carry, compaction claims, refusal receipts and
+  attachments: **0** in this preparation. No successful extraction or memory
+  revision existed. No duplicate specification arrived through plan, memory,
+  retrieval, objective carry or environment; environment contains runtime/shell
+  information, not another ForgeBoard requirement document.
+
+### Actual Groups and Current-Turn Evidence
+
+CompactionUnit is a complete original UI message, not an arbitrary token span.
+There is exactly **one** original CompactionGroup, start 0/end 1/protected true:
+user **724tGhF1204jMRWs**, 1194 preparation tokens including its environment
+envelope. Requirements remain verbatim. There are no additional original
+assistant groups. All generated material is in assistant UI message
+**GklScwTbXyRHSHpf**, converted into SDK step messages and supplied as mandatory
+extra by agent.prepareStep. It is incorrect to invent five protected groups.
+
+The following are every tool pair inside that extra, sorted by estimated cost.
+Paths are relative to C:/Users/Hayden/Documents/forgeboard-qwen3coder-20261018-02/.
+They are **not** separate CompactionGroups. All were ineligible for old normal
+extraction because they belong to the active turn, not older original groups.
+
+| Tool-Call ID | Tool and Target | Call | Result | Pair | Embedded Source | Historical Effect |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| call_zcd6iix0 | write_file backend/src/api.ts | 3001 | 133 | **3134** | 2898 | Completed host write |
+| call_5rg3ruih | write_file backend/src/datastore.ts | 2860 | 135 | **2995** | 2755 | Completed host write |
+| call_kcxinqq5 | write_file frontend/src/App.tsx | 1802 | 133 | **1935** | 1699 | Completed host write |
+| call_h3969g7k | write_file frontend/src/components/ProjectList.tsx | 1266 | 150 | **1416** | 1155 | Failed; no confirmed mutation |
+| call_bu6zmxr3 | write_file frontend/src/components/ProjectList.tsx | 1266 | 141 | **1407** | 1155 | Completed latest host write |
+| call_segqto08 | write_file frontend/tsconfig.json | 551 | 133 | 684 | 447 | Completed host write |
+| call_8077mxw0 | write_file backend/package.json | 548 | 133 | 681 | 444 | Completed host write |
+| call_6po7q1rs | write_file backend/tsconfig.json | 530 | 133 | 663 | 426 | Completed host write |
+| call_uphgdgw7 | write_file frontend/package.json | 450 | 133 | 583 | 346 | Completed host write |
+| call_rvew5viy | write_file backend/src/index.ts | 349 | 133 | 482 | 245 | Completed host write |
+| call_1u3ok8eb | write_file frontend/src/main.tsx | 230 | 133 | 363 | 126 | Completed host write |
+| call_4jlttt9k | create_directory frontend/src/components | 100 | 127 | 227 | 0 | Confirmed directory result |
+| call_t601zf8x | create_directory backend/src | 95 | 122 | 217 | 0 | Confirmed directory result |
+| call_m72y3fwd | create_directory frontend/src | 95 | 122 | 217 | 0 | Confirmed directory result |
+| call_68wv00w5 | create_directory backend | 93 | 120 | 213 | 0 | Confirmed directory result |
+| call_wpda75bd | create_directory frontend | 93 | 120 | 213 | 0 | Confirmed directory result |
+| call_zq48y5qg | list_directory workspace root | 89 | 107 | 196 | 0 | Read-only listing, no mutation |
+
+The first five rows are the five largest **mandatory extra pairs**, not five
+invented groups. Assistant calls and tool results remain paired with exact IDs.
+Every successful write has the host's ok:true/clackWorkspaceWrite:true result,
+matching literal path and complete content-length count. Historical completion
+is confirmed; no approval occurred. No path or current hash by itself proves
+which command caused the file. No current disk observation establishes an
+authoritative revision superseding a historical body. All directory/listing,
+failure and latest-write material stays unchanged by this checkpoint.
+
+### Successful Writes, Failure and Current State
+
+Ten successful write pairs total **12927**: call cost **11587**, result cost
+**1340**. Non-overlapping decomposition: embedded source **10541**, call
+identity/path/structure beyond source and framing **896**, result payload
+**1180**, message framing **310** (150 call + 160 result). stdout/stderr **0**.
+The host results contain status/path/count, not another full source body.
+Bodies also exist on disk, but disk contents were not automatically injected as
+a second hot copy. This is an unnecessarily large historical command payload,
+not a double-counted file-read bug.
+
+All ten writes target different files. There is no pair of confirmed writes A
+then B to the same authoritative target. The failed ProjectList attempt followed
+by the successful attempt is not confirmed-write supersession. Consequently C
+is not established; repeated-target histories are deliberately left verbatim.
+
+Current file observations below are diagnostic only, not used as production
+receipt proof. Each hash matches both the intended historical UTF-8 content and
+the preserved pre-independent-verification capture. Git reports each exact path
+as **untracked (??)**. The contributing call ID is in the table above; all ten
+entire intended writes completed according to their host result. No mtime is
+used. No file was changed by this investigation.
+
+| Relative Path | Current Bytes | Current SHA256 |
+| --- | ---: | --- |
+| backend/package.json | 696 | `d75d3b581de723158d4e041e1bdca0a3a2a7d24dd1efac9c188f326d4ece6ad9` |
+| frontend/package.json | 565 | `fa15ba0b429a15ce6d30430922bdcdf1574ad9c13025e4b8934af00c775874d0` |
+| backend/tsconfig.json | 821 | `3ab50fcdda9434ac4e91d2feacb6b39e5a2533987ff37dca3c75c8dbf96ca567` |
+| frontend/tsconfig.json | 874 | `93d86475a5fa1b77acb570a90a5908469c2ffa53dfd73e1f61d8e01d5d1741e8` |
+| backend/src/index.ts | 435 | `a2943a7d808e1a500f91cd2ab80ca34f6cf919542ced7d83f3ec59aa94b85274` |
+| backend/src/datastore.ts | 5136 | `ab54b25acd93d0b4bdd886689f5534e8463ed4c5dba27ca149a2feb6458950a8` |
+| backend/src/api.ts | 5530 | `311abe6f97412a27d7be70e7a9ec2d62dc9b0b722a67dfb1d8c9b974424ca603` |
+| frontend/src/main.tsx | 236 | `cb2147cc8c40b34cacc965fc061f5e8bb856cffd12cd024587bf20a201835d5c` |
+| frontend/src/App.tsx | 3386 | `492d0bff6e1ae16ebc8f1a687f188460a34974c011ade7f37bfe11eeb44a1202` |
+| frontend/src/components/ProjectList.tsx | 2487 | `47ceecc3426360f3f4a730b4300415bb448c879d2d9cc2ee053a777d26700256` |
+
+The filesystem failure is **1416** hot tokens: 1266 call + 150 result, including
+1155 embedded source and 31 framing. Native OS error 3 says the parent path was
+not found; there is no successful-effect proof for that attempt. The model then
+created the components directory and completed the same intended write. The
+failure is corrected in observed ordering, not the latest current error, but it
+does **not** meet the existing no-effect receipt contract: that contract requires
+an exact multiline bash_run guard rejection and a later accepted command.
+A native write_file error cannot inherit that certainty from error prose.
+The complete failed pair remains hot; this policy was not expanded.
+
+### Schemas, Plan and Extraction Control Flow
+
+Seventeen exposed tools cost **7502**, with **15314 serialized schema bytes**;
+7381 tokens are attributed to builtin payload and 121 to surrounding schema
+structure. Names: read_file, list_directory, write_file, create_directory, edit,
+multi_edit, grep, glob, bash_run, bash_list, open_preview, todo_write,
+read_agent_output, communicate_peer_task, request_peer_task, cancel_peer_task,
+propose_custom_tool. Existing F1 conservatively pins previously selected names
+for the logical run; the write_file expansion produces the final 17. No later
+shrink occurred. The exact next step did not demonstrably require every peer or
+proposal schema, but that alone does not prove a relevance-policy violation.
+This checkpoint does not force a schema reduction to gain 1132 tokens and does
+not claim every schema was semantically necessary. E is not the primary owner.
+
+Exact owners: agent.ts prepareStep supplies stepMessages.slice(finalMessages.length)
+to conversationCompaction.ts prepare; compactionPlan.ts planCompaction owns the
+currentPlanSteps/failure projections, group/tail selection, assemble and
+protected-budget check. In the original state:
+
+1. Planning **did run**. The pressure branch was entered. It did not return
+   needed:true: it threw before a plan with that field could return.
+2. coveredEnd **0**, tailStart **0**. The original user group was protected;
+   all current-turn extra was mandatory. Eligible older unprotected history:
+   **0**. Compressible/unprotected request cost: **0**.
+3. Protected-only conversation was **17837**. Including system, tools, reserve
+   and margin, protected-only required **33900 / 32768**. Omitting all optional
+   history changes nothing.
+4. planCompaction threw before conversationCompaction could call load,
+   extractionRoute, summarize or extract. No alternate gate blocked a legal
+   extraction. Extracting current-turn bodies as if they were older original
+   groups would violate the architecture. Normal extraction could not legally
+   solve this exact state under the old representation; this ordering was
+   expected, not a compaction-control-flow defect F.
+
+### Same-Request Provider Calibration
+
+| Sent Request | Native Estimated Input | Native JSON Bytes | Ollama Actual Input | Estimate / Actual |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 12043 | 24179 | 5639 | 2.135662 |
+| 9 | 15952 | 32219 | 7734 | 2.062581 |
+| 17 | 26722 | 54066 | 12853 | 2.079048 |
+
+All seventeen same-request rows are retained in analysis-5.json. Ratios range
+2.062581 to 2.136341, stable rather than wildly divergent. Generic punctuation,
+schema and JSON estimates are intentionally conservative compared with the
+model tokenizer/template. The schema share decreases as source history grows;
+it is not the cause of an increasing schema cost. SDK structures add measured
+overhead above native serialization, but do not explain the roughly 2x native
+estimate/provider ratio. Evidence does not isolate a tokenizer component as the
+dominant source of that ratio, nor prove an unserializable-field counting defect
+like ac1c8ed. **No estimator change (D)** is justified by this investigation.
+The blocked request's actual token count is unknown. Provider usage remains
+diagnostic, never substituted for preflight on an unsent request.
+
+### Narrow Production Change and Offline Replay
+
+verifiedWriteHistory.ts implements a bounded, pure current-turn projection and
+the source-confirmation boundary. It accepts only the exact host write_file
+input/result shapes described in the invariants, at most 32 candidates, content
+up to 256 KiB characters and literal absolute paths up to 4096 characters.
+Approval-bearing boundaries, provider-executed tools, malformed/duplicate IDs,
+repeated targets, latest writes, failures and uncertain effects do not qualify.
+Windows drive paths are compared case-insensitively for repeated targets.
+Unsupported/ambiguous paths fail closed. A receipt is emitted only if smaller.
+
+chatRuntime.ts captures the conversation/run/model/agent/workspace and checks
+them around persistence and native inspection. It persists the exact original
+UI transcript using persistCompactionSource/awaitSessionWrites, then uses
+loadConversationMemory/inspectMemorySources under the captured owner and
+revision. Each part digest must match the captured UI source and resolve only
+to that session. Missing/corrupt/stale proof cannot activate a receipt. Proofs
+are revalidated on each pressured preparation, not trusted across requests.
+The existing native workspace/secret-path and source-access controls remain
+authoritative. No new database, durable memory schema or filesystem reread is
+introduced; original call/result data stays in the existing session store.
+
+conversationCompaction.ts attempts this confirmation only after the original
+planner throws compaction-protected-budget. It replans with validated receipts,
+retains the same projection and restoration pins during normal extraction's
+pre-publication check, and uses the existing bounded exact-pair restoration
+mechanism. No hidden summarization or new model call is introduced for receipts.
+The mixed-history integration test initially reproduced an inconsistent
+pre-publication check; carrying the verified source list/pins into that check
+fixes the concrete regression without changing extraction policy.
+
+agent.ts permits confirmation only while request_conversation_evidence remains
+in the permitted SDK tool set and current agent permission is allow, checked
+before and after source confirmation. F1's existing advertised-schema policy is
+unchanged. A deterministic SDK test proves that the permitted restoration tool
+can execute even when F1 has not advertised it, restore the exact historical
+call/result on the next preparation, and never execute the historical write.
+The receipt explicitly names that tool and its original call-ID anchor.
+
+Receipts preserve exact tool/call identity, completed historical result, target,
+ordering/following-write identity, source session/message/part/SHA256 and
+explicit no-replay/current-state-unknown/supersession-unknown statements.
+Restoration uses the original in-memory SDK pair backed by the durable source,
+subject to B1 and the unchanged shared retrieval byte/chunk/round allowances.
+Oversized restoration still fails closed with session history available; a
+receipt is not permission to fabricate or replay missing evidence. Cancellation
+and stale captured-run checks remain authoritative. Private conversation
+ownership, memory/context architecture, PeerTasks and scheduler are unchanged.
+
+Eight old write inputs become receipts in the preserved request: package.json
+and tsconfig.json for both subprojects, backend index/datastore/api, frontend
+App. The small frontend main write is not worth replacing; ProjectList is the
+latest write and its target also appears in the failed attempt, so remains
+verbatim. All other material is preserved. **No supersession is asserted.**
+
+| Offline Request 18 | Before | After Verified Receipts | Reduction |
+| --- | ---: | ---: | ---: |
+| System | 3617 | 3617 | 0 |
+| Tools/options | 7502 | 7502 | 0 |
+| Conversation | 17837 | **10282** | **7555** |
+| Input | 28956 | **21401** | **7555** |
+| Margin, same formula | 2896 | **2141** | 755 |
+| Output reserve | 2048 | 2048 | 0 |
+| Required | 33900 | **25590 / 32768** | **8310** |
+| Headroom | -1132 | **7178** | +8310 |
+
+The same state now prepares safely, with no extraction (needed:false,
+tailStart:0). The optimized hypothetical native body is **42372 bytes**, input
+**20557**, margin **2056**, reserve **2048**, required **24661**, headroom
+**8107**. Exact original-pair restoration is asserted offline. These are
+preparation results, **not** evidence that ForgeBoard subsequently finished.
+Genuine irreducible >32K user requirements and large uncertain mutation history
+still throw compaction-protected-budget. B1 remains a hard gate.
+
+### Verification, Limitations and Stop
+
+- Final focused **164 tests passed / 6 files**, zero skips: verifiedWriteHistory
+  **16**, plus compactionPlan, toolFailureRetention, conversationCompaction,
+  contextBudget and agentCompaction.integration. Coverage includes large
+  settled payloads, durable proof, exact restoration/no replay, latest/repeated
+  targets, provider/failed/uncertain/approval cases, mismatched/duplicate/missing
+  proof, workspace/session isolation, stale run, persistence failure,
+  pressure-only activation, revalidation, irreducible overflow and mixed normal
+  extraction/publication. Existing superseded-plan/failure-receipt tests pass.
+- Final **npm.cmd run check-types passed**. **npm.cmd run lint** passed at the
+  established **71 warnings / 2 informational notices**, no added warning.
+  **npm.cmd test: 2905 passed / 205 files**, zero skips. **npm.cmd run build
+  passed**; four existing INEFFECTIVE_DYNAMIC_IMPORT warnings and the plugin
+  timing advisory remain. Full gates were repeated only after concrete final
+  safety/publication corrections, not after unchanged evidence inspection.
+- Diagnostic **node --check** and focused Biome lint pass. Offline analysis-5
+  reproduces 33900, verifies all current file hashes and exact source
+  restoration, and reports zero inference requests / zero executed agent tools.
+  **git diff --check passed**. This checkpoint changed no Rust source; Rust
+  gates were not run.
+  No native GUI or live provider acceptance is claimed in this checkpoint.
+- Production changes are limited to the new verified-write helper and the
+  existing agent/planner/compactor/chat runtime integration, with deterministic
+  tests, the offline diagnostic and this additive report. Existing historical
+  reports, safety stashes, delegation files and autonomous_tracker/ are untouched.
+  No source template/XML parsing, model, context, output reserve, margin formula,
+  timeout, continuation limit, F1 policy or memory architecture was changed.
+- Historical command, confirmed effect and current disk state remain distinct.
+  No generic successful-shell/edit/custom-tool receipt, approval compression,
+  repeated-write supersession, automatic replay, or new source-retrieval protocol
+  is implemented. Native source APIs are reused, not reimplemented or claimed
+  newly platform-verified.
+- The observed qwen3-coder run **materially outperformed qwen38-uncensored**:
+  17 completed requests/structured tool calls, zero malformed intents/empty
+  responses/stalls/cloud calls, 16 successful tools, ten source writes, recovered
+  filesystem failure, substantive partial backend/frontend and independently
+  verified persistence/API behavior. ForgeBoard remains incomplete; the Clack
+  context stop is separate from model quality. Qwen3.8 ForgeBoard testing stays
+  retired. This evidence alone does not promote coder to a universally reliable
+  or preferred model.
+- Commit scope: **fix(ai): compact verified tool effects**. No ForgeBoard resume,
+  Qwen invocation, larger-context test, subsequent checkpoint or push. Stop after
+  committing this fix; any new live mission requires a separate checkpoint.
+- Final status inspection found five concurrent, unrelated modifications not
+  present at the initial clean-state check: scripts/acceptance-approval.mjs,
+  scripts/check-real-local-product.mjs, src-tauri/examples/coworking_acceptance.rs,
+  src/test/acceptanceComparison.test.ts and src/test/realLocalProductAcceptance.tsx.
+  They are preserved untouched and excluded from staging/commit. Verification
+  results above are the actual completed runs for this checkpoint, not a claim
+  that later concurrent edits or the unrelated Rust example were verified.

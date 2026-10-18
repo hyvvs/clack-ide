@@ -12,6 +12,7 @@ import type { MemoryClaim } from "@/modules/ai/lib/conversationMemory";
 import { handoffObjective } from "@/modules/ai/lib/peerHistory";
 import { failedCommandOutput } from "@/modules/ai/lib/runBudget";
 import { checkShellCommand } from "@/modules/ai/lib/security";
+import { compactVerifiedWrites, type VerifiedWriteSource } from "@/modules/ai/lib/verifiedWriteHistory";
 
 /** A complete original UI message, converted by the existing SDK path. */
 export type CompactionUnit = {
@@ -304,13 +305,15 @@ export function planCompaction(options: {
   threshold?: number;
   memory?: { end: number; claims: readonly MemoryClaim[] };
   verbatimToolCallIds?: readonly string[];
+  verifiedWriteSources?: readonly VerifiedWriteSource[];
 }) {
   const { units: originals, limits, system, tools } = options;
   const groups = groupCompactionUnits(originals);
   const projected = compactResolvedToolFailures([...originals.map(unit => unit.messages), currentPlanSteps(options.extra ?? [])], options.verbatimToolCallIds);
   const units = originals.map((unit, index) => ({ ...unit, messages: projected.blocks[index] }));
-  const extra = projected.blocks[originals.length];
-  const toolReceipts = projected.receipts;
+  const verified = compactVerifiedWrites(projected.blocks[originals.length], options.verifiedWriteSources ?? [], options.verbatimToolCallIds);
+  const extra = verified.messages;
+  const toolReceipts = [...projected.receipts, ...verified.receipts];
   const memory = options.memory;
   const coveredEnd = memory?.end ?? 0;
   if (

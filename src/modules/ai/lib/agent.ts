@@ -1080,6 +1080,15 @@ export async function runAgentStream(opts: RunAgentOptions) {
         targetSeed,
         context: {
           ...opts.compaction,
+          confirmWriteSources: permittedTools.request_conversation_evidence && opts.compaction.confirmWriteSources
+            ? async (candidates) => {
+                const confirm = opts.compaction?.confirmWriteSources;
+                const allowed = () => resolveCurrentAgentPermission("request_conversation_evidence", {}, requestToolContext).outcome === "allow";
+                if (!confirm || !allowed()) return [];
+                const sources = await confirm(candidates);
+                return allowed() ? sources : [];
+              }
+            : undefined,
           remainingCalls: () =>
             Math.max(
               0,

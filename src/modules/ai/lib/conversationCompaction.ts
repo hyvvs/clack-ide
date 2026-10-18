@@ -55,6 +55,7 @@ import {
 import { projectCompletedPeerHistory } from "@/modules/ai/lib/peerHistory";
 import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
 import { contextDigest } from "@/modules/ai/lib/targetContext";
+import { verifiedWriteCandidates, type VerifiedWriteCandidate, type VerifiedWriteSource } from "@/modules/ai/lib/verifiedWriteHistory";
 
 export type CompactionNotice = {
   coveredMessages: number;
@@ -67,6 +68,7 @@ export type ConversationCompactionContext = {
   owner: MemoryOwner;
   originals: UIMessage[];
   ready: () => Promise<void>;
+  confirmWriteSources?: (candidates: VerifiedWriteCandidate[]) => Promise<VerifiedWriteSource[]>;
   remainingCalls: () => number;
   chargeCall: () => Promise<void>;
 };
@@ -366,6 +368,7 @@ export async function createConversationCompactor(options: {
       if (writes.length) await scoped?.validate(true);
       check();
       for (const id of writes) observedWrites.add(id);
+      let verifiedWriteSources: VerifiedWriteSource[] = [];
       const plan = () => {
         const result = planCompaction({
           units,
@@ -374,6 +377,7 @@ export async function createConversationCompactor(options: {
           tools,
           extra,
           verbatimToolCallIds: [...verbatimToolCallIds],
+          verifiedWriteSources,
           threshold: prepared
             ? COMPACTION_POLICY.target
             : COMPACTION_POLICY.trigger,
@@ -385,7 +389,19 @@ export async function createConversationCompactor(options: {
         return result;
       };
       // Without shared evidence, small conversations retain the no-disk fast path.
-      let current = plan();
+      let current: ReturnType<typeof plan>;
+      try { current = plan(); }
+      catch (error) {
+        const confirm = context.confirmWriteSources;
+        if (!(error instanceof CompactionError) || error.code !== "compaction-protected-budget" || !confirm) throw error;
+        const candidates = verifiedWriteCandidates(extra, [...verbatimToolCallIds]);
+        if (!candidates.length) throw error;
+        await context.ready();
+        check();
+        verifiedWriteSources = await memoryOperation(() => confirm(candidates));
+        check();
+        current = plan();
+      }
       if (current.toolReceipts.length) {
         await context.ready();
         check();
@@ -564,6 +580,8 @@ export async function createConversationCompactor(options: {
             system: options.system,
             tools,
             extra,
+            verifiedWriteSources,
+            verbatimToolCallIds: [...verbatimToolCallIds],
             memory: { end, claims },
             threshold: COMPACTION_POLICY.target,
           });

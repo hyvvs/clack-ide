@@ -1,4 +1,6 @@
 import { Chat, type UIMessage } from "@ai-sdk/react";
+import { confirmWriteSources } from "@/modules/ai/lib/verifiedWriteHistory";
+import { inspectMemorySources, loadConversationMemory } from "@/modules/ai/lib/conversationMemory";
 import { prepareSessionFallback } from "@/modules/ai/store/inferenceFallback";
 import { captureSessionTools } from "@/modules/ai/store/customToolCapture";
 import {
@@ -277,6 +279,29 @@ function makeChat(sessionId: string): Chat<UIMessage> {
         owner: { sessionId, workspaceId: session.profile?.workspaceId ?? null },
         originals,
         ready: () => awaitSessionWrites(sessionId),
+        confirmWriteSources: async (candidates) => {
+          const check = () => {
+            const current = owner()?.run;
+            if (current?.state !== "running" || current.startedAt !== run.startedAt || current.workspaceId !== run.workspaceId || current.modelId !== run.modelId || current.agentId !== run.agentId)
+              throw new Error("The captured conversation changed during write-source confirmation.");
+          };
+          return confirmWriteSources({
+            candidates,
+            messages: chats.get(sessionId)?.messages ?? [],
+            workspaceRoot: run.workspaceRoot ?? "",
+            sessionId,
+            check,
+            persist: async (snapshot) => {
+              await persistCompactionSource(sessionId, snapshot);
+              await awaitSessionWrites(sessionId);
+            },
+            inspect: async (locators) => {
+              const view = await loadConversationMemory({ sessionId, workspaceId: run.workspaceId ?? null });
+              if (view.sourceChanged) throw new Error("Original write-source evidence changed.");
+              return inspectMemorySources(view.preparation, locators);
+            },
+          });
+        },
         remainingCalls: () => {
           const current = owner()?.run;
           return current?.state === "running" &&
