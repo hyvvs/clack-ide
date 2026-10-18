@@ -6013,3 +6013,294 @@ baseline or call this end-to-end healthy merely because request 18 was passed.
 | mission-a-1.receive.jsonl | `54178f6d767cf582b6729b57a1a5153f9d132e664aff33b2deabdef95f98e9f2` |
 | data/terax-ai-sessions.json | `7ffc5c1a8baaee9791670e229ac87f0b1a6d61b3a364c930c073407545088c00` |
 | post-effect-run-audit-2.json | `d160b5b897bf7d2efb985b25597512299b529d653abfa11d1fbeb874d123971a` |
+
+## Verified write receipts across continuation history
+
+### Pre-Implementation Proof and Invariants
+
+Written before production changes in this checkpoint, starting at 73cc96c.
+The preserved post315b568-01 evidence reproduces SDK request 27 at **31821**
+and blocked request 28 at **32858 / 32768**. Both already contain **zero**
+successful-write receipts. The actual location/representation transition is
+request 24 to the automatic continuation at 25, not 27 to 28. The latter adds
+542 conversation tokens, 401 schema tokens and 94 margin tokens, total 1037.
+The original user unit costs 1194 and the prior assistant unit costs 17633;
+current extra grows from 2135 to 2677.
+
+Ten actual request-24 receipt anchors resolve to the same completed write
+records in assistant message 8cVix5KkOF1ljZav, conversation real-mission-a.
+The original session snapshot SHA256 remains
+7ffc5c1a8baaee9791670e229ac87f0b1a6d61b3a364c930c073407545088c00.
+Source part digests, call IDs, targets, host results, owner and durable source
+identity have not changed. Moving the immutable SDK turn into original units
+does not invalidate that proof. Existing native persistence/source inspection
+already accepts these owned part locators; no new storage architecture is
+required. Extra-only candidate discovery and extra-only projection are an
+implementation scope gap, not a separate prohibition on source-verified
+original-history representation. Original group closure protects protocol/source
+integrity and uncertainty; it does not make every settled write payload
+intrinsically mandatory verbatim.
+
+- Reuse exactly the existing conservative write_file eligibility predicate:
+  settled host result, exact path/content-length identity, unique call/result,
+  sequential later confirmed write in the same semantic user boundary, bounded
+  candidates and validated durable source. Do not generalize shell/custom/edit
+  effects or infer authority from current disk contents.
+- Evaluate original units plus extra in source order, preserving semantic
+  user/system boundaries. This must not hide a repeated target, duplicate ID,
+  approval or latest write merely because it lies in a different block.
+- Keep original UI messages, source metadata, group ranges, pair closure and
+  session persistence unchanged. Only the outgoing SDK representation may
+  replace a complete eligible protocol pair with a receipt.
+- Keep failures, uncertain/provider-executed effects, approvals, repeated
+  targets, newest writes and explicitly restored originals verbatim under the
+  existing rules. No supersession or current-file-state claim is introduced.
+- Reconfirm sources under the existing owner/run/workspace/digest/permission
+  checks on each pressured preparation. A historical receipt string or earlier
+  successful callback is not fresh proof. Missing or stale proof fails closed.
+- Activate only through the existing protected-pressure fallback. Do not add
+  automatic background confirmation or a new extraction/model call.
+- Preserve historical execution result, exact source anchor, order and explicit
+  no-replay language. Restoration never executes a tool. Keep the existing
+  retrieval byte/chunk/round bounds and B1 checks.
+- A requested original pair must pin its intact original group in the prepared
+  view, including when ordinary memory coverage would otherwise omit that
+  group. This is explicit evidence restoration, not mutation of stored groups
+  or memory coverage. Other eligible pairs may retain their verified receipts.
+- No compaction trigger/target, extraction policy, memory claim, context maximum,
+  output reserve, safety-margin formula, timeout or continuation limit changes.
+  Genuine mandatory overflow must still block.
+- No inference, ForgeBoard tool execution/resume, larger-context experiment,
+  correction-detector change, write_file guidance cleanup or model shootout.
+
+### Exact Request Accounting
+
+Offline reconstruction uses the preserved immutable mission and session records,
+the production SDK conversion, compaction planner and B1 estimator. These are
+conservative request-preparation estimates, not provider-generated token totals.
+All columns below use ceiling **32768**, reserve **2048** and the unchanged
+10-percent input-margin formula. System is core **3260** plus agent **442**.
+
+| Component | Request 27 SDK | Blocked 28 SDK | Delta | Fixed 28 SDK |
+| --- | ---: | ---: | ---: | ---: |
+| System | 3702 | 3702 | 0 | 3702 |
+| Exposed schemas | 2402 | 2803 | +401 | 2803 |
+| Original user unit | 1194 | 1194 | 0 | unchanged |
+| Prior assistant unit, before projection | 17633 | 17633 | 0 | projected |
+| Current extra, before projection | 2135 | 2677 | +542 | projected |
+| Conversation total | 20962 | 21504 | +542 | 13901 |
+| Input total | 27066 | 28009 | +943 | 20406 |
+| Output reserve | 2048 | 2048 | 0 | 2048 |
+| Safety margin | 2707 | 2801 | +94 | 2041 |
+| Required total | 31821 | 32858 | +1037 | 24495 |
+| Headroom | 947 | -90 | -1037 | 8273 |
+| Verified-write receipts | 0 | 0 | 0 | 12 |
+
+The additional exchange is root npm-install call **call_dxcqqmbu**: isolated
+call cost **99**, result **359**, assistant narration/provider metadata **84**,
+total **542**. F1 selected the additional bash_run schema for the fresh request:
+seven schemas / 4877 bytes become eight / 5668 bytes, adding **401** estimated
+tokens. No write changes representation between 27 and 28.
+
+Actual captured native request 27 has conversation **19629**, input **25733**,
+margin **2574**, reserve **2048**, required **30355**, headroom **2413**; system
+and schemas match its SDK preparation. Hypothetically serializing the blocked
+28 exchange gives conversation **20128**, input **26633**, margin **2664**,
+required **31345**, headroom **1423**. That request was **never sent**. Native
+wire and SDK framing estimates differ; this checkpoint changes neither estimator
+nor the authoritative preflight boundary.
+
+Original groups are user **[0,1)** (protected) and assistant **[1,2)** (not
+intrinsically protected). At the old boundary the intact assistant unit was the
+mandatory recent tail, tailStart **1**, coverage **0**. No older unprotected
+assistant group was available for legal extraction. After verified projection,
+the same state fits without extraction, tailStart **0**, needed **false**; no
+memory revision is created and no older history is removed to maximize savings.
+
+### Exact Sources and Representation Transition
+
+All ten rows below belong to conversation **real-mission-a**, assistant message
+**8cVix5KkOF1ljZav**, under workspace
+**C:/Users/Hayden/Documents/forgeboard-qwen3coder-20261018-03**. Paths are relative
+to that root. Every effect has its original exact path, bytesWritten value,
+ok:true and clackWorkspaceWrite:true result, paired to its unique write_file
+call and matching persisted input. Digest verification covers the whole original
+UI tool part, not a current filesystem reread. There is no fabricated effect ID:
+the owned message/part locator, original call ID and digest identify the effect.
+
+Each was a receipt in request **24**, then verbatim from continuation request
+**25**, including both **27** and **28**. None changed semantic effect status.
+Costs are isolated SDK assistant receipt versus full assistant-call/tool-result
+pair; verbatim cost is identical at 27 and 28. Whole-request savings also include
+message framing and are measured separately, not inferred by adding this table.
+
+| Call ID | Target | Part | bytesWritten | Receipt 24 | Verbatim 27 / 28 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| call_ydbibdom | package.json | 10 | 730 | 446 | 648 |
+| call_slvfa31c | backend/package.json | 13 | 660 | 450 | 663 |
+| call_cm15viwe | frontend/package.json | 16 | 535 | 450 | 567 |
+| call_c3vgz3bh | backend/tsconfig.json | 19 | 453 | 450 | 491 |
+| call_zseryf5v | frontend/tsconfig.json | 21 | 535 | 450 | 530 |
+| call_sq0ukki6 | backend/src/index.ts | 26 | 1038 | 451 | 808 |
+| call_dfwd89w1 | backend/src/persistence.ts | 36 | 2080 | 453 | 1362 |
+| call_3hn2kmo6 | backend/src/routes/projects.ts | 41 | 3699 | 455 | 2152 |
+| call_o43xw2wg | backend/src/routes/tasks.ts | 44 | 6392 | 454 | 3492 |
+| call_1m3ub6t5 | backend/src/__tests__/projects.test.ts | 52 | 705 | 461 | 635 |
+
+| Call ID | Unchanged Original Part Digest |
+| --- | --- |
+| call_ydbibdom | `8926199242378863ded0d636b86acf55ba977e199da62713227d2a1ec9065507` |
+| call_slvfa31c | `f9cb209dff5eed4ec40a0bbff1828f550235d93e462e583715a8af67e7111471` |
+| call_cm15viwe | `a720ace431d4f250a0ce107e4f29ab06650783763a7d0d6c64167c9bc5224401` |
+| call_c3vgz3bh | `67e61c49dbeaec343b5b0853596d95572642e4fd125d1d1a40bab6801267d234` |
+| call_zseryf5v | `2df352e4b8d62677e0fa8c39019b3ac12c9d6c077ea5ba5ed412ad3d7f31fe03` |
+| call_sq0ukki6 | `45a1d55642d836cb5e1c97c141ba03ff4030a87023b53bcf0f35056313cc2ff2` |
+| call_dfwd89w1 | `cc080b6c29d2f5655abbe6033b75e52446dfa1da8b736c5490756ab42cb0ac3c` |
+| call_3hn2kmo6 | `ad54548423b9b714b1df4775b186a2c251fd6d428fbfd159c7a13982ec5c0445` |
+| call_o43xw2wg | `996663ea1c831d69d6a2ee14eb8f9487761ddb457c0243c49c35105bd3c77fb8` |
+| call_1m3ub6t5 | `316fb1ea8114db677f74ef091986f57f319df5630dfa0b11eb6954dcfe935ead` |
+
+Request 28 also has two later eligible writes, using the same unchanged rule:
+call_eoqcijgl, frontend/src/App.tsx, part **60**, bytesWritten **1344**, digest
+`e5e1aac80ac74af41c111397061a70be8b745eda51caa5ec9f5c94c8c0e64212`;
+call_megs9kps, frontend/src/index.css, part **63**, bytesWritten **913**, digest
+`353d3f8ed425d062542c58cde63fa0be9a8c6459de21830d4e182d5fe503cb10`.
+Both precede subsequent settled writes. The latest README write
+**call_8dnx9gku** stays verbatim. Small model-definition/main/Vite writes that
+do not save space stay verbatim. Shell install history is not a write receipt.
+
+### Production Ownership and Safety
+
+- **conversationCompaction.ts** previously discovered candidate writes only in
+  current extra. It now discovers them in original units plus extra, in order,
+  only in the existing protected-budget-pressure fallback. Confirmation still
+  persists the unchanged original snapshot and validates owned part locators
+  through the existing native memory/authorization path, with stale-run checks.
+- **compactionPlan.ts** previously passed only projected.blocks[originals.length]
+  to compactVerifiedWrites. It now projects verified writes across all blocks
+  and maps each block back to the same unit identity. Original group closure,
+  tail construction and extraction selection are not recomputed from receipts.
+- **verifiedWriteHistory.ts** adds compactVerifiedWriteBlocks, preserving the
+  prior single-list wrapper. The existing candidate/proof predicate and receipt
+  format are unchanged. Global ordered scanning prevents a block split from
+  hiding repeated targets, duplicate IDs, approvals or semantic user boundaries.
+  Pair projection is atomic, even for a pair spanning blocks. With no proofs,
+  the new helper avoids flattening/scanning and retains the no-disk fast path.
+- Explicit source restoration pins the intact owning group in the prepared
+  view even after memory coverage advances. Otherwise a successful old write
+  could be restored from its receipt but then omitted as already-covered
+  history. This retains evidence only: it changes no stored message, group
+  range, memory revision or coverage and never executes the original tool.
+- Latest writes, repeated-target ambiguity (including Windows path casing),
+  failed/uncertain effects, approvals and provider-executed effects retain the
+  conservative policy. No proof means no successful-write receipt. Previously
+  approved/stale receipt text alone never authorizes a new projection.
+- No source persistence schema, memory architecture, tool execution, agent
+  scheduler, PeerTask, context/output limits, trigger/target percentages,
+  safety-margin formula, timeouts or continuation behavior changed.
+
+### Offline Result and Framing
+
+The same terminal state goes from **32858 / 32768**, headroom **-90**, zero
+receipts, to **24495 / 32768**, headroom **8273**, **12** receipts. Input and
+conversation savings are **7603**; unchanged margin arithmetic contributes
+another **760**, total required-budget savings **8363**. No inference or tool
+execution occurs. The exact same source sequence prepares identically whether
+the former assistant turn is all in extra or is an intact original-history unit
+followed by current extra.
+
+Restricting proof to only the ten actual request-24 receipt anchors already
+solves the block: conversation **14676**, input **21181**, reserve **2048**,
+margin **2119**, required **25348**, headroom **7420**. Those ten recover **6828**
+input / **7510** required-budget tokens at request 28. The earlier live
+requests 23-24 saved **6828** SDK input / approximately **7515** native required
+tokens per request; these are distinct request states/accounting layers, not
+interchangeable measurements. The extra two receipts follow normal eligibility,
+not broadened history removal.
+
+Measured SDK empty assistant framing is **16**, tool **15**, pair **31**, receipt
+assistant **16**. Unit/block boundaries add no model-message framing. The helper
+uses the same text-in-assistant receipt format as current-extra successful-write
+receipts and existing failed-command receipts, and removes the matching result
+atomically. It creates no dangling protocol pair. Restoration is bounded by the
+existing shared byte/chunk/round allowance and B1, including when exact original
+evidence causes real protected overflow.
+
+The new offline audit is **scripts/check-continuation-effect-context.mjs**.
+Local ignored evidence is under
+**src-tauri/target/continuation-effect-context-20261019-01/**: worktree-before.json,
+before.json, after.json and request-28.optimized.json. Baseline before.json was
+captured before production edits; after.json validates the preserved report and
+session SHA256 values, part digests/results, raw blocked budget, proof-backed
+budget and representation equivalence. Source inspection uses offline native
+digest semantics against the immutable session snapshot, not a live IPC claim.
+Network fetch is disabled. The optimized native payload is evidence only and
+was never sent; outputs use exclusive creation so the captured baseline cannot
+be silently overwritten.
+
+### Regression and Verification
+
+- Focused verification: **175 tests / 6 files passed** across verified-write
+  history, compaction plan, conversation compaction, failure retention, B1
+  context budget and agent-compaction integration. Verified-write tests increased
+  from **16** to **27**. New cases cover cross-block pair closure, repeated
+  targets across blocks, semantic user boundaries and cross-block approvals.
+- The continuation lifecycle disposes the current-turn compactor and constructs
+  a fresh compactor with the immutable prior turn as original history. Prepared
+  messages stay identical, persisted originals stay identical, fresh proof is
+  required, exact original call/result is restored, retrieval is charged/bounded
+  and B1 still rejects genuine overflow. Covered-history restoration pins the
+  original group without rewriting its memory revision. The actual SDK-tool
+  restoration test runs with both extra and original-history placement and
+  asserts **zero write_file executions**, including F1-hidden retrieval schemas.
+- Missing proofs fail closed; large failed and uncertain original writes still
+  block as protected overflow. Normal eligible older-history extraction and
+  publication still run alongside original-tail write receipts; no thresholds,
+  memory claims or coverage policy were modified to force or skip extraction.
+- **npm.cmd run check-types passed**. The first invocation exposed only two
+  new-test compatibility issues (SDK union flattening and ES target support for
+  Array.at); those tests were corrected and the failed gate rerun successfully.
+- **npm.cmd run lint passed** at the unchanged **71 warnings / 2 infos** baseline.
+  Focused lint on all four changed TypeScript files has zero diagnostics. New
+  offline script syntax and stdin Biome lint passed without rewrites.
+- **npm.cmd test** ran once: **2916 tests passed / 205 Clack files**. Overall exit
+  was **1** because default Vitest discovery also collected two pre-existing
+  ignored ForgeBoard evidence suites (backend/src and backend/dist projects
+  tests). Both failed at import/collection on missing **supertest**, matching
+  the preserved generated-project limitation. No Clack test failed. The copied
+  project and test discovery configuration were left untouched, no dependency
+  was installed and no ForgeBoard tool/test body was executed. No full-suite
+  rerun was used to hide this gate limitation.
+- **npm.cmd run build passed**, with four existing INEFFECTIVE_DYNAMIC_IMPORT
+  warnings and the plugin-timing advisory. **git diff --check passed**. No Rust
+  production/test source changed in this checkpoint, so Rust gates were not
+  rerun merely because an unrelated pre-existing native-example edit exists.
+- No live model, native GUI, ForgeBoard resume/tool execution, larger context,
+  new model comparison, correction message or provider token claim. This is an
+  offline production regression fix, not a fresh product acceptance result.
+
+### Preserved Conclusions and Stop Boundary
+
+qwen3-coder remains the strongest observed local coding model: the prior live
+run completed **27** requests/tools, **18** successful file writes, meaningful
+backend code/tests, frontend source and README, with **0** malformed calls,
+empty responses, tool errors, stalls or cloud inference and **1** automatic
+continuation. It passed the older request-18 boundary and exercised ten receipts
+in requests 23-24. That remains useful model evidence, not model success.
+
+ForgeBoard remains incomplete/broken: missing socket.io and supertest, frontend
+mock-data skeleton, missing SSE, failed production build, missing index.html and
+App.css, and runtime data not ignored. Those generated-project defects are
+separate from Clack's request-28 preparation stop. The multiline limit = 50
+correction detector remains a separate unchanged harness limitation; no
+correction was sent and retention of 25 remains untested. The write_file
+guidance/toolset mismatch is unchanged. Qwen3.8 remains retired from this local
+coding acceptance track.
+
+Commit scope: the three production TypeScript helpers, verified-write regression
+tests, new offline audit and only this additive report section. The six
+pre-existing worktree edits (including the separate report insertion), safety
+stashes, delegation work and autonomous_tracker/ are preserved and excluded.
+Commit title: **fix(ai): preserve verified effects across continuation**.
+No push. STOP after this fix; any fresh sustained model run, correction-harness
+repair or write_file guidance cleanup requires a separate checkpoint.

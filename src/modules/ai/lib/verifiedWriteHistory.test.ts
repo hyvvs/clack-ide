@@ -1,5 +1,11 @@
 import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import { planCompaction } from "@/modules/ai/lib/compactionPlan";
+import {
+  measureRequest,
+  resolveContextBudget,
+} from "@/modules/ai/lib/contextBudget";
+import { COMPACTION_POLICY } from "@/modules/ai/lib/compactionExtraction";
+import { newRetrievalAllowance } from "@/modules/ai/lib/retrievalAllowance";
 import { contextDigest } from "@/modules/ai/lib/targetContext";
 import { createOllamaModel } from "@/modules/ai/lib/ollamaModel";
 import {
@@ -9,6 +15,7 @@ import {
 } from "@/modules/ai/lib/conversationCompaction.fixture";
 import {
   compactVerifiedWrites,
+  compactVerifiedWriteBlocks,
   confirmWriteSources,
   verifiedWriteCandidates,
 } from "@/modules/ai/lib/verifiedWriteHistory";
@@ -87,6 +94,89 @@ async function setup(messages = snapshot()) {
 afterEach(disposeCompactionFixtures);
 
 describe("verified historical write receipts", () => {
+  it("projects intact pairs across block boundaries without changing source groups or framing", async () => {
+    const f = await setup(),
+      original = structuredClone(f.extra);
+    const sources = await f.confirm();
+    const split = [[f.extra[0]], f.extra.slice(1)];
+    const projected = compactVerifiedWriteBlocks(split, sources);
+    expect(projected.blocks).toHaveLength(2);
+    expect(projected.receipts[0].sourceBlock).toBe(0);
+    expect(projected.blocks.flat()).toEqual(
+      compactVerifiedWrites(f.extra, sources).messages,
+    );
+    const ids = projected.blocks
+      .flat()
+      .flatMap((message) =>
+        Array.isArray(message.content)
+          ? message.content.flatMap((part) =>
+              "toolCallId" in part ? [part.toolCallId] : [],
+            )
+          : [],
+      );
+    expect(ids.filter((id) => id === "old")).toHaveLength(0);
+    expect(ids.filter((id) => id === "current")).toHaveLength(2);
+    expect(f.extra).toEqual(original);
+    expect(
+      measureRequest({ messages: projected.blocks.flat() }).conversation,
+    ).toBeLessThan(measureRequest({ messages: original }).conversation);
+  });
+
+  it("invalidates earlier eligibility when a repeated target arrives in another block", async () => {
+    const f = await setup(),
+      sources = await f.confirm();
+    const repeated = await convertToModelMessages(
+      snapshot([
+        write("repeat", "new content", `${root}/old.ts`),
+        write("last"),
+      ]),
+    );
+    const projected = compactVerifiedWriteBlocks([f.extra, repeated], sources);
+    expect(
+      projected.receipts.some((receipt) => receipt.toolCallId === "old"),
+    ).toBe(false);
+    expect(projected.blocks[0]).toContainEqual(f.extra[0]);
+    expect(projected.blocks[0]).toContainEqual(f.extra[1]);
+    expect(projected.blocks[1]).toContainEqual(repeated[repeated.length - 2]);
+    expect(projected.blocks[1]).toContainEqual(repeated[repeated.length - 1]);
+  });
+
+  it("does not let a later write across a user boundary retire the previous boundary's latest write", async () => {
+    const f = await setup();
+    const previous = f.extra.slice(0, 2);
+    const projected = compactVerifiedWriteBlocks(
+      [
+        previous,
+        [{ role: "user", content: "New request" }, ...f.extra.slice(2)],
+      ],
+      await f.confirm(),
+    );
+    expect(
+      projected.receipts.some((receipt) => receipt.toolCallId === "old"),
+    ).toBe(false);
+    expect(projected.blocks[0]).toEqual(previous);
+  });
+
+  it("keeps historical writes hot when an approval in another block seals the same semantic boundary", async () => {
+    const f = await setup();
+    const pending = {
+      role: "assistant",
+      content: [
+        {
+          type: "tool-approval-request",
+          approvalId: "original-approval",
+          toolCallId: "pending",
+        },
+      ],
+    } as ModelMessage;
+    const projected = compactVerifiedWriteBlocks(
+      [f.extra, [pending]],
+      await f.confirm(),
+    );
+    expect(projected.receipts).toEqual([]);
+    expect(projected.blocks[0]).toEqual(f.extra);
+    expect(projected.blocks[1]).toEqual([pending]);
+  });
   it("retains a small, source-linked historical result without claiming current state or modifying originals", async () => {
     const f = await setup(),
       original = structuredClone(f.extra);
@@ -310,6 +400,204 @@ describe("verified historical write receipts", () => {
 });
 
 describe("pressure-only write receipt integration", () => {
+  it("preserves the verified view across a fresh continuation compactor and restores owned original evidence without replay", async () => {
+    const requirements = textMessage(
+      "requirements",
+      "user",
+      "Keep original constraints.",
+    );
+    const source = [requirements, ...snapshot()];
+    const writes = await setup(source),
+      frozen = structuredClone(source);
+    const first = compactionFixture([requirements]);
+    const current = await first.start({
+      context: {
+        owner: first.view().preparation.owner,
+        originals: first.originals,
+        ready: first.ready,
+        remainingCalls: () => 10,
+        chargeCall: first.chargeCall,
+        confirmWriteSources: () => writes.confirm(),
+      },
+    });
+    const before = await current.prepare(writes.extra.slice(1));
+    current.dispose();
+    const next = compactionFixture(source),
+      allowance = newRetrievalAllowance();
+    let working = 6000;
+    const confirm = vi.fn(() => writes.confirm());
+    const continued = await next.start({
+      allowance,
+      limits: async () => ({ deployed: 32768, workingTarget: working }),
+      context: {
+        owner: next.view().preparation.owner,
+        originals: next.originals,
+        ready: next.ready,
+        remainingCalls: () => 10,
+        chargeCall: next.chargeCall,
+        confirmWriteSources: confirm,
+      },
+    });
+    const after = await continued.prepare();
+    expect(after).toEqual(before);
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(next.call).not.toHaveBeenCalled();
+    expect(source).toEqual(frozen);
+    expect(writes.persist).toHaveBeenCalledWith(frozen);
+    expect(
+      continued.requestEvidence("Restore exact historical write", "old"),
+    ).toMatchObject({ status: "queued" });
+    const restored = await continued.prepare();
+    expect(restored).toContainEqual(writes.extra[1]);
+    expect(restored).toContainEqual(writes.extra[2]);
+    expect(
+      resolveContextBudget(
+        { deployed: 32768, workingTarget: working },
+        measureRequest({ messages: restored }),
+      ).fits,
+    ).toBe(true);
+    expect(allowance).toMatchObject({
+      rounds: 1,
+      chunks: 1,
+      conversationRounds: 1,
+    });
+    expect(allowance.bytes).toBeGreaterThan(0);
+    expect(
+      continued.requestEvidence("Restore another original", "older"),
+    ).toMatchObject({ status: "queued" });
+    working = 2000;
+    await expect(continued.prepare()).rejects.toMatchObject({
+      code: "compaction-protected-budget",
+    });
+    expect(
+      continued.requestEvidence("No unbounded restoration", "older"),
+    ).toMatchObject({ status: "limit" });
+    expect(next.call).not.toHaveBeenCalled();
+    expect(source).toEqual(frozen);
+  });
+
+  it("pins an original receipt's intact group even after valid memory coverage advances", async () => {
+    const requirements = textMessage(
+      "requirements",
+      "user",
+      "Keep original constraints.",
+    );
+    const source = [requirements, ...snapshot()],
+      writes = await setup(source);
+    const f = compactionFixture(source);
+    const compactor = await f.start({
+      alwaysLoad: true,
+      context: {
+        owner: f.view().preparation.owner,
+        originals: f.originals,
+        ready: f.ready,
+        remainingCalls: () => 10,
+        chargeCall: f.chargeCall,
+        confirmWriteSources: () => writes.confirm(),
+      },
+    });
+    expect(JSON.stringify(await compactor.prepare())).toContain(
+      "Clack historical write receipt",
+    );
+    const locators = source.map((message) => ({
+      kind: "message" as const,
+      messageId: message.id,
+    }));
+    await f.memory.read(f.view().preparation, locators);
+    await f.memory.commit({
+      preparation: f.view().preparation,
+      policyVersion: COMPACTION_POLICY.version,
+      start: 0,
+      end: 2,
+      sources: locators,
+      claims: [],
+    });
+    const covered = structuredClone(f.view().revision);
+    expect(
+      compactor.requestEvidence("Restore covered original pair", "old"),
+    ).toMatchObject({ status: "queued" });
+    const restored = await compactor.prepare();
+    expect(restored).toContainEqual(writes.extra[1]);
+    expect(restored).toContainEqual(writes.extra[2]);
+    expect(f.view().revision).toEqual(covered);
+    expect(f.call).not.toHaveBeenCalled();
+  });
+
+  it("requires fresh source proof for pressured original-history writes", async () => {
+    const writes = await setup(),
+      f = compactionFixture([
+        textMessage("requirements", "user", "Preserve source ownership."),
+        ...writes.messages,
+      ]);
+    const compactor = await f.start({
+      context: {
+        owner: f.view().preparation.owner,
+        originals: f.originals,
+        ready: f.ready,
+        remainingCalls: () => 10,
+        chargeCall: f.chargeCall,
+        confirmWriteSources: async () => [],
+      },
+    });
+    await expect(compactor.prepare()).rejects.toMatchObject({
+      code: "compaction-protected-budget",
+    });
+    expect(f.call).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "failed",
+    "uncertain",
+  ])("retains a large %s original write and its protected overflow", async (status) => {
+    const part = {
+      ...write("unresolved", "unresolved evidence ".repeat(10000)),
+      output: { error: status } as unknown as ReturnType<
+        typeof write
+      >["output"],
+    };
+    const writes = await setup(snapshot([part]));
+    const f = compactionFixture([
+      textMessage("requirements", "user", "Preserve current failures."),
+      ...writes.messages,
+    ]);
+    const frozen = structuredClone(f.originals);
+    const compactor = await f.start({
+      context: {
+        owner: f.view().preparation.owner,
+        originals: f.originals,
+        ready: f.ready,
+        remainingCalls: () => 10,
+        chargeCall: f.chargeCall,
+        confirmWriteSources: () => writes.confirm(),
+      },
+    });
+    await expect(compactor.prepare()).rejects.toMatchObject({
+      code: "compaction-protected-budget",
+    });
+    expect(f.originals).toEqual(frozen);
+    expect(f.call).not.toHaveBeenCalled();
+  });
+
+  it("keeps normal older-history extraction available with verified writes in original recent history", async () => {
+    const writes = await setup(),
+      f = compactionFixture();
+    f.originals.push(...writes.messages);
+    const compactor = await f.start({
+      context: {
+        owner: f.view().preparation.owner,
+        originals: f.originals,
+        ready: f.ready,
+        remainingCalls: () => 10,
+        chargeCall: f.chargeCall,
+        confirmWriteSources: () => writes.confirm(),
+      },
+    });
+    const result = await compactor.prepare();
+    expect(JSON.stringify(result)).toContain("Clack historical write receipt");
+    expect(f.call).toHaveBeenCalled();
+    expect(f.memory.commit).toHaveBeenCalled();
+    expect(f.view().revision?.coverage.end).toBeGreaterThan(0);
+  });
   it("preserves verified current-turn receipts while extracting eligible older history", async () => {
     const writes = await setup();
     const f = compactionFixture();
@@ -334,10 +622,14 @@ describe("pressure-only write receipt integration", () => {
       input: { content: body },
     });
   });
-  it("restores via a permitted SDK tool even when F1 has not advertised its schema, without replaying historical writes", async () => {
+  it.each([
+    "extra",
+    "original",
+  ])("restores %s via a permitted SDK tool even when F1 has not advertised its schema, without replaying historical writes", async (location) => {
     const writes = await setup();
     const f = compactionFixture([
       textMessage("requirements", "user", "Keep original constraints."),
+      ...(location === "original" ? writes.messages : []),
     ]);
     const compactor = await f.start({
       context: {
@@ -402,7 +694,7 @@ describe("pressure-only write receipt integration", () => {
       stopWhen: stepCountIs(2),
       prepareStep: async ({ messages, stepNumber }) => {
         const projected = await compactor.prepare([
-          ...writes.extra,
+          ...(location === "extra" ? writes.extra : []),
           ...messages.slice(1),
         ]);
         if (stepNumber === 1) {

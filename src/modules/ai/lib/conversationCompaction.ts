@@ -394,7 +394,7 @@ export async function createConversationCompactor(options: {
       catch (error) {
         const confirm = context.confirmWriteSources;
         if (!(error instanceof CompactionError) || error.code !== "compaction-protected-budget" || !confirm) throw error;
-        const candidates = verifiedWriteCandidates(extra, [...verbatimToolCallIds]);
+        const candidates = verifiedWriteCandidates([...units.flatMap(unit => unit.messages), ...extra], [...verbatimToolCallIds]);
         if (!candidates.length) throw error;
         await context.ready();
         check();

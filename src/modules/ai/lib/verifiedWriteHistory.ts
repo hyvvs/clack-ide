@@ -254,8 +254,25 @@ export function compactVerifiedWrites(
   sources: readonly VerifiedWriteSource[],
   pinned: readonly string[] = [],
 ) {
+  const projected = compactVerifiedWriteBlocks([messages], sources, pinned);
+  return {
+    messages: projected.blocks[0],
+    receipts: projected.receipts.map((receipt) => ({
+      ...receipt,
+      sourceBlock: -1,
+    })),
+  };
+}
+
+export function compactVerifiedWriteBlocks(
+  blocks: readonly ModelMessage[][],
+  sources: readonly VerifiedWriteSource[],
+  pinned: readonly string[] = [],
+) {
   const receipts: VerifiedWriteReceipt[] = [];
-  if (!sources.length) return { messages, receipts };
+  if (!sources.length) return { blocks: [...blocks], receipts };
+  const messages = blocks.flat();
+  const sourceBlocks = blocks.flatMap((block, index) => block.map(() => index));
   const cost = (role: "assistant" | "tool", content: unknown[]) =>
     measureRequest({ messages: [{ role, content }] }).conversation;
   for (const candidate of verifiedWriteCandidates(messages, pinned)) {
@@ -311,7 +328,7 @@ export function compactVerifiedWrites(
       continue;
     receipts.push({
       toolCallId: candidate.toolCallId,
-      sourceBlock: -1,
+      sourceBlock: sourceBlocks[candidate.callIndex],
       sourceBytes: new TextEncoder().encode(
         JSON.stringify([candidate.call, candidate.result]),
       ).byteLength,
@@ -323,20 +340,24 @@ export function compactVerifiedWrites(
   );
   return {
     receipts,
-    messages: messages.flatMap((message) => {
-      if (!Array.isArray(message.content)) return [message];
-      const content: unknown[] = [];
-      for (const part of message.content as Part[]) {
-        const receipt = part.toolCallId ? byId.get(part.toolCallId) : undefined;
-        if (
-          !receipt ||
-          (part.type !== "tool-call" && part.type !== "tool-result")
-        )
-          content.push(part);
-        else if (part.type === "tool-call")
-          content.push({ type: "text", text: receipt.text });
-      }
-      return content.length ? [{ ...message, content } as ModelMessage] : [];
-    }),
+    blocks: blocks.map((block) =>
+      block.flatMap((message) => {
+        if (!Array.isArray(message.content)) return [message];
+        const content: unknown[] = [];
+        for (const part of message.content as Part[]) {
+          const receipt = part.toolCallId
+            ? byId.get(part.toolCallId)
+            : undefined;
+          if (
+            !receipt ||
+            (part.type !== "tool-call" && part.type !== "tool-result")
+          )
+            content.push(part);
+          else if (part.type === "tool-call")
+            content.push({ type: "text", text: receipt.text });
+        }
+        return content.length ? [{ ...message, content } as ModelMessage] : [];
+      }),
+    ),
   };
 }
