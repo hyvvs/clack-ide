@@ -7243,3 +7243,294 @@ Unrelated IQ4_XS/report edits, stashes and autonomous_tracker/ must remain untou
 Evidence-only commit requested: **test(ai): compare devstral local coding model**.
 No push, no model download, no additional inference by this audit, no larger
 context, no other candidate run, no production architecture or service change.
+
+## Devstral pre-output recovery deadline investigation
+
+### Scope and primary result (2026-10-19)
+
+Resumed from `5e80321`. This is an evidence-only investigation, not another
+ForgeBoard acceptance mission. The historical mission remains
+**CLACK-BLOCKED / PRE-OUTPUT RECOVERY DEADLINE / INCOMPLETE**. Its final
+provider cause was unknown at that checkpoint; the newly correlated existing
+Ollama logs now establish that the runner was generating, not silently idle.
+
+Primary investigation classification: **A - INTERMITTENT ENGINE / PRE-OUTPUT
+LATENCY - NOT REPRODUCED**. Exactly one non-executing same-JSON-payload replay
+completed before 120 seconds, with a valid native tool call and normal final
+event. This does not establish that the historical generation would have
+completed before 600 seconds, or that its undisclosed partial tool arguments
+were valid. It does not establish a Clack deadline-policy/control-flow defect.
+No production source, timeout, model setting, context architecture or service
+configuration was changed. No subsequent sustained mission was started.
+
+### Historical request identity and controls
+
+- Evidence: `src-tauri/target/real-qwen-product/devstral-small2-20261019-01/`.
+- Native request ID: `inference-11`; conversation `real-mission-a`, logical run
+  `real-mission-a:1792427287763`.
+- Exact model: `devstral-small-2:24b`; digest
+  `24277f07f62db8f9cb68e9dfc679ea1818a7fbac47a50eff0a701d3f645b63c8`.
+- Destination: existing `http://127.0.0.1:11435/api/chat` SSH tunnel. Ollama
+  `0.40.5`, working context 32768, output 2048, `stream:true`, `think` omitted,
+  no sampling override. Unsupported None remains model/default/Automatic
+  equivalent, not a transmitted no-thinking control. Fallback Never, cloud 0.
+- Captured JSON: 29 messages, 16 schemas, **38,032 UTF-8 bytes** when minified
+  for replay. Original raw serialized key order was not retained by the native
+  recorder, which parsed the request into a JSON value. Replay preserves exact
+  JSON content, messages, schemas and native fields, not a claimed original
+  byte-order hash. Re-serialized payload SHA-256:
+  `adabedc3153d4ee3e560b610d27eb8dfa14b27f5dd6d21e08e1ded2d8c4d3888`.
+- Native B1 input estimate: **18,797** (system 3755, tools 7317, conversation
+  7725); reserve 2048, margin 1880, ceiling 32768, remaining headroom **10,043**.
+  Schema bytes 15,012. These are estimates, not provider usage. The runner log
+  independently reports an 8200-token prompt; request 11 has no final usage.
+- Request 11 was the **original first attempt of the next normal agent step**
+  after request 10's successful edit. No preceding transient-error trigger,
+  retry, recovery restart or continuation is recorded. Ten prior provider
+  completions and zero continuations are preserved; no completed tool was replayed.
+
+### Request-11 timeline
+
+UTC wall times below are recorded local timestamps. Monotonic deltas use the
+native trace's `elapsedUs` minus its dispatch stamp, not cross-host wall-clock
+subtraction. Zero trace events were dropped. Its trace clock began before
+`execute_traced`; that baseline is not itself a logged HTTP send timestamp.
+
+| Stage | Recorded time / native dispatch-relative interval |
+|---|---|
+| Clack preparation start | NOT RECORDED |
+| Clack preparation end | NOT RECORDED |
+| SDK recovery timer start / callback firing | NOT RECORDED; code owner established below |
+| Native IPC invocation observed | `2026-10-19T16:33:06.219Z` |
+| Admission entered / admitted | `16:33:06.233Z` / same timestamp; zero recorded queue wait |
+| Native attempt marked started | `16:33:06.240Z` |
+| reqwest request construction | NOT RECORDED; occurs before dispatch in code |
+| Native dispatch immediately before `req.send()` | **`16:33:06.241Z`**, trace `elapsedUs=7968` |
+| Physical TCP/HTTP send start / completion | NOT RECORDED |
+| Response headers | None observed before cancellation |
+| First HTTP body byte at reqwest delivery | None observed; 0 chunks / 0 bytes |
+| First IPC chunk | None observed |
+| First parsed frame | None observed; 0 frames |
+| First meaningful model output to Clack | None observed |
+| Native cancellation observed / admitted operation settled | **`16:35:06.204Z`**, trace `elapsedUs=119971011` |
+| Session terminal error recorded | `16:35:06.205Z` |
+| Native settled event delivered to browser observer | `16:35:06.207Z`, `cancelled` |
+| Kernel/socket abort completion | NOT RECORDED; trace finishes after guarded HTTP future returns |
+
+Native dispatch to observed cancellation is **119.963043 seconds**. IPC
+invocation observation to session error is 119.986 seconds. The trace's absolute
+`119971011us` is 119.971011 seconds from trace creation, **not** the
+dispatch-relative interval. This qualifies earlier rounded 119.97-second wording.
+
+Terminal SDK error is `InferenceTransportError("overall-deadline")`, normalized
+as `timeout`, title `Inference timed out`, message
+`The inference request exceeded its overall deadline.` Native reports
+`cancelled`, not its own `overall-deadline` or `first-output-timeout`. The SDK
+120-second timer won; the native 600-second guard did not fire first.
+
+### Timer ownership and intended semantics
+
+| Clock | Owner / start / stop |
+|---|---|
+| Shared 120s pre-output ceiling | `src/modules/ai/lib/providerRetry.ts`, `withProviderRetryTracking`, `PROVIDER_RECOVERY_LIMITS.totalMs=120_000`. Starts in `wrapStream` before `open()` calls underlying `doStream`, even on the original attempt. Shared across original attempt, retries, backoff, proxy preflight/admission and model loading. No reset per retry. Cleared at first non-structural SDK part or cleanup/cancel. |
+| Native first-output 120s | `src-tauri/src/modules/net/inference/mod.rs`, `Timeouts::for_policy(Policy::SelfHosted)`, then `execute_traced`. Starts at its `Instant::now()` after admission and native preflight; includes resolve/client construction, header wait and body wait. Meaningful parsed protocol progress changes it to the 60s idle guard. |
+| Native overall 600s | Same `Timeouts::for_policy`, `Deadline.overall = start + limits.overall` in `execute_traced`. Same post-admission start. Never extended/reset by headers, body, progress, retries outside this attempt or idle resets; request teardown stops it. |
+
+Call path: normal `createAgent` setup in `agent.ts` wraps every v3 base model
+with `withProviderRetryTracking` (no provider-specific total-time override),
+then answer continuation; AI SDK agent steps call that model's `doStream`;
+Ollama `send` in `ollamaModel.ts` serializes the body and invokes the captured
+`createProxyFetch` transport; `proxyFetchImpl` performs preflight/open/IPC;
+`ai_http_stream -> execute_admitted -> execute -> execute_traced` owns native HTTP.
+
+The name "recovery" does **not** mean a timer only starts after an error. It
+also bounds the initial attempt while automatic pre-output recovery is possible.
+Structural `stream-start`, `response-metadata`, `text-start`, `reasoning-start`
+and `raw` parts do not clear it. Headers alone, raw first body bytes and empty
+heartbeats do not clear it. A text/reasoning delta, tool boundary, finish or
+other non-structural SDK part does. Neither clock distinguishes cold from warm
+models; load time counts. No unrelated agent preparation before `wrapStream`
+is included, but proxy-layer preparation after it is included.
+
+This is deliberate D3 behavior, introduced in `1ff4a69`, not evidence of F
+(recovery-only timer mistakenly applied to a normal step). The D3 implementation
+record explicitly includes preparation/admission/delay, and
+`streamRecovery.test.ts` asserts that an original attempt whose headers never
+arrive fails once at the existing recovery ceiling. It also covers bounded
+retries, Retry-After, cancellation, stale work, and no replay after output/effects.
+The historical zero queue wait and approximately 22ms IPC-to-dispatch gap do
+not support E (120 seconds consumed by unrelated preparation). Cloud requests
+also use the SDK ceiling; native legacy policy has no first/idle guard but
+retains its overall 600s bound. No policy was changed for either provider class.
+
+### Existing Ollama logs and tunnel correlation
+
+Read-only SSH retrieval preserved 799 lines from the existing system service
+journal for `16:26:00Z` through `16:37:00Z`. No debug logging was enabled, service
+restarted or model setting altered. Correlation is by consecutive requests,
+single runner/slot, model blob, 32768 context, 8200 prompt tokens and timestamps;
+Ollama does **not** log Clack's `inference-11` ID. Host clocks are not identical:
+a current bounded check put remote UTC approximately 1.0-1.25s ahead of local;
+that is not a historical calibration. Cross-host times are not used to fabricate
+sub-millisecond network or prompt-start latency.
+
+- Runner startup was logged at remote `16:27:22.515508Z`, listening at
+  `16:27:28.680895Z`, during the earlier smoke. Initial memory fitting offloaded
+  **29/41 layers** to the GPU; this was not an all-GPU model.
+- Request 10 released slot 0/task 1790 at `16:33:06.932289Z`, marking all slots
+  idle. Its final `load_duration` was 1.507460ms. No intervening unload/reload,
+  new runner or scheduler wait is logged. Devstral was already warm for request 11.
+- The next runner operation, task **2095**, began at `16:33:07.357881Z` with
+  8200 prompt tokens, cached prefix 8146; sampler initialization completed at
+  `16:33:07.359149Z`. Exact prompt-evaluation/generation start is NOT RECORDED.
+- The runner logged **100 generated tokens at `16:33:22.393652Z`**, then steady
+  generation, reaching **786 at `16:35:06.731638Z`**, approximately 6.6 tokens/s.
+  These are logged internal progress counts, **not final provider usage**.
+  Generation, not a cold-load/queue/idle-engine stall, occupied this interval.
+- The route logged HTTP 500 at `16:35:07.281462Z`, after local cancellation;
+  `cancel task, id_task=2095` followed at `16:35:07.347691Z`, release at
+  `16:35:07.501718Z`. No provider error was received by Clack. Do not reinterpret
+  this post-cancellation server status as an independently preceding engine fault.
+- No service warning/error, reload/offload adjustment or explicit memory-pressure
+  event is logged for request 11. Graph-reallocation messages also occur during
+  ordinary generation. Per-instant RAM/VRAM changes were not sampled throughout
+  this request; the prior audit's during-run hardware observation remains valid.
+- `/api/ps` succeeded at remote `16:33:07.140224Z`, `/api/version` at
+  `16:33:07.955335Z`, and `/api/ps` at `16:33:08.122398Z`. The prior audit captured
+  Devstral loaded at local `16:33:06.837Z`, after dispatch, not an invented
+  immediately-before-dispatch `/api/ps` response.
+- After cancellation, `/api/ps` and `/api/version` both returned 200 at remote
+  `16:35:08.325396Z` / `16:35:08.510023Z`; later metadata remained responsive.
+  The original SSH tunnel process (PID 21936, created before this mission) was
+  still present during this audit. Contemporary model traffic and successful
+  metadata support a live tunnel before/during/after the event, not a demonstrated
+  tunnel outage or Clack HTTP send failure.
+
+Internal runner generation without response delivery is consistent with
+server-side buffering of structured tool output. The exact Ollama/parser buffer
+stage and the cancelled partial content were not instrumented, so that narrower
+mechanism is an inference, not a proven parser defect. Successful replay also
+withheld its first frame until late generation. No trustworthy request-specific
+protocol progress signal was available to Clack before its first headers/body.
+`/api/ps` proves residency/health, not useful per-request generation. SSH runner
+logs are diagnostic evidence, not a production progress signal; none was invented.
+
+### Prior-request latency distribution
+
+Seconds from native dispatch. Headers/body/total use native monotonic intervals;
+structured-call timing uses the browser observer's millisecond wall timestamp
+relative to native dispatch, not physical socket receive. The earlier reported
+40.920s first useful call and 109.1s first write were mission-relative and do not
+substitute for these first-byte intervals.
+
+| Devstral request | Headers | First body | First structured call | Native total |
+|---|---:|---:|---:|---:|
+| 1 | 40.902 | 40.902 | 40.906 | 41.050 |
+| 2 | 1.940 | 1.940 | 1.942 | 2.074 |
+| 3 | 1.584 | 1.584 | 1.586 | 40.442 |
+| 4 | 3.665 | 3.665 | 3.667 | 3.807 |
+| 5 | 17.493 | 17.493 | 17.495 | 17.637 |
+| 6 | 51.460 | 51.460 | 51.462 | 51.607 |
+| 7 | 1.907 | 1.907 | 1.909 | 2.036 |
+| 8 | 75.247 | 75.247 | 75.250 | 75.400 |
+| 9 | 2.557 | 2.557 | 2.559 | 2.713 |
+| 10 | 44.876 | 44.876 | 44.878 | 45.035 |
+
+Devstral requests 1-10 were warm (the smoke loaded it). First-body range
+**1.584071-75.247403s**, completed duration **2.035888-75.400232s**.
+The existing cold smoke reported 7.325153s load, 8.978854s first body,
+8.982s first tool and 9.104930s native completion on its much smaller prompt.
+
+Existing-only Coder comparison:
+`forgeboard-qwen3coder-poste56bbe5-01`, 23 requests, same 32768/2048, native
+`think:false`, no new Coder inference. First-body range
+**0.457890-23.057221s**, first structured-call range **1.383-23.065s**,
+native total range **1.419689-23.075427s**. Its first cold mission request
+reported 12.243572s load, 18.852741s first body, 20.116s first tool and
+20.116267s native completion; later loads were approximately 0.9-14.8ms.
+Different prompts/architectures/cache state limit causal comparisons. These
+observed completed samples do not demonstrate a general need to raise 120s.
+
+### Single diagnostic replay
+
+Fresh evidence ID: **`devstral-latency-20261019-01`**, under
+`src-tauri/target/`. Before dispatch, process inspection found no Clack acceptance
+host, Cargo/rustc build or Clack test harness; remote read-only inspection found
+only `ollama serve`, no runner, no recent inference logs, GPU idle, and `/api/ps`
+empty. No unrelated process was terminated. The original tunnel, exact model
+digest and Ollama version were verified without inference.
+
+One disposable, non-production Node HTTP diagnostic sent the captured JSON
+through that same tunnel. It has **no tool executor**, no Clack session/harness,
+no cloud destination, no retry and no permanent production timeout bypass.
+The one-shot evidence lock prevents accidental replay. It uses a diagnostic-only
+600s absolute bound and bounded response/frame storage, without the product
+120s guards or Node Fetch's implicit header deadline. Only the offline
+reconstruction helper/tests are committed; the one-shot client remains in ignored
+evidence. This is direct HTTP evidence, not a claimed native IPC replay.
+
+The model had unloaded in the intervening idle period. Unlike historical request
+11, the replay was **cold with zero cached prompt tokens**. It used no warmup,
+load-only inference, setting change or altered keep-alive to hide that difference.
+
+| Replay event | UTC / monotonic seconds after dispatch |
+|---|---|
+| Dispatch | `2026-10-19T17:17:07.517Z` / 0 |
+| Local TCP connected / request written to Node transport | `17:17:07.520Z`; not a claimed remote receipt timestamp |
+| Headers, HTTP 200 NDJSON | `17:18:21.712Z` / **74.194727s** |
+| First body | `17:18:21.713Z` / **74.195507s** |
+| First parsed frame / structured tool | `17:18:21.713Z` / **74.195664s** |
+| Provider final frame | `17:18:21.858Z` / **74.340206s** |
+| HTTP end | `17:18:21.878Z` / **74.361007s** |
+
+Two valid frames, 1786 body bytes, zero malformed frames, `done_reason=stop`.
+Provider-reported total duration **74.287229s**, load **3.686989s**, prompt
+evaluation **12.743709s** / 8200 input tokens / 0 cached, generation
+**57.816179s** / 386 output tokens. Ollama logs independently show runner task 0
+on the same model/32768 context and those evaluation timings. No token total is
+fabricated for the earlier cancelled request.
+
+The returned call was `write_file` for `src/backend/data/data.ts` with structured
+path/content arguments. **It was not executed**: zero executed tool calls/effects, no
+ForgeBoard mutation/test/build/continuation/acceptance progress. Source hashes
+of the original ForgeBoard files were identical before and after. `/api/ps`
+responded during the replay at 30s and after completion; `/api/version` returned
+200 after completion. No 120s or 600s diagnostic cancellation was required.
+
+### Decision, verification and preservation
+
+**No confirmed Clack defect; no semantic fix or timeout change.** This was a
+normal original attempt intentionally subject to a documented pre-output guard.
+The historical runner was active, while Clack had no usable protocol progress;
+the sole replay completed well within 120s even with cold load/full prefill.
+That does not prove the original could not have completed later, nor justify a
+policy change from one unreproduced cancellation. It is not C (stuck engine),
+D (demonstrated tunnel failure), E (unrelated pre-dispatch delay), or F
+(unintended recovery-only control flow). B is not established by this replay.
+Native overall 600s and native first/idle 120s/60s remain unchanged.
+
+Daily usability remains **PROMISING BUT NOT YET**; **NO PREFERRED MODEL YET**.
+Coder remains the strongest observed implementation reference, not a newly
+promoted default. No ForgeBoard mission rerun, context increase, model download,
+comparison ladder, Ollama/network configuration change or push occurred.
+
+Verification: **104 focused tests passed**: 12 new offline diagnostic tests and
+92 existing tests across `streamRecovery`, `providerRetry`, `proxyFetch`,
+`ollamaStreamTrace` and `ollamaToolProtocol`. TypeScript passed. Both committed
+scripts passed Node syntax and focused Biome lint via unchanged stdin projection
+under the repository rules (scripts are outside normal Biome include paths).
+The initial sandbox Vite run failed temp-cache rename before executing tests;
+the identical focused suite passed outside the sandbox. No production source
+changed, so full suites/build/Rust gates were not rerun under the requested
+evidence-only policy. `git diff --check` passed (only existing CRLF notices).
+
+Evidence retains the original native/IPC traces, reconstructed monotonic table,
+historical and replay journals, controls/hash, bounded current clock observation,
+raw replay NDJSON, result, Coder comparison and before/after project hashes.
+Unrecorded preparation/timer/socket instants remain explicitly NOT RECORDED.
+The original six unrelated dirty changes, IQ4_XS report insertion, delegation work,
+safety stashes and autonomous_tracker/ remain untouched by this checkpoint.
+Only this appended report section plus offline audit helper/tests are staged.
+
+Evidence-only commit: **test(ai): classify devstral pre-output latency**.
+No new mission or timeout-policy implementation is authorized by this result.
