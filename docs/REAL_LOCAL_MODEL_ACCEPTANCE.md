@@ -8826,3 +8826,299 @@ The six original dirty paths/edits, both safety stashes and autonomous_tracker/
 remain preserved and unstaged. Expected final branch state: main, **64 ahead /
 0 behind cached origin/main**, empty index and the same six dirty paths. **No
 push. STOP. No subsequent candidate or checkpoint started.**
+
+## Nemotron 3.5 Lightning local-agent evaluation
+
+### Scope and artifact
+
+Date **2026-10-20 Europe/Paris**. Base **0adc1ed**, including **a968b5c**;
+main initially **65 ahead / 0 behind cached origin/main**, empty index, the same
+six original dirty paths. Their bytes, all tracked hashes and both safety stash
+identities were saved. No competing Clack host/build/test/model run was detected.
+autonomous_tracker/ was not touched. The initially refused development tunnel was
+restored by the user before download; that preparatory refusal is not model failure.
+
+Current official [tags](https://ollama.com/library/nemotron-3.5-lightning/tags),
+[exact tag](https://ollama.com/library/nemotron-3.5-lightning:30b-a3b-q4_K_M)
+and registry manifest/config were inspected before pulling. The Linux/llamacpp
+default alias resolved to the same Q4_K_M weight/config payload as the explicit
+tag. The advertised 19-25GB range spans backends; it is not a promise of a 19GB
+Linux GGUF. The explicit quantized GGUF avoids MLX, BF16, Q8 and ambiguous aliases.
+Its 25.43GB weights require offload beyond 16GB VRAM; practical 32K performance on
+the supplied hardware was a measurement target, not assumed from advertised size.
+
+| Field | Verified evidence |
+|---|---|
+| Exact installed tag | **nemotron-3.5-lightning:30b-a3b-q4_K_M** |
+| Full manifest/installed digest | **e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2** |
+| Weight digest | **5c19f6282f4fc51cb114cb6c876d70ca2fc3b9cf0fbd0a018d9908f4fe1f63b3** |
+| Exact installed size | **25,430,749,387 bytes** |
+| Weight layer size | **25,430,738,944 bytes** |
+| Architecture / quantization | **nemotron_h_moe / GGUF / Q4_K_M**, 53 blocks |
+| Native total parameters | **32,913,266,240**, displayed 32.9B |
+| Active parameters | Official family says approximately 3B; native metadata reports 128 experts, 6 used and 1 shared, not an exact active-parameter total |
+| Advertised maximum context | **1,048,576** native tokens |
+| Native capabilities | **completion, tools, thinking** |
+| Modalities / structured output | Text; no vision/audio or separate structured-output capability advertised in the captured native metadata; those were not probed |
+| Native thinking metadata | **{"values":[false,true,"medium"],"default":true}** |
+| Renderer/parser | **nemotron-3.5-nano**, unchanged |
+| Engine requirement / installed | **0.32.9 / 0.40.5**, compatible |
+
+Exactly **one artifact** was pulled, successfully, with digest verification in
+**375.358 seconds**. All nine prior model records remained unchanged. No other
+model/alias was downloaded, deleted or replaced; no qwen3-coder-next. No Ollama
+update, service/global setting, template, firewall or network-exposure change.
+The existing localhost SSH tunnel was used. North, Muse, Qwen and Devstral were
+not invoked. Registry/config metadata reads were not inference.
+
+Workspace and evidence ID: **forgeboard-nemotron35-lightning-20261019-01**,
+using the requested label despite the local execution date being October 20.
+Workspace **C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01**
+started with only .git. Evidence is under **src-tauri/target/real-qwen-product/**.
+Nothing was seeded. Only bounded test-harness registration/guards/evidence capture
+were changed; no production source, model-specific prompt or architecture changed.
+
+### Discovery and bounded reasoning checks
+
+Normal production discovery correctly normalized **None -> false**, **On -> true**,
+**Medium -> "medium"**, mapping **ollama-mixed**. Metadata-only preparation
+captured these choices and the scoped capability revision with **zero inference**.
+No valid metadata was rejected. No arbitrary None/Low substitution was made.
+
+| Phase | Choice / native field | Native structured result | Reported input/output tokens |
+|---|---|---|---:|
+| Compatibility check 1 | Automatic / think omitted, provider default true | get_test_value({"value":"protocol-check"}), PASS | 308 / 41 |
+| Compatibility check 2 | None / think:false | Same native call, PASS | 308 / 26 |
+| Final canonical smoke | Automatic / think omitted | Same native call, PASS | 308 / 112 |
+
+Each used one harmless prompt/schema, 32768 context, 2048 output, fallback Never,
+cloud zero and **zero tool execution**. Text was only newline whitespace, not
+tool-looking markup interpreted by the evaluator. Medium was recognized but not
+tested because both materially distinct bounded checks already disambiguated
+compatibility. No exhaustive reasoning ladder. First cold probe provider total
+was **15.014003 s**, load **12.897934 s**; warm None **0.455887 s**, canonical
+Automatic **1.942729 s**. These are probe observations, not quality rankings.
+
+**Automatic/provider default was selected for the mission**, since it produced
+valid native tools and is what a normal Automatic user receives. No observed
+reasoning auto-selection gap. The test-only native guard rejected unexpected
+think overrides/output values rather than silently rewriting requests.
+
+### Mission chronology and stop
+
+The unchanged **2,086-character** ForgeBoard specification was sent **once**;
+SHA-256 **f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801**.
+No candidate/benchmark names, reminders, manual Continue, evaluator implementation
+or requirement resend. Only the authorized conditional correction added a user
+message. All **19 mission requests** used the exact installed model/tag, **32768 /
+2048**, **think omitted**, fallback Never, zero cloud. Installed and final loaded
+digest evidence, session/provider/profile configuration revision and native bodies
+are retained. No claim is made that the model digest is itself an Ollama wire field.
+
+First request capture **22:28:37.353Z**, native dispatch **22:28:37.373Z**. First
+body **12.733764 s** after dispatch; first parsed output **22:28:50.110Z**; first
+native structured tool **19.227 s** after dispatch. It inspected the empty repo,
+created a 12-step plan, ran npm init/install and generated tsconfig. The advertised
+shell was **PowerShell (pwsh.exe)**, not Bash. First shell command was
+**cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01 && npm init -y**,
+exit 0. Its syntax worked on the advertised native shell.
+
+First successful shell-generated manifest effect: **46.138 s** after capture.
+First direct verified file write: **76.133 s**, tsconfig.json. Three direct writes
+were tsconfig.json, package.json and src/types.ts; npm also created/updated lockfile
+and dependency state. Indirect shell effects are not conflated with the three
+direct verified-write receipts used by the correction threshold.
+
+Before correction, two natural tool failures were followed by successful recovery:
+an old_string edit mismatch by a full write, and npm peer-dependency resolution
+failure by --legacy-peer-deps. No evaluator advice. This is useful pre-blocker
+recovery evidence, not a completed application. No substantive server/frontend,
+persistence/SSE implementation, test or production build was reached.
+
+At **22:30:57.160Z**, the third direct write and current accepted plan's **page
+size 50** satisfied both correction conditions. The exact authorized message was
+dispatched at **22:30:57.216Z**, once. Request 16 was intentionally cancelled at
+that boundary, not an engine stall. The same conversation continued. Its later
+accepted plan and unexecuted text mention 25; **working pagination retention is
+not verified**, since no application implementing it reached disk.
+
+### Confirmed Clack defect: F1 objective/tool continuity
+
+**Primary classification: CLACK-BLOCKED / F1 OBJECTIVE-CONTINUITY AND TOOL-EXPOSURE
+DEFECT / INCONCLUSIVE.** Stop model sampling; no production repair or rerun here.
+
+The live native bodies establish the regression:
+
+- Requests 1-16 exposed the normal 16 coding/collaboration tools.
+- Immediately after the bounded correction, request 17 exposed **only
+  communicate_peer_task, request_peer_task, cancel_peer_task**. The original task
+  explicitly forbade delegation. File read/write/edit, shell and todo tools vanished
+  from the ongoing coding task without a permission/model/workspace change.
+- Its unexposed todo_write failed; request 18 then exposed todo_write plus the
+  same three peer tools. Request 19 still lacked write_file and shell capability.
+- This is a **generic runtime/tool-selection continuity defect**, not evidence
+  that Nemotron intrinsically cannot implement software.
+
+Read-only production call-path inspection and **reproduce-exposure.mjs** reproduce
+the captured selection using the actual schemas and correction. agent.ts selects
+uiExposureQuery/exposureQuery, then prepareToolExposure. toolExposure.ts's
+continuedExposureQuery recognizes only whole-message continuations starting with
+Continue/Resume/etc.; this message begins **Change**, although it explicitly says
+Continue the same project. Selection therefore retains only the correction as
+its lexical query, losing the original coding objective. requiredUiToolNames also
+ceases requiring completed tools before the latest user turn. The resulting
+ranking exposes only peer tools.
+
+The offline reproduction matches request 17's three tool names. With history
+pressure removed, the same latest-only query still drops coding tools, whereas
+the original objective plus correction restores all 16. A second comparison using
+the **captured serialized native history** restores some coding tools but not every
+write/shell tool. That comparison is not an exact reconstruction of the original
+SDK history or its selection budget; this boundary is recorded in
+f1-repro-boundaries.json. **A prefix-regex change is not proposed as a verified
+sufficient fix**. The separate repair must independently verify objective continuity
+and budget-aware preservation/recovery of required authorized task capabilities.
+No source changes were made to toolExposure.ts, agent.ts, permissions or B1.
+
+The final native response, request 19, returned **done_reason:length / 2048 output
+tokens**, with a truncated **<tool_call><function=write_file>** block exposed as
+text, not a provider-native call. **It was not executed or written to disk.**
+The subsequent continuation was rejected before dispatch with
+**answer-continuation-budget**: estimated input **31846**, reserve **2048**, margin
+**3185**, ceiling **32768**, required **37079**, deficit **4311**. No continuation
+request was sent. This is a distinct observed terminal budget boundary, not proof
+of a second accounting bug; native token usage and conservative SDK estimates are
+different measurements. F1's earlier confirmed defect already invalidates a fair
+post-correction model-quality verdict. No rescue, timeout/context increase or
+automatic mode change was attempted.
+
+### Counts, context and evidence limits
+
+**19 mission attempts / 18 engine finishes / 1 intentional correction cancellation**;
+**17 structured calls, 14 successful / 3 failed**, **3 direct writes**, **1 malformed
+textual intent**, **0 completed empty responses**, **0 normal premature prose
+stops**, **0 dispatched automatic continuations**, **0 approval events**, **0
+pre-output/stream-idle timeout stalls**. The third failure is the post-defect
+unexposed todo_write with stringified arguments; a subsequent native todo call
+with structured arguments succeeded. Do not attribute that transition solely to
+intrinsic model quality. The later todo plan falsely marked missing API/SSE work
+complete; filesystem verification does not accept those plan claims as effects.
+
+Reported output tokens from the 18 finished requests total **7770**; cancelled
+request 16's final usage is unknown, not inferred. Across all phases there were
+**22 inference requests**, only this candidate, zero cloud. All production
+120-second pre-output, 60-second idle, 600-second overall deadlines were unchanged.
+The host remained healthy and exited normally; no harness timeout or crash.
+
+Minimum captured **native headroom: 2016 estimated tokens**. **SDK minimum across
+the correction/cancelled-history boundary was not independently reconstructed**;
+no native estimate is substituted or invented as an SDK minimum. The blocked
+continuation's SDK budget/deficit is retained above. Zero observed historical
+verified-effect compaction receipts/token savings, extraction/retrieval calls or
+durable memory revisions. Direct write-verification results still exist; these
+are distinct from compact historical receipts.
+
+Per-request dispatch, headers, body, parsed-frame and completion/cancellation
+timestamps are in audit.json plus native receive traces. Body arrival ranged
+**0.736653-23.703339 s** after dispatch. The bounded IPC diagnostic event ring
+dropped older **diagnostic entries** for requests 1/2 (464/190); aggregate counters
+and first/last timestamps remain. This is not asserted to be payload loss or a
+complete raw-frame archive. Original message IDs/roles/parts match durable history.
+Recovery-only answer lifecycle metadata differs for the correction-cancelled
+segment; it was preserved, not falsely asserted byte-identical or replayed.
+
+### Independent application audit
+
+Inventory excluding .git/node_modules found only **package.json, package-lock.json,
+tsconfig.json, src/types.ts**. No src/index.ts exists. A source-hashed copy at
+**C:/Users/Hayden/Documents/forgeboard-nemotron-audit-20261020-01** was inspected
+without repairs, separately from Clack's dependencies. Actual commands:
+
+| Command | Result |
+|---|---|
+| npm ci --ignore-scripts --legacy-peer-deps --audit=false --fund=false | PASS, 385 packages; deprecation warnings for inflight/glob |
+| npm test | FAIL exit 2 in pretest tsc: TS5108, moduleResolution=node10 removed |
+| npm run build | FAIL exit 2, same TS5108 |
+| npm start | FAIL exit 1, missing dist/index.js |
+
+The generated test script uses --passWithNoTests; even had it run, an empty suite
+would not count as meaningful authored tests. No model test/build execution
+occurred; tsc --init generated configuration, not a production build. Original
+workspace and copied source hashes remain unchanged. No evaluator implementation
+or config/dependency repair. npm warnings are retained, not silently fixed.
+
+Project/task CRUD/open/view, combined search/filtering, API validation/errors,
+4317 listener, restart persistence, SSE, React UI/loading/error/empty/accessibility,
+750ms debounce, implemented page size/title maximum, README and runtime-data
+ignore are all **NOT IMPLEMENTED**. Types and unexecuted answer text do not satisfy
+those requirements. No server/frontend existed for endpoint, restart, SSE or
+browser checks. Native acceptance ran on Windows; no Computer Use or native
+Clack GUI, Linux/macOS Clack runtime/GUI acceptance is claimed.
+
+### Four-way comparison and auto-configuration findings
+
+| Metric | qwen3-coder | Muse | North | Nemotron |
+|---|---|---|---|---|
+| Recommended config automatic? | None chosen for reference, not established | Low manually chosen | None manually chosen, provider default true | Normal Automatic/default preserved and probe-validated |
+| Native smoke | PASS | PASS | PASS | Both compatibility modes and canonical PASS |
+| Reasoning tested | None/false | Low/"low" | **None/false; default=true; broader config unmeasured** | Automatic/omitted and None/false probes; mission Automatic |
+| Mission requests / structured calls | 23 / 22 | 15 / 14 | 2 / 1 | 19 / 17 |
+| Successful / failed tools | 21 / 1 | 14 / 0 | 1 / 0 | 14 / 3, post-defect qualification |
+| Direct writes | 12 | 7 | 0 | 3, setup/types only |
+| Backend / frontend | Partial API; earlier partial frontend | Helpers / none | None / none | No server / none |
+| Persistence / SSE | Earlier persistence proof / incomplete | Helpers only | None | None |
+| Tests / application build | Incomplete/failed | None/app cannot start | None | None/fails; no authored tests |
+| Failure recovery | Latest missing-directory failure followed by prose/fabricated receipt | Not exercised | Not exercised | Two pre-defect failures recovered |
+| Prose stop / empty output | Yes / no | No / no | No / yes | No / no; truncated textual tool intent at length |
+| Stream stall | No recurring | Yes | No | No |
+| Context blocker latest | No | No | No | Continuation estimate exceeded 32K after length |
+| Final class | MODEL-INCOMPLETE | UPSTREAM STALL/INCOMPLETE | ENGINE/EMPTY RESPONSE at None | **CLACK F1 BLOCKED / INCONCLUSIVE** |
+
+**Observed operational ranking under tested configurations:** the prior provisional
+qwen3-coder > Muse > North remains an evidence reference; **Nemotron is unranked
+because Clack's confirmed runtime defect prevents a fair post-correction comparison**.
+No new intrinsic model ranking/winner. Qwen remains the provisional delivery leader,
+**PROMISING BUT NOT YET** daily-autonomous. Confidence is high in the reproduced
+runtime failure, limited in comparative model quality. Nemotron readiness is not
+established, not blanket model failure. North may deserve a future default-mode
+test; Nemotron a fair rerun after the generic repair; Muse a reliability-qualified
+rerun if separately authorized. None was started here.
+
+Clack successfully discovered native tools, mixed legal reasoning controls and
+wire mappings, model metadata/context and stable profile identity. Automatic's
+provider-default behavior worked without a family-specific production branch.
+The evaluator still chose the artifact based on hardware/backend, checked engine
+compatibility, configured **32K/2048**, orchestrated bounded probes and judged
+practical reliability. Recommended practical context/output were **not calibrated
+automatically**; advertised 1M is not verified practical context. Persistent,
+revision-aware onboarding recommendations and secure second-PC setup remain
+subjects for the later dedicated audit, not implemented features claimed here.
+
+### Verification and handoff
+
+Focused capability/serialization/protocol/harness/approval/correction tests:
+**220 passed / 8 files**, then **11 passed** in the affected discovery-capture
+group (ten overlap, one new; **221 distinct tests exercised**). Final types, focused
+Biome lint (two files, zero diagnostics), script syntax, cargo fmt --check, native
+test-host compilation and five source-freeze checks passed. The offline F1
+reproduction passed and sent zero inference. The evidence audit preserved the
+documented SDK/recovery/diagnostic limitations; no complete SDK reconstruction
+claim. Final working/staged diff checks passed, with existing CRLF conversion
+notices only. No unnecessary full frontend/Rust suites were rerun. No production
+Clack code changed or defect fixed. All owned native/launcher/audit processes ended.
+
+Evidence: baseline.json, endpoint-ready.json, pull.jsonl, installed.json,
+workspace-initial.json, preflight-1.json, system-preflight-1/2/3.json and their
+native/request/receive traces, mission-a-1.json/.native-report.json/.jsonl/
+.requests.jsonl/.receive.jsonl, correction-state.json, per-phase freezes,
+f1-objective-repro.json, f1-repro-boundaries.json and audit.json. Raw evidence/generated files stay outside
+the commit. The six original dirty edits, both stashes and autonomous_tracker/
+are preserved and unstaged. Commit **test(ai): evaluate nemotron local agent**;
+expected main **66 ahead / 0 behind cached origin/main**, empty index afterwards.
+
+**STOP model sampling. Next checkpoint: separate generic F1 objective/tool-capability
+continuity repair**, preserving permissions/B1 and the original task through a
+bounded correction. No proposed sufficient patch or repair is implemented here.
+Then the required **Local Provider Auto-Configuration and Model Onboarding UX Audit**,
+subject to resolution of this production blocker. No broad audit/UI work, another
+model, qwen-next, context calibration or qwen-specific tuning was started. **No push.**

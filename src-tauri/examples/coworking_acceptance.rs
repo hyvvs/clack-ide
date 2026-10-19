@@ -231,6 +231,7 @@ fn main() {
                             assert!(matches!(model.as_str(), "qwen38-uncensored:latest" | "qwen3-coder:30b" | "devstral-small-2:24b") || matches!(model.as_str(),
                                 "muse-glimmer:30b" |
                                 "north-mini-code-1.0:q4_K_M" |
+                                "nemotron-3.5-lightning:30b-a3b-q4_K_M" |
                                 "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M"
                                 | "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M"
                                 | "hf.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive:IQ3_M"
@@ -244,8 +245,8 @@ fn main() {
                             let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_millis();
                             writeln!(file, "{}", serde_json::json!({"at": at, "requestId": value["requestId"], "url": value["url"], "body": body})).expect("persist request audit");
                             if let Ok(think) = std::env::var("CLACK_ACCEPTANCE_EXPECTED_THINK") {
-                                assert!(matches!(think.as_str(), "low" | "false"));
-                                if (think == "low" && body["think"] != "low") || (think == "false" && body["think"] != false) || body["options"]["num_predict"] != 2048 {
+                                assert!(matches!(think.as_str(), "low" | "false" | "omitted"));
+                                if (think == "low" && body["think"] != "low") || (think == "false" && body["think"] != false) || (think == "omitted" && body.get("think").is_some()) || body["options"]["num_predict"] != 2048 {
                                     invoke.resolver.reject("Acceptance stopped: serialized reasoning/output controls changed");
                                     return true;
                                 }

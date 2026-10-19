@@ -33,8 +33,8 @@ afterEach(async () => {
 
 const nativeParserAvailable = process.platform === "win32" || spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { timeout: 5000, windowsHide: true }).status === 0;
 describe.skipIf(!nativeParserAvailable)("native per-approval literal workspace effect policy", () => {
-  it("keeps the same owner and path checks for North's explicitly authorized disposable root", async () => {
-    root = path.join(directory, "forgeboard-north-mini-code-20261019-01");
+  it.each(["north-mini-code", "nemotron35-lightning"])("keeps the same owner and path checks for the %s disposable root", async candidate => {
+    root = path.join(directory, `forgeboard-${candidate}-20261019-01`);
     await mkdir(path.join(root, ".git"), { recursive: true });
     Object.assign(expected, { workspaceRoot: root });
     Object.assign(subject, { workspaceRoot: root, cwd: root });

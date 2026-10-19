@@ -25,6 +25,7 @@ const modelId = process.env.CLACK_PRODUCT_MODEL ?? "qwen38-uncensored:latest";
 assert(["qwen38-uncensored:latest", "qwen3-coder:30b", "devstral-small-2:24b"].includes(modelId) || [
   "muse-glimmer:30b",
   "north-mini-code-1.0:q4_K_M",
+  "nemotron-3.5-lightning:30b-a3b-q4_K_M",
   "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M",
   "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M",
   "hf.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive:IQ3_M",
@@ -161,6 +162,10 @@ try {
     assert.equal(reasoningChoice, "none", "Disabled-thinking guard requires explicit None");
     env.CLACK_ACCEPTANCE_EXPECTED_THINK = "false";
   }
+  if (process.env.CLACK_PRODUCT_EXPECT_AUTOMATIC === "1") {
+    assert.equal(reasoningChoice, "automatic", "Provider-default guard requires Automatic");
+    env.CLACK_ACCEPTANCE_EXPECTED_THINK = "omitted";
+  }
   if (streamDiagnostic || (traceStreams && ["mission-a", "system-preflight"].includes(phase))) env.CLACK_ACCEPTANCE_RECEIVE_TRACE = "1";
   child = spawn(path.join(repository, "src-tauri/target/codex-test/debug/examples", `coworking_acceptance${process.platform === "win32" ? ".exe" : ""}`), [], { cwd: root, env, windowsHide: true });
   child.once("exit", (code, signal) => { childExit = { pid: child.pid, code, signal, at: Date.now() }; });
@@ -184,6 +189,8 @@ try {
     assert.deepEqual(body.options, { num_ctx: 32768, num_predict: 2048 });
     if (result.reasoningControl?.effective === "unsupported-no-control")
       assert(!Object.hasOwn(body, "think"), "Unsupported reasoning control must be omitted");
+    else if (reasoningChoice === "automatic")
+      assert(!Object.hasOwn(body, "think"), "Automatic must preserve the provider default");
     else assert.equal(body.think, reasoningChoice === "low" ? "low" : false);
     assert.equal(body.stream, true);
     assert.deepEqual(body.tools.map(t => t.function.name), ["get_test_value"]);

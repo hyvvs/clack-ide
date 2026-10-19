@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const candidates = [
+  "nemotron-3.5-lightning:30b-a3b-q4_K_M",
   "north-mini-code-1.0:q4_K_M",
   "devstral-small-2:24b",
   "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M",
@@ -39,5 +40,21 @@ describe("installed-model acceptance bounds", () => {
     expect(runner).toContain('assert.equal(reasoningChoice, "none"');
     expect(runner).toContain('env.CLACK_ACCEPTANCE_EXPECTED_THINK = "false"');
     expect(host).toContain('think == "false" && body["think"] != false');
+  });
+  it("preserves provider-default Automatic without serializing a reasoning override", () => {
+    const runner = readFileSync("scripts/check-real-local-product.mjs", "utf8");
+    const host = readFileSync("src-tauri/examples/coworking_acceptance.rs", "utf8");
+    expect(runner).toContain('process.env.CLACK_PRODUCT_EXPECT_AUTOMATIC === "1"');
+    expect(runner).toContain('assert.equal(reasoningChoice, "automatic"');
+    expect(runner).toContain('env.CLACK_ACCEPTANCE_EXPECTED_THINK = "omitted"');
+    expect(runner).toContain('else if (reasoningChoice === "automatic")');
+    expect(runner).toContain('"Automatic must preserve the provider default"');
+    expect(host).toContain('think == "omitted" && body.get("think").is_some()');
+  });
+  it("records normal normalized capability during metadata-only preparation without inference", () => {
+    const ui = readFileSync("src/test/realLocalProductAcceptance.tsx", "utf8");
+    expect(ui).toContain('phase === "preflight" && config.realProduct.prepareOnly');
+    expect(ui).toContain('requested: "discovery-only", effective: captured.choice, capability: captured.capability');
+    expect(ui).toContain('const captured = sessionEffort(session)');
   });
 });

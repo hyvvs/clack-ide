@@ -209,6 +209,7 @@ export async function runRealLocalProduct(config: Configuration) {
   assert(["qwen38-uncensored:latest", "qwen3-coder:30b", "devstral-small-2:24b"].includes(modelId) || [
     "muse-glimmer:30b",
     "north-mini-code-1.0:q4_K_M",
+    "nemotron-3.5-lightning:30b-a3b-q4_K_M",
     "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M",
     "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M",
     "hf.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive:IQ3_M",
@@ -410,6 +411,13 @@ export async function runRealLocalProduct(config: Configuration) {
     await add("real-mission-a", "builtin:coder");
   }
   let reasoningControl: unknown;
+  if (phase === "preflight" && config.realProduct.prepareOnly) {
+    const session = useChatStore.getState().sessions.find(s => s.id === "real-preflight");
+    assert(session, "Metadata discovery session unavailable");
+    const captured = sessionEffort(session);
+    reasoningControl = { requested: "discovery-only", effective: captured.choice, capability: captured.capability };
+    evidence.emit({ kind: "reasoning-control", at: Date.now(), sessionId: session.id, control: reasoningControl });
+  }
   if (["mission-a", "system-preflight"].includes(phase) && config.realProduct.reasoningChoice) {
     const id = phase === "mission-a" ? "real-mission-a" : "real-preflight";
     const session = useChatStore.getState().sessions.find(s => s.id === id);
