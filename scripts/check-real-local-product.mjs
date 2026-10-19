@@ -22,7 +22,11 @@ assert(maxOutput === undefined || (Number.isSafeInteger(maxOutput) && maxOutput 
 const singleSpec = process.env.CLACK_PRODUCT_SINGLE_SPEC === "1";
 const traceStreams = process.env.CLACK_PRODUCT_TRACE === "1";
 const modelId = process.env.CLACK_PRODUCT_MODEL ?? "qwen38-uncensored:latest";
-assert(["qwen38-uncensored:latest", "qwen3-coder:30b"].includes(modelId), "Use an explicitly authorized installed comparison model");
+assert(["qwen38-uncensored:latest", "qwen3-coder:30b"].includes(modelId) || [
+  "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M",
+  "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M",
+  "hf.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive:IQ3_M",
+].includes(modelId), "Use an explicitly authorized installed comparison model");
 const toolProtocol = process.env.CLACK_PRODUCT_TOOL_PROTOCOL === "1";
 assert(!toolProtocol || phase === "system-preflight", "Tool protocol diagnostics require the non-executing preflight phase");
 const prepareOnly = process.env.CLACK_PRODUCT_PREPARE_ONLY === "1";
@@ -170,7 +174,9 @@ try {
     const body = requests[0].body;
     assert.equal(body.model, modelId);
     assert.deepEqual(body.options, { num_ctx: 32768, num_predict: 2048 });
-    assert.equal(body.think, false);
+    if (result.reasoningControl?.effective === "unsupported-no-control")
+      assert(!Object.hasOwn(body, "think"), "Unsupported reasoning control must be omitted");
+    else assert.equal(body.think, false);
     assert.equal(body.stream, true);
     assert.deepEqual(body.tools.map(t => t.function.name), ["get_test_value"]);
   }

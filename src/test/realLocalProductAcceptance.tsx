@@ -206,7 +206,11 @@ export async function runRealLocalProduct(config: Configuration) {
   assert(config.realProduct, "Missing real product phase");
   const phase = config.realProduct.phase;
   const modelId = config.realProduct.modelId ?? "qwen38-uncensored:latest";
-  assert(["qwen38-uncensored:latest", "qwen3-coder:30b"].includes(modelId), "Unauthorized comparison model");
+  assert(["qwen38-uncensored:latest", "qwen3-coder:30b"].includes(modelId) || [
+    "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M",
+    "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M",
+    "hf.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive:IQ3_M",
+  ].includes(modelId), "Unauthorized comparison model");
   const trace = config.realProduct.phase === "stream-diagnostic" ? createOllamaStreamTrace() : undefined;
   const evidence = audit(config.report, trace, config.realProduct.traceStreams, config.realProduct.toolProtocol);
   if (trace) {
@@ -409,8 +413,13 @@ export async function runRealLocalProduct(config: Configuration) {
     const session = useChatStore.getState().sessions.find(s => s.id === id);
     assert(session, "Reasoning preflight session unavailable");
     const captured = sessionEffort(session);
-    await setSessionEffort(id, config.realProduct.reasoningChoice);
-    reasoningControl = { requested: config.realProduct.reasoningChoice, effective: config.realProduct.reasoningChoice, capability: captured.capability };
+    if (config.realProduct.reasoningChoice === "none" && captured.capability.status === "unsupported") {
+      reasoningControl = { requested: "none", effective: "unsupported-no-control", capability: captured.capability,
+        wireControl: "omitted", reason: "Exact model metadata advertises no native thinking control; no override or Automatic substitution." };
+    } else {
+      await setSessionEffort(id, config.realProduct.reasoningChoice);
+      reasoningControl = { requested: config.realProduct.reasoningChoice, effective: config.realProduct.reasoningChoice, capability: captured.capability };
+    }
     evidence.emit({ kind: "reasoning-control", at: Date.now(), sessionId: id, control: reasoningControl });
   }
   if (phase === "offline") await add("real-offline", "builtin:coder");

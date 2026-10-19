@@ -228,7 +228,11 @@ fn main() {
                             let body: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON body required");
                             let model = std::env::var("CLACK_ACCEPTANCE_MODEL")
                                 .unwrap_or_else(|_| "qwen38-uncensored:latest".into());
-                            assert!(matches!(model.as_str(), "qwen38-uncensored:latest" | "qwen3-coder:30b"));
+                            assert!(matches!(model.as_str(), "qwen38-uncensored:latest" | "qwen3-coder:30b") || matches!(model.as_str(),
+                                "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M"
+                                | "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M"
+                                | "hf.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive:IQ3_M"
+                            ));
                             assert_eq!(body["model"], model);
                             assert_eq!(body["options"]["num_ctx"], 32768);
                             let directory = std::env::var("CLACK_ACCEPTANCE_ROOT").expect("owned root");

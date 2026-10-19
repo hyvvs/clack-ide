@@ -6603,3 +6603,322 @@ and one bounded native structured-tool probe per non-retired comparison model.
 qwen3-coder's existing baseline is retained without another ForgeBoard run;
 Qwen3.8 remains historical-only. The latest baseline's eleven receipts and
 healthy request 23 do not turn unexercised live continuation into a failed test.
+
+## Installed local coding model comparison
+
+Stage 2, **2026-10-19**, after **5e269ac fix(ai): align file guidance with available tools**.
+Exactly three non-executing native tool probes and three qualified, fresh,
+one-shot ForgeBoard missions were performed. No additional qwen3-coder mission,
+Qwen3.8 inference, model download, larger-context test, service/global Ollama
+configuration change, architecture change or push occurred.
+
+### Isolation and installed inventory
+
+Read-only Windows process inspection found no concurrent Clack host, acceptance
+runner, Cargo/rustc or Vite/Vitest run before comparison. The sequential runner
+also checks isolation. All **1272** tracked/checkpoint source-file hashes remained
+unchanged throughout each mission. No source was edited during inference.
+All owned runners/native hosts exited after comparison; unrelated processes were
+not terminated. These are native Windows IPC acceptance fixtures, not native GUI
+interaction or Linux/macOS verification.
+
+Metadata-only GET /api/version, /api/tags, /api/ps and exact-model POST /api/show
+used the existing authorized **http://127.0.0.1:11435** SSH tunnel. Reported Ollama
+version: **0.40.5**. Every installed model was **unloaded** at inventory time;
+every model advertised context **262144** and **tools**. This is advertised
+capacity, not the working context: every inference below remained **32768**.
+
+Exact installed names:
+
+- Coder: **qwen3-coder:30b**.
+- 35B-A3B: **hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M**.
+- Gemma: **hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M**.
+- 27B: **hf.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive:IQ3_M**.
+- Retired historical variants: **qwen38-uncensored:latest**, **qwen38-iq4xs:latest**.
+
+| Installed tag label | Exact digest | Bytes | Architecture / reported size / quantization | Thinking advertised |
+|---|---|---:|---|---|
+| Coder | 06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca | 18556700761 | qwen3moe / 30.5B / Q4_K_M | No |
+| 35B-A3B | 5bc355c7f631b3e94fe6434a750da9deda8b3fd0345c004dd954558df6a43926 | 22066041578 | qwen35moe / 34.7B / Q4_K_M | Yes |
+| Gemma | c8d2e9add7d6b5a9b1d32d35ae02d1d1a9292a51622209f46c23fa83a1a95670 | 17990844136 | gemma4 / 25.2B / Q4_K_M | No |
+| 27B | 12ffb1ffc35b5fe7c283f7c5184999faf4376965df2afab26358d4db4e17ce5c | 13508481153 | qwen35 / 26.9B / IQ3_M | Yes |
+| qwen38-uncensored | 0e163794a8b9cdd6e234013b1a27d2e58f06f48d20413a0c2e3e370faaef5505 | 16810714650 | qwen35 / 27.3B / Q4_K_M | Yes |
+| qwen38-iq4xs | daabf3aac7f641eb4d89fd39b53cbb2ce25fc7cd27256369a3797ff0e6b239dc | 15705861206 | qwen35 / 27.3B / IQ4_XS | Yes |
+
+The newly observed 27B size is **26.9B**, not the previously assumed 27.3B.
+Inventory is preserved at
+src-tauri/target/installed-local-models-20261019-01/inventory.json; no model alias,
+base-family inference or inferred digest was substituted.
+
+### Controls and evidence ownership
+
+Acceptance-only allowlists were extended to those three exact installed IDs in
+the Node runner, native example and browser fixture. No production adapter,
+memory/context, scheduler, authorization, continuation or timeout code changed
+in Stage 2. Unsupported reasoning is explicitly recorded rather than requesting
+an unsupported setting or silently relabeling Automatic as None.
+
+All requests used the production native Ollama adapter, num_ctx=32768,
+num_predict=2048, stream=true, fallback Never, no provider retries and cloud=0.
+The two Qwen3.6 models serialized **think:false**. Gemma's exact metadata has no
+thinking control: the recorded effective value is **unsupported-no-control**,
+and every outgoing request **omitted think**. Gemma nevertheless emitted
+reasoning in its mission; absence of a supported control does not prove absence
+of generated reasoning. No reasoning override was fabricated.
+
+Each probe sent the same harmless get_test_value(value="protocol-check") request
+once, with no executor or tool effects. All three returned exactly one valid
+provider-native structured call with the exact argument. **3 PASS / 0 FAIL**;
+all three therefore qualified for one mission. Probe output usage was 27, 134,
+27 tokens respectively, including any provider-counted reasoning. No textual
+XML/JSON/tool-looking output was executed.
+
+Each mission started in an empty Git repository containing only .git. Full
+ForgeBoard specification SHA-256:
+**f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801**.
+The specification was sent **exactly once per mission**, without benchmark/prior
+failure references or evaluator implementation. Production tools, permissions,
+normal automatic continuation and the existing approval/correction evaluators
+were retained. The native **600-second overall inference deadline** was not
+changed. No mission was retried, repaired, resumed or manually Continued.
+
+All workspace paths below start **C:/Users/Hayden/Documents/**. The historical
+qwen-none folder prefix satisfies the existing disposable-workspace safety
+allowlist; it is not a model alias. Exact model identity comes from every
+captured request and profile.
+
+| Candidate | Fresh workspace basename | Fresh evidence run ID |
+|---|---|---|
+| 35B-A3B | forgeboard-qwen-none-20261019-41 | installed-qwen36moe-20261019-01 |
+| Gemma | forgeboard-qwen-none-20261019-42 | installed-gemma4-20261019-01 |
+| 27B | forgeboard-qwen-none-20261019-43 | installed-qwen36dense-20261019-01 |
+
+Per-run evidence is retained under src-tauri/target/real-qwen-product/<run-id>/:
+preflight-1.json, system-preflight-1.json, native requests/receive traces,
+mission-a-1.json or .failure.json, event log, isolated session data, correction
+state, source-freeze-after.json and installed-model-audit.json. Independent
+audits sent **zero inference** and preserved all original project bytes.
+
+Per-run installed-model-audit.json hashes, in table order:
+
+- **9feb7046dfe84245d6f4dfa0936d2397feb4b9cdbd218b5593fd9222035a2a3f**.
+- **4a0190314dc0c153b121f20b795f916971fb9f49261d2df416f5bf1462acebc5**.
+- **496fbb3a433791b16275868ca4c348fbd93de628a9cc6226630aedf6ada303fd**.
+
+### 35B-A3B outcome
+
+**ENGINE-BLOCKED / provider error / interrupted / incomplete**, not a normal
+premature model stop and not a context failure. There were **18 requests**,
+**17 structured calls**, **17 successful tools**, **0 failed tools**, **9
+successful writer calls**, four directory calls, two todo updates and two shell
+calls. npm install genuinely succeeded. The first command,
+**node --version && npx --version**, succeeded under the advertised **PowerShell
+(pwsh.exe)**, not Bash. Neither a test nor a build was run by the model.
+
+Only nine configuration/HTML files plus package-lock.json existed: no backend
+source, frontend application source, tests, README or root .gitignore. Port 4317
+appeared only as a Vite proxy target, not a working backend server.
+
+Request 18 emitted a short partial text, then a provider-error frame after a
+roughly 32-second output gap. No required engine final/usage total followed.
+Native receive/IPC evidence and the SDK error missing-final-event agree at that
+boundary. The normalized native trace settled as cancelled after interruption;
+that label is not proof of user cancellation or a 600-second timeout. The exact
+provider error payload/root cause is not retained by the bounded category trace
+and is **unconfirmed**. No total token count is inferred for that request.
+
+### Gemma outcome
+
+**CLACK-BLOCKED / compaction-protected-budget / incomplete**, with substantial
+model-side recovery/creation mistakes preceding the safe budget stop. There were
+**32 requests/calls**, **23 successful tool invocations**, **9 failed tools**
+(nonzero shell exit or tool error), **0 writer/edit successes**, and **1 normal
+automatic continuation** after the first 24 steps. Zero explicit approvals were
+needed under the retained trusted-workspace policy. Exit-zero scaffolder
+cancellation is counted as a completed invocation, not successful application
+delivery.
+
+The first shell command **npm init -y** succeeded. Later the model corrected
+nonexistent npm dependencies and invalid Vite subcommands, but also mixed POSIX
+and PowerShell syntax, attempted editing an unread/nonexistent file, and
+repeatedly sent forbidden literal multiline commands. The shell/tool refusals
+were preserved, not bypassed. A persistent cd frontend caused later relative
+backend writes to land at **frontend/backend/src/types/index.ts**. Two successful
+single-line echo calls wrote the same one-line, 33-byte type file. npm/scaffolder
+effects produced 23 retained nondependency files in total, including an unchanged
+Vite counter/demo frontend, not a ForgeBoard interface. These are shell effects,
+not nine or more successful application writer calls. The correction observer
+accepted zero bounded current source-write events for this mission.
+
+There was no backend implementation, CRUD, persistence, SSE, validation, filtering,
+tests or ForgeBoard README. The frontend README/.gitignore were stock scaffold
+files; root .gitignore was absent. Neither a model test nor build ran. No
+functional port 4317, title-120 rule, debounce-750 rule or page-size implementation
+existed. **13345 reasoning characters** were preserved despite the absence of an
+advertised thinking switch; the comparison cannot claim true no-reasoning parity.
+
+Before request 33, protected input estimated **28798**, output reserve **2048**,
+safety margin **2880**, required **33726 > 32768**, including **20515** history/
+tool-state tokens and no derived memory. Clack correctly did not send that
+oversized request. The budget stop is real; no erroneous estimate, receipt loss
+or new context-architecture correctness defect was demonstrated. Shell-only tiny
+writes did not create the verified writer receipts used in the Coder baseline.
+
+### 27B outcome
+
+**HARNESS-BLOCKED / native-to-WebView delivery lost / inconclusive**. Its probe
+passed normally, then one fresh mission request was dispatched with think:false.
+Native evidence recorded one **568-byte** body, provider-done, IPC-forwarded and
+completed/eof after approximately **9.23 seconds**. No corresponding SDK
+first-byte/finish, answer, structured call, todo or filesystem effect reached the
+acceptance transcript. The workspace remained empty apart from .git.
+
+Read-only process inspection found host **25344** and runners alive/responding,
+but no WebView2 process for this isolated run; the host's direct child list
+contained only conhost. No matching crash diagnostic established why its WebView
+disappeared. This is not evidence that the model spent 600 seconds reasoning,
+returned no native output or failed the task. The native response payload/usage
+was not preserved in the receive summary, so mission token/tool contents are
+unknown rather than inferred from its byte count.
+
+After approximately **226.6 seconds** from dispatch with no SDK progress, the
+evaluator stopped **only the owned native host**. The recorded child exit **1**
+is this deliberate cleanup, not a spontaneous host exit or production timeout.
+The runner captured .failure.json and source hashes, and exited normally after
+classifying the attempt. mission-stop-observation.json distinguishes observation
+from cleanup. No replay, retry, restart interaction or repair was performed.
+
+### Comparison and product audit
+
+Coder is the existing **b933887** audited baseline from
+forgeboard-qwen3coder-poste56bbe5-01, before the Stage 1 guidance change. It was
+**not rerun**. Earlier sustained Coder work, not this latest baseline, contained
+some persistence implementation and 18 writes; those results are not conflated
+with the latest twelve-write run. Times below start at first native dispatch;
+Coder's elapsed figure is its existing whole-run audit duration.
+
+| Metric | qwen3-coder reference | Qwen3.6 35B-A3B | Gemma4 26B-A4B | Qwen3.6 27B |
+|---|---|---|---|---|
+| Tool smoke | Existing PASS | PASS | PASS | PASS |
+| ForgeBoard run | Existing only | One fresh | One fresh | One fresh, inconclusive |
+| Mission inferences | 23 | 18 | 32 | 1 |
+| Structured calls | 22 | 17 | 32 | 0 observed by SDK |
+| Successful / failed tools | 21 / 1 | 17 / 0 | 23 / 9 | 0 / 0 observed |
+| Successful writer calls | 12 | 9 | 0; two tiny shell rewrites plus scaffold | 0 |
+| First response / structured tool | 18.879s / 20.136s | 7.740s / 14.136s | 4.619s reasoning / 28.163s | Native 9.23s; SDK unobserved |
+| First confirmed write | 30.040s | 27.040s | None accepted by observer; shell/scaffold effects exist | None |
+| First substantive backend / frontend | Backend 72.538s; frontend absent | Neither | Neither; generic Vite scaffold only | Neither |
+| Elapsed | 183.541s | 125.865s | 174.442s | 226.635s, evaluator cleanup |
+| Backend / frontend | Partial backend / config only | Config / config only | None / scaffold | None / none |
+| Persistence | Earlier run only; latest in-memory | None | None | Not exercised |
+| SSE | No | No | No | Not exercised |
+| Model test / build commands | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| Tests / build audited | Prior partial/failed | Audit dependency-blocked; no source/tests | Root test fails; build script absent | No package/source to run |
+| Automatic continuations | 0 latest; 1 older | 0 | 1 | 0 observed |
+| Empty completed responses | 0 | 0 | 0 | Unknown; no SDK completion |
+| Premature normal prose stop | Yes latest | No; engine interruption | No; budget stop | Not assessable |
+| Explicit approvals / cloud | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 observed |
+| Transport idle/deadline stalls | 0 | 0; provider error instead | 0 | Native completed; WebView delivery stall |
+| Minimum native estimated headroom | 1835 | 9616 | 1023 on sent requests | Not captured |
+| Minimum SDK headroom | 844 | Not captured | Next preparation over by 958 | Not captured |
+| Verified receipts / saving | 11 / 6976 required tokens at request 23 | 0 / 0 | 0 / 0 | 0 observed |
+| Memory revisions / extraction / evidence retrieval | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | Not exercised |
+| Correction sent / 25 retained | No / untested | No / untested | No / untested | No / untested |
+| Context blocker | None latest | None | Protected-budget before request 33 | Not established |
+| Final class | MODEL-INCOMPLETE | ENGINE-BLOCKED | CLACK-BLOCKED | HARNESS-BLOCKED |
+
+The syntax-aware 50-to-25 observer was retained unchanged, but none of the new
+missions reached current page-size-50 code/accepted plan after three confirmed
+source writes. No correction was therefore sent, and no 25-retention success or
+failure is claimed. No malformed textual tool intent was executed. Coder's prior
+fabricated-looking prose receipt remains a model stop, not an executable call.
+Gemma's real continuation had **no verified write receipts**; it does not verify
+live receipt relocation. Coder live continuation-receipt survival remains **NOT
+EXERCISED**, not failed. **e56bbe5** deterministic coverage remains authoritative.
+
+Independent, source-identical copies were created outside Clack at
+C:/Users/Hayden/Documents/forgeboard-audit-20261019-41 and -42. No original project
+was repaired. For 35B-A3B, offline npm ci --ignore-scripts failed ENOTCACHED for
+ws-8.22.0; subsequent test/build commands failed because vitest/tsc were absent.
+This is an **audit dependency limitation**, not evidence of failed authored tests.
+There were no application or test source files regardless. Gemma's root npm test
+was the generated "no test specified" exit 1, and npm run build had no script;
+the Vite demo is not a ForgeBoard acceptance pass. No package existed for 27B.
+CRUD, task/project behavior, filters/search, deterministic validation/errors,
+persistence, SSE, required frontend workflows, runtime-data ignores, port 4317,
+title max 120, debounce 750 and page-size behavior were **not delivered** by any
+new candidate. No fabricated functional checks or UI acceptance are claimed.
+
+### Decision, limits and next candidate
+
+**No preferred local coding model yet.** Coder remains the strongest observed
+implementation reference, with meaningful earlier backend/persistence progress,
+reliable sustained native calls and now healthy latest context preparation.
+Its latest premature prose stop and incomplete unverified product still rule out
+declaring a reliable daily autonomous default.
+
+35B-A3B showed clean structured tooling and fast configuration progress, but an
+engine-blocked run cannot prove delivery or superior failure recovery. Gemma
+recovered from some dependency/scaffolding mistakes but repeatedly failed file
+creation and exhausted protected context before an application existed. 27B's
+native probe passed, but harness loss makes its coding ability **unranked**.
+Delivery ranking: **Coder first; no defensible complete-product ranking among
+the three new candidates**. By observed useful progress only, 35B-A3B's clean
+configuration work is more promising than Gemma's scaffold/recovery loop; this is
+not a latency/parameter-size victory or a model-quality conclusion about 27B.
+Confidence is high that no preferred/default choice was earned here, low for
+comparative generalization from one bounded mission each. No installed candidate
+has demonstrated sufficient reliability for daily unsupervised coding-agent work.
+
+Keep broad context-architecture debugging **stopped**. These runs add specific
+engine-stream, Gemma protected-budget pressure and isolated WebView-delivery
+limitations, not evidence to discard the existing C1/G1/M1/M2/PeerTask/context
+design. The WebView-loss cause and exact engine error need bounded investigation
+in separately authorized work; no hidden repair or new mission was started here.
+
+Next external candidate recommendation, **not downloaded or tested**:
+**devstral-small-2:24b**. Its exact tag is currently listed by the primary
+[Ollama model page](https://ollama.com/library/devstral-small-2:24b), checked
+2026-10-19: tool-capable, Q4_K_M, approximately 15GB, requiring Ollama 0.13.3 or
+later. This availability check is not a claim that it will work better on this
+host. Any download and same-32K evaluation require a separate checkpoint.
+
+### Verification and repository safety
+
+- Stage 1's production gates remain as recorded above: **100 focused**, **2970
+  full-suite tests / 207 passing files**, with only two preserved ForgeBoard
+  collection failures for missing supertest; types/lint/build passed, unchanged
+  71 warnings / 2 infos and four build dynamic-import advisories.
+- Stage 2: **19 focused tests / 3 files** (four new installed-model guard cases,
+  preserved comparison and approval-lifecycle coverage), plus **107 approval/
+  correction tests / 2 files**, all passed under Vitest. An initial sandbox cache
+  rename denial ran no tests; an incorrect Node-test-runner invocation was
+  corrected to the suites' existing Vitest runner. Neither changed product code.
+- Affected **TypeScript passed**, **cargo fmt --check passed**, and strict
+  **cargo clippy --all-targets --locked -- -D warnings passed**, using isolated
+  target/codex-test. The full Rust gate failed in the library suite at **605
+  passed / 1 failed / 606 total**, before later test targets could run:
+  unchanged d1_cancellation_timeout_and_revocation_prevent_or_interrupt_work
+  expected tool-revoked but got timed-out, line 758. Its isolated rerun also
+  failed. That test's bytes are unchanged from checkpoint entry. Its broader
+  timing/root cause was not investigated; this is not a green Rust gate or a
+  checkpoint-owned production change, and no unrelated fix was attempted.
+- All three native probe/control audits passed, and every mission's source-freeze
+  audit passed. Offline evidence/source-identity audits passed. One offline
+  audit assertion about continuation adding a user message was corrected:
+  production automatic continuation does not resend the original user message.
+  The completed first audit was reused, not its inference replayed.
+- The Stage 2 lint recheck also passed at **71 warnings / 2 infos**. Full frontend
+  test/build gates were not redundantly rerun after the acceptance-only extension.
+  No native GUI/manual browser, Linux/macOS or live cloud test is
+  claimed. Diff checks passed. Local generated evidence and disposable projects
+  are preserved; no model/persistent application setting was globally changed.
+- Only checkpoint-owned hunks/new scripts/tests and this appended section belong
+  in the evidence commit. The original six unrelated edits, including IQ4_XS
+  additions and the separate earlier report insertion, remain unstaged and
+  preserved. Safety stashes, delegation work and autonomous_tracker/ are untouched.
+
+Separate evidence commit: **test(ai): compare installed local coding models**.
+Total new native inference requests: **54 = 3 probes + 51 mission requests**;
+cloud inference **0**. No model download, context increase, additional Coder or
+Qwen3.8 mission, automatic tuning ladder, architecture rewrite or push. STOP.
