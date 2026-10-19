@@ -137,7 +137,7 @@ export function buildFsTools(ctx: ToolContext) {
 
     write_file: tool({
       description:
-        "Create or overwrite a file with the given content. Approval follows the active agent policy. Prefer `edit` / `multi_edit` for in-place changes — only use `write_file` for creating a brand-new file or fully replacing a tiny one.",
+        "Create a brand-new file or overwrite a previously read tiny text file with the given content. Confirm the parent directory exists first. Prefer an exposed exact-string editing capability for targeted existing-file changes; do not use full replacement as a proxy for a targeted change. Approval follows the active agent policy.",
       inputSchema: z.object({
         path: z.string(),
         content: z.string(),

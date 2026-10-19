@@ -127,7 +127,7 @@ export function buildEditTools(ctx: ToolContext) {
   return {
     edit: tool({
       description:
-        "Replace an exact string in a file. Requires read_file on this path first in the current session — this prevents blind edits. `old_string` must be unique in the file unless `replace_all: true`. Approval follows the active agent policy.",
+        "Replace an exact string in an existing file. Requires a successful prior file read on this path in the current session; cannot create unread or nonexistent files. `old_string` must be unique in the file unless `replace_all: true`. Approval follows the active agent policy.",
       inputSchema: z.object({
         path: z.string(),
         old_string: z
@@ -160,7 +160,7 @@ export function buildEditTools(ctx: ToolContext) {
 
     multi_edit: tool({
       description:
-        "Apply several exact-string replacements to a single file atomically. Each edit is applied in order to the running buffer; if any edit's old_string is missing or non-unique, the whole batch aborts before writing. Requires prior read_file on the path. Approval follows the active agent policy.",
+        "Apply several exact-string replacements to a single existing file atomically. Each edit is applied in order to the running buffer; if any edit's old_string is missing or non-unique, the whole batch aborts before writing. Requires a successful prior file read on the path in this session; cannot create unread or nonexistent files. Approval follows the active agent policy.",
       inputSchema: z.object({
         path: z.string(),
         edits: z

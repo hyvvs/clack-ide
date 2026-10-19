@@ -608,9 +608,9 @@ it("compact stable composition preserves full policy and explicit constraints on
     for (const rule of [
       "sensitive files",
       "final",
-      "prior read_file",
+      "previously read files",
       "approval card",
-      "BEFORE spawning",
+      "Before spawning",
       "Never run interactive",
       "Never change port 1420.",
       "Keep architecture.",

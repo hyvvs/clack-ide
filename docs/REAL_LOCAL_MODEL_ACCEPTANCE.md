@@ -6539,3 +6539,67 @@ only this additive report section. Six pre-existing unrelated edits, including
 the separate report insertion, remain excluded and preserved; safety stashes,
 delegation work and autonomous_tracker/ are untouched. The commit records an
 acceptance attempt, not a falsely claimed continuation pass. No push. STOP.
+
+## Truthful file-creation guidance
+
+Stage 1 of the installed-model comparison checkpoint, starting at **b933887**.
+The prior system/default/lite/plan prompts named a static superset of tools.
+In particular, default file-creation advice recommended write_file even when
+permissions, agent assignment, model capabilities or F1's active schema selection
+did not expose it. Some schema descriptions also recommended other absent tools.
+
+The fix makes built-in system and plan-mode guidance capability-neutral. The
+current request's selected schemas are explicitly authoritative; a historical
+tool name or prior successful call never grants current availability. Concrete
+creation/editing instructions now live in the actual tool capability metadata
+already filtered by permissions and F1 on every request:
+
+- The exposed file writer supports brand-new files and previously read tiny-file
+  replacement, not blind targeted replacement. It does not advertise absent edit
+  tools. Existing parent-directory and approval requirements remain.
+- Exposed exact-string editors explicitly require a prior successful file read
+  and cannot create unread/nonexistent files. Uniqueness, atomicity, stale-read
+  validation and mutation implementations are unchanged.
+- The exposed foreground shell describes authorized noninteractive workspace
+  file creation, following the actual env shell/shell_syntax. It does not imply
+  Bash from the historical name or hard-code Windows/PowerShell. If no shell
+  schema is exposed, this creation route is not sent. Related background/log/
+  preview descriptions no longer recommend unavailable named tools.
+- Read-only/edit-only/no-tool requests receive no executable writer/shell
+  recommendation. Plan mode still prohibits command execution and queues exposed
+  file mutations for review. Trusted agent/user instructions are not rewritten;
+  core authorization and current-schema authority continue to constrain them.
+
+This uses the existing selected-schema/SDK activeTools path, not a duplicate
+capability registry or per-model prompt table. No new tool, permission grant,
+textual-tool execution fallback, context preparation, compaction, retrieval,
+memory, scheduler, model/agent routing or timeout change was introduced.
+
+Verification:
+
+- **100 focused tests / 5 files passed**, including **26 new guidance cases**
+  spanning writer present/absent, shell present/absent, edit-only, atomic-edit,
+  read-only, no tools, background handles and three provider/model identities.
+  Actual F1 selection plus SDK serialization proves a reduced shell-only file
+  creation route does not advertise an omitted writer. Hierarchy, preflight and
+  real mutation-safety regressions remain covered. Two old wording/order
+  expectations were corrected without weakening behavior assertions.
+- **npm.cmd run check-types passed**. **npm.cmd run lint passed**, unchanged
+  **71 warnings / 2 infos**. **npm.cmd run build passed**, with the four existing
+  INEFFECTIVE_DYNAMIC_IMPORT advisories and plugin-timing notice.
+- The single **npm.cmd test** invocation passed **2970 tests / 207 files**.
+  Overall exit was **1** solely because default discovery collected the two
+  preserved post315b568-01 ForgeBoard src/dist backend test suites, both missing
+  supertest. No Clack test failed, no acceptance project was repaired, and no
+  test-discovery setting was changed to hide these failures.
+- **git diff --check passed**. No checkpoint-owned Rust change, so no Rust gate
+  rerun. No native GUI/live-provider testing or model inference is claimed for
+  Stage 1. The six pre-existing unrelated edits and safety stashes are preserved;
+  only this new report section is staged, not the prior report insertion.
+
+Separate production commit: **fix(ai): align file guidance with available tools**.
+No push. Stage 2 starts only after this commit, using installed-model inventory
+and one bounded native structured-tool probe per non-retired comparison model.
+qwen3-coder's existing baseline is retained without another ForgeBoard run;
+Qwen3.8 remains historical-only. The latest baseline's eleven receipts and
+healthy request 23 do not turn unexercised live continuation into a failed test.
