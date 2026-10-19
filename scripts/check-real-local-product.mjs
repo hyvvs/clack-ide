@@ -34,7 +34,7 @@ const prepareOnly = process.env.CLACK_PRODUCT_PREPARE_ONLY === "1";
 assert(!prepareOnly || phase === "preflight", "Metadata-only preparation must use preflight");
 assert(!singleSpec || !["resume-a", "mission-b"].includes(phase), "Single-spec runs forbid manual continuation and peer missions");
 const reasoningChoice = process.env.CLACK_PRODUCT_REASONING || undefined;
-assert(reasoningChoice === undefined || ["automatic", "none"].includes(reasoningChoice), "Reasoning choice must be automatic or none");
+assert(reasoningChoice === undefined || ["automatic", "none", "low"].includes(reasoningChoice), "Reasoning choice must be automatic, none or metadata-supported low");
 assert(reasoningChoice === undefined || ["mission-a", "system-preflight"].includes(phase), "Reasoning override requires Mission A or its compatibility preflight");
 const endpoint = "http://127.0.0.1:11435";
 let streamDiagnostic, replaySource;
@@ -155,6 +155,7 @@ try {
   await cp(data, `${output}.data-before`, { recursive: true, errorOnExist: true, force: false });
   const env = Object.fromEntries(["PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "HOME", "LANG"].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []));
   Object.assign(env, { APPDATA: data, LOCALAPPDATA: data, TEMP: owned, TMP: owned, CLACK_ACCEPTANCE_ROOT: owned, CLACK_REAL_PRODUCT_PHASE: `${phase}-${attempt}`, CLACK_ACCEPTANCE_MODEL: modelId, CLACK_ACCEPTANCE_OLLAMA_URL: `${endpoint}/api/chat`, CLACK_ACCEPTANCE_URL: `${vite.resolvedUrls.local[0]}coworking-acceptance.html?configuration=${encodeURIComponent(`${local}/configuration`)}` });
+  if (reasoningChoice === "low") env.CLACK_ACCEPTANCE_EXPECTED_THINK = "low";
   if (streamDiagnostic || (traceStreams && ["mission-a", "system-preflight"].includes(phase))) env.CLACK_ACCEPTANCE_RECEIVE_TRACE = "1";
   child = spawn(path.join(repository, "src-tauri/target/codex-test/debug/examples", `coworking_acceptance${process.platform === "win32" ? ".exe" : ""}`), [], { cwd: root, env, windowsHide: true });
   child.once("exit", (code, signal) => { childExit = { pid: child.pid, code, signal, at: Date.now() }; });
@@ -164,6 +165,7 @@ try {
   let timer;
   const result = await Promise.race([report, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Real product acceptance reached 90-minute bound")), 90 * 60 * 1000); }), new Promise((_, reject) => child.once("exit", code => reject(new Error(`Native host exited before report: ${code}`))))]).finally(() => clearTimeout(timer));
   await evidenceWrites;
+  await writeFile(`${output}.native-report.json`, JSON.stringify(result, null, 2), { flag: "wx" });
   const destinations = [...nativeLog.matchAll(/CLACK_ACCEPTANCE_INFERENCE ("[^"\r\n]+")/g)].map(m => JSON.parse(m[1]));
   const finalHealth = streamDiagnostic || traceStreams ? { ps: await metadataHealth("/api/ps"), version: await metadataHealth("/api/version") } : undefined;
   const finalModels = finalHealth ? finalHealth.ps.body : await (await fetch(`${endpoint}/api/ps`, { signal: AbortSignal.timeout(5000) })).json();
@@ -177,7 +179,7 @@ try {
     assert.deepEqual(body.options, { num_ctx: 32768, num_predict: 2048 });
     if (result.reasoningControl?.effective === "unsupported-no-control")
       assert(!Object.hasOwn(body, "think"), "Unsupported reasoning control must be omitted");
-    else assert.equal(body.think, false);
+    else assert.equal(body.think, reasoningChoice === "low" ? "low" : false);
     assert.equal(body.stream, true);
     assert.deepEqual(body.tools.map(t => t.function.name), ["get_test_value"]);
   }

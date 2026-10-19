@@ -242,6 +242,13 @@ fn main() {
                                 .expect("owned audit file");
                             let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_millis();
                             writeln!(file, "{}", serde_json::json!({"at": at, "requestId": value["requestId"], "url": value["url"], "body": body})).expect("persist request audit");
+                            if let Ok(think) = std::env::var("CLACK_ACCEPTANCE_EXPECTED_THINK") {
+                                assert_eq!(think, "low");
+                                if body["think"] != "low" || body["options"]["num_predict"] != 2048 {
+                                    invoke.resolver.reject("Acceptance stopped: serialized reasoning/output controls changed");
+                                    return true;
+                                }
+                            }
                             if phase.starts_with("offline") {
                                 invoke.resolver.reject("Acceptance connection unavailable");
                                 return true;

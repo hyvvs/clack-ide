@@ -18,8 +18,17 @@ describe("installed-model acceptance bounds", () => {
     expect(ui).toContain('captured.capability.status === "unsupported"');
     expect(ui).toContain('effective: "unsupported-no-control"');
     expect(runner).toContain('assert(!Object.hasOwn(body, "think")');
-    expect(runner).toContain("else assert.equal(body.think, false)");
+    expect(runner).toContain('else assert.equal(body.think, reasoningChoice === "low" ? "low" : false)');
     expect(runner).toContain('assert.equal(requests.length, 1, "Tool protocol probe must send exactly one inference")');
     expect(ui).toContain("toolExecutionCount: 0");
+  });
+  it("accepts explicit Low only through normal validation and preserves native failure reports", () => {
+    const runner = readFileSync("scripts/check-real-local-product.mjs", "utf8");
+    const host = readFileSync("src-tauri/examples/coworking_acceptance.rs", "utf8");
+    expect(runner).toContain('["automatic", "none", "low"].includes(reasoningChoice)');
+    expect(runner).toContain('env.CLACK_ACCEPTANCE_EXPECTED_THINK = "low"');
+    expect(host).toContain('body["think"] != "low"');
+    expect(host).toContain('body["options"]["num_predict"] != 2048');
+    expect(runner.indexOf('.native-report.json')).toBeLessThan(runner.indexOf('assert.equal(requests.length, 1, "Tool protocol probe'));
   });
 });

@@ -8271,3 +8271,286 @@ implementation, tests and this appendix are included in the scoped commit.
 Commit: **fix(ai): support mixed reasoning controls**. **No push. STOP here.**
 The next checkpoint may perform the separately authorized live Muse smoke and,
 only if it passes, its fresh ForgeBoard acceptance. None of that work was started.
+
+## Muse Glimmer live evaluation after reasoning compatibility fix
+
+### Scope, isolation and controls
+
+Evaluation date: **2026-10-19**, from **4d1c70b**, main, initially 62 ahead / 0
+behind cached origin/main, empty index. The six existing dirty paths were saved
+byte-for-byte before work. Both safety stashes and autonomous_tracker/ were left
+alone. Process inspection found no competing Clack acceptance host, Cargo/rustc,
+Clack Vite/test runner or model evaluation. The existing localhost tunnel was
+reachable; /api/ps was initially empty. No other model was invoked.
+
+The installed artifact matched **muse-glimmer:30b**, digest
+**de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1**,
+Q4_K_M, **18,157,010,252 bytes**, Ollama **0.40.5**. Native metadata advertised
+**[false, "low", "medium", "high", "max"]**. No model download, Ollama service
+change, template change, tuning ladder, context calibration or timeout change
+occurred. Ordinary npm dependencies were installed only in an independent audit
+copy after the mission ended, not as evaluator implementation assistance.
+
+Fresh workspace: **C:/Users/Hayden/Documents/forgeboard-muse-glimmer-20261019-02**.
+Evidence/run ID: **forgeboard-muse-glimmer-20261019-02**, under
+**src-tauri/target/real-qwen-product/**. Suffix 01 belonged to the earlier blocked,
+zero-inference attempt and was not reused. The new workspace began with only an
+empty Git repository. No application implementation was seeded.
+
+All **16 inference requests** (one smoke plus 15 mission requests) used the normal
+production native Ollama /api/chat adapter, exact model, **num_ctx=32768**,
+**num_predict=2048**, **think:"low"**, fallback Never, **zero cloud inference**.
+The mission initially exposed the normal 16 production tools, including native
+shell tools, with the existing F1, permission, effect and context mechanisms.
+Its normal trusted-workspace test profile was preserved; no approval bypass was
+added. No approval-requested/submitted event arose in this mission, so live
+approval recovery was not exercised. Existing automated approval coverage passed.
+
+Production source was frozen. Before/after tracked-file hashes for preparation,
+smoke and mission all matched. Only test-harness support for Low was added: the
+existing reasoning selector flows through production resolution, a native-host
+test guard records and rejects an unexpected think/output value before dispatch,
+and the runner preserves its native report before terminal assertions. There is
+no Muse-specific production branch. The original six dirty-file changes are
+excluded from this checkpoint commit.
+
+### Structured smoke
+
+Exactly one harmless smoke request was dispatched at **20:50:42.591Z** with
+get_test_value(value: string). Muse returned the provider-native structured call
+**get_test_value({"value":"protocol-check"})**, SDK finish **tool-calls**, native
+done_reason **stop**, no answer prose. **PASS**. The tool was **not executed**
+(execution count zero); textual tool intent was never interpreted as a call.
+Provider usage: **408 input / 94 output tokens**. Engine total duration was
+**32.115694 s**, including **21.831022 s** load. No reasoning-validation failure.
+Preparation before this smoke was metadata-only and sent zero inference.
+
+### Fresh mission chronology and tool behavior
+
+The complete unchanged ForgeBoard specification was sent **once**, with SHA-256
+**f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801**.
+The persisted transcript contains one user message. No reminder, manual Continue,
+requirement resend, recovery retry or evaluator implementation was supplied.
+
+First native request capture: **20:52:06.194Z**; native dispatch **20:52:06.210Z**.
+First parsed response was **20:52:14.838Z**. First native structured-tool frame
+arrived **59.201 s** after native dispatch; SDK tool availability was **59.444 s**
+after capture. Muse created a nine-step plan, inspected the empty workspace,
+created backend/frontend directories and then backend src/data directories.
+
+| Confirmed file write | Provider finish / next request bound (UTC) | Elapsed since first capture |
+|---|---|---:|
+| backend/package.json | 20:54:57.870 / 20:54:58.028 | 171.676-171.834 s |
+| backend/tsconfig.json | 20:55:16.862 / 20:55:16.963 | 190.668-190.769 s |
+| backend/data/store.json | 20:55:44.814 / 20:55:44.902 | 218.620-218.708 s |
+| backend/src/types.ts | 20:56:12.586 / 20:56:12.756 | 246.392-246.562 s |
+| backend/src/store.ts | 20:56:43.065 / 20:56:43.197 | 276.871-277.003 s |
+| backend/src/validation.ts | 20:57:37.277 / 20:57:37.425 | 331.083-331.231 s |
+| backend/src/sse.ts | 20:58:08.233 / 20:58:08.374 | 362.039-362.180 s |
+
+The first file-write success receipt was at **20:54:57.973Z**, **171.779 s** after
+first capture. Directory creation succeeded earlier but is not counted as a file
+mutation or substantive application implementation. types.ts is a data model;
+store.ts is a partial persistence helper, validation.ts contains real schemas,
+and sse.ts is a partial broadcaster. There was **no substantive API/server or
+frontend**, model-authored test, successful model test or model production build.
+
+Totals: **15 mission requests**, **14 completed engine responses**, **14 native
+structured calls**, **14 successful tools / 0 failed**, **7 verified file writes**,
+**4 directory creates**, **2 todo_write**, **1 list_directory**. There were zero
+shell calls, malformed textual intents, completed empty responses, premature
+answer-prose stops, automatic continuations or pre-output timeouts. No first shell
+command exists, so advertised PowerShell syntax compliance was **not exercised**.
+Natural tool-failure diagnosis/recovery was **not exercised**, not a pass or fail.
+All completed responses produced structured tools, not claimed completion.
+The retained assistant reasoning totals **1,361 characters**; the last partial
+reasoning is **Now services**. Final plan failures are runtime terminalization,
+not model-authored assertions that those implementation steps were completed.
+
+### Terminal stream boundary and latency
+
+Request 15 dispatched at **20:58:08.396Z**, received HTTP 200 plus its first body
+at **20:58:09.689Z**, and delivered two reasoning frames (304 bytes total). Its
+last reqwest body delivery was **20:58:09.793Z**. No subsequent body bytes arrived.
+At **20:59:09.796Z**, **60.003 s** after the last native body delivery, the existing
+60-second idle guard fired; session failure was recorded at **20:59:09.804Z**.
+Total mission capture-to-failure: **423.610 s**. The native host remained alive
+to persist the report and exited cleanly with code 0. No 90-minute harness bound,
+120-second first-output guard or 600-second request deadline was reached.
+
+Classification: **UPSTREAM STREAM STALL / NATIVE STREAM-IDLE DEADLINE / INCOMPLETE**.
+The reqwest delivery and IPC traces agree: the two received frames were forwarded
+promptly, with no dropped events, then input stopped. No confirmed Clack reasoning,
+context, approval, guidance or transport defect was established. This is an
+observed upstream-delivery stall under unchanged production controls, **not proof
+of an internal Muse engine crash**. Model, Ollama, remote-host and tunnel ownership
+of the silence remain unconfirmed. No server-side logs were invented. No final
+engine finish/usage arrived for request 15; its generated-token count is unknown.
+The **3,294 output tokens** returned across requests 1-14 are completed-only usage,
+not an inferred total for the interrupted request or whole mission.
+
+All times below are milliseconds from each native dispatch. Parsed frame times
+and absolute dispatch timestamps are retained in audit.json. Completion is native
+EOF for requests 1-14; request 15 has no engine finish or EOF.
+
+| Request | Headers | First body | First structured frame | Completion |
+|---|---:|---:|---:|---:|
+| 1 | 8625.282 | 8625.482 | 59201 | 59220.312 |
+| 2 | 1278.353 | 1278.505 | 8355 | 8355.495 |
+| 3 | 977.679 | 977.799 | 19407 | 19406.736 |
+| 4 | 7202.560 | 7202.684 | 7205 | 7227.065 |
+| 5 | 935.460 | 935.661 | 46609 | 46609.389 |
+| 6 | 2341.266 | 2341.375 | 30058 | 30077.706 |
+| 7 | 845.961 | 846.092 | 18800 | 18819.555 |
+| 8 | 1168.071 | 1168.224 | 8593 | 8595.973 |
+| 9 | 879.041 | 879.147 | 8362 | 8363.003 |
+| 10 | 901.655 | 901.763 | 10520 | 10518.738 |
+| 11 | 974.272 | 974.385 | 27637 | 27664.005 |
+| 12 | 905.574 | 905.690 | 30290 | 30290.694 |
+| 13 | 987.269 | 987.381 | 54060 | 54060.496 |
+| 14 | 1048.682 | 1048.797 | 30789 | 30789.026 |
+| 15 | 1293.791 | 1293.904 | none | idle timeout at 61400.271 |
+
+IPC frame wall-clock measurements and native monotonic EOF measurements can
+differ by a few milliseconds; the table preserves their actual observation
+boundaries rather than asserting ordering at sub-millisecond precision.
+
+### Correction, context and memory
+
+Seven confirmed successful file writes exceeded the correction's three-write
+threshold. However, page size **50 never materially entered current code or the
+accepted structured plan**, so the second required condition was false. The
+syntax-aware detector correctly remained **pending**. The original user spec was
+not mistaken for an accepted plan; max(500) was not mistaken for page size 50.
+**No correction was sent; retention of 25 was not exercised.**
+
+Every captured request retained **think:"low"**, context 32768 and output 2048.
+The stored Low preference and supported contract remained unchanged. The old
+expiry timestamp in the immutable active-run capture is not itself stale-request
+evidence: the production request preflight revalidates that same native contract.
+No reasoning rejection or unexpected omission/change occurred.
+
+Exact SDK history reconstruction, including tool-result JSON order, normal
+environment text and production preparation, reproduced **all 15 captured native
+bodies**. Minimum measured headroom: **SDK 8,996 / native 9,916 estimated tokens**.
+No protected-budget failure. **Zero verified-effect receipt compactions / zero
+receipt token savings**, zero rolling compaction, extraction, retrieval or durable
+memory revisions. The original transcript remains source-linked and intact; the
+final memory revision/revisionId are null. F1/context policy was not changed to
+make this fit. This short run did not exercise long-conversation memory pressure.
+
+### Independent application audit
+
+All seven generated files were inventoried and hashed, then copied without source
+repairs to **C:/Users/Hayden/Documents/forgeboard-muse-audit-20261019-02**, outside
+Clack's ancestor dependency tree. Both copies' original source hashes still match.
+After inspecting the manifest, the evaluator installed its declared dependencies
+with lifecycle scripts disabled and no lockfile rewrite. Actual results:
+
+| Command in independent backend copy | Result |
+|---|---|
+| npm.cmd install --ignore-scripts --package-lock=false --audit=false --fund=false | PASS; 132 npm packages, no model download |
+| npm.cmd test | FAIL, exit 1: no test files found |
+| npm.cmd run build | PASS, exit 0: tsc compiled four helpers only |
+| npm.cmd start | FAIL, exit 1: dist/server.js does not exist |
+| Evaluator compiled-schema probe | PASS: title 120 accepted, 121 rejected, empty task update rejected |
+
+The schema probe is **not** a model-authored test or API verification. A successful
+helper compilation is **not** a completed production application build.
+
+| Requirement | Independent outcome |
+|---|---|
+| Project/task CRUD, open/view, combined filters/search, deterministic HTTP errors, port 4317 | **NOT IMPLEMENTED**: no server or routes |
+| Task fields/status/priority/tags/timestamps | Interfaces and schemas present; no functional task API/UI |
+| Backend validation | Partial schemas including title max 120; not wired to HTTP |
+| Restart persistence | Partial JSON store helper and empty JSON file; no runnable backend to exercise restart persistence |
+| SSE without polling | Partial broadcaster only; no SSE route, mutation integration or frontend subscriber |
+| SSE correctness | Static defect: close callback deletes a newly allocated object from Set, not the registered client; no repair made |
+| React frontend/project/task/search/filter UI | **NOT IMPLEMENTED**: frontend directory is empty |
+| Loading/error/empty states, keyboard accessibility, debounce 750 | **NOT IMPLEMENTED**; plan text alone does not count |
+| Page size 50 or corrected 25 | **NOT IMPLEMENTED**; correction was not eligible |
+| API/validation/persistence/filter/frontend tests | **NOT IMPLEMENTED**; zero model test commands |
+| Production application build | **NOT IMPLEMENTED**; partial backend helper compilation only |
+| README and runtime-data ignore | **NOT IMPLEMENTED**; no README or .gitignore, runtime JSON is not ignored |
+| Git commits | Zero |
+
+No backend was available for real CRUD, restart or mutation-to-SSE verification;
+no frontend existed for browser acceptance. These checks are missing, not passed.
+No native GUI/Computer Use was performed. The native acceptance adapter did run
+on Windows; Linux/macOS GUI or runtime acceptance is not claimed.
+
+### Direct comparison and decision
+
+Qwen figures are the existing sustained reference, not a new invocation. Prior-run
+persistence evidence is explicitly separate from the latest comparison mission.
+
+| Metric | qwen3-coder | Muse Glimmer |
+|---|---|---|
+| Tool smoke | PASS | PASS |
+| Reasoning | None / false reference | Low / "low", all requests |
+| Mission requests | 23 | 15 |
+| Structured calls | 22 | 14 |
+| Successful / failed tools | 21 / 1 | 14 / 0 |
+| Successful file mutations | 12 | 7 |
+| Failure recovery | Latest missing-directory failure was followed by prose/fabricated receipt, not a real recovery call | Not exercised; no tool failure |
+| Backend | Substantive partial API | Types/validation/storage/SSE helpers only, no server |
+| Frontend | Earlier-run partial implementation; latest reference none | None |
+| Persistence | Demonstrated in earlier run | Helper only; backend restart unavailable |
+| SSE | Incomplete | Unwired broadcaster, cleanup defect |
+| Tests / application build | Incomplete/failed | No tests; helper compile passes, application cannot start |
+| Correction retained | Latest reference had one user message and no correction; older correction-specific evidence is separate | Not exercised, second condition never met |
+| Premature prose stop | Observed | No; native idle timeout |
+| Engine/transport stall | No recurring 120-second pre-output stall | One 60-second post-output delivery silence |
+| Latest context blocker | None | None |
+| Minimum SDK / native headroom | 844 / 1835 | 8996 / 9916 |
+| Latest-request receipts / savings | 11 / 6976 estimated tokens | 0 / 0 |
+| Final classification | MODEL-INCOMPLETE | UPSTREAM STREAM STALL / NATIVE STREAM-IDLE DEADLINE / INCOMPLETE |
+
+Decision: **QWEN3-CODER REMAINS PROVISIONAL LEADER**. It demonstrated materially
+more real application work under the existing controls: its latest first write
+was 30.510 s after session start and backend entry point 73.008 s, versus Muse's
+171.779 s after first capture and no server. These timing origins differ slightly;
+they are not claimed as synchronized benchmarks. Confidence is **moderate
+for observed productivity**, limited for intrinsic model ranking: this is one
+Muse mission, and server-side ownership of its delivery silence is unknown.
+Neither model completed the required software product autonomously.
+
+Muse daily-autonomous status: **NO, on current demonstrated evidence**. Current
+best-tested qwen3-coder: **PROMISING BUT NOT YET**. **North Mini Code should be
+tested next: YES**, in a separately authorized checkpoint, absent a newly proven
+Clack defect. No North/Nemotron download or inference was performed here.
+Context calibration now: **NO**. Qwen-specific production tuning now: **NO**.
+
+### Verification and preservation
+
+Focused frontend/harness tests: **214 passed / 8 files**, covering reasoning
+compatibility, native Ollama serialization/routing, comparison harness, installed
+models, approval lifecycle, structured tool protocol and syntax-aware correction.
+After the final assertion-only lint cleanup, the installed-model group was run
+again: **6 passed**. These are overlapping, not 220 distinct tests.
+**npm.cmd run check-types**, focused Biome lint (three files, zero diagnostics),
+**node --check scripts/check-real-local-product.mjs**, and **cargo fmt --check**
+passed. The native test host compiled and ran the zero-inference preparation,
+single smoke and single mission. All three phase source-freeze checks passed.
+The offline reconstruction/audit passed and made zero network/inference calls.
+Independent generated-project failures above are product-acceptance outcomes,
+not hidden Clack test successes. No unnecessary full suites were rerun under the
+evidence-only test policy; prior checkpoint full-suite limitations remain recorded
+in their original section. Final diff checks passed; Git emitted only existing
+LF-to-CRLF working-copy conversion notices.
+
+Retained evidence includes baseline.json, preflight-1.json,
+system-preflight-1.json/.requests.jsonl/.receive.jsonl, mission-a-1.json,
+mission-a-1.native-report.json, mission-a-1.jsonl, mission-a-1.requests.jsonl,
+mission-a-1.receive.jsonl, correction-state.json, each phase's source-freeze
+before/result, audit.json and independent-audit.json. Raw evidence and generated
+projects stay outside the commit. The native report and durable transcript match.
+All owned child processes exited; no relaunch, replay, second smoke or second
+mission was attempted.
+
+Commit scope: this appendix, Low acceptance-harness support/guard and its focused
+test only. Production source **unchanged**. Original six dirty-file changes,
+stashes and autonomous_tracker/ **preserved**. Expected branch state after the
+scoped commit: main, **63 ahead / 0 behind cached origin/main**, original six
+paths still dirty and unstaged. **test(ai): evaluate muse after reasoning fix**.
+**No push. STOP. No subsequent candidate or checkpoint started.**

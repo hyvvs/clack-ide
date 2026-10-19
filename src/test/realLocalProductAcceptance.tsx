@@ -83,7 +83,7 @@ type Configuration = {
   root: string;
   server: string;
   report: string;
-  realProduct?: { phase: Phase; modelId?: string; toolProtocol?: boolean; maxOutput?: number; singleSpec?: boolean; reasoningChoice?: "automatic" | "none"; traceStreams?: boolean; prepareOnly?: boolean };
+  realProduct?: { phase: Phase; modelId?: string; toolProtocol?: boolean; maxOutput?: number; singleSpec?: boolean; reasoningChoice?: "automatic" | "none" | "low"; traceStreams?: boolean; prepareOnly?: boolean };
   streamDiagnostic?: { body: Record<string, unknown>; sourceRequestId: string };
 };
 type Part = {
