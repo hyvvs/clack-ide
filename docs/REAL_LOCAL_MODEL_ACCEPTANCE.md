@@ -7534,3 +7534,315 @@ Only this appended report section plus offline audit helper/tests are staged.
 
 Evidence-only commit: **test(ai): classify devstral pre-output latency**.
 No new mission or timeout-policy implementation is authorized by this result.
+
+## Fresh Devstral acceptance after latency classification
+
+### Baseline, scope and setup (2026-10-19)
+
+Resumed from `1ef8fbe`, `main`, 59 ahead / 0 behind the recorded `origin/main`,
+empty index. Six unrelated dirty paths and both safety stashes were preserved.
+The prior investigation remains **A - INTERMITTENT ENGINE PRE-OUTPUT LATENCY /
+NOT REPRODUCED** for its single diagnostic replay; its 74.361007s completion
+is not rewritten as a timeout or as acceptance progress. Its earlier historical
+mission remains CLACK-BLOCKED / PRE-OUTPUT RECOVERY DEADLINE / INCOMPLETE.
+
+Exactly **one fresh inference mission** was authorized here. The user explicitly
+selected the existing safe-approval-compatible workspace name
+`C:/Users/Hayden/Documents/forgeboard-devstral-20261019-02` instead of the
+initially requested `forgeboard-devstral-small2-...` prefix. This avoided editing
+the dirty approval harness. Evidence ID remains
+**`forgeboard-devstral-small2-20261019-02`**, under
+`src-tauri/target/real-qwen-product/`. The fresh Git repository contained only
+`.git`, with no seeded implementation or commits, before the task was sent.
+
+Process inspection found no competing Clack acceptance host, Cargo/rustc build,
+Clack test or harness. Read-only SSH inspection found only Ollama serve, no runner
+or recent inference, and idle GPU. Metadata verified the existing tunnel and
+installed model without inference. No model was pulled, updated or recreated.
+
+One **pre-task harness setup failure** is retained, not hidden as a model failure:
+`mission-a-1` was launched before configuring its isolated endpoint/profile.
+The fixture initializes those records only in its configuration phase; the host
+reported `[object Object]` with empty endpoint/profile arrays and exited normally.
+It sent **zero inference, zero ForgeBoard messages and zero effects**. This was
+an evaluator invocation/setup omission, not a confirmed production Clack defect.
+The generated error string itself does not establish any more specific exception.
+
+The existing `preflight` fixture was then invoked with **PREPARE_ONLY=1** solely
+to initialize isolated endpoint/profile/permission metadata. Its saved report
+proves **zero inference** and the workspace still contained only `.git` afterward.
+This was not another structured-tool compatibility probe or smoke generation.
+`mission-a-2` is the sole actual task/inference mission. No production code or
+harness source was repaired to recover from the setup omission.
+
+### Exact controls and single task
+
+- Model: **`devstral-small-2:24b`**, digest
+  `24277f07f62db8f9cb68e9dfc679ea1818a7fbac47a50eff0a701d3f645b63c8`.
+  Mistral3 24.0B Q4_K_M; installed size 15,177,374,099 bytes; advertised context
+  393216. Same already-installed artifact/template and default sampling settings.
+- Existing native Ollama endpoint: `http://127.0.0.1:11435/api/chat`, through
+  the unchanged localhost SSH tunnel; Ollama **0.40.5**. No service, listener,
+  networking, firewall, template, keep-alive or global setting change.
+- All 11 native payloads preserve **num_ctx=32768, num_predict=2048,
+  stream=true**, no sampling override and **no `think` field**. Session reasoning
+  is explicitly Automatic/model default; exact-model capability is unsupported.
+  This is not described as equivalent to Coder's transmitted `think:false`.
+- Fallback Never/effectively disabled: no fallback policy or destination is
+  configured, so the production fallback owner returns no alternate request.
+  Cloud inference **0**. All captured inference destinations
+  are the authorized local endpoint, all captured models are exact Devstral.
+- Shared SDK pre-output **120s**, native first-output **120s**, idle **60s**,
+  overall **600s**, normal F1 selection, B1, receipts, compaction, retrieval,
+  continuation and production approval responder remain unchanged. All requests
+  exposed 16 production schemas (15,012 serialized schema bytes).
+- The unchanged authoritative ForgeBoard specification was sent **exactly
+  once**. Durable transcript contains one user message, SHA-256
+  `f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`.
+  Normal production environment/shell context was prepended on the wire.
+  No prior-run hints, reminder, manual Continue, correction help, task resend,
+  delegation, evaluator implementation or mid-run setting change was supplied.
+
+### Per-request latency and recurring terminal boundary
+
+UTC dispatch below is the native trace immediately before reqwest send.
+Headers, body, meaningful protocol progress and completion use native monotonic
+deltas from that dispatch. IPC/parsed timestamps are browser-observed wall-clock
+milliseconds relative to native dispatch, not socket timestamps. Their first
+observations were equal for every completed request. No native/IPC trace events
+or parsed frames were dropped and no malformed frames were recorded.
+
+| Request | Dispatch UTC | Headers s | First body s | First IPC / parsed s | First meaningful s | Native duration s |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | 17:40:44.580 | 59.130824 | 59.130989 | 59.141 | 59.140755 | 59.271120 |
+| 2 | 17:41:44.397 | 2.064547 | 2.064651 | 2.067 | 2.064697 | 2.205189 |
+| 3 | 17:41:52.854 | 1.597419 | 1.597525 | 1.599 | 1.597572 | 51.738360 |
+| 4 | 17:42:45.021 | 44.768975 | 44.769098 | 44.771 | 44.769178 | 44.915717 |
+| 5 | 17:43:30.153 | 31.286723 | 31.286836 | 31.289 | 31.286908 | 31.416660 |
+| 6 | 17:44:01.799 | 2.070731 | 2.070844 | 2.073 | 2.070890 | 2.220537 |
+| 7 | 17:44:04.090 | 48.576673 | 48.576776 | 48.578 | 48.576856 | 48.725503 |
+| 8 | 17:44:52.989 | 48.891060 | 48.891175 | 48.893 | 48.891273 | 49.056922 |
+| 9 | 17:45:42.620 | 52.323255 | 52.323366 | 52.325 | 52.323450 | 52.488443 |
+| 10 | 17:46:35.303 | 35.088404 | 35.088548 | 35.090 | 35.088615 | 35.257520 |
+| 11 | 17:47:10.820 | NONE | NONE | NONE | NONE | 119.978589, cancelled |
+
+All dates are **2026-10-19**. First useful structured output was 59.154s after
+the first recorded native IPC invocation. Request 3 demonstrates why total
+duration is not interchangeable with first-byte/tool latency: its early directory
+calls arrived before its later buffered file-write call.
+
+Requests 1-10 completed with provider `done_reason=stop`; total provider-reported
+output usage for those ten only is **2681 tokens**. Request 11 received **no
+headers, body bytes, IPC chunks, parsed frames, finish event or final usage**.
+Maximum successful pre-output/header latency was **59.130824s**; the final
+no-output wait reached the production 120s ceiling instead of receiving output.
+
+Request-11 native cancellation was observed at **17:49:10.798Z**, with session
+error recorded at **17:49:10.800Z**: SDK `overall-deadline`, native `cancelled`.
+Native monotonic dispatch-to-cancellation is **119.978589s**; exact SDK timer
+callback time was not recorded. Runtime ownership is still
+`providerRetry.ts::withProviderRetryTracking`,
+`PROVIDER_RECOVERY_LIMITS.totalMs=120_000`, not the native 600s guard. This was
+the original next-step request after a successful shared-types write, not a
+retry or continuation. Elapsed first request to terminal error: **506.233s**.
+
+The event therefore **recurred in a second fresh mission**, with a different
+request payload, not an exact replay of the historical failed body. This does
+not negate the earlier replay's before-120s result or estimate a population
+failure rate from a small, non-random sample. No new diagnostic replay was sent.
+
+### Engine/tunnel evidence at the recurrence
+
+Passive snapshots retained model residency and responsive `/api/ps` and
+`/api/version` during the wait (including approximately 93s into request 11)
+and after cancellation. Saved native/IPC traces independently show zero response
+delivery. No competing Clack source edit occurred during the live run.
+
+Read-only Ollama journal correlation identifies warm runner slot 0/task **2706**:
+8394 prompt tokens, 8292 cached prefix, 32768 context, sampler initialized at
+remote **17:47:12.002799Z**. The runner logged steady generation around
+6.5 tokens/s, reaching **760 generated tokens at 17:49:09.276284Z** before
+cancellation. These are internal progress counters, not fabricated final usage.
+No request-11 cold load, scheduler wait, reload, idle-engine stall or preceding
+engine error is demonstrated. Initial run loading used 29/41 GPU-offloaded
+layers; Devstral was warm by request 11.
+
+Remote logs then show `/api/chat` 500 at **17:49:11.813577Z**, cancel task 2706
+at **17:49:11.951469Z**, release at **17:49:12.109227Z**, followed by successful
+`/api/ps` and `/api/version`. This post-client-cancellation 500 was not a provider
+error received by Clack. Host clock skew and lack of shared request IDs prohibit
+inventing precise cross-host network latency. Correlation uses consecutive
+single-runner activity, model/context/prompt and time as in the prior audit.
+
+Primary fresh-run classification: **ENGINE / DEVSTRAL PRE-OUTPUT RELIABILITY /
+INCOMPLETE under unchanged production controls**. The runtime stop remains
+Clack's documented pre-output guard. Repeated inability to deliver a first
+protocol response within that guard is operational reliability evidence for this
+engine/model/hardware combination, not proof of inability to implement the task,
+an idle/stuck engine, a malformed hidden call or an unbounded model failure.
+Internal structured-output buffering remains plausible, not a newly proven
+parser bug. No new Clack defect or justification to change timeout was established.
+
+### Tool behavior, writes and correction
+
+| Tool | Calls | Success | Failure |
+|---|---:|---:|---:|
+| todo_write | 2 | 2 | 0 |
+| bash_run | 1 | 1 | 0 |
+| create_directory | 4 | 4 | 0 |
+| write_file | 5 | 4 | 1 |
+| read_file | 1 | 1 | 0 |
+| edit | 1 | 1 | 0 |
+| **Total** | **14** | **13** | **1** |
+
+The only shell command was `npm init -y`, valid under the advertised native
+PowerShell contract, exit 0. There was no model dependency install, test, build
+or Git commit. Five confirmed file mutations comprise four successful write_file
+calls and one edit; npm init additionally created the original root manifest.
+The only failure was a read-before-write refusal for that manifest; Devstral
+recovered with read_file then edit and continued without evaluator help.
+
+No malformed textual tool intents, assistant prose, visible reasoning, empty
+completed responses, premature prose stop, explicit approval requests/submissions,
+continuations, delegation or effect replay occurred. The longest recorded gap
+between received chunks was **46.304s**; no 60s stream-idle guard fired. There
+was one terminal pre-output timeout, not a post-output stream stall.
+
+Correction monitoring was **enabled** (`singleSpec=false`), unlike the adopted
+first mission. It confirmed five writes, with the third at observer timestamp
+**17:44:53.382Z**. Current authored code/current accepted plan never materially
+contained page size 50: the shared pageSize type is not a numeric value, and
+the original task specification alone is not implementation/accepted-plan evidence.
+The full two-part correction boundary was **not reached**. The 50-to-25 message
+was sent **zero times**, correctly; 25 retention is **UNTESTED**, not a pass.
+No extra message was injected merely to exercise correction.
+
+### Delivered files and independent verification
+
+Final repository is unborn `master`, five untracked files, **3845 bytes total**:
+root package.json (687), backend package.json (696), frontend package.json (770),
+backend index.ts (1056), shared types.ts (636). Four directories were created.
+
+The first confirmed tool file write completed between **119.995-120.440s**
+after first IPC invocation. Backend index.ts arrived between
+**350.522-350.717s**, shared types between **385.975-386.234s**. These are
+provider-final/next-invocation bounds, not invented exact filesystem timestamps.
+The backend file contains an Express listener at port 4317, in-memory arrays,
+unused title-length helpers and an unregistered error handler. It has **no API
+routes** and imports missing `./types` instead of the authored shared file.
+This is backend scaffolding, not a substantive functional CRUD milestone.
+There is no frontend source/component/entry HTML, only its manifest. Neither
+substantive backend nor frontend acceptance was achieved.
+
+Independent verification used a separate untouched copy at
+`C:/Users/Hayden/Documents/forgeboard-devstral-audit-20261019-02`. No code,
+dependency manifest, configuration or original workspace was repaired; no
+dependencies were downloaded/installed by the evaluator. Original project
+hashes remained identical after verification.
+
+| Generated command, run on copy | Result |
+|---|---|
+| npm.cmd test | Exit 1: backend Jest not installed; no test source exists |
+| npm.cmd run build:backend | Exit 1: tsc not installed; no tsconfig exists |
+| npm.cmd run build:frontend | Exit 1: react-scripts not installed; no frontend entry/source exists |
+| npm.cmd run start:backend | Exit 1: ts-node not installed; no server/API started |
+
+These are as-delivered failures, not successful compilation/runtime tests after
+an evaluator repair. Dependencies being absent does not prove the compiler
+would reject every future implementation; missing routes/source/config are
+separate inspected evidence of incompleteness. No app test or production build
+was executed by the model and no independent functional test passed.
+
+**NOT IMPLEMENTED:** project CRUD/open; task CRUD/view; combined filters/search;
+API-enforced status/priority/tag/title validation and deterministic missing/error
+responses; restart persistence; SSE mutation events; frontend behavior/loading/
+error/empty/keyboard states; numeric page size 50 or 25; debounce 750ms; README;
+runtime-data ignore rules. Status/priority unions and a 120-character helper are
+present only as unused source, not verified API behavior. Port 4317 is present
+in source only, not a successfully running endpoint. No browser/native manual
+GUI or Linux/macOS Clack GUI acceptance is claimed. Windows native inference
+host with remote Linux Ollama was exercised.
+
+### Context integrity
+
+All 11 requests passed native B1 with 16 normal F1-selected schemas. An offline,
+network-disabled audit reconstructed every SDK request through the existing
+planCompaction/ollamaBody path and asserted equality with its captured native
+JSON. Only verified persisted/wire tool-result key order and parallel completion
+order were restored; source content was not invented. Minimum estimated SDK
+headroom: **10,257**. Minimum native headroom: **10,297**. Neither figure is a
+safety margin or a provider token-usage measurement.
+
+Verified-effect/history receipts: **0**, savings **0**. Automatic compaction,
+extraction, retrieval and memory commits: **0**; durable memory revision remains
+null, originals intact. No protected-budget/context stop occurred. There is no
+evidence here requiring context-architecture debugging, larger context, receipt
+changes or memory redesign. Those workstreams remain stopped.
+
+### Existing Coder comparison and decision
+
+Coder was **not invoked**. Latest saved reference is
+`forgeboard-qwen3coder-poste56bbe5-01`; older substantive persistence/frontend
+evidence remains qualified as recorded, not attributed to the latest run.
+
+| Metric | qwen3-coder existing evidence | Fresh Devstral |
+|---|---|---|
+| Native tool protocol | Existing PASS | Prior PASS, no new smoke |
+| Latest requests / calls / successful / failed | 23 / 22 / 21 / 1 | 11 / 14 / 13 / 1 |
+| Successful file mutations | 12 latest; 18 in earlier sustained reference | 5 (four writes, one edit) |
+| Backend / frontend | Earlier partial substantive implementation | Backend scaffold / frontend manifest only |
+| Persistence | Demonstrated in earlier run; latest in-memory | NOT IMPLEMENTED |
+| SSE | Incomplete | NOT IMPLEMENTED |
+| Application tests / build | Incomplete / failed | No tests, as-delivered build commands fail |
+| Premature prose stop | Observed in latest reference | None, runtime cancellation |
+| Pre-output over 120s | Not observed in saved reference; first body max 23.057221s | Recurs at 119.978589s cancellation with no output |
+| Latest context blocker / cloud inference | None / 0 | None / 0 |
+
+**QWEN3-CODER PREFERRED, PROVISIONALLY**, for local coding on this tested hardware
+at the existing 32768/2048 controls. This is a recommendation, **not a changed
+Clack default/profile or proof of autonomous completion**. Coder remains clearly
+the stronger observed implementation reference; Devstral now has repeated
+pre-output reliability interruptions in its two fresh mission samples and has
+not delivered stronger engineering. Confidence is **moderate for this relative
+operational choice, low for general model superiority or complete delivery**.
+
+Daily autonomous coding without babysitting: **PROMISING BUT NOT YET**. Coder's
+own incomplete tests/build and premature stop remain disqualifying for a reliable
+daily-autonomous claim. Exactly one recommended next step: **provisionally use
+qwen3-coder for local coding at the unchanged current controls**. No further
+model run, timeout tuning, larger-context trial or architecture checkpoint was
+started in this pass.
+
+### Verification and repository preservation
+
+**200 focused tests passed**: 188 Vitest tests across acceptanceComparison,
+acceptanceApprovalLifecycle, ollamaToolProtocol, ollamaStreamTrace, streamRecovery,
+acceptance-approval and acceptance-correction; plus 12 Node latency-diagnostic
+tests. An initial invocation mistakenly included the Vitest approval/correction
+files under Node's test runner; the proper configured Vitest run passed, as did
+the separate Node-only diagnostic run. No product test regression was repaired.
+TypeScript, focused Biome lint on five harness/test files (zero diagnostics),
+three harness script syntax checks and offline audit syntax passed.
+`git diff --check` passed, apart from existing line-ending conversion notices.
+No production source changed, so full frontend/build/Rust gates were not repeated
+under the requested evidence-only policy. The existing native example was built
+by the launcher; that is not a new Rust implementation or cross-platform gate.
+
+All **1276 previously tracked files**, including the six dirty paths, stayed
+byte-identical through the mission and offline project audit. Afterwards only
+this explicitly requested report section was appended. Its original bytes and
+unrelated IQ4_XS insertion remain preserved; the five other dirty files remain
+byte-for-byte unchanged and unstaged. Both original safety stash identities
+and autonomous_tracker/ remain untouched. Final process inspection found no
+remaining acceptance host, launcher, Cargo/rustc build or Clack test run.
+
+Evidence retains baseline/source hashes, process/remote metadata, failed pre-task
+setup, zero-inference configuration, sole mission transcript, request/receive/IPC
+traces, correction checkpoint, passive runner journals, offline SDK/native budgets,
+file hashes, generated-command outputs and launcher exit records. All raw evidence
+and the disposable audit scripts remain under ignored target storage.
+
+Expected evidence-only commit: **test(ai): rerun devstral after latency audit**.
+Only this report addition is staged. No push, production edit, deadline change,
+model setting/template change, larger context, other model inference, download,
+repeat/replay mission or subsequent checkpoint.
