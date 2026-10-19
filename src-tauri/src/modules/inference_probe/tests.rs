@@ -315,6 +315,46 @@ fn ollama_native_controls_remain_separate_from_loaded_or_advertised_capacity() {
 }
 
 #[test]
+fn ollama_preserves_mixed_and_future_thinking_controls_as_native_evidence() {
+    for values in [
+        json!([false, "low", "medium", "high", "max"]),
+        json!([false, "low", "future_level"]),
+        json!([true, false, "high", "high"]),
+    ] {
+        let mut model = parse(Backend::Ollama, models()).remove(0);
+        ollama_show(
+            &endpoint(Backend::Ollama),
+            &mut model,
+            &json!({"capabilities":["completion","thinking"], "thinking":{"values":values}}),
+            10,
+        )
+        .unwrap();
+        let control = evidence(&model, "thinkingControls").unwrap();
+        assert_eq!(control.value, values.to_string());
+        assert_eq!(control.scope.transport_model_id, "model-a");
+    }
+}
+
+#[test]
+fn ollama_rejects_malformed_entries_inside_thinking_controls() {
+    for values in [
+        json!([["low"]]),
+        json!([{"level":"low"}]),
+        json!([false, 1]),
+        json!([false, null]),
+    ] {
+        let mut model = parse(Backend::Ollama, models()).remove(0);
+        assert!(ollama_show(
+            &endpoint(Backend::Ollama),
+            &mut model,
+            &json!({"capabilities":["completion","thinking"], "thinking":{"values":values}}),
+            10,
+        )
+        .is_err());
+    }
+}
+
+#[test]
 fn requested_ollama_context_is_scoped_and_survives_existing_probe_persistence() {
     let ep = endpoint(Backend::Ollama);
     let mut snapshot = snapshot();

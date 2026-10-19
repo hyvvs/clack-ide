@@ -23,6 +23,7 @@ fn updated(meta: &Value, update: &EffortUpdate) -> Result<Value> {
         || ![
             "automatic",
             "none",
+            "on",
             "minimal",
             "low",
             "medium",
@@ -173,6 +174,15 @@ mod tests {
         update.choice = "low".into();
         update.owner.session_id = "other".into();
         assert!(updated(&meta, &update).is_err());
+    }
+
+    #[test]
+    fn generic_enabled_thinking_persists_as_on_without_inventing_effort() {
+        let (meta, mut update) = fixture();
+        update.choice = "on".into();
+        let next = updated(&meta, &update).unwrap();
+        assert_eq!(next["effortPreferences"]["choices"][0]["choice"], "on");
+        assert_eq!(meta["profile"], next["profile"]);
     }
 
     #[test]

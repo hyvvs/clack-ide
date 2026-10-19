@@ -17,7 +17,10 @@ import {
   type SessionMeta,
 } from "@/modules/ai/lib/sessions";
 import { targetContextKey } from "@/modules/ai/lib/targetContext";
-import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
+import { captureEffort, effortProviderOptions } from "@/modules/ai/lib/reasoningEffort";
+import { ollamaEffortFixture } from "@/modules/ai/lib/reasoningEffort.fixture";
+import { selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
+import { ollamaBody } from "@/modules/ai/lib/ollamaModel";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
 vi.mock("@/modules/ai/lib/sessions", async (original) => ({
@@ -90,6 +93,40 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 describe("session-owned reasoning effort", () => {
+  it.each(["none", "low", "medium", "high", "max", "automatic"])("accepts Muse %s through normal session persistence without inference", async choice => {
+    const fixture = ollamaEffortFixture();
+    const selection = selfHostedSelectionId(fixture.profile);
+    disk[0].profile = createConversationProfile({ agentId: "builtin:coder", modelId: selection, workspaceRoot: null });
+    useChatStore.setState({ sessions: structuredClone(disk) });
+    usePreferencesStore.setState({ selfHostedInference: fixture.state });
+    await setSessionEffort("a", choice);
+    expect(sessionEffort(disk[0]).choice).toBe(choice);
+    expect(sessionEffort(disk[0]).capability.levels).toEqual(["none", "low", "medium", "high", "max"]);
+    const options = effortProviderOptions(sessionEffort(disk[0]));
+    const body = ollamaBody(fixture.profile.transportModelId, { prompt: [], maxOutputTokens: 2048, providerOptions: { ...options, ollama: { ...options.ollama, numCtx: 32768 } } }, true);
+    expect(body.options).toEqual({ num_ctx: 32768, num_predict: 2048 });
+    if (choice === "automatic") expect(body).not.toHaveProperty("think");
+    else expect(body.think).toBe(choice === "none" ? false : choice);
+    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).toEqual(["conversation_effort_set"]);
+  });
+  it.each(["future_level", "on", "LOW"])("rejects unadvertised Muse choice %s before native persistence", async choice => {
+    const fixture = ollamaEffortFixture();
+    disk[0].profile = createConversationProfile({ agentId: "builtin:coder", modelId: selfHostedSelectionId(fixture.profile), workspaceRoot: null });
+    useChatStore.setState({ sessions: structuredClone(disk) });
+    usePreferencesStore.setState({ selfHostedInference: fixture.state });
+    await expect(setSessionEffort("a", choice)).rejects.toThrow("not supported");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(pendingEffortWrites.size).toBe(0);
+  });
+  it("persists boolean true as On without calling it High", async () => {
+    const fixture = ollamaEffortFixture([true]);
+    disk[0].profile = createConversationProfile({ agentId: "builtin:coder", modelId: selfHostedSelectionId(fixture.profile), workspaceRoot: null });
+    useChatStore.setState({ sessions: structuredClone(disk) });
+    usePreferencesStore.setState({ selfHostedInference: fixture.state });
+    await setSessionEffort("a", "on");
+    expect(sessionEffort(disk[0]).choice).toBe("on");
+    expect(effortProviderOptions(sessionEffort(disk[0]))).toEqual({ ollama: { think: true } });
+  });
   it("persists isolated chat choices and restores them after hydration", async () => {
     await setSessionEffort("a", "high");
     await setSessionEffort("b", "low");

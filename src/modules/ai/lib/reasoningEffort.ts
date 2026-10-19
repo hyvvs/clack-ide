@@ -10,11 +10,13 @@ export type EffortMapping =
   | "google-level"
   | "google-budget"
   | "ollama-boolean"
-  | "ollama-level";
+  | "ollama-level"
+  | "ollama-mixed";
 export type EffortCapability = {
   status: "supported" | "unsupported" | "unknown";
   levels: string[];
   mapping?: EffortMapping;
+  ollamaControls?: Record<string, boolean | string>;
   evidence: string;
   revision: string;
   expiresAt?: number;
@@ -162,6 +164,8 @@ const deploymentContract = z
   })
   .strict();
 
+const ollamaLevels = ["none", "on", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 export function effortCapability(
   identity: ModelTransportIdentity,
   state?: SelfHostedState,
@@ -196,20 +200,32 @@ export function effortCapability(
       const controls = thinking.filter(e => e.metric === "probe.thinkingControls");
       const declared = thinking.filter(e => e.metric === "probe.thinking");
       let levels: string[], mapping: EffortMapping = "ollama-boolean";
+      let ollamaControls: EffortCapability["ollamaControls"];
       if (controls.length === 1 && typeof controls[0].value === "string") {
         try {
-          const values = z.array(z.union([z.boolean(), z.string().min(1).max(32)])).min(1).max(16).parse(JSON.parse(controls[0].value));
-          if (new Set(values).size !== values.length) return unknown;
-          if (values.every(v => typeof v === "boolean")) levels = values.map(v => v ? "on" : "none");
-          else if (values.every(v => typeof v === "string")) { levels = values as string[]; mapping = "ollama-level"; }
-          else return unknown;
+          const values = z.array(z.union([z.boolean(), z.string().min(1).max(32).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/)])).min(1).max(16).parse(JSON.parse(controls[0].value));
+          const normalized: Record<string, boolean | string> = {};
+          for (const level of ollamaLevels) {
+            if (level === "none" && values.includes(false)) normalized[level] = false;
+            else if (level === "on" && values.includes(true)) normalized[level] = true;
+            else if (values.includes(level)) normalized[level] = level;
+          }
+          levels = Object.keys(normalized);
+          if (!levels.length) return unknown;
+          const wireValues = Object.values(normalized);
+          if (wireValues.every(v => typeof v === "string")) mapping = "ollama-level";
+          else if (wireValues.some(v => typeof v === "string")) {
+            mapping = "ollama-mixed";
+            ollamaControls = normalized;
+          }
         } catch { return unknown; }
       } else if (controls.length) return unknown;
       else if (declared.length === 1 && typeof declared[0].value === "boolean") levels = declared[0].value ? ["none", "on"] : [];
       else return unknown;
       return { status: levels.length ? "supported" : "unsupported", levels, mapping,
+        ...(ollamaControls ? { ollamaControls } : {}),
         evidence: "Ollama native thinking contract; boolean controls are not effort levels",
-        revision: JSON.stringify([revision, endpoint.configurationRevision, profile.id, levels, mapping]),
+        revision: JSON.stringify([revision, endpoint.configurationRevision, profile.id, levels, mapping, ...(ollamaControls ? [ollamaControls] : [])]),
         expiresAt: Math.min(...thinking.map(e => (e.observedAt ?? now) + 30_000)) };
     }
     const evidence = profile.evidence.filter(
@@ -340,6 +356,12 @@ export function effortProviderOptions(capture: EffortCapture): ProviderOptions {
       return { ollama: { think: choice === "on" } };
     case "ollama-level":
       return { ollama: { think: choice } };
+    case "ollama-mixed": {
+      const value = c.ollamaControls?.[choice];
+      if (value !== choice && !(choice === "none" && value === false) && !(choice === "on" && value === true))
+        throw new Error("Unsupported native reasoning control.");
+      return { ollama: { think: value } };
+    }
     case "responses":
       return { openai: { reasoningEffort: choice } };
     case "anthropic":
@@ -365,6 +387,7 @@ export function sameEffortContract(
     current.mapping === captured.capability.mapping &&
     current.levels.length === captured.capability.levels.length &&
     current.levels.every(level => captured.capability.levels.includes(level)) &&
+    (current.mapping !== "ollama-mixed" || current.levels.every(level => current.ollamaControls?.[level] === captured.capability.ollamaControls?.[level])) &&
     current.levels.includes(captured.choice);
 }
 

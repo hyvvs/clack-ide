@@ -8075,3 +8075,199 @@ the narrowly related acceptance-fixture/test changes are included.
 Evidence commit: **test(ai): evaluate muse glimmer local agent**. The candidate is
 documented as blocked, not completed acceptance. **No push. No North/Nemotron
 evaluation, qwen-specific fix, context calibration or subsequent checkpoint.**
+
+## Mixed reasoning-control compatibility fix
+
+Base: **5400956 test(ai): evaluate muse glimmer local agent**. This is an offline
+production compatibility checkpoint, not a resumed model evaluation. The prior
+Muse acceptance result remains **pre-inference blocked at that committed base**;
+the fix below has not yet been exercised against the live model.
+
+### Reproduction and owner chain
+
+Existing captured native /api/show metadata for **muse-glimmer:30b**, digest
+**de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1**, contains:
+
+```json
+{"thinking":{"values":[false,"low","medium","high","max"],"default":"high"}}
+```
+
+The capture was read locally from the previous checkpoint's evidence. Neither
+metadata nor inference was requested from Ollama in this checkpoint. A saved-model
+fixture reproduced the original **unknown** capability and normal session
+validation's rejection of None and Low before the production change. Automatic
+was already accepted without an override; it was not the compatibility defect.
+
+| Ownership | Exact file and function/type |
+|---|---|
+| Native metadata parsing | src-tauri/src/modules/inference_probe/metadata.rs: **ollama_show** preserves scoped probe.thinkingControls evidence as JSON, including mixed primitive types. Its production parser is unchanged. |
+| Capability normalization | src/modules/ai/lib/reasoningEffort.ts: **effortCapability**, specifically the Ollama backend branch. This was the root rejection owner. |
+| Internal representation and captured identity | Same file: **EffortCapability**, **EffortCapture**, **captureEffort**, **sameEffortContract**; existing version-1 session effort preferences remain the persistence format. |
+| Session selection/validation | src/modules/ai/store/reasoningEffort.ts: **sessionEffort**, **setSessionEffort**; existing locks, supported-choice checks and persistence flow are unchanged. |
+| Native persistence boundary | src-tauri/src/modules/conversation_memory/reasoning_effort.rs: **updated**, **conversation_effort_set**; existing authorization, idle/CAS checks, atomic writes and revision ownership remain unchanged. |
+| UI option derivation | src/modules/ai/components/EffortControl.tsx: **SessionEffortControl** maps capability.levels through the existing **effortLabel**. No UI production code or styling changed. |
+| Request validation and native serialization | src/modules/ai/lib/requestPreflight.ts: **createRequestPreflight** retains admission/refresh checks; src/modules/ai/lib/reasoningEffort.ts: **effortProviderOptions** supplies controls; src/modules/ai/lib/ollamaModel.ts: **ollamaBody** retains exact think value/omission. Preflight and adapter production code are unchanged. |
+
+Previously the Ollama branch required the complete array to be either all
+booleans or all strings, rejecting a valid heterogeneous array. It also rejected
+duplicate entries. The fix is in the **Ollama-specific adaptation**, not a relaxed
+generic/provider schema or a Muse-name special case.
+
+### Normalization and exact semantics
+
+Each structurally valid entry is considered independently against existing
+representable Clack efforts. Recognition is exact and case-sensitive; there is
+no lowercasing, trimming, model-name inference or aliasing of unknown names.
+
+- **false -> none / None -> native false**. Disabled reasoning never becomes
+  Automatic and is not discarded because other values are strings.
+- **true -> on / On -> native true**. Generic enabled reasoning is not Low,
+  Medium or High. On already had frontend identity/label and boolean serialization,
+  but was missing from native persistence's finite choice allowlist. This checkpoint
+  adds that single existing choice there and tests its persistence.
+- **low, medium, high** retain their existing product identities and exact native
+  strings. Existing representable minimal/xhigh values are also metadata-driven.
+- **max** is already first-class: product identity max, label **Maximum**, native
+  persistence accepts max. It is exposed and serialized literally as **"max"**,
+  never silently mapped to high.
+- **Automatic** remains independent of the advertised array: no saved explicit
+  preference and **no outgoing think field**. No default reasoning level is forced.
+- Unknown bounded future names are not selectable or serialized. Their original
+  reported source metadata stays intact. For **[false,"low","future_level"]**,
+  None and Low remain supported. Adding only an unknown name does not change the
+  effective recognized revision or invalidate an in-flight supported control.
+- Duplicate entries normalize to one option in stable product order, independent
+  of provider ordering. Boolean aliases take deterministic precedence when both
+  false and "none", or true and "on", are advertised. A legacy string-only
+  "none"/"on" contract still sends strings, not invented booleans.
+- Existing metadata bounds remain: 1-16 entries, boolean or nonempty strings up to
+  32 characters. Control characters, nested arrays, objects, numbers, null entries,
+  malformed top-level structures and invalid JSON fail closed to unknown. An
+  all-unrecognized list remains unknown, not a fabricated no-thinking contract.
+  Conflicting evidence records still fail closed; duplicate entries inside one
+  valid list are distinct from conflicting source records.
+
+All-boolean and all-named effective contracts keep their existing mappings.
+Heterogeneous effective contracts use the additive **ollama-mixed** mapping with
+a bounded **ollamaControls** record retaining the exact wire value for each
+normalized choice. The canonical wire map participates in revision identity and
+same-contract validation. Scope, freshness and the 30-second metadata TTL are
+unchanged. Changed boolean/string wire meaning is rejected at admission even
+when visible level names are identical. Missing/tampered mixed mappings fail
+closed instead of guessing a boolean or default.
+
+Exact normalized Muse capability, omitting only its existing revision/timestamp
+and evidence-description fields:
+
+```json
+{
+  "status": "supported",
+  "levels": ["none", "low", "medium", "high", "max"],
+  "mapping": "ollama-mixed",
+  "ollamaControls": {
+    "none": false,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "max"
+  }
+}
+```
+
+### Offline session-to-request verification
+
+| User option | Normalized session choice | Native Ollama field |
+|---|---|---|
+| Automatic | automatic | think omitted |
+| None | none | think: false |
+| Low | low | think: "low" |
+| Medium | medium | think: "medium" |
+| High | high | think: "high" |
+| Maximum | max | think: "max" |
+| On, only when true is advertised | on | think: true |
+
+None, Low, Medium, High, Maximum and Automatic are accepted through the normal
+session setter with mocked native persistence; restored session choices serialize
+through the unchanged native body builder. On is not offered for this Muse
+capture because it does not advertise true. Explicit future_level, LOW and
+unadvertised On are rejected before native persistence. The native adapter and
+production admission path are independently exercised with intercepted IPC and
+network fetch forbidden. No live provider response is simulated as real evidence.
+
+The unchanged UI component was rendered statically with its popover content
+exposed by a test wrapper: Automatic, None, Low, Medium, High and Maximum appear
+in order, known choices remain enabled, duplicates/future names are absent,
+boolean-only true is labeled On, and malformed metadata remains disabled and
+unverified. This is automated component evidence, not native GUI interaction.
+
+### Tests and final gates
+
+Focused frontend: **242 passed across 8 files**:
+reasoningEffortOllama, reasoningEffort, reasoningEffortHosted,
+reasoningEffortRequests, store/reasoningEffort, ollamaRouting, ollamaModel and
+EffortControl. The matrix covers homogeneous/heterogeneous controls, false/true,
+Max, future names, deterministic order/duplicates, malformed structures/JSON,
+normal session acceptance/rejection, Automatic, native serialization, TTL/scope,
+changed-wire admission rejection, unchanged-wire future-name admission, old
+Ollama formats, and unchanged compatible/cloud provider contracts.
+
+Focused Windows Rust: **7 effort-persistence tests passed**, plus **8 Ollama
+metadata tests passed**. The new parser fixtures prove mixed/future values retain
+their original native evidence and malformed entries are rejected without changing
+the native production parser. The additional native effort test proves generic
+On persistence without inventing a named effort.
+
+The final suite gates were run once after stabilization; diff checks were also
+repeated for the documentation and staging review:
+
+| Gate | Actual result |
+|---|---|
+| npm.cmd run check-types | PASS |
+| npm.cmd run lint | PASS, unchanged 71 warnings / 2 informational notices; focused touched-file lint had zero diagnostics |
+| npm.cmd test | **3036 passed / 1 failed**, 209 passed / 4 failed test files; only the preserved failures described below |
+| npm.cmd run build | PASS, existing dynamic-import/plugin-timing warnings |
+| git diff --check | PASS, existing CRLF conversion notices only |
+| cargo fmt --check | PASS |
+| cargo clippy --all-targets --locked --target-dir target/codex-test -- -D warnings | PASS |
+| cargo test --locked --target-dir target/codex-test | **608 passed / 1 failed** in the library suite; subsequent integration binaries were not reached by this full command |
+
+Known preserved failures, not new checkpoint regressions:
+
+- Vitest collects the old saved **before-src--test--acceptanceComparison.test.ts**
+  under ignored target/installed-local-models-20261019-01; its literal old model
+  allowlist assertion differs from the preserved working harness.
+- Two source/dist test collections from an old generated ForgeBoard project lack
+  **supertest**. Its source, dependencies and retained evidence were not repaired.
+- The existing Node-only **audit-devstral-latency.test.mjs** is incorrectly
+  collected by Vitest as an empty suite. No test-discovery change was made here.
+- The same previously recorded, unchanged Rust
+  **d1_cancellation_timeout_and_revocation_prevent_or_interrupt_work** still
+  expects tool-revoked but receives timed-out at custom_tools/execution/tests.rs:758.
+  Neither that implementation nor its assertion was touched. No all-green global
+  frontend or Rust claim is made, and no repeated full-suite gate was run.
+
+Detailed gate logs and the pre-edit preservation baseline are retained under
+**src-tauri/target/real-qwen-product/mixed-reasoning-controls-20261019/**.
+
+### Scope and handoff
+
+Production files changed: **src/modules/ai/lib/reasoningEffort.ts** and
+**src-tauri/src/modules/conversation_memory/reasoning_effort.rs** only. Other
+changes are focused tests/fixtures and this report appendix. No second reasoning
+resolver, provider-wide schema relaxation, new UI control, model-specific branch,
+database, session-store migration or context mechanism was introduced.
+
+**Muse was NOT invoked.** No structured-tool smoke, /api/chat probe, ForgeBoard
+run, Qwen run, North/Nemotron download/run, or other real AI inference occurred.
+Ollama was not contacted or altered. No model prompt, context size/architecture,
+timeout, fallback, tool authorization, memory, retrieval or scheduler behavior
+was changed. No Computer Use/native GUI acceptance was performed. Automated
+Rust execution was Windows-only; Linux/macOS native verification is not claimed.
+
+The six original unrelated dirty paths and edits remain preserved and unstaged;
+both safety stashes and autonomous_tracker/ remain untouched. Only checkpoint
+implementation, tests and this appendix are included in the scoped commit.
+
+Commit: **fix(ai): support mixed reasoning controls**. **No push. STOP here.**
+The next checkpoint may perform the separately authorized live Muse smoke and,
+only if it passes, its fresh ForgeBoard acceptance. None of that work was started.

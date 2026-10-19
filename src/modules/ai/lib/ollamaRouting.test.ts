@@ -30,6 +30,7 @@ import {
   effortProviderOptions,
 } from "@/modules/ai/lib/reasoningEffort";
 import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
+import { MUSE_THINKING_VALUES } from "@/modules/ai/lib/reasoningEffort.fixture";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -53,7 +54,7 @@ const sent: {
   headers: unknown;
 }[] = [];
 const approvals = new Map<string, (value: boolean) => void>();
-function configuration() {
+function configuration(modelId = "exact:latest") {
   let value = saveSelfHostedModel(
     addSelfHostedEndpoint(
       emptySelfHostedState(),
@@ -72,7 +73,7 @@ function configuration() {
       ),
     ),
     "ollama-endpoint",
-    "exact:latest",
+    modelId,
   );
   value = setProfileOverride(
     value,
@@ -532,6 +533,50 @@ async function explicitNoneModel() {
 }
 
 describe("captured reasoning evidence across real adapter steps", () => {
+  it.each(["automatic", "none", "low", "medium", "high", "max"])("serializes mixed Muse %s through production admission and the native adapter, entirely intercepted", async choice => {
+    state = configuration("muse-glimmer:30b");
+    current = state;
+    snapshot = metadata(32768, 32768);
+    snapshot.models[0].evidence.push(profileEvidence(state, state.profiles[0].id, "probe.thinkingControls", JSON.stringify(MUSE_THINKING_VALUES), "backend-reported", Date.now(), "reported"));
+    state.profiles[0].evidence = snapshot.models[0].evidence;
+    const identity = selfHostedTransportIdentity(selfHostedSelectionId(state.profiles[0]), state);
+    if (!identity) throw new Error("Missing fixture identity");
+    const reasoning = { ...captureEffort("selection", identity, undefined, state), choice };
+    const fetcher = vi.fn(() => { throw new Error("No network allowed in offline reasoning test"); });
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      await (await model(false, reasoning)).doGenerate({ ...params, maxOutputTokens: 2048 });
+      expect(sent).toHaveLength(1);
+      expect(sent[0].body).toMatchObject({ model: "muse-glimmer:30b", options: { num_ctx: 32768, num_predict: 2048 } });
+      if (choice === "automatic") expect(sent[0].body).not.toHaveProperty("think");
+      else expect(sent[0].body.think).toBe(choice === "none" ? false : choice);
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it.each(["future-level", "changed-wire"])("revalidates mixed controls at admission: %s", async change => {
+    snapshot = metadata(32768, 32768);
+    snapshot.models[0].evidence.push(profileEvidence(state, state.profiles[0].id, "probe.thinkingControls", JSON.stringify([false, true, "low"]), "backend-reported", Date.now(), "reported"));
+    state.profiles[0].evidence = snapshot.models[0].evidence;
+    current = state;
+    const identity = selfHostedTransportIdentity(selfHostedSelectionId(state.profiles[0]), state);
+    if (!identity) throw new Error("Missing fixture identity");
+    const reasoning = { ...captureEffort("selection", identity, undefined, state), choice: "none" };
+    const built = await model(false, reasoning);
+    beforeAdmission = () => {
+      current = structuredClone(current);
+      const controls = current.profiles[0].evidence.find(e => e.metric === "probe.thinkingControls");
+      if (!controls) throw new Error("Missing fixture controls");
+      controls.value = JSON.stringify(change === "future-level" ? [false, true, "low", "future_level"] : ["none", true, "low"]);
+    };
+    if (change === "future-level") {
+      await built.doGenerate(params);
+      expect(sent).toHaveLength(1);
+      expect(sent[0].body.think).toBe(false);
+    } else {
+      await expect(built.doGenerate(params)).rejects.toThrow();
+      expect(sent).toHaveLength(0);
+    }
+  });
   it("revalidates an expired capture when rebuilding the same model for a later run segment", async () => {
     let now = Date.now();
     vi.spyOn(Date, "now").mockImplementation(() => now);
