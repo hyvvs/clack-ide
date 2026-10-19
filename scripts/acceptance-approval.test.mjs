@@ -33,6 +33,17 @@ afterEach(async () => {
 
 const nativeParserAvailable = process.platform === "win32" || spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { timeout: 5000, windowsHide: true }).status === 0;
 describe.skipIf(!nativeParserAvailable)("native per-approval literal workspace effect policy", () => {
+  it("keeps the same owner and path checks for North's explicitly authorized disposable root", async () => {
+    root = path.join(directory, "forgeboard-north-mini-code-20261019-01");
+    await mkdir(path.join(root, ".git"), { recursive: true });
+    Object.assign(expected, { workspaceRoot: root });
+    Object.assign(subject, { workspaceRoot: root, cwd: root });
+    expect((await decide("Set-Content probe.txt -Value 'probe'")).approved).toBe(true);
+    expect((await decide("Set-Content ../outside -Value 'no'")).approved).toBe(false);
+    expect((await decide("Set-Content .env -Value 'no'")).approved).toBe(false);
+    subject.runId = "unrelated-run";
+    expect((await decide("Set-Content probe.txt -Value 'probe'")).approved).toBe(false);
+  });
   it("applies unchanged approval and path protections to the Muse disposable workspace", async () => {
     root = path.join(directory, "forgeboard-muse-glimmer-20261019-01");
     await mkdir(path.join(root, ".git"), { recursive: true });

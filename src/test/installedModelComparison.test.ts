@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const candidates = [
+  "north-mini-code-1.0:q4_K_M",
   "devstral-small-2:24b",
   "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M",
   "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M",
@@ -30,5 +31,13 @@ describe("installed-model acceptance bounds", () => {
     expect(host).toContain('body["think"] != "low"');
     expect(host).toContain('body["options"]["num_predict"] != 2048');
     expect(runner.indexOf('.native-report.json')).toBeLessThan(runner.indexOf('assert.equal(requests.length, 1, "Tool protocol probe'));
+  });
+  it("can fail closed before dispatch if explicit None serializes anything except false", () => {
+    const runner = readFileSync("scripts/check-real-local-product.mjs", "utf8");
+    const host = readFileSync("src-tauri/examples/coworking_acceptance.rs", "utf8");
+    expect(runner).toContain('process.env.CLACK_PRODUCT_EXPECT_NO_THINK === "1"');
+    expect(runner).toContain('assert.equal(reasoningChoice, "none"');
+    expect(runner).toContain('env.CLACK_ACCEPTANCE_EXPECTED_THINK = "false"');
+    expect(host).toContain('think == "false" && body["think"] != false');
   });
 });

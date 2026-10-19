@@ -100,7 +100,7 @@ export async function evaluateAcceptanceApproval(subject, expected) {
     !expected.approvals?.some(a => a.id === subject.id && a.toolCallId === subject.toolCallId && a.toolName === subject.toolName && JSON.stringify(a.input) === JSON.stringify(subject.input)))
     return deny("Approval is not the registered pending production effect");
   if (!subject.cwd || !equal(subject.cwd, expected.workspaceRoot)) return deny("Approval cwd is not the disposable workspace root");
-  if (!path.isAbsolute(expected.workspaceRoot) || !/^forgeboard-(?:qwen-none|qwen3coder|devstral|muse-glimmer)-\d{8}-\d{2}$/.test(path.basename(expected.workspaceRoot)))
+  if (!path.isAbsolute(expected.workspaceRoot) || !/^forgeboard-(?:qwen-none|qwen3coder|devstral|muse-glimmer|north-mini-code)-\d{8}-\d{2}$/.test(path.basename(expected.workspaceRoot)))
     return deny("Workspace is not an explicitly disposable ForgeBoard acceptance root");
   const input = subject.input;
   if (!input || Object.keys(input).some(k => !["command", "timeout_secs"].includes(k)) ||

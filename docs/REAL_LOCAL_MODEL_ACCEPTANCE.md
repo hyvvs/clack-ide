@@ -8554,3 +8554,275 @@ stashes and autonomous_tracker/ **preserved**. Expected branch state after the
 scoped commit: main, **63 ahead / 0 behind cached origin/main**, original six
 paths still dirty and unstaged. **test(ai): evaluate muse after reasoning fix**.
 **No push. STOP. No subsequent candidate or checkpoint started.**
+
+## North Mini Code 1.0 local-agent evaluation
+
+### Baseline and official artifact
+
+Date: **2026-10-19**. Base **1cc39cc test(ai): evaluate muse after reasoning fix**,
+main, initially **63 ahead / 0 behind cached origin/main**, empty index. The six
+original dirty files were preserved in a fresh byte-for-byte baseline. Both safety
+stashes and autonomous_tracker/ were untouched. Read-only process inspection found
+no competing Clack acceptance host, Cargo/rustc, Clack Vite/test or model run.
+The existing authorized tunnel at **http://127.0.0.1:11435** was reachable, with
+Ollama **0.40.5**, eight installed models and initially no loaded model.
+
+The exact official [Ollama tag](https://ollama.com/library/north-mini-code-1.0:q4_K_M)
+and [registry manifest](https://registry.ollama.ai/v2/library/north-mini-code-1.0/manifests/q4_K_M)
+were inspected before pulling. Native installed metadata was then retained in
+full; advertised values were not used as a substitute for native capabilities.
+
+| Field | Actual evidence |
+|---|---|
+| Exact installed tag | **north-mini-code-1.0:q4_K_M** |
+| Full manifest/installed digest | **d8b269ad5c7c7144ce104b83ce93bc3efb85e0f74e01be6be5f5d6f7ca90b60f** |
+| Model-weight layer digest | **2e6b0d32b7ff9d61f77d6808307db4791f487a72b22da0b28f5d4293b5729282** |
+| Config digest | **d7d22779fb87ed760b8b256143d423ccbbf760020d5277b9949759f67afbab12** |
+| Exact installed artifact size (/api/tags) | **18,593,967,008 bytes**, including config/layers |
+| Weight layer size (registry manifest) | **18,593,955,136 bytes** |
+| Architecture | **cohere2moe**, GGUF, sparse MoE; 128 experts / 8 used, 49 blocks |
+| Parameters | **30,484,303,872** native total, displayed **30.5B**; official model description says approximately 3B active, not independently measured |
+| Quantization | **Q4_K_M** |
+| Native advertised context | **500,000 tokens** from cohere2moe.context_length |
+| Official page discrepancy | Artifact metadata reports 500,000 (about 488 Ki tokens), while tag README describes 256K; evaluation stays at 32,768 |
+| Native capabilities | **completion, tools, thinking** |
+| Input modalities | Text completion/chat; no vision/audio capability advertised in native metadata; no multimodal inference attempted |
+| Native reasoning metadata | **{"values":[false,true],"default":true}** |
+| Minimum engine | **requires: 0.30.10**, from registry config and installed /api/show |
+| Installed engine | **0.40.5**, compatible; no update performed |
+| Native renderer/parser | **cohere / cohere**; retained unchanged |
+| Artifact defaults | temperature 1, top_p 0.95; no sampling override or tuning |
+
+Only the requested exact tag was pulled. It completed successfully in **286.167 s**,
+including SHA-256 verification. Registry manifest bytes and config bytes were
+hashed; the installed full digest matched. All **eight previous model records
+remained unchanged**; the ninth record is North. No other model was downloaded,
+replaced or removed, including no separate latest, Q8, BF16, MLX, Nemotron or
+qwen3-coder-next. No Ollama service/global settings, model template or engine
+version changed. North was initially unloaded after installation; /api/ps after
+the mission showed only North loaded with runtime context **32768**. Its loaded
+runtime memory size is not confused with the installed artifact's on-disk size.
+
+### Reasoning, workspace and harness boundaries
+
+The user-required preference order selected **None**, since native metadata
+explicitly supports boolean false. Production normalization returned supported
+levels **none/on**, mapping **ollama-boolean**. No Low/effort equivalence was
+invented. Default true was deliberately overridden by the supported **think:false**
+for the authorized None comparison, not silently changed mid-run. This single
+run does not establish how North would behave with thinking enabled.
+
+Workspace: **C:/Users/Hayden/Documents/forgeboard-north-mini-code-20261019-01**.
+Evidence/run ID: **forgeboard-north-mini-code-20261019-01**, under
+**src-tauri/target/real-qwen-product/**. The directory was fresh and initialized
+with only an empty Git repository. No evaluator implementation was seeded.
+
+Only test harness files changed before inference: exact tag registration at the
+three existing allowlist boundaries, the disposable North workspace prefix in
+the existing owner/path-bound approval evaluator, focused tests, and an opt-in
+native None wire guard. The guard records the actual outgoing body and rejects
+unexpected thinking/output controls before dispatch. It does not change the
+production adapter or silently rewrite controls. Existing Low and unsupported
+reasoning paths remain intact. Unknown/unsafe effects remain denied; owner,
+workspace, secret-path and current pending-approval checks were not relaxed.
+
+Zero-inference preparation passed, then exactly one smoke and exactly one mission
+ran through the production native Clack /api/chat path. Every one of the **three
+actual requests** used the exact North tag, **num_ctx=32768**, **num_predict=2048**,
+**think:false**, fallback **Never**, cloud **0**. Session selection, normalized
+capability revision and native controls stayed consistent. The active run ended
+before its initial 30-second capability expiry; no stale-evidence rejection arose.
+The native 60-second idle / 600-second overall deadlines and shared 120-second
+pre-output guard were unchanged, as was the harness's 90-minute safety bound.
+
+All tracked-source hashes matched before/after each live phase. No production
+Clack files changed, no model-specific production prompt was added, and no source
+editing occurred while inference was running. Existing normal tools, F1,
+trusted-workspace test permission profile, approvals, verified-effect receipts,
+continuation and context/memory policies were used without architectural changes.
+
+### Single structured-tool smoke
+
+Smoke request capture **21:20:57.133Z**: a harmless deterministic get_test_value
+schema, with the same normal native tool serialization. North returned exactly
+one provider-native structured call:
+**get_test_value({"value":"protocol-check"})**, call ID **call_pokxh9zw**.
+SDK finish **tool-calls**, provider done_reason **stop**, no prose, **zero tool
+executions**. **PASS**. Nothing textual was parsed into a tool or executed.
+
+Returned provider usage: **117 input / 33 output tokens**. Provider total
+**9.975920 s**, including **9.018999 s** load, **0.463627 s** prompt evaluation
+and **0.490294 s** generation. Host and source-freeze checks passed. No reasoning
+validation failure occurred. The workspace still contained only .git before the
+mission; there was no second smoke or compatibility retry.
+
+### One fresh ForgeBoard mission
+
+The complete unchanged **2,086-character** ForgeBoard specification was sent
+**exactly once**, SHA-256
+**f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801**.
+It did not mention candidate names, benchmarks, prior failures or Clack internals.
+There was one persisted user message, no correction/reminder/manual Continue,
+no resubmission, no setting change and no evaluator implementation assistance.
+
+Native mission host PID **47636**, launcher **39836**. First request capture
+**21:21:27.538Z**; session terminal time **21:21:46.491Z**, **18.953 s** later.
+
+| Request | Native dispatch UTC | Headers ms | First body ms | First parsed frame UTC | Native EOF ms |
+|---|---|---:|---:|---|---:|
+| 1 | 21:21:27.558 | 5661.100 | 5661.294 | 21:21:33.222 | 5684.067 |
+| 2 | 21:21:33.330 | 13133.012 | 13133.124 | 21:21:46.465 | 13152.786 |
+
+Milliseconds are relative to each native dispatch; wall/monotonic boundaries
+are retained separately in audit.json. First useful native structured-tool frame
+was **5.664 s** after dispatch; SDK tool availability **5.712 s** after capture.
+Request 1 called **list_directory**, call ID **call_6p9h0efu**, against the fresh
+workspace, and successfully received **entries:[]**. Both requests exposed the
+normal **16 production tools**. No tool subset was stripped to force a result.
+
+Request 2 returned a **single 349-byte native body / single parsed final frame**,
+done **true**, done_reason **stop**, normal EOF, and provider usage **5192 input /
+716 output tokens**. The native trace recorded **no content, thinking or tool-call
+category**, and the persisted assistant contains no answer/reasoning part after
+its second step-start. There were zero invalid/dropped frames/events or pending
+partial bytes. The final frame was promptly forwarded by reqwest/IPC. It did not
+time out, hit a length limit or request continuation. Provider total duration was
+**12.927491 s**, generation **12.408541 s**; 716 is actual reported usage, **not**
+a claim that Clack received 716 tokens of answer text. Total mission output usage
+reported across both requests was **765 tokens** (49 + 716).
+
+Classification: **ENGINE / EMPTY TERMINAL RESPONSE / INCOMPLETE**. The native
+service exposed a completed empty response despite reporting generation. Whether
+model generation or the engine's Cohere renderer/parser caused the empty payload
+is **unconfirmed**; no hidden token content or server-side diagnostics were
+invented. The evidence does not establish a Clack transport-loss defect: the raw
+native trace and persisted SDK result agree that no answer/tool payload arrived.
+There is **no confirmed Clack defect**, and nothing was patched to rescue North.
+
+Clack's run state **completed**, the harness **ok:true**, and normal process exit
+mean that the request lifecycle completed, **not** that ForgeBoard was delivered.
+The provider stopped at **two steps**, below the existing 24-step soft boundary;
+no automatic continuation was scheduled for this normal stop. No forced Continue,
+alternate reasoning run, replay or post-outcome tuning was attempted.
+
+Totals: **2 mission requests**, **2 completed responses**, **1 structured tool
+call**, **1 successful tool**, **0 failures**, **0 file mutations/directories**,
+**1 completed empty response**, **0 malformed textual intents**, **0 prose stops**,
+**0 approvals**, **0 continuations**, **0 pre-output stalls**, **0 stream-idle
+stalls**, **0 shell commands**. Failure recovery and native PowerShell syntax use
+were **not exercised**. There was no structured todo plan, first mutation,
+substantive backend/frontend, persistence/SSE implementation, authored test,
+successful model test or production build; those productivity timings are **not
+reached**, not zero-second achievements.
+
+### Correction, context and independent application audit
+
+The syntax-aware correction observer stayed **pending**, with **zero eligible
+writes** and no authored implementation/current accepted plan containing page
+size 50. Neither correction condition was reached. **50-to-25 was not sent**;
+25 retention is **not exercised**. No original user-spec text was mistaken for
+accepted implementation evidence.
+
+Offline reconstruction using production preparation and original source/tool
+result ordering reproduced **both captured native requests exactly**. Minimum
+measured estimated-token headroom: **SDK 16,985 / native 17,021**. No protected
+budget block. **Zero verified-effect receipts / zero receipt savings**, zero
+compaction, extraction or retrieval calls and zero durable memory revisions.
+The final conversation revisionId/revision remain null; source transcript and
+native/durable history agree. No memory or context architecture was redesigned.
+
+Independent filesystem and Git inspection after the terminal outcome found only
+**.git**, no generated source/manifests/README/ignore files, a clean scratch Git
+status and **zero commits**. There was nothing to copy, install, repair or launch.
+No evaluator code was added to the workspace.
+
+| Requirement | Independent outcome |
+|---|---|
+| React/TypeScript frontend, Node/TypeScript backend/npm setup | **NOT IMPLEMENTED** |
+| Project create/list/edit/delete/open | **NOT IMPLEMENTED** |
+| Task CRUD/view, required fields/statuses/priorities/tags/timestamps | **NOT IMPLEMENTED** |
+| Combined project/status/priority/tags/search filtering | **NOT IMPLEMENTED** |
+| Input validation/title max 120/deterministic errors/statuses/API 4317 | **NOT IMPLEMENTED** |
+| Local restart persistence and runtime-data ignore | **NOT IMPLEMENTED**; no backend exists for restart testing |
+| SSE mutations without polling | **NOT IMPLEMENTED**; no endpoint or frontend subscriber |
+| Loading/error/empty UI, debounce 750, page size, keyboard accessibility | **NOT IMPLEMENTED** |
+| Model-authored API/validation/persistence/filter/frontend tests | **NOT IMPLEMENTED** |
+| Test execution / production build | **NOT IMPLEMENTED**; not run independently because no manifest or command exists |
+| README | **NOT IMPLEMENTED** |
+
+These are missing capabilities, not passed acceptance checks or fabricated failed
+test invocations. No frontend existed for browser verification. The real native
+acceptance adapter ran on Windows; no Computer Use/native Clack GUI interaction
+or Linux/macOS runtime/GUI verification was performed or claimed.
+
+### Three-model comparison and decision
+
+No qwen3-coder, Muse, Devstral or Nemotron inference was sent. Reference results
+are preserved from their original evidence. In particular, earlier Qwen frontend
+and persistence evidence is not incorrectly attributed to its latest mission.
+
+| Metric | qwen3-coder | Muse Glimmer | North Mini Code |
+|---|---|---|---|
+| Native tool smoke | PASS | PASS | PASS |
+| Reasoning | None / false reference | Low / "low" | None / false |
+| Latest mission requests | 23 | 15 | 2 |
+| Structured calls | 22 | 14 | 1 |
+| Successful / failed tools | 21 / 1 | 14 / 0 | 1 / 0 |
+| Successful file mutations | 12 | 7 | 0 |
+| Failure recovery | Latest missing-directory failure followed by prose/fabricated receipt, not actual recovery | Not exercised | Not exercised |
+| Backend | Substantive partial API | Unwired helpers | None |
+| Frontend | Earlier-run partial; latest none | None | None |
+| Persistence | Demonstrated in earlier run | Helper only | None |
+| SSE | Incomplete | Unwired helper with cleanup defect | None |
+| Tests / application build | Incomplete/failed | No tests; helper compilation only, app cannot start | No implementation, tests or build |
+| Premature prose stop | Yes | No | No; empty terminal response instead |
+| Empty terminal response | None in latest reference | None | 1 |
+| Engine/stream stall | No recurring stall in reference | One 60-second post-output silence | None |
+| Latest context blocker | None | None | None |
+| Minimum SDK / native headroom | 844 / 1835 | 8996 / 9916 | 16985 / 17021 |
+| Final class | MODEL-INCOMPLETE | UPSTREAM STALL / INCOMPLETE | ENGINE / EMPTY TERMINAL RESPONSE / INCOMPLETE |
+
+**QWEN REMAINS LEADER. Provisional operational ordering: qwen3-coder > Muse
+Glimmer > North Mini Code**, based on application work actually delivered, not
+parameter count or advertised benchmarks. North's first native tool was faster
+than Muse's, but no mutation or application followed, so latency does not reverse
+the engineering-productivity ranking. This is **one run per selected setting**,
+not proof about all North reasoning modes. Confidence is **moderate for these
+observed outcomes, limited for broader intrinsic model ranking**.
+
+North daily-autonomous status: **NO on this evidence**. Best-tested qwen3-coder:
+**PROMISING BUT NOT YET**, not production-ready autonomous delivery. Muse's prior
+status remains NO. **Should Nemotron 3.5 Lightning be tested next? YES**, in a
+separately authorized checkpoint; no confirmed Clack defect currently blocks
+that next sample. Nemotron was **not** downloaded or tested here. Context
+calibration now **NO**; qwen-specific tuning now **NO**. No 48K/49,152/64K run.
+
+### Verification, evidence and commit scope
+
+Focused reasoning/Ollama serialization/protocol/harness/approval/correction suite:
+**216 passed / 8 files**. After adding the opt-in None native guard, its affected
+installed-model group passed **8 tests**, seven overlapping and one new: **217
+distinct tests exercised**, not 224 distinct tests. Final type checking passed;
+focused Biome lint (two TS test files, zero diagnostics), script syntax checks,
+**cargo fmt --check**, native test-host compilation, all three phase source-freeze
+checks and exact offline SDK reconstruction passed. Final working/staged diff
+checks passed, with only existing Git LF-to-CRLF conversion notices. Production
+source remained unchanged, so no unnecessary full frontend/Rust suite was rerun.
+Existing broader-suite limitations stay recorded in the preceding checkpoints.
+
+Evidence directory contains baseline.json (original dirty files, all tracked
+hashes, stashes, initial server metadata, hashed registry manifest/config),
+pull.jsonl, installed.json, workspace-initial.json, preflight-1.json,
+system-preflight-1.json/.native-report.json/.requests.jsonl/.receive.jsonl,
+mission-a-1.json/.native-report.json/.jsonl/.requests.jsonl/.receive.jsonl,
+correction-state.json, per-phase source-freeze files and audit.json. Raw evidence
+and scratch Git metadata are not committed. All owned native/launcher processes
+exited; the remote Ollama model's normal loaded state was not forcibly changed.
+
+Commit scope: **test(ai): evaluate north mini local agent**, this appendix plus
+the narrowly bounded test-harness registration/guard/tests only. Production
+architecture, prompts, context, timeouts, permissions and memory remain unchanged.
+The six original dirty paths/edits, both safety stashes and autonomous_tracker/
+remain preserved and unstaged. Expected final branch state: main, **64 ahead /
+0 behind cached origin/main**, empty index and the same six dirty paths. **No
+push. STOP. No subsequent candidate or checkpoint started.**

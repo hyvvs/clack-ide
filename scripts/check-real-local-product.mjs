@@ -24,6 +24,7 @@ const traceStreams = process.env.CLACK_PRODUCT_TRACE === "1";
 const modelId = process.env.CLACK_PRODUCT_MODEL ?? "qwen38-uncensored:latest";
 assert(["qwen38-uncensored:latest", "qwen3-coder:30b", "devstral-small-2:24b"].includes(modelId) || [
   "muse-glimmer:30b",
+  "north-mini-code-1.0:q4_K_M",
   "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M",
   "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M",
   "hf.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive:IQ3_M",
@@ -156,6 +157,10 @@ try {
   const env = Object.fromEntries(["PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "HOME", "LANG"].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []));
   Object.assign(env, { APPDATA: data, LOCALAPPDATA: data, TEMP: owned, TMP: owned, CLACK_ACCEPTANCE_ROOT: owned, CLACK_REAL_PRODUCT_PHASE: `${phase}-${attempt}`, CLACK_ACCEPTANCE_MODEL: modelId, CLACK_ACCEPTANCE_OLLAMA_URL: `${endpoint}/api/chat`, CLACK_ACCEPTANCE_URL: `${vite.resolvedUrls.local[0]}coworking-acceptance.html?configuration=${encodeURIComponent(`${local}/configuration`)}` });
   if (reasoningChoice === "low") env.CLACK_ACCEPTANCE_EXPECTED_THINK = "low";
+  if (process.env.CLACK_PRODUCT_EXPECT_NO_THINK === "1") {
+    assert.equal(reasoningChoice, "none", "Disabled-thinking guard requires explicit None");
+    env.CLACK_ACCEPTANCE_EXPECTED_THINK = "false";
+  }
   if (streamDiagnostic || (traceStreams && ["mission-a", "system-preflight"].includes(phase))) env.CLACK_ACCEPTANCE_RECEIVE_TRACE = "1";
   child = spawn(path.join(repository, "src-tauri/target/codex-test/debug/examples", `coworking_acceptance${process.platform === "win32" ? ".exe" : ""}`), [], { cwd: root, env, windowsHide: true });
   child.once("exit", (code, signal) => { childExit = { pid: child.pid, code, signal, at: Date.now() }; });
