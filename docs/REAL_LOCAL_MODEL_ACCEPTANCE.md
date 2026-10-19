@@ -7846,3 +7846,232 @@ Expected evidence-only commit: **test(ai): rerun devstral after latency audit**.
 Only this report addition is staged. No push, production edit, deadline change,
 model setting/template change, larger context, other model inference, download,
 repeat/replay mission or subsequent checkpoint.
+
+## 2026-10-19: broader local-agent comparison stopped at Muse control metadata
+
+Base: **ed034cd test(ai): rerun devstral after latency audit**. Requested order:
+Muse Glimmer, North Mini Code, then Nemotron 3.5 Lightning. The explicit
+stop-on-new-Clack-defect rule fired at the first candidate. **The broader model
+comparison is incomplete; no model-quality verdict was obtained for Muse.**
+
+Classification: **PRODUCT / MIXED OLLAMA REASONING CONTROL METADATA /
+PRE-INFERENCE BLOCKED**. This is neither ENGINE VERSION INCOMPATIBLE nor
+ENGINE-BLOCKED / TOOL PROTOCOL: the engine accepts the artifact, but Clack rejects
+its advertised controls before any native inference request can be dispatched.
+Production code was deliberately not repaired during this benchmark checkpoint.
+
+### Official artifact and installed engine
+
+Only **muse-glimmer:30b** was downloaded, using the existing remote Ollama service
+through the existing authorized infrastructure. Exact manifest / installed digest:
+**de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1**.
+Total installed size: **18,157,010,252 bytes** (18.157 GB decimal, approximately
+16.91 GiB). The standard Linux GGUF artifact was chosen, not MLX or DFlash.
+
+- Language weights: architecture **muse-glimmer**, **27.9B**, **Q4_K_M**;
+  16,756,681,056 bytes, blob
+  71b5c9c9abbc2a9e7c13550b6f9fe1f062650117a24490b15a310cbd7de03f8b.
+- Vision projector: **clip**, advertised **1.92B**, **Q4_K_M**;
+  1,400,328,928 bytes, blob
+  f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6.
+- Native /api/show advertises **131072 context**, completion, tools, thinking,
+  and vision. These are reported capabilities, not successful inference evidence.
+- The official registry configuration requires **Ollama 0.32.8**. The installed
+  client and service both report **0.40.5**, so no update was required or made.
+- Hardware verified read-only: RTX 4060 Ti, 16380 MiB VRAM; 33,236,643,840 bytes
+  RAM, 33,235,660,800 bytes swap. Before pull, available filesystem space was
+  1,672,869,265,408 bytes. Partial GPU residency remained acceptable; no residency
+  or performance result was measured because inference never began.
+
+Primary artifact sources checked at execution time:
+[official exact tag](https://ollama.com/library/muse-glimmer:30b),
+[official language-weight metadata](https://ollama.com/library/muse-glimmer:30b/blobs/71b5c9c9abbc),
+[official manifest](https://registry.ollama.ai/v2/library/muse-glimmer/manifests/30b),
+[official configuration](https://registry.ollama.ai/v2/library/muse-glimmer/blobs/sha256:57b82200bf7c0d7d7051c1349e584f193db42799c74529a96c83addd0fa80147).
+The model card's recommended latest engine and reasoning labels are not a
+substitute for the exact installed runtime contract below.
+
+### Isolation, preparation and chronology
+
+Fresh workspace: **C:/Users/Hayden/Documents/forgeboard-muse-glimmer-20261019-01**.
+Fresh evidence ID: **forgeboard-muse-glimmer-20261019-01**, under
+src-tauri/target/real-qwen-product/. Shared audit evidence ID:
+**current-model-shootout-20261019** in the same ignored parent.
+
+No other Clack host, Cargo/rustc, Vite test or acceptance launcher was active at
+the isolation checks. Unrelated Codex/other application processes and the existing
+SSH tunnel were left alone. Each live phase additionally hashed all tracked
+source files before/after and found **zero changes during the phase**.
+
+Chronology, UTC:
+
+1. **18:08:46**: saved HEAD, the six pre-existing dirty files, their full bytes,
+   diff and both safety-stash identities; began the single Muse download after
+   verifying official compatibility. All seven existing model tags/digests were
+   preserved in the before inventory.
+2. A metadata-only preparation was inadvertently attempted before the pull
+   completed. It failed closed: "Refresh this Ollama model's metadata before
+   requesting a runtime context. No inference was sent." This is a preparation
+   sequencing error, not a model failure or ForgeBoard attempt. Its evidence was
+   preserved, not overwritten.
+3. **18:13:17**: Ollama completed its verified pull and wrote the new manifest.
+   **18:13:20**: /api/show and installed inventory confirmed exact artifact bytes,
+   digest, capabilities and actual thinking values.
+4. **18:13:36-18:13:42**: metadata-only preflight attempt 2 passed. Normal Clack
+   configuration reported working context **32768**, output/reserve **2048**,
+   zero inference destinations, no messages, no todos and no memory revision.
+5. **18:13:52-18:13:57**: the sole harmless native tool-smoke setup requested
+   **None**, which the exact engine advertises as boolean false. It stopped
+   before dispatch. Native host 43020 exited code 0; the launcher failed its
+   assertion that one request should have been captured because it captured zero.
+6. Offline diagnosis using the unchanged production resolver and session-setting
+   API reproduced the exact mixed-control rejection. The entire comparison was
+   stopped. No direct provider bypass, second smoke, mission or later download.
+
+The configured fallback was Never, with no cloud destination. No outgoing
+num_ctx/num_predict/think payload exists: configuration evidence must not be
+presented as serialized inference evidence. All production deadlines remained
+unchanged, including the 120s pre-output guard and 600s overall native deadline.
+
+### Concrete Clack defect and evidence limits
+
+The installed engine's exact /api/show response is:
+
+```json
+{"thinking":{"values":[false,"low","medium","high","max"],"default":"high"}}
+```
+
+The native metadata probe correctly preserves this array as scoped, reported
+**probe.thinkingControls** evidence. However,
+**src/modules/ai/lib/reasoningEffort.ts**, effortCapability's Ollama branch,
+accepts either an all-boolean list or an all-string list and returns unknown for
+the valid mixed list. It therefore produces **status: unknown, levels: []**.
+The normal **setSessionEffort** API in
+**src/modules/ai/store/reasoningEffort.ts** rejects both None and Low with:
+"This effort is not supported by the selected model and API."
+
+The offline diagnostic used the exact persisted native profile, model, endpoint,
+configuration revision and evidence timestamps. Its clock was pinned to one
+millisecond after observation, inside the normal 30-second freshness window,
+with fetch disabled and zero network attempts. Three resolver repetitions gave
+the same result. The actual production session-setting function rejected both
+choices. In-memory diagnostic controls containing only [false] or only the named
+levels were supported, isolating mixed-type handling rather than evidence age,
+transport identity or generic lack of Muse support. These diagnostic variants
+were never persisted or sent to Ollama.
+
+Evidence: **muse-after.json**, **muse-final.json**, **muse-control-defect.json**,
+**reproduce-muse-controls.mjs**, isolated native settings and source-freeze records.
+The smoke launcher's assertion ran before it saved the native failure report,
+so **system-preflight-1.failure.json** retains the outer 0 != 1 assertion, not
+the inner session error. The latter is independently reproduced offline; it is
+not claimed to have been captured from a live inference response. No request or
+receive JSONL was created. The preflight's harmless WebView cleanup warning also
+appeared on its successful zero-inference phase and is not the diagnosed cause.
+
+### Candidate outcomes and comparison
+
+| Metric | qwen3-coder:30b, saved reference | Muse Glimmer | North Mini Code | Nemotron 3.5 Lightning |
+|---|---|---|---|---|
+| Download this checkpoint | No rerun/download | muse-glimmer:30b, 18,157,010,252 bytes | Not downloaded | Not downloaded |
+| Engine compatibility | Previously exercised | 0.40.5 exceeds artifact minimum 0.32.8 | Not evaluated | Not evaluated |
+| Native tool smoke | PASS, prior evidence | BLOCKED before inference, not a protocol verdict | Not run | Not run |
+| Mission requests / structured calls | 23 / 22, latest reference | 0 / 0 | Not run | Not run |
+| Successful mutations / failed tools | 12 / 1 | 0 / 0 | Not run | Not run |
+| Recovery quality | Partial, prior failures recovered | Unmeasured | Unmeasured | Unmeasured |
+| Backend / frontend | Partial substantive implementation | Not attempted | Not attempted | Not attempted |
+| Persistence | Demonstrated earlier; latest in-memory | Not attempted | Not attempted | Not attempted |
+| SSE | Incomplete | Not attempted | Not attempted | Not attempted |
+| Application tests / build | Incomplete / failed | None executed, no application files | Not attempted | Not attempted |
+| Premature prose stop | Observed | Unmeasured | Unmeasured | Unmeasured |
+| Engine stall | Not observed above 120s in saved reference | No inference, unmeasured | Unmeasured | Unmeasured |
+| Context blocker | None in latest reference | No context block after metadata preparation; reasoning-control block | Unmeasured | Unmeasured |
+| Final class | MODEL-INCOMPLETE | PRODUCT / METADATA / PRE-INFERENCE BLOCKED | NOT RUN: mandatory stop | NOT RUN: mandatory stop |
+
+For Muse, first response/tool/write/backend/frontend times are **N/A**, not zero
+latency. Tool successes/failures, file mutations, malformed intents, model prose
+stops, empty model responses, continuations, approvals and correction sends are
+all **0 because no inference occurred**. The workspace remains exactly **.git**.
+The ForgeBoard specification was sent **zero times**; no evaluator implementation
+or repair was made. Page-size correction, tests/build, persistence, SSE, CRUD,
+search/filters, accessibility, README, ignore behavior and all numeric canaries
+cannot be assessed without an application. No independent application copy was
+needed or created for this empty workspace.
+
+No measured request headroom, receipts/savings, compaction, extraction or retrieval
+exists for this candidate; these are **N/A**, not evidence of context efficiency.
+No production memory/context mechanism, F1 reduction, continuation, receipt,
+approval policy, tool template or deadline was changed or bypassed.
+
+North's and Nemotron's official catalog pages were inspected only. They were not
+pulled, assigned an evaluated artifact digest, smoke-tested or ranked. Their
+minimum-engine compatibility remains unverified. No all-three download occurred.
+**qwen3-coder-next was not downloaded**; the approximately 52 GB Q4_K_M class is
+excluded by the requested hardware/storage comparison policy. No prior candidate
+was rerun. Devstral's two observed pre-output interruptions remain separate saved
+evidence, not new trials in this comparison.
+
+**Ranking:** qwen3-coder remains the strongest previously tested implementation
+reference; Devstral is retired from active comparison for now. Muse, North and
+Nemotron are **unranked**, not inferior, because no valid new mission exists.
+**No new preferred model can be selected from this incomplete broader comparison.**
+The previous provisional qwen3-coder preference is not upgraded to daily
+autonomous readiness: **PROMISING BUT NOT YET** still applies.
+
+Next recommendation: separately fix and verify the exact mixed boolean/named
+reasoning-control compatibility defect, preserving native false semantics,
+freshness and authorization, then resume the sequential smoke/mission comparison
+with explicit authorization. Do not substitute Automatic to hide this failure.
+Whether qwen-specific continuation work is warranted remains **deferred until
+the broader comparison is valid**. Context calibration is **not next**; no
+48K/64K experiment or timeout adjustment was made.
+
+### Verification and preservation
+
+- Final focused verification: **149 tests passed / 7 files**: acceptanceComparison,
+  installedModelComparison, acceptanceApprovalLifecycle, ollamaToolProtocol,
+  reasoningEffort, acceptance-approval and acceptance-correction. These include
+  exact Muse fixture authorization, unchanged path/secret approval denials, native
+  structured-call serialization, non-execution and rejection of textual markup.
+  Unit fixture success is not claimed as a live Muse native-tool PASS.
+- TypeScript passed. Full lint passed at **71 warnings / 2 informational notices**;
+  focused lint on the three touched TS/TSX test files had zero diagnostics.
+- Production build passed with existing dynamic-import/plugin-timing warnings.
+  Rust formatting and strict all-targets locked Clippy passed, using the existing
+  isolated target/codex-test directory. The native example built and launched.
+- The single full frontend gate was **not green**: **2979 passed / 2 failed**,
+  with **206 passed / 5 failed test files**. One failure was a literal fixture
+  assertion affected by a temporary, unused harness-only Low option. That option
+  was removed; its affected test passes in the final focused run. Remaining
+  failures are discovery of an old saved acceptanceComparison source under
+  ignored target storage, two old generated ForgeBoard tests missing supertest,
+  and a Node-only latency test incorrectly collected by Vitest as an empty suite.
+  Those evidence files/test discovery were not changed or deleted. No second
+  full frontend run is claimed after the focused correction.
+- Full Rust gate: **605 passed / 1 failed**. Unmodified
+  d1_cancellation_timeout_and_revocation_prevent_or_interrupt_work expected
+  tool-revoked but received timed-out at tests.rs:758. Its single-test rerun also
+  failed (0 passed / 1 failed / 605 filtered out). No production/test assertion
+  was changed to suppress it, and no clean full-Rust claim is made.
+- Initial sandbox Vitest launch failed before executing tests on a Vite temporary
+  file rename; the authorized unsandboxed focused runs passed. An initial offline
+  diagnostic expected the wrong fail-closed error wording; only that disposable
+  diagnostic expectation was corrected. Neither was a model trial or product fix.
+- Final diff check passed apart from existing CRLF conversion notices. No Computer
+  Use, native GUI interaction, Linux/macOS GUI or real model inference verification
+  is claimed. Read-only Ollama health/inventory remained available; no acceptance,
+  build, test or launcher process remained after checks.
+
+All seven original installed tags and digests are unchanged; only Muse was added.
+No model deletion/overwrite/re-import, engine update, service/network/firewall
+change or cloud inference occurred. Existing unrelated processes were preserved.
+Production source changes: **0**. Test-only changes authorize the exact Muse tag
+and disposable root and add serialization/approval tests; no production policy
+or architecture changed. The six original dirty-file edits, including IQ4_XS
+additions, remain preserved and excluded from the candidate commit. Both safety
+stashes and autonomous_tracker/ remain untouched. Only this report addition and
+the narrowly related acceptance-fixture/test changes are included.
+
+Evidence commit: **test(ai): evaluate muse glimmer local agent**. The candidate is
+documented as blocked, not completed acceptance. **No push. No North/Nemotron
+evaluation, qwen-specific fix, context calibration or subsequent checkpoint.**

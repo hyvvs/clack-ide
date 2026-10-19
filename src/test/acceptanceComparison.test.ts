@@ -20,4 +20,13 @@ describe("controlled local-model comparison setup", () => {
     expect(host).toContain('phase.starts_with("system-preflight-")');
     expect(runner).toContain("CLACK_ACCEPTANCE_OLLAMA_URL");
   });
+  it("authorizes the exact Muse tag only in acceptance fixtures and validates supported effort", () => {
+    for (const file of ["scripts/check-real-local-product.mjs", "src-tauri/examples/coworking_acceptance.rs", "src/test/realLocalProductAcceptance.tsx"]) {
+      const source = readFileSync(file, "utf8");
+      expect(source).toContain('"muse-glimmer:30b"');
+      expect(source).not.toContain('"muse-glimmer:latest"');
+    }
+    const fixture = readFileSync("src/test/realLocalProductAcceptance.tsx", "utf8");
+    expect(fixture).toContain("await setSessionEffort(id, config.realProduct.reasoningChoice)");
+  });
 });
