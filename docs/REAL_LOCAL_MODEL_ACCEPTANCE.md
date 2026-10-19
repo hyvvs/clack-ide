@@ -6922,3 +6922,324 @@ Separate evidence commit: **test(ai): compare installed local coding models**.
 Total new native inference requests: **54 = 3 probes + 51 mission requests**;
 cloud inference **0**. No model download, context increase, additional Coder or
 Qwen3.8 mission, automatic tuning ladder, architecture rewrite or push. STOP.
+
+## Devstral Small 2 24B Local Comparison: 2026-10-19
+
+This checkpoint evaluates the next candidate named above with the same bounded
+local product acceptance rather than changing the benchmark or tuning the model.
+The exact Ollama tag is **devstral-small-2:24b**. The pull completed successfully
+on the existing Ollama 0.40.5 host. `ollama show` reports **Mistral3, 24.0B,
+Q4_K_M, 393216 advertised context** and tool capability. The installed digest is
+**24277f07f62db8f9cb68e9dfc679ea1818a7fbac47a50eff0a701d3f645b63c8**;
+the model layer is approximately 15 GB.
+
+Acceptance-only authorization was extended for that exact tag and for disposable
+`forgeboard-devstral-YYYYMMDD-NN` workspaces. No production inference adapter,
+context budgeting, scheduler, tool policy, continuation, retry or timeout behavior
+changed. Node syntax checks passed, the focused comparison Vitest remained **2/2
+passing**, and `cargo fmt --check` passed before inference.
+
+The fresh workspace was
+**C:/Users/Hayden/Documents/forgeboard-devstral-20261019-01** with evidence run
+ID **devstral-small2-20261019-01**. Metadata preparation used **zero inference**.
+The non-executing protocol probe then sent exactly one local request with
+`num_ctx=32768`, `num_predict=2048`, streaming enabled and one harmless
+`get_test_value` schema. Devstral returned the exact native structured call
+`get_test_value({"value":"protocol-check"})`; tool execution count was **0**.
+The loaded runtime reported **32768** context and llama.cpp. Cloud inference was
+**0**.
+
+`reasoningChoice=none` was requested for parity, but exact model metadata advertises
+no native thinking control. Clack therefore recorded **unsupported-no-control**
+and omitted `think` on the wire instead of inventing a supported setting. The
+mission used the unchanged ForgeBoard specification once, one persistent Coder,
+no delegation, no evaluator-authored implementation, no correction, no manual
+Continue and no retry.
+
+### ForgeBoard outcome
+
+**ENGINE/PRODUCTION-TIMEOUT / incomplete.** The mission issued **11 native
+inference requests**. Requests 1-10 all received normal provider final events with
+`done_reason=stop`; their provider-reported output total was **2060 tokens**.
+Request 11 was dispatched normally but delivered **zero response-body chunks and
+zero bytes for approximately 119.97 seconds**. The browser/SDK provider-recovery
+wrapper has a fixed **120000 ms** total stream budget and surfaced
+`overall-deadline`; cancellation then reached the native request. The Rust
+self-hosted transport separately has a **120-second first-output guard** and a
+**600-second absolute ceiling**, so this boundary is a real production-contract
+timeout rather than an evaluator stop. The local Ollama service remained healthy
+and the model remained loaded at 32768 context after the run. The evidence does
+not localize whether the long no-byte interval was model computation or another
+provider-side stall, so no narrower root cause is claimed.
+
+This was **not a context-budget failure**. Every captured request used the exact
+model, 32768 context and 2048 output reserve, with `think` omitted and cloud 0.
+The minimum recorded request headroom was **1226 tokens**. The final run state was
+failed with error code `overall-deadline`, totalSteps **10**, continuationCount
+**0**, peerTaskCount **0**, and last finish reason `tool-calls`. Whole mission
+elapsed time was approximately **418.4 seconds**.
+
+The model made useful early progress before the timeout. It executed **19 tool
+invocations: 18 successful / 1 failed**. Breakdown: todo_write **2/2**,
+bash_run **3/3**, create_directory **9/9**, write_file **2/3**, read_file **1/1**,
+edit **1/1**. It successfully ran `npm init -y`, installed TypeScript/@types/node,
+then installed its declared dependencies, created the project/source directory
+layout, wrote tsconfig.json, edited package.json, and wrote
+`src/shared/types.ts`. Its one tool failure was a protected write to the existing
+package.json before reading it; the model immediately corrected that by reading
+the file and applying an edit. This is materially cleaner tool recovery than a
+repeated identical-call loop.
+
+The final nondependency project content was only **package.json,
+package-lock.json, tsconfig.json and src/shared/types.ts**, plus empty source
+directories. There was **no backend implementation, frontend implementation,
+API, CRUD, persistence, SSE, validation, combined filtering/search, tests,
+README, root .gitignore, production build, or functional port 4317**. No title-120,
+debounce-750 or task-page-size-50 behavior existed in runnable application code.
+The model itself never reached a test or build command. A post-run evaluator audit
+sent **no inference** and made no repairs: `npm test -- --runInBand` reported
+**No tests found**; `npm run build -- --noEmit` passed only the small TypeScript
+surface that existed and is not a production-build acceptance pass.
+
+### Decision
+
+Devstral Small 2 passes the local native tool-protocol gate and showed competent
+early project setup, dependency installation, protected-write recovery and real
+writer use. It still **did not demonstrate autonomous ForgeBoard delivery under
+the production Clack contract**. The request-11 no-first-byte stall is sufficient
+to fail this checkpoint without a retry, context increase, timeout relaxation,
+reasoning substitution or prompt babysitting. It is therefore **not promoted to a
+preferred/default local coding model** from this run.
+
+Relative to prior incomplete candidates, this run provides stronger evidence of
+clean early execution than the Qwen3.8 repeated-tool-failure attempt and the Gemma
+file-creation loop, but substantially less delivered application functionality
+than the strongest historical qwen3-coder progress. That observation is limited
+to these acceptance runs and is not a general benchmark claim.
+
+### Devstral Small 2 installed-model comparison: adopted-run audit
+
+This audit continues from **2677375**, containing **5e269ac**, on main. At
+attachment, index was empty, stored origin/main was 0 behind / 57 ahead, both
+safety stashes were unchanged, and the six existing modified paths remained.
+An already-running Devstral mission was discovered. The user explicitly chose
+**Audit the existing run; do not start another**. No new inference, smoke,
+ForgeBoard mission, retry, download or model/service/network configuration change
+was initiated by this audit. The existing run's report above is preserved.
+
+This supplement supersedes ambiguous deadline/headroom/build wording above, not
+the original transcript or historical model findings. The model download was
+completed by the user before this evaluation; no model was downloaded here.
+
+#### Artifact and hardware
+
+Exact installed artifact: **devstral-small-2:24b**, digest
+**24277f07f62db8f9cb68e9dfc679ea1818a7fbac47a50eff0a701d3f645b63c8**,
+**15177374099 bytes** on disk. Exact show metadata reports **mistral3**,
+**24011361280 parameters**, **24.0B**, **Q4_K_M**, advertised context **393216**,
+capabilities **completion, vision, tools**, and no advertised thinking control.
+Stored model temperature 0.15 was not tuned or overridden. Ollama reports 0.40.5.
+
+Saved metadata-only preflight and smoke initial /api/ps snapshots show Devstral
+was **unloaded** before that smoke. During the adopted mission, read-only SSH
+inspection measured an **NVIDIA GeForce RTX 4060 Ti**, VRAM **16380 MiB total /
+14696 MiB used / 1313 MiB free**. RAM was **33236643840 bytes total**, approximately
+4.997 GB used and 28.239 GB available. zram swap: **33235660800 bytes total**,
+approximately 1.461 GB used. These hardware measurements are **during-run**, not
+a fabricated pre-load VRAM baseline; historical pre-load VRAM usage is unavailable.
+No unrelated workload was stopped. /api/ps reported runtime size **16133233048**,
+size_vram **14060701613**, and context **32768**. Full-GPU residency is not claimed;
+reported VRAM residency is smaller than total runtime size.
+
+#### Protocol and controls
+
+The saved smoke contains exactly **one** /api/chat request, one deterministic
+get_test_value schema, and one valid native structured call with value
+protocol-check. No answer prose, tool executor, approval or follow-up inference:
+**PASS**. Native trace categorized a tool frame and a normal provider final;
+SDK finish was tool-calls. Provider usage: 93 input / 13 output tokens.
+
+All 12 captured requests, one smoke plus eleven mission requests, used the exact
+installed model, **32768 context / 2048 output**, streaming, and the existing
+localhost tunnel. Fallback remained Never; every captured inference destination
+was http://127.0.0.1:11435/api/chat; cloud count **0**. No sampling field was added.
+The harness requested None, explicitly reported **unsupported-no-control**, and
+omitted think in **every native body**. The persisted production session choice
+remained its internal **automatic/default** value because None was unsupported;
+this is not represented as a successful None setting or a hidden think:false.
+No reasoning output was observed.
+
+Existing workspace:
+**C:/Users/Hayden/Documents/forgeboard-devstral-20261019-01**.
+Existing evidence ID: **devstral-small2-20261019-01** under
+src-tauri/target/real-qwen-product/. No second workspace/mission was created.
+The saved transcript has exactly one user specification, SHA-256
+**f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801**,
+matching prior ForgeBoard comparisons. No delegation, reminder, correction,
+manual Continue or evaluator implementation occurred.
+
+Protocol limitation: the adopted launcher had **SINGLE_SPEC=1**, disabling the
+syntax-aware correction branch. This was discovered and disclosed before audit;
+the user chose no new run. It was not changed mid-run. Independently inspected
+files and the final plan never materially contained page size 50, so the full
+correction trigger was not reached anyway. **50-to-25 was not sent; retention is
+UNTESTED**, not passed, forgotten, or a model failure. The run is not claimed as
+full correction-protocol parity with an enabled comparison harness.
+
+#### Chronology and stop boundary
+
+First native dispatch was **2026-10-19 16:28:08.197 UTC**. First useful response
+and native structured tool arrived after **40.920 seconds**. Ten completed
+responses all contained provider-native tools: **19 calls total**, zero normal
+answer-prose responses, malformed textual intents or empty completed responses.
+Request 3 contained ten calls, explaining why calls exceed completed responses.
+The eleventh response is classified **NO RESPONSE / ABORTED**, not empty/model stop.
+
+Successful calls: **18**. Failed calls: **1**, the read-before-write refusal on
+existing package.json. The model read it and used an exact edit, then continued
+installing dependencies and writing types. No repeated refusal loop, fabricated
+receipt, premature prose stop or manual recovery occurred. Breakdown:
+todo_write 2, bash_run 3, create_directory 9, read_file 1, write_file 3 attempts
+(2 successful), edit 1 successful. First shell command **npm init -y** succeeded
+under the actually advertised **Windows PowerShell (powershell.exe)**, not Bash.
+
+Three successful file mutation calls were observed: tsconfig.json write,
+package.json edit, src/shared/types.ts write. Time to the first confirmed writer
+effect is bounded between response completion and the next dispatch:
+**109.101-109.197 seconds**. Other mutation bounds are 238.547-239.100 and
+297.765-298.022 seconds. npm-generated manifests/lockfiles are separate shell
+effects, not additional application source writer calls. No substantive backend
+or frontend implementation was reached. Model test/build commands: **0 / 0**.
+Explicit approvals **0**, automatic continuations **0**, model Git commits **0**.
+
+Final request dispatch: **16:33:06.219 UTC**. Session failure:
+**16:35:06.205 UTC**, approximately **119.986 seconds** later. Native dispatch to
+cancellation observation was **119.971 seconds**, with **no headers, body bytes,
+IPC data or provider final/usage**. Prior ten responses reported 2060 output
+tokens total; no usage is inferred for request 11. Whole native-dispatch-to-report
+duration was **419.351 seconds**, approximately 418.4 seconds to session failure.
+
+Winning boundary: the shared **withProviderRetryTracking** wrapper in agent.ts
+uses providerRetry.ts's **120000 ms pre-first-meaningful-output recovery ceiling**.
+Its timer aborts with **overall-deadline**; native then observes cancellation.
+This is **not a 600-second native overall timeout**, evaluator termination,
+WebView disappearance or confirmed model exhaustion. The wrapper clears that
+timer at first meaningful output: the earlier description "total stream budget"
+must not be interpreted as a 120-second cap on an already-progressing stream.
+Native policy separately retains 120-second first-output, 60-second meaningful
+idle and 600-second absolute guards. The wrapper won this race. Why Ollama had
+not returned headers/body remains **UNCONFIRMED**; partial CPU/GPU residency alone
+does not establish causation. No timeout, retry policy or production source was
+changed to rescue the attempt.
+
+This identifies an enforced runtime limit, not proof that the timer malfunctioned:
+the native first-output guard would also expire near 120 seconds without progress.
+Relaxing the outer wrapper alone is not demonstrated to solve the underlying stall.
+
+Classification: **CLACK-BLOCKED / PRE-OUTPUT RECOVERY DEADLINE / INCOMPLETE**,
+with underlying provider no-response cause unknown. This locates the observed
+product boundary rather than blaming model engineering ability or claiming a
+new context defect. No additional run was authorized or attempted.
+
+#### Context and independent project audit
+
+Every native request fit B1. Minimum remaining headroom was **10043 native-wire
+estimated tokens** and **10026 SDK estimated tokens**, including output reserve
+and safety margin. Formula: ceiling minus system/tools/conversation costs,
+reserve and margin. The preceding section's **1226** was request 1's **safety
+margin**, not remaining headroom. Final native input was 18797, reserve 2048,
+margin 1880, ceiling 32768: remaining 10043. Schema counts/costs are retained per
+request in the audit JSON; final exposure was 16 schemas / 15012 bytes.
+
+Offline SDK reconstruction matched **all eleven captured native requests** after
+restoring semantically verified result JSON key ordering and parallel completion
+order from captured wire evidence. No source reference was fabricated. The
+existing shared planCompaction/measureRequest/resolveContextBudget/ollamaBody
+implementations were used unchanged, without inference. Verified receipts **0**,
+savings **0**, compaction/extraction/retrieval **0**, durable memory revision
+**none**. No protected-budget stop. Live continuation-receipt survival remains
+**NOT EXERCISED**; e56bbe5 deterministic coverage is unaffected.
+
+Exactly four nondependency project files remained: package.json, package-lock.json,
+tsconfig.json, src/shared/types.ts. Shared type aliases/enums are not counted as
+substantive application implementation. Tests, backend/frontend application,
+project/task CRUD, filters/search, deterministic validation/errors, missing-parent
+handling, persistence, SSE, functional port 4317, title limit 120, debounce 750,
+page-size behavior, loading/error/empty views, keyboard navigation, ForgeBoard
+README and runtime-data ignore rules are **NOT IMPLEMENTED**.
+
+A separate source-identical copy at
+**C:/Users/Hayden/Documents/forgeboard-devstral-audit-20261019-01** used the
+acceptance host's isolated retained npm cache (per-command only):
+
+- npm ci --offline --ignore-scripts --no-audit --no-fund: **PASS**, 391 packages,
+  no network installation or project repairs.
+- npm test -- --runInBand: **EXIT 1, No tests found**. Zero authored tests passed.
+- npm run build: **EXIT 0**, tsc compiled only shared types. This is not a working
+  frontend/server production-build acceptance pass.
+- npm start: **EXIT 1, MODULE_NOT_FOUND**, dist/backend/index.js absent.
+
+No backend could start, so persistence restart and live SSE mutation checks could
+not be performed. No frontend existed for browser/keyboard checks. Original
+source hashes remained unchanged by independent commands; no repair was made.
+
+#### Direct decision
+
+| Metric | qwen3-coder latest reference | Devstral adopted run |
+|---|---|---|
+| Native smoke | Existing PASS | PASS, one non-executing request |
+| Mission requests / structured calls | 23 / 22 | 11 / 19 |
+| Successful / failed tools | 21 / 1 | 18 / 1 |
+| Successful file mutations | 12 writer calls | 2 writer calls + 1 edit |
+| Substantive backend / frontend | Partial backend; frontend config only | Neither; shared types only |
+| Persistence | Demonstrated in earlier run, latest in-memory | NOT IMPLEMENTED |
+| SSE | Not completed | NOT IMPLEMENTED |
+| Tests / production application build | Earlier partial/incomplete/failed | No tests; type-only tsc pass; startup fails |
+| Recoverable failure | Latest stopped in prose | Read/edit recovery succeeded |
+| Premature prose stop | Yes latest | No; product timeout |
+| Continuations | 0 latest, 1 earlier | 0 |
+| Stream idle stalls | 0 | 0; one pre-output deadline |
+| Minimum SDK / native headroom | 844 / 1835 | 10026 / 10043 |
+| Receipts / required-token savings | 11 / 6976 on latest request 23 | 0 / 0 |
+| Latest context blocker / cloud | None / 0 | None / 0 |
+| Final class | MODEL-INCOMPLETE | CLACK-BLOCKED, provider cause unknown |
+
+**NO PREFERRED MODEL YET.** Coder remains the strongest observed implementation
+reference across earlier substantive backend/persistence/frontend work, but its
+latest premature stop and incomplete delivery do not earn a reliable default.
+Devstral showed clean native tooling and recovery, not enough delivered software
+to surpass Coder or judge ultimate model capability from a runtime-limited run.
+Confidence is high that neither earned promotion here, low for a general quality
+ranking. Daily autonomous coding without babysitting: **PROMISING BUT NOT YET**,
+not a daily-use recommendation or a completed ForgeBoard claim.
+
+Keep context-architecture debugging **stopped**. Exactly one recommended next
+direction: **a bounded investigation of Devstral's pre-output no-response boundary
+and shared recovery/native deadline interaction**, correlating Ollama-side timing
+with Clack dispatch/cancellation before proposing any policy change. Do not raise
+context or blindly extend deadlines; no further model run or fix was started here.
+
+#### Verification and preservation
+
+Focused Clack verification: **208 tests / 8 files passed**, covering acceptance,
+native tool protocol (including two new Devstral structured/textual cases),
+approval/correction, guidance and recovery deadlines. TypeScript passed. Focused
+lint passed on four harness/test files with no diagnostics. Script syntax,
+cargo fmt --check and strict Clippy for the native coworking_acceptance example
+passed. Full Clack frontend/Rust suites and production build were intentionally
+not rerun for an evidence-only checkpoint; earlier unrelated suite limitations
+are not represented as repaired.
+
+Audit baseline and read-only hardware/model evidence are retained under
+src-tauri/target/devstral-audit-20261019-01/, with audit.json and an independent
+source-hash inventory. Pre-start isolation/empty-workspace/source freeze were not
+independently observed by this adopting audit; saved preflight supports initially
+unloaded model and the original spec/transcript are verified. From attachment to
+mission completion, tracked hashes were observed unchanged. Subsequent changes
+were confined to audit tests/report, not production modules. Another task appended
+the initial report after terminal outcome; it is preserved and qualified above.
+Unrelated IQ4_XS/report edits, stashes and autonomous_tracker/ must remain untouched.
+
+Evidence-only commit requested: **test(ai): compare devstral local coding model**.
+No push, no model download, no additional inference by this audit, no larger
+context, no other candidate run, no production architecture or service change.

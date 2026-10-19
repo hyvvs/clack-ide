@@ -14,7 +14,7 @@ describe("controlled local-model comparison setup", () => {
   it("limits setup to the two authorized models without changing context/output/deadlines", () => {
     const runner = readFileSync("scripts/check-real-local-product.mjs", "utf8");
     const host = readFileSync("src-tauri/examples/coworking_acceptance.rs", "utf8");
-    expect(runner).toContain('["qwen38-uncensored:latest", "qwen3-coder:30b"].includes(modelId)');
+    expect(runner).toContain('["qwen38-uncensored:latest", "qwen3-coder:30b", "devstral-small-2:24b"].includes(modelId)');
     expect(host).toContain('assert_eq!(body["model"], model)');
     expect(host).toContain('assert_eq!(body["options"]["num_ctx"], 32768)');
     expect(host).toContain('phase.starts_with("system-preflight-")');
