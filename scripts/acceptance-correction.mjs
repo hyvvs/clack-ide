@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, realpath, readFile, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
+import ts from "typescript";
 import { inspectAcceptanceShellEffects } from "./acceptance-approval.mjs";
 
 export const correctionText = "Change the task page size requirement from 50 to 25. The new value supersedes 50 everywhere. Continue the same project and do not restart from scratch.";
@@ -11,6 +12,48 @@ const page50 = text => !/(?:50[^\n]{0,40}(?:superseded|replaced)[^\n]{0,20}25|25
     /\bpaginat\w*\s*[:=(]?\s*50\b/i.test(text) ||
     /\b(?:paginat\w*|tasks?)\b[^\n\r.;]{0,50}\blimit\s*[:=]\s*50\b/i.test(text));
 const normalize = text => text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+
+function authoredPage50(target, content) {
+  if (/\.ya?ml$/i.test(target)) return content.split(/\r?\n/).find(line => page50(line));
+  const source = /\.json$/i.test(target)
+    ? ts.parseJsonText(target, content)
+    : ts.createSourceFile(target, content, ts.ScriptTarget.Latest, true);
+  if (source.parseDiagnostics.length) return undefined;
+  const name = node => node && (ts.isIdentifier(node) || ts.isStringLiteral(node)) ? node.text : undefined;
+  const size = value => /^(?:page_?size|per_?page)$/i.test(value ?? "");
+  const page = value => /^(?:page|offset|currentPage|pageNum|pageNumber|pagination)$/i.test(value ?? "");
+  const fifty = node => node && (ts.isNumericLiteral(node) || ts.isStringLiteral(node)) && node.text === "50";
+  const pagination = node => {
+    const container = ts.isBindingElement(node) || ts.isPropertyAssignment(node) ? node.parent : undefined;
+    if (container && (ts.isObjectBindingPattern(container) || ts.isObjectLiteralExpression(container))) {
+      const siblings = ts.isObjectBindingPattern(container) ? container.elements : container.properties;
+      if (siblings.some(item => page(name(item.propertyName ?? item.name)))) return true;
+    }
+    let scope = node.parent;
+    while (scope && !ts.isBlock(scope) && !ts.isSourceFile(scope)) scope = scope.parent;
+    let hasPage = false, hasSlice = false;
+    const inspect = item => {
+      if (item !== scope && ts.isFunctionLike(item)) return;
+      if (ts.isIdentifier(item) && page(item.text)) hasPage = true;
+      if (ts.isCallExpression(item) && ts.isPropertyAccessExpression(item.expression) && ["slice", "limit"].includes(item.expression.name.text)) hasSlice = true;
+      ts.forEachChild(item, inspect);
+    };
+    if (scope) inspect(scope);
+    return hasPage && hasSlice;
+  };
+  let found;
+  const visit = node => {
+    if (found) return;
+    if (ts.isVariableDeclaration(node) || ts.isBindingElement(node) || ts.isPropertyAssignment(node)) {
+      const key = name(node.propertyName ?? node.name), value = node.initializer;
+      const fallback = value && ts.isBinaryExpression(value) && [ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(value.operatorToken.kind) && fifty(value.right);
+      if ((fifty(value) || fallback) && (size(key) || (key === "limit" && pagination(node)))) found = node;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found ? content.slice(found.getStart(source), found.end).slice(0, 512) : undefined;
+}
 
 async function projectFile(root, operand) {
   if (typeof operand !== "string" || /[\x00-\x1f*?[\]~$%]/.test(operand) || /^(?:\\\\|\/\/)/.test(operand)) throw new Error("Nonliteral project path");
@@ -67,13 +110,15 @@ export async function confirmedWrite(root, part) {
 }
 
 export async function currentPage50(root, writes, plan) {
-  const todo = plan.find(t => !["cancelled", "interrupted", "failed"].includes(t.status) && page50(`${t.title}\n${t.description ?? ""}`));
+  const todo = plan.find(t => ["pending", "in_progress", "blocked"].includes(t.status) && page50(`${t.title}\n${t.description ?? ""}`));
   if (todo) return { kind: "current-accepted-plan", todo: structuredClone(todo), planSha256: digest(JSON.stringify(plan)) };
-  for (const target of new Set(writes.flatMap(w => w.files.map(f => f.path)))) {
-    if (!/\.(?:[cm]?[jt]sx?|json|ya?ml)$/i.test(target) || /[\\/]docs?[\\/]/i.test(target)) continue;
+  const latest = new Map(writes.flatMap(w => w.files.map(file => [file.path, file.sha256])));
+  for (const [target, expected] of latest) {
+    if (!/\.(?:[cm]?[jt]sx?|json|ya?ml)$/i.test(target) || /[\\/](?:docs?|tests?|__tests__|fixtures?|__fixtures__)[\\/]|\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(target)) continue;
     try {
       const file = await projectFile(root, target);
-      const line = file.content.split(/\r?\n/).find(line => page50(line));
+      if (file.sha256 !== expected) continue;
+      const line = authoredPage50(target, file.content);
       if (line) return { kind: "current-authored-code", path: file.path, sha256: file.sha256, line: line.slice(0, 512) };
     } catch { /* Missing or replaced evidence is not current implementation. */ }
   }

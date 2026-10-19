@@ -77,6 +77,73 @@ describe.skipIf(!parser)("confirmed shell effects", () => {
   });
 });
 describe("current work boundary and durable exactly-once dispatch", () => {
+  it.each([
+    ["multiline query defaults", "const {\n status,\n page = 1,\n limit = 50\n} = req.query;"],
+    ["pageSize property", "const pagination = { pageSize: 50 };"],
+    ["constant assignment", "export const PAGE_SIZE = 50;"],
+    ["default query limit", "const page = Number(req.query.page) || 1; const limit = Number(req.query.limit) || 50; const tasks = all.slice((page - 1) * limit, page * limit);"],
+    ["nullish query limit", "const page = req.query.page ?? 1; const limit = req.query.limit ?? 50; tasks.slice((page - 1) * limit, page * limit);"],
+    ["aliased query binding", "const { page = 1, limit: perRequest = 50 } = req.query;"],
+  ])("recognizes confirmed current authored %s", async (_name, content) => {
+    const code = await native("code", "tasks.ts", content);
+    const result = await observe(request([code, await native("2"), await native("3")], []));
+    expect(result.writes).toHaveLength(3);
+    expect(result.boundary.page).toMatchObject({ kind: "current-authored-code", path: code.output.path });
+    expect(result.boundary.page.line).toContain("50");
+  });
+  it.each([
+    "const width = 50;",
+    "const timeout = 50;",
+    "const fixture = { count: 50, limit: 50 };",
+    "// Task pagination pageSize: 50\nconst timeout = 50;",
+    'const documentation = "Task pagination pageSize: 50";',
+    "const PAGE_SIZE = 500;",
+    "const PAGE_SIZE = 25; // supersedes 50",
+  ])("does not infer pagination from unrelated or superseded authored content: %s", async content => {
+    const code = await native("code", "api.ts", content);
+    expect((await observe(request([code, await native("2"), await native("3")], []))).boundary).toBeUndefined();
+  });
+  it.each(["pagination.test.ts", "pagination.spec.ts", "fixtures/pagination.ts"])("does not treat a page-size test fixture as implementation: %s", async file => {
+    await mkdir(path.join(root, "fixtures"), { recursive: true });
+    const fixture = await native("fixture", file, "export const PAGE_SIZE = 50;");
+    expect((await observe(request([fixture, await native("2"), await native("3")], []))).boundary).toBeUndefined();
+  });
+  it("requires three writes even when multiline pagination has already reached disk", async () => {
+    const code = await native("code", "tasks.ts", "const {\n page = 1,\n limit = 50\n} = req.query;");
+    const two = [code, await native("2")];
+    expect((await observe(request(two, []))).boundary).toBeUndefined();
+    expect((await observe(request([...two, await native("3")], []))).boundary.page.kind).toBe("current-authored-code");
+  });
+  it("does not promote rejected or unconfirmed page-size input into authored evidence", async () => {
+    const code = await native("code", "tasks.ts", "export const PAGE_SIZE = 50;");
+    const rejected = { ...code, state: "output-error", output: { error: "rejected" } };
+    expect((await observe(request([rejected, await native("1"), await native("2"), await native("3")], []))).boundary).toBeUndefined();
+  });
+  it("requires the latest successful file hash, not an unobserved later disk edit", async () => {
+    const old = await native("old", "tasks.ts", "const PAGE_SIZE = 50;");
+    const oldProof = await confirmedWrite(root, old);
+    const updated = await native("updated", "tasks.ts", "const PAGE_SIZE = 25;");
+    const newProof = await confirmedWrite(root, updated);
+    expect(await currentPage50(root, [oldProof, newProof], [])).toBeUndefined();
+    await writeFile(updated.output.path, "const PAGE_SIZE = 50;");
+    expect(await currentPage50(root, [oldProof, newProof], [])).toBeUndefined();
+  });
+  it.each(["completed", "cancelled", "interrupted", "failed", "superseded"])("does not use a %s plan as current accepted work", async status => {
+    const parts = [await native("1"), await native("2"), await native("3")];
+    expect((await observe(request(parts, [{ ...plan[0], status }]))).boundary).toBeUndefined();
+  });
+  it("preserves a blocked but still current accepted plan", async () => {
+    expect(await currentPage50(root, [], [{ ...plan[0], status: "blocked" }])).toMatchObject({ kind: "current-accepted-plan" });
+  });
+  it.skipIf(!parser)("detects shell-authored pagination only after matching literal content reaches disk", async () => {
+    const content = "const {\n page = 1,\n limit = 50\n} = req.query;";
+    const target = path.join(root, "tasks.ts");
+    await writeFile(target, `${content}\n`);
+    const write = shell("shell-code", "'const {', ' page = 1,', ' limit = 50', '} = req.query;' | Set-Content tasks.ts");
+    const result = await observe(request([write, await native("2"), await native("3")], []));
+    expect(result.boundary.page).toMatchObject({ kind: "current-authored-code", path: target });
+    expect(result.writes[0].files[0].sha256).toBe(result.boundary.page.sha256);
+  });
   it.each(["pagination (50/page)", "50 per page", "pagination: 50", "pageSize: 50", "page size of 50"])("recognizes an explicit current plan spelling: %s", async description => {
     expect(await currentPage50(root, [], [{ ...plan[0], description }])).toMatchObject({ kind: "current-accepted-plan" });
   });

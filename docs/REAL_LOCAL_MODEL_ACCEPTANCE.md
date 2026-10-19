@@ -6304,3 +6304,238 @@ stashes, delegation work and autonomous_tracker/ are preserved and excluded.
 Commit title: **fix(ai): preserve verified effects across continuation**.
 No push. STOP after this fix; any fresh sustained model run, correction-harness
 repair or write_file guidance cleanup requires a separate checkpoint.
+
+## Live validation of continuation-stable verified effects
+
+### Scope, Detector and Isolation
+
+Starting HEAD: **e56bbe5 fix(ai): preserve verified effects across continuation**.
+One fresh mission was authorized and performed on **2026-10-19**. No Clack
+production source, context architecture, memory policy, limits, output reserve,
+margin, thresholds, deadlines, tool guidance or model template was changed.
+In particular, the known write_file guidance/toolset mismatch remains untouched.
+
+The acceptance-only detector formerly checked each source line separately and
+required a pagination/task word on the same line as limit = 50. It missed the
+prior run's ordinary multiline req.query destructuring. It now parses bounded
+JS/TS/JSON authored content with the existing TypeScript parser: explicit page
+size properties/constants, multiline page/limit defaults and pagination-linked
+query fallbacks qualify. Comments, string documentation, arbitrary 50, timeouts,
+unrelated limits and larger numbers do not. Pending/in-progress/blocked accepted plan
+items may qualify; completed, cancelled, interrupted, failed or superseded items
+do not. Original specifications and historical plan snapshots are not inspected
+as current work.
+
+Current file bytes must match the latest successfully observed write's SHA256.
+The existing native/shell effect identity, exact literal-content verification,
+path/link/secret checks, three-write-event threshold and durable serialized
+pending/dispatching/sent protocol are preserved. A command string alone never
+proves a write; shell output must have reached disk. No production prompt or
+tool changed. Test/fixture paths were also explicitly excluded after three
+additional negative tests exposed that false-positive boundary during final
+audit. That final acceptance-only refinement happened after the mission, not
+during it, and does not change its untriggered correction result.
+
+Phase-1 correction tests passed **46/46** before inference, with the existing
+approval/comparison tests also passing **59/59**. No competing Clack host,
+Cargo/Rust build, Vite/test process or acceptance runner was present in the
+immediately preceding process inspection. Unrelated Codex processes were left
+alone. The tunnel initially refused connections; the user restored it before
+metadata preflight. The exact installed qwen3-coder digest was verified:
+`06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca`.
+
+Fresh workspace: **C:/Users/Hayden/Documents/forgeboard-qwen3coder-20261019-01**.
+This date-stamped name preserves the existing safe-approval disposable-root
+allowlist; the preferred checkpoint-named workspace would not satisfy it.
+Evidence ID: **forgeboard-qwen3coder-poste56bbe5-01** under
+**src-tauri/target/real-qwen-product/**. Only an empty Git repository was seeded:
+no source, dependency scaffold or commit. The native metadata-only preflight
+sent **zero inference**. All **1267** tracked files were frozen for the mission;
+the post-mission comparison found **zero changes**, including no production
+edits and no changes to the six unrelated pre-existing modifications.
+
+### Fresh Mission Chronology and Controls
+
+- Native runner interval: **15:55:22.913 to 15:58:26.454 Europe/Paris**, elapsed
+  **183.541 seconds**, including host/setup/report overhead. The same exact
+  ForgeBoard specification was sent **once**, SHA256
+  `f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`.
+  The original stored conversation contains one user message and no correction,
+  reminder, manual Continue, requirement resend or evaluator implementation.
+- All **23** captured requests used native **/api/chat**, exact model
+  **qwen3-coder:30b**, **num_ctx=32768**, **num_predict=2048**, **think:false**,
+  reasoning **None**, fallback **Never**, cloud inference **0**. Production's
+  **60-second meaningful-progress** and **600-second overall** deadlines were
+  unchanged. No Automatic reasoning, other-model probe, model download or
+  context increase occurred.
+- First completed useful tool: approximately **20.136 seconds** after request 1
+  dispatch. First confirmed file write: **30.510 seconds** after session start.
+  First substantive backend entry point: **73.008 seconds** after session start.
+  No substantive frontend, persistence implementation, SSE implementation,
+  successfully authored test, test execution or successful build followed.
+- Observed **22 structured calls**, **21 successful tools**, **1 failed tool**,
+  **12 successful file writes**, **0 shell calls**, **0 approval requests**,
+  **0 empty responses**, **0 stream stalls**, **0 automatic continuations**,
+  **0 extraction calls**, **0 retrieval calls**, **0 memory revisions** and
+  **0 model-created Git commits**. Successful effects were one directory listing,
+  eight directory creations and twelve file writes. The correction observer
+  recorded ten eligible write events; its unchanged excluded-path protections
+  do not certify files under models/. That still exceeded the three-event gate.
+- Request 22 attempted backend/src/__tests__/index.test.ts without first creating
+  its directory. Actual write **call_2x1j43nu** failed with Windows os error 3;
+  no test file reached disk. Request 23 received that failure verbatim alongside
+  eleven proven receipts. The latest successful write, **call_rguc1qi3**, also
+  remained verbatim. No repeated-target, uncertain-effect or approval history
+  was hidden to make it fit.
+- The final native response was **text only**, **done_reason=stop**, provider
+  **eval_count=280**, with normal completed IPC/native transport. It said
+  "Let me create the tests directory first" and then imitated Clack's historical
+  receipt format for create_directory, claiming **call_004h7d5j**, followed by
+  **call_71v5g5x8**. Neither is an actual tool call in the immutable transcript.
+  Its claimed original part/digest is not execution evidence. The model-authored
+  text was stored as text, not converted into an effect, approval or trusted
+  source. No textual markup was executed. This is recorded separately from
+  malformed tool-call syntax: native structured calls were parseable, while the
+  final response fabricated an effect receipt instead of making the next call.
+- Production ended naturally at **23 steps**, below the normal **24-step** soft
+  boundary. There was no length stop, timeout, watchdog, harness cancellation or
+  context failure. No second mission or manual continuation was attempted.
+
+### Pressure and Continuation Evidence
+
+Budgets below are conservative **SDK preparation estimates**, not provider token
+usage. All use ceiling **32768**, reserve **2048**, unchanged margin arithmetic.
+The audit records every request's SDK/native budget, IDs and receipt provenance.
+
+| Request | System | Schemas | Conversation | Input | Reserve | Margin | Required | Headroom | Receipts |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 20 | 3617 | 7502 | 14899 | 26018 | 2048 | 2602 | 30668 | 2100 | 0 |
+| 21 | 3617 | 7502 | 15448 | 26567 | 2048 | 2657 | 31272 | 1496 | 0 |
+| 22 | 3617 | 7502 | 16041 | 27160 | 2048 | 2716 | 31924 | 844 | 0 |
+| 23, raw before receipt projection | 3617 | 7502 | 17282 | 28401 | 2048 | 2841 | 33290 | -522 | 0 |
+| 23, prepared and sent | 3617 | 7502 | 10941 | 22060 | 2048 | 2206 | 26314 | 6454 | 11 |
+
+At request 23, normal pressure-only verified-effect projection saved **6341 SDK
+input / 6976 required-budget tokens**. The captured native wire estimate was
+input **21088**, reserve **2048**, margin **2109**, required **25245**, headroom
+**7523**. Reconstructing its verbatim native pairs measures **6344 input / 6979
+required-budget savings**. Minimum actual prepared headroom was **844 SDK** /
+**1835 native**, both at request 22. Raw protected-pressure detection at 23 was
+resolved normally before inference; it was not a terminal product block.
+
+The eleven actual receipt anchors were call_1vymn22q, call_jagxkqii,
+call_8wnfg2tn, call_ec1wf6o0, call_dvtrehq7, call_qo9yo1iy, call_wk90dww0,
+call_3x68nb95, call_iu2icrcy, call_krnw0u5s and call_n7snhddp. Each resolves
+to the same persisted conversation **real-mission-a**, assistant
+**Va3SX8y7b3g707Ow**, exact original part, matching digest and host-completed
+result. All identities/digests/paths and before/after costs are in the audit.
+The final model-authored imitation is not included in that proof list.
+
+**There are zero continuation transitions.** Pre/post-transition receipt IDs,
+costs and survival are **not exercised**, not zero-equals-zero success. The
+request-28 history-relocation defect did not recur as an observed failure, but
+the model stopped before that class of transition could be live-verified.
+The offline continuation regression from e56bbe5 remains valid; this mission
+does not replace it with a claimed live pass. No compaction extraction was
+forced and no memory revision was published to manufacture coverage.
+
+### Correction and Independent Application Audit
+
+The three-write-event condition was reached. The page-size-50 condition was
+**not**: neither an accepted plan nor current authored implementation contained
+pagination. The unchanged specification alone did not qualify. The exact
+50-to-25 correction was therefore sent **zero times**; subsequent retention of
+25 is **untested**, not a failed or passed memory claim. Final detector tests
+also validate the original multiline form against actual successful file bytes.
+Read-only detector-regression.json independently confirms that the original
+post315b568-01 tasks.ts, SHA256
+`b1401b3626b68c27900f98d0e1bd4a6a77d12dcfd1f16d37a3ad9541b6626cc4`,
+now yields the exact **limit = 50** match. No old project was resumed.
+
+All twelve generated files were preserved byte-for-byte, and an independent copy
+was used for all verification. Codex did not implement, repair, complete or
+reseed ForgeBoard. There were **zero package/model downloads**. Dependency
+preparation used **npm install --offline --ignore-scripts** with audit/funding
+disabled: frontend dependencies were available locally; backend preparation
+failed **ENOTCACHED** for the declared helmet package. This is an independent
+audit environment limitation, not evidence that the declared package is bad.
+
+- **Backend:** seven source files provide a partial Express CRUD/controller/model
+  skeleton, port **4317** and a **120-character title** check. Models contain
+  sample in-memory arrays; filePath is unused and no disk persistence exists.
+  Combined filter/search logic exists statically, but functional API behavior
+  was not verified. There is no pagination, SSE or persistence implementation.
+- **Frontend:** package.json and tsconfig.json only; no src, index.html, UI,
+  loading/error/empty/a11y states or **750 ms** debounce implementation.
+- **Tests:** the attempted backend test write failed. No backend/frontend test
+  file was authored successfully and the model ran no tests. Independent root
+  test/build commands fail on undeclared **concurrently**. Backend build reports
+  missing Jest type definitions; its Jest test executable is unavailable after
+  the offline dependency-preparation failure. Those dependency-bound outcomes
+  are not presented as complete source-level test results.
+- **Build:** independently cached frontend Vite **4.5.14** fails on the genuinely
+  missing index.html. Frontend test invocation also encounters ancestor Clack
+  Vite-config discovery/ESM loading, an audit-isolation limitation; there are no
+  authored frontend tests to pass regardless. No production build succeeded.
+- **Runtime:** the emitted unmodified backend was attempted only in the audit
+  copy after confirming port 4317 was free. Its owned child exited on missing
+  helmet; no unrelated process was terminated. CRUD, deterministic error
+  responses and restart persistence could not be exercised. SSE was absent,
+  so no mutation-event-without-polling test was possible. Static in-memory
+  storage is evidence of missing persistence, not a claimed restart test.
+- **README/runtime ignore:** neither README nor .gitignore exists. No generated
+  source was modified by the audit; both original and copied source inventories
+  match their twelve captured SHA256 values. The original repository remains
+  uncommitted and unseeded except for model-created source.
+
+### Verification, Classification and Stop Boundary
+
+- Final combined focused group: **293 tests / 10 files passed**, covering
+  correction, native approval policy, acceptance lifecycle/comparison, verified
+  writes, compaction planning/runtime, failure retention, B1 and agent context
+  preparation. After adding the three fixture-path negatives and preserving
+  blocked-current-plan behavior, only the affected correction group was rerun:
+  **50/50 passed**. This verifies **297 distinct
+  focused cases**; it is not a new full-suite count or one combined invocation.
+- **npm.cmd run check-types passed**. Syntax and focused stdin Biome lint passed
+  for both changed correction files and the new offline audit, with zero
+  diagnostics/rewrites. **git diff --check passed**. The native acceptance host
+  built in its isolated target and completed both preflight and mission.
+- No full Clack suite/build/lint or Rust gates were rerun: changes are acceptance
+  harness/tests/docs only. No production source changed before, during or after
+  the mission. Windows native IPC was exercised; no manual GUI or Linux/macOS
+  native verification is claimed.
+- **Clack classification:** no new confirmed product/runtime/context blocker.
+  Native transport, real tool execution and current-extra verified-write
+  receipts worked. **Continuation/history-relocation live acceptance remains
+  INCONCLUSIVE / UNEXERCISED.** Sustained 32K autonomous coding is not established.
+- **Model classification:** **MODEL / PREMATURE PROSE STOP / INCOMPLETE**. A normal
+  provider stop followed a real tool failure; the response fabricated a receipt
+  rather than continuing structured tool work. No transport termination is
+  being mislabeled as model failure. qwen3-coder remains the strongest previously
+  observed local coding model, but this attempt neither completed ForgeBoard
+  nor demonstrated the requested sustained continuation behavior.
+- Do not reopen context architecture based on this run: it establishes no new
+  defect. Equally, do not mark the architecture's sustained live acceptance as
+  complete. write_file guidance cleanup remains outstanding. The conditional
+  gate for starting the installed-model shootout/larger-context/UX sequence was
+  not satisfied here; no such work began. Any further run requires a separate
+  checkpoint; no reminder, retry, model switch or second mission followed.
+
+New offline audit: **scripts/check-continuation-live-run.mjs**. Ignored evidence
+includes setup/source freezes, native metadata preflight, launch record, full
+request/receive/session data, correction checkpoint, continuation-live-audit.json,
+independent install/command/runtime results and evidence-manifest.json.
+
+| Primary Preserved Record | SHA256 |
+| --- | --- |
+| mission-a-1.json | `f3d19ac07c2dd9bd5eb4e85b3d2d3d211338bf3e3fcc3929e6a1b75fb1728f4c` |
+| mission-a-1.requests.jsonl | `7a4e6fc09270c41a8907578accc6913bc3f1ae1c29281067d4b087c8691002c4` |
+| data/terax-ai-sessions.json | `4ee7c95cfcb12b3fa85e37909301ad32f4e0f35bc12a4ffcec18dd4473e4e722` |
+| continuation-live-audit.json | `617720ff81bbb7497ba5873a47991ef279da2635a1de9e38e7343307c78713bd` |
+
+Commit scope is acceptance-correction.mjs, its tests, the new offline audit and
+only this additive report section. Six pre-existing unrelated edits, including
+the separate report insertion, remain excluded and preserved; safety stashes,
+delegation work and autonomous_tracker/ are untouched. The commit records an
+acceptance attempt, not a falsely claimed continuation pass. No push. STOP.
