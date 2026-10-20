@@ -139,7 +139,8 @@ export function selfHostedPickerStatus(selectionId: string, state: SelfHostedSta
     return { label: readiness.status, disabled: true };
   if (inventory.observedAt > now || now - inventory.observedAt >= 300_000)
     return { label: "Unverified", disabled: false };
-  return { label: readiness?.status ?? "Unverified", disabled: readiness?.status === "Needs attention" };
+  return { label: readiness?.status ?? "Unverified", disabled: readiness?.status === "Needs attention" &&
+    (readiness.tools !== "Needs attention" || !!readiness.problem) };
 }
 
 export function compatibleServerBaseURL(endpoint: SelfHostedEndpoint): string {

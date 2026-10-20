@@ -21,6 +21,7 @@ export type ToolVerificationState =
   | "Verified"
   | "Unsupported"
   | "Incompatible"
+  | "Needs attention"
   | "Unverified"
   | "Incomplete"
   | "Stale"
@@ -80,6 +81,17 @@ export function sameToolScope(
 ) {
   return !!b && JSON.stringify(a) === JSON.stringify(b);
 }
+// Keep a bounded negative observation independently of native capability proof.
+function toolFailure(record: ToolVerification | undefined) {
+  if (record?.failure) return record.failure;
+  if (record?.status === "incompatible" && record.completedAt !== null &&
+    ["text-only", "wrong-tool", "invalid-arguments", "multiple-calls"].includes(record.outcome))
+    return {
+      at: record.completedAt,
+      expiresAt: record.completedAt + TOOL_VERIFICATION.ttlMs,
+      outcome: record.outcome as NonNullable<ToolVerification["failure"]>["outcome"],
+    };
+}
 export function toolVerificationState(
   state: SelfHostedState,
   profile: SelfHostedProfile,
@@ -109,6 +121,8 @@ export function toolVerificationState(
   if (!sameToolScope(record.scope, toolScope(profile, endpoint, now)))
     return "Stale";
   if (expectedContext !== undefined && record.context !== expectedContext) return "Stale";
+  const failure = toolFailure(record);
+  if (failure && failure.at <= now && failure.expiresAt > now) return "Needs attention";
   if (record.status === "verifying") return "Incomplete";
   if (record.proof && record.proof.at <= now && record.proof.expiresAt > now)
     return "Verified";
@@ -207,7 +221,7 @@ export async function runToolVerification(
   const current = toolVerificationState(state, profile, now(), context);
   if (
     !options.force &&
-    (["Verified", "Incompatible"].includes(current) ||
+    (["Verified", "Incompatible", "Needs attention"].includes(current) ||
       (comparable?.retryAfter ?? 0) > now())
   )
     return previous;
@@ -229,6 +243,7 @@ export async function runToolVerification(
     textChars: 0,
     finish: null,
     proof: comparable?.proof ?? null,
+    ...(toolFailure(comparable) ? { failure: toolFailure(comparable) } : {}),
     retryAfter: 0,
   };
   const save = async () => {
@@ -268,6 +283,7 @@ export async function runToolVerification(
     ) {
       record.outcome = "revision-changed";
       record.proof = null;
+      delete record.failure;
     } else if (
       !state.inventories?.some(
         (i) =>
@@ -286,11 +302,16 @@ export async function runToolVerification(
               "multiple-calls",
               "text-only",
             ].includes(record.outcome)
-          ? "incompatible"
+          ? "needs-attention"
           : "incomplete";
     if (record.status === "verified")
       record.proof = { at: now(), expiresAt: now() + TOOL_VERIFICATION.ttlMs };
-    if (record.status === "incompatible") record.proof = null;
+    if (record.status === "needs-attention")
+      record.failure = {
+        at: now(),
+        expiresAt: now() + TOOL_VERIFICATION.ttlMs,
+        outcome: record.outcome as NonNullable<ToolVerification["failure"]>["outcome"],
+      };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     record.status = "incomplete";

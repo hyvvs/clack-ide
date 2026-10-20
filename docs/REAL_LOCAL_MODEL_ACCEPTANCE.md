@@ -10638,3 +10638,229 @@ or model-name workaround. Secure authenticated remote self-hosted connection
 onboarding remains the largest separate connection-UX gap; generic non-Ollama
 verification and comprehensive local Agent readiness also remain incomplete.
 No next checkpoint, extra live probe or managed SSH work was started. No push.
+
+## Qwen Automatic tool-verification mismatch investigation
+
+2026-10-21, checkpoint base `9583f5d2f7319002581af2b1ab2c63aa6d74623e` on
+`main` (72 ahead / 0 behind cached origin). Final classification:
+**TOOL VERIFICATION CLASSIFICATION DEFECT**. The wire-dependent live observations
+below are also retained explicitly; their engine-side cause is not established.
+This is not a claim that changing Automatic to explicit None is the correct fix.
+
+### Historical native PASS and current revision
+
+Exact model: `qwen3-coder:30b`. Historical and all four fresh probes have full
+digest `06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca`.
+Both historical and current server report Ollama `0.40.5`. Endpoint/protocol is
+the existing tunnel, `http://127.0.0.1:11435/api/chat`, native streaming NDJSON.
+No artifact, template, server, service, environment, network or SSH setting was
+changed. No model was downloaded. No cloud inference or ForgeBoard run occurred.
+
+Strongest recovered historical evidence is
+`src-tauri/target/real-qwen-product/tool-protocol-coder-20261018-01/`:
+`system-preflight-1.requests.jsonl`, `system-preflight-1.response.ndjson` and SDK
+summary `system-preflight-1.json`; full revision metadata is in
+`tool-protocol-20261018/coder-metadata.json`. The request had:
+
+- Context `32768`, output `2048`, explicit None, native `think:false`.
+- System: `You are a tool-using assistant. Follow the user's tool request.`
+- User: `Call get_test_value exactly once with value "protocol-check". Do not answer in prose.`
+- One harmless `get_test_value` function, object schema with required string
+  `value`, `additionalProperties:false`, JSON Schema draft-07. No execute handler.
+- No tool-choice override, sampling override, seed or credential in the body.
+
+The provider actually returned `message.tool_calls[0]` with ID `call_5jzng39z`,
+function `get_test_value`, arguments `{"value":"protocol-check"}`. Final native
+reason was `stop`, SDK finish `tool-calls`, input/output usage `298/23`; calls
+executed `0`. Raw-response SHA-256:
+`a70731ab49f092765ac0fc1e47c8fc38b4cb3b564c5cff5a9ff1371341b707a9`.
+The path is provider native parser -> Clack native NDJSON adapter -> SDK native
+tool-call event, not a Clack textual-tool parser.
+
+The prior failing production run is
+`src-tauri/target/tool-verification/tool-verification-2026-10-20T23-05-47-057Z/`.
+Its persisted bounded record and actual outgoing body establish Automatic,
+`think` omitted, conservative planning/loaded context `4096`, output `512`, no
+system message, completed `stop`, 128 text characters and zero native calls.
+That run did NOT preserve the raw response or final usage, so its output-token
+count cannot be reconstructed. Fresh A probes reproduce the same text below.
+
+Current canonical tool is `get_probe_value`, description
+`Return a deterministic compatibility probe value. No side effects.` Its strict
+draft-07 object requires string `key` with constant `clack-probe-v1` and number
+`count` with constant `1`; extra properties are forbidden. User prompt:
+`Call get_probe_value exactly once with key "clack-probe-v1" and count 1. Use the native tool interface. Do not answer in text or simulate a tool call.`
+No tool execution handler or forced tool-choice field exists. Material
+historical/current differences are context, output allowance, explicit reasoning
+wire field, system/user instructions, function name and schema. The digest,
+server version, endpoint, native transport and parser path match.
+
+### Reasoning semantics and controlled differential evidence
+
+Current and historical native metadata both advertise
+`thinking:{values:[false],default:false}`. Clack normalizes false to the display
+label None and the supported explicit choice `none`. Automatic still means
+provider default, serializing no `think` field. Explicit supported None means
+`think:false`. A display label is not a wire override or independent proof of
+equivalence. No reasoning preference was silently changed.
+
+The version-matched published Ollama source
+([default resolver](https://github.com/ollama/ollama/blob/v0.40.5/model/renderers/thinking.go),
+[chat route](https://github.com/ollama/ollama/blob/v0.40.5/server/routes.go),
+[renderer](https://github.com/ollama/ollama/blob/v0.40.5/model/renderers/qwen3coder.go))
+resolves omission to the valid advertised false default, preserves explicit
+false, and does not branch on thinking in this renderer. This supports retaining
+Clack's provider-default omission policy, not equating every provider's omitted
+and false fields universally. Published source is not attestation of the remote
+binary. The fresh observations differ despite those declared semantics; actual
+runtime equivalence is therefore not guaranteed by this investigation.
+The version's [native ChatRequest](https://github.com/ollama/ollama/blob/v0.40.5/api/types.go)
+has no required/forced tool-choice field; Clack already reports that limitation.
+No invented API field or provider-specific coercion was added.
+
+Process inventory before inference found no Clack acceptance host, Cargo/Rust
+build or matching Vite/test/harness process. The isolated hidden native example
+registers only metadata/profile/inference IPC and exit, not filesystem/shell/tool
+execution. Each host allows exactly one request and checks its full JSON body
+against the expected production request before native HTTP. Per-run application
+data and raw channel bytes are separate from user settings. Exactly **4** new
+Qwen inference requests were made; no further inference after this matrix:
+
+| Probe | Run ID under `src-tauri/target/qwen-tool-mismatch/` | Wire change from A | Native result | Provider input/output tokens |
+| --- | --- | --- | --- | --- |
+| A | `qwen-tool-mismatch-a-2026-10-20T23-29-55-490Z` | None; actual production verifier | Text only, 128 chars, zero calls | 342 / 34 |
+| B | `qwen-tool-mismatch-b-2026-10-20T23-30-56-019Z` | Only `think:false` | One valid native call, no text | 342 / 36 |
+| A repeat | `qwen-tool-mismatch-a-repeat-2026-10-20T23-31-06-702Z` | None; same A body | Same text only, zero calls | 342 / 34 |
+| B repeat | `qwen-tool-mismatch-b-repeat-2026-10-20T23-31-37-471Z` | Only `think:false` | One valid native call, no text | 342 / 36 |
+
+All four requests used the same canonical prompt/schema, no system message,
+output `512`, no `num_ctx` override, planning/loaded `4096`, unchanged installed
+sampling defaults, and ended normally with native `done_reason:stop`. None hit
+the output ceiling. B call IDs are `call_e9fa0or3` and `call_ww8t10am`, both
+`get_probe_value({"key":"clack-probe-v1","count":1})`; SDK finish `tool-calls`,
+results empty, executions zero. A's native text starts at `<function=get_probe_value>`
+and ends `</tool_call>` without an opening `<tool_call>` envelope. The provider
+delivered it as `message.content`, not `message.tool_calls`; Clack did not lose a
+structured call. No textual output was repaired, parsed or executed.
+
+The only body variable in the fresh A/B comparison is omitted versus explicit
+false. That is an observed configuration-sensitive separation (two observations
+each), not a statistical reliability guarantee or proof of the internal engine
+mechanism. Sampling was not overridden; deterministic rendered-prompt/seed and
+remote binary provenance were not measured. The precise underlying reason for
+this separation remains unconfirmed. A general Automatic serialization defect
+has NOT been established, so production serialization remains unchanged.
+
+4K context and output 512 demonstrably allow valid calls under B; 512 did not
+truncate these A failures. The canonical schema/prompt demonstrably work under
+B, so they are not inherently invalid. Their interaction with provider-default
+behavior is not independently proven causal. Historical-shape C and additional
+variable D were unnecessary and not run: no context calibration or trust bypass
+was needed. Existing legitimately stale 48K records were neither replaced nor
+promoted as fresh. Current revision is demonstrably native-protocol capable
+under explicit None. Automatic did not comply in either fresh probe; reliable
+Automatic invocation is not established. Explicit None PASS is NOT persisted as
+Automatic proof or used to silently tune the profile.
+
+Full historical and fresh request bodies, raw native response bytes, response
+hashes, version/digest/default metadata, loaded contexts, usage and SDK call
+objects are retained in committed fixture
+`src/test/fixtures/qwen-tool-mismatch-20261021.json`. Ignored per-run directories
+also retain full channel events, isolated profile snapshots and native logs.
+
+### Generic evidence/readiness repair
+
+The previous classifier conflated one failed invocation with proof of protocol
+incompatibility. It also deleted same-scope prior valid native-call proof on
+text/schema failure. The pure verifier now preserves distinct bounded evidence:
+
+- Existing version-1 record, identity/scope and native `proof:{at,expiresAt}`
+  remain. Optional `failure:{at,expiresAt,outcome}` holds one negative observation
+  for text-only, wrong-tool, invalid-arguments or multiple-calls outcomes.
+- New `needs-attention` status and projected `Needs attention` mean required
+  native invocation was not verified reliably, not that tools are unsupported.
+  Old `incompatible` invocation records project the same way without rewriting
+  history. Lost historical proof is not fabricated or imported from another mode.
+- Same-scope/context proof survives later failure. A fresh negative observation
+  takes precedence over proof for readiness. Later PASS can refresh capability
+  proof but cannot erase the negative observation; no Ready/Incompatible
+  oscillation. The existing 24-hour evidence TTL bounds the hold. Scope/context
+  changes require new evidence; unrelated model records are unaffected.
+- Negative evidence survives serialization, transient errors, cancellation and
+  explicit rechecks. Unforced use does not trigger repeated inference. Native
+  validation checks the bounded extension and existing compare-and-swap owns
+  writes. No database, profile matrix, statistical benchmark or auto-retry added.
+- Automatic Agent tool dispatch remains blocked while evidence needs attention.
+  Chat Only stays selectable; model selection and explicit verification are not
+  disabled solely by a tool-invocation failure. Authentication/offline/budget
+  failures retain their existing blocking rules. UI shows the negative observation,
+  retained capability proof and conservative hold, not unsupported capability.
+- Evidence remains exclusively for Automatic/provider-default native tools v1.
+  Explicit reasoning success does not verify Automatic. Connection, digest,
+  deployment, runtime/version, reasoning metadata and tested-context boundaries
+  remain intact. A cold/stale runtime needs normal refresh/reverification.
+
+Resulting Qwen evidence is **Needs attention / Automatic Agent not Ready** when
+the failed observation is in scope; genuinely stale evidence remains Stale.
+Diagnostic explicit None success is capability evidence for that tested setting,
+not a new production readiness claim. User application profiles were not changed.
+Muse/North/Nemotron saved evidence, context calibration, B1, F1, compaction,
+memory, PeerTasks, permissions, budgets and timeout constants are unchanged.
+
+### Verification and boundaries
+
+Focused frontend: **332 passed across 10 files**, including all four raw-response
+SDK replays, omitted versus false serialization, display/default distinction,
+PASS -> text FAIL -> later PASS, legacy records, digest/reasoning/context scope,
+malformed evidence, native schema validation, no execution, Agent blocking,
+Chat Only selection and context/runtime regression. Focused Windows Rust:
+**9 passed**, including conflicting-evidence roundtrip and invalid-record checks.
+Automated Chromium onboarding fixture passed at **320/390/1280px**, light/dark,
+**200% CSS scaling**, keyboard verification/cancellation, stale/offline/revision
+behavior and truthful attention guidance. This is browser evidence, not native
+GUI acceptance. Live probes used hidden native Windows IPC; no Computer Use,
+Linux/macOS native verification or other-model smoke inference was performed.
+
+Final gates (one complete pass; no attempt to hide historical failures):
+
+- `npm.cmd run check-types`: passed.
+- `npm.cmd run lint`: passed, unchanged **71 warnings / 2 informational notices**.
+- `npm.cmd test`: **3,226 passed / 1 failed / 2 skipped**, **219 passing / 4
+  failing files**. The same baseline failures are the Node-only
+  `scripts/audit-devstral-latency.test.mjs` (not a Vitest suite), generated
+  ForgeBoard backend source/dist tests under ignored `src-tauri/target/` missing
+  `supertest`, and the archived pre-change `acceptanceComparison` allowlist
+  assertion. No new failure. No test-discovery configuration changed.
+- `npm.cmd run build`: passed, existing ineffective-dynamic-import and
+  plugin-timings notices remain.
+- `cargo fmt --check`: passed.
+- `cargo clippy --all-targets --locked --target-dir target/codex-test -- -D warnings`:
+  passed.
+- `cargo test --locked --target-dir target/codex-test`: **627 passed / 1 failed /
+  2 ignored** in the library. The same historical
+  `d1_cancellation_timeout_and_revocation_prevent_or_interrupt_work` assertion at
+  `custom_tools/execution/tests.rs:758` expected `tool-revoked`, got `timed-out`.
+  Prior ledgers record reproduction on unmodified `346fc35`. Cargo stopped
+  before integration binaries in this full invocation. No execution/cancellation
+  code, test or timeout was changed. The nine affected native tests passed.
+- `git diff --check`: passed. Gate logs are under ignored
+  `src-tauri/target/qwen-tool-mismatch/`. The full suites are **not all green**;
+  their unchanged baseline failures remain visible.
+
+Production changes are limited to `toolVerificationSchema.ts`,
+`toolVerification.ts`, `toolVerificationRuntime.ts`, `modelOnboarding.ts`,
+`selfHostedModels.ts`, `ToolVerificationControl.tsx` and native
+`self_hosted_profiles.rs`. Other owned changes are focused tests, the bounded
+native diagnostic host/runner, raw evidence fixture and browser expectations.
+No dependencies or lockfiles changed. Other verified model evidence is not
+invalidated; no additional live-model smoke was needed for this classification
+repair. Explicit-mode verification storage and comprehensive invocation
+reliability measurement remain outside this checkpoint.
+
+Six original dirty paths are preserved byte-for-byte (report prefix plus five
+other files); only this appendix and checkpoint-owned files are staged. Both
+safety stashes and `autonomous_tracker/` are untouched. No push or subsequent
+checkpoint. Largest separate onboarding gap remains secure authenticated remote
+self-hosted connection setup; recommended next checkpoint is **Design and
+Implement Secure Remote Self-Hosted Connection Onboarding**, with this runtime
+reasoning-default discrepancy retained as an explicit limitation, not hidden.

@@ -225,6 +225,7 @@ fn validate_tool_verification(
     };
     let time = |v: &Value| v.as_u64().is_some_and(|n| n <= 9_007_199_254_740_991);
     let proof = &record["proof"];
+    let failure = &record["failure"];
     if record.to_string().len() > 16 * 1024
         || record["version"] != 1
         || !bounded(&record["id"], 128)
@@ -246,7 +247,14 @@ fn validate_tool_verification(
         })
         || !matches!(
             record["status"].as_str(),
-            Some("verifying" | "verified" | "incompatible" | "incomplete" | "unsupported")
+            Some(
+                "verifying"
+                    | "verified"
+                    | "incompatible"
+                    | "needs-attention"
+                    | "incomplete"
+                    | "unsupported"
+            )
         )
         || !matches!(
             record["outcome"].as_str(),
@@ -282,6 +290,14 @@ fn validate_tool_verification(
         || record["textualIntent"].as_bool().is_none()
         || !(record["finish"].is_null() || bounded(&record["finish"], 64))
         || !(proof.is_null() || (time(&proof["at"]) && time(&proof["expiresAt"])))
+        || !(failure.is_null()
+            || (time(&failure["at"])
+                && time(&failure["expiresAt"])
+                && matches!(
+                    failure["outcome"].as_str(),
+                    Some("text-only" | "wrong-tool" | "invalid-arguments" | "multiple-calls")
+                )))
+        || (record["status"] == "needs-attention" && failure.is_null())
         || (record["status"] == "verified"
             && (record["outcome"] != "native-call"
                 || record["calls"] != 1
@@ -496,6 +512,34 @@ mod tests {
                 .pointer_mut(path)
                 .unwrap() = invalid;
             assert!(validate(&value).is_err(), "accepted {path}");
+        }
+    }
+
+    #[test]
+    fn tool_verification_preserves_bounded_conflicting_evidence() {
+        let mut value = tool_verified();
+        let record = &mut value["profiles"][0]["toolVerification"];
+        record["failure"] = json!({"at":2,"expiresAt":3,"outcome":"text-only"});
+        validate(&value).unwrap();
+        let record = &mut value["profiles"][0]["toolVerification"];
+        record["status"] = json!("needs-attention");
+        record["outcome"] = json!("text-only");
+        record["calls"] = json!(0);
+        record["validArguments"] = json!(false);
+        let restored: Value = serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
+        validate(&restored).unwrap();
+        assert_eq!(
+            restored["profiles"][0]["toolVerification"]["proof"],
+            json!({"at":2,"expiresAt":3})
+        );
+        for invalid in [
+            Value::Null,
+            json!({"at":2,"expiresAt":3,"outcome":"native-call"}),
+            json!({"at":-1,"expiresAt":3,"outcome":"text-only"}),
+        ] {
+            let mut invalid_record = value.clone();
+            invalid_record["profiles"][0]["toolVerification"]["failure"] = invalid;
+            assert!(validate(&invalid_record).is_err());
         }
     }
 }

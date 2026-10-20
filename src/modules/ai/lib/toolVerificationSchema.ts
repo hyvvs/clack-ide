@@ -30,6 +30,11 @@ export const toolOutcome = z.enum([
   "interrupted",
 ]);
 const time = z.number().int().nonnegative().safe();
+export const toolFailureSchema = z.object({
+  at: time,
+  expiresAt: time,
+  outcome: z.enum(["text-only", "wrong-tool", "invalid-arguments", "multiple-calls"]),
+}).strict();
 export const toolVerificationSchema = z
   .object({
     version: z.literal(1),
@@ -52,6 +57,7 @@ export const toolVerificationSchema = z
       "verifying",
       "verified",
       "incompatible",
+      "needs-attention",
       "incomplete",
       "unsupported",
     ]),
@@ -68,9 +74,11 @@ export const toolVerificationSchema = z
     textChars: z.number().int().min(0).max(65536),
     finish: z.string().max(64).nullable(),
     proof: z.object({ at: time, expiresAt: time }).strict().nullable(),
+    failure: toolFailureSchema.optional(),
     retryAfter: time,
   })
   .strict()
+  .refine(r => r.status !== "needs-attention" || r.failure !== undefined)
   .refine(
     (r) =>
       r.status !== "verified" ||

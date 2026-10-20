@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { hostedEffortFixture, ollamaEffortFixture } from "@/modules/ai/lib/reasoningEffort.fixture";
 import { captureEffort, effortCapability, effortLabel, effortProviderOptions, sameEffortContract } from "@/modules/ai/lib/reasoningEffort";
+import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
 
 function capture(values: unknown, model?: string) {
   const fixture = ollamaEffortFixture(values, model);
@@ -10,6 +11,20 @@ function capture(values: unknown, model?: string) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Ollama metadata-driven reasoning controls", () => {
+  it("a displayed None provider default does not turn Automatic into explicit false", () => {
+    const f = ollamaEffortFixture([false], "unrelated-native-coder");
+    const evidence = f.profile.evidence.find(e => e.metric === "probe.thinkingControls");
+    if (!evidence) throw new Error("missing fixture evidence");
+    f.profile.evidence.push({...evidence, metric: "probe.thinkingDefault", value: false});
+    expect(modelOnboarding(f.state, f.profile)?.reasoning).toMatchObject({ recommended: "None", providerDefault: false, wire: "omit" });
+    const automatic = captureEffort("selection", f.identity, undefined, f.state);
+    const none = captureEffort("selection", f.identity, {version: 1, choices: [{key: automatic.key, choice: "none", revision: automatic.capability.revision}]}, f.state);
+    expect(automatic.choice).toBe("automatic");
+    expect(effortProviderOptions(automatic)).toEqual({});
+    expect(none.choice).toBe("none");
+    expect(effortProviderOptions(none)).toEqual({ollama: {think: false}});
+    expect(automatic.choice).toBe("automatic");
+  });
   it("uses auto-detected native provider controls and rejects evidence from an older digest", () => {
     const fixture = ollamaEffortFixture([false, true, "medium"]);
     fixture.endpoint.backendHint = undefined;

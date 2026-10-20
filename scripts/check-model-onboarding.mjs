@@ -162,8 +162,9 @@ try {
   await settings.getByText('Tools: Verified',{exact:true}).waitFor();
   await settings.getByText('Ready',{exact:true}).waitFor();
   await page.evaluate(()=>window.verifyTools('incompatible'));
-  await settings.getByText('Tools: Incompatible',{exact:true}).waitFor();
-  await settings.getByText('Chat only',{exact:true}).waitFor();
+  await settings.getByText('Tools: Needs attention',{exact:true}).waitFor();
+  await settings.getByRole('status').getByText('Needs attention',{exact:true}).waitFor();
+  await settings.getByText(/This does not prove tools are unsupported/).waitFor();
   await page.evaluate(()=>{
     const state=window.prefs.getState().selfHostedInference,p=state.profiles[0];
     window.toolJobs.setState({jobs:{[p.endpointId]:{profileId:p.id,controller:new AbortController()}}});
@@ -195,6 +196,6 @@ try {
   await settings.getByText('Tools: Verified',{exact:true}).waitFor();
   await settings.getByText('Ready',{exact:true}).waitFor();
   assert.deepEqual(errors,[]);
-  await writeFile(path.join(output,"result.json"),JSON.stringify({passed:true,toolVerification:["advertised","verified","ready","incompatible-chat-only","verifying","cancel"],contextVerification:["conservative","verified-49152","expired-stale","tool-evidence-independent"],widths:[1280,390,320],themes:["dark","light"],cssZoom:2,errors,inference:0,nativeGUI:false},null,2));
-  console.log("Onboarding browser fixture passed: context preserved, tools verified/Ready, incompatible/Chat Only, cancel, digest withdrawal/reverification, offline/return, keyboard, 320px, light/dark, 200% CSS scaling. No native GUI or inference.");
+  await writeFile(path.join(output,"result.json"),JSON.stringify({passed:true,toolVerification:["advertised","verified","ready","needs-attention-chat-only-available","verifying","cancel"],contextVerification:["conservative","verified-49152","expired-stale","tool-evidence-independent"],widths:[1280,390,320],themes:["dark","light"],cssZoom:2,errors,inference:0,nativeGUI:false},null,2));
+  console.log("Onboarding browser fixture passed: context preserved, tools verified/Ready, needs attention/Chat Only guidance, cancel, digest withdrawal/reverification, offline/return, keyboard, 320px, light/dark, 200% CSS scaling. No native GUI or inference.");
 } finally {await browser?.close();await server.close();}

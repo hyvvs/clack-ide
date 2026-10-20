@@ -247,7 +247,7 @@ describe("canonical native tool evidence", () => {
     await f.run();
     expect(modelOnboarding(f.state(), f.get())?.status).toBe("Unverified");
   });
-  it("tool incompatibility leaves Chat Only selectable and is not automatically retried", async () => {
+  it("one text response needs attention, leaves Chat Only selectable and is not automatically retried", async () => {
     const f = fixture();
     f.deps.request.mockResolvedValue(
       observed({
@@ -258,13 +258,90 @@ describe("canonical native tool evidence", () => {
     );
     await f.run();
     await f.run();
-    expect(f.verdict()).toBe("Incompatible");
+    expect(f.verdict()).toBe("Needs attention");
     expect(f.deps.request).toHaveBeenCalledTimes(1);
-    expect(modelOnboarding(f.state(), f.get())?.status).toBe("Chat only");
+    expect(modelOnboarding(f.state(), f.get())?.status).toBe("Needs attention");
     expect(
       selfHostedPickerStatus(selfHostedSelectionId(f.get()), f.state())
         ?.disabled,
     ).toBe(false);
+  });
+  it("PASS then text FAIL preserves capability proof but blocks readiness across restart and later PASS", async () => {
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const f = fixture();
+    await f.run();
+    const proof = structuredClone(f.get().toolVerification?.proof);
+    f.deps.request.mockResolvedValueOnce(observed({ calls: [], text: "not a native call", finish: "stop", callAt: null }));
+    await f.run(true);
+    expect(f.get().toolVerification).toMatchObject({ status: "needs-attention", outcome: "text-only", proof });
+    expect(f.verdict()).toBe("Needs attention");
+    f.replace(readSelfHostedState(JSON.parse(JSON.stringify(f.state()))));
+    await f.run();
+    expect(f.deps.request).toHaveBeenCalledTimes(2);
+    vi.mocked(Date.now).mockReturnValue(now + 1_000);
+    await f.run(true);
+    expect(f.get().toolVerification).toMatchObject({ status: "verified", outcome: "native-call", failure: { outcome: "text-only", at: now } });
+    expect(f.verdict()).toBe("Needs attention");
+    expect(modelOnboarding(f.state(), f.get())?.status).toBe("Needs attention");
+    vi.mocked(Date.now).mockReturnValue(now + TOOL_VERIFICATION.ttlMs + 1);
+    f.get().evidence = f.get().evidence.map(e => ({...e, observedAt: Date.now(), expiresAt: Date.now() + 300_000}));
+    await f.deps.inspect();
+    expect(f.verdict()).toBe("Verified");
+  });
+  it("a transient recheck cannot remove a previous failed invocation", async () => {
+    const f = fixture();
+    f.deps.request.mockResolvedValueOnce(observed({ calls: [], text: "no", callAt: null }));
+    await f.run();
+    f.deps.request.mockRejectedValueOnce(new Error("network failure"));
+    await f.run(true);
+    expect(f.verdict()).toBe("Needs attention");
+    expect(f.get().toolVerification?.proof).toBeNull();
+  });
+  it("legacy incompatible observations project truthfully without rewriting stored evidence", async () => {
+    const f = fixture();
+    f.deps.request.mockResolvedValueOnce(observed({ calls: [], text: "no" }));
+    await f.run();
+    const record = f.get().toolVerification;
+    if (!record) throw new Error("missing record");
+    record.status = "incompatible";
+    delete record.failure;
+    f.replace(readSelfHostedState(JSON.parse(JSON.stringify(f.state()))));
+    const before = JSON.stringify(f.state());
+    expect(f.verdict()).toBe("Needs attention");
+    expect(JSON.stringify(f.state())).toBe(before);
+    await f.run(true);
+    expect(f.verdict()).toBe("Needs attention");
+    expect(f.get().toolVerification?.proof).not.toBeNull();
+  });
+  it.each(["wrong-tool", "invalid-arguments", "multiple-calls"])("a %s observation also preserves proof without restoring readiness", async outcome => {
+    const f = fixture();
+    await f.run();
+    const proof = structuredClone(f.get().toolVerification?.proof);
+    f.deps.request.mockResolvedValueOnce(observed({calls: outcome === "multiple-calls" ? [call, call] :
+      [outcome === "wrong-tool" ? {...call, name: "other"} : {...call, input: {key: "wrong", count: 1}}]}));
+    await f.run(true);
+    expect(f.get().toolVerification).toMatchObject({proof, failure: {outcome}, status: "needs-attention"});
+    expect(f.verdict()).toBe("Needs attention");
+  });
+  it("malformed negative evidence fails validation instead of granting readiness", async () => {
+    const f = fixture();
+    await f.run();
+    const record = f.get().toolVerification;
+    expect(toolVerificationSchema.safeParse({...record, status: "needs-attention"}).success).toBe(false);
+    expect(toolVerificationSchema.safeParse({...record, failure: {at: 1, expiresAt: 2, outcome: "native-call"}}).success).toBe(false);
+  });
+  it.each(["reasoning", "context", "digest"])("negative evidence cannot cross a changed %s configuration", async (kind) => {
+    const f = fixture();
+    f.deps.request.mockResolvedValueOnce(observed({ calls: [], text: "no" }));
+    await f.run();
+    if (kind === "reasoning") f.add("thinkingDefault", false);
+    if (kind === "context") f.deps.context = () => 8192;
+    if (kind === "digest") f.get().modelRevision = "new";
+    expect(toolVerificationState(f.state(), f.get(), Date.now(), f.deps.context())).toBe("Stale");
+    await f.run();
+    expect(f.get().toolVerification?.failure).toBeUndefined();
+    expect(f.verdict()).toBe("Verified");
   });
   it.each([
     "first-output timeout",

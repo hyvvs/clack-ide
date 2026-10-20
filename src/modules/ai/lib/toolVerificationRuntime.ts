@@ -84,7 +84,7 @@ export async function verifyModelTools(options: {
   const verdict = modelOnboarding(options.state, profile)?.tools ?? "Unverified";
   if (
     !options.force &&
-    ["Verified", "Incompatible", "Unsupported"].includes(verdict)
+    ["Verified", "Incompatible", "Needs attention", "Unsupported"].includes(verdict)
   )
     return profile.toolVerification;
   const pending = flights.get(endpoint.id);
@@ -303,9 +303,9 @@ export async function ensureSelectedTools(
   )
     throw new Error("Model settings changed during tool verification");
   const verdict = modelOnboarding(current, profile)?.tools ?? "Unverified";
-  if (["Incompatible", "Unsupported"].includes(verdict))
+  if (["Incompatible", "Needs attention", "Unsupported"].includes(verdict))
     throw new Error(
-      `Agent tools ${verdict.toLowerCase()} for this model. Use Chat Only or verify tools in model settings.`,
+      `Agent tool verification: ${verdict}. Use Chat Only or review tool evidence in model settings.`,
     );
   return {
     ...state,

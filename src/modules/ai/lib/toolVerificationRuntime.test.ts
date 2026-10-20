@@ -178,7 +178,7 @@ it("first tool-capable use verifies once and publishes proof, with no executable
   await ensureSelectedTools(state(), id, new AbortController().signal);
   expect(h.modelCalls).toBe(1);
 });
-it("incompatible Agent calls are blocked with Chat Only guidance", async () => {
+it("text-only Agent calls are blocked with Chat Only guidance without claiming incompatibility", async () => {
   h.calls = [];
   h.text = '<tool_call>{"name":"get_probe_value"}</tool_call>';
   await expect(
@@ -189,6 +189,22 @@ it("incompatible Agent calls are blocked with Chat Only guidance", async () => {
     ),
   ).rejects.toThrow(/Chat Only/);
   expect(state().profiles[0].toolVerification?.outcome).toBe("text-only");
+  expect(state().profiles[0].toolVerification?.status).toBe("needs-attention");
+  expect(h.modelCalls).toBe(1);
+  await expect(ensureSelectedTools(state(), selfHostedSelectionId(state().profiles[0]), new AbortController().signal)).rejects.toThrow(/Needs attention/);
+  expect(h.modelCalls).toBe(1);
+});
+it("a later successful recheck does not silently restore Agent access after conflicting evidence", async () => {
+  const id = selfHostedSelectionId(state().profiles[0]);
+  await ensureSelectedTools(state(), id, new AbortController().signal);
+  const proof = structuredClone(state().profiles[0].toolVerification?.proof);
+  h.calls = []; h.text = "I will call a tool";
+  await verifyModelTools({state: state(), profileId: state().profiles[0].id, signal: new AbortController().signal, force: true});
+  expect(state().profiles[0].toolVerification?.proof).toEqual(proof);
+  h.calls = [{type: "tool-call", toolCallId: "second-native", toolName: "get_probe_value", input: JSON.stringify({key: "clack-probe-v1", count: 1})}]; h.text = "";
+  await verifyModelTools({state: state(), profileId: state().profiles[0].id, signal: new AbortController().signal, force: true});
+  await expect(ensureSelectedTools(state(), id, new AbortController().signal)).rejects.toThrow(/Needs attention/);
+  expect(h.modelCalls).toBe(3);
 });
 it("native competing verification lease performs no inference", async () => {
   h.busy = true;

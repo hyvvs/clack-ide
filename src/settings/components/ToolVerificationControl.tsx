@@ -87,12 +87,26 @@ export function ToolVerificationControl({
           {error}
         </p>
       )}
+      {verdict === "Needs attention" && (
+        <p role="alert" className="server-warning">
+          A verification did not return the required native call. This does not prove
+          tools are unsupported. Agent tools remain blocked; Chat Only is available.
+          Conflicting evidence stays under review until its 24-hour expiry or a
+          configuration change, even if a recheck succeeds.
+        </p>
+      )}
       {record && (
         <details className="server-details">
           <summary>Tool verification details</summary>
           <dl>
             <dt>Outcome</dt>
             <dd>{record.outcome}</dd>
+            <dt>Native capability proof</dt>
+            <dd>{record.proof ? `Observed ${new Date(record.proof.at).toLocaleString()}` : "Not established"}</dd>
+            {record.failure && <>
+              <dt>Failed verification</dt>
+              <dd>{record.failure.outcome} / {new Date(record.failure.at).toLocaleString()}</dd>
+            </>}
             <dt>Observed</dt>
             <dd>
               {record.completedAt

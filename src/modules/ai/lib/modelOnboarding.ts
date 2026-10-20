@@ -217,6 +217,7 @@ export function modelOnboarding(
   )
     status = "Incompatible";
   else if (profile.toolVerification && ["Incompatible", "Unsupported"].includes(tools)) status = "Chat only";
+  else if (tools === "Needs attention") status = "Needs attention";
   else if (problem) status = "Needs attention";
   else if (
     inventory?.connected &&

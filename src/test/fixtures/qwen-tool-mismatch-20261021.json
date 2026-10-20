@@ -1,0 +1,708 @@
+{
+  "base": "9583f5d2f7319002581af2b1ab2c63aa6d74623e",
+  "cloudInference": 0,
+  "toolExecutions": 0,
+  "historical": {
+    "request": {
+      "at": 1792338159384,
+      "body": {
+        "messages": [
+          {
+            "content": "You are a tool-using assistant. Follow the user's tool request.",
+            "role": "system"
+          },
+          {
+            "content": "Call get_test_value exactly once with value \"protocol-check\". Do not answer in prose.",
+            "role": "user"
+          }
+        ],
+        "model": "qwen3-coder:30b",
+        "options": {
+          "num_ctx": 32768,
+          "num_predict": 2048
+        },
+        "stream": true,
+        "think": false,
+        "tools": [
+          {
+            "function": {
+              "description": "Harmless diagnostic value lookup; no filesystem, shell or external effects.",
+              "name": "get_test_value",
+              "parameters": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "requestId": "inference-1",
+      "url": "http://127.0.0.1:11435/api/chat"
+    },
+    "rawResponse": "{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-18T17:42:51.675859292Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"call_5jzng39z\",\"function\":{\"index\":0,\"name\":\"get_test_value\",\"arguments\":{\"value\":\"protocol-check\"}}}]},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-18T17:42:51.693168475Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":9822699028,\"load_duration\":8820028158,\"prompt_eval_count\":298,\"prompt_eval_cached_count\":0,\"prompt_eval_duration\":615409000,\"eval_count\":23,\"eval_duration\":366047000}\n",
+    "responseSha256": "a70731ab49f092765ac0fc1e47c8fc38b4cb3b564c5cff5a9ff1371341b707a9",
+    "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+    "version": {
+      "version": "0.40.5"
+    },
+    "thinking": {
+      "values": [
+        false
+      ],
+      "default": false
+    }
+  },
+  "runs": [
+    {
+      "runId": "qwen-tool-mismatch-a-2026-10-20T23-29-55-490Z",
+      "phase": "a",
+      "request": {
+        "at": 1792539034887,
+        "body": {
+          "messages": [
+            {
+              "content": "Call get_probe_value exactly once with key \"clack-probe-v1\" and count 1. Use the native tool interface. Do not answer in text or simulate a tool call.",
+              "role": "user"
+            }
+          ],
+          "model": "qwen3-coder:30b",
+          "options": {
+            "num_predict": 512
+          },
+          "stream": true,
+          "tools": [
+            {
+              "function": {
+                "description": "Return a deterministic compatibility probe value. No side effects.",
+                "name": "get_probe_value",
+                "parameters": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": {
+                      "const": 1,
+                      "type": "number"
+                    },
+                    "key": {
+                      "const": "clack-probe-v1",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "count"
+                  ],
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "requestId": "inference-1"
+      },
+      "rawResponse": "{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.512655932Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003cfunction\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.533329478Z\",\"message\":{\"role\":\"assistant\",\"content\":\"=get\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.548574608Z\",\"message\":{\"role\":\"assistant\",\"content\":\"_probe\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.561894291Z\",\"message\":{\"role\":\"assistant\",\"content\":\"_value\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.575559648Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.603424925Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003cparameter\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.616769678Z\",\"message\":{\"role\":\"assistant\",\"content\":\"=key\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.630491415Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.643833179Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\ncl\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.657304823Z\",\"message\":{\"role\":\"assistant\",\"content\":\"ack\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.670736748Z\",\"message\":{\"role\":\"assistant\",\"content\":\"-pro\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.684143352Z\",\"message\":{\"role\":\"assistant\",\"content\":\"be\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.697573716Z\",\"message\":{\"role\":\"assistant\",\"content\":\"-v\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.71099447Z\",\"message\":{\"role\":\"assistant\",\"content\":\"1\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.737644897Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003c/\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.751106861Z\",\"message\":{\"role\":\"assistant\",\"content\":\"parameter\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.764539886Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.791393934Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003cparameter\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.804843668Z\",\"message\":{\"role\":\"assistant\",\"content\":\"=count\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.818285053Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.831931639Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n1\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.858733137Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003c/\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.871837649Z\",\"message\":{\"role\":\"assistant\",\"content\":\"parameter\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.885233883Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.898692397Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003c/\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.913053939Z\",\"message\":{\"role\":\"assistant\",\"content\":\"function\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.926440503Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.939877377Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003c/tool_call\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:30:49.954013778Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":10973188192,\"load_duration\":10001058130,\"prompt_eval_count\":342,\"prompt_eval_cached_count\":0,\"prompt_eval_duration\":506544000,\"eval_count\":34,\"eval_duration\":462308000}\n",
+      "responseSha256": "7f13ffa19b454b5c1951c44c504edd9568b86a031f7602dafbb40fda55c3a0ed",
+      "versionBefore": {
+        "version": "0.40.5"
+      },
+      "versionAfter": {
+        "version": "0.40.5"
+      },
+      "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+      "thinking": {
+        "values": [
+          false
+        ],
+        "default": false
+      },
+      "installedDefaults": "repeat_penalty                 1.05\nstop                           \"<|im_start|>\"\nstop                           \"<|im_end|>\"\nstop                           \"<|endoftext|>\"\ntemperature                    0.7\ntop_k                          20\ntop_p                          0.8",
+      "psBefore": {
+        "models": []
+      },
+      "psAfter": {
+        "models": [
+          {
+            "name": "qwen3-coder:30b",
+            "model": "qwen3-coder:30b",
+            "size": 15393578022,
+            "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+            "details": {
+              "parent_model": "",
+              "format": "gguf",
+              "family": "qwen3moe",
+              "families": [
+                "qwen3moe"
+              ],
+              "parameter_size": "30.5B",
+              "quantization_level": "Q4_K_M"
+            },
+            "expires_at": "2026-10-21T01:35:49.954098238+02:00",
+            "size_vram": 15196949052,
+            "context_length": 4096,
+            "runner": "llamacpp"
+          }
+        ]
+      },
+      "text": "<function=get_probe_value>\n<parameter=key>\nclack-probe-v1\n</parameter>\n<parameter=count>\n1\n</parameter>\n</function>\n</tool_call>",
+      "calls": [],
+      "final": {
+        "model": "qwen3-coder:30b",
+        "created_at": "2026-10-20T23:30:49.954013778Z",
+        "message": {
+          "role": "assistant",
+          "content": ""
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 10973188192,
+        "load_duration": 10001058130,
+        "prompt_eval_count": 342,
+        "prompt_eval_cached_count": 0,
+        "prompt_eval_duration": 506544000,
+        "eval_count": 34,
+        "eval_duration": 462308000
+      },
+      "verdict": {
+        "version": 1,
+        "id": "f089a5cc-a02b-4225-8179-de1d5e344202",
+        "scope": {
+          "endpointId": "qwen-mismatch",
+          "configurationRevision": 1,
+          "model": "qwen3-coder:30b",
+          "deployment": null,
+          "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+          "backend": "ollama",
+          "runtimeEpoch": "24192:1792539034534515900",
+          "providerVersion": "0.40.5",
+          "reasoning": "[false,\"[false]\",false]",
+          "protocol": "native-tools-v1"
+        },
+        "status": "incompatible",
+        "outcome": "text-only",
+        "context": 4096,
+        "output": 512,
+        "startedAt": 1792539034836,
+        "completedAt": 1792539046674,
+        "firstBodyAt": 1792539045437,
+        "callAt": null,
+        "calls": 0,
+        "validArguments": false,
+        "textualIntent": true,
+        "textChars": 128,
+        "finish": "stop",
+        "proof": null,
+        "retryAfter": 1792625446674
+      }
+    },
+    {
+      "runId": "qwen-tool-mismatch-b-2026-10-20T23-30-56-019Z",
+      "phase": "b",
+      "request": {
+        "at": 1792539058225,
+        "body": {
+          "messages": [
+            {
+              "content": "Call get_probe_value exactly once with key \"clack-probe-v1\" and count 1. Use the native tool interface. Do not answer in text or simulate a tool call.",
+              "role": "user"
+            }
+          ],
+          "model": "qwen3-coder:30b",
+          "options": {
+            "num_predict": 512
+          },
+          "stream": true,
+          "think": false,
+          "tools": [
+            {
+              "function": {
+                "description": "Return a deterministic compatibility probe value. No side effects.",
+                "name": "get_probe_value",
+                "parameters": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": {
+                      "const": 1,
+                      "type": "number"
+                    },
+                    "key": {
+                      "const": "clack-probe-v1",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "count"
+                  ],
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "requestId": "inference-1"
+      },
+      "rawResponse": "{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:02.814882979Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"call_e9fa0or3\",\"function\":{\"index\":0,\"name\":\"get_probe_value\",\"arguments\":{\"key\":\"clack-probe-v1\",\"count\":1}}}]},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:02.828374843Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":502728806,\"load_duration\":2358630,\"prompt_eval_count\":342,\"prompt_eval_cached_count\":341,\"prompt_eval_duration\":16010000,\"eval_count\":36,\"eval_duration\":481796000}\n",
+      "responseSha256": "36a2c68f40e82572b679c2295f266ffaf407388d707c4c6319bd715b9dfd71b9",
+      "versionBefore": {
+        "version": "0.40.5"
+      },
+      "versionAfter": {
+        "version": "0.40.5"
+      },
+      "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+      "thinking": {
+        "values": [
+          false
+        ],
+        "default": false
+      },
+      "installedDefaults": "repeat_penalty                 1.05\nstop                           \"<|im_start|>\"\nstop                           \"<|im_end|>\"\nstop                           \"<|endoftext|>\"\ntemperature                    0.7\ntop_k                          20\ntop_p                          0.8",
+      "psBefore": {
+        "models": [
+          {
+            "name": "qwen3-coder:30b",
+            "model": "qwen3-coder:30b",
+            "size": 15393578022,
+            "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+            "details": {
+              "parent_model": "",
+              "format": "gguf",
+              "family": "qwen3moe",
+              "families": [
+                "qwen3moe"
+              ],
+              "parameter_size": "30.5B",
+              "quantization_level": "Q4_K_M"
+            },
+            "expires_at": "2026-10-21T01:35:49.954098238+02:00",
+            "size_vram": 15196949052,
+            "context_length": 4096,
+            "runner": "llamacpp"
+          }
+        ]
+      },
+      "psAfter": {
+        "models": [
+          {
+            "name": "qwen3-coder:30b",
+            "model": "qwen3-coder:30b",
+            "size": 15393578022,
+            "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+            "details": {
+              "parent_model": "",
+              "format": "gguf",
+              "family": "qwen3moe",
+              "families": [
+                "qwen3moe"
+              ],
+              "parameter_size": "30.5B",
+              "quantization_level": "Q4_K_M"
+            },
+            "expires_at": "2026-10-21T01:36:02.828463934+02:00",
+            "size_vram": 15196949052,
+            "context_length": 4096,
+            "runner": "llamacpp"
+          }
+        ]
+      },
+      "text": "",
+      "calls": [
+        {
+          "id": "call_e9fa0or3",
+          "function": {
+            "index": 0,
+            "name": "get_probe_value",
+            "arguments": {
+              "key": "clack-probe-v1",
+              "count": 1
+            }
+          }
+        }
+      ],
+      "final": {
+        "model": "qwen3-coder:30b",
+        "created_at": "2026-10-20T23:31:02.828374843Z",
+        "message": {
+          "role": "assistant",
+          "content": ""
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 502728806,
+        "load_duration": 2358630,
+        "prompt_eval_count": 342,
+        "prompt_eval_cached_count": 341,
+        "prompt_eval_duration": 16010000,
+        "eval_count": 36,
+        "eval_duration": 481796000
+      },
+      "sdk": {
+        "calls": [
+          {
+            "type": "tool-call",
+            "toolCallId": "call_e9fa0or3",
+            "toolName": "get_probe_value",
+            "input": {
+              "key": "clack-probe-v1",
+              "count": 1
+            }
+          }
+        ],
+        "results": [],
+        "finish": "tool-calls",
+        "usage": {
+          "inputTokens": 342,
+          "inputTokenDetails": {},
+          "outputTokens": 36,
+          "outputTokenDetails": {},
+          "totalTokens": 378
+        },
+        "choice": "none"
+      }
+    },
+    {
+      "runId": "qwen-tool-mismatch-a-repeat-2026-10-20T23-31-06-702Z",
+      "phase": "a-repeat",
+      "request": {
+        "at": 1792539068870,
+        "body": {
+          "messages": [
+            {
+              "content": "Call get_probe_value exactly once with key \"clack-probe-v1\" and count 1. Use the native tool interface. Do not answer in text or simulate a tool call.",
+              "role": "user"
+            }
+          ],
+          "model": "qwen3-coder:30b",
+          "options": {
+            "num_predict": 512
+          },
+          "stream": true,
+          "tools": [
+            {
+              "function": {
+                "description": "Return a deterministic compatibility probe value. No side effects.",
+                "name": "get_probe_value",
+                "parameters": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": {
+                      "const": 1,
+                      "type": "number"
+                    },
+                    "key": {
+                      "const": "clack-probe-v1",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "count"
+                  ],
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "requestId": "inference-1"
+      },
+      "rawResponse": "{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.013630076Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003cfunction\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.027347663Z\",\"message\":{\"role\":\"assistant\",\"content\":\"=get\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.0423838Z\",\"message\":{\"role\":\"assistant\",\"content\":\"_probe\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.056231008Z\",\"message\":{\"role\":\"assistant\",\"content\":\"_value\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.070133087Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.0976199Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003cparameter\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.110925383Z\",\"message\":{\"role\":\"assistant\",\"content\":\"=key\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.125122484Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.138677799Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\ncl\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.152258005Z\",\"message\":{\"role\":\"assistant\",\"content\":\"ack\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.16585351Z\",\"message\":{\"role\":\"assistant\",\"content\":\"-pro\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.180135352Z\",\"message\":{\"role\":\"assistant\",\"content\":\"be\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.193443535Z\",\"message\":{\"role\":\"assistant\",\"content\":\"-v\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.207284293Z\",\"message\":{\"role\":\"assistant\",\"content\":\"1\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.234479264Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003c/\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.24819535Z\",\"message\":{\"role\":\"assistant\",\"content\":\"parameter\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.261494894Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.288333992Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003cparameter\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.301442453Z\",\"message\":{\"role\":\"assistant\",\"content\":\"=count\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.315250491Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.328612625Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n1\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.355318212Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003c/\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.368442463Z\",\"message\":{\"role\":\"assistant\",\"content\":\"parameter\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.381874307Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.395993397Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003c/\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.409354031Z\",\"message\":{\"role\":\"assistant\",\"content\":\"function\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.422605194Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.435997368Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003c/tool_call\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:13.449437552Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":472507348,\"load_duration\":1285791,\"prompt_eval_count\":342,\"prompt_eval_cached_count\":341,\"prompt_eval_duration\":16518000,\"eval_count\":34,\"eval_duration\":451864000}\n",
+      "responseSha256": "96a32194e0f6d92c5f8419f7e1a80d3507406a04c54462c0ddfd5a854abc094e",
+      "versionBefore": {
+        "version": "0.40.5"
+      },
+      "versionAfter": {
+        "version": "0.40.5"
+      },
+      "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+      "thinking": {
+        "values": [
+          false
+        ],
+        "default": false
+      },
+      "installedDefaults": "repeat_penalty                 1.05\nstop                           \"<|im_start|>\"\nstop                           \"<|im_end|>\"\nstop                           \"<|endoftext|>\"\ntemperature                    0.7\ntop_k                          20\ntop_p                          0.8",
+      "psBefore": {
+        "models": [
+          {
+            "name": "qwen3-coder:30b",
+            "model": "qwen3-coder:30b",
+            "size": 15393578022,
+            "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+            "details": {
+              "parent_model": "",
+              "format": "gguf",
+              "family": "qwen3moe",
+              "families": [
+                "qwen3moe"
+              ],
+              "parameter_size": "30.5B",
+              "quantization_level": "Q4_K_M"
+            },
+            "expires_at": "2026-10-21T01:36:02.828463934+02:00",
+            "size_vram": 15196949052,
+            "context_length": 4096,
+            "runner": "llamacpp"
+          }
+        ]
+      },
+      "psAfter": {
+        "models": [
+          {
+            "name": "qwen3-coder:30b",
+            "model": "qwen3-coder:30b",
+            "size": 15393578022,
+            "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+            "details": {
+              "parent_model": "",
+              "format": "gguf",
+              "family": "qwen3moe",
+              "families": [
+                "qwen3moe"
+              ],
+              "parameter_size": "30.5B",
+              "quantization_level": "Q4_K_M"
+            },
+            "expires_at": "2026-10-21T01:36:13.449513452+02:00",
+            "size_vram": 15196949052,
+            "context_length": 4096,
+            "runner": "llamacpp"
+          }
+        ]
+      },
+      "text": "<function=get_probe_value>\n<parameter=key>\nclack-probe-v1\n</parameter>\n<parameter=count>\n1\n</parameter>\n</function>\n</tool_call>",
+      "calls": [],
+      "final": {
+        "model": "qwen3-coder:30b",
+        "created_at": "2026-10-20T23:31:13.449437552Z",
+        "message": {
+          "role": "assistant",
+          "content": ""
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 472507348,
+        "load_duration": 1285791,
+        "prompt_eval_count": 342,
+        "prompt_eval_cached_count": 341,
+        "prompt_eval_duration": 16518000,
+        "eval_count": 34,
+        "eval_duration": 451864000
+      },
+      "verdict": {
+        "version": 1,
+        "id": "5060a893-70a5-4b92-aedb-f395ed300c2a",
+        "scope": {
+          "endpointId": "qwen-mismatch",
+          "configurationRevision": 1,
+          "model": "qwen3-coder:30b",
+          "deployment": null,
+          "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+          "backend": "ollama",
+          "runtimeEpoch": "42172:1792539068455690600",
+          "providerVersion": "0.40.5",
+          "reasoning": "[false,\"[false]\",false]",
+          "protocol": "native-tools-v1"
+        },
+        "status": "incompatible",
+        "outcome": "text-only",
+        "context": 4096,
+        "output": 512,
+        "startedAt": 1792539068834,
+        "completedAt": 1792539069716,
+        "firstBodyAt": 1792539068938,
+        "callAt": null,
+        "calls": 0,
+        "validArguments": false,
+        "textualIntent": true,
+        "textChars": 128,
+        "finish": "stop",
+        "proof": null,
+        "retryAfter": 1792625469716
+      }
+    },
+    {
+      "runId": "qwen-tool-mismatch-b-repeat-2026-10-20T23-31-37-471Z",
+      "phase": "b-repeat",
+      "request": {
+        "at": 1792539099155,
+        "body": {
+          "messages": [
+            {
+              "content": "Call get_probe_value exactly once with key \"clack-probe-v1\" and count 1. Use the native tool interface. Do not answer in text or simulate a tool call.",
+              "role": "user"
+            }
+          ],
+          "model": "qwen3-coder:30b",
+          "options": {
+            "num_predict": 512
+          },
+          "stream": true,
+          "think": false,
+          "tools": [
+            {
+              "function": {
+                "description": "Return a deterministic compatibility probe value. No side effects.",
+                "name": "get_probe_value",
+                "parameters": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": {
+                      "const": 1,
+                      "type": "number"
+                    },
+                    "key": {
+                      "const": "clack-probe-v1",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "count"
+                  ],
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "requestId": "inference-1"
+      },
+      "rawResponse": "{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:43.783428969Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"call_ww8t10am\",\"function\":{\"index\":0,\"name\":\"get_probe_value\",\"arguments\":{\"key\":\"clack-probe-v1\",\"count\":1}}}]},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:31:43.796847593Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":511720288,\"load_duration\":1227970,\"prompt_eval_count\":342,\"prompt_eval_cached_count\":341,\"prompt_eval_duration\":24247000,\"eval_count\":36,\"eval_duration\":483214000}\n",
+      "responseSha256": "ce1c40bbb08e0f6cef9217c9b381a5aa3e118f62998dac6f60595124215ad5dd",
+      "versionBefore": {
+        "version": "0.40.5"
+      },
+      "versionAfter": {
+        "version": "0.40.5"
+      },
+      "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+      "thinking": {
+        "values": [
+          false
+        ],
+        "default": false
+      },
+      "installedDefaults": "repeat_penalty                 1.05\nstop                           \"<|im_start|>\"\nstop                           \"<|im_end|>\"\nstop                           \"<|endoftext|>\"\ntemperature                    0.7\ntop_k                          20\ntop_p                          0.8",
+      "psBefore": {
+        "models": [
+          {
+            "name": "qwen3-coder:30b",
+            "model": "qwen3-coder:30b",
+            "size": 15393578022,
+            "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+            "details": {
+              "parent_model": "",
+              "format": "gguf",
+              "family": "qwen3moe",
+              "families": [
+                "qwen3moe"
+              ],
+              "parameter_size": "30.5B",
+              "quantization_level": "Q4_K_M"
+            },
+            "expires_at": "2026-10-21T01:36:13.449513452+02:00",
+            "size_vram": 15196949052,
+            "context_length": 4096,
+            "runner": "llamacpp"
+          }
+        ]
+      },
+      "psAfter": {
+        "models": [
+          {
+            "name": "qwen3-coder:30b",
+            "model": "qwen3-coder:30b",
+            "size": 15393578022,
+            "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+            "details": {
+              "parent_model": "",
+              "format": "gguf",
+              "family": "qwen3moe",
+              "families": [
+                "qwen3moe"
+              ],
+              "parameter_size": "30.5B",
+              "quantization_level": "Q4_K_M"
+            },
+            "expires_at": "2026-10-21T01:36:43.796928714+02:00",
+            "size_vram": 15196949052,
+            "context_length": 4096,
+            "runner": "llamacpp"
+          }
+        ]
+      },
+      "text": "",
+      "calls": [
+        {
+          "id": "call_ww8t10am",
+          "function": {
+            "index": 0,
+            "name": "get_probe_value",
+            "arguments": {
+              "key": "clack-probe-v1",
+              "count": 1
+            }
+          }
+        }
+      ],
+      "final": {
+        "model": "qwen3-coder:30b",
+        "created_at": "2026-10-20T23:31:43.796847593Z",
+        "message": {
+          "role": "assistant",
+          "content": ""
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 511720288,
+        "load_duration": 1227970,
+        "prompt_eval_count": 342,
+        "prompt_eval_cached_count": 341,
+        "prompt_eval_duration": 24247000,
+        "eval_count": 36,
+        "eval_duration": 483214000
+      },
+      "sdk": {
+        "calls": [
+          {
+            "type": "tool-call",
+            "toolCallId": "call_ww8t10am",
+            "toolName": "get_probe_value",
+            "input": {
+              "key": "clack-probe-v1",
+              "count": 1
+            }
+          }
+        ],
+        "results": [],
+        "finish": "tool-calls",
+        "usage": {
+          "inputTokens": 342,
+          "inputTokenDetails": {},
+          "outputTokens": 36,
+          "outputTokenDetails": {},
+          "totalTokens": 378
+        },
+        "choice": "none"
+      }
+    }
+  ]
+}
