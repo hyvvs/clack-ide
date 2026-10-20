@@ -9339,3 +9339,369 @@ Recommended next step, requiring separate authorization: **one fresh Nemotron
 ForgeBoard rerun under the same 32K Automatic/provider-default controls to verify
 the generic F1 repair live.** That rerun and the broader onboarding UX audit were
 not started here. `CLACK.md` compatibility principles remain unchanged.
+
+## Live F1 objective-tool continuity verification
+
+Date: 2026-10-20. Starting HEAD: `d81445469a1212eaf83fc12bf8ccaf0aa4ca387c`.
+Exactly one fresh Nemotron mission was performed. **Classification: PRODUCT
+RUNTIME / PROTECTED CONTEXT BUDGET / INCOMPLETE. Post-correction F1 live acceptance:
+NOT EXERCISED.** No new Clack production defect was confirmed. This is not a
+completed ForgeBoard result, a model-quality failure, or a live pass for the
+post-correction repair.
+
+### Isolation, controls and evidence
+
+- Fresh empty Git workspace:
+  `C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261020-02`.
+  No seeded implementation or initial commit.
+- Fresh evidence ID: `forgeboard-nemotron35-lightning-20261020-02`, under
+  `src-tauri/target/real-qwen-product/`. Evidence includes `baseline.json`,
+  `endpoint-ready.json`, `freeze-before.json`, `freeze-after.json`,
+  `mission-a-1.json`, native report, request/receive/event JSONL,
+  `correction-state.json`, durable session data and `audit.json`. Raw evidence is
+  local/ignored, not newly committed transcript content.
+- Process inspection found no competing Clack acceptance host, Cargo/Rust build,
+  Vite test or harness. Existing SSH tunnel process PID 7568 was left unchanged.
+  Metadata-only preflight completed with zero inference and zero specifications.
+  Mission runner PID 41372 and native host PID 33224 subsequently exited.
+- Ollama `0.40.5` through existing `http://127.0.0.1:11435`; exact installed model
+  `nemotron-3.5-lightning:30b-a3b-q4_K_M`, digest
+  `e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2`.
+  Artifact 25,430,749,387 bytes, `nemotron_h_moe`, 32.9B, Q4_K_M. Native metadata
+  advertised tools/thinking and controls `[false, true, "medium"]`, default true.
+- Every one of the 15 native `/api/chat` requests preserved `num_ctx:32768`,
+  `num_predict:2048`, Automatic with **no `think` override**, exact model identity,
+  Never fallback and unchanged production deadlines. Final loaded-model evidence
+  reported context 32768 and the same digest. No model download or cloud inference.
+- Full authoritative ForgeBoard specification sent **once**, SHA-256
+  `f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`.
+  No reminders, requirement resend, manual Continue, tuning, evaluator coding or
+  source edits during the mission. All 1044 baseline tracked-file hashes and both
+  safety stashes were unchanged at the before/after source-freeze boundaries.
+
+### Chronology, tools and correction boundary
+
+| Observation | Actual result |
+| --- | --- |
+| Native requests / completed engine responses | 15 / 15 |
+| Structured calls / successful tools / failed tools | 15 / 13 / 2 |
+| Successful direct source writes | 5 events, 4 distinct paths |
+| Confirmed writes counted by correction detector | 4 |
+| Material page-size 50 in code or accepted structured plan | Not reached |
+| Correction sent / full specifications sent | 0 / 1 |
+| Structured todo plans / automatic continuations | 0 / 0 |
+| Model-run tests / builds | 0 / 0 |
+| First native body / first structured useful tool | 16.593 s / 21.702 s |
+| Overall harness observation | Approximately 167.188 s |
+| Provider-reported completed output usage, summed | 7323 tokens |
+
+The first shell command was valid for the advertised PowerShell 7 environment:
+`cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261020-02 && npm init -y`.
+The model later used POSIX-style `mkdir -p` with multiple positional paths, which
+PowerShell rejected (`call_0y4qptkz`, exit 1). It recovered with separate native
+directory commands. `call_e31fq0qr` attempted a validator write before its parent
+directory existed (OS error 3); the model created the directory and rewrote it
+successfully. Neither failure required evaluator help.
+
+The five successful write events were `src/models/task.ts` (359 bytes),
+`src/storage/index.ts` (3802, then 4910 bytes),
+`src/validators/taskValidator.ts` (4081 bytes) and `src/app.ts` (2482 bytes).
+The conservative correction observer excludes the `models` path, so it counted
+four of those events; its other confirmed writes already exceeded three. The
+required material page-size 50 was absent, so the correction correctly remained
+pending. Prose planning was not treated as an accepted structured plan. No
+correction was forced, and there is no immediately-after-correction request.
+
+All 15 requests retained the same 14 tool schemas:
+`read_file`, `list_directory`, `write_file`, `create_directory`, `edit`, `grep`,
+`glob`, `bash_run`, `bash_list`, `open_preview`, `todo_write`, `request_peer_task`,
+`cancel_peer_task`, `propose_custom_tool`. Direct read/create/modify/command paths
+remained available. Applying the committed objective resolver to the terminal
+durable state still yields **implementation**, the full original ForgeBoard
+objective, and required families **read/create/modify/command**. Post-correction
+and post-continuation tool sets are **not applicable**, not passing observations.
+No live F1 regression was observed; its intended correction-boundary acceptance
+remains open.
+
+### Exact terminal boundary and limitations
+
+After request 15 completed and its successful storage write was recorded, Clack
+blocked the next request before inference with `compaction-protected-budget`.
+The captured production error is authoritative:
+
+| Context component | Estimated tokens |
+| --- | ---: |
+| System | 3755 |
+| Schema/options | 6320 |
+| Conversation | 20685 |
+| Input total | 30760 |
+| Output reserve | 2048 |
+| Safety margin | 3076 |
+| Required total / ceiling | 35884 / 32768 |
+| Deficit | 3116 |
+
+Fourteen schemas occupied 12902 wire bytes. No request 16 was sent. Minimum
+estimated headroom among actual native requests was 2055 tokens, not a claim
+about exact provider tokenization. All engine responses finished; the last
+reported `done_reason:stop`, 1333 output tokens and a tool call. No length finish,
+engine stall, request deadline, harness interruption or premature completion claim
+caused the terminal state. This new **3116** deficit is separate from the earlier
+captured continuation's **4311**, or its repaired counterfactual **5204**.
+
+Offline reconstruction from the full terminal UI transcript also reaches the
+protected-budget boundary, but does **not** reproduce the exact SDK cost:
+conversation 21808 versus captured 20685, total 37120 versus 35884. It lacks an
+exact match of the production projection at that boundary; no accounting defect
+is inferred from that mismatch. No memory extraction/retrieval or committed
+memory revision was recorded. Effect-receipt summaries were not independently
+instrumented, so absence of such summaries is not asserted. Existing B1/C1/G1/M1/
+M2, PeerTask, approvals, verified effects, compaction and continuation code was
+not changed. The valid hard guard is not itself a newly confirmed Clack defect;
+the conditional read-only Part 2 audit therefore proceeded, without a repair or
+another mission.
+
+### Independent generated-project audit, without repair
+
+Seven final files exist: `package.json`, `package-lock.json`, `tsconfig.json`, and
+the four TypeScript paths above. An independent source-only snapshot was created
+at `C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-audit-20261020-02`.
+No implementation was added or repaired. Source hashes in both trees were
+unchanged after inspection and verification attempts.
+
+| Requirement | Evidence at terminal state |
+| --- | --- |
+| Project CRUD/open | Partial create/list/delete code; edit/open absent; not runtime-verified |
+| Task CRUD/view | Partial create/list/update/delete code; individual view absent; not runtime-verified |
+| Status/priority/tags/timestamps | Types and validation present; not runtime-verified |
+| Combined filters and title/description search | Storage implementation present; not runtime-verified |
+| Local persistence across restart | JSON storage code for `data/forgeboard.json`; no restart verification |
+| Validation/title max 120 | Validator code present; no passing tests |
+| Deterministic HTTP errors | Middleware precedes routes; correctness not verified |
+| SSE | No actual SSE HTTP route or working delivery |
+| React frontend/loading/error/empty/accessibility | Absent |
+| Tests/build/README/runtime ignore | Absent apart from npm's failing placeholder test |
+| Port 4317 / debounce 750 / material page size 50 or 25 | Absent; correction never sent |
+
+The model ran setup commands (`npm init`, dependency installation and
+`tsc --init`), **not** tests or a production build. Independent `npm.cmd test`
+failed with "no test specified"; `npm.cmd run build` and `npm.cmd start` failed
+for missing scripts. Read-only `tsc --noEmit -p tsconfig.json` using the generated
+project's installed compiler failed with **TS5069** (`declarationMap` requires
+`declaration` or `composite`). The source also calls a private storage constructor.
+No runnable API/frontend or meaningful working ForgeBoard is claimed. These
+incomplete artifacts do not convert the runtime context stop into a model-quality
+verdict.
+
+## Self-hosted Ollama discovery and model-picker audit
+
+Date: 2026-10-20. Read-only production audit following the preceding mission;
+no provider/picker UX implementation or architecture change.
+**Classification: SELF-HOSTED DISCOVERY PARTIAL.** Discovery and saved-model
+routing exist, but endpoint-once automatic publication of installed models into
+the normal picker is not complete.
+
+### Current flow and exact code owners
+
+| Boundary | Production owner and current behavior |
+| --- | --- |
+| Settings entry | `src/settings/SettingsApp.tsx`; `src/settings/sections/ModelsSection.tsx` Connections & models, Add self-hosted server |
+| Server editor | `src/settings/components/SelfHostedServers.tsx:50` and `ServerEditor:137`; connect around 234, selected-model save around 297 |
+| Connection save | `src/modules/ai/lib/selfHostedSetup.ts:26` `saveServerConfiguration`; endpoint/profile identity in `selfHostedProfiles.ts` |
+| Persistence | `src/modules/settings/selfHostedPersistence.ts`, preferences `updateSelfHostedProfiles`; native `src-tauri/src/modules/self_hosted_profiles.rs` |
+| Probe bridge | `src/modules/ai/lib/selfHostedProbe.ts:64` `createSelfHostedProbeClient`; native `src-tauri/src/modules/inference_probe/mod.rs` |
+| Discovery/parsing/cache | Native `inference_probe/discovery.rs`, `metadata.rs`, `cache.rs`, `transport.rs`; optional UI `src/settings/components/ServerDiscovery.tsx` |
+| Saved picker registry | `src/modules/ai/lib/selfHostedModels.ts:86` `savedSelfHostedModelInfos`; only saved/legacy profiles, not every inventory row |
+| Normal chat picker | `src/modules/ai/components/AiStatusBarControls.tsx:240` `ModelDropdown`; same list combines cloud and saved self-hosted entries |
+| Chat binding/destination | Existing session profile `modelId`, `useModelSwitch`, full-ID recents/favorites, `connectionPresentation.ts` |
+| Inference route | `selfHostedModels.ts:120` `selfHostedTransportIdentity`, `savedProviderModels.ts` `resolveModelTransportIdentity`, native Ollama model adapter |
+| Health/context/fallback | `selfHostedHealth.ts`, `useSelfHostedSnapshot.ts`, `contextBudgetProfile.ts`, `store/inferenceFallback.ts` |
+
+The user enters a name, address, server type (default **Not specified**), optional
+credential, and private-network opt-in. Connect saves the connection and invokes
+bounded metadata refresh. Health and inventory are then probed; this is not an
+automatic network scan. Selecting **Ollama** uses its native inventory routes.
+Listed model checkboxes plus Save create multiple saved profiles under the same
+server. Manual model-ID entry is an alternative, **not required** for discovered
+rows. One endpoint can supply N saved picker entries without N server records,
+but each desired discovered row still requires selection/save. Inventory alone,
+including an unsaved native-detail profile, does not publish it to the picker.
+
+Provider auto-detection is limited. The optional collapsed Discover servers flow
+accepts 1-8 explicit candidate addresses and separate private-network consent.
+It tries compatible `/v1/models` first; a successful compatible response yields
+a generic candidate without an Ollama backend hint. Ollama identification can
+occur on its native fallback route when the compatible route is unsupported.
+Normal Connect uses the server-type hint rather than promoting an unknown type
+automatically. Since the current tunnel answers **both** inventories, a generic
+candidate is possible instead of automatic Ollama selection. This is code plus
+live API evidence, not a claimed native UI interaction. Choosing Ollama remains
+important for native per-request controls and metadata.
+
+### Inventory, metadata, identity and revision boundaries
+
+- Native Ollama uses `GET /api/tags` for installed inventory, selected-model
+  `POST /api/show`, and `GET /api/ps` for loaded/runtime context. General Connect
+  without a selected model does not walk `/api/show` across the inventory.
+- Native probe bounds: six requests, five seconds per route, twenty seconds
+  overall, 2 MiB response bodies, 5000 inventory rows and 8 MiB normalized metadata.
+  Cache: eight endpoints / 32 MiB, single-flight and stale-generation rejection;
+  inventory TTL 300000 ms, runtime-instance TTL 30000 ms. Endpoint configuration
+  and private-network consent participate in validity. These are not inference.
+- Tags parsing currently drops digest, artifact size and tag-level capabilities.
+  Selected `/api/show` normalizes advertised context, vision, trained-for-tools,
+  thinking and native reasoning controls. Automatic omits `think`, preserving
+  provider defaults; the normalized profile does not retain the raw provider
+  default as a separate field. Trained-for-tools metadata is not proof of an
+  operational deployed parser: positive tool evidence correctly remains unknown
+  until verified, negative evidence can reject support. Structured-output and
+  full deployed-engine compatibility are not established by inventory.
+- Stable profile identity is `[endpointId, modelId, deploymentId]`, encoded in a
+  `self-hosted:` selection ID. Equal tags on different servers remain distinct
+  picker destinations and native routes. Aliases are presentation, not identity.
+  Session bindings, selected models, recents and favorites preserve full IDs;
+  an existing chat is not rebound to a different server by tag alone.
+- Evidence is endpoint-configuration/model/deployment scoped, **not digest-aware**.
+  A changed digest behind the same tag is not an explicit revision invalidation
+  boundary. TTL and reasoning-control revalidation do not substitute for digest
+  ownership. Revision-aware capability/recommendation/calibration profiles remain
+  an onboarding gap; no redesign was made here.
+- Endpoint/profiles and their saved evidence persist. The full native inventory
+  cache is in-memory, not a durable all-model registry restored on restart.
+
+### Refresh, disappearance, offline behavior and defaults
+
+Manual Connect/Refresh and selected-model Details are implemented. A refresh can
+discover a newly installed model without re-adding the server, but the user must
+still select/save it before it appears in the normal picker. Picker opening does
+not probe inventory; startup hydrates saved profiles rather than auto-discovering
+all servers. Editor mounting reads cache. The client supports stale inspection
+refresh and request preflight performs bounded refresh when evidence is missing,
+stale/offline or runtime evidence expires; neither path automatically publishes
+all new models. No global idle polling is present.
+
+A removed remote model disappears from fresh inventory but its saved picker row
+and historical chat identity remain. Current health can still report **Ready**
+from a freshly connected endpoint despite the selected tag being absent. The
+picker does not yet mark that row unavailable. Original routing is preserved,
+not silently substituted: subsequent inference may be blocked by unknown-context
+policy or report the original server/model error if sent. Removal was verified
+with deterministic fixtures/source inspection, not by deleting a live model.
+
+On connection failure, same-configuration old inventory can remain display-only
+and stale; fresh capability authority is invalidated. Health reports **Offline**,
+or **Unverified** after cached evidence expires without a new result. Saved rows
+can remain visible, without unified per-row unavailable presentation. Reconnect
+and refresh exist. There is no guarantee every unavailable tag is rejected
+before HTTP, but there is no implicit replacement route. Offline behavior was
+covered by fixtures; the live tunnel was not disrupted for this audit.
+
+Advertised context, configured working context, native `num_ctx` allocation and
+loaded `/api/ps` evidence are distinct. Automatic does not select an advertised
+1M ceiling as a working default; unverified capacity has the conservative 4096
+policy. The mission's manual 32K target is not an automatic hardware recommendation.
+Passive calibration exists for concurrency/prefill/idle timing only, not a verified
+practical-context search. No practical hardware context auto-calibration exists.
+Server type, optional credentials/private consent, selected-model saving and
+advanced reasoning/context choices still require user decisions. Ready, Unverified,
+Offline and other health/error data exist, but a unified per-model capability/
+availability picker presentation is incomplete.
+
+### Security and no-cloud boundary
+
+HTTP(S) endpoints are normalized; embedded credentials, query strings and fragments
+are rejected. Credentials use keychain references, not plaintext profile JSON.
+Configuration changes invalidate evidence, while alias changes do not reset
+identity. Private-network consent, metadata/link-local deny rules, guarded DNS,
+redirect rejection and bounded native requests remain in force. HTTP warnings,
+TLS and authenticated remote endpoint primitives already exist. Native SSH-backed
+connection setup/provisioning UX does not; the existing localhost tunnel works
+as an HTTP endpoint. The connection-ID abstraction can support future secure
+remote adapters without global string-only model routing, but such an adapter
+was not implemented or tested. No Ollama restart/rebind, firewall or SSH change
+was made; unauthenticated `0.0.0.0` exposure is not recommended.
+
+Missing fallback policy and explicit Never return no fallback. Missing endpoint
+identity fails rather than routing by a global model tag. G3 Ask/trusted fallback
+is separate explicit policy with destination/data/agent/workspace consent; it is
+not an offline/removal/timeout shortcut to OpenRouter. Existing focused fallback
+tests cover those guards. The mission made **zero cloud inference**. This is not
+a claim that explicitly authorized fallback features do not exist.
+
+### One bounded live read-only connection check
+
+`discovery-live.json` records one five-call integration check through the existing
+tunnel: `/api/version`, `/v1/models`, `/api/tags`, `/api/ps` and selected Nemotron
+`/api/show`, all HTTP 200, approximately half a second overall. Per-call five-second,
+overall twenty-second and 2 MiB response bounds were applied. Both inventory
+routes listed **10 installed models**:
+
+```text
+nemotron-3.5-lightning:30b-a3b-q4_K_M
+north-mini-code-1.0:q4_K_M
+muse-glimmer:30b
+devstral-small-2:24b
+qwen38-iq4xs:latest
+qwen38-uncensored:latest
+hf.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive:IQ3_M
+hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M
+hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M
+qwen3-coder:30b
+```
+
+Only Nemotron received a metadata-detail query. Later `/api/ps` was empty after
+normal unloading, not proof of an offline endpoint. No inference, model pull,
+deletion or server mutation was performed by this discovery check. Reading other
+installed model IDs is not testing those models.
+
+### Zero-knowledge verdict and focused verification
+
+| Intended criterion | Verdict | Current boundary |
+| --- | --- | --- |
+| Enter one Ollama endpoint; automatically detect and populate normal picker | PARTIAL | Native discovery works with hint; explicit select/save and limited auto-detection remain |
+| One server exposes many models without typing each ID or adding N servers | PASS for selected/saved rows; PARTIAL for automatic publication | Inventory checkboxes feed real normal picker; unsaved rows do not |
+| Install another model, refresh, see it in picker without re-adding server | PARTIAL | Inventory refresh works; new row still needs save |
+| Ordinary user need not understand routes/wire/context internals | PARTIAL | Native internals hidden, but provider selection/default/practical-context onboarding incomplete |
+| Duplicate tags preserve destination, selected chat and recents identity | PASS in focused fixtures | Stable endpoint/model/deployment references |
+| Removed/offline model marked unavailable in normal picker | PARTIAL | Health/stale authority exists; removed-model/per-row presentation incomplete |
+
+New `src/modules/ai/components/SelfHostedDiscoveryAudit.test.tsx` adds **7 tests**
+using the real picker renderer, saved-model selectors, chat bindings, health,
+probe client and transport resolver. Only the closed Radix portal/store-hook
+render boundary is replaced; these are deterministic integration fixtures, not
+native GUI acceptance. Tests characterize both working behavior and gaps:
+inventory/unsaved profiles not published; one-server multiple saved rows plus
+cloud; duplicate tags on two destinations; refresh needing save; removed model
+still selectable/Ready; offline display versus capability/fallback authority;
+expired evidence plus recents/favorites/route identity.
+
+Verification performed in this checkpoint:
+
+- Mission preparation/F1/approval/correction group: **193 passed / 4 files**
+  (`toolObjective`, `toolExposure`, acceptance-correction and acceptance-approval).
+- Final discovery/picker/routing/reasoning/fallback group: **227 passed / 11 files**,
+  including all seven new tests. The two groups are disjoint: **420 distinct
+  frontend/script tests / 15 files**. A sandbox temporary-file rename restriction
+  initially prevented collection; the authorized focused rerun passed. An earlier
+  wrong Node-only invocation was replaced by the configured Vitest runner.
+- Native Windows `cargo test --locked --lib --target-dir target/codex-test
+  inference_probe::`: **67 passed / 542 filtered**, covering parsing, identity,
+  bounded transport/discovery/cache and native controls. No Linux/macOS native
+  run or native GUI interaction is claimed.
+- `npm.cmd run check-types`: passed. Focused Biome lint: zero diagnostics after
+  making the test-only menuitem fixture focusable. Diff whitespace check passed.
+  No production changes: full frontend/build/Clippy suites were intentionally not
+  repeated, as requested. Historical full-suite failures recorded in the preceding
+  checkpoint are not relabeled as passing.
+
+Only this new appendix pair and the new test file belong to this commit. The six
+pre-existing dirty paths, including the original unrelated report hunks, remain
+preserved as unstaged work; both stashes and `autonomous_tracker/` are untouched.
+Production source and `CLACK.md` are unchanged. All owned host/test processes
+finished. Expected repository state: main **68 ahead / 0 behind** cached
+origin/main, empty index and no additional untracked files. No downloads, no
+inference outside the single authorized Nemotron mission, **cloud 0, no push**.
+
+**Single recommended next checkpoint: Implement Self-Hosted Provider
+Auto-Discovery and Picker Integration.** It has not been started. This priority
+does not close the still-unexercised post-correction F1 live acceptance condition;
+no further mission is authorized or performed in this checkpoint. STOP.
