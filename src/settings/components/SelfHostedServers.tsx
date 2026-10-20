@@ -41,6 +41,8 @@ import {
 } from "@/modules/ai/lib/selfHostedSetup";
 import { serverModelDetails } from "@/modules/ai/lib/selfHostedCapabilities";
 import { useSelfHostedInventory } from "@/modules/ai/hooks/useSelfHostedInventory";
+import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
+import { ModelOnboardingDetails } from "@/settings/components/ModelOnboardingDetails";
 import "@/settings/components/SelfHostedServers.css";
 
 const probeClient = createSelfHostedProbeClient();
@@ -272,6 +274,18 @@ function ServerEditor({
       setSnapshot((previous) => retainServerInventory(previous, result));
       setDetailModel(model);
       searchRef.current?.focus();
+      if (!model && result.connected && result.backend === "ollama") {
+        const started = Date.now();
+        for (const candidate of result.models.slice(0, 12)) {
+          if (epoch.current !== token || Date.now() - started >= 20_000) break;
+          const profile = usePreferencesStore.getState().selfHostedInference.profiles.find(p => p.endpointId === server.id && p.transportModelId === candidate.id && p.deploymentId === null);
+          if (profile && modelOnboarding(usePreferencesStore.getState().selfHostedInference, profile)?.evidence.some(e => e.metric === "probe.runtimeContext")) continue;
+          const metadata = await probeClient.refresh(options(server, candidate.id));
+          if (epoch.current !== token) return;
+          setSnapshot(previous => retainServerInventory(previous, metadata));
+          if (!metadata.connected) break;
+        }
+      }
     } catch {
       if (epoch.current === token)
         setError(
@@ -294,6 +308,7 @@ function ServerEditor({
     current && detailModel
       ? serverModelDetails(current, detailModel, visibleSnapshot)
       : null;
+  const connectionHealth = current ? selfHostedHealth({ endpoint: current, snapshot: visibleSnapshot, checking: busy }).label : serverConnectionStatus(visibleSnapshot, busy);
   const save = async () => {
     if (!current || changed || busy) return;
     setSaving(true);
@@ -391,10 +406,12 @@ function ServerEditor({
               required
             />
           </label>
+          <details className="server-details">
+          <summary>Advanced connection settings</summary>
           <label>
             Server type
             <select
-              value={backend || (!current?.backendHint ? current?.detectedBackend : "") || ""}
+              value={backend}
               onChange={(e) =>
                 setBackend(e.target.value as SelfHostedBackend | "")
               }
@@ -407,6 +424,7 @@ function ServerEditor({
               ))}
             </select>
           </label>
+          </details>
           <label htmlFor={`${formId}-credential`}>
             {current?.credentialRef
               ? "Replace credential (optional)"
@@ -442,7 +460,7 @@ function ServerEditor({
         <p className="text-xs [overflow-wrap:anywhere]">Destination: {describeConnectionAddress(baseURL).label}{describeConnectionAddress(baseURL).address ? ` - ${describeConnectionAddress(baseURL).address}` : ""}</p>
         <div className="server-heading">
           <span className="server-status" role="status">
-            {current ? selfHostedHealth({ endpoint: current, snapshot: visibleSnapshot, checking: busy }).label : serverConnectionStatus(visibleSnapshot, busy)}
+            {connectionHealth === "Ready" ? "Connected" : connectionHealth}
           </span>
           <Button
             type="submit"
@@ -477,7 +495,6 @@ function ServerEditor({
       ) : null}
       {current ? (
         <>
-          <CalibrationControls endpointId={current.id} disabled={changed || busy || saving} snapshot={visibleSnapshot} />
           <div className="server-heading">
             <h4>Models on {current.alias}</h4>
             <span>
@@ -498,17 +515,21 @@ function ServerEditor({
             className="server-models"
             aria-label="Discovered server models"
           >
-            {rows.slice(0, 60).map((model) => (
+            {rows.slice(0, 60).map((model) => {
+              const profile = state.profiles.find(p => p.endpointId === current.id && p.transportModelId === model.id && p.deploymentId === null);
+              const view = profile ? modelOnboarding(state, profile) : null;
+              return (
               <div className="server-model" key={model.id}>
                 <div>
                   <span>
                     <strong>{model.name ?? model.id}</strong>
                     <small>
-                      {model.id}
+                      {view?.status ?? "Unverified"} / {current.alias}
                       {model.chat === "unsupported"
                         ? " / Not a chat model"
                         : ""}
                     </small>
+                    <small>Tools: {view?.tools ?? "Unverified"} / Reasoning: {view?.reasoning.recommended ?? "Unknown"} / Vision: {view?.vision ?? "Unverified"}</small>
                   </span>
                 </div>
                 <button
@@ -519,10 +540,10 @@ function ServerEditor({
                     void connect(model.id);
                   }}
                 >
-                  Details
+                Settings
                 </button>
               </div>
-            ))}
+            );})}
             {!rows.length ? (
               <p>
                 {visibleSnapshot?.models.length
@@ -534,6 +555,9 @@ function ServerEditor({
           {rows.length > 60 ? (
             <p>Showing 60 of {rows.length}. Refine search for more results.</p>
           ) : null}
+          {detailModel && state.profiles.filter(p => p.endpointId === current.id && p.transportModelId === detailModel && p.deploymentId === null).map(p => <ModelOnboardingDetails key={p.id} state={state} profile={p} disabled={changed || busy || saving} />)}
+          <details className="server-details"><summary>Advanced</summary>
+          <CalibrationControls endpointId={current.id} disabled={changed || busy || saving} snapshot={visibleSnapshot} />
           <label className="server-manual" htmlFor={`${formId}-manual`}>
             Manual model ID
             <Input
@@ -608,6 +632,7 @@ function ServerEditor({
               Add manual model
             </Button>
           </div>
+          </details>
         </>
       ) : null}
     </div>

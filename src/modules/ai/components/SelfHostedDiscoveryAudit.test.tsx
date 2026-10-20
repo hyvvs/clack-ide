@@ -26,6 +26,8 @@ import { retainServerInventory } from "@/modules/ai/lib/selfHostedSetup";
 import { selfHostedHealth } from "@/modules/ai/lib/selfHostedHealth";
 import { selfHostedCapabilities } from "@/modules/ai/lib/selfHostedCapabilities";
 import { effectiveFallback } from "@/modules/ai/lib/inferenceFallback";
+import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
+import { ModelOnboardingDetails } from "@/settings/components/ModelOnboardingDetails";
 
 vi.mock("@/modules/ai/store/chatStore", async (original) => {
   const actual =
@@ -163,6 +165,45 @@ afterEach(() => {
 });
 
 describe("discovery-to-normal-picker persistence boundaries", () => {
+  it("renders normal Automatic settings and truthful advanced details for an unsaved discovered model", () => {
+    const state = saveInventory(inventory());
+    usePreferencesStore.setState({ selfHostedInference: state });
+    const html = renderToStaticMarkup(<ModelOnboardingDetails state={state} profile={state.profiles[0]} />);
+    expect(html).toContain("Automatic (4,096 tokens)");
+    expect(html).toContain("Automatic (Recommended)");
+    expect(html).toContain("Advertised maximum");
+    expect(html).toContain("Verified practical context");
+    expect(html).toContain("Advanced model settings");
+    expect(html).not.toContain("Tools verified");
+    expect(html).not.toContain('value="32768"');
+    expect(picker(state)).toContain("Unverified");
+  });
+  it.runIf(process.env.CLACK_ONBOARDING_LIVE === "1")("uses the same four live metadata profiles in Settings and the normal picker", () => {
+    const evidence = JSON.parse(readFileSync("src-tauri/target/onboarding/live.json", "utf8"));
+    const state = readSelfHostedState(evidence.state);
+    vi.spyOn(Date, "now").mockReturnValue(Math.max(...state.profiles.flatMap(p => p.evidence.map(e => e.observedAt ?? 0))) + 1);
+    const html = picker(state);
+    const profiles = state.profiles.filter(p => p.evidence.some(e => e.metric === "probe.runtimeContext"));
+    expect(profiles).toHaveLength(4);
+    const views = profiles.flatMap(p => { const view = modelOnboarding(state, p); return view ? [view] : []; });
+    expect(views).toHaveLength(4);
+    for (const [index, profile] of profiles.entries()) {
+      expect(html).toContain(profile.transportModelId);
+      expect(views[index].context.recommended).toBe(4096);
+      expect(views[index].context.verified).toBeUndefined();
+      expect(views[index].status).toBe("Unverified");
+      expect(views[index].tools).toBe("Advertised / unverified");
+      const details = renderToStaticMarkup(<ModelOnboardingDetails state={state} profile={profile} />);
+      expect(details).toContain("Automatic (4,096 tokens)");
+      expect(details).toContain("Advertised / unverified");
+      expect(details).toContain("Verified practical context");
+    }
+    expect(views.map(v => v.reasoning.recommended).sort()).toEqual(["High", "None", "On", "On"]);
+    expect(views.map(v => v.reasoning.wire)).toEqual(["omit", "omit", "omit", "omit"]);
+    expect(evidence.inference).toBe(0);
+    expect(evidence.cloudInference).toBe(0);
+    writeFileSync("src-tauri/target/onboarding/live-ui.json", JSON.stringify({ views, html, inference: 0 }, null, 2));
+  });
   it("retains the current-selection marker for legacy chat bindings without rewriting them", () => {
     const state = saveInventory(inventory(["shared-model"]));
     const legacy = selfHostedSelectionId(state.profiles[0]);

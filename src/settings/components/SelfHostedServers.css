@@ -46,3 +46,8 @@
 .server-discovery-results li { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; border-bottom: 1px solid var(--border); padding: 10px 0; min-width: 0; }
 .server-discovery-results small { color: var(--muted-foreground); }
 .self-hosted-servers textarea:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.model-onboarding { display: flex; flex-direction: column; gap: 12px; min-width: 0; border-top: 1px solid var(--border); padding-top: 12px; }
+.model-onboarding-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 6px 10px; overflow-wrap: anywhere; }
+.model-onboarding-summary dt { color: var(--muted-foreground); }
+.model-onboarding-summary dd { min-width: 0; }
+.server-details select { max-width: 100%; min-width: 0; background: var(--background); border: 1px solid var(--border); border-radius: 6px; padding: 6px; }

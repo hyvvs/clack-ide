@@ -268,6 +268,116 @@ fn persisted_inventory_validation_rejects_conflicting_owners_and_duplicate_model
     crate::modules::self_hosted_profiles::validate(&valid).unwrap();
 }
 
+#[test]
+fn onboarding_preserves_legal_provider_defaults_without_interpreting_model_names() {
+    for (values, default) in [
+        (
+            json!([false, "low", "medium", "high", "max"]),
+            json!("medium"),
+        ),
+        (json!([false, true]), json!(true)),
+        (json!([false, true, "medium"]), json!(false)),
+        (json!([false, "future-level"]), json!("future-level")),
+    ] {
+        let mut model = Model::new("unrelated-tag".into());
+        ollama_show(&endpoint(Backend::Ollama), &mut model, &json!({"capabilities":["completion","thinking"], "thinking":{"values":values, "default":default}}), 100).unwrap();
+        assert_eq!(
+            model
+                .evidence
+                .iter()
+                .find(|e| e.metric == "probe.thinkingDefault")
+                .unwrap()
+                .value,
+            default
+        );
+        assert!(model.evidence.iter().all(|e| e.confidence == "reported"));
+    }
+    for default in [
+        json!("unsupported"),
+        json!({"secret":"not metadata"}),
+        json!(123),
+    ] {
+        let mut model = Model::new("model".into());
+        assert!(ollama_show(&endpoint(Backend::Ollama), &mut model, &json!({"capabilities":["completion"], "thinking":{"values":[false,true], "default":default}}), 100).is_err());
+    }
+}
+
+#[test]
+fn material_capability_change_invalidates_measurements_not_user_pins_and_removes_absent_defaults() {
+    let mut state = settings();
+    let mut first = observed(1, "a");
+    first.selected_model_id = Some("model-0".into());
+    ollama_show(&endpoint(Backend::Ollama), &mut first.models[0], &json!({"capabilities":["completion","thinking","tools"], "thinking":{"values":[false,true], "default":true}}), 100).unwrap();
+    merge_evidence(&mut state, &first).unwrap();
+    state["profiles"][0]["recommendations"] = json!({"workingContext":{"value":32768}});
+    state["profiles"][0]["overrides"] = json!({"workingContext":{"value":16384}});
+    merge_evidence(&mut state, &first).unwrap();
+    assert_eq!(
+        state["profiles"][0]["recommendations"]["workingContext"]["value"],
+        32768
+    );
+    let mut next = observed(1, "a");
+    next.selected_model_id = Some("model-0".into());
+    ollama_show(
+        &endpoint(Backend::Ollama),
+        &mut next.models[0],
+        &json!({"capabilities":["completion","tools"]}),
+        101,
+    )
+    .unwrap();
+    merge_evidence(&mut state, &next).unwrap();
+    assert_eq!(state["profiles"][0]["recommendations"], json!({}));
+    assert_eq!(
+        state["profiles"][0]["overrides"]["workingContext"]["value"],
+        16384
+    );
+    assert!(!state["profiles"][0]["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["metric"] == "probe.thinkingDefault"));
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly authorized Ollama tunnel, metadata only, no inference"]
+async fn live_onboarding_representative_profiles_without_inference() {
+    assert_eq!(std::env::var("CLACK_ONBOARDING_LIVE").as_deref(), Ok("1"));
+    let mut endpoint = endpoint(Backend::Ollama);
+    endpoint.base_url = "http://127.0.0.1:11435/".into();
+    endpoint.backend_hint = None;
+    let mut state = settings();
+    let mut snapshots = vec![];
+    for selected in [
+        None,
+        Some("qwen3-coder:30b"),
+        Some("muse-glimmer:30b"),
+        Some("north-mini-code-1.0:q4_K_M"),
+        Some("nemotron-3.5-lightning:30b-a3b-q4_K_M"),
+    ] {
+        let result = deadline(
+            transport::HANDSHAKE_TIMEOUT,
+            handshake(&Transport::default(), &endpoint, selected, None, true),
+        )
+        .await
+        .unwrap();
+        assert!(result.connected, "{:?}", result.errors);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.backend, Some(Backend::Ollama));
+        if let Some(id) = selected {
+            assert!(result.models.iter().any(|m| m.id == id
+                && m.evidence
+                    .iter()
+                    .any(|e| e.metric == "probe.runtimeContext")));
+        }
+        merge_evidence(&mut state, &result).unwrap();
+        crate::modules::self_hosted_profiles::validate(&state).unwrap();
+        snapshots.push(result);
+    }
+    std::fs::create_dir_all("target/onboarding").unwrap();
+    std::fs::write("target/onboarding/live.json", serde_json::to_vec_pretty(&json!({"state":state,"snapshots":snapshots,"inference":0,"cloudInference":0,"downloads":0})).unwrap()).unwrap();
+    println!("Read-only discovery plus four scoped profiles; zero inference, cloud or downloads");
+}
+
 #[tokio::test]
 #[ignore = "requires the explicitly authorized existing localhost Ollama tunnel; metadata only"]
 async fn live_discovery_to_persisted_picker_contract_without_inference() {

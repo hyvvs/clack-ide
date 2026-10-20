@@ -9,11 +9,13 @@ import {
   effectiveProfileValue,
   resetProfileOverride,
   setProfileOverride,
+  endpointBackend,
 } from "@/modules/ai/lib/selfHostedProfiles";
 import { profileBudgetLimits } from "@/modules/ai/lib/contextBudgetProfile";
 import { resolveContextBudget } from "@/modules/ai/lib/contextBudget";
 import { serverModelDetails } from "@/modules/ai/lib/selfHostedCapabilities";
 import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
+import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
 
 const fields = [
   ["configuredContext", "Asserted context"],
@@ -39,6 +41,7 @@ export function ProfileAdvancedControls({
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [customContext, setCustomContext] = useState(false);
   if (!profile || !endpoint) return null;
   let budget: ReturnType<typeof resolveContextBudget> | null = null;
   let contextError = "";
@@ -55,7 +58,10 @@ export function ProfileAdvancedControls({
     profile.transportModelId,
     snapshot ?? null,
   );
-  const save = async (field: (typeof fields)[number][0], reset: boolean) => {
+  const advertised = modelOnboarding(state, profile)?.context.advertised;
+  const presets = [16384, 32768, 49152, 65536].filter(n => typeof advertised === "number" && n <= advertised);
+  const pinnedContext = profile.overrides.workingContext?.evidence.value;
+  const save = async (field: (typeof fields)[number][0], reset: boolean, value?: number) => {
     setSaving(true);
     setError("");
     try {
@@ -68,7 +74,7 @@ export function ProfileAdvancedControls({
           throw new Error("Server settings changed");
         return reset
           ? resetProfileOverride(s, profileId, field)
-          : setProfileOverride(s, profileId, field, Number(draft[field]));
+          : setProfileOverride(s, profileId, field, value ?? Number(draft[field]));
       });
       setDraft((d) => {
         const next = { ...d };
@@ -86,7 +92,6 @@ export function ProfileAdvancedControls({
   return (
     <details
       className="server-details"
-      open={endpoint.backendHint === "ollama" ? true : undefined}
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           e.preventDefault();
@@ -96,7 +101,22 @@ export function ProfileAdvancedControls({
         }
       }}
     >
-      <summary>{endpoint.backendHint === "ollama" ? "Context and model settings" : "Advanced model settings"}</summary>
+      <summary>Advanced model settings</summary>
+      <label className="server-manual">Context
+        <select aria-label="Context preset" disabled={disabled || saving}
+          value={customContext ? "custom" : typeof pinnedContext === "number" ? presets.includes(pinnedContext) ? pinnedContext : "custom" : "automatic"}
+          onChange={event => {
+            const value = event.target.value;
+            setCustomContext(value === "custom");
+            if (value === "custom") document.getElementById(`${id}-workingContext`)?.focus();
+            if (value === "automatic") void save("workingContext", true);
+            else if (value !== "custom") void save("workingContext", false, Number(value));
+          }}>
+          <option value="automatic">Automatic (Recommended)</option>
+          {presets.map(n => <option key={n} value={n}>{n / 1024}K</option>)}
+          <option value="custom">Custom</option>
+        </select>
+      </label>
       <dl>
         <dt>Model maximum</dt>
         <dd>{details.advertisedContext}</dd>
@@ -128,7 +148,7 @@ export function ProfileAdvancedControls({
           / Vision {details.capabilities.image}
         </dd>
       </dl>
-      {endpoint.backendHint === "ollama" ? <p>Clack requests the working context from Ollama when the model runs. Automatic leaves the server default unchanged unless a recommendation is available.</p> : null}
+      {endpointBackend(endpoint) === "ollama" ? <p>Automatic uses conservative planning unless a current recommendation is available. Custom context is requested when the model runs; it is not a hardware verification.</p> : null}
       {contextError ? <p className="server-warning" role="alert">{contextError}</p> : null}
       {fields.map(([field, label]) => {
         const effective = effectiveProfileValue(state, profileId, field);

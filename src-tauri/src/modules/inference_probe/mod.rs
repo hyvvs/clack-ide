@@ -420,7 +420,38 @@ fn merge_evidence(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeErr
                 && profile
                     .get("backend")
                     .is_some_and(|b| *b != json!(snapshot.backend)));
-        if changed_revision {
+        let detailed = snapshot.connected
+            && snapshot.selected_model_id.as_deref() == profile["transportModelId"].as_str()
+            && model.is_some_and(|m| {
+                m.evidence
+                    .iter()
+                    .any(|e| e.metric == "probe.runtimeContext")
+            });
+        let capability_metrics = [
+            "probe.thinking",
+            "probe.thinkingControls",
+            "probe.thinkingDefault",
+            "probe.trainedForTools",
+            "probe.vision",
+            "probe.advertisedContext",
+        ];
+        let changed_capabilities = detailed
+            && model.is_some_and(|m| {
+                profile["evidence"].as_array().is_some_and(|old| {
+                    old.iter().any(|e| {
+                        capability_metrics.contains(&e["metric"].as_str().unwrap_or_default())
+                    }) && capability_metrics.iter().any(|metric| {
+                        old.iter()
+                            .find(|e| e["metric"] == *metric)
+                            .map(|e| &e["value"])
+                            != m.evidence
+                                .iter()
+                                .find(|e| e.metric == *metric)
+                                .map(|e| &e.value)
+                    })
+                })
+            });
+        if changed_revision || changed_capabilities {
             profile["evidence"] = json!([]);
             profile["recommendations"] = json!({});
             profile
@@ -456,6 +487,7 @@ fn merge_evidence(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeErr
                 !e["metric"].as_str().is_some_and(|metric| {
                     metric.starts_with("probe.")
                         && (metric == "probe.requestedContext"
+                            || (detailed && capability_metrics.contains(&metric))
                             || !snapshot.connected
                             || model
                                 .is_none_or(|m| m.evidence.iter().any(|new| new.metric == metric)))

@@ -487,6 +487,20 @@ pub fn ollama_show(
             json!(values).to_string().into(),
             false,
         );
+        let default = &value["thinking"]["default"];
+        if !default.is_null() {
+            if !values.contains(default) {
+                return Err(ProbeError::metadata());
+            }
+            model.add(
+                endpoint,
+                at,
+                None,
+                "thinkingDefault",
+                default.clone(),
+                false,
+            );
+        }
     }
     model.add(
         endpoint,

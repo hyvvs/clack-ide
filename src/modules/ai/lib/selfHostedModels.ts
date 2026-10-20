@@ -1,4 +1,5 @@
 import type { ModelInfo, ProviderId } from "@/modules/ai/config";
+import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
 import {
   ensureSelfHostedProfile,
   resolveSelfHostedSelection,
@@ -133,9 +134,12 @@ export function selfHostedPickerStatus(selectionId: string, state: SelfHostedSta
   const model = inventory.models.find(m => m.id === target.profile.transportModelId);
   if (!model) return { label: "Unavailable", disabled: true };
   if (model.chat === "unsupported") return { label: "Incompatible", disabled: true };
+  const readiness = modelOnboarding(state, target.profile, now);
+  if (readiness?.status === "Incompatible")
+    return { label: readiness.status, disabled: true };
   if (inventory.observedAt > now || now - inventory.observedAt >= 300_000)
     return { label: "Unverified", disabled: false };
-  return { label: "Available / capabilities unverified", disabled: false };
+  return { label: readiness?.status ?? "Unverified", disabled: readiness?.status === "Needs attention" };
 }
 
 export function compatibleServerBaseURL(endpoint: SelfHostedEndpoint): string {

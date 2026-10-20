@@ -16,6 +16,8 @@ import {
   effortLabel,
   effortProviderOptions,
 } from "@/modules/ai/lib/reasoningEffort";
+import { resolveSelfHostedSelection } from "@/modules/ai/lib/selfHostedProfiles";
+import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
 
 export function EffortControl({ sessionId }: { sessionId?: string }) {
   const id = useChatStore((s) => sessionId ?? s.activeSessionId);
@@ -26,7 +28,7 @@ function SessionEffortControl({ sessionId: id }: { sessionId: string }) {
   const session = useChatStore((s) =>
     s.sessions.find((entry) => entry.id === id),
   );
-  usePreferencesStore();
+  const preferences = usePreferencesStore();
   const locked = useModelSelectionLock(id);
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState<string>();
@@ -41,6 +43,8 @@ function SessionEffortControl({ sessionId: id }: { sessionId: string }) {
     return null;
   }
   const capability = effort.capability;
+  const target = resolveSelfHostedSelection(preferences.selfHostedInference, session.profile?.modelId ?? "");
+  const onboarding = target.status === "available" ? modelOnboarding(preferences.selfHostedInference, target.profile) : null;
   if (capability.status === "unsupported") return null;
   let effective: string;
   try {
@@ -84,7 +88,7 @@ function SessionEffortControl({ sessionId: id }: { sessionId: string }) {
                 .finally(() => setSaving(false));
             }}
           >
-            <option value="automatic">Automatic</option>
+            <option value="automatic">{onboarding ? `Automatic (${onboarding.reasoning.recommended})` : "Automatic"}</option>
             {capability.levels.map((level) => (
               <option key={level} value={level}>
                 {effortLabel(level)}

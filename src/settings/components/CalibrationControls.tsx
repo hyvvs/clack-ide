@@ -37,7 +37,7 @@ export function CalibrationControls({
   const profiles = state.profiles.filter(
     (p) =>
       p.endpointId === endpointId &&
-      (p.saved || endpoint?.legacy?.profileId === p.id),
+      (p.saved || endpoint?.legacy?.profileId === p.id || state.inventories?.some(i => i.endpointId === endpointId && i.models.some(m => m.id === p.transportModelId))),
   );
   const [selected, setSelected] = useState("");
   const [progress, setProgress] = useState<number | null>(null);
