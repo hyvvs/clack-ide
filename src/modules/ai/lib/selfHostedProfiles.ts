@@ -2,6 +2,7 @@ import { z } from "zod";
 import { calibrationSchema, CALIBRATED_FIELDS } from "@/modules/ai/lib/calibrationSchema";
 import { contextCalibrationSchema } from "@/modules/ai/lib/contextCalibrationSchema";
 import { trustedContext } from "@/modules/ai/lib/contextCalibrationTrust";
+import { toolVerificationSchema } from "@/modules/ai/lib/toolVerificationSchema";
 
 export const SELF_HOSTED_SCHEMA_VERSION = 1;
 export const SELF_HOSTED_SETTINGS_KEY = "selfHostedInference";
@@ -164,6 +165,7 @@ const profileSchema = z.object({
   overrides: z.partialRecord(field, manual),
   calibration: calibrationSchema.optional(),
   contextCalibration: contextCalibrationSchema.optional(),
+  toolVerification: toolVerificationSchema.optional(),
   saved: z
     .object({ label: z.string().trim().min(1).max(1024).optional() })
     .optional(),
@@ -218,13 +220,15 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
     endpoints.push(endpoint);
   }
   for (const entry of envelope.data.profiles) {
+    const rawTool = z.object({ toolVerification: z.unknown().optional() }).safeParse(entry);
+    const invalidTool = rawTool.success && rawTool.data.toolVerification !== undefined && !toolVerificationSchema.safeParse(rawTool.data.toolVerification).success;
     const rawContext = z.object({ contextCalibration: z.unknown().optional() }).safeParse(entry);
     const invalidContext = rawContext.success && rawContext.data.contextCalibration !== undefined && !contextCalibrationSchema.safeParse(rawContext.data.contextCalibration).success;
     const rawCalibration = z.object({ calibration: z.unknown().optional() }).safeParse(entry);
     const invalidCalibration = rawCalibration.success && rawCalibration.data.calibration !== undefined &&
       !calibrationSchema.safeParse(rawCalibration.data.calibration).success;
-    const parsed = profileSchema.safeParse(invalidCalibration || invalidContext
-      ? { ...(entry as Record<string, unknown>), ...(invalidCalibration ? { calibration: undefined } : {}), ...(invalidContext ? { contextCalibration: undefined } : {}) } : entry);
+    const parsed = profileSchema.safeParse(invalidCalibration || invalidContext || invalidTool
+      ? { ...(entry as Record<string, unknown>), ...(invalidTool ? { toolVerification: undefined } : {}), ...(invalidCalibration ? { calibration: undefined } : {}), ...(invalidContext ? { contextCalibration: undefined } : {}) } : entry);
     if (!parsed.success) continue;
     const profile = parsed.data;
     if (invalidContext) delete profile.recommendations.workingContext;

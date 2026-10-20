@@ -22,6 +22,7 @@ const mocks = new Map([
     export async function emitKeysChanged() {}
   `],
   ["src/modules/ai/lib/keyring", `export async function setCustomEndpointKey(){}`],
+  ["src/modules/ai/lib/toolVerificationRuntime", `export async function verifyModelTools(){window.verifyTools();}`],
   ["src/modules/ai/lib/contextRuntimeClient", `
     import {rememberContextRuntime} from "/src/modules/ai/lib/contextCalibrationTrust.ts";
     export async function inspectContextRuntime(endpoint){
@@ -66,9 +67,20 @@ const entry = `
  import {contextReasoningIdentity,rememberContextRuntime} from "/src/modules/ai/lib/contextCalibrationTrust.ts";
  import {profileEvidence} from "/src/modules/ai/lib/selfHostedProfiles.ts";
  import {useContextCalibrationJobs} from "/src/modules/ai/store/contextCalibrationJobs.ts";
+ import {useToolVerificationJobs} from "/src/modules/ai/store/toolVerificationJobs.ts";
+ import {commitToolVerification,toolScope} from "/src/modules/ai/lib/toolVerification.ts";
  import "/src/styles/globals.css";
  window.probes=[];window.digest="revision-a";window.offline=false;
  window.calibrationJobs=useContextCalibrationJobs;
+ window.toolJobs=useToolVerificationJobs;
+ window.verifyTools=(status='verified')=>{
+   const state=window.prefs.getState().selfHostedInference,p=state.profiles[0],e=state.endpoints[0],now=Date.now();
+   const record={version:1,id:'browser-tool-proof',scope:toolScope(p,e),status,outcome:status==='verified'?'native-call':'text-only',
+     context:49152,output:512,startedAt:now,completedAt:now,firstBodyAt:now,callAt:status==='verified'?now:null,
+     calls:status==='verified'?1:0,validArguments:status==='verified',textualIntent:status!=='verified',textChars:status==='verified'?0:32,
+     finish:status==='verified'?'tool-calls':'stop',proof:status==='verified'?{at:now,expiresAt:now+86400000}:null,retryAfter:now+86400000};
+   window.prefs.setState({selfHostedInference:commitToolVerification(state,p.id,record,p.toolVerification?.id)});
+ };
  window.verifyContext=()=>{
    let state=window.prefs.getState().selfHostedInference;
    const profile=state.profiles[0],endpoint=state.endpoints[0],now=Date.now();
@@ -146,6 +158,20 @@ try {
   await settings.getByText("Automatic (4,096 tokens) / Unverified",{exact:true}).waitFor();
   await settings.getByText("Context: Stale / conservative",{exact:true}).waitFor();
   await page.evaluate(()=>window.verifyContext());
+  await settings.getByRole('button',{name:'Verify tools',exact:true}).click();
+  await settings.getByText('Tools: Verified',{exact:true}).waitFor();
+  await settings.getByText('Ready',{exact:true}).waitFor();
+  await page.evaluate(()=>window.verifyTools('incompatible'));
+  await settings.getByText('Tools: Incompatible',{exact:true}).waitFor();
+  await settings.getByText('Chat only',{exact:true}).waitFor();
+  await page.evaluate(()=>{
+    const state=window.prefs.getState().selfHostedInference,p=state.profiles[0];
+    window.toolJobs.setState({jobs:{[p.endpointId]:{profileId:p.id,controller:new AbortController()}}});
+  });
+  await settings.getByText('Tools: Verifying',{exact:true}).waitFor();
+  await settings.getByRole('button',{name:'Cancel tool verification',exact:true}).click();
+  assert.equal(await page.evaluate(()=>Object.values(window.toolJobs.getState().jobs)[0].controller.signal.aborted),true);
+  await page.evaluate(()=>{window.toolJobs.setState({jobs:{}});window.verifyTools();});
   for(const theme of ["dark","light"]){
     await page.evaluate(theme=>document.documentElement.className=theme,theme);
     for(const width of [1280,390,320]){
@@ -164,7 +190,11 @@ try {
   await page.evaluate(()=>{window.offline=false;window.digest="revision-b";});
   await page.getByRole("button",{name:"Refresh",exact:true}).click();
   await settings.getByRole("status").getByText("Unverified",{exact:true}).waitFor();
+  await settings.getByText('Tools: Stale',{exact:true}).waitFor();
+  await page.evaluate(()=>{window.verifyContext();window.verifyTools();});
+  await settings.getByText('Tools: Verified',{exact:true}).waitFor();
+  await settings.getByText('Ready',{exact:true}).waitFor();
   assert.deepEqual(errors,[]);
-  await writeFile(path.join(output,"result.json"),JSON.stringify({passed:true,contextVerification:["conservative","verified-49152","expired-stale","tool-evidence-independent"],widths:[1280,390,320],themes:["dark","light"],cssZoom:2,errors,inference:0,nativeGUI:false},null,2));
-  console.log("Onboarding browser fixture passed: calibrated/stale context, tools remain unverified, overrides/reset, offline/return, keyboard, 320px, light/dark, 200% CSS scaling. No native GUI or inference.");
+  await writeFile(path.join(output,"result.json"),JSON.stringify({passed:true,toolVerification:["advertised","verified","ready","incompatible-chat-only","verifying","cancel"],contextVerification:["conservative","verified-49152","expired-stale","tool-evidence-independent"],widths:[1280,390,320],themes:["dark","light"],cssZoom:2,errors,inference:0,nativeGUI:false},null,2));
+  console.log("Onboarding browser fixture passed: context preserved, tools verified/Ready, incompatible/Chat Only, cancel, digest withdrawal/reverification, offline/return, keyboard, 320px, light/dark, 200% CSS scaling. No native GUI or inference.");
 } finally {await browser?.close();await server.close();}

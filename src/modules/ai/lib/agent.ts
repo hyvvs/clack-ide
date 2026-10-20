@@ -140,6 +140,7 @@ function ellipsize(s: string, max: number): string {
 }
 
 export type BuildModelOptions = {
+  toolVerification?: boolean;
   calibrationContext?: number;
   providerEvidence?: import("@/modules/ai/lib/providerModelEvidence").ProviderModelEvidence;
   calibration?: Pick<CalibrationCaptureOptions, "requestClass" | "record" | "onQueued">;
@@ -254,6 +255,7 @@ export async function buildLanguageModel(
     options.selfHostedInference?.revision,
     options.assertedContext,
     options.calibrationContext,
+    options.toolVerification,
     reasoning,
     options.providerEvidence,
   ]);
@@ -281,7 +283,7 @@ export async function buildLanguageModel(
     state: options.selfHostedInference,
     admission,
     assertedContext: options.assertedContext,
-    optimization: options.calibration?.requestClass === "optimization",
+    optimization: options.calibration?.requestClass === "optimization" && !options.toolVerification,
     calibrationContext: options.calibrationContext,
     validateEvidence: () =>
       options.inferenceScope?.validateEvidence?.() ?? Promise.resolve(),
@@ -782,6 +784,12 @@ export async function runAgentStream(opts: RunAgentOptions) {
   inferenceScope.validateEvidence = opts.validateRouting ?? inferenceScope.validateEvidence;
   inferenceScope.validateFallback = opts.validateRouting;
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
+  if (opts.selfHostedInference && !opts.recovery && !opts.logicalContinuation && !opts.toolContext.isPeerReplyOnly?.() &&
+    (!opts.reasoning || opts.reasoning.choice === "automatic") &&
+    resolveCurrentAgentPermission("read_file", {}, opts.toolContext).source !== "chat-only") {
+    const { ensureSelectedTools } = await import("@/modules/ai/lib/toolVerificationRuntime");
+    opts.selfHostedInference = await ensureSelectedTools(opts.selfHostedInference, modelId, opts.abortSignal ?? new AbortController().signal, inferenceScope);
+  }
   const baseModel = await buildConfiguredLanguageModel(modelId, opts.keys, {
     reasoning: opts.reasoning,
     inferenceScope,

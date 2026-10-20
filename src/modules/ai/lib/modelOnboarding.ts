@@ -11,6 +11,7 @@ import {
 import { profileBudgetLimits } from "@/modules/ai/lib/contextBudgetProfile";
 import { resolveContextBudget } from "@/modules/ai/lib/contextBudget";
 import { trustedContext } from "@/modules/ai/lib/contextCalibrationTrust";
+import { toolVerificationState } from "@/modules/ai/lib/toolVerification";
 import {
   PROBE_INVENTORY_TTL_MS,
   PROBE_INSTANCE_TTL_MS,
@@ -20,6 +21,7 @@ import {
 export const ONBOARDING_COMPATIBILITY_VERSION = 1;
 export type ModelReadiness =
   | "Ready"
+  | "Chat only"
   | "Unverified"
   | "Offline"
   | "Incompatible"
@@ -196,6 +198,8 @@ export function modelOnboarding(
       ? practical.value
       : undefined;
   let status: ModelReadiness = "Unverified";
+  const testedContext = typeof profile.overrides.workingContext?.evidence.value === "number" ? profile.overrides.workingContext.evidence.value : context;
+  const tools = profile.toolVerification ? toolVerificationState(state, profile, now, testedContext) : statusFor(value("trainedForTools"), verified("tools"));
   if (
     !inventory?.connected &&
     inventory?.error !== "unsupported-probe-route" &&
@@ -208,10 +212,11 @@ export function modelOnboarding(
   else if (inventory?.connected && !listed) status = "Unavailable";
   else if (
     listed?.chat === "unsupported" ||
-    verified("tools") === false ||
+    (!profile.toolVerification && verified("tools") === false) ||
     verified("reasoning") === false
   )
     status = "Incompatible";
+  else if (profile.toolVerification && ["Incompatible", "Unsupported"].includes(tools)) status = "Chat only";
   else if (problem) status = "Needs attention";
   else if (
     inventory?.connected &&
@@ -219,8 +224,8 @@ export function modelOnboarding(
     inventory.observedAt <= now &&
     now - inventory.observedAt < PROBE_INVENTORY_TTL_MS &&
     verifiedContext &&
-    verified("tools") === true &&
-    (capability.status === "unsupported" || verified("reasoning") === true)
+    (tools === "Verified") &&
+    (profile.toolVerification || capability.status === "unsupported" || verified("reasoning") === true)
   )
     status = "Ready";
   return {
@@ -235,7 +240,7 @@ export function modelOnboarding(
     ],
     status,
     problem,
-    tools: statusFor(value("trainedForTools"), verified("tools")),
+    tools,
     vision: statusFor(value("vision"), verified("vision")),
     structuredOutput: statusFor(
       value("structuredOutput"),

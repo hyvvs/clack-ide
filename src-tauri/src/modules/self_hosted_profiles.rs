@@ -49,6 +49,9 @@ pub(super) fn validate(value: &Value) -> Result<(), String> {
         return Err("Invalid or oversized self-hosted settings".into());
     }
     for profile in value["profiles"].as_array().into_iter().flatten() {
+        if let Some(record) = profile.get("toolVerification") {
+            validate_tool_verification(value, profile, record)?;
+        }
         let Some(record) = profile.get("contextCalibration") else {
             continue;
         };
@@ -209,6 +212,89 @@ pub(super) fn validate(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_tool_verification(
+    state: &Value,
+    profile: &Value,
+    record: &Value,
+) -> Result<(), String> {
+    let scope = &record["scope"];
+    let bounded = |value: &Value, max: usize| {
+        value
+            .as_str()
+            .is_some_and(|s| !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control))
+    };
+    let time = |v: &Value| v.as_u64().is_some_and(|n| n <= 9_007_199_254_740_991);
+    let proof = &record["proof"];
+    if record.to_string().len() > 16 * 1024
+        || record["version"] != 1
+        || !bounded(&record["id"], 128)
+        || scope["endpointId"] != profile["endpointId"]
+        || scope["model"] != profile["transportModelId"]
+        || scope["digest"] != profile["modelRevision"]
+        || scope["deployment"] != profile["deploymentId"]
+        || scope["backend"] != "ollama"
+        || scope["protocol"] != "native-tools-v1"
+        || !bounded(&scope["digest"], 1024)
+        || !bounded(&scope["runtimeEpoch"], 128)
+        || !bounded(&scope["providerVersion"], 64)
+        || !bounded(&scope["reasoning"], 2048)
+        || !state["endpoints"].as_array().is_some_and(|es| {
+            es.iter().any(|e| {
+                e["id"] == scope["endpointId"]
+                    && e["configurationRevision"] == scope["configurationRevision"]
+            })
+        })
+        || !matches!(
+            record["status"].as_str(),
+            Some("verifying" | "verified" | "incompatible" | "incomplete" | "unsupported")
+        )
+        || !matches!(
+            record["outcome"].as_str(),
+            Some(
+                "native-call"
+                    | "wrong-tool"
+                    | "invalid-arguments"
+                    | "multiple-calls"
+                    | "text-only"
+                    | "empty"
+                    | "output-length"
+                    | "timeout"
+                    | "transport"
+                    | "offline"
+                    | "revision-changed"
+                    | "cancelled"
+                    | "unsupported"
+                    | "interrupted"
+            )
+        )
+        || record["output"] != 512
+        || !record["context"]
+            .as_u64()
+            .is_some_and(|n| n > 0 && n <= 2_000_000)
+        || !time(&record["startedAt"])
+        || !time(&record["retryAfter"])
+        || !["completedAt", "firstBodyAt", "callAt"]
+            .iter()
+            .all(|k| record[*k].is_null() || time(&record[*k]))
+        || record["calls"].as_u64().is_none_or(|n| n > 2)
+        || record["textChars"].as_u64().is_none_or(|n| n > 65536)
+        || record["validArguments"].as_bool().is_none()
+        || record["textualIntent"].as_bool().is_none()
+        || !(record["finish"].is_null() || bounded(&record["finish"], 64))
+        || !(proof.is_null() || (time(&proof["at"]) && time(&proof["expiresAt"])))
+        || (record["status"] == "verified"
+            && (record["outcome"] != "native-call"
+                || record["calls"] != 1
+                || record["validArguments"] != true
+                || record["callAt"].is_null()
+                || record["completedAt"].is_null()
+                || proof.is_null()))
+    {
+        return Err("Invalid tool verification ownership or record".into());
+    }
+    Ok(())
+}
+
 fn compare_and_save(
     current: Value,
     expected: Value,
@@ -362,5 +448,54 @@ mod tests {
         record["attempts"][0]["loaded"] = json!(131072);
         record["attempts"][0]["outcome"] = json!("transient");
         validate(&value).unwrap();
+    }
+
+    fn tool_verified() -> Value {
+        let mut value = calibrated();
+        value["profiles"][0]["toolVerification"] = json!({"version":1,"id":"tools","scope":{"endpointId":"a","configurationRevision":1,
+            "model":"model","digest":"digest","deployment":null,"backend":"ollama","runtimeEpoch":"native","providerVersion":"1.2.3",
+            "reasoning":"[false]","protocol":"native-tools-v1"},"status":"verified","outcome":"native-call","context":8192,"output":512,
+            "startedAt":1,"completedAt":2,"firstBodyAt":2,"callAt":2,"calls":1,"validArguments":true,"textualIntent":false,"textChars":0,
+            "finish":"tool-calls","proof":{"at":2,"expiresAt":3},"retryAfter":3});
+        value
+    }
+
+    #[test]
+    fn tool_verification_roundtrip_and_cas_preserve_context_and_ownership() {
+        let value = tool_verified();
+        let restored: Value = serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
+        validate(&restored).unwrap();
+        assert_eq!(
+            restored["profiles"][0]["contextCalibration"],
+            calibrated()["profiles"][0]["contextCalibration"]
+        );
+        assert_eq!(
+            compare_and_save(value.clone(), value.clone(), restored, |_| Ok(())),
+            Ok(true)
+        );
+        assert_eq!(
+            compare_and_save(value.clone(), Value::Null, value, |_| panic!("stale write")),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn tool_verification_rejects_wrong_owner_version_and_fabricated_success() {
+        for (path, invalid) in [
+            ("/scope/digest", json!("other")),
+            ("/scope/endpointId", json!("other")),
+            ("/scope/protocol", json!("future")),
+            ("/version", json!(2)),
+            ("/validArguments", json!(false)),
+            ("/calls", json!(2)),
+            ("/proof", Value::Null),
+            ("/output", json!(2048)),
+        ] {
+            let mut value = tool_verified();
+            *value["profiles"][0]["toolVerification"]
+                .pointer_mut(path)
+                .unwrap() = invalid;
+            assert!(validate(&value).is_err(), "accepted {path}");
+        }
     }
 }

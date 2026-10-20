@@ -10,6 +10,7 @@ import type {
 } from "@/modules/ai/lib/selfHostedProfiles";
 import { ProfileAdvancedControls } from "@/settings/components/ProfileAdvancedControls";
 import { ContextCalibrationControl } from "@/settings/components/ContextCalibrationControl";
+import { ToolVerificationControl } from "@/settings/components/ToolVerificationControl";
 
 export function ModelOnboardingDetails({
   state,
@@ -23,7 +24,7 @@ export function ModelOnboardingDetails({
   const [clock, setClock] = useState(Date.now());
   const endpoint = state.endpoints.find(e => e.id === profile.endpointId);
   useEffect(() => {
-    if (!endpoint || !profile.contextCalibration) return;
+    if (!endpoint || (!profile.contextCalibration && !profile.toolVerification)) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     void inspectContextRuntime(endpoint).catch(() => {}).finally(() => {
@@ -32,7 +33,7 @@ export function ModelOnboardingDetails({
       timer = setTimeout(() => setClock(Date.now()), 30_001);
     });
     return () => { active = false; clearTimeout(timer); };
-  }, [endpoint, profile.contextCalibration]);
+  }, [endpoint, profile.contextCalibration, profile.toolVerification]);
   const now = Math.max(clock, Date.now());
   const view = modelOnboarding(state, profile, now);
   if (!view) return null;
@@ -128,6 +129,7 @@ export function ModelOnboardingDetails({
         disabled={disabled}
       />
       <ContextCalibrationControl state={state} profile={profile} disabled={disabled} now={now} />
+      <ToolVerificationControl state={state} profile={profile} disabled={disabled} now={now} context={typeof view.context.override === "number" ? view.context.override : view.context.recommended} />
     </section>
   );
 }

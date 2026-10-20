@@ -463,6 +463,10 @@ fn merge_evidence(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeErr
                 .as_object_mut()
                 .ok_or_else(internal)?
                 .remove("contextCalibration");
+            profile
+                .as_object_mut()
+                .ok_or_else(internal)?
+                .remove("toolVerification");
         }
         if let Some(digest) = model.and_then(|m| m.digest.as_ref()) {
             profile["modelRevision"] = json!(digest);

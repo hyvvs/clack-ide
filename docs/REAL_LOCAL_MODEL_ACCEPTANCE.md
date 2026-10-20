@@ -10403,3 +10403,238 @@ lease or network calibration, while normal request preflight still validates liv
 evidence. Another profile's server job cannot appear as this model's progress or
 cancel control. These narrow corrections passed **24/24** coordinator/routing
 tests, the browser fixture, targeted lint, typecheck and production build.
+
+## Automatic native tool compatibility verification
+
+Production checkpoint, 2026-10-21 Europe/Paris, based on `e81440a`.
+Classification: **LOCAL TOOL AUTO-VERIFICATION READY** for the bounded native
+Ollama protocol contract. Overall zero-knowledge onboarding is not universally
+Ready: other backend adapters are not live-verified, three representative profiles
+still lack current trusted context, and Qwen's new text-only result warrants a
+separate configuration-specific investigation. This is not a coding benchmark.
+
+### Product Flow and Contract
+
+Previously `probe.trainedForTools=true` meant advertised support, not proof of
+usable native calls. The existing native-owned profile now optionally retains
+`toolVerification` version 1. Normal Automatic Agent/tool-capable first use verifies
+when needed, after existing context preparation. Chat Only, recovery, logical
+continuations and peer-reply-only operation do not initiate tool probes. Discovery
+does NOT infer against every discovered model; picker opens do not start probes.
+Settings offers Verify tools and Cancel with richer bounded provenance details.
+
+Explicit reasoning selections do not silently become Automatic for a user run.
+The canonical verification tests Automatic/provider default only. Its evidence does
+not certify every explicit reasoning level; those runs retain existing unknown-
+capability permission/approval policy rather than triggering a reasoning tuning
+ladder. Unknown/incomplete evidence likewise retains that existing safe policy,
+but never becomes Agent Ready. A current incompatible/unsupported Automatic
+verdict blocks Agent dispatch with Chat Only/verification guidance. It does not
+disable text-only model selection or force a cloud/provider switch.
+
+The one exposed tool is `get_probe_value`, with a strict object schema:
+`{"key":"clack-probe-v1","count":1}`, both required, no additional properties.
+The fixed prompt explicitly requests exactly one native call and forbids textual
+simulation. Its definition has NO execute handler, approval handler, filesystem,
+shell or network implementation. The SDK collects the call but never executes
+it or sends a tool-result follow-up. The native acceptance host registers only
+settings, metadata, inference and exit commands, not model execution/mutation tools.
+
+Production uses the existing SDK model builder, native Ollama `/api/chat`, parser,
+HTTP/keychain/private-network authorization, scheduler admission, cancellation and
+B1 preflight. It never routes this probe through compatible `/v1` or F1. Output
+allowance is **512**, `maxRetries=0`, one generation, a **120-second** probe bound
+over unchanged production transport deadlines. Ordinary B1 limits still apply;
+the special 170-output optimization cap is not the protocol probe contract. No
+budget/reserve/margin formulas, context ladder, compaction or receipts changed.
+
+The probe consumes the current effective context without recalibration: fresh
+practical Automatic if trusted, otherwise conservative Automatic; an explicit
+context pin remains authoritative. Context-calibration state is never synthesized
+from historical documentation. A tool verdict is context-specific as well as
+revision-specific, so changing working context withdraws the previous verdict
+until another authorized probe establishes the new configuration.
+
+PASS requires terminal provider completion plus exactly one provider-native SDK-
+parsed call to the exposed name with schema-valid arguments. Multiple calls,
+wrong names or invalid arguments fail closed; none execute. No textual XML, JSON,
+function markup, prose, shell text or fabricated receipt is parsed/repaired into
+a native call. Completed nonempty text-only output is Incompatible under the
+tested canonical configuration. Empty response, output exhaustion without a valid
+call, pre-output/stream-idle/deadline or unrelated transport failure is Incomplete,
+not Unsupported. Authoritative provider metadata `tools=false` skips inference and
+reports Unsupported. Unknown training metadata can receive one native probe.
+
+There is **no automatic compatibility-level retry**. Incomplete results have
+five-minute backoff; protocol verdicts are reused while valid. Explicit Verify
+may request another bounded check, not an automatic tuning loop. This acceptance
+used zero retries. Native per-server ownership prevents concurrent calibration or
+tool verification; unrelated servers are independent. Cancellation aborts native
+inference and releases the lease/job. Restart does not replay saved requests or
+pretend persisted `verifying` means a running request; it displays Incomplete.
+
+### Identity, Trust and Readiness
+
+Bounded metadata (native maximum **16 KiB** per record) contains run ID, exact
+connection/configuration, backend, model/deployment/digest, native-process epoch,
+server version, normalized Automatic reasoning metadata, Clack protocol revision
+`native-tools-v1`, tested context/output, outcome, call/argument/text indicators,
+timestamps, optional proof/expiry and backoff. No raw conversation, credentials,
+reasoning transcript, attachment blobs or model benchmark rankings are stored.
+
+Proof has a **24-hour** maximum TTL, plus fresh server/version observation,
+current reasoning metadata, matching model/configuration/protocol/context. Native
+process restart, changed runtime version/digest/backend/connection/defaults or
+lost current evidence withdraws trust. A same-scope transient recheck preserves
+previous still-valid proof; changed scopes/contexts do not inherit it. Server
+identity is bounded live evidence, not an invented hardware/boot fingerprint.
+Opening Settings can refresh metadata/version without repeating generation.
+
+Existing profile compare-and-swap and run-ID checks reject stale writers; existing
+cross-window persistence remains the owner. Native schema/ownership validation
+rejects fabricated success and cross-owner records. Frontend load isolates malformed
+or unsupported new records without dropping the profile, explicit pins or context
+calibration. Digest/material capability migration removes derived tool proof while
+preserving labels and applicable numeric overrides. Same tag on two servers does
+not share verification. No competing database or new persistent job store.
+
+Tools display Advertised/unverified, Verified, Unsupported, Incompatible,
+Incomplete or Stale. Ready requires online/current inventory, usable text,
+no settings incompatibility, trusted context and a valid native-tool proof under
+Automatic; vision and structured output are not required. This probe establishes
+Automatic reasoning/tool compatibility, not reasoning quality. Context-only or
+tools-only proof remains Unverified. New tool-incompatible profiles are shown as
+Chat only and stay selectable; the compact picker retains existing status UI.
+Legacy compatibility evidence retains existing behavior rather than being silently
+rewritten. Other self-hosted backend adapters truthfully report verification
+unavailable; generic orchestration/schema ownership is separate from the concrete
+Ollama adapter. They are not falsely labeled tool-incompatible or verified.
+
+### Four-Model Native Acceptance
+
+Run ID **`tool-verification-2026-10-20T23-05-47-057Z`**, ignored local evidence under
+`src-tauri/target/tool-verification/` with that directory name. Native host PID
+**42612**, epoch `42612:1792537558524605300`, Ollama **0.40.5**, endpoint
+`http://127.0.0.1:11435` through the existing tunnel. Isolation check found no other
+Clack host, Cargo/Rust, Vite/Vitest or acceptance run before dispatch. No source
+edits occurred while live inference ran. The host completed and exited; total
+fixture time **75,859 ms**. This is automated Windows native IPC/inference evidence,
+NOT manual native GUI, Computer Use, Linux or macOS verification.
+
+The fixture copied prior native profile evidence into isolated app data, not the
+user's settings. Qwen/Nemotron original **49,152** context-calibration records were
+deep-compared and are preserved EXACTLY. Their 15-minute lease had expired and
+their native epoch belonged to the earlier host. Reusing them as fresh 48K would
+violate `e81440a`. Thus all four used existing conservative **4,096** planning;
+native `num_ctx` was omitted and fresh `/api/ps` reported **4,096 loaded** for each.
+No context calibration, 48K refresh or 64K request occurred in this checkpoint.
+Deterministic tests separately verify consumption of a currently trusted context
+and withdrawal/re-verification when that effective context changes.
+
+All four actual outgoing requests had **one** canonical schema, `num_predict=512`,
+Automatic with **no `think` override**, one synthetic prompt, no user data or
+conversation and the exact selected tag. No output token total is inferred from
+that allowance. Native request bodies/IDs/dispatch times are retained in
+`requests.jsonl`; bounded profile outcomes are in `report.json`, with isolated
+settings, `source-state.json`, `run.json`, `build.log`, `native.log` alongside.
+
+| Exact model | Automatic default | Result / native calls / valid arguments | Readiness |
+|---|---|---|---|
+| `qwen3-coder:30b` | None, field omitted | Incompatible / 0 / no | Chat only |
+| `muse-glimmer:30b` | High, field omitted | Verified / 1 / yes | Unverified context |
+| `north-mini-code-1.0:q4_K_M` | On, field omitted | Verified / 1 / yes | Unverified context |
+| `nemotron-3.5-lightning:30b-a3b-q4_K_M` | On, field omitted | Verified / 1 / yes | Unverified context |
+
+Exact digests, in table order:
+
+- Qwen: `06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca`.
+- Muse: `de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1`.
+- North: `d8b269ad5c7c7144ce104b83ce93bc3efb85e0f74e01be6be5f5d6f7ca90b60f`.
+- Nemotron: `e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2`.
+
+Qwen finished `stop` with **128 text characters**, textual-intent indicator true,
+no native call and no schema-valid arguments. Exact text was not retained by the
+bounded product record, so this is not a claim about its precise XML/JSON wording.
+Its result is scoped to this canonical prompt/default/context, not a claim that
+Qwen cannot ever call tools or that Clack is exonerated by other models succeeding.
+Earlier structured-call evidence used different prompts/configuration; cause of
+the discrepancy is **unconfirmed**. No repair-and-resume, None/Low forcing or
+comparison/tuning ladder was run. Muse/North/Nemotron finished `tool-calls` with
+one exact schema-valid call each; North preserved its provider default On rather
+than repeating the old None/empty-response setup. No timeout or stall occurred.
+
+| Model | Native dispatch UTC epoch ms | First native body ms after dispatch | Parsed native call ms | Verification complete ms |
+|---|---:|---:|---:|---:|
+| Qwen | 1792537559496 | 11,425 | none | 12,661 |
+| Muse | 1792537572990 | 11,944 | 26,484 | 27,128 |
+| North | 1792537601070 | 13,941 | 15,766 | 16,449 |
+| Nemotron | 1792537618325 | 12,811 | 14,723 | 15,579 |
+
+First body uses the existing native-response-body callback, not SDK stream-start.
+Verification completion includes final metadata/version validation and persistence,
+not a claimed exact provider EOF timestamp. Three calls were observed; **zero
+calls executed**, zero tool-result follow-ups, **4 total live inference requests**,
+**0 retries**, **0 cloud inference**, **0 downloads**, **0 ForgeBoard runs**, **0
+model-tool filesystem/shell effects**, **0 remote/service/firewall/SSH changes**.
+
+### Verification and Scope
+
+- Focused final frontend: **263 passed / 10 files**. New verifier/coordinator
+  subset: **44 passed**, plus actual SDK/native wire/no-execution integration.
+  Covers malformed/wrong/multiple calls, XML/JSON/prose, empty/length output,
+  timeouts/transport/backoff, offline, digest/model/server/reasoning/context changes,
+  same tag across servers, restart/serialization, stale CAS, preserved prior proof,
+  cancellation including in-flight, readiness and context/calibration regressions.
+- Native profile ownership/persistence/schema tests: **8 passed**. Tool proof
+  roundtrip/CAS preserves context; wrong owner/version/protocol, fabricated argument
+  validity, multiple-call success and missing proof are rejected.
+- Automated browser actual Settings fixture passed Verifying/Cancel, native-proof
+  projection, Ready, tool-incompatible Chat Only, digest withdrawal/reverification,
+  offline/return, context/pins/reset and keyboard focus. No horizontal overflow at
+  **320, 390, 1280px**, light/dark, **200% CSS scaling**. Screenshots/results remain
+  under ignored `src-tauri/target/onboarding/browser/`. Synthetic IPC; zero browser
+  inference. No Computer Use or manual native GUI acceptance was performed.
+- `npm.cmd run check-types`: passed.
+- `npm.cmd run lint`: passed at unchanged **71 warnings, 2 informational notices**.
+- `npm.cmd test`: **3,209 passed, 1 failed, 2 skipped; 218 passed / 4 failed files**.
+  Same historical failures as the base: Node-only latency audit collected by
+  Vitest; two generated ForgeBoard backend source/dist suites missing `supertest`;
+  archived acceptanceComparison asserting the old model allowlist. None were
+  edited/excluded to fabricate green gates. Full suite ran once; final context-
+  scope correction received the 263-test affected suite and browser rerun.
+- `npm.cmd run build`: passed, existing ineffective-dynamic-import/plugin-timing
+  notices only. Types/build repeated for the final context-scoping correction.
+- `cargo fmt --check`: passed.
+- `cargo clippy --all-targets --locked --target-dir target/codex-test -- -D warnings`:
+  passed after simplifying two new validator boolean expressions. Eight affected
+  native tests were rerun after that semantics-preserving correction.
+- `cargo test --locked --target-dir target/codex-test`: **626 passed, 1 historical
+  failure, 2 ignored** in the library suite. Same D1 revocation/timing assertion at
+  `custom_tools/execution/tests.rs:758`, expected `tool-revoked`, got `timed-out`.
+  Cargo stopped before subsequent integration binaries. This is not an all-green
+  full-suite claim, and unrelated cancellation/timeouts were not modified.
+- `git diff --check`: passed. Gate logs and local reproduction evidence remain
+  under ignored `src-tauri/target/tool-verification/`.
+
+Production files: new `toolVerificationSchema.ts`, `toolVerification.ts`,
+`toolVerificationRuntime.ts`, transient `toolVerificationJobs.ts` and
+`ToolVerificationControl.tsx`; integrations in `agent.ts`, `modelOnboarding.ts`,
+`selfHostedProfiles.ts`, `ModelOnboardingDetails.tsx`, native
+`inference_probe/mod.rs` and `self_hosted_profiles.rs`. Tests/fixtures add the
+native host and opt-in runner, new unit/coordinator suites, actual Ollama routing
+case and deterministic browser coverage. No dependencies/package/lock changes,
+F1, context-calibration implementation, compaction or protected-budget changes.
+
+The six original dirty paths are byte-preserved (original report prefix plus
+the other five files), both stashes and `autonomous_tracker/` untouched. Only this
+appendix and checkpoint files are committed. Baseline `main` was 71 ahead / 0
+behind cached origin; no fetch or push.
+
+Largest immediate remaining evidence gap is the configuration-specific Qwen
+canonical-probe mismatch versus historical native-call observations. Recommended
+next checkpoint: **Diagnose the Qwen canonical native-tool compatibility mismatch**
+with a separately authorized controlled comparison, not an intelligence ranking
+or model-name workaround. Secure authenticated remote self-hosted connection
+onboarding remains the largest separate connection-UX gap; generic non-Ollama
+verification and comprehensive local Agent readiness also remain incomplete.
+No next checkpoint, extra live probe or managed SSH work was started. No push.

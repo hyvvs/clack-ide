@@ -32,6 +32,7 @@ import {
 } from "@/modules/ai/lib/reasoningEffort";
 import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
 import { MUSE_THINKING_VALUES } from "@/modules/ai/lib/reasoningEffort.fixture";
+import { TOOL_PROBE_NAME, TOOL_PROBE_PROMPT, probeArguments } from "@/modules/ai/lib/toolVerificationSchema";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -266,6 +267,24 @@ async function model(
   return built;
 }
 describe("production Ollama route, B1 and runtime evidence", () => {
+  it("verifies a native structured probe through SDK and native HTTP without executing the tool", async () => {
+    reply = () => ({ message: { role: "assistant", content: "", tool_calls: [{ function: { name: TOOL_PROBE_NAME, arguments: { key: "clack-probe-v1", count: 1 } } }] }, done_reason: "stop" });
+    const built = await buildLanguageModel("ollama", EMPTY_PROVIDER_KEYS, "exact:latest", {
+      selfHosted: true, selfHostedInference: state, toolVerification: true, ollamaBaseURL: state.endpoints[0].baseURL,
+      admission: endpointInferenceAdmission(state.endpoints[0].id, state.profiles[0].id, state),
+      inferenceScope: { sessionId: "tool-probe", runId: "tool-probe", isCurrent: () => true },
+      calibration: { requestClass: "optimization", record: () => {} },
+    }, "only-this-credential");
+    const definitions = { [TOOL_PROBE_NAME]: tool({ inputSchema: probeArguments }) };
+    const result = streamText({ model: built, prompt: TOOL_PROBE_PROMPT, tools: definitions, maxOutputTokens: 512, maxRetries: 0 });
+    await result.consumeStream();
+    expect(await result.toolCalls).toMatchObject([{ toolName: TOOL_PROBE_NAME, input: { key: "clack-probe-v1", count: 1 } }]);
+    expect(await result.toolResults).toEqual([]); expect(definitions[TOOL_PROBE_NAME]).not.toHaveProperty("execute");
+    expect(sent).toHaveLength(1); expect(sent[0].url).toBe("https://private.test/proxy/api/chat");
+    expect(sent[0].body.options).toMatchObject({ num_ctx: 32768, num_predict: 512 });
+    expect(sent[0].body).not.toHaveProperty("think");
+    expect((sent[0].body.tools as { function: { name: string } }[]).map(t => t.function.name)).toEqual([TOOL_PROBE_NAME]);
+  });
   it("serializes a bounded calibration allocation through the production SDK/native route without tools, thinking override or user-pin mutation", async () => {
     const pin = JSON.stringify(state.profiles[0].overrides);
     const built = await buildLanguageModel("ollama", EMPTY_PROVIDER_KEYS, "exact:latest", {
