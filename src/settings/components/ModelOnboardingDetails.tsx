@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { inspectContextRuntime } from "@/modules/ai/lib/contextRuntimeClient";
 import {
   modelOnboarding,
   profileSnapshot,
@@ -7,6 +9,7 @@ import type {
   SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
 import { ProfileAdvancedControls } from "@/settings/components/ProfileAdvancedControls";
+import { ContextCalibrationControl } from "@/settings/components/ContextCalibrationControl";
 
 export function ModelOnboardingDetails({
   state,
@@ -17,7 +20,21 @@ export function ModelOnboardingDetails({
   profile: SelfHostedProfile;
   disabled?: boolean;
 }) {
-  const view = modelOnboarding(state, profile);
+  const [clock, setClock] = useState(Date.now());
+  const endpoint = state.endpoints.find(e => e.id === profile.endpointId);
+  useEffect(() => {
+    if (!endpoint || !profile.contextCalibration) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    void inspectContextRuntime(endpoint).catch(() => {}).finally(() => {
+      if (!active) return;
+      setClock(Date.now());
+      timer = setTimeout(() => setClock(Date.now()), 30_001);
+    });
+    return () => { active = false; clearTimeout(timer); };
+  }, [endpoint, profile.contextCalibration]);
+  const now = Math.max(clock, Date.now());
+  const view = modelOnboarding(state, profile, now);
   if (!view) return null;
   const tokens = (value: unknown) =>
     typeof value === "number"
@@ -110,6 +127,7 @@ export function ModelOnboardingDetails({
         snapshot={profileSnapshot(state, profile)}
         disabled={disabled}
       />
+      <ContextCalibrationControl state={state} profile={profile} disabled={disabled} now={now} />
     </section>
   );
 }

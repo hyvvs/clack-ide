@@ -27,7 +27,6 @@ import {
 } from "@/modules/ai/lib/selfHostedProbe";
 import {
   readSelfHostedState,
-  effectiveProfileValue,
   type SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
 import { probeEvidenceIsFresh } from "@/modules/ai/lib/selfHostedProbe";
@@ -107,6 +106,7 @@ export function createRequestPreflight(options: {
   assertedContext?: number;
   reasoning?: EffortCapture;
   optimization?: boolean;
+  calibrationContext?: number;
   validateEvidence?: () => Promise<void>;
 }) {
   const state = options.state;
@@ -130,7 +130,7 @@ export function createRequestPreflight(options: {
   const limits = (): BudgetLimits => ({
     ...(options.optimization ? { inputCap: 1365, outputCap: 170 } : {}),
     ...(profile && state
-      ? profileBudgetLimits(state, profile.id, snapshot)
+      ? profileBudgetLimits(state, profile.id, snapshot, Date.now(), options.calibrationContext)
       : options.local
         ? { asserted: options.assertedContext }
         : {
@@ -140,10 +140,11 @@ export function createRequestPreflight(options: {
     ...(effortBudget(options.reasoning)
       ? { reasoningBudget: effortBudget(options.reasoning) }
       : {}),
+    ...(options.calibrationContext !== undefined ? { maxOutput: 32, outputReserve: undefined } : {}),
   });
   const runtimeTarget = () => {
     if (options.providerId !== "ollama" || !profile || !state) return undefined;
-    const target = effectiveProfileValue(state, profile.id, "workingContext").value;
+    const target = limits().runtimeTarget;
     if (typeof target !== "number") return undefined;
     limits();
     return target;
@@ -160,6 +161,10 @@ export function createRequestPreflight(options: {
         options.providerEvidence,
       );
     if (!endpoint || !profile) return;
+    if (profile.contextCalibration && options.calibrationContext === undefined) {
+      try { await (await import("@/modules/ai/lib/contextRuntimeClient")).inspectContextRuntime(endpoint); }
+      catch { /* Loss of runtime evidence keeps Automatic conservative. */ }
+    }
     const client = createSelfHostedProbeClient();
     const probeOptions = {
       endpointId: endpoint.id,
@@ -329,6 +334,9 @@ export function createRequestPreflight(options: {
       return wrapped;
     },
     async prepare(body: Record<string, unknown>) {
+      if (options.calibrationContext !== undefined && (options.providerId !== "ollama" || !Number.isSafeInteger(options.calibrationContext) ||
+        options.calibrationContext < 1 || options.calibrationContext > 65536 || (Array.isArray(body.tools) && body.tools.length > 0)))
+        throw new ContextBudgetError("invalid-context-calibration", "Context verification requires a bounded native request without tools.");
       await refresh();
       await reasoningOptions();
       const measured = assertRequestBudget(limits(), body, schemaKinds, availableSchemas);

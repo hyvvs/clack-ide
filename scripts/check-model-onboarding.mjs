@@ -22,6 +22,12 @@ const mocks = new Map([
     export async function emitKeysChanged() {}
   `],
   ["src/modules/ai/lib/keyring", `export async function setCustomEndpointKey(){}`],
+  ["src/modules/ai/lib/contextRuntimeClient", `
+    import {rememberContextRuntime} from "/src/modules/ai/lib/contextCalibrationTrust.ts";
+    export async function inspectContextRuntime(endpoint){
+      rememberContextRuntime(endpoint.id,{epoch:"browser-fixture",version:"fixture",configurationRevision:endpoint.configurationRevision,at:Date.now()});
+    }
+  `],
   ["src/modules/ai/lib/selfHostedProbe", `
     import {ensureSelfHostedProfile,profileEvidence} from "/src/modules/ai/lib/selfHostedProfiles.ts";
     export const PROBE_INVENTORY_TTL_MS=300000,PROBE_INSTANCE_TTL_MS=30000;
@@ -57,8 +63,28 @@ const mocks = new Map([
 const entry = `
  import React from "react";import {createRoot} from "react-dom/client";
  import {SelfHostedServers} from "/src/settings/components/SelfHostedServers.tsx";
+ import {contextReasoningIdentity,rememberContextRuntime} from "/src/modules/ai/lib/contextCalibrationTrust.ts";
+ import {profileEvidence} from "/src/modules/ai/lib/selfHostedProfiles.ts";
+ import {useContextCalibrationJobs} from "/src/modules/ai/store/contextCalibrationJobs.ts";
  import "/src/styles/globals.css";
  window.probes=[];window.digest="revision-a";window.offline=false;
+ window.calibrationJobs=useContextCalibrationJobs;
+ window.verifyContext=()=>{
+   let state=window.prefs.getState().selfHostedInference;
+   const profile=state.profiles[0],endpoint=state.endpoints[0],now=Date.now();
+   profile.evidence=profile.evidence.filter(e=>!['probe.loaded','probe.loadedContext','probe.runtimeAllocation'].includes(e.metric));
+   for(const [metric,value] of Object.entries({loaded:true,loadedContext:49152,runtimeAllocation:"fixture-allocation"}))
+     profile.evidence.push(profileEvidence(state,profile.id,'probe.'+metric,value,'backend-reported',now,'reported'));
+   rememberContextRuntime(endpoint.id,{epoch:"browser-fixture",version:"fixture",configurationRevision:endpoint.configurationRevision,at:now});
+   const record={version:1,id:'browser-proof',scope:{endpointId:endpoint.id,configurationRevision:endpoint.configurationRevision,
+     model:profile.transportModelId,deployment:null,digest:profile.modelRevision,backend:'ollama',runtimeEpoch:'browser-fixture',providerVersion:'fixture',
+     reasoning:contextReasoningIdentity(profile,endpoint)},status:'verified',highest:49152,failedNext:null,failure:null,allocation:'fixture-allocation',
+     startedAt:now,updatedAt:now,expiresAt:now+900000,retryAfter:now+900000,
+     attempts:[{context:49152,requested:49152,loaded:49152,outcome:'success',at:now,latencyMs:1,thermal:'warm',finish:'stop',think:'omitted'}]};
+   state={...state,profiles:state.profiles.map(p=>p.id!==profile.id?p:{...p,contextCalibration:record,recommendations:{...p.recommendations,
+     workingContext:{...profileEvidence(state,p.id,'workingContext',49152,'measured',now,'observed'),expiresAt:now+900000}}})};
+   window.prefs.setState({selfHostedInference:state});
+ };
  createRoot(document.getElementById("root")).render(React.createElement("main",{style:{maxWidth:760,padding:16,margin:"auto"}},React.createElement(SelfHostedServers)));
 `;
 const server = await createServer({root,configFile:false,logLevel:"warn",optimizeDeps:{entries:[],noDiscovery:true,include:["react","react-dom/client","react/jsx-runtime","zustand","zod","@hugeicons/react","@hugeicons/core-free-icons","radix-ui","class-variance-authority","clsx","tailwind-merge"]},
@@ -102,6 +128,24 @@ try {
   assert.equal(await page.evaluate(()=>window.prefs.getState().selfHostedInference.profiles[0].overrides.workingContext),undefined);
   await page.getByLabel("Search server models").focus();await page.keyboard.press("Tab");
   assert.equal(await page.evaluate(()=>document.activeElement?.textContent),"Settings");
+  await page.evaluate(()=>{
+    const state=window.prefs.getState().selfHostedInference;
+    window.calibrationJobs.setState({jobs:{[state.endpoints[0].id]:{profileId:state.profiles[1].id,context:8192,controller:new AbortController()}}});
+  });
+  assert.equal(await settings.getByRole("button",{name:"Cancel context verification"}).count(),0);
+  assert.equal(await settings.getByRole("button",{name:"Verify context"}).isDisabled(),true);
+  await page.evaluate(()=>window.calibrationJobs.setState({jobs:{}}));
+  await page.evaluate(()=>window.verifyContext());
+  await settings.getByText("Automatic (49,152 tokens) / Verified",{exact:true}).waitFor();
+  await settings.getByText("Context: Verified on this server / 49,152 recommended",{exact:true}).waitFor();
+  await settings.getByText("Advertised / unverified",{exact:true}).waitFor();
+  await page.evaluate(()=>{
+    const state=window.prefs.getState().selfHostedInference;
+    window.prefs.setState({selfHostedInference:{...state,profiles:state.profiles.map((p,i)=>i? p : {...p,contextCalibration:{...p.contextCalibration,expiresAt:0}})}});
+  });
+  await settings.getByText("Automatic (4,096 tokens) / Unverified",{exact:true}).waitFor();
+  await settings.getByText("Context: Stale / conservative",{exact:true}).waitFor();
+  await page.evaluate(()=>window.verifyContext());
   for(const theme of ["dark","light"]){
     await page.evaluate(theme=>document.documentElement.className=theme,theme);
     for(const width of [1280,390,320]){
@@ -121,6 +165,6 @@ try {
   await page.getByRole("button",{name:"Refresh",exact:true}).click();
   await settings.getByRole("status").getByText("Unverified",{exact:true}).waitFor();
   assert.deepEqual(errors,[]);
-  await writeFile(path.join(output,"result.json"),JSON.stringify({passed:true,widths:[1280,390,320],themes:["dark","light"],cssZoom:2,errors,inference:0,nativeGUI:false},null,2));
-  console.log("Onboarding browser fixture passed: endpoint once, automatic metadata, settings, overrides/reset, offline/return, keyboard, 320px, light/dark, 200% CSS scaling. No native GUI or inference.");
+  await writeFile(path.join(output,"result.json"),JSON.stringify({passed:true,contextVerification:["conservative","verified-49152","expired-stale","tool-evidence-independent"],widths:[1280,390,320],themes:["dark","light"],cssZoom:2,errors,inference:0,nativeGUI:false},null,2));
+  console.log("Onboarding browser fixture passed: calibrated/stale context, tools remain unverified, overrides/reset, offline/return, keyboard, 320px, light/dark, 200% CSS scaling. No native GUI or inference.");
 } finally {await browser?.close();await server.close();}

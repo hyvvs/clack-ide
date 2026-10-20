@@ -10163,3 +10163,243 @@ recommended next checkpoint is **Calibrate Local Model Context Automatically**,
 with bounded per-inference-machine verification, not a model-family tuning table.
 Secure remote onboarding remains a separate future gap. Neither next checkpoint
 was started. No push.
+
+## Automatic practical-context calibration
+
+Production checkpoint, 2026-10-21 Europe/Paris, based on `0bed9f1`. Classification:
+**LOCAL CONTEXT AUTO-CALIBRATION READY** for the bounded allocation contract below.
+This is not a model-quality, long-prompt stress, structured-tool or complete local
+coding-readiness claim. No subsequent checkpoint was started; no push.
+
+### Behavior, Trigger and Safety
+
+Previously Automatic used the existing conservative 4,096-token planning policy
+without practical evidence, not a model's advertised maximum. Now first model
+selection or first non-recovery/non-continuation use of a managed Ollama profile
+in Automatic working-context mode prepares bounded verification. Existing valid
+evidence is reused; stale selected evidence is revalidated. Settings also offers
+Verify context and cancellation. Discovery does NOT load/calibrate every model.
+Explicit working-context pins skip automatic calibration and remain authoritative;
+explicit verification may establish a recommendation without changing a pin.
+Captured chat/run settings are not rewritten. Active-run model/agent ownership,
+model-switch safety, logical continuations and recovery remain intact.
+
+The normal finite ladder is **4,096, 8,192, 16,384, 32,768, 49,152, 65,536**,
+clipped to fresh advertised maximum and the product ceiling of **65,536**. A smaller
+advertised maximum below the first step can use that bounded value (minimum 512).
+Huge advertised capacities never lift the ceiling. This live acceptance explicitly
+limited the ladder to **49,152**; **65,536 was not attempted**. No per-family/model
+production cases, benchmark-report ingestion or historical 32K proof seeding.
+
+Production uses the existing AI SDK Ollama model, native HTTP transport, inference
+admission/cancellation and B1 preflight. It does not introduce a parallel provider
+request path. Each synthetic request is `Reply with OK.`, `maxRetries=0`, streamed
+native `/api/chat`, `options.num_ctx=candidate`, `options.num_predict=32`, Automatic
+reasoning with **no `think` override**, and **no tools or conversation content**.
+Calibration cannot execute shell, writes, PeerTasks or agent missions. Existing
+connection consent, credential references/keychain, private-network authorization,
+TLS/SSRF policy and scheduler admission apply. No cloud fallback.
+
+Success requires a completed engine finish (`stop` or bounded `length`), no
+transport/provider failure, fresh matching model digest and exact loaded context
+from `/api/ps`, a matching runtime allocation receipt, current server version and
+native-process epoch. HTTP 200, advertised capacity or a smaller substituted
+allocation alone cannot pass. `length` proves only completion of the small bounded
+allocation probe, not that a thinking model produced a useful answer.
+
+There are at most six upward requests and one conditional restoration request,
+seven total. Generation is bounded by 75 seconds per attempt and a four-minute
+ladder deadline, with separately bounded existing metadata I/O. Calibration has
+no automatic request retry. Meaningful memory/resource failure or a silent smaller
+allocation stops upward testing and records `failedNext`; that candidate and
+larger ones are excluded from later comparable calibration. Health is refreshed
+after failure. At most one previously successful SMALLER allocation may be
+restored if the failed attempt unloaded it. An allocation which itself failed is
+never retried as restoration. Existing transport timeout constants are unchanged.
+
+Transport failures are transient/incomplete, not a permanent capacity verdict.
+First-output, stream-idle and request-deadline failures are classified as timeout,
+not OOM. Five-minute automatic backoff avoids hammering; explicit Verify bypasses
+transient backoff, not the comparable failed-capacity bound. Offline models are
+not inferred against. Cancellation stops further generation and releases native
+inference ownership; a server crash does not become Ready. No Ollama restart.
+
+### Ownership, Persistence and Freshness
+
+The existing native-owned self-hosted settings/profile store gains optional
+`contextCalibration` version 1, not a new database. It contains bounded run ID,
+scope, status, highest success, failed-next boundary, failure classification,
+allocation receipt, timestamps/expiry/backoff and at most seven compact attempt
+records (requested/loaded, outcome, finish, cold/warm/unknown, latency, omitted
+thinking control). Native record size is capped at 16 KiB within existing envelope
+bounds. No raw response/transcript, credentials, reasoning or binary blobs persist.
+
+Scope is exact connection ID/configuration revision, backend/native protocol,
+model ID, deployment identity, digest, normalized provider reasoning metadata,
+provider version and Clack native-process epoch. Ollama deployments unsupported by
+the current per-request contract remain unsupported rather than being guessed.
+Other providers (LM Studio, MLX, vLLM/generic compatible) receive no invented
+Ollama semantics; their Settings control truthfully reports calibration unsupported.
+
+Native `/api/ps` supplies a bounded digest/size/size_vram allocation receipt and
+exact context. This is NOT a physical hardware/server/boot fingerprint or measured
+VRAM headroom. Trust additionally requires connected fresh metadata, fresh native
+version/epoch observation (30 seconds), matching loaded allocation and a maximum
+15-minute practical-evidence lease. Runtime loss/unload, changed receipt/version,
+model digest, connection/configuration or native restart withdraws trust. Metadata
+refresh/preflight rechecks current evidence; expiry falls back conservatively.
+Ollama does not expose authoritative hardware/boot identity here, so equal receipts
+are not proof that hardware never changed. Short-lived live allocation evidence,
+not indefinite same-digest reuse, is the supported contract. No fabricated GPU/RAM
+fingerprint, memory-headroom recommendation or cross-server calibration transfer.
+
+The highest practical result persists with measured provenance and expiry in the
+existing recommendation field; Automatic only consumes it while these trust
+checks pass. Missing/stale evidence uses the existing conservative policy. Model
+or chat numeric overrides win and are never silently clamped/replaced. The same
+tag/digest on another connection cannot inherit this proof. Digest changes remove
+derived calibration while preserving compatible numeric overrides and labels.
+
+Existing native compare-and-swap persistence and profile/run-ID checks reject
+stale callbacks. An expiring, owner-checked per-endpoint native lease prevents
+competing windows calibrating one server; unrelated servers remain independent.
+Transient job/AbortController state is not persisted. Restart retains bounded
+history but not valid current-process trust, running requests or request replay.
+Malformed/unsupported new records are isolated on load, preserving the profile
+and explicit overrides while dropping the untrusted recommendation. Larger-than-
+requested provider observations can be retained as unverified failure evidence,
+not promoted into a successful candidate.
+
+Settings shows Conservative, Verifying, Verified on this server, Stale or
+Incomplete; advanced details retain the highest observation and failure boundary.
+The existing Automatic summary updates to the verified value and reverts when
+proof expires. The compact picker retains its existing summary/ownership UI and
+shows preparation during context verification, without VRAM/log controls.
+Advertised maximum, requested context, loaded context and practical proof remain
+distinct. Tools are still Advertised / unverified or Unverified, never made
+verified by context success. B1 formulas, reserves, margins, protected context,
+compaction/effect receipts, F1, sessions and permissions are unchanged.
+
+### Native Two-Model Evidence
+
+Existing tunnel only: `http://127.0.0.1:11435`, Ollama **0.40.5**. Process isolation
+before the run found no competing Clack host, Cargo/Rust, Vite/Vitest or acceptance
+run. The hidden automated native Wry host used isolated settings/app data and the
+production coordinator, SDK, native IPC/HTTP, profile CAS and B1. No source editing
+occurred during live calibration. This was NOT manual native GUI acceptance.
+
+Run/evidence ID: `context-calibration-2026-10-20T22-30-10-746Z` under ignored
+`src-tauri/target/context-calibration/`. It retains `run.json`, `requests.jsonl`,
+`report.json`, `native.log`, `build.log` and isolated settings. Host PID **22812**,
+native epoch `22812:1792535417384319400`; runner completed normally and host exited.
+Webview measurement **81,555 ms** total. Ten actual native requests were captured.
+All had the exact selected tag, candidate context, 32 output allowance, omitted
+`think`, no tools and only the synthetic user prompt. Actual generated token
+counts were not inferred from that configured allowance.
+
+Model 1: **`qwen3-coder:30b`**, digest
+`06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca`.
+Fresh advertised maximum **262,144**; starting Automatic planning **4,096**.
+Provider metadata default None; Automatic still omitted `think` on the wire.
+
+Model 2: **`nemotron-3.5-lightning:30b-a3b-q4_K_M`**, digest
+`e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2`.
+Chosen from installed models for architecture/runtime and mixed reasoning-control
+contrast, not expected coding quality. Fresh advertised maximum **1,048,576**;
+starting Automatic planning **4,096**. Provider default On; Automatic omitted
+`think`, preserving that default.
+
+| Requested and exactly loaded | Qwen latency / finish | Nemotron latency / finish |
+|---:|---|---|
+| 4,096 | 11,981 ms / stop / cold | 16,980 ms / length / cold |
+| 8,192 | 5,334 ms / stop / warm | 7,970 ms / length / warm |
+| 16,384 | 5,451 ms / stop / warm | 7,333 ms / length / warm |
+| 32,768 | 5,567 ms / stop / warm | 7,256 ms / length / warm |
+| 49,152 | 5,312 ms / stop / warm | 6,839 ms / length / warm |
+
+Every row passed the exact loaded-context/digest/runtime proof. Both final records
+were `verified`, highest **49,152**, no failed-next value/failure, final trusted
+Automatic recommendation **49,152** in the live host. Both 32K and 48K succeeded;
+64K was not attempted or inferred. Cold means provider reported not loaded before
+the first probe; latencies include allocation, generation and metadata checks,
+not a precise standalone load timer. Nemotron's bounded `length` is preserved
+explicitly; this is not evidence of answering/coding quality. No server instability
+or resource failure was observed. Overall model/tool readiness remains Unverified.
+
+Cloud inference **0**, model downloads **0**, tools/shell/file effects **0**,
+ForgeBoard runs **0**, Ollama restarts **0**, SSH/service/firewall/network changes
+**0**. The runner's localhost fixture/report listeners are test-only, not provider
+exposure or a production onboarding service.
+
+### Implementation and Verification
+
+Production changes: `contextCalibrationSchema`, `contextCalibrationTrust`,
+`contextRuntimeClient`, `contextCalibration`, `contextCalibrationRuntime` and the
+transient `contextCalibrationJobs`; integrations in `selfHostedProfiles`,
+`selfHostedProbe`, `modelOnboarding`, `contextBudgetProfile`, `requestPreflight`,
+`agent`, `transport`, `useModelSwitch`, `ModelOnboardingDetails` and
+`ContextCalibrationControl`. Native additions are `inference_probe/context.rs`,
+its metadata/merge integration, bounded profile validation and two registered
+commands. No dependencies, package/lock files or architectural-plan changes.
+Owned acceptance artifacts: `context_calibration_acceptance.rs`, opt-in
+`check-context-calibration-live.mjs`, and extended deterministic onboarding browser
+fixture. Existing dirty acceptance harness files were NOT used as edit targets.
+
+- Focused frontend: **368 passed, 2 skipped, 16 files**. Includes **29** pure
+  calibration cases, **4** production-coordinator/SDK-mocked IPC cases, actual
+  SDK-to-native wire assertion and B1, compaction, sessions, routing and model-switch
+  regressions. One settings-change error regression was fixed before this pass.
+  Strengthened offline-return/new-epoch assertions and final schema/mock corrections
+  subsequently passed **33/33** focused calibration/coordinator tests.
+- Focused native: probe suite **81 passed, 2 ignored**, and profile persistence/
+  ownership/schema suite **6 passed**. The latter passed again after final native
+  validation aligned unexpected larger loaded-context failure evidence with the
+  frontend schema. No live inference was repeated for these validation/UI changes.
+- Automated Chromium Settings fixture: conservative -> 49,152 Verified -> expired
+  Stale/conservative; tools remain unverified; pins/reset, offline/return/digest,
+  keyboard focus and no horizontal overflow at **320, 390, 1280px**, light/dark and
+  **200% CSS scaling**. Zero inference. Browser evidence is not manual native GUI
+  evidence. Windows hidden native inference acceptance is real; Linux/macOS native
+  verification and manual native interactions were not performed.
+- `npm.cmd run check-types`: passed after correcting new IPC test-mock argument
+  narrowing (initial type failure also prevented the first build from proceeding).
+- `npm.cmd run lint`: passed at unchanged **71 warnings, 2 informational notices**.
+- `npm.cmd test`: **3,164 passed, 1 failed, 2 skipped; 216 passed / 4 failed files**.
+  Same historical failures as the base: Node-only latency audit collected by Vitest,
+  two generated ForgeBoard backend source/dist suites missing `supertest`, archived
+  acceptanceComparison snapshot asserting an obsolete allowlist. None were edited
+  or excluded to fabricate green gates. Full suite ran once; final narrow schema/
+  test corrections received focused checks, not redundant full-suite reruns.
+- `npm.cmd run build`: passed after the type correction, existing ineffective
+  dynamic-import and plugin-timing notices only.
+- `cargo fmt --check`: passed, including after final native validation correction.
+- `cargo clippy --all-targets --locked --target-dir target/codex-test -- -D warnings`:
+  passed, including after that correction.
+- `cargo test --locked --target-dir target/codex-test`: **624 passed, 1 failed,
+  2 ignored** in the library suite. Same historical D1 revocation/timing assertion
+  at `custom_tools/execution/tests.rs:758`, expected `tool-revoked`, got `timed-out`.
+  The base ledger records reproduction against unmodified `346fc35`. Cargo stopped
+  at the failing library gate, so this is not a claim that all integration binaries
+  ran in that invocation. Final owned native correction passed its six focused
+  tests. No unrelated cancellation/timeout implementation was changed.
+- `git diff --check`: passed. Commands/evidence are retained under ignored
+  `src-tauri/target/context-calibration/`; browser screenshots/results under ignored
+  `src-tauri/target/onboarding/browser/`. No all-green full-suite claim.
+
+The six original dirty paths are preserved: original report bytes before this
+appendix, `scripts/acceptance-approval.mjs`, `scripts/check-real-local-product.mjs`,
+`src-tauri/examples/coworking_acceptance.rs`, `src/test/acceptanceComparison.test.ts`
+and `src/test/realLocalProductAcceptance.tsx`. Only this report appendix and owned
+checkpoint files are staged. Both safety stashes and `autonomous_tracker/` remain
+untouched. Baseline `main` was 70 ahead / 0 behind cached origin; no fetch or push.
+
+Remaining biggest onboarding gap / next preferred checkpoint:
+**Verify Local Model Tool Compatibility Automatically**. It was NOT started.
+Secure authenticated remote/SSH onboarding, physical hardware diagnostics,
+long-workload stability and coding-quality acceptance remain separate. Context
+calibration establishes bounded runtime allocation evidence only.
+Final review also verified fresh trusted-proof reuse without re-entering a server
+lease or network calibration, while normal request preflight still validates live
+evidence. Another profile's server job cannot appear as this model's progress or
+cancel control. These narrow corrections passed **24/24** coordinator/routing
+tests, the browser fixture, targeted lint, typecheck and production build.

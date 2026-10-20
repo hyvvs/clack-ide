@@ -321,6 +321,8 @@ pub fn run() {
             modules::inference_probe::self_hosted_probe,
             modules::inference_probe::self_hosted_probe_cache,
             modules::inference_probe::self_hosted_probe_cancel,
+            modules::inference_probe::context::self_hosted_context_lease,
+            modules::inference_probe::context::self_hosted_context_runtime,
             modules::inference_probe::discovery::self_hosted_discover,
             net::ai_http_request,
             net::inference::ai_http_open,

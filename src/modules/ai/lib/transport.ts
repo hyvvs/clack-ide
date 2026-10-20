@@ -27,6 +27,7 @@ import {
   type ModelInputCapabilities,
 } from "./modelCapabilities";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import { resolveSelfHostedSelection, endpointBackend } from "@/modules/ai/lib/selfHostedProfiles";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import {
@@ -221,9 +222,16 @@ export function createContextAwareTransport(deps: Deps) {
     );
     const shellIdentity = await deps.getShellIdentity?.();
     const envBlock = formatEnvBlock(live, shellIdentity);
-    const hostedState = recovery
+    let hostedState = recovery
       ? captured?.configuration.selfHostedInference
       : deps.getSelfHostedInference?.();
+    if (!recovery && !batch.isLogicalContinuation && hostedState) {
+      const target = resolveSelfHostedSelection(hostedState, deps.getModelId());
+      if (target.status === "available" && !target.profile.overrides.workingContext && endpointBackend(target.endpoint) === "ollama") {
+        const { ensureSelectedContext } = await import("@/modules/ai/lib/contextCalibrationRuntime");
+        hostedState = await ensureSelectedContext(hostedState, deps.getModelId(), options.abortSignal ?? new AbortController().signal, scope);
+      }
+    }
     const capturedIdentity = recovery
       ? captured?.configuration.capturedModelIdentity
       : deps.getCapturedModelIdentity?.();

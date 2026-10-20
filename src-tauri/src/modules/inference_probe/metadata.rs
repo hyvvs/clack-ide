@@ -535,7 +535,19 @@ pub fn ollama_ps(
     for record in records(value, "models")? {
         let id = name(&record["name"])?;
         let context = number(&record["context_length"])?;
-        if loaded.insert(id, context).is_some() {
+        let allocation = if let (Some(digest), Some(size), Some(vram)) = (
+            record["digest"].as_str(),
+            record["size"].as_u64(),
+            record["size_vram"].as_u64(),
+        ) {
+            if digest.len() > 1024 || size > 9_007_199_254_740_991 || vram > 9_007_199_254_740_991 {
+                return Err(ProbeError::metadata());
+            }
+            Some((digest.to_owned(), json!([digest, size, vram]).to_string()))
+        } else {
+            None
+        };
+        if loaded.insert(id, (context, allocation)).is_some() {
             return Err(ProbeError::metadata());
         }
     }
@@ -549,9 +561,14 @@ pub fn ollama_ps(
             json!(loaded.contains_key(&model.id)),
             false,
         );
-        if let Some(Some(context)) = loaded.get(&model.id) {
+        if let Some((Some(context), allocation)) = loaded.get(&model.id) {
             // Ollama exposes no stable instance ID. Never invent one from the model digest.
             model.add(endpoint, at, None, "loadedContext", context.clone(), false);
+            if let Some((digest, value)) = allocation {
+                if model.digest.as_ref() == Some(digest) {
+                    model.add(endpoint, at, None, "runtimeAllocation", json!(value), false);
+                }
+            }
         }
         account_model_bytes(model, &mut bytes)?;
     }

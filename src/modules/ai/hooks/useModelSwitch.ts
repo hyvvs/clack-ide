@@ -3,6 +3,8 @@ import {
   prepareModelSwitch,
   type PreparedModelSwitch,
 } from "../store/modelSwitch";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { resolveSelfHostedSelection, endpointBackend } from "@/modules/ai/lib/selfHostedProfiles";
 
 export function useModelSwitch(
   sessionId: string | null,
@@ -44,6 +46,20 @@ export function useModelSwitch(
     setChecking(true);
     setReview(null);
     setFailure(null);
+    try {
+      const state = usePreferencesStore.getState().selfHostedInference;
+      const target = resolveSelfHostedSelection(state, modelId);
+      if (target.status === "available" && !target.profile.overrides.workingContext && endpointBackend(target.endpoint) === "ollama") {
+        setPreparingLabel(`Context verification: ${label}`);
+        const { ensureSelectedContext } = await import("@/modules/ai/lib/contextCalibrationRuntime");
+        await ensureSelectedContext(state, modelId, controller.current.signal);
+      }
+    } catch (error) {
+      if (current === generation.current) { setChecking(false); setFailure(error instanceof Error ? error.message : "Context verification unavailable"); }
+      return false;
+    }
+    if (current !== generation.current) return false;
+    setPreparingLabel(label);
     const prepared = await prepareModelSwitch(
       sessionId,
       modelId,

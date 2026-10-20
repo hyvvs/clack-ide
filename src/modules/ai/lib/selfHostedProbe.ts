@@ -132,6 +132,7 @@ export function probeEvidenceIsFresh(
     "probe.loaded",
     "probe.loadedContext",
     "probe.reportedParallel",
+    "probe.runtimeAllocation",
   ].includes(evidence.metric);
   return (
     now - evidence.observedAt <

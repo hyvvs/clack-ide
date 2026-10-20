@@ -303,6 +303,36 @@ fn onboarding_preserves_legal_provider_defaults_without_interpreting_model_names
 }
 
 #[test]
+fn practical_allocation_evidence_requires_matching_digest_and_is_removed_on_unload() {
+    let endpoint = endpoint(Backend::Ollama);
+    let mut state = settings();
+    let mut snapshot = observed(1, "a");
+    ollama_ps(&endpoint, &mut snapshot.models, &json!({"models":[{"name":"model-0","digest":"a-0","context_length":32768,"size":10000,"size_vram":8000}]}),100).unwrap();
+    assert!(snapshot.models[0]
+        .evidence
+        .iter()
+        .any(|e| e.metric == "probe.runtimeAllocation"));
+    merge_evidence(&mut state, &snapshot).unwrap();
+    let mut next = observed(1, "a");
+    ollama_ps(&endpoint, &mut next.models, &json!({"models":[]}), 101).unwrap();
+    merge_evidence(&mut state, &next).unwrap();
+    assert!(!state["profiles"][0]["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| matches!(
+            e["metric"].as_str(),
+            Some("probe.loadedContext" | "probe.runtimeAllocation")
+        )));
+    let mut model = observed(1, "a");
+    ollama_ps(&endpoint, &mut model.models, &json!({"models":[{"name":"model-0","digest":"wrong","context_length":32768,"size":10000,"size_vram":8000}]}),100).unwrap();
+    assert!(!model.models[0]
+        .evidence
+        .iter()
+        .any(|e| e.metric == "probe.runtimeAllocation"));
+}
+
+#[test]
 fn material_capability_change_invalidates_measurements_not_user_pins_and_removes_absent_defaults() {
     let mut state = settings();
     let mut first = observed(1, "a");

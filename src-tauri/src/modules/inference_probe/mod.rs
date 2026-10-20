@@ -1,4 +1,5 @@
 mod cache;
+pub mod context;
 pub mod discovery;
 mod metadata;
 #[cfg(test)]
@@ -458,6 +459,10 @@ fn merge_evidence(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeErr
                 .as_object_mut()
                 .ok_or_else(internal)?
                 .remove("calibration");
+            profile
+                .as_object_mut()
+                .ok_or_else(internal)?
+                .remove("contextCalibration");
         }
         if let Some(digest) = model.and_then(|m| m.digest.as_ref()) {
             profile["modelRevision"] = json!(digest);
@@ -487,6 +492,11 @@ fn merge_evidence(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeErr
                 !e["metric"].as_str().is_some_and(|metric| {
                     metric.starts_with("probe.")
                         && (metric == "probe.requestedContext"
+                            || (["probe.loadedContext", "probe.runtimeAllocation"]
+                                .contains(&metric)
+                                && model.is_some_and(|m| {
+                                    m.evidence.iter().any(|e| e.metric == "probe.loaded")
+                                }))
                             || (detailed && capability_metrics.contains(&metric))
                             || !snapshot.connected
                             || model

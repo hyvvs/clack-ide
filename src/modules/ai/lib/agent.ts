@@ -140,6 +140,7 @@ function ellipsize(s: string, max: number): string {
 }
 
 export type BuildModelOptions = {
+  calibrationContext?: number;
   providerEvidence?: import("@/modules/ai/lib/providerModelEvidence").ProviderModelEvidence;
   calibration?: Pick<CalibrationCaptureOptions, "requestClass" | "record" | "onQueued">;
   reasoning?: EffortCapture;
@@ -252,6 +253,7 @@ export async function buildLanguageModel(
     admission,
     options.selfHostedInference?.revision,
     options.assertedContext,
+    options.calibrationContext,
     reasoning,
     options.providerEvidence,
   ]);
@@ -280,6 +282,7 @@ export async function buildLanguageModel(
     admission,
     assertedContext: options.assertedContext,
     optimization: options.calibration?.requestClass === "optimization",
+    calibrationContext: options.calibrationContext,
     validateEvidence: () =>
       options.inferenceScope?.validateEvidence?.() ?? Promise.resolve(),
   });

@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { calibrationSchema, CALIBRATED_FIELDS } from "@/modules/ai/lib/calibrationSchema";
+import { contextCalibrationSchema } from "@/modules/ai/lib/contextCalibrationSchema";
+import { trustedContext } from "@/modules/ai/lib/contextCalibrationTrust";
 
 export const SELF_HOSTED_SCHEMA_VERSION = 1;
 export const SELF_HOSTED_SETTINGS_KEY = "selfHostedInference";
@@ -161,6 +163,7 @@ const profileSchema = z.object({
   recommendations: z.partialRecord(field, evidenceSchema),
   overrides: z.partialRecord(field, manual),
   calibration: calibrationSchema.optional(),
+  contextCalibration: contextCalibrationSchema.optional(),
   saved: z
     .object({ label: z.string().trim().min(1).max(1024).optional() })
     .optional(),
@@ -215,13 +218,16 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
     endpoints.push(endpoint);
   }
   for (const entry of envelope.data.profiles) {
+    const rawContext = z.object({ contextCalibration: z.unknown().optional() }).safeParse(entry);
+    const invalidContext = rawContext.success && rawContext.data.contextCalibration !== undefined && !contextCalibrationSchema.safeParse(rawContext.data.contextCalibration).success;
     const rawCalibration = z.object({ calibration: z.unknown().optional() }).safeParse(entry);
     const invalidCalibration = rawCalibration.success && rawCalibration.data.calibration !== undefined &&
       !calibrationSchema.safeParse(rawCalibration.data.calibration).success;
-    const parsed = profileSchema.safeParse(invalidCalibration
-      ? { ...(entry as Record<string, unknown>), calibration: undefined } : entry);
+    const parsed = profileSchema.safeParse(invalidCalibration || invalidContext
+      ? { ...(entry as Record<string, unknown>), ...(invalidCalibration ? { calibration: undefined } : {}), ...(invalidContext ? { contextCalibration: undefined } : {}) } : entry);
     if (!parsed.success) continue;
     const profile = parsed.data;
+    if (invalidContext) delete profile.recommendations.workingContext;
     if (
       !endpoints.some((e) => e.id === profile.endpointId) ||
       profiles.some(
@@ -516,6 +522,10 @@ export function effectiveProfileValue(
   const endpoint = requireEndpoint(state, profile.endpointId);
   const pin = profile.overrides[name];
   const evidence = pin?.evidence ?? profile.recommendations[name];
+  if (!pin && name === "workingContext" && profile.contextCalibration) {
+    const value = trustedContext(state, profile, now);
+    return { mode: "automatic", value, evidence, stale: value === undefined };
+  }
   const stale =
     !!evidence &&
     (evidence.scope.configurationRevision !== endpoint.configurationRevision ||

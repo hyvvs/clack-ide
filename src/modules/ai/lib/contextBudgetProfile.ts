@@ -11,6 +11,7 @@ import {
 import { CALIBRATED_FIELDS } from "@/modules/ai/lib/calibrationSchema";
 import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import { ContextBudgetError, UNKNOWN_CONTEXT_POLICY } from "@/modules/ai/lib/contextBudget";
+import { snapshotContext } from "@/modules/ai/lib/contextCalibrationTrust";
 
 export const MAX_OLLAMA_CONTEXT = 2_000_000;
 
@@ -19,6 +20,7 @@ export function profileBudgetLimits(
   profileId: string,
   snapshot: ProbeSnapshot | null,
   now = Date.now(),
+  calibrationTarget?: number,
 ): BudgetLimits {
   const profile = state.profiles.find((p) => p.id === profileId);
   const endpoint = state.endpoints.find(
@@ -62,7 +64,8 @@ export function profileBudgetLimits(
       field("configuredContext").mode === "manual"
         ? number("configuredContext")
         : undefined,
-    workingTarget: number("workingContext"),
+    workingTarget: calibrationTarget ?? (profile.contextCalibration && !profile.overrides.workingContext
+      ? snapshotContext(state, profile, snapshot, now) : number("workingContext")),
     manualWorking: field("workingContext").mode === "manual",
     outputReserve: number("outputReserve"),
     maxOutput: number("maxOutput"),

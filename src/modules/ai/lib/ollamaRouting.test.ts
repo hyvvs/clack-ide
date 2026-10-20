@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateText, jsonSchema, stepCountIs, streamText, tool } from "ai";
 import { withAnswerContinuation } from "@/modules/ai/lib/answerContinuation";
 import { invoke } from "@tauri-apps/api/core";
-import { buildConfiguredLanguageModel } from "@/modules/ai/lib/agent";
+import { buildConfiguredLanguageModel, buildLanguageModel } from "@/modules/ai/lib/agent";
+import { endpointInferenceAdmission } from "@/modules/ai/lib/inferenceAdmission";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
 import {
   addSelfHostedEndpoint,
@@ -265,6 +266,24 @@ async function model(
   return built;
 }
 describe("production Ollama route, B1 and runtime evidence", () => {
+  it("serializes a bounded calibration allocation through the production SDK/native route without tools, thinking override or user-pin mutation", async () => {
+    const pin = JSON.stringify(state.profiles[0].overrides);
+    const built = await buildLanguageModel("ollama", EMPTY_PROVIDER_KEYS, "exact:latest", {
+      selfHosted: true, selfHostedInference: state, calibrationContext: 8192,
+      ollamaBaseURL: state.endpoints[0].baseURL,
+      admission: endpointInferenceAdmission(state.endpoints[0].id, state.profiles[0].id, state),
+      inferenceScope: { sessionId: "context-only", runId: "context-only", isCurrent: () => true },
+    }, "only-this-credential");
+    const result = streamText({ model: built, prompt: "Reply with OK.", maxOutputTokens: 32, maxRetries: 0 });
+    await result.consumeStream();
+    expect(await result.finishReason).toBe("stop");
+    expect(sent).toHaveLength(1);
+    expect(sent[0].url).toBe("https://private.test/proxy/api/chat");
+    expect(sent[0].body.options).toMatchObject({ num_ctx: 8192, num_predict: 32 });
+    expect(sent[0].body).not.toHaveProperty("think");
+    expect(sent[0].body.tools ?? []).toEqual([]);
+    expect(JSON.stringify(state.profiles[0].overrides)).toBe(pin);
+  });
   it("Automatic does not budget against an earlier larger allocation without a default-context contract", async () => {
     state.profiles[0].overrides = {}; current = state; snapshot = metadata(32768);
     const built = await model();

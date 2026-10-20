@@ -48,6 +48,102 @@ pub(super) fn validate(value: &Value) -> Result<(), String> {
     {
         return Err("Invalid or oversized self-hosted settings".into());
     }
+    for profile in value["profiles"].as_array().into_iter().flatten() {
+        let Some(record) = profile.get("contextCalibration") else {
+            continue;
+        };
+        let scope = &record["scope"];
+        let tokens = |v: &Value| v.as_u64().is_some_and(|n| n > 0 && n <= 65536);
+        let string = |v: &Value, max: usize| {
+            v.as_str().is_some_and(|s| {
+                !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control)
+            })
+        };
+        let outcome = |v: &Value| {
+            matches!(
+                v.as_str(),
+                Some(
+                    "success"
+                        | "capacity"
+                        | "allocation-mismatch"
+                        | "transient"
+                        | "timeout"
+                        | "offline"
+                        | "revision-changed"
+                        | "cancelled"
+                        | "unsupported"
+                        | "interrupted"
+                )
+            )
+        };
+        let valid = record["version"] == 1
+            && record.to_string().len() <= 16 * 1024
+            && string(&record["id"], 128)
+            && scope["endpointId"] == profile["endpointId"]
+            && scope["model"] == profile["transportModelId"]
+            && scope["digest"] == profile["modelRevision"]
+            && scope["deployment"] == profile["deploymentId"]
+            && scope["backend"] == "ollama"
+            && string(&scope["digest"], 1024)
+            && string(&scope["runtimeEpoch"], 128)
+            && string(&scope["providerVersion"], 64)
+            && string(&scope["reasoning"], 2048)
+            && value["endpoints"].as_array().is_some_and(|es| {
+                es.iter().any(|e| {
+                    e["id"] == scope["endpointId"]
+                        && e["configurationRevision"] == scope["configurationRevision"]
+                })
+            })
+            && matches!(
+                record["status"].as_str(),
+                Some(
+                    "verifying"
+                        | "verified"
+                        | "incomplete"
+                        | "capacity"
+                        | "cancelled"
+                        | "unsupported"
+                )
+            )
+            && ["startedAt", "updatedAt", "expiresAt", "retryAfter"]
+                .iter()
+                .all(|k| record[*k].as_u64().is_some())
+            && (record["highest"].is_null() || tokens(&record["highest"]))
+            && (record["failedNext"].is_null() || tokens(&record["failedNext"]))
+            && (record["allocation"].is_null() || string(&record["allocation"], 1024))
+            && (record["failure"].is_null() || outcome(&record["failure"]))
+            && record["attempts"].as_array().is_some_and(|a| {
+                a.len() <= 7
+                    && a.iter().all(|entry| {
+                        tokens(&entry["context"])
+                            && entry["requested"] == entry["context"]
+                            && entry["think"] == "omitted"
+                            && matches!(
+                                entry["thermal"].as_str(),
+                                Some("cold" | "warm" | "unknown")
+                            )
+                            && (entry["finish"].is_null() || string(&entry["finish"], 64))
+                            && entry["at"].as_u64().is_some()
+                            && entry["latencyMs"]
+                                .as_f64()
+                                .is_some_and(|n| n.is_finite() && (0.0..=600_000.0).contains(&n))
+                            && (entry["loaded"].is_null()
+                                || entry["loaded"]
+                                    .as_u64()
+                                    .is_some_and(|n| n > 0 && n <= 2_000_000))
+                            && (entry["outcome"] != "success"
+                                || entry["loaded"] == entry["context"])
+                            && outcome(&entry["outcome"])
+                    })
+                    && (record["highest"].is_null()
+                        || a.iter().any(|e| {
+                            e["context"] == record["highest"] && e["outcome"] == "success"
+                        }))
+            });
+        if !valid {
+            return Err("Invalid context calibration ownership or record".into());
+        }
+    }
     if let Some(inventories) = value.get("inventories") {
         let rows = inventories
             .as_array()
@@ -201,5 +297,70 @@ mod tests {
         oversized = state();
         oversized["unexpected"] = json!("x".repeat(2 * 1024 * 1024));
         assert!(validate(&oversized).is_err());
+    }
+
+    fn calibrated() -> Value {
+        json!({"version":1,"revision":1,"endpoints":[{"id":"a","configurationRevision":1}],"profiles":[{
+            "endpointId":"a","transportModelId":"model","modelRevision":"digest","deploymentId":null,
+            "contextCalibration":{"version":1,"id":"calibration","scope":{"endpointId":"a","configurationRevision":1,
+                "model":"model","digest":"digest","deployment":null,"backend":"ollama","runtimeEpoch":"native-epoch",
+                "providerVersion":"1.2.3","reasoning":"[false]"},"status":"verified","highest":8192,"failedNext":null,
+                "failure":null,"allocation":"receipt","startedAt":1,"updatedAt":2,"expiresAt":3,"retryAfter":3,
+                "attempts":[{"context":8192,"requested":8192,"loaded":8192,"outcome":"success","at":2,"latencyMs":10,
+                    "thermal":"cold","finish":"stop","think":"omitted"}]}
+        }]})
+    }
+
+    #[test]
+    fn context_calibration_is_restart_safe_and_compare_and_swap_owned() {
+        let value = calibrated();
+        let restored: Value = serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
+        validate(&restored).unwrap();
+        assert_eq!(
+            compare_and_save(
+                restored.clone(),
+                restored.clone(),
+                value.clone(),
+                |_| Ok(())
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            compare_and_save(restored, Value::Null, value, |_| panic!(
+                "stale owner must not write"
+            )),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn context_calibration_rejects_cross_owner_false_allocation_and_unbounded_metadata() {
+        for (path, invalid) in [
+            ("/scope/endpointId", json!("other")),
+            ("/scope/configurationRevision", json!(2)),
+            ("/scope/digest", json!("changed")),
+            ("/highest", json!(131072)),
+            ("/attempts/0/loaded", json!(4096)),
+            ("/failure", json!("fabricated")),
+            ("/attempts/0/thermal", json!("fabricated")),
+            ("/allocation", json!("x".repeat(1025))),
+        ] {
+            let mut value = calibrated();
+            *value["profiles"][0]["contextCalibration"]
+                .pointer_mut(path)
+                .unwrap() = invalid;
+            assert!(validate(&value).is_err(), "accepted {path}");
+        }
+        let mut value = calibrated();
+        value["profiles"][0]["contextCalibration"]["attempts"] = json!([]);
+        assert!(validate(&value).is_err());
+        let mut value = calibrated();
+        let record = &mut value["profiles"][0]["contextCalibration"];
+        record["highest"] = Value::Null;
+        record["failure"] = json!("transient");
+        record["status"] = json!("incomplete");
+        record["attempts"][0]["loaded"] = json!(131072);
+        record["attempts"][0]["outcome"] = json!("transient");
+        validate(&value).unwrap();
     }
 }

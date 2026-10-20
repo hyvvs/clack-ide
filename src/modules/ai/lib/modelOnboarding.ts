@@ -10,6 +10,7 @@ import {
 } from "@/modules/ai/lib/reasoningEffort";
 import { profileBudgetLimits } from "@/modules/ai/lib/contextBudgetProfile";
 import { resolveContextBudget } from "@/modules/ai/lib/contextBudget";
+import { trustedContext } from "@/modules/ai/lib/contextCalibrationTrust";
 import {
   PROBE_INVENTORY_TTL_MS,
   PROBE_INSTANCE_TTL_MS,
@@ -185,7 +186,7 @@ export function modelOnboarding(
     problem = error instanceof Error ? error.message : "Review model settings";
   }
   const practical = profile.recommendations.workingContext;
-  const verifiedContext =
+  const verifiedContext = profile.contextCalibration ? trustedContext(state, profile, now) :
     practical &&
     practical.source === "measured" &&
     practical.confidence === "observed" &&
