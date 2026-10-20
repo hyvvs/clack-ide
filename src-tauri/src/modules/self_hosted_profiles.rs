@@ -48,6 +48,68 @@ pub(super) fn validate(value: &Value) -> Result<(), String> {
     {
         return Err("Invalid or oversized self-hosted settings".into());
     }
+    if let Some(inventories) = value.get("inventories") {
+        let rows = inventories
+            .as_array()
+            .filter(|a| a.len() <= 256)
+            .ok_or("Invalid self-hosted inventory")?;
+        let mut endpoints = std::collections::HashSet::new();
+        for row in rows {
+            let endpoint = row["endpointId"]
+                .as_str()
+                .filter(|v| !v.is_empty() && v.len() <= 2048)
+                .ok_or("Invalid inventory ownership")?;
+            if !endpoints.insert(endpoint)
+                || row["observedAt"].as_u64().is_none()
+                || row["connected"].as_bool().is_none()
+                || !value["endpoints"].as_array().is_some_and(|items| {
+                    items.iter().any(|e| {
+                        e["id"] == endpoint
+                            && e["configurationRevision"] == row["configurationRevision"]
+                    })
+                })
+            {
+                return Err("Invalid inventory ownership".into());
+            }
+            let models = row["models"]
+                .as_array()
+                .filter(|a| a.len() <= 5000)
+                .ok_or("Invalid inventory models")?;
+            let mut ids = std::collections::HashSet::new();
+            for model in models {
+                let name = model["id"]
+                    .as_str()
+                    .filter(|v| {
+                        !v.is_empty() && v.len() <= 1024 && !v.chars().any(char::is_control)
+                    })
+                    .ok_or("Invalid inventory identity")?;
+                if !ids.insert(name)
+                    || !matches!(
+                        model["chat"].as_str(),
+                        Some("supported" | "unsupported" | "unknown")
+                    )
+                {
+                    return Err("Invalid inventory identity".into());
+                }
+                for field in ["name", "digest", "modifiedAt"] {
+                    if !model[field].is_null()
+                        && model[field]
+                            .as_str()
+                            .is_none_or(|s| s.len() > 1024 || s.chars().any(char::is_control))
+                    {
+                        return Err("Invalid inventory metadata".into());
+                    }
+                }
+                if !model["size"].is_null()
+                    && model["size"]
+                        .as_u64()
+                        .is_none_or(|s| s > 9_007_199_254_740_991)
+                {
+                    return Err("Invalid inventory size".into());
+                }
+            }
+        }
+    }
     Ok(())
 }
 

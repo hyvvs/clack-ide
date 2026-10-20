@@ -9705,3 +9705,230 @@ inference outside the single authorized Nemotron mission, **cloud 0, no push**.
 Auto-Discovery and Picker Integration.** It has not been started. This priority
 does not close the still-unexercised post-correction F1 live acceptance condition;
 no further mission is authorized or performed in this checkpoint. STOP.
+
+## Self-hosted provider auto-discovery and picker integration
+
+Date: 2026-10-20. Starting HEAD: `346fc35`.
+**SELF-HOSTED DISCOVERY READY for the Ollama inventory-to-normal-picker goal.**
+**Zero-knowledge endpoint-once criterion: PASS** in production native discovery
+plus deterministic normal-picker integration. This is not a claim of verified
+model inference, practical hardware context, or complete automatic model tuning.
+No ForgeBoard mission, model inference, cloud inference or model download occurred.
+
+### Old flow, new flow and owners
+
+Previously: add connection, usually select provider type, Connect, inspect
+inventory, select each desired row, Save models, then choose a saved picker row.
+Refreshing discovered new rows did not publish them; removed models could remain
+Ready. Inventory normalization discarded Ollama revision/size metadata.
+
+Now: Settings -> Connections & models -> Add self-hosted server -> enter name,
+address and required credential/private-network consent -> Connect. Automatic
+provider detection uses bounded native signatures; successful inventory commits
+immediately publish its models to the existing per-chat picker. No model-ID typing
+or individual model save is required. Details remains on-demand. An explicit
+manual model field remains for providers that cannot enumerate models, not as the
+basic Ollama path. Existing manual labels/settings remain supported.
+
+| Ownership boundary | Production owners |
+| --- | --- |
+| Settings/connection editor | `src/settings/components/SelfHostedServers.tsx`, entered through `ModelsSection.tsx` |
+| Durable schema, connection/profile identity | `src/modules/ai/lib/selfHostedProfiles.ts` |
+| Existing persistence/CAS and cross-window events | `selfHostedPersistence.ts`, settings `store.ts`, native `self_hosted_profiles.rs` |
+| Native detection/inventory/revision merge | `src-tauri/src/modules/inference_probe/{mod,metadata,cache,transport}.rs` |
+| Refresh coordination | `selfHostedInventory.ts`, `hooks/useSelfHostedInventory.ts`, App startup and normal picker opening |
+| Shared registry/status/destination routing | `selfHostedModels.ts`, `AiStatusBarControls.tsx`; existing session model binding and saved-provider route resolver |
+| Favorites/recents | `modelPrefs.ts` plus connection-qualified picker filtering |
+| Capability/context integration | Existing `reasoningEffort.ts`, `selfHostedCapabilities.ts`, `contextBudgetProfile.ts`, `requestPreflight.ts`; detected-backend reads and revision/availability guards only |
+
+### Connection, inventory, profiles and binding
+
+The existing version-1 `selfHostedInference` envelope is extended additively, not
+replaced by another store. Existing chats and version-1 settings without inventory
+remain readable. Repeated loading is idempotent; invalid inventory is isolated on
+read and rejected on write rather than silently becoming capability authority.
+
+- **Connection:** durable user configuration, including optional manual
+  `backendHint`, observed `detectedBackend`, security/credential reference and
+  existing configuration revision. A meaningful configuration edit clears
+  detection/inventory authority; alias edits retain identity.
+- **Inventory:** optional `inventories[]`, one record per connection/configuration
+  revision, containing `observedAt`, `connected`, normalized `backend`, bounded
+  error code and model rows. Rows retain exact `id`, optional display name,
+  supported/unsupported/unknown chat status and optional `digest`, `size`,
+  `modifiedAt`. No conversation, attachments or raw provider response are stored.
+- **Profile/evidence:** existing unsaved capability profiles are reconciled by
+  stable endpoint/model/deployment ownership. They are not marked `saved`, and
+  do not imply manual settings or verified capability. Native inventory and
+  profile updates commit together under the existing settings lock/save rollback,
+  revision counter, stale-generation check and cross-window event mechanism.
+  User labels, overrides and profile identity are retained.
+- **Revision:** profiles retain optional `modelRevision` and observed `backend`;
+  evidence scopes may retain `modelRevision`. New/different or lost digest, and
+  a changed known backend, invalidate old evidence, recommendations and passive
+  calibration. Explicit user overrides/labels are retained as user configuration,
+  not relabeled as verified capability. Same-digest detail evidence may survive
+  only under normal existing TTL/scope rules. Native cache adopts the committed
+  detected backend without an unnecessary second probe.
+- **Picker/chat reference:** newly observed profiles use
+  `self-hosted:[endpointId,transportModelId,deploymentId,modelRevision|null,backend]`.
+  Their stable profile ID remains the existing three-part owner tuple. Previously
+  used three-part/legacy selections and four-part revision references remain
+  resolvable. Exact known old revisions/providers do not follow replacements.
+  A historical binding remains unchanged and unavailable until the user explicitly
+  switches; missing identity never falls back to a global matching model tag.
+- **Route:** resolver returns explicit adapter provider, exact transport model,
+  endpoint URL, profile/connection ID, configuration revision, private consent and
+  credential reference. Equal tags on two servers remain distinct routes. Recents
+  and favorites reconcile unversioned legacy aliases without duplicate rows, but
+  never migrate a known old digest to a newer one. Cloud IDs are unchanged.
+
+Inventory models and manually saved rows reconcile to one picker candidate per
+profile owner. Custom labels win over provider display names. Old manually saved
+rows remain available if discovery is unsupported; after authoritative inventory
+removal they cannot remain newly selectable Ready entries. Server deletion hides
+only that server's candidates, preserves historical records and prevents reroute.
+
+### Detection, refresh, availability and security
+
+Automatic Connect verifies the Ollama `/api/version` signature and native
+`/api/tags` inventory before selecting Ollama. Ports, aliases and model names are
+not detection evidence. Native LM Studio schemas are also recognized; ambiguous
+or unsupported signatures fall back to compatible `/v1/models` without inventing
+vLLM/MLX identity. Explicit provider selection still works and generic compatible
+servers remain usable. Automatic mode rechecks native signatures on refresh rather
+than treating an old detected family as a permanent manual override.
+
+Ollama inventory retains digest/size/modification metadata cheaply; `/api/ps`
+provides loaded-state evidence. `/api/show` remains selected-model/on-demand,
+not an all-model walk. Removed inventory entries cannot be recreated as available
+merely by a selected-model detail probe. Listing does not certify a deployed tool
+parser or all model capabilities. Advertised, configured and runtime context
+remain separate. Detected Ollama uses existing native reasoning mappings, including
+Automatic omission of `think`; no recommendation or reasoning default was changed.
+
+| Trigger/state | Behavior |
+| --- | --- |
+| Connect/manual Refresh | Explicit bounded refresh and atomic publication, no model save step |
+| Startup/settings hydration | Nonblocking stale refresh of configured live connections |
+| Opening normal picker | Refreshes stale inventory without blocking the picker |
+| Fresh inventory | Five-minute TTL avoids unnecessary refresh |
+| Offline/failure | Display identities retained; thirty-second automatic retry backoff; explicit Refresh remains available |
+| Concurrent views | Frontend single-flight plus native cross-window cache/generation coordination; two refresh workers |
+| Newly installed model | Next successful refresh publishes it automatically, no server re-add |
+| Removed model | Unsaved live candidate disappears; retained manual/history reference is unavailable, never falsely Ready |
+| Offline server | Cached candidates are disabled/Offline or Authentication required; historical identity is retained |
+| Server online again | Fresh inventory restores candidates under the same identity when revision is unchanged |
+| Unsupported enumeration | Manual configured models remain unverified, not falsely offline solely because listing is unsupported |
+| Expired capability/inventory | Unverified, not certified Ready; deeper metadata remains on-demand |
+
+Model construction and preflight fail closed for known offline, removed,
+incompatible or changed-revision selections. No primary inference is sent by the
+new preflight regression cases. Missing policy/Never still permit no fallback;
+explicit G3 fallback policy remains separate. Existing B1 budgeting, working
+context, timeouts, C1/G1/M1/M2, PeerTask scheduling, approvals and continuation/
+effect safeguards were not redesigned or weakened.
+
+Existing metadata limits remain: six requests/handshake, five seconds/route,
+twenty seconds overall, 2 MiB responses, 5000 inventory rows and existing native
+cache bounds. Persistence remains limited to 256 connections, 2048 total profiles
+and a 2 MiB envelope; oversized updates fail without replacing previous valid
+state. These limits are not a guarantee all maxima fit simultaneously. History
+profiles are retained under existing ownership rather than indiscriminately
+deleted when a server goes offline or a tag disappears.
+
+Native URL/DNS/redirect/metadata-IP protections, private-network consent and
+keychain references remain authoritative. Refresh never sends browser credentials
+as free-form metadata arguments and never broadens network permission. HTTP(S),
+TLS and authenticated endpoints remain supported. No SSH onboarding, tunnel,
+firewall, Ollama bind/service or remote configuration change was made. No advice
+to expose unauthenticated Ollama on `0.0.0.0` was added.
+
+### Read-only live acceptance
+
+At **2026-10-20T01:47:22.850Z**, the explicitly enabled native test used the existing
+`http://127.0.0.1:11435` tunnel, a fresh isolated connection record with no manual
+provider hint, and production `handshake`/normalization/merge/validation functions.
+Result: **connected, detected Ollama, zero errors, 10 installed models**. Only
+version, tags and loaded-model metadata routes were used; no selected-model show
+walk, model inference, pull, delete or server mutation.
+
+Local ignored evidence: `src-tauri/target/discovery-integration/live.json` and
+`live-picker.json`. Native output contains one connection, one inventory and ten
+unsaved profiles, with full digest, size and modified metadata. The frontend
+integration then hydrated that exact native output and rendered the real normal
+`ModelDropdown`: **10 automatic self-hosted candidates plus cloud models, zero
+per-model saves**, with each exact selection resolving to the same localhost
+Ollama connection. The selected model was not inferred or run. Installed model
+IDs matched the preceding ten-model audit; their presence is not model testing.
+
+This is bounded native production-data-flow plus real picker-renderer evidence,
+not Computer Use or native GUI clicking. User settings/keychain were not mutated
+by the isolated test host. No Linux/macOS native GUI or live inference claim.
+
+### Tests, gates and baseline failures
+
+- Focused frontend group: **360 passed / 1 live-only skipped / 17 files**.
+  Covers automatic one/many candidates, two-server duplicate tags/four routes,
+  new/removed models, offline/online, digest and provider identity, historical
+  bindings, labels/pins/manual compatibility, favorites/recents, stale refresh,
+  deduplication, no-inference IPC, consent/credentials, persistence, B1/model
+  switching, native reasoning and explicit fallback regressions.
+  The post-review picker/favorites subset additionally passed **35 / 1 skipped /
+  3 files**, including one new legacy current-selection marker regression. These
+  groups overlap and are not added together as independent test counts.
+- Native probe group: **77 passed / 1 live-only ignored**, including ten new
+  non-live inventory/detection/revision/cache cases and the existing native
+  security/transport/cache suite. Explicit live native test: **1 passed**.
+  Picker integration using the real captured native data: **8 passed** (seven
+  regular audit cases plus the enabled live-data case).
+- `npm.cmd run check-types`: passed. `npm.cmd run lint`: passed at the existing
+  **71 warnings / 2 informational notices**. `npm.cmd run build`: passed, with
+  existing ineffective dynamic-import and plugin-timing notices. `git diff
+  --check`: passed. `cargo fmt --check` and strict all-targets locked Clippy passed
+  using the isolated `target/codex-test` directory.
+- Final full frontend suite: **3107 passed / 1 failed / 1 skipped;
+  213 passed / 4 failed files**. All failure files are the known archived/evidence
+  issues: Node-only `audit-devstral-latency.test.mjs` collected as an empty Vitest
+  suite, generated ForgeBoard source/dist project suites missing `supertest`, and
+  archived `before-src--test--acceptanceComparison.test.ts` asserting the old
+  model allowlist. No checkpoint-owned frontend test failed; no historical test
+  or test-discovery policy was changed to hide failures.
+- Full locked Rust suite: **618 passed / 1 failed / 1 ignored**. The unchanged
+  `d1_cancellation_timeout_and_revocation_prevent_or_interrupt_work` expected
+  `tool-revoked` but received `timed-out`. The failure reproduced alone and on an
+  independently archived **committed HEAD `346fc35`** (608 other tests filtered).
+  The existing test passes a 10 ms deadline to a biased timer/revocation monitor;
+  exact OS timing cause is not claimed. Baseline/current logs are preserved in
+  `baseline-d1.log` and `final-rust-tests.log`. No tool execution/memory code,
+  timer, safeguard or test was altered. Therefore full Rust is **not all green**;
+  the confirmed pre-existing gate failure is documented, not relabeled a pass.
+  Temporary extracted baseline sources were removed after preserving the archive
+  and log, to avoid duplicating future frontend test discovery.
+
+Final review additionally fixed duplicate carry-forward of the existing
+`probe.requestedContext` receipt during inventory-only refreshes; a 100-refresh
+native regression keeps exactly one receipt. The former checkbox-label row styles
+were retargeted to the replacement wrapper so long IDs retain their flex/wrapping
+constraints. The final legacy-selection marker correction preserves the stored
+chat ID while showing its canonical current row, with `aria-current` and truthful
+status tooltips. Affected gates were repeated after these concrete review fixes;
+the live network check was not repeated. Earlier frontend (3106 passed) and Rust
+(617 passed before the added regression) logs remain in `initial-tests.log` and
+`initial-rust-tests.log`. No unrelated failure was repaired or suppressed.
+
+Only checkpoint-owned implementation, tests and this appended record are staged.
+All six pre-existing dirty paths, including the original unrelated report hunks,
+remain preserved as unstaged work. Both safety stashes, `autonomous_tracker/` and
+`CLACK.md` remain untouched. No user process was terminated. No models downloaded,
+no ForgeBoard run, **model inference 0, cloud inference 0, no push**.
+
+Remaining onboarding gaps are intentionally deferred: practical hardware-context
+calibration, Automatic reasoning/output recommendations, deeper capability/
+engine verification, richer Ready/Unverified/Incompatible explanations and secure
+remote/SSH setup. Legacy bindings with no historically recorded digest cannot be
+retroactively assigned a verified historical revision. Post-correction F1 live
+acceptance remains unexercised; it was not rerun here.
+
+**Next checkpoint: Local Provider Auto-Configuration and Model Onboarding UX.**
+It has not been started. STOP.

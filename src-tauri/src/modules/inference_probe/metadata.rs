@@ -38,12 +38,17 @@ pub struct Endpoint {
     #[serde(rename = "baseURL")]
     pub base_url: String,
     pub backend_hint: Option<Backend>,
+    #[serde(default)]
+    pub detected_backend: Option<Backend>,
     pub credential_ref: Option<CredentialRef>,
     pub configuration_revision: u64,
     pub deleted_at: Option<u64>,
 }
 
 impl Endpoint {
+    pub fn backend(&self) -> Option<Backend> {
+        self.backend_hint.or(self.detected_backend)
+    }
     pub fn account(&self) -> Result<Option<String>, ProbeError> {
         match &self.credential_ref {
             None => Ok(None),
@@ -122,6 +127,8 @@ pub struct Scope {
     pub transport_model_id: String,
     pub deployment_id: Option<String>,
     pub configuration_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_revision: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,14 +147,23 @@ pub struct Model {
     pub name: Option<String>,
     pub chat: Support,
     pub evidence: Vec<Evidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<String>,
 }
 impl Model {
-    fn new(id: String) -> Self {
+    pub(super) fn new(id: String) -> Self {
         Self {
             id,
             name: None,
             chat: Support::Unknown,
             evidence: vec![],
+            digest: None,
+            size: None,
+            modified_at: None,
         }
     }
     pub(super) fn add(
@@ -175,6 +191,7 @@ impl Model {
                 transport_model_id: self.id.clone(),
                 deployment_id: instance.map(str::to_owned),
                 configuration_revision: endpoint.configuration_revision,
+                model_revision: self.digest.clone(),
             },
         });
     }
@@ -183,6 +200,7 @@ impl Model {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Route {
+    OllamaVersion,
     OllamaTags,
     OllamaShow,
     OllamaPs,
@@ -193,6 +211,7 @@ pub enum Route {
 impl Route {
     pub fn suffix(self) -> &'static str {
         match self {
+            Self::OllamaVersion => "api/version",
             Self::OllamaTags => "api/tags",
             Self::OllamaShow => "api/show",
             Self::OllamaPs => "api/ps",
@@ -272,6 +291,15 @@ pub fn inventory(
             return Err(ProbeError::metadata());
         }
         let mut model = Model::new(id);
+        if route == Route::OllamaTags {
+            if !record["digest"].is_null() {
+                model.digest = Some(name(&record["digest"])?);
+            }
+            model.size = number(&record["size"])?.and_then(|v| v.as_u64());
+            if !record["modified_at"].is_null() {
+                model.modified_at = Some(name(&record["modified_at"])?);
+            }
+        }
         model.add(endpoint, at, None, "listed", json!(true), false);
         if route == Route::LmV1 {
             if !record["display_name"].is_null() {

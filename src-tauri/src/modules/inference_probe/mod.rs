@@ -59,6 +59,8 @@ pub struct Snapshot {
     pub instance_ttl_ms: u64,
     pub models: Vec<Model>,
     pub errors: Vec<RouteError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<Backend>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,7 +82,7 @@ fn annotate_requested_context(
     selected: Option<&str>,
     requested: Option<u64>,
 ) {
-    if endpoint.backend_hint != Some(Backend::Ollama) {
+    if snapshot.backend.or(endpoint.backend()) != Some(Backend::Ollama) {
         return;
     }
     if let (Some(model), Some(requested)) = (
@@ -232,29 +234,106 @@ async fn handshake(
         instance_ttl_ms: INSTANCE_TTL_MS,
         models: vec![],
         errors: vec![],
+        backend: endpoint.backend(),
     };
     let mut count = 0;
-    let routes: &[Route] = match endpoint.backend_hint {
+    let mut detected = endpoint.clone();
+    if endpoint.backend_hint.is_none() {
+        detected.detected_backend = None;
+        // Native version + inventory signatures, never ports, aliases or model names.
+        let version = transport
+            .request(
+                endpoint,
+                Route::OllamaVersion,
+                None,
+                secret,
+                private,
+                &mut count,
+            )
+            .await;
+        match version {
+            Ok(value)
+                if value["version"].as_str().is_some_and(|v| {
+                    v.len() <= 64
+                        && v.split('.').count() >= 2
+                        && v.split('.')
+                            .take(2)
+                            .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+                }) =>
+            {
+                detected.backend_hint = Some(Backend::Ollama);
+            }
+            Err(error)
+                if !matches!(
+                    error.code,
+                    ErrorCode::UnsupportedProbeRoute
+                        | ErrorCode::InvalidServerResponse
+                        | ErrorCode::MalformedMetadata
+                ) =>
+            {
+                result.reachable = error.reachable;
+                result.stale = true;
+                result.errors.push(RouteError {
+                    route: Some(Route::OllamaVersion),
+                    error,
+                });
+                return Ok(result);
+            }
+            _ => {}
+        }
+    }
+    let routes: &[Route] = match detected.backend() {
         Some(Backend::Ollama) => &[Route::OllamaTags],
         Some(Backend::Lmstudio) => &[Route::LmV1, Route::LmV0, Route::CompatibleModels],
+        None => &[Route::LmV1, Route::LmV0, Route::CompatibleModels],
         _ => &[Route::CompatibleModels],
     };
     for route in routes {
         let response = transport
             .request(endpoint, *route, selected, secret, private, &mut count)
             .await;
-        let models =
-            response.and_then(|v| inventory(endpoint, *route, selected, &v, result.observed_at));
+        let models = response.and_then(|v| {
+            if endpoint.backend_hint.is_none() && matches!(route, Route::LmV1 | Route::LmV0) {
+                let key = if *route == Route::LmV1 {
+                    "models"
+                } else {
+                    "data"
+                };
+                let native = v[key].as_array().is_some_and(|rows| {
+                    !rows.is_empty()
+                        && rows.iter().all(|m| {
+                            matches!(
+                                m["type"].as_str(),
+                                Some("llm" | "vlm" | "embedding" | "embeddings")
+                            )
+                        })
+                });
+                if !native {
+                    return Err(ProbeError::metadata());
+                }
+            }
+            inventory(endpoint, *route, selected, &v, result.observed_at)
+        });
         match models {
             Ok(models) => {
+                if endpoint.backend_hint.is_none() {
+                    result.errors.clear();
+                }
                 result.models = models;
                 result.connected = true;
                 result.reachable = true;
+                result.backend = Some(match route {
+                    Route::OllamaTags => Backend::Ollama,
+                    Route::LmV1 | Route::LmV0 => Backend::Lmstudio,
+                    _ => endpoint.backend_hint.unwrap_or(Backend::OpenaiCompatible),
+                });
                 break;
             }
             Err(error) => {
                 result.reachable |= error.reachable;
-                let fallback = error.code == ErrorCode::UnsupportedProbeRoute;
+                let fallback = error.code == ErrorCode::UnsupportedProbeRoute
+                    || (endpoint.backend_hint.is_none()
+                        && error.code == ErrorCode::MalformedMetadata);
                 result.errors.push(RouteError {
                     route: Some(*route),
                     error,
@@ -265,9 +344,14 @@ async fn handshake(
             }
         }
     }
-    if result.connected && endpoint.backend_hint == Some(Backend::Ollama) {
+    if result.connected && result.backend == Some(Backend::Ollama) {
         for route in [Route::OllamaShow, Route::OllamaPs] {
-            if route == Route::OllamaShow && selected.is_none() {
+            if route == Route::OllamaShow
+                && !result
+                    .models
+                    .iter()
+                    .any(|m| Some(m.id.as_str()) == selected)
+            {
                 continue;
             }
             let response = transport
@@ -286,12 +370,7 @@ async fn handshake(
                     if models.len() >= MAX_RECORDS {
                         return Err(ProbeError::metadata());
                     }
-                    let mut model = Model {
-                        id: selected.unwrap_or_default().into(),
-                        name: None,
-                        chat: Support::Unknown,
-                        evidence: vec![],
-                    };
+                    let mut model = Model::new(selected.unwrap_or_default().into());
                     ollama_show(endpoint, &mut model, &value, now())?;
                     models.push(model);
                 }
@@ -324,11 +403,42 @@ fn clear_probe_evidence(profile: &mut Value) {
 }
 
 fn merge_evidence(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeError> {
+    merge_inventory(value, snapshot)?;
     let profiles = value["profiles"].as_array_mut().ok_or_else(internal)?;
     for profile in profiles
         .iter_mut()
         .filter(|p| p["endpointId"] == snapshot.endpoint_id)
     {
+        let model = snapshot
+            .models
+            .iter()
+            .find(|m| p_string(profile, "transportModelId") == m.id);
+        let changed_revision = model
+            .is_some_and(|m| profile["modelRevision"].as_str() != m.digest.as_deref())
+            || (snapshot.connected
+                && snapshot.backend.is_some()
+                && profile
+                    .get("backend")
+                    .is_some_and(|b| *b != json!(snapshot.backend)));
+        if changed_revision {
+            profile["evidence"] = json!([]);
+            profile["recommendations"] = json!({});
+            profile
+                .as_object_mut()
+                .ok_or_else(internal)?
+                .remove("calibration");
+        }
+        if let Some(digest) = model.and_then(|m| m.digest.as_ref()) {
+            profile["modelRevision"] = json!(digest);
+        } else if model.is_some() {
+            profile
+                .as_object_mut()
+                .ok_or_else(internal)?
+                .remove("modelRevision");
+        }
+        if model.is_some() && snapshot.backend.is_some() {
+            profile["backend"] = json!(snapshot.backend);
+        }
         let requested = profile["evidence"].as_array().and_then(|items| {
             items
                 .iter()
@@ -341,7 +451,17 @@ fn merge_evidence(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeErr
                 })
                 .cloned()
         });
-        clear_probe_evidence(profile);
+        if let Some(items) = profile["evidence"].as_array_mut() {
+            items.retain(|e| {
+                !e["metric"].as_str().is_some_and(|metric| {
+                    metric.starts_with("probe.")
+                        && (metric == "probe.requestedContext"
+                            || !snapshot.connected
+                            || model
+                                .is_none_or(|m| m.evidence.iter().any(|new| new.metric == metric)))
+                })
+            });
+        }
         let requested = snapshot
             .models
             .iter()
@@ -385,11 +505,7 @@ fn merge_evidence(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeErr
             profile["updatedAt"] = json!(snapshot.observed_at);
         }
     }
-    if let Some(model) = snapshot
-        .models
-        .iter()
-        .find(|m| Some(&m.id) == snapshot.selected_model_id.as_ref())
-    {
+    for model in snapshot.models.iter().filter(|_| snapshot.connected) {
         let mut deployments = vec![None];
         for e in &model.evidence {
             if e.scope.deployment_id.is_some() && !deployments.contains(&e.scope.deployment_id) {
@@ -409,10 +525,66 @@ fn merge_evidence(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeErr
                 .iter()
                 .filter(|e| e.scope.deployment_id == deployment)
                 .collect();
-            profiles.push(json!({"id": id, "endpointId": snapshot.endpoint_id, "transportModelId": model.id, "deploymentId": deployment, "createdAt": snapshot.observed_at, "updatedAt": snapshot.observed_at, "evidence": evidence, "recommendations": {}, "overrides": {}}));
+            let mut profile = json!({"id": id, "endpointId": snapshot.endpoint_id, "transportModelId": model.id, "deploymentId": deployment, "createdAt": snapshot.observed_at, "updatedAt": snapshot.observed_at, "evidence": evidence, "recommendations": {}, "overrides": {}});
+            if let Some(digest) = &model.digest {
+                profile["modelRevision"] = json!(digest);
+            }
+            if snapshot.backend.is_some() {
+                profile["backend"] = json!(snapshot.backend);
+            }
+            profiles.push(profile);
         }
     }
     value["revision"] = json!(value["revision"].as_u64().ok_or_else(internal)? + 1);
+    Ok(())
+}
+
+fn merge_inventory(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeError> {
+    if snapshot.connected {
+        if let Some(endpoint) = value["endpoints"]
+            .as_array_mut()
+            .and_then(|items| items.iter_mut().find(|e| e["id"] == snapshot.endpoint_id))
+        {
+            endpoint["detectedBackend"] = json!(snapshot.backend);
+        }
+    }
+    if value.get("inventories").is_none() {
+        value["inventories"] = json!([]);
+    }
+    let inventories = value["inventories"].as_array_mut().ok_or_else(internal)?;
+    let previous = inventories.iter().find(|v| {
+        v["endpointId"] == snapshot.endpoint_id
+            && v["configurationRevision"] == snapshot.configuration_revision
+    });
+    let models = if snapshot.connected {
+        snapshot
+            .models
+            .iter()
+            .map(|model| {
+                let mut item = json!(model);
+                item.as_object_mut()
+                    .expect("serialized model")
+                    .remove("evidence");
+                item
+            })
+            .collect::<Vec<_>>()
+    } else {
+        previous
+            .and_then(|v| v["models"].as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    let backend = snapshot
+        .backend
+        .map(|b| json!(b))
+        .or_else(|| previous.and_then(|v| v.get("backend")).cloned())
+        .unwrap_or(Value::Null);
+    let inventory = json!({"endpointId": snapshot.endpoint_id,
+        "configurationRevision": snapshot.configuration_revision, "observedAt": snapshot.observed_at,
+        "connected": snapshot.connected, "backend": backend, "models": models,
+        "error": snapshot.errors.last().map(|e| e.error.code)});
+    inventories.retain(|v| v["endpointId"] != snapshot.endpoint_id);
+    inventories.push(inventory);
     Ok(())
 }
 fn p_string<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -452,12 +624,45 @@ fn finish(app: &AppHandle, endpoint: &Endpoint, generation: u64, mut outcome: ca
         if configured(&previous, &endpoint.id)? != *endpoint {
             return Err(ProbeError::new(ErrorCode::Cancelled));
         }
-        if let Ok(snapshot) = &outcome {
-            if snapshot.connected {
-                let mut next = previous.clone();
-                merge_evidence(&mut next, snapshot)?;
-                save_state(app, &store, previous, next)?;
+        let failed;
+        let snapshot = match &outcome {
+            Ok(snapshot) => Some(snapshot),
+            Err(error)
+                if !matches!(
+                    error.code,
+                    ErrorCode::Cancelled
+                        | ErrorCode::Busy
+                        | ErrorCode::InvalidConfiguration
+                        | ErrorCode::PersistenceFailed
+                ) =>
+            {
+                failed = Snapshot {
+                    endpoint_id: endpoint.id.clone(),
+                    configuration_revision: endpoint.configuration_revision,
+                    selected_model_id: None,
+                    observed_at: now(),
+                    connected: false,
+                    reachable: error.reachable,
+                    credential_used: false,
+                    stale: true,
+                    refreshing: false,
+                    inventory_ttl_ms: INVENTORY_TTL_MS,
+                    instance_ttl_ms: INSTANCE_TTL_MS,
+                    models: vec![],
+                    errors: vec![RouteError {
+                        route: None,
+                        error: error.clone(),
+                    }],
+                    backend: endpoint.backend(),
+                };
+                Some(&failed)
             }
+            _ => None,
+        };
+        if let Some(snapshot) = snapshot {
+            let mut next = previous.clone();
+            merge_evidence(&mut next, snapshot)?;
+            save_state(app, &store, previous, next)?;
         }
         Ok(())
     };
@@ -523,7 +728,7 @@ pub async fn self_hosted_probe(
         });
         if requested_context.is_some_and(|v| v == 0 || v > 2_000_000)
             || (options.requested_context.is_some()
-                && (endpoint.backend_hint != Some(Backend::Ollama)
+                && (endpoint.backend() != Some(Backend::Ollama)
                     || options.selected_model_id.is_none()))
         {
             return Err(ProbeError::new(ErrorCode::InvalidConfiguration));

@@ -91,6 +91,8 @@ export function selfHostedHealth(
   const model = snapshot?.models.find(
     (m) => m.id === profile?.transportModelId,
   );
+  if (profile && snapshot?.connected && !snapshot.stale && !model)
+    return { label: "Unavailable", detail: "Model is absent from the current server inventory" };
   if (model?.chat === "unsupported")
     return { label: "Limited", detail: "Not a supported chat model" };
   const loaded = model?.evidence.find(

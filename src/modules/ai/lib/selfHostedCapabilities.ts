@@ -1,6 +1,7 @@
 import type { ModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
 import {
   resolveSelfHostedSelection,
+  endpointBackend,
   type SelfHostedEndpoint,
   type SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
@@ -102,7 +103,7 @@ export function serverModelDetails(
         : evidence.some(e => e.metric === "probe.loaded" && e.value === false)
           ? "Not currently loaded" : "Unknown",
     runtimeContext: evidence.some(e => e.metric === "probe.runtimeContext" && e.value === "per-request")
-      ? "per-request" as const : endpoint.backendHint ? "server-managed" as const : "unknown" as const,
+      ? "per-request" as const : endpointBackend(endpoint) ? "server-managed" as const : "unknown" as const,
     advertisedContext: advertised.length
       ? `${format(advertised)} tokens (model maximum, not current server context)`
       : "Unknown",

@@ -53,6 +53,7 @@ fn normalize(address: &str) -> Result<Endpoint, ProbeError> {
         id: "discovery".into(),
         base_url: address.into(),
         backend_hint: None,
+        detected_backend: None,
         credential_ref: None,
         configuration_revision: 1,
         deleted_at: None,

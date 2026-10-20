@@ -10,6 +10,21 @@ function capture(values: unknown, model?: string) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Ollama metadata-driven reasoning controls", () => {
+  it("uses auto-detected native provider controls and rejects evidence from an older digest", () => {
+    const fixture = ollamaEffortFixture([false, true, "medium"]);
+    fixture.endpoint.backendHint = undefined;
+    fixture.endpoint.detectedBackend = "ollama";
+    const captured = captureEffort("selection", fixture.identity, undefined, fixture.state);
+    expect(captured.capability.status).toBe("supported");
+    expect(effortProviderOptions(captured)).toEqual({});
+    expect(effortProviderOptions({ ...captured, choice: "none" })).toEqual({ ollama: { think: false } });
+    fixture.state.profiles[0].modelRevision = "new-revision";
+    expect(effortCapability(fixture.identity, fixture.state).status).toBe("unknown");
+    fixture.profile.evidence = fixture.profile.evidence.map(e => ({ ...e, scope: { ...e.scope, modelRevision: "new-revision" } }));
+    const revalidated = effortCapability(fixture.identity, fixture.state);
+    expect(revalidated.status).toBe("supported");
+    expect(revalidated.revision).not.toBe(captured.capability.revision);
+  });
   it("normalizes captured Muse controls without discarding None or named effort", () => {
     const fixture = ollamaEffortFixture();
     const capability = effortCapability(fixture.identity, fixture.state);

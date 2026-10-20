@@ -20,12 +20,14 @@ import {
   deleteSelfHostedEndpoint,
   type SelfHostedEndpoint,
   type SelfHostedBackend,
+  endpointBackend,
 } from "@/modules/ai/lib/selfHostedProfiles";
 import {
   SELF_HOSTED_BACKENDS,
   endpointAllowsPrivate,
   endpointProvider,
   saveSelfHostedModel,
+  savedSelfHostedModelInfos,
 } from "@/modules/ai/lib/selfHostedModels";
 import {
   createSelfHostedProbeClient,
@@ -38,6 +40,7 @@ import {
   retainServerInventory,
 } from "@/modules/ai/lib/selfHostedSetup";
 import { serverModelDetails } from "@/modules/ai/lib/selfHostedCapabilities";
+import { useSelfHostedInventory } from "@/modules/ai/hooks/useSelfHostedInventory";
 import "@/settings/components/SelfHostedServers.css";
 
 const probeClient = createSelfHostedProbeClient();
@@ -48,6 +51,7 @@ const options = (server: SelfHostedEndpoint, model?: string) => ({
 });
 
 export function SelfHostedServers({ addRequest = 0 }: { addRequest?: number }) {
+  useSelfHostedInventory();
   const state = usePreferencesStore((s) => s.selfHostedInference);
   const [editing, setEditing] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -75,12 +79,7 @@ export function SelfHostedServers({ addRequest = 0 }: { addRequest?: number }) {
       ) : null}
       {error ? <p role="alert">{error}</p> : null}
       {endpoints.map((endpoint) => {
-        const models = state.profiles.filter(
-          (p) =>
-            p.endpointId === endpoint.id &&
-            p.deploymentId === null &&
-            (p.saved || endpoint.legacy?.profileId === p.id),
-        );
+        const models = savedSelfHostedModelInfos({ ...state, endpoints: [endpoint] });
         return (
           <div className="server-row focus-visible:outline focus-visible:outline-1" key={endpoint.id} data-settings-connection={endpoint.id} tabIndex={-1}>
             <ProviderIcon provider={endpointProvider(endpoint)} size={17} />
@@ -92,13 +91,13 @@ export function SelfHostedServers({ addRequest = 0 }: { addRequest?: number }) {
             >
               <strong>{endpoint.alias}</strong>
               <span>
-                {models.length} saved {models.length === 1 ? "model" : "models"}
+                {models.length} {models.length === 1 ? "model" : "models"}
               </span>
               {models.length ? (
                 <small>
                   {models
                     .slice(0, 3)
-                    .map((p) => p.saved?.label ?? p.transportModelId)
+                    .map((p) => p.label)
                     .join(" / ")}
                   {models.length > 3 ? " ..." : ""}
                 </small>
@@ -160,7 +159,6 @@ function ServerEditor({
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [manual, setManual] = useState("");
-  const [selected, setSelected] = useState<string[]>([]);
   const [detailModel, setDetailModel] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -215,9 +213,11 @@ function ServerEditor({
     let alive = true;
     const token = epoch.current;
     void probeClient
-      .read(options(endpoint))
-      .then((value) => {
-        if (alive && epoch.current === token) setSnapshot(value);
+      .inspect(options(endpoint))
+      .then(async ({ cached, refresh }) => {
+        if (alive && epoch.current === token) setSnapshot(cached);
+        const value = await refresh;
+        if (value && alive && epoch.current === token) setSnapshot(value);
       })
       .catch(() => {});
     return () => {
@@ -299,9 +299,7 @@ function ServerEditor({
     setSaving(true);
     setError("");
     try {
-      const ids = [
-        ...new Set([...selected, ...(manual.trim() ? [manual.trim()] : [])]),
-      ];
+      const ids = manual.trim() ? [manual.trim()] : [];
       await updateSelfHostedProfiles((state) => {
         const latest = state.endpoints.find((e) => e.id === current.id);
         if (
@@ -323,7 +321,6 @@ function ServerEditor({
       });
       setSaved(true);
       setManual("");
-      setSelected([]);
       if (!endpoint) onCreated(current.id);
     } catch {
       setError(
@@ -397,12 +394,12 @@ function ServerEditor({
           <label>
             Server type
             <select
-              value={backend}
+              value={backend || (!current?.backendHint ? current?.detectedBackend : "") || ""}
               onChange={(e) =>
                 setBackend(e.target.value as SelfHostedBackend | "")
               }
             >
-              <option value="">Not specified</option>
+              <option value="">Automatic</option>
               {Object.entries(SELF_HOSTED_BACKENDS).map(([id, label]) => (
                 <option key={id} value={id}>
                   {label}
@@ -484,8 +481,8 @@ function ServerEditor({
           <div className="server-heading">
             <h4>Models on {current.alias}</h4>
             <span>
-              {current.backendHint
-                ? `${SELF_HOSTED_BACKENDS[current.backendHint]} (selected type)`
+              {endpointBackend(current)
+                ? SELF_HOSTED_BACKENDS[endpointBackend(current) as SelfHostedBackend]
                 : "Backend could not be confirmed"}
             </span>
           </div>
@@ -503,20 +500,7 @@ function ServerEditor({
           >
             {rows.slice(0, 60).map((model) => (
               <div className="server-model" key={model.id}>
-                <label>
-                  <input
-                    type="checkbox"
-                    disabled={model.chat === "unsupported" || changed || saving}
-                    checked={selected.includes(model.id)}
-                    onChange={(e) => {
-                      setSaved(false);
-                      setSelected((ids) =>
-                        e.target.checked
-                          ? [...ids, model.id]
-                          : ids.filter((id) => id !== model.id),
-                      );
-                    }}
-                  />
+                <div>
                   <span>
                     <strong>{model.name ?? model.id}</strong>
                     <small>
@@ -526,7 +510,7 @@ function ServerEditor({
                         : ""}
                     </small>
                   </span>
-                </label>
+                </div>
                 <button
                   type="button"
                   disabled={busy || changed}
@@ -608,11 +592,7 @@ function ServerEditor({
           ) : null}
           <div className="server-heading">
             <span role="status">
-              {saved
-                ? "Models saved"
-                : selected.length
-                  ? `${selected.length} selected`
-                  : ""}
+              {saved ? "Manual model saved" : ""}
             </span>
             <Button
               size="sm"
@@ -620,12 +600,12 @@ function ServerEditor({
                 changed ||
                 busy ||
                 saving ||
-                (!selected.length && !manual.trim())
+                !manual.trim()
               }
               onClick={() => void save()}
             >
               <HugeiconsIcon icon={Tick01Icon} size={14} />
-              Save models
+              Add manual model
             </Button>
           </div>
         </>

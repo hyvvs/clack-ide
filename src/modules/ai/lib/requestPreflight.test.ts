@@ -100,6 +100,33 @@ async function model(provider: ProviderId, id: string) {
   return built;
 }
 describe("real installed adapters serialize shared output/preflight", () => {
+  it.each(["removed", "incompatible", "changed-digest", "offline"])("rejects %s discovery state before sending inference, without fallback", async scenario => {
+    const fixture = hostedEffortFixture();
+    fixture.profile.modelRevision = "rev-a";
+    fixture.state.profiles[0].modelRevision = "rev-a";
+    const snapshot: ProbeSnapshot = {
+      endpointId: fixture.endpoint.id, configurationRevision: 1,
+      selectedModelId: fixture.profile.transportModelId, observedAt: Date.now(),
+      connected: scenario !== "offline", reachable: scenario !== "offline", credentialUsed: false,
+      stale: false, refreshing: false, inventoryTtlMs: 300000, instanceTtlMs: 30000,
+      errors: scenario === "offline" ? [{ route: null, error: { code: "unreachable", reachable: false, statusCode: null } }] : [],
+      models: scenario === "removed" ? [] : [{ id: fixture.profile.transportModelId, name: null,
+        chat: scenario === "incompatible" ? "unsupported" : "unknown", evidence: [],
+        digest: scenario === "changed-digest" ? "rev-b" : "rev-a" }],
+    };
+    const originalInvoke = vi.mocked(invoke).getMockImplementation();
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "self_hosted_profiles_snapshot") return [["selfHostedInference", fixture.state]];
+      if (command === "self_hosted_probe_cache" || command === "self_hosted_probe") return snapshot;
+      return originalInvoke?.(command, args);
+    });
+    const built = await buildConfiguredLanguageModel(selfHostedSelectionId(fixture.profile), EMPTY_PROVIDER_KEYS,
+      { selfHostedInference: fixture.state, capturedModelIdentity: fixture.identity });
+    if (typeof built === "string" || built.specificationVersion !== "v3") throw new Error("Unexpected model");
+    await expect(built.doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
+      maxOutputTokens: 256 })).rejects.toThrow(/unavailable/i);
+    expect(bodies).toHaveLength(0);
+  });
   it.each(["openai-compatible", "lmstudio", "vllm", "mlx"] as const)("revalidates the existing explicit contract for %s without using Ollama controls", async backend => {
     let now = Date.now();
     const date = vi.spyOn(Date, "now").mockImplementation(() => now);

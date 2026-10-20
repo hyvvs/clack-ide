@@ -166,6 +166,7 @@ export function createRequestPreflight(options: {
       selectedModelId: profile.transportModelId,
       allowPrivateNetwork: endpointAllowsPrivate(endpoint),
     };
+    let failureCode: string | undefined;
     try {
       snapshot = await client.read(probeOptions);
       if (
@@ -181,9 +182,22 @@ export function createRequestPreflight(options: {
         refreshAttemptedAt = Date.now();
         snapshot = await client.refresh(probeOptions);
       }
-    } catch {
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && typeof error.code === "string")
+        failureCode = error.code;
       /* Optional metadata failure retains only evidence still fresh under A2. */
     }
+    if (failureCode && ["unreachable", "dns-failure", "timeout", "tls-failure", "authentication-failed", "unsafe-endpoint"].includes(failureCode))
+      throw new Error("Self-hosted server unavailable. Reconnect or refresh this server. No inference was sent.");
+    if (snapshot?.connected && !snapshot.stale) {
+      const current = snapshot.models.find(m => m.id === profile.transportModelId);
+      if (!current || current.chat === "unsupported" ||
+          (profile.modelRevision && profile.modelRevision !== current.digest))
+        throw new Error("Model unavailable or revision changed. Refresh this server and explicitly choose a current model. No inference was sent.");
+    }
+    if (snapshot && !snapshot.connected && snapshot.errors.some(e =>
+      ["unreachable", "dns-failure", "timeout", "tls-failure", "authentication-failed"].includes(e.error.code)))
+      throw new Error("Self-hosted server unavailable. Reconnect or refresh this server. No inference was sent.");
   };
   const checkIdentity = async () => {
     if (!profile || !identity) return;

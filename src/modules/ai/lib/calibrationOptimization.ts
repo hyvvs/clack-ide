@@ -11,6 +11,7 @@ import {
   type ScopedCalibrationSample,
 } from "@/modules/ai/lib/inferenceCalibration";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import { endpointBackend } from "@/modules/ai/lib/selfHostedProfiles";
 import {
   endpointAllowsPrivate,
   compatibleServerBaseURL,
@@ -230,7 +231,7 @@ export async function optimizeInferenceProfile(options: Options) {
         );
         if (!identity) throw new Error("Model identity unavailable.");
         const model = await buildLanguageModel(
-          endpoint.backendHint === "ollama" ? "ollama" : "openai-compatible",
+          endpointBackend(endpoint) === "ollama" ? "ollama" : "openai-compatible",
           EMPTY_PROVIDER_KEYS,
           profile.transportModelId,
           {

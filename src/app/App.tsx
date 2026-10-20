@@ -22,6 +22,7 @@ import {
   useSelectionAskAi,
 } from "@/modules/ai";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
+import { useSelfHostedInventory } from "@/modules/ai/hooks/useSelfHostedInventory";
 import { routeAiPaneShortcut } from "@/modules/ai/lib/aiPaneShortcuts";
 import { native } from "@/modules/ai/lib/native";
 import {
@@ -155,6 +156,7 @@ function readTerminalDockCollapsed(): boolean {
 }
 
 export default function App() {
+  useSelfHostedInventory();
   const {
     tabs,
     activeId,

@@ -18,8 +18,8 @@
 .server-models { max-height: 240px; overflow: auto; min-width: 0; }
 .server-model { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 4px; border-bottom: 1px solid var(--border); }
 .server-model:hover { background: var(--accent); }
-.server-model label { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
-.server-model label > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.server-model > div { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.server-model > div > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .server-model strong, .server-model small { overflow-wrap: anywhere; }
 .server-model button { flex-shrink: 0; padding: 4px; color: var(--muted-foreground); }
 .self-hosted-servers button:focus-visible, .self-hosted-servers input:focus-visible, .self-hosted-servers select:focus-visible, .self-hosted-servers summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }

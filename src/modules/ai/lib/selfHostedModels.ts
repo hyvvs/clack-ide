@@ -2,6 +2,7 @@ import type { ModelInfo, ProviderId } from "@/modules/ai/config";
 import {
   ensureSelfHostedProfile,
   resolveSelfHostedSelection,
+  endpointBackend,
   type SelfHostedState,
   type SelfHostedEndpoint,
   type SelfHostedProfile,
@@ -21,7 +22,11 @@ export const SELF_HOSTED_BACKENDS = {
 } as const;
 
 export function selfHostedSelectionId(profile: SelfHostedProfile): string {
-  return `self-hosted:${profile.id}`;
+  return `self-hosted:${profile.backend
+    ? JSON.stringify([profile.endpointId, profile.transportModelId, profile.deploymentId, profile.modelRevision ?? null, profile.backend])
+    : profile.modelRevision
+    ? JSON.stringify([profile.endpointId, profile.transportModelId, profile.deploymentId, profile.modelRevision])
+    : profile.id}`;
 }
 
 export function saveSelfHostedModel(
@@ -49,7 +54,7 @@ export function saveSelfHostedModel(
 }
 
 export function endpointProvider(endpoint: SelfHostedEndpoint): ProviderId {
-  const hint = endpoint.backendHint;
+  const hint = endpointBackend(endpoint);
   return hint === "ollama" || hint === "lmstudio" || hint === "mlx"
     ? hint
     : "openai-compatible";
@@ -76,7 +81,8 @@ export function selfHostedModelInfo(
   return {
     id: selectionId,
     provider: endpointProvider(target.endpoint),
-    label: target.profile.saved?.label ?? target.profile.transportModelId,
+    label: target.profile.saved?.label ?? state.inventories?.find(i => i.endpointId === target.endpoint.id &&
+      i.configurationRevision === target.endpoint.configurationRevision)?.models.find(m => m.id === target.profile.transportModelId)?.name ?? target.profile.transportModelId,
     hint: target.endpoint.alias,
     description: `${target.endpoint.alias} / ${target.profile.transportModelId}`,
     capabilities: { intelligence: 0, speed: 0, cost: 0 },
@@ -91,11 +97,13 @@ export function savedSelfHostedModelInfos(state: SelfHostedState): ModelInfo[] {
     if (
       !endpoint ||
       p.deploymentId !== null ||
-      (!p.saved && endpoint.legacy?.profileId !== p.id)
+      (!p.saved && endpoint.legacy?.profileId !== p.id && !state.inventories?.some(i =>
+        i.endpointId === endpoint.id && i.configurationRevision === endpoint.configurationRevision &&
+        i.models.some(m => m.id === p.transportModelId)))
     )
       return [];
     const id =
-      endpoint.legacy?.profileId === p.id
+      endpoint.legacy?.profileId === p.id && !p.modelRevision
         ? endpoint.legacy.selectionId
         : selfHostedSelectionId(p);
     const info = selfHostedModelInfo(id, state);
@@ -103,13 +111,40 @@ export function savedSelfHostedModelInfos(state: SelfHostedState): ModelInfo[] {
   });
 }
 
+export function canonicalSelfHostedSelectionId(id: string, state?: SelfHostedState): string {
+  if (!state) return id;
+  const target = resolveSelfHostedSelection(state, id);
+  if (target.status !== "available" || !target.profile.modelRevision) return id;
+  // Only unversioned legacy aliases migrate. A captured old digest never follows a new one.
+  return selfHostedSelectionId(target.profile);
+}
+
+export function selfHostedPickerStatus(selectionId: string, state: SelfHostedState, now = Date.now()): { label: string; disabled: boolean } | undefined {
+  const target = resolveSelfHostedSelection(state, selectionId);
+  if (target.status === "not-managed") return undefined;
+  if (target.status === "missing") return { label: "Unavailable", disabled: true };
+  const inventory = state.inventories?.find(i => i.endpointId === target.endpoint.id &&
+    i.configurationRevision === target.endpoint.configurationRevision);
+  if (!inventory) return { label: "Unverified", disabled: false };
+  if (!inventory.connected) {
+    if (inventory.error === "unsupported-probe-route") return { label: "Unverified", disabled: false };
+    return { label: inventory.error === "authentication-failed" ? "Authentication required" : "Offline", disabled: true };
+  }
+  const model = inventory.models.find(m => m.id === target.profile.transportModelId);
+  if (!model) return { label: "Unavailable", disabled: true };
+  if (model.chat === "unsupported") return { label: "Incompatible", disabled: true };
+  if (inventory.observedAt > now || now - inventory.observedAt >= 300_000)
+    return { label: "Unverified", disabled: false };
+  return { label: "Available / capabilities unverified", disabled: false };
+}
+
 export function compatibleServerBaseURL(endpoint: SelfHostedEndpoint): string {
   const url = new URL(endpoint.baseURL);
   let path = url.pathname.replace(/\/+$/, "");
   if (
     !path ||
-    ((endpoint.backendHint === "ollama" ||
-      endpoint.backendHint === "lmstudio") &&
+    ((endpointBackend(endpoint) === "ollama" ||
+      endpointBackend(endpoint) === "lmstudio") &&
       !path.endsWith("/v1"))
   )
     path += "/v1";
@@ -133,6 +168,9 @@ export function selfHostedTransportIdentity(
       "Model unavailable. Restore the server or choose another model.",
     );
   const { endpoint, profile } = target;
+  const status = selfHostedPickerStatus(selectionId, state);
+  if (status?.disabled)
+    throw new Error(`Model unavailable (${status.label}). Refresh this server or explicitly choose another model.`);
   return {
     providerId: endpointProvider(endpoint),
     transportModelId: profile.transportModelId,

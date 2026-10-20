@@ -183,6 +183,9 @@ impl Cache {
         let entry = self.entries.get_mut(&endpoint.id).expect("current entry");
         let result = match outcome {
             Ok(snapshot) if snapshot.connected => {
+                if snapshot.backend.is_some() {
+                    entry.endpoint.detected_backend = snapshot.backend;
+                }
                 entry.snapshot = Some(snapshot.clone());
                 Ok(snapshot)
             }

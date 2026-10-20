@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import type { ReactNode, AriaAttributes } from "react";
+import { readFileSync, writeFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelDropdown } from "@/modules/ai/components/AiStatusBarControls";
@@ -66,11 +67,13 @@ vi.mock("@/components/ui/dropdown-menu", () => {
     DropdownMenuItem: ({
       children,
       "aria-label": label,
+      "aria-current": current,
     }: {
       children?: ReactNode;
       "aria-label"?: string;
+      "aria-current"?: AriaAttributes["aria-current"];
     }) => (
-      <div role="menuitem" tabIndex={-1} aria-label={label}>
+      <div role="menuitem" tabIndex={-1} aria-label={label} aria-current={current}>
         {children}
       </div>
     ),
@@ -159,8 +162,38 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("current discovery-to-normal-picker contract and documented gaps", () => {
-  it("discovered inventory or an unsaved native detail profile alone does not populate the normal picker", async () => {
+describe("discovery-to-normal-picker persistence boundaries", () => {
+  it("retains the current-selection marker for legacy chat bindings without rewriting them", () => {
+    const state = saveInventory(inventory(["shared-model"]));
+    const legacy = selfHostedSelectionId(state.profiles[0]);
+    state.profiles[0].modelRevision = "observed-revision";
+    state.profiles[0].backend = "ollama";
+    const html = picker(state, legacy);
+    expect(html).toContain('aria-label="shared-model. Same-PC address: http://localhost:11435" aria-current="true"');
+    expect(useChatStore.getState().sessions[0].profile?.modelId).toBe(legacy);
+    expect(html.match(/aria-current="true"/g)).toHaveLength(1);
+  });
+  it.runIf(process.env.CLACK_DISCOVERY_LIVE === "1")("publishes the real native discovery commit into the normal picker without per-model saves or inference", () => {
+    const evidence = JSON.parse(readFileSync("src-tauri/target/discovery-integration/live.json", "utf8"));
+    const state = readSelfHostedState(evidence.state);
+    const models = savedSelfHostedModelInfos(state);
+    expect(state.endpoints).toHaveLength(1);
+    expect(state.profiles.every(p => !p.saved)).toBe(true);
+    expect(models.length).toBeGreaterThan(0);
+    expect(models).toHaveLength(evidence.snapshot.models.length);
+    const html = picker(state);
+    for (const model of models) {
+      expect(html).toContain(model.label);
+      expect(selfHostedTransportIdentity(model.id, state)).toMatchObject({ providerId: "ollama",
+        endpointBaseURL: "http://127.0.0.1:11435/v1", selfHosted: { endpointId: "endpoint-a" } });
+    }
+    expect(html).toContain('aria-label="GPT-5.4 mini. Cloud connection"');
+    expect(evidence.inference).toBe(0);
+    writeFileSync("src-tauri/target/discovery-integration/live-picker.json", JSON.stringify({
+      count: models.length, ids: models.map(m => m.id), html, inference: 0, perModelSaves: 0,
+    }, null, 2));
+  });
+  it("an uncommitted probe payload or detail profile alone is not a second picker store", async () => {
     const snapshot = inventory();
     const call = vi.fn().mockResolvedValue(snapshot);
     expect(
@@ -224,7 +257,7 @@ describe("current discovery-to-normal-picker contract and documented gaps", () =
       selfHosted: { endpointId: "server-b" },
     });
   });
-  it("refresh discovers a new model but it still needs an explicit save before appearing in the normal picker", async () => {
+  it("an uncommitted mock refresh cannot mutate the durable registry", async () => {
     const state = saveInventory(inventory());
     const refreshed = inventory([
       "discovered-alpha",
@@ -240,7 +273,7 @@ describe("current discovery-to-normal-picker contract and documented gaps", () =
     expect(next.endpoints).toEqual(state.endpoints);
     expect(picker(next)).toContain("newly-installed");
   });
-  it("removed remote models remain saved and selectable: identity is preserved but unavailable presentation is a current gap", () => {
+  it("removed remote models retain historical identity and report unavailable health", () => {
     const state = saveInventory(inventory());
     const selection = selfHostedSelectionId(state.profiles[1]);
     const refreshed = inventory(["discovered-alpha"]);
@@ -258,7 +291,7 @@ describe("current discovery-to-normal-picker contract and documented gaps", () =
         profile: state.profiles[1],
         snapshot: refreshed,
       }).label,
-    ).toBe("Ready");
+    ).toBe("Unavailable");
     expect(
       selfHostedTransportIdentity(selection, state)?.transportModelId,
     ).toBe("discovered-beta");

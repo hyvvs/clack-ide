@@ -3,6 +3,7 @@ import type { NormalizedAiError, AiErrorKind } from "@/modules/ai/lib/errors";
 import type {
   ProfileEvidence,
   SelfHostedEndpoint,
+  SelfHostedBackend,
 } from "@/modules/ai/lib/selfHostedProfiles";
 
 export const PROBE_INVENTORY_TTL_MS = 300_000;
@@ -46,8 +47,12 @@ export type ProbeSnapshot = {
     name: string | null;
     chat: ProbeSupport;
     evidence: ProfileEvidence[];
+    digest?: string;
+    size?: number;
+    modifiedAt?: string;
   }[];
   errors: { route: string | null; error: ProbeError }[];
+  backend?: SelfHostedBackend;
 };
 export type ProbeOptions = {
   endpointId: string;
@@ -111,6 +116,8 @@ export function probeEvidenceIsFresh(
     evidence.observedAt > now
   )
     return false;
+  const model = snapshot.models.find(m => m.id === evidence.scope.transportModelId);
+  if (model?.digest && evidence.scope.modelRevision !== model.digest) return false;
   const current = snapshot.models
     .find((model) => model.id === evidence.scope.transportModelId)
     ?.evidence.some(

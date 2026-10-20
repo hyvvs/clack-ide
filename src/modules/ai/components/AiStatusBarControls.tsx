@@ -76,7 +76,8 @@ import {
 import { useChatStore } from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
-import { savedSelfHostedModelInfos } from "@/modules/ai/lib/selfHostedModels";
+import { savedSelfHostedModelInfos, selfHostedPickerStatus, canonicalSelfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
+import { useSelfHostedInventory } from "@/modules/ai/hooks/useSelfHostedInventory";
 import { hasKeyForModel } from "@/modules/ai/store/chatStore";
 import { modelConnectionLabel } from "@/modules/ai/lib/connectionPresentation";
 import { chatConnectionSummary } from "@/modules/ai/lib/chatConnectionSummary";
@@ -249,6 +250,7 @@ export function ModelDropdown({
   const modelSwitch = useModelSwitch(targetId, sessionId === undefined);
   const resetSwitch = modelSwitch.reset;
   const [open, setOpen] = useState(false);
+  useSelfHostedInventory(open);
   const previousTargetId = useRef(targetId);
   useEffect(() => {
     if (
@@ -283,6 +285,9 @@ export function ModelDropdown({
   const recentIds = usePreferencesStore((s) => s.recentModelIds);
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
   const selfHosted = usePreferencesStore((s) => s.selfHostedInference);
+  const pickerFavorites = useMemo(() => favoriteIds.map(id => canonicalSelfHostedSelectionId(id, selfHosted)), [favoriteIds, selfHosted]);
+  const pickerRecents = useMemo(() => recentIds.map(id => canonicalSelfHostedSelectionId(id, selfHosted)), [recentIds, selfHosted]);
+  const pickerSelection = canonicalSelfHostedSelectionId(selected, selfHosted);
   const savedProviderModels = usePreferencesStore((s) => s.savedProviderModels);
   const lmstudioBaseURL = usePreferencesStore((s) => s.lmstudioBaseURL);
   const lmstudioModelId = usePreferencesStore((s) => s.lmstudioModelId);
@@ -381,9 +386,9 @@ export function ModelDropdown({
     const q = search.trim().toLowerCase();
     let pool: readonly ModelInfo[] = allModels;
     if (tab === "favorites") {
-      pool = pool.filter((m) => favoriteIds.includes(m.id));
+      pool = pool.filter((m) => pickerFavorites.includes(m.id));
     } else if (tab === "recent") {
-      const order = new Map(recentIds.map((id, i) => [id, i]));
+      const order = new Map(pickerRecents.map((id, i) => [id, i]));
       pool = pool
         .filter((m) => order.has(m.id))
         .slice()
@@ -400,7 +405,7 @@ export function ModelDropdown({
       pool = pool.filter((model) => modelSelectionMatchesQuery(model, q));
     }
     return pool;
-  }, [activeProvider, allModels, favoriteIds, recentIds, search, tab]);
+  }, [activeProvider, allModels, pickerFavorites, pickerRecents, search, tab]);
 
   return (
     <DropdownMenu
@@ -638,14 +643,15 @@ export function ModelDropdown({
                       key={m.id}
                       model={m}
                       destination={modelConnectionLabel(m.id, connectionSettings)}
-                      selected={m.id === selected}
+                      selected={m.id === pickerSelection}
                       disabled={locked}
+                      status={selfHostedPickerStatus(m.id, selfHosted)}
                       hasKey={
                         m.id.startsWith("self-hosted:")
                           ? hasKeyForModel(m.id)
                           : isCompatModelId(m.id) || hasKeyFor(m.provider)
                       }
-                      favorite={favoriteIds.includes(m.id)}
+                      favorite={pickerFavorites.includes(m.id)}
                       showProviderIcon={activeProvider === null}
                       onPick={() => {
                         if (
@@ -779,6 +785,7 @@ function ModelRow({
   showProviderIcon,
   onPick,
   onToggleFavorite,
+  status,
 }: {
   model: ModelInfo;
   destination: string;
@@ -789,11 +796,14 @@ function ModelRow({
   showProviderIcon: boolean;
   onPick: () => void;
   onToggleFavorite: () => void;
+  status?: { label: string; disabled: boolean };
 }) {
   return (
     <DropdownMenuItem
       aria-label={`${model.label}. ${destination}`}
-      disabled={disabled}
+      disabled={disabled || status?.disabled}
+      aria-description={status?.label}
+      aria-current={selected ? "true" : undefined}
       onSelect={(e) => {
         e.preventDefault();
         onPick();
@@ -852,9 +862,9 @@ function ModelRow({
       Object.values(model.capabilities).every((v) => v === 0) ? (
         <span
           className="max-w-28 truncate text-[11px] text-muted-foreground"
-          title={model.hint}
+          title={status ? `${model.hint} / ${status.label}` : model.hint}
         >
-          {model.hint}
+          {status ? `${model.hint} / ${status.label}` : model.hint}
         </span>
       ) : (
         <CapabilityBars caps={model.capabilities} />

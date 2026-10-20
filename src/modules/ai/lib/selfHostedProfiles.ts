@@ -72,6 +72,7 @@ const endpointSchema = z.object({
   alias: z.string().trim().min(1).max(128),
   baseURL: endpointUrl,
   backendHint: backend.optional(),
+  detectedBackend: backend.nullish(),
   credentialRef: credentialReference.nullable(),
   allowPrivateNetwork: z.boolean().optional(),
   transportSecurity: z.enum(["http-unencrypted", "https-unverified"]),
@@ -83,6 +84,29 @@ const endpointSchema = z.object({
   legacy: legacyBinding.optional(),
 });
 export type SelfHostedEndpoint = z.infer<typeof endpointSchema>;
+
+export function endpointBackend(endpoint: SelfHostedEndpoint): SelfHostedBackend | undefined {
+  return endpoint.backendHint ?? endpoint.detectedBackend ?? undefined;
+}
+
+const inventoryModelSchema = z.object({
+  id: z.string().min(1).max(1024).refine(value => !/[\u0000-\u001f\u007f]/.test(value)),
+  name: z.string().max(1024).nullable(),
+  chat: z.enum(["supported", "unsupported", "unknown"]),
+  digest: z.string().min(1).max(1024).optional(),
+  size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  modifiedAt: z.string().max(1024).optional(),
+});
+export const selfHostedInventorySchema = z.object({
+  endpointId: id,
+  configurationRevision: z.number().int().positive(),
+  observedAt: timestamp,
+  connected: z.boolean(),
+  backend: backend.nullish(),
+  error: z.string().max(64).nullish(),
+  models: z.array(inventoryModelSchema).max(5000).refine(rows => new Set(rows.map(m => m.id)).size === rows.length),
+});
+export type SelfHostedInventory = z.infer<typeof selfHostedInventorySchema>;
 
 export const evidenceSchema = z.object({
   metric: z.string().min(1).max(64),
@@ -102,6 +126,7 @@ export const evidenceSchema = z.object({
     transportModelId: id,
     deploymentId: id.nullable(),
     configurationRevision: z.number().int().positive(),
+    modelRevision: z.string().max(1024).optional(),
   }),
 });
 export type ProfileEvidence = z.infer<typeof evidenceSchema>;
@@ -139,6 +164,8 @@ const profileSchema = z.object({
   saved: z
     .object({ label: z.string().trim().min(1).max(1024).optional() })
     .optional(),
+  modelRevision: z.string().max(1024).optional(),
+  backend: backend.optional(),
 });
 export type SelfHostedProfile = z.infer<typeof profileSchema>;
 export type SelfHostedState = {
@@ -146,6 +173,7 @@ export type SelfHostedState = {
   revision: number;
   endpoints: SelfHostedEndpoint[];
   profiles: SelfHostedProfile[];
+  inventories?: SelfHostedInventory[];
 };
 
 export function emptySelfHostedState(): SelfHostedState {
@@ -172,6 +200,7 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
       revision: z.number().int().nonnegative(),
       endpoints: z.array(z.unknown()).max(256),
       profiles: z.array(z.unknown()).max(2048),
+      inventories: z.array(z.unknown()).max(256).optional(),
     })
     .safeParse(raw);
   if (!envelope.success) return emptySelfHostedState();
@@ -234,7 +263,13 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
     }
     profiles.push(profile);
   }
-  return { version: 1, revision: envelope.data.revision, endpoints, profiles };
+  const inventories = envelope.data.inventories?.flatMap(raw => {
+    const parsed = selfHostedInventorySchema.safeParse(raw);
+    return parsed.success && endpoints.some(e => e.id === parsed.data.endpointId &&
+      e.configurationRevision === parsed.data.configurationRevision) ? [parsed.data] : [];
+  }).filter((item, index, all) => all.findIndex(i => i.endpointId === item.endpointId) === index);
+  return { version: 1, revision: envelope.data.revision, endpoints, profiles,
+    ...(inventories ? { inventories } : {}) };
 }
 
 export function assertWritableSelfHostedState(raw: unknown): void {
@@ -245,6 +280,7 @@ export function assertWritableSelfHostedState(raw: unknown): void {
       revision: z.number().int().nonnegative(),
       endpoints: z.array(endpointSchema).max(256),
       profiles: z.array(profileSchema).max(2048),
+      inventories: z.array(selfHostedInventorySchema).max(256).optional(),
     })
     .safeParse(raw);
   if (!parsed.success) {
@@ -255,7 +291,8 @@ export function assertWritableSelfHostedState(raw: unknown): void {
   const normalized = readSelfHostedState(parsed.data);
   if (
     normalized.endpoints.length !== parsed.data.endpoints.length ||
-    JSON.stringify(normalized.profiles) !== JSON.stringify(parsed.data.profiles)
+    JSON.stringify(normalized.profiles) !== JSON.stringify(parsed.data.profiles) ||
+    JSON.stringify(normalized.inventories) !== JSON.stringify(parsed.data.inventories)
   )
     throw new Error(
       "Self-hosted settings contain invalid profile references or values; original data was preserved",
@@ -328,9 +365,11 @@ export function editSelfHostedEndpoint(
     previous.configurationRevision + (configChanged ? 1 : 0);
   next.updatedAt = now;
   next.transportSecurity = transportSecurity(next.baseURL);
+  if (configChanged) delete next.detectedBackend;
   return {
     ...state,
     endpoints: state.endpoints.map((e) => (e.id === endpointId ? next : e)),
+    ...(state.inventories ? { inventories: state.inventories.filter(i => i.endpointId !== endpointId || !configChanged) } : {}),
   };
 }
 
@@ -391,6 +430,7 @@ export function profileEvidence(
       deploymentId: profile.deploymentId,
       configurationRevision: requireEndpoint(state, profile.endpointId)
         .configurationRevision,
+      ...(profile.modelRevision ? { modelRevision: profile.modelRevision } : {}),
     },
   });
 }
@@ -524,8 +564,26 @@ export function resolveSelfHostedSelection(
       profile: SelfHostedProfile;
     } {
   if (selectionId.startsWith("self-hosted:")) {
-    const profileId = selectionId.slice("self-hosted:".length);
-    const profile = state.profiles.find((p) => p.id === profileId && p.saved);
+    let profileId = selectionId.slice("self-hosted:".length);
+    let modelRevision: string | undefined;
+    let selectedBackend: SelfHostedBackend | undefined;
+    try {
+      const tuple: unknown = JSON.parse(profileId);
+      if (Array.isArray(tuple) && (tuple.length === 4 || tuple.length === 5) &&
+          (typeof tuple[3] === "string" || (tuple.length === 5 && tuple[3] === null)) &&
+          (tuple.length === 4 || backend.safeParse(tuple[4]).success)) {
+        profileId = JSON.stringify(tuple.slice(0, 3));
+        modelRevision = typeof tuple[3] === "string" ? tuple[3] : undefined;
+        selectedBackend = tuple[4] as SelfHostedBackend | undefined;
+      }
+    } catch { /* Legacy IDs are matched literally, never routed by model tag. */ }
+    const profile = state.profiles.find((p) => p.id === profileId && (p.saved ||
+      state.inventories?.some(i => i.endpointId === p.endpointId && i.models.some(m => m.id === p.transportModelId))));
+    if (modelRevision && profile?.modelRevision !== modelRevision)
+      return { status: "missing", endpointId: profile?.endpointId ?? "", message: "Model revision changed. Choose the current model explicitly." };
+    const owner = state.endpoints.find(e => e.id === profile?.endpointId);
+    if (selectedBackend && owner && endpointBackend(owner) !== selectedBackend)
+      return { status: "missing", endpointId: owner.id, message: "Server provider changed. Choose the current model explicitly." };
     return resolveSelfHostedProfile(
       state,
       profile?.endpointId ?? "",
@@ -565,7 +623,7 @@ export function resolveSelfHostedProfile(
       message:
         "Self-hosted endpoint or model is unavailable. Restore it or explicitly choose a model in Models & Providers.",
     };
-  return { status: "available", endpoint, profile };
+  return { status: "available", endpoint: { ...endpoint, backendHint: endpointBackend(endpoint) }, profile };
 }
 
 function transportSecurity(
@@ -584,6 +642,7 @@ function evidenceMatchesProfile(
     evidence.scope.endpointId === profile.endpointId &&
     evidence.scope.transportModelId === profile.transportModelId &&
     evidence.scope.deploymentId === profile.deploymentId
+    && (evidence.source === "user-assertion" || !profile.modelRevision || evidence.scope.modelRevision === profile.modelRevision)
   );
 }
 

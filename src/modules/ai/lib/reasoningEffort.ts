@@ -1,6 +1,7 @@
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import type { ModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import { endpointBackend } from "@/modules/ai/lib/selfHostedProfiles";
 import { z } from "zod";
 
 export type EffortMapping =
@@ -191,10 +192,11 @@ export function effortCapability(
       profile.transportModelId !== identity.transportModelId
     )
       return unknown;
-    if (endpoint.backendHint === "ollama") {
+    if (endpointBackend(endpoint) === "ollama") {
       const thinking = profile.evidence.filter(e => ["probe.thinking", "probe.thinkingControls"].includes(e.metric) &&
         e.scope.endpointId === endpoint.id && e.scope.transportModelId === profile.transportModelId &&
         e.scope.configurationRevision === endpoint.configurationRevision && e.scope.deploymentId === profile.deploymentId &&
+        (!profile.modelRevision || e.scope.modelRevision === profile.modelRevision) &&
         e.observedAt !== null && e.observedAt <= now && now - e.observedAt < 30_000 && e.confidence === "reported" &&
         ["backend-reported", "advertised"].includes(e.source));
       const controls = thinking.filter(e => e.metric === "probe.thinkingControls");
@@ -225,7 +227,7 @@ export function effortCapability(
       return { status: levels.length ? "supported" : "unsupported", levels, mapping,
         ...(ollamaControls ? { ollamaControls } : {}),
         evidence: "Ollama native thinking contract; boolean controls are not effort levels",
-        revision: JSON.stringify([revision, endpoint.configurationRevision, profile.id, levels, mapping, ...(ollamaControls ? [ollamaControls] : [])]),
+        revision: JSON.stringify([revision, endpoint.configurationRevision, profile.id, profile.modelRevision, profile.backend, levels, mapping, ...(ollamaControls ? [ollamaControls] : [])]),
         expiresAt: Math.min(...thinking.map(e => (e.observedAt ?? now) + 30_000)) };
     }
     const evidence = profile.evidence.filter(
@@ -237,6 +239,7 @@ export function effortCapability(
         e.scope.transportModelId === profile.transportModelId &&
         e.scope.deploymentId === profile.deploymentId &&
         e.scope.configurationRevision === endpoint.configurationRevision &&
+        (!profile.modelRevision || e.scope.modelRevision === profile.modelRevision) &&
         e.observedAt !== null &&
         e.observedAt <= now &&
         now - e.observedAt < 30_000,
@@ -264,6 +267,8 @@ export function effortCapability(
           revision,
           endpoint.configurationRevision,
           profile.id,
+          profile.modelRevision,
+          profile.backend,
           evidence[0].value,
         ]),
         expiresAt: evidence[0].observedAt + 30_000,

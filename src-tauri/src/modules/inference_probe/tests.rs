@@ -1,6 +1,8 @@
 use super::*;
 #[path = "discovery_tests.rs"]
 mod discovery_tests;
+#[path = "inventory_tests.rs"]
+mod inventory_tests;
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -17,6 +19,7 @@ fn endpoint(backend: Backend) -> Endpoint {
         id: "endpoint-a".into(),
         base_url: "http://127.0.0.1:1/v1".into(),
         backend_hint: Some(backend),
+        detected_backend: None,
         credential_ref: None,
         configuration_revision: 1,
         deleted_at: None,
@@ -899,6 +902,7 @@ fn snapshot() -> Snapshot {
         instance_ttl_ms: INSTANCE_TTL_MS,
         models: parse(Backend::Mlx, models()),
         errors: vec![],
+        backend: None,
     }
 }
 fn begin(

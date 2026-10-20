@@ -1,6 +1,7 @@
 import type { BudgetLimits } from "@/modules/ai/lib/contextBudget";
 import {
   effectiveProfileValue,
+  endpointBackend,
   type SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
 import {
@@ -66,13 +67,13 @@ export function profileBudgetLimits(
     outputReserve: number("outputReserve"),
     maxOutput: number("maxOutput"),
   };
-  if (endpoint.backendHint === "ollama" && limits.workingTarget === undefined) {
+  if (endpointBackend(endpoint) === "ollama" && limits.workingTarget === undefined) {
     const loaded = bound("probe.loadedContext");
     // A previous allocation does not establish the next request's server default.
     limits.deployed = bound("probe.configuredContext") ??
       (loaded !== undefined && loaded <= UNKNOWN_CONTEXT_POLICY ? loaded : undefined);
   }
-  if (endpoint.backendHint === "ollama" && limits.workingTarget !== undefined) {
+  if (endpointBackend(endpoint) === "ollama" && limits.workingTarget !== undefined) {
     const target = limits.workingTarget;
     if (!Number.isSafeInteger(target) || target <= 0 || target > MAX_OLLAMA_CONTEXT)
       throw new ContextBudgetError("invalid-context-settings", "Ollama working context must be a positive whole number within the application limit.");
@@ -110,6 +111,8 @@ export function budgetIdentity(
     profile?.id,
     profile?.transportModelId,
     profile?.deploymentId,
+    profile?.modelRevision,
+    profile?.backend,
     profile?.overrides,
     // Performance guidance does not change captured context or transport settings.
     profile ? Object.fromEntries(Object.entries(profile.recommendations).filter(([field]) =>
