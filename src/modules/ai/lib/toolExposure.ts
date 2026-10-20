@@ -16,8 +16,10 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { ToolContext } from "@/modules/ai/tools/context";
 import { handoffObjective } from "@/modules/ai/lib/peerHistory";
 import { referencedFiles } from "@/modules/ai/lib/scopedEvidence";
+import { operationCapabilities, resolveToolObjective, type ToolCapability, type ToolObjective } from "@/modules/ai/lib/toolObjective";
+import { getTodos } from "@/modules/ai/store/todoStore";
 
-export const EXPOSURE_POLICY = "f1-exposure-v4";
+export const EXPOSURE_POLICY = "f1-exposure-v5";
 export const EXPOSURE_LIMITS = {
   candidates: 192,
   optional: 16,
@@ -158,6 +160,8 @@ export function selectToolSchemas(input: {
   limits?: BudgetLimits;
   reuseNames?: readonly string[];
   reuseFallback?: boolean;
+  objective?: ToolObjective;
+  capabilities?: Readonly<Record<string, readonly ToolCapability[]>>;
 }) {
   const schemas = [...input.schemas].sort((a, b) =>
     compare(a.function.name, b.function.name),
@@ -176,6 +180,7 @@ export function selectToolSchemas(input: {
       "tool-exposure-identity",
       "Conflicting callable tool names cannot be selected.",
     );
+  const selectionQuery = input.objective?.query || input.query;
   const named = new Set(input.query.slice(-EXPOSURE_LIMITS.rankingCharacters).match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []);
   const mandatory = [...new Set([...(input.mandatory ?? []), ...schemas.filter(schema => named.has(schema.function.name)).map(schema => schema.function.name)])].sort(compare);
   for (const name of mandatory)
@@ -184,7 +189,7 @@ export function selectToolSchemas(input: {
         "tool-exposure-required-unavailable",
         `Required tool '${name}' is no longer permitted or executable. Resolve the active tool lifecycle before retrying.`,
       );
-  const boundedQuery = input.query.slice(-EXPOSURE_LIMITS.rankingCharacters);
+  const boundedQuery = selectionQuery.slice(-EXPOSURE_LIMITS.rankingCharacters);
   const conversational = /^(hello|hi|hey|thanks|thank you)[.!?\s]*$/i.test(
     boundedQuery.trim(),
   );
@@ -240,6 +245,13 @@ export function selectToolSchemas(input: {
           ranked[EXPOSURE_LIMITS.optional].score ===
             ranked[EXPOSURE_LIMITS.optional - 1].score)));
   const selected = new Set(mandatory);
+  const capabilities = (name: string) => input.capabilities?.[name] ?? operationCapabilities(name);
+  for (const capability of input.objective?.required ?? []) {
+    if ([...selected].some(name => capabilities(name).includes(capability))) continue;
+    const eligible = schemas.filter(s => capabilities(s.function.name).includes(capability));
+    eligible.sort((a, b) => measureRequest({ tools: [a] }).tools - measureRequest({ tools: [b] }).tools || compare(a.function.name, b.function.name));
+    if (eligible[0]) selected.add(eligible[0].function.name);
+  }
   const dependencies: Record<string, string[]> = {
     edit: ["read_file"],
     multi_edit: ["read_file"],
@@ -259,13 +271,17 @@ export function selectToolSchemas(input: {
         );
       selected.add(name);
     }
-  // Uncertain requests keep the full permitted set, including when B1 must reject it.
+  // Ambiguous matches retain the permitted alternatives; no-match requests keep only a safe read core.
   for (const { schema, score } of conversational
     ? []
     : fallback
       ? ranked
       : ranked.filter((r) => r.score >= Math.min(4, ranked[0]?.score || 1)).slice(0, EXPOSURE_LIMITS.optional)) {
     if (fallback || score > 0) {
+      if (["delegated", "read-only"].includes(input.objective?.kind ?? "") && (requiresWorkspaceWriteLease(schema.function.name) || capabilities(schema.function.name).some(c => ["create", "modify", "command"].includes(c))) && !mandatory.includes(schema.function.name)) continue;
+      if (fallback && !ranked.some(r => r.score > 0) && !capabilities(schema.function.name).includes("read") && schema.function.name !== "list_directory") continue;
+      if (!mandatory.includes(schema.function.name) && selected.has(schema.function.name)) continue;
+      if (input.objective?.kind === "implementation" && capabilities(schema.function.name).length && capabilities(schema.function.name).every(c => [...selected].some(name => capabilities(name).includes(c)))) continue;
       const trial = new Set([...selected, schema.function.name]);
       for (const name of trial)
         for (const dependency of dependencies[name] ?? []) if (byName.has(dependency)) trial.add(dependency);
@@ -324,6 +340,7 @@ export async function prepareToolExposure(
     mandatory?: readonly string[];
     uiMessages?: readonly UIMessage[];
     query?: string;
+    objectiveMessages?: readonly UIMessage[];
   },
 ) {
   const authorization = () =>
@@ -350,6 +367,13 @@ export async function prepareToolExposure(
     ),
   );
   const schemas = await serializedToolSchemas(permitted);
+  const objectiveMessages = input.objectiveMessages ?? input.uiMessages;
+  const objective = objectiveMessages ? resolveToolObjective(objectiveMessages, getTodos(input.context.getSessionId())) : undefined;
+  const capabilities = Object.fromEntries(Object.entries(permitted).map(([name, tool]) => {
+    const identity = identities.get(tool) as { definition?: { binding?: { kind?: string; operation?: string } } } | undefined;
+    const binding = identity?.definition?.binding;
+    return [name, operationCapabilities(binding?.kind === "native" ? binding.operation ?? "" : identity ? "" : name)];
+  }));
   const preferences = usePreferencesStore.getState();
   const mandatory = [
     ...new Set([
@@ -362,6 +386,8 @@ export async function prepareToolExposure(
     policy: EXPOSURE_POLICY,
     source: [input.messages, input.uiMessages],
     query: input.query,
+    objective,
+    capabilities,
     session: input.context.getSessionId(),
     workspace: input.context.getWorkspaceId?.(),
     root: input.context.getWorkspaceRoot(),
@@ -393,6 +419,8 @@ export async function prepareToolExposure(
     limits: input.limits,
     reuseNames: hit?.names,
     reuseFallback: hit?.fallback,
+    objective,
+    capabilities,
   });
   const cacheHit = hit !== undefined;
   if (!cacheHit) {
@@ -426,6 +454,7 @@ export async function prepareToolExposure(
     key,
     identity,
     cacheHit,
+    objective,
     tools: Object.fromEntries(
       selection.names.map((name) => [name, permitted[name]]),
     ),

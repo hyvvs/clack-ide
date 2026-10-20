@@ -9122,3 +9122,220 @@ bounded correction. No proposed sufficient patch or repair is implemented here.
 Then the required **Local Provider Auto-Configuration and Model Onboarding UX Audit**,
 subject to resolution of this production blocker. No broad audit/UI work, another
 model, qwen-next, context calibration or qwen-specific tuning was started. **No push.**
+
+## F1 objective-continuity and required-capability repair
+
+2026-10-20, from `32e952a`. Classification of the preserved mission remains
+**CLACK-BLOCKED / F1 OBJECTIVE-CONTINUITY AND TOOL-EXPOSURE DEFECT**, not a
+Nemotron quality verdict. This checkpoint repairs production selection offline.
+**No Nemotron rerun, other model run, inference, download, provider probe or model
+tool execution occurred.** No onboarding UX or subsequent checkpoint started.
+
+### Exact failure transition and ownership
+
+Source evidence is `forgeboard-nemotron35-lightning-20261019-01`, conversation
+`real-mission-a`, user objective `qSH5wXlvWSy2UYld`: implement and verify the full
+ForgeBoard application, as one persistent Coder without delegation. The original
+specification SHA-256 remains
+`f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`.
+
+- Immediately before correction, `inference-16` had the same 16 schemas as
+  requests 1-15: `read_file`, `list_directory`, `write_file`, `create_directory`,
+  `edit`, `multi_edit`, `grep`, `glob`, `bash_run`, `bash_list`, `open_preview`,
+  `todo_write`, `communicate_peer_task`, `request_peer_task`, `cancel_peer_task`,
+  `propose_custom_tool`. Three direct writes were verified: `tsconfig.json`,
+  `package.json`, `src/types.ts`; two earlier tool failures had recovered.
+- At `1792449057160` (2026-10-19 22:30:57.160 UTC), the third write
+  `call_njee40qq` reached the correction boundary. The latest successful plan
+  `call_52hig39a` had item 1 completed, item 2 in progress and items 3-12 pending.
+  Item 4 still specified page size 50. Plan digest:
+  `907d6eafe3191bbb84e5473c4b61112738de2c4be0cbeb8d685b7df4a3b5a367`.
+- Request 16 was intentionally cancelled. Correction `1Ugb5fHaH1lRlJAq` was sent
+  once at `1792449057246`: "Change the task page size requirement from 50 to 25.
+  The new value supersedes 50 everywhere. Continue the same project and do not
+  restart from scratch." The conversation, workspace, agent and model did not
+  change. This was a requirement mutation, not a replacement objective.
+- `continuedExposureQuery` in `toolExposure.ts` recognized only a whole-message
+  continuation starting at its beginning. This message started with "Change".
+  The query therefore became exactly that correction, losing the broader build
+  objective for ranking. `requiredToolNames` reset resolved tail calls at the new
+  user message; `requiredUiToolNames` excluded resolved pre-correction calls.
+  A new run also reset live todos via `chatStore.prepareRun`, although successful
+  accepted plan calls remained in the original persisted UI transcript.
+- `inference-17`, captured at `1792449057762`, exposed only
+  `cancel_peer_task`, `communicate_peer_task`, `request_peer_task` (sorted order).
+  Task/requirement words matched peer schemas, while coding received no minimum
+  capability protection. The old policy did not have a durable task classifier
+  or consult accepted plan state. This was implicit lexical specialization,
+  not an explicit legitimate delegation-only decision.
+- The unexposed `todo_write` call `call_pzwbmlvr` also had invalid string-valued
+  todos. Request 18 recovered with `call_7sc93k0x`: items 1-3 reported completed,
+  item 4 in progress with page size 25, items 5-12 pending. Those completion
+  claims are not proof of implemented API/SSE effects. Requests 18-19 exposed
+  only the three peer tools plus `todo_write`; creation and commands remained
+  unavailable.
+- Request 19 ended with native `done_reason=length`, `eval_count=2048` and
+  truncated textual `write_file` intent, not an executed native tool call. The
+  same-answer continuation was not dispatched: `answer-continuation-budget`,
+  input estimate 31846 + output reserve 2048 + margin 3185 - ceiling 32768 =
+  **4311 tokens over budget**. No server, frontend, tests or build were completed.
+
+The exact owners remain: `tools/customExecution.ts` builds assigned/executable
+versions; `permissions.ts` owns permission and write-lane enforcement;
+`toolExposure.ts` owns ranking, schema reduction, lifecycle pinning and cache;
+`agent.ts` wires selection into initial request, recovery validation and every SDK
+`prepareStep`; `streamText.activeTools` and the existing native adapter construct
+outgoing schemas. `todos.ts`/`todoStore.ts` and successful `todo_write` transcript
+parts own accepted plan state. `answerContinuation.ts` owns length continuation
+and its B1 check. PeerTask coordination, provenance and scheduling did not change.
+
+### Implemented invariant and boundaries
+
+**F1 may compress redundant/irrelevant schemas, but cannot discard the eligible
+minimum capabilities of the current unresolved objective to make a request fit.**
+
+`toolObjective.ts` is a pure derived view, not another durable store. It reads the
+existing original UI transcript, successful validated full plan replacements,
+current session todos and structured attempted tool operations. Unfinished plans
+anchor the broader objective across correction runs, including after the live
+todo reset. Corrections remain bounded alongside that objective through repeated
+continuations; failed/malformed plan calls cannot replace accepted obligations.
+Completed/cancelled plans release old obligations for new objectives, and a new
+task-scoped handoff resets prior direct-work evidence. No original message, plan,
+memory revision or outgoing conversation text is rewritten by this view.
+
+The ranking query is bounded to 8192 characters. Direct structured creation/edit
+attempts establish primary implementation needs, including recovery after a
+failed edit. Initial tasks or a plan restored without hot source text use bounded
+generic action/domain matching because existing plan records have no task-kind
+or assignee field. A peer call alone cannot erase direct implementation needs;
+fully delegated classification requires explicit whole-objective delegation and
+peer evidence without direct mutation evidence. This is not automatic semantic
+task understanding, ownership reassignment or a new plan architecture.
+
+Capabilities distinguish source reading, creation, modification, commands and
+peer work. They come from known callable builtin operations or existing trusted
+native-operation binding identity, never model names, tool descriptions, MCP
+annotations or requested permissions. `write_file` supplies creation AND editing;
+exact-string editors supply editing only. Equivalent eligible operations can
+substitute. F1 deterministically promotes the lowest-schema-cost eligible provider
+of each uncovered required capability before optional ranking, suppresses redundant
+alternatives, and retains existing explicit/lifecycle requirements and dependency
+closure. Under hard pressure the minimum set can still fail B1 or payload bounds;
+it is not silently dropped. Policy `f1-exposure-v5` includes objective/capability
+state in the bounded existing cache identity. Original selection messages remain
+available even when the actual model request has been compacted.
+
+All permission checks, executor approval guards, assignment restrictions,
+read-only write lanes, secret paths and workspace authorization remain
+authoritative. Chat Only exposes no tools. Ask, Trusted Workspace, Full Access
+and Custom retain existing semantics. Specifically, a false Custom category
+means **ask for approval**, not a blanket denial in the existing resolver; this
+repair does not turn it into an execution grant. An unassigned/denied writer is
+never recreated to satisfy coverage. Research-only/ordinary chat do not acquire
+implementation coverage. Unknown/no-match intent uses a safe read core instead
+of an arbitrary peer-only or all-mutating fallback. Ambiguous positive matches
+and unresolved exact tool lifecycles retain the existing conservative behavior.
+Externally supplied MCP/HTTP/WASI claims are not treated as proven equivalent
+filesystem or shell operations.
+
+### Offline replay and context cost
+
+Fresh repair evidence:
+`src-tauri/target/real-qwen-product/f1-objective-repair-20261020-01/`.
+`before-toolExposure.ts` preserves the base selector; `replay.mjs` blocks fetch,
+reconstructs all 27 permitted compaction-enabled builtin schemas (captured dynamic
+schemas plus unchanged-source static definitions), converts original UI messages
+through the SDK, prunes with the production reasoning policy, and invokes the
+existing compaction planner without extraction or effects. Re-serialization through
+`ollamaBody` matches requests 17 and 19 semantically, allowing JSON object key
+order differences. The exact selected schemas and costs are in `replay.json`.
+The committed `toolObjective.fixture.json` retains real tool-state/plan evidence
+and all candidate schemas; its test projection excludes prose/reasoning. The
+full SDK reconstruction uses the preserved original raw evidence separately.
+
+| Request-17 selection | Before | Repaired |
+| --- | ---: | ---: |
+| Permitted candidates | 27 | 27 |
+| Selected schemas | 3 | 7 |
+| Serialized schema bytes | 4607 | 7422 |
+| Estimated F1 schema tokens | 2189 | 3634 |
+| System estimate | 3758 | 3758 |
+| Conversation estimate | 16196 | 16196 |
+| Output reserve | 2048 | 2048 |
+| Safety margin | 2215 | 2359 |
+| Projected total | 26406 | 27995 |
+| Remaining headroom | 6362 | 4773 |
+
+Before (sorted): `cancel_peer_task`, `communicate_peer_task`, `request_peer_task`.
+After (sorted): `bash_run`, `list_directory`, `open_preview`, `read_file`,
+`request_peer_task`, `todo_write`, `write_file`.
+The selected cost increases **1445 estimated tokens / 2815 bytes**, while staying
+well below the full candidate cost of 11231 estimated tokens / 23021 bytes.
+The accepted objective and correction remain unchanged; classification becomes
+implementation with read/create/modify/command coverage, not peer-only.
+
+For the later continuation, replay must restore the SDK's actual validation
+error for `call_pzwbmlvr` from the captured native tool-result text. The durable UI
+has the presentation-normalized "Primary inference failed." instead; using it
+alone understates conversation cost by 1718 tokens. Restoring that evidence gives
+an exact match for all historical B1 totals, including the **4311** deficit.
+Holding that captured history and answer fixed and replacing only its tool set
+with the repaired pinned selection yields:
+
+- SDK-schema/options estimate **2773 -> 3585** (+812); SDK schema representation
+  differs from F1's function-envelope representation in the preceding table.
+- System **3888**, conversation **25185**, reserve **2048**, ceiling **32768**
+  remain fixed. Input **31846 -> 32658**, margin **3185 -> 3266**.
+- Projected total **37079 -> 37972**, deficit **4311 -> 5204** (+893).
+
+Thus a correct tool inventory does **not** solve that separate context block.
+This is a same-captured-state counterfactual, not a prediction of a repaired
+model's future output or provider token usage. B1, C1/G1/M1/M2, compaction,
+continuation/effect safeguards, reasoning, 32K context, output allowance, deadlines
+and provider settings were not changed. No model-specific production code added.
+
+### Verification, repository safety and stop
+
+Final focused group: **172 passed / 8 files**. This includes **31 new objective
+tests** and the existing F1, guidance, B1 integration, permission, collaboration,
+custom execution and G3 fallback integration cases. Coverage includes baseline
+coding, exact captured correction, repeated continuation, failed edit/recovery,
+compacted request plus durable plan, peer-heavy direct work, explicit fully
+delegated work, research/chat, all five permission modes, disabled assignment and
+read-only lanes, missing/single/equivalent writers, tight schema pressure, safe
+unknown fallback, invalid plans, handoff/new-objective reset, cache invalidation,
+and schema-order determinism. The fallback fixture now carries trusted native-read
+identity rather than relying on the removed unsafe unknown-tool fallback.
+
+Required full gates were attempted once. The full frontend run reported
+**3073 passed / 2 failed tests; 209 passed / 5 failed files**. One failure was that
+affected synthetic G3 read fixture, now fixed and passed in the final focused
+group. The remaining preserved historical failures are the old saved
+`before-src--test--acceptanceComparison.test.ts` model allowlist assertion, two
+generated ForgeBoard `projects.test` suites without `supertest`, and the Node-only
+`audit-devstral-latency.test.mjs` collected as an empty Vitest suite. No historical
+evidence, test-discovery policy or generated project was altered to hide them.
+The full suite was not repeated; no claim of an all-green full suite.
+
+The initial type/build gates exposed two test-only compatibility errors (ES2021
+`replaceAll` and imported JSON-schema typing). Both were fixed; final
+`npm.cmd run check-types` and `npm.cmd run build` passed. Full lint passed at the
+existing **71 warnings / 2 informational notices**, with zero diagnostics in
+changed code on focused lint. Production build emitted the existing ineffective
+dynamic-import warnings for customExecution/agent/transport/chatRuntime and plugin
+timing notice. Diff whitespace checks passed with CRLF conversion notices only.
+No checkpoint Rust changes, so no redundant Rust gates; native GUI/provider
+verification was not performed or claimed.
+
+Only the two production owners plus the new pure objective helper, scoped tests,
+captured fixture and this appendix are committed. All six original dirty paths
+remain preserved as unstaged work (including the original unrelated report
+hunks), both safety stashes are unchanged, and `autonomous_tracker/` is untouched.
+Expected post-commit state: main 67 ahead / 0 behind cached origin/main, empty
+index, no additional untracked files. **No push. STOP.**
+
+Recommended next step, requiring separate authorization: **one fresh Nemotron
+ForgeBoard rerun under the same 32K Automatic/provider-default controls to verify
+the generic F1 repair live.** That rerun and the broader onboarding UX audit were
+not started here. `CLACK.md` compatibility principles remain unchanged.

@@ -228,12 +228,12 @@ describe("relevance and bounded fallback", () => {
       (await select("ignored", { messages: wireMessages })).names.length,
     ).toBeGreaterThan(1);
   });
-  it("uncertainty includes all permitted tools even when B1 cannot admit them", async () => {
+  it("uncertainty keeps a safe read core without bypassing B1", async () => {
     const result = await select("Continue.", {
       limits: { reported: 512 },
       system: "x".repeat(8192),
     });
-    expect(result.names).toHaveLength(7);
+    expect(result.names).toEqual(["list_directory", "read_file"]);
     expect(result.metrics.fallback).toBe(true);
     expect(result.budget.fits).toBe(false);
   });

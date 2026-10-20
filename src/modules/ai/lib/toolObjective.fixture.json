@@ -1,0 +1,1286 @@
+{
+  "source": "forgeboard-nemotron35-lightning-20261019-01 / inference-17; tool-state projection (reasoning/text excluded)",
+  "originalSourceHash": "5019773fc888f3baa4e55a40c616c0cc344fe82defed2177e1bf5a3e025c3ad5",
+  "messages": [
+    {
+      "id": "qSH5wXlvWSy2UYld",
+      "parts": [
+        {
+          "text": "Build ForgeBoard from scratch in this empty workspace. You own implementation: inspect, plan, create, implement, test, debug and finish using available tools, not merely a description. Work as one persistent Coder, without delegation or other agents.\nForgeBoard is a substantial local-first developer project/task board with a React + TypeScript frontend, Node + TypeScript backend, and npm (not yarn/pnpm). Choose appropriate supporting libraries and architecture. No cloud APIs, telemetry, analytics SaaS, external AI or external cloud database.\nProvide project create/list/edit/delete/open and task create/edit/delete/view within projects. Tasks have title, optional description, status (Backlog, Todo, In Progress, Blocked, Done), priority (Low, Medium, High, Urgent), multiple tags, created/updated timestamps. Support combined project/status/priority/tag filters and free-text search over task titles and descriptions. Initial task page size is 50.\nPersist data locally across backend restart. Ignore runtime databases/user data in Git. Use real Server-Sent Events for task/project mutations and update the frontend without manual refresh, not polling. Backend API port must be 4317. Enforce a maximum task title length of 120 characters in backend validation. Use 750 ms debounce wherever editable/search-like debouncing is used.\nAPI needs input validation, meaningful HTTP status codes, deterministic JSON errors, stable successful responses, missing-resource handling and no client stack traces. Frontend needs loading, error and empty states and keyboard-operable normal controls. Functional clarity matters more than visual polish.\nWrite meaningful automated backend API, validation, persistence, combined filtering/search tests and important frontend behavior tests where practical. Actually execute tests, debug failures and run a real production build. Write a useful README with setup/dev/test/build commands, runtime persistence and architecture. Finish all requirements, preserving unfinished work in your structured plan and reporting verification evidence truthfully.",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "id": "DrJ4yYpxRmypoTdV",
+      "parts": [
+        {
+          "input": {
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01"
+          },
+          "output": {
+            "entries": [],
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01"
+          },
+          "state": "output-available",
+          "toolCallId": "call_wov1fmcm",
+          "type": "tool-list_directory"
+        },
+        {
+          "input": {
+            "todos": [
+              {
+                "description": "Set up package.json, tsconfig, express, cors, json validator, and SSE support",
+                "id": "1",
+                "status": "in_progress",
+                "title": "Initialize backend Node.js project with Express, TypeScript, and dependencies"
+              },
+              {
+                "description": "Create Express routes with input validation, HTTP status codes, deterministic JSON errors, max 120 char title",
+                "id": "2",
+                "status": "pending",
+                "title": "Implement backend API: projects CRUD and tasks CRUD with validation"
+              },
+              {
+                "description": "Set up SSE broadcast on task/project create/update/delete, frontend subscription",
+                "id": "3",
+                "status": "pending",
+                "title": "Implement SSE endpoints for real-time task/project mutations"
+              },
+              {
+                "description": "Query parameters: project, status, priority, tag, search; page size 50",
+                "id": "4",
+                "status": "pending",
+                "title": "Implement filtering and search (project/status/priority/tag/free-text)"
+              },
+              {
+                "description": "Read/write tasks/projects JSON file on disk; survive restarts",
+                "id": "5",
+                "status": "pending",
+                "title": "Implement local persistence (JSON file) across backend restart"
+              },
+              {
+                "description": "Set up React app, React Query, SSE client, types for API",
+                "id": "6",
+                "status": "pending",
+                "title": "Initialize frontend React + TypeScript project with Vite"
+              },
+              {
+                "description": "Create pages, forms, loading/error/empty states, keyboard navigation",
+                "id": "7",
+                "status": "pending",
+                "title": "Implement frontend: project and task CRUD pages, forms with 750ms debounce"
+              },
+              {
+                "description": "Debounced search input, filter chips, results list",
+                "id": "8",
+                "status": "pending",
+                "title": "Implement frontend filtering and search with debounce"
+              },
+              {
+                "description": "Jest/Supertest tests for all endpoints, validation, persistence",
+                "id": "9",
+                "status": "pending",
+                "title": "Write backend API, validation, persistence tests"
+              },
+              {
+                "description": "RTL tests for component interactions, SSE updates, filter/search",
+                "id": "10",
+                "status": "pending",
+                "title": "Write important frontend behavior tests"
+              },
+              {
+                "description": "Ensure all tests pass",
+                "id": "11",
+                "status": "pending",
+                "title": "Run tests, debug failures, fix issues"
+              },
+              {
+                "description": "npm run build success, useful README with setup/dev/test/build commands",
+                "id": "12",
+                "status": "pending",
+                "title": "Run production build, verify README docs"
+              }
+            ]
+          },
+          "output": {
+            "count": 12,
+            "inProgress": "Initialize backend Node.js project with Express, TypeScript, and dependencies",
+            "ok": true
+          },
+          "state": "output-available",
+          "toolCallId": "call_2onalt13",
+          "type": "tool-todo_write"
+        },
+        {
+          "input": {
+            "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01 && npm init -y",
+            "timeout_secs": 30
+          },
+          "output": {
+            "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01 && npm init -y",
+            "cwd_after": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01",
+            "exit_code": 0,
+            "stderr": "",
+            "stdout": "Wrote to C:\\Users\\Hayden\\Documents\\forgeboard-nemotron35-lightning-20261019-01\\package.json:\n\n{\n  \"name\": \"forgeboard-nemotron35-lightning-20261019-01\",\n  \"version\": \"1.0.0\",\n  \"description\": \"\",\n  \"main\": \"index.js\",\n  \"scripts\": {\n    \"test\": \"echo \\\"Error: no test specified\\\" && exit 1\"\n  },\n  \"keywords\": [],\n  \"author\": \"\",\n  \"license\": \"ISC\"\n}",
+            "timed_out": false,
+            "truncated": false
+          },
+          "state": "output-available",
+          "toolCallId": "call_ezg5g01k",
+          "type": "tool-bash_run"
+        },
+        {
+          "input": {
+            "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01 && npm install express cors @types/express ts-node typescript @types/node nodemon",
+            "timeout_secs": 120
+          },
+          "output": {
+            "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01 && npm install express cors @types/express ts-node typescript @types/node nodemon",
+            "cwd_after": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01",
+            "exit_code": 0,
+            "stderr": "",
+            "stdout": "\nadded 123 packages, and audited 124 packages in 4s\n\n34 packages are looking for funding\n  run `npm fund` for details\n\n3 high severity vulnerabilities\n\nTo address all issues, run:\n  npm audit fix\n\nRun `npm audit` for details.",
+            "timed_out": false,
+            "truncated": false
+          },
+          "state": "output-available",
+          "toolCallId": "call_sjgzr4ru",
+          "type": "tool-bash_run"
+        },
+        {
+          "input": {
+            "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01 && npx tsc --init --target ES2020 --module commonjs --esModuleInterop --strict --outDir ./dist --rootDir ./src",
+            "timeout_secs": 30
+          },
+          "output": {
+            "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01 && npx tsc --init --target ES2020 --module commonjs --esModuleInterop --strict --outDir ./dist --rootDir ./src",
+            "cwd_after": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01",
+            "exit_code": 0,
+            "stderr": "",
+            "stdout": "\nCreated a new tsconfig.json\n\nYou can learn more at https://aka.ms/tsconfig",
+            "timed_out": false,
+            "truncated": false
+          },
+          "state": "output-available",
+          "toolCallId": "call_3gwxiag3",
+          "type": "tool-bash_run"
+        },
+        {
+          "input": {
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/tsconfig.json"
+          },
+          "output": {
+            "content": "{\n  // Visit https://aka.ms/tsconfig to read more about this file\n  \"compilerOptions\": {\n    // File Layout\n    \"rootDir\": \"./src\",\n    \"outDir\": \"./dist\",\n\n    // Environment Settings\n    // See also https://aka.ms/tsconfig/module\n    \"module\": \"commonjs\",\n    \"target\": \"es2020\",\n    \"types\": [],\n    // For nodejs:\n    // \"lib\": [\"esnext\"],\n    // \"types\": [\"node\"],\n    // and npm install -D @types/node\n\n    // Other Outputs\n    \"sourceMap\": true,\n    \"declaration\": true,\n    \"declarationMap\": true,\n\n    // Stricter Typechecking Options\n    \"noUncheckedIndexedAccess\": true,\n    \"exactOptionalPropertyTypes\": true,\n\n    // Style Options\n    // \"noImplicitReturns\": true,\n    // \"noImplicitOverride\": true,\n    // \"noUnusedLocals\": true,\n    // \"noUnusedParameters\": true,\n    // \"noFallthroughCasesInSwitch\": true,\n    // \"noPropertyAccessFromIndexSignature\": true,\n\n    // Recommended Options\n    \"strict\": true,\n    \"jsx\": \"react-jsx\",\n    \"verbatimModuleSyntax\": true,\n    \"isolatedModules\": true,\n    \"noUncheckedSideEffectImports\": true,\n    \"moduleDetection\": \"force\",\n    \"skipLibCheck\": true,\n\n    \"esModuleInterop\": true,\n  }\n}\n",
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/tsconfig.json",
+            "size": 1144,
+            "total_lines": 47
+          },
+          "state": "output-available",
+          "toolCallId": "call_rrk4qy7q",
+          "type": "tool-read_file"
+        },
+        {
+          "input": {
+            "new_string": "{\n  \"compilerOptions\": {\n    \"rootDir\": \"./src\",\n    \"outDir\": \"./dist\",\n    \"module\": \"commonjs\",\n    \"target\": \"es2020\",\n    \"lib\": [\"es2020\"],\n    \"types\": [\"node\"],\n    \"strict\": true,\n    \"esModuleInterop\": true,\n    \"sourceMap\": true,\n    \"declaration\": true,\n    \"moduleResolution\": \"node\",\n    \"outDir\": \"./dist\",\n    \"rootDir\": \"./src\",\n    \"resolveJsonModule\": true,\n    \"forceConsistentCasingInFileNames\": true,\n    \"skipLibCheck\": true,\n    \"jsx\": \"react-jsx\",\n    \"declarationMap\": true\n  },\n  \"include\": [\"src/**/*\"],\n  \"exclude\": [\"node_modules\", \"dist\"]\n}",
+            "old_string": "{\n  // Visit https://aka.ms/tsconfig to read more about this file\n  \"compilerOptions\": {\n    // File Layout\n    \"rootDir\": \"./src\",\n    \"outDir\": \"./dist\",\n\n    // Environment Settings\n    // See also https://aka.ms/tsconfig/module\n    \"module\": \"commonjs\",\n    \"target\": \"es2020\",\n    \"types\": [],\n    // and npm install -D @types/node\n\n    // Other Outputs\n    \"sourceMap\": true,\n    \"declaration\": true,\n    \"declarationMap\": true,\n\n    // Stricter Typechecking Options\n    \"noUncheckedIndexedAccess\": true,\n    \"exactOptionalPropertyTypes\": true,\n\n    // Style Options\n    // \"noImplicitReturns\": true,\n    // \"noImplicitOverride\": true,\n    // \"noUnusedLocals\": true,\n    // \"noUnusedParameters\": true,\n    // \"noFallthroughCasesInSwitch\": true,\n    // \"noPropertyAccessFromIndexSignature\": true,\n\n    // Recommended Options\n    \"strict\": true,\n    \"jsx\": \"react-jsx\",\n    \"verbatimModuleSyntax\": true,\n    \"isolatedModules\": true,\n    \"noUncheckedSideEffectImports\": true,\n    \"moduleDetection\": \"force\",\n    \"skipLibCheck\": true,\n\n    \"esModuleInterop\": true,\n  }\n}",
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/tsconfig.json"
+          },
+          "output": {
+            "error": "old_string not found: \"{\\n  // Visit https://aka.ms/tsconfig to read more about this file\\n  \\\"compilerOpt\"",
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/tsconfig.json"
+          },
+          "state": "output-available",
+          "toolCallId": "call_5rb5tt18",
+          "type": "tool-edit"
+        },
+        {
+          "input": {
+            "content": "{\n  \"compilerOptions\": {\n    \"rootDir\": \"./src\",\n    \"outDir\": \"./dist\",\n    \"module\": \"commonjs\",\n    \"target\": \"es2020\",\n    \"lib\": [\"es2020\"],\n    \"types\": [\"node\"],\n    \"strict\": true,\n    \"esModuleInterop\": true,\n    \"sourceMap\": true,\n    \"declaration\": true,\n    \"moduleResolution\": \"node\",\n    \"outDir\": \"./dist\",\n    \"rootDir\": \"./src\",\n    \"resolveJsonModule\": true,\n    \"forceConsistentCasingInFileNames\": true,\n    \"skipLibCheck\": true,\n    \"jsx\": \"react-jsx\",\n    \"declarationMap\": true\n  },\n  \"include\": [\"src/**/*\"],\n  \"exclude\": [\"node_modules\", \"dist\"]\n}",
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/tsconfig.json"
+          },
+          "output": {
+            "bytesWritten": 571,
+            "clackWorkspaceWrite": true,
+            "ok": true,
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/tsconfig.json"
+          },
+          "state": "output-available",
+          "toolCallId": "call_isb4sgp3",
+          "type": "tool-write_file"
+        },
+        {
+          "input": {
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/package.json"
+          },
+          "output": {
+            "content": "{\n  \"name\": \"forgeboard-nemotron35-lightning-20261019-01\",\n  \"version\": \"1.0.0\",\n  \"description\": \"\",\n  \"main\": \"index.js\",\n  \"scripts\": {\n    \"test\": \"echo \\\"Error: no test specified\\\" && exit 1\"\n  },\n  \"keywords\": [],\n  \"author\": \"\",\n  \"license\": \"ISC\",\n  \"dependencies\": {\n    \"@types/express\": \"^5.0.6\",\n    \"@types/node\": \"^26.6.5\",\n    \"cors\": \"^2.8.6\",\n    \"express\": \"^5.3.0\",\n    \"nodemon\": \"^3.1.14\",\n    \"ts-node\": \"^10.9.2\",\n    \"typescript\": \"^7.0.2\"\n  }\n}\n",
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/package.json",
+            "size": 470,
+            "total_lines": 22
+          },
+          "state": "output-available",
+          "toolCallId": "call_y34la4n3",
+          "type": "tool-read_file"
+        },
+        {
+          "input": {
+            "content": "{\n  \"name\": \"forgeboard-nemotron35-lightning-20261019-01\",\n  \"version\": \"1.0.0\",\n  \"description\": \"Local-first developer project/task board with React + TypeScript frontend and Node + TypeScript backend. No cloud APIs, telemetry, or external databases.\",\n  \"main\": \"dist/index.js\",\n  \"scripts\": {\n    \"start\": \"node dist/index.js\",\n    \"dev\": \"nodemon src/index.ts\",\n    \"build\": \"tsc\",\n    \"test\": \"jest --passWithNoTests\",\n    \"lint\": \"eslint src --ext .ts\",\n    \"pretest\": \"tsc\"\n  },\n  \"keywords\": [\"local-first\", \"task-board\", \"forgebord\", \"sse\", \"real-time\"],\n  \"author\": \"\",\n  \"license\": \"ISC\",\n  \"dependencies\": {\n    \"cors\": \"^2.8.6\",\n    \"express\": \"^5.3.0\"\n  },\n  \"devDependencies\": {\n    \"@types/cors\": \"^2.8.17\",\n    \"@types/express\": \"^5.0.6\",\n    \"@types/jest\": \"^29.5.14\",\n    \"@types/supertest\": \"^6.0.2\",\n    \"jest\": \"^29.7.0\",\n    \"supertest\": \"^7.0.0\",\n    \"ts-jest\": \"^29.2.5\",\n    \"typescript\": \"^7.0.2\"\n  }\n}",
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/package.json"
+          },
+          "output": {
+            "bytesWritten": 930,
+            "clackWorkspaceWrite": true,
+            "ok": true,
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/package.json"
+          },
+          "state": "output-available",
+          "toolCallId": "call_y9pph5h1",
+          "type": "tool-write_file"
+        },
+        {
+          "input": {
+            "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01 && npm install --save-dev jest @types/jest @types/supertest ts-jest",
+            "timeout_secs": 60
+          },
+          "output": {
+            "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01 && npm install --save-dev jest @types/jest @types/supertest ts-jest",
+            "cwd_after": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01",
+            "exit_code": 1,
+            "stderr": "npm error code ERESOLVE\nnpm error ERESOLVE unable to resolve dependency tree\nnpm error\nnpm error While resolving: forgeboard-nemotron35-lightning-20261019-01@1.0.0\nnpm error Found: typescript@7.0.2\nnpm error node_modules/typescript\nnpm error   dev typescript@\"^7.0.2\" from the root project\nnpm error\nnpm error Could not resolve dependency:\nnpm error peer typescript@\">=4.3 <7\" from ts-jest@29.4.15\nnpm error node_modules/ts-jest\nnpm error   dev ts-jest@\"^29.2.5\" from the root project\nnpm error\nnpm error Fix the upstream dependency conflict, or retry\nnpm error this command with --force or --legacy-peer-deps\nnpm error to accept an incorrect (and potentially broken) dependency resolution.\nnpm error\nnpm error\nnpm error For a full report see:\nnpm error C:\\Users\\Hayden\\Documents\\clack\\src-tauri\\target\\real-qwen-product\\forgeboard-nemotron35-lightning-20261019-01\\data\\npm-cache\\_logs\\2026-10-19T22_30_06_583Z-eresolve-report.txt\nnpm error A complete log of this run can be found in: C:\\Users\\Hayden\\Documents\\clack\\src-tauri\\target\\real-qwen-product\\forgeboard-nemotron35-lightning-20261019-01\\data\\npm-cache\\_logs\\2026-10-19T22_30_06_583Z-debug-0.log\n",
+            "stdout": "",
+            "timed_out": false,
+            "truncated": false
+          },
+          "state": "output-available",
+          "toolCallId": "call_83db57dx",
+          "type": "tool-bash_run"
+        },
+        {
+          "input": {
+            "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01 && npm install --save-dev --legacy-peer-deps jest @types/jest @types/supertest ts-jest",
+            "timeout_secs": 60
+          },
+          "output": {
+            "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01 && npm install --save-dev --legacy-peer-deps jest @types/jest @types/supertest ts-jest",
+            "cwd_after": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01",
+            "exit_code": 0,
+            "stderr": "npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.\nnpm warn deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me\n",
+            "stdout": "\nadded 294 packages, removed 32 packages, and audited 386 packages in 10s\n\n66 packages are looking for funding\n  run `npm fund` for details\n\n34 vulnerabilities (5 moderate, 29 high)\n\nTo address issues that do not require attention, run:\n  npm audit fix\n\nTo address all issues (including breaking changes), run:\n  npm audit fix --force\n\nRun `npm audit` for details.",
+            "timed_out": false,
+            "truncated": false
+          },
+          "state": "output-available",
+          "toolCallId": "call_tcgrhall",
+          "type": "tool-bash_run"
+        },
+        {
+          "input": {
+            "command": "mkdir C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/src"
+          },
+          "output": {
+            "command": "mkdir C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/src",
+            "cwd_after": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01",
+            "exit_code": 0,
+            "stderr": "",
+            "stdout": "\r\n    Directory: C:\\Users\\Hayden\\Documents\\forgeboard-nemotron35-lightning-20261019-01\r\n\r\n\u001b[32;1mMode   \u001b[0m\u001b[32;1m              LastWriteTime\u001b[0m \u001b[32;1;3m        Length\u001b[0m\u001b[32;1m Name\u001b[0m\r\n\u001b[32;1m----   \u001b[0m \u001b[32;1m             -------------\u001b[0m \u001b[32;1m        ------\u001b[0m \u001b[32;1m----\u001b[0m\r\nd----          10/20/2026 12:30 AM                \u001b[44;1msrc\u001b[0m\r",
+            "timed_out": false,
+            "truncated": false
+          },
+          "state": "output-available",
+          "toolCallId": "call_q94dj8f2",
+          "type": "tool-bash_run"
+        },
+        {
+          "input": {
+            "todos": [
+              {
+                "description": "Set up package.json, tsconfig, express, cors, json validator, and SSE support",
+                "id": "1",
+                "status": "completed",
+                "title": "Initialize backend Node.js project with Express, TypeScript, and dependencies"
+              },
+              {
+                "description": "Create Express routes with input validation, HTTP status codes, deterministic JSON errors, max 120 char title",
+                "id": "2",
+                "status": "in_progress",
+                "title": "Implement backend API: projects CRUD and tasks CRUD with validation"
+              },
+              {
+                "description": "Set up SSE broadcast on task/project create/update/delete, frontend subscription",
+                "id": "3",
+                "status": "pending",
+                "title": "Implement SSE endpoints for real-time task/project mutations"
+              },
+              {
+                "description": "Query parameters: project, status, priority, tag, search; page size 50",
+                "id": "4",
+                "status": "pending",
+                "title": "Implement filtering and search (project/status/priority/tag/free-text)"
+              },
+              {
+                "description": "Read/write tasks/projects JSON file on disk; survive restarts",
+                "id": "5",
+                "status": "pending",
+                "title": "Implement local persistence (JSON file) across backend restart"
+              },
+              {
+                "description": "Set up React app, React Query, SSE client, types for API",
+                "id": "6",
+                "status": "pending",
+                "title": "Initialize frontend React + TypeScript project with Vite"
+              },
+              {
+                "description": "Create pages, forms, loading/error/empty states, keyboard navigation",
+                "id": "7",
+                "status": "pending",
+                "title": "Implement frontend: project and task CRUD pages, forms with 750ms debounce"
+              },
+              {
+                "description": "Debounced search input, filter chips, results list",
+                "id": "8",
+                "status": "pending",
+                "title": "Implement frontend filtering and search with debounce"
+              },
+              {
+                "description": "Jest/Supertest tests for all endpoints, validation, persistence",
+                "id": "9",
+                "status": "pending",
+                "title": "Write backend API, validation, persistence tests"
+              },
+              {
+                "description": "RTL tests for component interactions, SSE updates, filter/search",
+                "id": "10",
+                "status": "pending",
+                "title": "Write important frontend behavior tests"
+              },
+              {
+                "description": "Ensure all tests pass",
+                "id": "11",
+                "status": "pending",
+                "title": "Run tests, debug failures, fix issues"
+              },
+              {
+                "description": "npm run build success, useful README with setup/dev/test/build commands",
+                "id": "12",
+                "status": "pending",
+                "title": "Run production build, verify README docs"
+              }
+            ]
+          },
+          "output": {
+            "count": 12,
+            "inProgress": "Implement backend API: projects CRUD and tasks CRUD with validation",
+            "ok": true
+          },
+          "state": "output-available",
+          "toolCallId": "call_52hig39a",
+          "type": "tool-todo_write"
+        },
+        {
+          "input": {
+            "content": "export interface Task {\n  id: string\n  title: string\n  description?: string\n  status: 'Backlog' | 'Todo' | 'In Progress' | 'Blocked' | 'Done'\n  priority: 'Low' | 'Medium' | 'High' | 'Urgent'\n  tags: string[]\n  projectId: string\n  createdAt: string\n  updatedAt: string\n}\n\nexport interface Project {\n  id: string\n  name: string\n  description?: string\n  createdAt: string\n  updatedAt: string\n}\n\nexport type TaskStatus =\n  | 'Backlog'\n  | 'Todo'\n  | 'In Progress'\n  | 'Blocked'\n  | 'Done'\n\nexport type TaskPriority = 'Low' | 'Medium' | 'High' | 'Urgent'\n\nexport interface FilterOptions {\n  projectId?: string\n  status?: TaskStatus\n  priority?: TaskPriority\n  tag?: string\n  search?: string\n}\n\nexport interface ApiError {\n  message: string\n  code: string\n  path?: string\n}\n\nexport interface ApiResponse<T> {\n  data: T\n  meta?: {\n    total: number\n    page: number\n    pageSize: number\n  }\n}",
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/src/types.ts"
+          },
+          "output": {
+            "bytesWritten": 885,
+            "clackWorkspaceWrite": true,
+            "ok": true,
+            "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261019-01/src/types.ts"
+          },
+          "state": "output-available",
+          "toolCallId": "call_njee40qq",
+          "type": "tool-write_file"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "id": "1Ugb5fHaH1lRlJAq",
+      "parts": [
+        {
+          "text": "Change the task page size requirement from 50 to 25. The new value supersedes 50 everywhere. Continue the same project and do not restart from scratch.",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "schemas": [
+    {
+      "function": {
+        "description": "Read a UTF-8 text file. Defaults to the first 2000 lines (capped at 25KB). Pass `offset`/`limit` for line-based windowing of large files. Refuses binary, oversized, or sensitive files (.env, keys, credentials). If you call this on the same path twice in a session without edits in between, the second call returns `unchanged: true` instead of re-emitting the content — re-read the prior tool result.",
+        "name": "read_file",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "description": "Max lines to return. Default 2000.",
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "offset": {
+              "description": "0-based start line. Default 0.",
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "path": {
+              "description": "Absolute path, or relative to the active terminal cwd.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "List immediate entries (files + directories) in a directory. Hidden entries are omitted.",
+        "name": "list_directory",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "description": "Absolute path, or relative to the active terminal cwd.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Create a brand-new file or overwrite a previously read tiny text file with the given content. Confirm the parent directory exists first. Prefer an exposed exact-string editing capability for targeted existing-file changes; do not use full replacement as a proxy for a targeted change. Approval follows the active agent policy.",
+        "name": "write_file",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Create a directory (and any missing parents). Approval follows the active agent policy.",
+        "name": "create_directory",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Replace an exact string in an existing file. Requires a successful prior file read on this path in the current session; cannot create unread or nonexistent files. `old_string` must be unique in the file unless `replace_all: true`. Approval follows the active agent policy.",
+        "name": "edit",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "new_string": {
+              "description": "Replacement substring.",
+              "type": "string"
+            },
+            "old_string": {
+              "description": "Exact substring to replace. Must be unique unless replace_all.",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "replace_all": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path",
+            "old_string",
+            "new_string"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Apply several exact-string replacements to a single existing file atomically. Each edit is applied in order to the running buffer; if any edit's old_string is missing or non-unique, the whole batch aborts before writing. Requires a successful prior file read on the path in this session; cannot create unread or nonexistent files. Approval follows the active agent policy.",
+        "name": "multi_edit",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "edits": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "new_string": {
+                    "type": "string"
+                  },
+                  "old_string": {
+                    "type": "string"
+                  },
+                  "replace_all": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "old_string",
+                  "new_string"
+                ],
+                "type": "object"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "edits"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Search file contents in the workspace using a regular expression. Honors .gitignore. Returns up to `max_results` (default 30, max 500) `{path, line, text}` hits, with a `truncated` flag when more existed. Long match lines are clipped to 160 chars. Use this for code navigation — do NOT brute-force read_file across the tree. Narrow with `glob` when you can; raise `max_results` only if the first batch truly isn't enough.",
+        "name": "grep",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "case_insensitive": {
+              "type": "boolean"
+            },
+            "glob": {
+              "description": "Optional include-globs over relative paths, e.g. ['**/*.ts', 'src/**/*.tsx'].",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_results": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "pattern": {
+              "description": "Regex pattern (Rust ripgrep dialect). Anchor and escape literal characters as needed.",
+              "type": "string"
+            },
+            "root": {
+              "description": "Root to search under. Defaults to workspace root, then active cwd.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pattern"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Find files by path pattern (gitignore-aware). Use over `list_directory` when you want all matches recursively. Patterns use globset syntax: `**/*.ts`, `src/**/test_*.py`. Returns up to `max_results` matches.",
+        "name": "glob",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "max_results": {
+              "maximum": 2000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "pattern": {
+              "description": "Glob pattern over relative paths.",
+              "type": "string"
+            },
+            "root": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pattern"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Run a foreground command in this session's persistent native shell. Despite the historical tool id `bash_run`, this is NOT necessarily Bash: obey the current <env> shell and shell_syntax fields exactly. cwd persists across calls. Use for short-lived commands (lint, test, search, build), including creating new workspace files with noninteractive native-shell file-writing commands when authorized. Respect workspace scope, secret-path protections and approvals. Do not use for dev servers, watchers or daemons; these require an exposed background-process capability. NEVER invoke interactive tools (vim, less, top). Approval follows the active agent policy.",
+        "name": "bash_run",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "timeout_secs": {
+              "maximum": 300,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "bash_background",
+        "description": "Spawn a long-running process using the native shell declared by the current <env> shell and shell_syntax fields. Despite the historical `bash_` tool ids, do not assume POSIX Bash syntax. Returns a handle for exposed log/stop capabilities. Output is captured into a 4MB ring buffer. Approval follows the active agent policy.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "cwd": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "bash_logs",
+        "description": "Read accumulated logs from a managed background process. Pass `since_offset` from the previous response's `next_offset` to tail incrementally. `dropped` reports bytes evicted by the ring buffer.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "handle": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "since_offset": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "handle"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "function": {
+        "description": "List all managed background processes in this app, running and exited. Always call this BEFORE spawning a new long-running process to avoid duplicates. If a matching process is already running, reuse it; inspect it through an exposed preview capability instead of respawning. Auto-executes.",
+        "name": "bash_list",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "bash_kill",
+        "description": "Terminate a managed background process by handle. Idempotent: kills nothing if the handle is unknown or already exited.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "handle": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "handle"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "run_subagent",
+        "description": "Spawn an isolated subagent with its own restricted toolset and a fresh message history. Use when you need to delegate a self-contained read-only investigation (large search, code review, security audit) without polluting your own context. The subagent returns a single text summary; pick a 'type' that matches its job.\n\nTypes:\n- explore: Read-only codebase explorer. Locates files, traces references, summarizes architecture.\n- code-review: Reviews changed code for correctness, architecture, performance, security.\n- security: Audits code/configuration for security risks (auth, injection, secrets, etc).\n- general: General-purpose worker for multi-step research questions that span many files.\n\nAuto-executes (no approval) — subagents are read-only by design.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "explore",
+                "code-review",
+                "security",
+                "general"
+              ]
+            },
+            "prompt": {
+              "type": "string",
+              "description": "Self-contained instruction. The subagent has no memory of prior conversation — include all relevant context."
+            },
+            "description": {
+              "description": "Short label shown in the chat UI for the spawn card.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "prompt"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "suggest_command",
+        "description": "Propose a single shell command. Renders a card in chat with an 'Insert' button — the command is NOT written to any terminal automatically; only the user's click inserts it at the prompt without executing. Use this when the answer IS a command.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "The shell command. Single line, no trailing newline."
+            },
+            "explanation": {
+              "description": "Optional one-line note shown beside the command.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_terminal_output",
+        "description": "Return the tail of the active terminal's scrollback. Use this when the user references 'this error', 'the last command', or you need to interpret recent terminal output. Default is 80 lines; raise it only when you genuinely need more. Returns an empty string if there is no active terminal; refuses if the terminal is in Privacy mode.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "lines": {
+              "description": "Number of trailing lines to return. Default 80.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "function": {
+        "description": "Open a preview tab (in-app iframe) at the given URL — restricted to localhost/loopback addresses for the local dev server. Use this after starting a dev server (e.g. `npm run dev`, `vite`) to surface the rendered page next to the terminal. To preview external sites, the user should paste the URL into the preview address bar themselves.",
+        "name": "open_preview",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "description": "Full URL to load (e.g. http://localhost:5173). Must include scheme. Only http/https on loopback hosts are accepted.",
+              "format": "uri",
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Replace your current task list. Use this for any non-trivial multi-step task (≥3 substantive steps). Mark exactly one item `in_progress` while you work on it; flip it to `completed` and the next to `in_progress` as you go. The tool replaces the previous list — always pass the FULL list, not a delta. Auto-executes (no approval).",
+        "name": "todo_write",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "todos": {
+              "description": "The complete list of todos for this task.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "maxLength": 512,
+                    "type": "string"
+                  },
+                  "id": {
+                    "description": "Stable id; generated if omitted. Reuse ids across calls to keep UI stable.",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "status": {
+                    "description": "Use blocked, with a reason in description, when work needs clarification or unavailable access. Completed is reported progress, not proof of successful effects.",
+                    "enum": [
+                      "pending",
+                      "in_progress",
+                      "completed",
+                      "blocked"
+                    ],
+                    "type": "string"
+                  },
+                  "title": {
+                    "maxLength": 160,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title",
+                  "status"
+                ],
+                "type": "object"
+              },
+              "maxItems": 16,
+              "type": "array"
+            }
+          },
+          "required": [
+            "todos"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "request_conversation_evidence",
+        "description": "Request missing source evidence before your next response. Without a scoped anchor, searches only your own conversation; use an original message/evidence ID and expand for adjacent intact tool groups. For an authorized project/task query use anchor workspace, or select project:<recordId>, task:<taskId>, artifact:<taskId>:<artifactId>, or file:<workspace-relative-path>. Project/task evidence is also selected automatically. Never searches another private chat. Two bounded rounds total with a shared size/time allowance; if unavailable, disclose uncertainty instead of guessing.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "anchor": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1100
+            },
+            "expand": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "spawn_coding_agent",
+        "description": "Spawn a Claude Code agent in a new terminal tab and give it the prompt. Use this when the user (via /claude-code) wants work delegated and no agent is active yet in this session. Craft a complete, self-contained prompt first; the user approves it before the agent starts. Do not call this if an agent is already active — use send_to_agent instead.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The full, self-contained task prompt for the Claude Code agent."
+            }
+          },
+          "required": [
+            "prompt"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "send_to_agent",
+        "description": "Send a follow-up instruction to the active Claude Code agent in this session. Use after reviewing its output to request fixes or the next unit of work. The instruction is typed into the agent's prompt and submitted once the user approves. Read its latest output first so the follow-up is informed.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "instruction": {
+              "type": "string",
+              "minLength": 1,
+              "description": "One clear, self-contained instruction for the agent. No control characters."
+            }
+          },
+          "required": [
+            "instruction"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "read_agent_output",
+        "description": "Inspect the Claude Code agent in this session: whether one is active, its status, and the tail of its terminal output. Call this first when handling a /claude-code request so you know whether to spawn a new agent or follow up with the existing one, and to see what it has done and reported.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "lines": {
+              "description": "Trailing lines of the agent terminal to return. Default 120.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 400
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "promote_peer_finding",
+        "description": "Propose a bounded excerpt of a completed task result as shared project knowledge. Only your own task endpoints are eligible. Native user approval and evidence verification are always required, including in Full Access. This does not run tests or turn an assumption into a fact automatically.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "taskId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "excerpt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "files": {
+              "minItems": 1,
+              "maxItems": 8,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              }
+            }
+          },
+          "required": [
+            "taskId",
+            "excerpt",
+            "files"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "function": {
+        "description": "Send a bounded task-scoped note or ask the source to clarify your current task. Clarification yields your run until the source answers; do not repeat the question. Only explicit task endpoints, parent/child edges and dependency producer-to-consumer edges are allowed. No full transcripts, secrets or hidden reasoning. Evidence must already belong to the addressed task. Current task: none.",
+        "name": "communicate_peer_task",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {
+              "default": [],
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "artifactId": {
+                    "type": "string"
+                  },
+                  "contentHash": {
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": "string"
+                  },
+                  "taskId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "taskId",
+                  "artifactId",
+                  "contentHash"
+                ],
+                "type": "object"
+              },
+              "maxItems": 8,
+              "type": "array"
+            },
+            "kind": {
+              "enum": [
+                "clarification-request",
+                "clarification-response",
+                "finding",
+                "blocker",
+                "review-request",
+                "review-response",
+                "dependency-update",
+                "note"
+              ],
+              "type": "string"
+            },
+            "recipientTaskId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "replyTo": {
+              "type": "string"
+            },
+            "taskId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "text": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "taskId",
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Ask another persistent Clack conversation to perform a bounded task in the same workspace. Use this for an independent review, a focused question, or delegated work that benefits from the target chat's own agent and model. The task and result are visible in both conversations. Starting another provider run may require user approval. Do not use this for a quick read-only subagent investigation.\n\nAvailable target conversations:\n- s-mvftq8xp-5csacw: New chat (agent builtin:coder, model gpt-5.4-mini)\n- real-preflight: real-preflight (agent builtin:coder, model self-hosted:[\"real-qwen\",\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",null])\n\nTasks in this collaboration that may be used as prerequisites:\n- No dependency candidates are available. Create a normal peer task without dependencies.",
+        "name": "request_peer_task",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "artifactRefs": {
+              "description": "Optional workspace file or diff paths. Clack snapshots their exact contents when the task is created.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "file",
+                      "diff"
+                    ],
+                    "type": "string"
+                  },
+                  "path": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "path"
+                ],
+                "type": "object"
+              },
+              "maxItems": 8,
+              "type": "array"
+            },
+            "dependsOn": {
+              "description": "Optional peer task IDs from this collaboration. This task waits until all listed tasks complete successfully and becomes blocked if one fails or is cancelled.",
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 8,
+              "type": "array"
+            },
+            "executionMode": {
+              "default": "read-only",
+              "description": "Read-only blocks mutation tools. Shared-write serializes mutations in the project checkout. Isolated-worktree requires a clean local Git repository and returns a reviewable patch.",
+              "enum": [
+                "read-only",
+                "shared-write",
+                "isolated-worktree"
+              ],
+              "type": "string"
+            },
+            "followUpTo": {
+              "description": "Completed task ID you own or performed. Use kind review to review its immutable results, or delegate to return corrections. Preserves graph limits and creates a prerequisite edge; no private transcript transfer.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "delegate",
+                "review",
+                "question"
+              ],
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Self-contained bounded task. Do not include secrets or hidden reasoning.",
+              "maxLength": 12000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "targetSessionId": {
+              "description": "Exact target conversation ID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "targetSessionId",
+            "kind",
+            "prompt"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Cancel an active peer task in the current collaboration. Set cascade to true to cancel its active descendants as well. Completed, failed, blocked, sibling, and unrelated tasks are not cancelled.\n\nTasks in this collaboration:\n- No cancellable collaboration is active.",
+        "name": "cancel_peer_task",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "cascade": {
+              "default": false,
+              "description": "Cancel active descendants in the selected task's subtree.",
+              "type": "boolean"
+            },
+            "reason": {
+              "description": "Brief human-readable reason for the cancellation.",
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "taskId": {
+              "description": "Exact peer task ID.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "taskId"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Submit a bounded JSON custom-tool definition for user review, never registration or execution. Name must start custom_. Required fields: name, description, inputSchema (object), outputSchema, outputDescription, binding (native operation read_file/list_directory/write_file/create_directory; http url/method; script executable/argv/hash; function module/export/hash; wasi schemaVersion:1/hash/abi:wasi-preview1-json-v1/export:_start/runtime:clack-wasi-1; mcp server/tool), permissions (read-files/write-files/create-files/run-commands/network), credentialRef (null or keyring reference), timeoutMs, outputBytes. WASI requires previously user-imported same-workspace module hash, only run-commands permission, null credentials and outputBytes<=16384. Omit scope/agents/conversations to bind to your current conversation and agent; no broader proposal is allowed. Object schemas require properties and additionalProperties:false; strings maxLength<=8192; arrays maxItems<=64; no references/defaults. No credentials, inline executable code, installation or execution. User authorization is separate.",
+        "name": "propose_custom_tool",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "definitionJson": {
+              "maxLength": 24576,
+              "minLength": 2,
+              "type": "string"
+            }
+          },
+          "required": [
+            "definitionJson"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ],
+  "oldNames": [
+    "cancel_peer_task",
+    "communicate_peer_task",
+    "request_peer_task"
+  ]
+}

@@ -39,13 +39,16 @@ vi.mock("@/modules/ai/lib/providerRetry", async (original) => ({
 vi.mock("@/modules/ai/tools/tools", async () => {
   const { tool } = await import("ai");
   const { z } = await import("zod");
+  const { identifyTool } = await import("@/modules/ai/lib/toolExposure");
+  const readFixture = tool({
+    description: "Read fixture",
+    inputSchema: z.object({}),
+    execute: async () => ({ text: "evidence" }),
+  });
+  identifyTool(readFixture, { definition: { binding: { kind: "native", operation: "read_file" } } });
   return {
     buildTools: () => ({
-      read_fixture: tool({
-        description: "Read fixture",
-        inputSchema: z.object({}),
-        execute: async () => ({ text: "evidence" }),
-      }),
+      read_fixture: readFixture,
     }),
   };
 });
