@@ -12353,3 +12353,383 @@ readiness-only harness/evidence and **this report appendix only**. Original six
 dirty contents, both safety stashes and `autonomous_tracker/` are preserved; only
 checkpoint-owned hunks are staged. No clean/reset, no push. Commit:
 `fix(ai): bound reasoning-aware tool verification`. Stop after this checkpoint.
+
+## Fresh hardened-runtime Nemotron ForgeBoard acceptance
+
+### Scope, isolation and immutable evidence
+
+2026-10-21, evidence-only acceptance from committed `main`
+`16fa831637cf6a6fb71ce0d3a80360028475ab7f`. Exactly **one fresh Nemotron mission**;
+no Qwen or other-model inference. No production source, verifier, reasoning
+selection, F1, compaction, context calibration, continuation or timeout changes.
+Before launch, read-only process inspection found no competing Clack acceptance,
+native host, Cargo/rustc or Vite/test/build run. The **941 tracked
+source/configuration SHA-256 values** captured before inference still matched
+after terminal state. Existing six dirty files were baselined separately.
+
+- Model: **`nemotron-3.5-lightning:30b-a3b-q4_K_M`**.
+- Exact installed digest, verified before inference:
+  `e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2`.
+- Connection: existing user-managed SSH tunnel at **`http://127.0.0.1:11435`**,
+  native Ollama transport; **Ollama 0.40.5**. No benchmark connection or managed-SSH
+  substitute. Original SSH process **37440** remained untouched.
+- Fresh empty Git workspace:
+  **`C:\Users\Hayden\Documents\forgeboard-nemotron35-lightning-20261021-02`**.
+  The existing safe approval allowlist supports this prefix, not the preferred
+  `nemotron-hardened` workspace prefix. Used the supported name without changing
+  the dirty approval rules. No seeded package, template or evaluator implementation.
+- Evidence ID: **`forgeboard-nemotron-hardened-20261021-02`**, raw artifacts under
+  `src-tauri/target/real-qwen-product/forgeboard-nemotron-hardened-20261021-02/`.
+  Owned native host PID **40720**, runner PID **35112**; neither remained after
+  evidence capture, runner exit **0**. Runner success is not application success.
+- Original specification SHA-256:
+  `f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`.
+  Sent **exactly once**, unchanged. The only subsequent user message was the
+  authorized correction below. No reminders, rescues, manual Continue or repairs.
+
+The bounded committed record is
+`src/test/fixtures/fresh-nemotron-20261021.json`. It includes native controls,
+response classes/timings/usage, every tool result identity, plans, budget history,
+source manifest, audit outcomes and SHA-256 values for 13 raw evidence artifacts.
+Raw native request/stream/receive logs remain local under the ignored target
+directory, not duplicated into this report or promoted to project memory.
+
+### Normal production readiness and Automatic controls
+
+The earlier Verified evidence belonged to an exited native runtime. It was not
+valid proof for this fresh process. The unchanged production readiness path
+therefore legitimately revalidated: **six context probes** at 4,096, 8,192,
+16,384, 32,768, 49,152 and 65,536, output allowance 32, followed by **one tool
+verification request** at output 512. That first tool probe returned a valid native
+call; it **never executed**. No diagnostic differential, redundant verification,
+output escalation or alternative-reasoning search occurred. These **seven
+pre-mission requests** are separate from mission productivity.
+
+Immediately before the mission: **tools Verified / Agent Ready**; reasoning
+**Automatic**, provider-default thinking **On**, effective provider options `{}`,
+profile overrides `{}`. Native **`think` omitted**, never forced true/false/Medium.
+Automatic recommended, verified, requested and actually loaded context:
+**65,536**; advertised 1,048,576 was not substituted for practical capacity.
+Every mission body retained **`num_ctx=65536`, `num_predict=2048`, `think` omitted**.
+The final loaded-model observation retained the same digest and 65,536 context.
+Fallback **Never**, cloud inference **0**. No model downloads. Production request
+deadline remained **600 seconds**; it was not reached or extended.
+
+### Mission chronology and productivity
+
+Mission **04:05:54.152-04:13:51.024 UTC**, **7m 56.872s**, including the authorized
+correction transition. Latencies below use the initial mission start, not the
+post-correction run start; readiness probes are excluded.
+
+| Milestone | Latency / evidence |
+|---|---|
+| First provider output | **12.072s** |
+| First native structured call | **18.941s** |
+| First verified direct file mutation | **73.497s**, tsconfig edit, not substantive product code |
+| First substantive backend attempt | **114.984s**, `src/storage.ts`; implementation attempt, not working persistence |
+| Server entry source | **309.493s**, `src/server.ts` |
+| SSE/publisher source | **340.242s**, `src/publisher.ts`; not operational SSE |
+| Working backend startup | **Not reached** |
+| Substantive frontend | **Not reached** |
+| First meaningful authored/passing test | **Not reached** |
+| Successful production build | **Not reached** |
+
+**47 native requests total = 7 readiness + 40 mission dispatches**. The next
+step was blocked locally, so it is not a 41st dispatched mission request.
+**39 native calls**, **30 successful operations / 9 failed operations**. Tool
+protocol delivery alone is not success: six nonzero shell exits count as failures.
+
+| Tool | Calls | Successful | Failed |
+|---|---:|---:|---:|
+| `list_directory` | 3 | 3 | 0 |
+| `todo_write` | 3 | 3 | 0 |
+| `bash_run` | 11 | 5 | 6 |
+| `read_file` | 5 | 5 | 0 |
+| `edit` | 5 | 4 | 1 |
+| `write_file` | 11 | 9 | 2 |
+| `grep` | 1 | 1 | 0 |
+
+There were **13 verified direct write/edit effects**: nine successful `write_file`
+and four edits, **11 source-code mutations plus two tsconfig mutations**. These
+are events, not 13 distinct files. Other successful shell effects were npm init,
+declared-dependency installation, tsc initialization, `src` directory creation and
+`src/routes` directory creation. Package/lockfile/node_modules creation is not
+counted as additional substantive source writes. **Zero evaluator approvals**;
+normal trusted-workspace authorization applied, without a permission waiver.
+No PeerTasks or delegation.
+
+**15 responses contained prose alongside native calls; zero prose-only responses,
+textual pseudo-tool intents, completed empty responses or length stops.** Completed
+native mission responses finished `stop`, normalized to tool calls. Request
+`inference-27` was cancelled for the authorized correction boundary: no final
+provider finish or usage was received. Its null usage is not an invented zero,
+output-exhaustion event or engine stall. No textual pseudo-tool was executed.
+
+### Shell identity and unassisted recovery
+
+Before the first command, the native environment serialized
+`shell: PowerShell (pwsh.exe)` and
+`shell_syntax: PowerShell; not POSIX Bash`. The tool description also warns that
+the historical `bash_run` ID does not imply Bash. First command:
+`cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02 && npm init -y`.
+It succeeded under PowerShell 7. Later Unix-command errors were model choices,
+not a hidden Bash environment or first-command serialization failure.
+
+- Writing `projects.ts` failed twice because `src/routes` did not exist. After a
+  failed `ls -la /C:/...` command and native directory inspection, the model created
+  the missing directory and the same file write succeeded. The duplicate failed
+  write is retained, not erased from reliability totals.
+- The correction's first exact-string edit failed to match. The model inspected
+  source, then applied a narrower successful edit. `cat | head | tail` and `sed`
+  inspection attempts failed on unavailable Unix commands; it used `read_file`.
+- `npx tsc --noEmit 2>&1 | head -50` failed at the pipeline. Two subsequent bare
+  typechecks really ran and returned compiler failures. The model rewrote
+  tsconfig, ran the compiler again, and read storage code to continue debugging.
+  Configuration and application errors remained unresolved when the guard stopped
+  the next step. Natural recovery is partial, not a passing compiler/build.
+
+No evaluator explained errors or supplied commands. A ten-item plan tracked
+backend, persistence, frontend, SSE, filters, tests, debugging and build/docs.
+Setup/persistence/filtering were marked completed based on attempted code, not
+independent functional proof. Remaining plan items ended failed at runtime
+finalization; that does not prove the model voluntarily abandoned each item.
+No final claim of passing tests, working build or complete product was emitted.
+
+### Correction, objective continuity and F1
+
+The syntax-aware detector observed **five verified write/edit events**, including
+four actual source files, and current authored `src/routes/tasks.ts` containing
+`pageSize = 50` with its content hash. Both correction prerequisites were met.
+At **04:08:59.420 UTC**, sent exactly once:
+
+> Change the task page size requirement from 50 to 25. The new value supersedes 50 everywhere. Continue the same project and do not restart from scratch.
+
+Next native request **`inference-28`** retained the **entire original specification
+byte-for-byte**, not merely the product name or a generated summary. Its source
+creation, reading and execution capabilities remained available. In fact,
+`read_file`, `write_file` and `bash_run` remained exposed in **every mission request**.
+F1 selected 13 or 14 schemas; occasional omission of `edit` did not remove the
+permitted `write_file` implementation route. **No F1 regression** observed.
+
+Final task-route AST contains **`const pageSize = 25`**, with no active 50 page
+size. This is a real source correction, **not an HTTP-verified 25-item response**:
+the server cannot start. There were **zero manual, answer-length or soft-limit
+automatic continuations**; continuation-trigger/objective-retention comparisons
+are therefore not applicable. Normal native tool steps continued until the local
+context guard; no mid-run setting change or requirement resend occurred.
+
+### Exact terminal boundary and memory/context evidence
+
+**`PRODUCT RUNTIME / PROTECTED CONTEXT BUDGET`**, error
+**`compaction-protected-budget`**. The next dispatch was refused locally; no
+provider HTTP 400, 600-second inference timeout, engine stall, voluntary model
+stop, premature terminal prose or textual tool fallback caused termination.
+The last SDK finish was tool calls. Post-correction step count 20 remained below
+soft 24 / hard 240; continuation count zero. Runner completed its evidence capture.
+
+| Blocked shared-B1 quantity | Conservative estimate |
+|---|---:|
+| System | 3,755 |
+| Schemas/options | 6,244 |
+| Conversation | 47,963 |
+| Total input | 57,962 |
+| Output reserve | 2,048 |
+| Included reasoning reserve | 0 |
+| Safety margin | 5,797 |
+| Required | **65,807** |
+| Effective ceiling | **65,536** |
+| Deficit | **271** |
+
+Final schema serialization was 12,764 bytes / 14 tools. Minimum admitted
+**reconstructed conservative headroom: 3,987**. Last admitted `inference-47`
+required 61,289, headroom 4,247. Its actual provider-reported input was **27,025**.
+These are different measurement points and methods. Do **not** claim that Ollama
+physically exhausted 65K, infer missing token totals, or manufacture separate
+SDK/native token counters: that independent numeric instrumentation was absent.
+The discrepancy alone does not establish a Clack defect or justify bypassing B1.
+
+**Three source-linked verified-effect receipts**, for storage, schemas and
+publisher writes, appeared in the last admitted request. Their conversation,
+message/part identities and canonical source SHA-256 were verified against the
+original durable tool parts and captured original native call/result pairs.
+An offline shared-B1 reconstruction restored those exact pairs: conversation
+estimate **47,567 before / 43,856 after**, **3,711 estimated tokens saved**. This
+is source-verified estimated receipt savings, not measured provider token savings.
+The later storage read raised protected cost and the next step still blocked.
+
+**Zero successful rolling compactions, zero model-directed evidence retrievals,
+zero extractions, memory revision null.** Receipt reduction is not an LLM memory
+revision. Preparation generation 99 is not 99 compactions. Original history and
+tool provenance remained present; no memory/context architecture was redesigned.
+
+### Frozen application and independent audit without repairs
+
+At terminal state inference stopped. SHA-256 freeze captured **nine authored or
+npm-generated files, 95,872 bytes**, excluding `.git` and `node_modules`:
+`package.json`, lockfile, tsconfig, `src/storage.ts`, `src/schemas.ts`,
+`src/routes/projects.ts`, `src/routes/tasks.ts`, `src/server.ts`, `src/publisher.ts`.
+Six TypeScript source files total 20,042 bytes. No model Git commit was created.
+An isolated `independent-project` copy installed **only its declared locked
+dependencies** using `npm.cmd ci --ignore-scripts --no-audit --no-fund`; no missing
+dependencies were supplied. All nine original/copy hashes matched before and after
+audit. No application source, manifest or dependency repair by the evaluator.
+
+| Independent command | Exact outcome |
+|---|---|
+| `npm test` | Exit 1; npm-init placeholder, **zero meaningful tests** |
+| `npm run build` | Exit 1; missing build script |
+| `npm start` | Exit 1; missing start script |
+| Declared local `tsc --noEmit` | Exit 1; **52 TypeScript diagnostics** |
+| Declared local `ts-node src/server.ts` | Exit 1 before startup, `TypeError: Cannot read properties of undefined (reading 'fileExists')` in ts-node configuration |
+
+The last command is a diagnostic entry attempt, not a model-authored run script.
+Declared ts-node 10.9.2 / TypeScript 7.0.2 fails before the source executes.
+Port 4317 was free before that attempt; its owned child exited, without killing
+any unrelated process. The model itself ran typechecks, **not** a meaningful test
+suite, production build or successful backend startup.
+
+The comparable hardened-Qwen **19-check matrix** is retained: **0 passed,
+1 startup failure, 18 blocked**. Thus **0/19 demonstrated**, not 19 executed API
+failures. Project create/list/open/edit/delete, task create/view/list/edit/delete,
+status/priority/title validation, deterministic JSON errors/not-found, title and
+description search, individual and combined project/status/priority/tag filters,
+page size 25 and port-4317 behavior cannot be dynamically credited. The original
+19 rows group those capabilities the same way as the Qwen audit; startup prevents
+HTTP probes, rather than inventing extra scored requests.
+
+Static source/compiler evidence explains why attempted backend code is not a
+working product: synchronous storage methods contain `await import("fs")`,
+routes call instance methods on the exported Storage class, projects initialize
+as an object where array methods are used, uuid/socket.io/vite are undeclared,
+tsconfig retains unknown `noUncheckedAccess`, and server has CommonJS top-level
+await and missing SSE function imports. No unexecuted fix is credited.
+
+- **Persistence:** JSON-file code attempted, but not operational. Real
+  create/stop/restart/retrieve test **blocked by startup**; not a measured data-loss
+  test and not a persistence pass.
+- **SSE:** publisher/routes attempted but **NOT IMPLEMENTED as a usable feature**.
+  Functions are missing at the server call sites, catch-all 404 is registered
+  before later SSE/static routes, project CRUD does not publish, and task deletion
+  looks up task project identity after deletion. No live SSE connection/event or
+  cleanup test ran; no polling substitute received credit.
+- **Frontend:** **NOT IMPLEMENTED**. No React dependency, TSX, index.html or
+  substantive UI. Rendering, CRUD/navigation, statuses/priorities/tags, loading,
+  error/empty states, search/filtering, keyboard access, page size, title max and
+  750ms debounce have no frontend acceptance evidence. No browser/native GUI
+  verification is claimed.
+- **Tests:** **NOT IMPLEMENTED**; no meaningful model-authored test files. Default
+  npm placeholder failed, not an API/frontend test suite.
+- **Build/docs/ignore:** production build unavailable, README/setup/run instructions
+  absent, `.gitignore` absent. Runtime persistence paths are not appropriately
+  excluded. No usable final application or telemetry/cloud-free product acceptance
+  can be claimed from an unstartable backend, although the mission used zero cloud AI.
+
+### Direct comparison with committed hardened Qwen
+
+Reference only: `9b4866a test(ai): rerun qwen on hardened local runtime`, bounded
+`hardened-qwen-20261021.json`. **No Qwen inference in this checkpoint.**
+
+| Metric | Hardened Qwen | Fresh hardened Nemotron |
+|---|---|---|
+| Automatic context | 65,536 | 65,536 |
+| Effective reasoning | None / `think:false` | Provider default On / `think` omitted |
+| Tools ready | Yes | Yes, normal fresh-scope revalidation |
+| Mission attempts | 20 | 40 dispatched; next step locally blocked |
+| Native calls | 17 | 39 |
+| Successful / failed tools | 17 / 0 | 30 / 9 |
+| Direct file write/edit effects | 12 | 13; 11 source-code, two tsconfig |
+| Final frozen files | 11 | 9, excluding installed dependencies |
+| First provider output | 8.068s | 12.072s |
+| First native call | 9.631s | 18.941s |
+| First write | 21.258s | 73.497s, config; backend attempt 114.984s |
+| Automatic continuations | 1 length continuation | 0 |
+| Correction sent | Once | Once |
+| Page size 25 | HTTP verified | AST verified only; HTTP blocked |
+| F1 implementation routes | Retained | Retained, including next correction request |
+| Protected-context block | No | Yes, estimate 65,807 / ceiling 65,536 |
+| Backend audit | 13/19 passed | 0/19 demonstrated: startup failed, 18 blocked |
+| Persistence | Real restart failed | Source attempted; restart test blocked |
+| SSE | Missing/404, failed | Attempted/unwired; live test blocked |
+| Frontend | Scaffold only, App.tsx missing | None |
+| Tests | Incomplete/failing | None; placeholder fails |
+| Build | Failed | Missing script; command fails |
+| Terminal behavior | Textual `write_file` pseudo-call / premature stop | Native tool progress, then local protected-context refusal |
+| Final usability | STILL LIMITED | STILL LIMITED; runtime-limited incomplete app |
+
+**Did Nemotron materially outperform Qwen? NO demonstrated delivered-software
+improvement.** Qwen remains ahead on observed working backend functionality and
+tool reliability; both fail complete-product acceptance. More calls and mutations
+are not a quality win. **Full autonomous model-quality ranking is INCONCLUSIVE**
+because Nemotron did not receive an unblocked opportunity to finish: its terminal
+boundary was the runtime guard, not voluntary prose/pseudo-tool behavior. Qwen is
+the **best-tested working-backend reference**, not an unattended-ready default.
+
+Earlier Nemotron evidence involved the old F1 continuity defect, a 32K protected
+budget, or a readiness block before the mission. Those are not fair completed
+model-quality trials. This run reached sustained backend implementation with F1
+intact and 65K Automatic context, but compiler/debugging remained unfinished when
+the protected budget stopped it. It neither proves Nemotron cannot finish nor
+establishes that long-horizon model stopping is now the dominant limitation.
+
+**Overall local-Agent usability: STILL LIMITED.** No working complete ForgeBoard,
+frontend, persistence restart, meaningful tests or production build was delivered.
+Not READY and not PROMISING BUT NOT YET on substantial working-product grounds.
+No additional model shootout is justified immediately by this evidence.
+
+Recommended next separate checkpoint: **Audit Protected-Context Accounting and
+Compaction Eligibility**. Trace the protected-growth/admission boundary, compare
+the conservative estimate with actual provider usage at matching points, and
+explain why only three receipts and no durable compaction were eligible. Do not
+presume the guard is wrong, weaken safety, inflate context or force continuation.
+An obligation-aware terminal-continuation audit may still matter for Qwen, but
+Nemotron kept making native calls; blind continuation would hit the same guard.
+**No next audit or repair was started here.**
+
+### Focused verification, limitations and repository safety
+
+- Pre-mission acceptance/readiness/correction/approval/evidence tests:
+  **136 passed / 5 files** (`hardenedAcceptance.test.ts`,
+  `hardenedRunEvidence.test.ts`, `hardened-readiness.test.mjs`,
+  `acceptance-approval.test.mjs`, `acceptance-correction.test.mjs`).
+- New frozen evidence/auditor suite `scripts/fresh-nemotron.test.mjs`:
+  **14 passed / 1 file**. **150 distinct focused tests passed / 6 files total**.
+  Includes exact Automatic wire, scoped readiness counts, full specification and
+  correction/F1 retention, shell-exit failure accounting, cancelled usage, exact
+  local budget versus provider measurements, source-linked receipt savings,
+  failed-versus-blocked audit outcomes and non-execution of textual tool intent.
+- `node scripts/audit-fresh-nemotron.mjs summary`: passed raw-evidence
+  reconstruction, native-call/transcript reconciliation, original spec hash,
+  all request controls, terminal math and frozen original/copy hash checks.
+  `receipts`: passed canonical source digest and captured call/result restoration;
+  repeated analysis asserts the immutable evidence result instead of replacing it.
+- `npm.cmd run check-types`: passed. Node syntax checks for new audit/test scripts:
+  passed. Native host `cargo build --locked --example hardened_agent_acceptance
+  --target-dir target/codex-test`: passed; scoped `rustfmt --check --edition 2021
+  examples/hardened_agent_acceptance.rs`: passed. Working/staged diff checks passed.
+- No full unrelated frontend/Rust/lint/build reruns: this checkpoint changes only
+  evidence/audit tests/report. Prior checkpoint's explicitly documented full-suite
+  collection/assertion and Rust cancellation-timeout failures remain unresolved;
+  this is **not** a claim of newly green full repository gates.
+- Independent audit tooling limitations were resolved without touching the app:
+  sandboxed external-repo status required a read-only escalated retry; offline
+  receipt analysis initially wrote the correct result but encountered Vite
+  optimizer-close errors. The new auditor disables optimizer/config loading;
+  successful rerun asserted byte-equivalent receipt evidence. An initial expected
+  zero-receipt assertion was replaced with source verification of the actual three.
+  A focused-test recheck hit a sandbox temporary-cache rename `EPERM` before test
+  collection; using a process-local checkpoint-owned TEMP/TMP directory passed
+  all 14 checks without changing source or global settings. No inference rerun,
+  evidence deletion, application repair or hidden model rescue.
+- Real Windows native IPC/inference evidence only. No Linux/macOS live run or
+  native GUI acceptance claimed. No model downloads, cloud inference, Ollama
+  service/bind/firewall/SSH/model-artifact changes; manual 11435 tunnel untouched.
+
+Checkpoint-owned files: this appendix, `scripts/audit-fresh-nemotron.mjs`,
+`scripts/fresh-nemotron.test.mjs`, and
+`src/test/fixtures/fresh-nemotron-20261021.json`. The pre-existing report bytes and
+the five other dirty files remain byte-for-byte unchanged. Only this appendix is
+staged from the dirty report; no pre-existing report edits are included. Both
+safety stashes and `autonomous_tracker/` are untouched. No production changes,
+clean/reset, broad formatting, follow-on checkpoint or push. Commit:
+**`test(ai): rerun nemotron after readiness hardening`**. Expected post-commit state:
+`main`, **80 ahead / 0 behind cached origin**, original six dirty paths preserved.
