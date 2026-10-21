@@ -38,6 +38,12 @@ Clack is a Tauri 2 + React 19 + Rust IDE/agent app forked from Terax.
 - Respect each checkpoint's boundaries and stop rules. A confirmed new Clack defect must be preserved and handled separately, not patched to finish a benchmark. These principles do not authorize extra model runs, downloads, broad UI work, context calibration, timeout changes or model-specific tuning.
 - After North and Nemotron sampling is complete, the next dedicated audit is **Local Provider Auto-Configuration and Model Onboarding UX**. Map existing capabilities and gaps in discovery, calibration, per-model persistence, remote-provider UX, Automatic/advanced settings and failure states before implementing broad UI changes. Do not start that audit prematurely.
 
+## Long-Horizon Context Principles
+
+- Prefer deterministic, reversible representations of verified history over lossy freeform summaries. Keep exact originals source-linked and recoverable; never replay an effect to recover evidence.
+- User intent and corrections remain authoritative independently of workspace contents. Historical tool success does not prove current file state, passing validation or requirement completion.
+- A compact representation's byte-level reversibility is necessary, not sufficient: enforce source ownership, dependency retention, provider continuation semantics and freshness before production use. Preserve current partial answers and unresolved evidence; fail closed when safe context cannot fit.
+
 ## Verification
 
 Run the relevant subset before claiming done:

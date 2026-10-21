@@ -14016,3 +14016,376 @@ silently declared successful or removed to fit.
   `test(ai): audit continuation context preparation`. Expected post-commit:
   `main`, **85 ahead / 0 behind cached origin**, original six dirty paths,
   empty index, no checkpoint-owned untracked files. **No push. STOP.**
+
+## Long-horizon continuation representation and safe compaction audit
+
+### Boundary and completion classification
+
+- Base: `8bf153d test(ai): audit continuation context preparation`. Frozen
+  evidence remains the `b2cd814` terminal state of
+  `forgeboard-nemotron-hardened-20261021-04`.
+- **LONG-HORIZON REPRESENTATION AUDITED**. No production compaction extension
+  passed the complete runtime integration/safety bar in this checkpoint. This
+  is not READY, not a production fix, and not a claim that deterministic
+  approaches are impossible. Reversible prototypes establish concrete options
+  and their remaining obligations rather than a speculative summary pipeline.
+- The current continuation boundary remains correct: C1 `inference-33` needed
+  55,891 with +9,645 headroom; C2 `inference-37` needed 62,216 with +3,320;
+  last dispatched `inference-40` needed 64,805 with +731. C3 shared preparation
+  was blocked at 68,889 / -3,353. Its actual projected wire representation is
+  **61,132 input + 2,048 reserve + 6,114 margin = 69,294**, deficit **3,758**.
+  There is no newly discovered duplication/accounting defect.
+- **Zero inference, zero model-server requests, zero cloud inference, zero
+  ForgeBoard reruns, zero frozen-project mutations or tool replay.** Public provider
+  documentation was read; neither Ollama nor the SSH tunnel was contacted, and
+  no mission content was sent to a provider. No context/output/reasoning/F1,
+  reserve, margin-policy, continuation-count or protected-failure setting changed.
+- `scripts/audit-long-horizon-context.mjs` validates the prior projected-body
+  canonical hash, 22 raw evidence hashes, 955 existing Clack source hashes and
+  25 original plus 25 independent-copy project hashes. It reads only frozen
+  content and uses the actual `measureRequest`/`resolveContextBudget` functions.
+  The original body, transcript and source files remain unchanged.
+
+### Additive provider-history token inventory
+
+The denominator is **51,374 estimated conversation/history tokens** in **60
+non-system messages**. The full request has 61 messages, 3,872 system tokens
+and 5,886 schema tokens, totaling 61,132 input. These are Clack estimates, not
+new provider usage. Each provider-bound field is assigned exactly once using
+its marginal contribution to the actual estimator. Rows below sum to 51,374;
+subtables are drill-downs, not additional budget categories. Role, tool identity
+and envelope costs are separately retained instead of hidden in content rows.
+
+| Class | Items | Estimated tokens | % history | Reduction finding |
+|---|---:|---:|---:|---|
+| Exact original objective, content field | 1 | 1,049 | 2.042% | Protected |
+| Exact correction plus native environment, content field | 1 | 214 | 0.417% | Protected |
+| Historical assistant reasoning | 29 | 3,601 | 7.009% | No blanket omission proof |
+| Historical non-tool assistant prose | 28 spans/fields | 1,019 | 1.983% | Unique rationale/obligations not deterministically closed |
+| Older unfinished textual tool-intent drafts | 2 | 7,982 | 15.537% | Not native effects; preserve without semantic proof |
+| Current unfinished answer | 1 | 3,955 | 7.698% | Exact, hot, protected |
+| Native tool-call fields | 28 | 19,046 | 37.073% | See effects/plan/command breakdown |
+| File-read result content | 5 | 3,210 | 6.248% | No superseded full bodies |
+| Directory-list result content | 3 | 568 | 1.106% | One tiny stale listing, two currently relevant listings |
+| Shell-result content | 12 | 3,683 | 7.169% | Keep all output; exact command echo can be factored |
+| Successful write-result content | 4 | 332 | 0.646% | Already small; large bodies are in call arguments |
+| Plan-result content | 2 | 121 | 0.236% | Latest plan protected |
+| Search-result content | 2 | 4,916 | 9.569% | Exact duplicate path prefixes are factorable |
+| Existing authenticated historical-write receipt | 1 | 427 | 0.831% | Retained, not mislabeled as chatter |
+| Message/identity/envelope material | 116 fields | 1,251 | 2.435% | Required structural material |
+| **History total** | | **51,374** | **100%** | |
+
+The 116 envelope fields are 60 role/envelopes plus 28 tool names and 28 tool-call
+IDs, not 116 messages. The objective's scalar text is 1,044 tokens. Correction
+text alone is 79; its complete native user message is 92, with environment adding
+130 to that message. The current partial answer's scalar text is 3,950, its
+content field 3,955, and its complete assistant message 3,964. These distinctions
+explain the earlier shared-message estimate of 3,979; no content was removed.
+
+System guidance outside the history total is 3,755 plus the current directive's
+117 marginal tokens, totaling 3,872. There are **zero obsolete continuation
+directives** in this frozen history. Thirteen unchanged tool schemas cost 5,886.
+The SDK coalesces the two older drafts with following commentary; exact draft
+spans are located by original response SHA-256 and their marginal tokens are
+separated from the remaining prose. No commentary is mislabeled as draft code.
+All 62 local answer annotations remain excluded by existing accounting; native
+serialization contains none, and they contribute no inventory tokens.
+
+| Native tool family | Calls | Call fields | Result content fields |
+|---|---:|---:|---:|
+| `write_file` | 4 | 15,016 | 332 |
+| `todo_write` | 2 | 1,753 | 121 |
+| `bash_run` | 12 | 1,387 | 3,683 |
+| `read_file` | 5 | 443 | 3,210 |
+| `list_directory` | 3 | 253 | 568 |
+| `grep` | 2 | 194 | 4,916 |
+| **Totals, already allocated above** | **28** | **19,046** | **12,830** |
+
+There were 29 original native calls: the fifth write is already represented by
+the SSE receipt. Largest historical consumers are **write arguments (15,016)**,
+**older unexecuted drafts (7,982)**, and **search result content (4,916)**.
+File reads are not the dominant or obviously stale material in this case.
+
+### File, command, plan and failure lifecycle audit
+
+| Read source | Result tokens | Frozen classification |
+|---|---:|---|
+| `call_zlaxq06s`, `tsconfig.json` | 800 | Full body matches archived current file; configuration remains relevant; no later replacement |
+| `call_rjmwob4e`, `store.ts` | 70 | `unchanged:true` acknowledgement, superseded by `call_dsker88h`; no read body to reclaim |
+| `call_o8uovr4u`, `server.ts` | 70 | `unchanged:true` acknowledgement, superseded by `call_li49alt0`; no read body to reclaim |
+| `call_ij6zhem0`, `vite.config.ts` | 181 | Full body matches archived current file; no later replacement |
+| `call_qzckb19v`, `App.tsx` | 2,089 | Latest full read; exact content immediately relevant to the unfinished edit; protected |
+
+All three full bodies hash-match the archived files. This proves snapshot
+identity, not that they remain current indefinitely. Re-reading requires current
+workspace authorization, canonical-path/secret protections and a fresh observation;
+a filename, old size or cached timestamp is not content identity. A historical
+read can become cold only after an exact later replacement plus dependency
+closure, while preserving its immutable source/difference for historical reasoning.
+Those prerequisites do not identify a large superseded-read body here.
+
+Eight shell calls succeeded and four failed. Successful shell-result content is
+2,483 tokens; failed content is 1,200. Success output includes package/setup
+information and warnings, so deleting arbitrary stdout because exit status is
+zero is not justified. No mission test/build/validation pass closes the failures.
+The successful PowerShell line count resolves an observation need, not the
+identity or effects of a different failed command.
+
+The four retained failures are `call_xjdmv59j` (unsupported `wc`),
+`call_naozij7z` (`cmd/find` quoting), `call_bpsdoytg` (nested PowerShell quoting),
+and `call_6aqynifa` (escaped command). None is the existing CR/LF pre-execution
+guard-refusal contract. No permission/security failure is collapsed into success.
+
+Proposed failure states are **observed-unresolved -> resolution-candidate ->
+resolved-at-evidence-revision -> stale/needs-revalidation**, with denied/uncertain
+effects separately preserved. A candidate needs a later success of the same
+typed validation, effective cwd/environment/tool revision and relevant workspace
+dependency scope, with no intervening relevant mutation. Command text resemblance
+or another exit-zero command is not resolution. A later source, manifest, lockfile,
+environment or checkout change invalidates any current validation claim; the old
+pass remains historical evidence. These are audit criteria, not implemented states.
+
+The empty root listing is provably stale after later writes but costs only 55
+content tokens. A source-linked lossless receipt is larger than the original.
+The two frontend listings remain relevant/current in the archived application;
+the uncompleted frontend work may depend on their names. No speculative deletion
+of directory information or deleted/renamed-file evidence is credited.
+
+There are two different full plan versions: `call_g7g3lxci` has the original
+page-size-50 pending plan; `call_iw8c7h3w` has page size 25 and five model-reported
+completion marks. The latter plus five unfinished obligations stays verbatim.
+Existing `currentPlanSteps` retires acknowledged earlier versions only within
+the current extra-history user boundary; it deliberately does not cross the
+correction boundary into original history. A proposed exact inverse delta retains
+every old description/status, rather than assuming a model plan can supersede
+user intent or safely deleting its differences.
+
+All five native writes have durable success evidence. The two old `store.ts`/
+`server.ts` bodies are followed by later verified full writes to the same paths;
+latest bodies stay hot. Existing unique-path receipts exclude both repeated
+paths, leaving only the active SSE receipt and its 1,213-token saving. Current
+workspace state is not proved merely by those write outputs. The frozen final
+file hashes match the latest write contents, but a post-run snapshot is not an
+atomic production-preparation freshness witness.
+
+### Reasoning, prose and unfinished-answer requirements
+
+The native adapter currently maps SDK reasoning parts into `thinking`, separately
+from answer text; transcript conversion carries old reasoning into later native
+requests. That mechanism alone does not prove it is safe to discard. Historical
+reasoning is not duplicated here, and tool completion is not necessarily the
+completion of the provider's assistant turn.
+
+- Required provider material: preserve provider-owned signatures, encrypted/
+  redacted reasoning and active tool-loop thinking according to provider semantics.
+- Immediately adjacent answer continuation: the exact unfinished text stays hot.
+  Existing D2 inner text continuation does not append that segment's new reasoning;
+  this checkpoint neither expands that exception nor changes its behavior.
+- Safe omission after durable tool success: **not established generically**.
+  A completed filesystem write is not evidence that a reasoning dependency or
+  a provider tool-use turn is closed.
+- Resent through transcript-to-request conversion: yes, observed, but not a
+  sufficient omission rule. No 3,601-token reasoning-deletion saving is credited.
+
+Current official [Ollama streaming tool guidance](https://docs.ollama.com/capabilities/tool-calling)
+instructs clients to accumulate reasoning, answer and native calls and return
+those fields with tool results. [Ollama thinking documentation](https://docs.ollama.com/capabilities/thinking)
+separates reasoning display and generation controls; hiding a trace in UI does
+not establish safe context deletion. [Claude thinking guidance](https://platform.claude.com/docs/en/build-with-claude/thinking)
+requires unmodified thinking in an active tool-use turn and distinguishes older
+turns from that active loop. These are current primary-source compatibility
+constraints, not a native re-test of Ollama 0.40.5 or a universal claim about
+every model template. No local/cloud model experiment was performed.
+
+The 1,019-token prose class includes commentary, not a trustworthy typed closure
+of all decisions, constraints or errors it may contain. The two older partial
+drafts cost 7,982 tokens but include unexecuted proposed implementation. They are
+not completed effects and may contain unique intended interfaces/architecture.
+No semantic NLP guess is used to declare them disposable. All three textual
+pseudo-tool fragments remain plain text, and the current 7,760-character partial
+answer is preserved exactly. No fragment becomes a tool call or replay action.
+
+### Independent deterministic simulations
+
+These are **audit-only prototypes**, not functions called by the application or
+a new persistent receipt system. They are never dispatched. The selected-region
+columns measure affected call fields plus their complete native result envelopes;
+the projected column is the actual marginal representation allocation. They are
+not additional inventory totals. Zero rows mean zero eligible beneficial items,
+not that every related class is absent or free.
+
+| Candidate | Beneficial items | Current selected tokens | Projected tokens | Input saved | Safety/status |
+|---|---:|---:|---:|---:|---|
+| A. Superseded full file reads | 0 | 0 | 0 | 0 | No such body in this state |
+| B. Proven resolved command failures | 0 | 0 | 0 | 0 | No matching scoped later validation pass |
+| C. Routine success: exact command echo factoring | 8 | 3,654 | 3,213 | 441 | Every output byte/flag retained; duplicate command restored from same native call |
+| D. Beneficial stale directory receipt | 0 | 0 | 0 | 0 | One stale tiny listing would grow; current useful listings retained |
+| E. Superseded plan exact inverse delta | 1 | 975 | 845 | 130 | Literal previous state recoverable; new cross-boundary lifecycle not integrated |
+| F. Historical reasoning/prose omission | 0 | 0 | 0 | 0 | No generic semantic/provider safety proof |
+| G. Obsolete continuation scaffolding | 0 | 0 | 0 | 0 | None remains; current directive protected |
+| H. Search-result exact path factoring | 1 result | 4,968 | 3,242 | 1,726 | All 30 hit texts/lines/relative paths and flags preserved |
+| I. Superseded full-write exact deltas | 2 | 7,517 | 4,975 | 2,542 | Lossless offline proof; conditional runtime integration still required |
+
+C removes only a duplicate command field whose value exactly equals the native
+call's argument, replacing it with that same call ID. It does **not** delete
+stdout, stderr, exit, cwd, timeout or truncation information. H factors a full
+path only when it equals `root + '/' + rel` exactly with safe relative segments;
+all original paths are reconstructed byte-for-byte. There is no change to the
+search query, hit set, validation result or freshness claim.
+
+E records literal reverse JSON changes against the retained latest plan, including
+old wording/statuses and original result/source identity. I uses an exact
+code-point prefix/middle/suffix delta against the retained latest full write,
+with both immutable source locators/digests, old/base content hashes and original
+result. All old content round-trips exactly. Unicode, changed array lengths,
+missing keys and prototype-looking JSON keys are tested. No freeform summary,
+inferred requirement, source mutation or semantic change is introduced by these
+offline encoders. Old native pairs become non-executable historical data only.
+
+The original transcript remains the source of truth. Proposed encodings require
+same-conversation ownership, immutable source validation and explicit base
+retention; their mathematical reversibility does not itself grant permission,
+prove model comprehension of the representation, or establish a production
+recovery/cleanup contract.
+
+### Frozen before/after and implementation decision
+
+| Representation | Input | Reserve | Margin | Required | Headroom | Production? |
+|---|---:|---:|---:|---:|---:|---|
+| Existing frozen C3 wire | 61,132 | 2,048 | 6,114 | 69,294 | -3,758 | Actual current behavior |
+| C + E + H structural prototypes | 58,835 | 2,048 | 5,884 | 66,767 | -1,231 | No |
+| C + E + H + conditional I | 56,293 | 2,048 | 5,630 | 63,971 | +1,565 | No |
+| Production after this checkpoint | 61,132 | 2,048 | 6,114 | 69,294 | -3,758 | Unchanged |
+
+Structural-only information-preserving savings total **2,297 input / 2,527
+required tokens**, insufficient. Adding conditional write deltas gives **4,839
+input / 5,323 required tokens** and an offline fit, but only +1,565 headroom.
+This is not the preferred 4,000+ headroom and not a production acceptance result.
+The percentage policy stays `max(128, ceil(input * 0.1))`; lower counterfactual
+margins follow lower estimated input, not a reduced policy. Holding the **original
+absolute 6,114 margin** instead still gives 64,455 required / **+1,081** for the
+conditional prototype, and 66,997 / -1,461 for structural-only.
+
+No production implementation is made because:
+
+1. Low-risk independent structural reductions alone do not get the frozen request
+   under the existing ceiling. Tiny receipts can increase rather than decrease
+   context; blanket deletion would manufacture savings.
+2. High-saving repeated-write/plan references need a dependency-aware retention
+   contract. Their base must remain pinned/verbatim or immutably retrievable when
+   either side is compacted, restored, cancelled, restarted or cleaned up. A
+   hash/reference in an offline fixture is not that implemented native lifecycle.
+3. Existing authenticated write-source selection deliberately excludes repeated
+   paths and cross-boundary plan retirement. The current primitives validate
+   individual sources, not the new multi-source reverse-delta dependency graph.
+   The audit does not bypass those protections to make a frozen budget pass.
+4. A current-workspace or validation claim additionally needs native freshness
+   validation, correct checkout/environment and out-of-band invalidation. Exact
+   transcript reconstruction does not prove present filesystem truth or passing
+   checks. No such fact is fabricated from old write success or a later snapshot.
+5. Provider continuation/signature and model consumption behavior must be tested
+   for the new projection. Successful offline decode is necessary evidence, not
+   evidence that a reasoning model safely uses a new compressed-data convention.
+
+Therefore actual production savings are **zero**, and its third continuation
+still fails closed. The conditional result shows a promising deterministic
+direction, not that a lossy summary is the only possible solution. There is no
+context-size/model-name/continuation-number/deficit special case.
+
+### Ownership, freshness, timing and existing architecture reuse
+
+No new chat database, shared project store, automatic promotion or parallel
+receipt infrastructure is created. Existing integration points are:
+
+| Needed component | Existing owner / reusable primitive | Gap identified |
+|---|---|---|
+| Exact objective and correction precedence | Original session user messages; C1 `MemoryOwner`, source revisions and requirement-qualified claims | No complete automatic per-requirement completion graph |
+| Historical effects | `VerifiedWriteSource`, durable tool parts, existing write receipts | Repeated-write dependency proof and retained-base lifecycle |
+| Validation evidence | Native command/result identities; project verification knowledge when explicitly approved | Command text/exit alone lacks a bounded validation dependency/environment scope |
+| Failure evidence | C1 error/unresolved claims, original results, run failure counters and narrow CR/LF adaptation receipt | No general typed resolution relation |
+| Current plan | Conversation-owned todos and acknowledged `todo_write` replacement | Model completion marks do not establish requirement success |
+| Workspace observations | M2 dependency content/slice hashes, canonical paths, Git/environment comparison, bounded revalidation | Must reuse native validation without promoting private chat data into global memory |
+| Original recovery | C1 immutable evidence locators and G1a same-conversation restoration/pinning | New multi-source references must obey the same ownership, retention and retrieval bounds |
+
+`conversation_memory/project/freshness.rs` checks canonical authorized paths,
+secret protections, bounded reads and dependency content identity, plus Git/
+environment scope. Changed sources invalidate knowledge; missing/unreadable
+sources remain missing or need revalidation. Its existing approved-project scope
+must not be bypassed merely to compact a private conversation. Current write
+receipts correctly say current state is not established; that qualification stays.
+
+`workspaceWriteLease.ts` coordinates cooperating agents, not editors, external
+processes or arbitrary filesystem changes. A lease is not a freshness witness.
+Out-of-band changes must invalidate current-state/validation claims, require
+authorized re-read or re-expand immutable originals, and never trigger automatic
+re-execution of past effects. Failed verification leaves old transcript evidence
+intact. Content cleanup must retain both source and base while referenced.
+
+Timing should reuse existing **0.70 trigger / 0.55 target**, bounded pressure
+preparation and shared B1 final measurement. Apply oldest *eligible causal chains*
+first, recompute actual serialized cost, stop at target or candidate exhaustion,
+and leave the protected block in place if insufficient. Do not compact every
+request or introduce a fixed 65K/3,758-deficit threshold. Unchanged B1 arithmetic
+is checked at 16K, 32K, 64K and 128K; this is not a new compaction implementation
+or a live model verification at those sizes.
+
+Recency is causal rather than merely age/size: pin current partial answer,
+latest required read before edit, current plan, active provider tool loop,
+pending approval/effect, unresolved failure, latest validation witness and every
+dependency/base needed to interpret cold data. A read -> reasoning -> edit ->
+failure -> fix -> pass chain is cold only with typed source/effect/validation
+links and no unresolved use of the old state. Cross-user requirements and their
+corrections remain exact/hot; failed, denied or uncertain operations never acquire
+success by omission. These criteria are audited recommendations, not new runtime
+controls or automatic intelligence.
+
+The existing state distinguishes observed tool success/failure and model-reported
+todo status. It does **not** prove completion of each user requirement. In this
+mission, backend files exist after writes, frontend implementation was attempted
+as text rather than executed, and planned tests/builds have no mission validation
+result. A terminal session failure is not proof that every pending requirement
+was attempted and failed. No forced continuation, obligation classifier or new
+summary/extraction inference is implemented here.
+
+### Ranking, verification and next boundary
+
+- Highest practical low-risk saving here: H, exact search-path factoring (1,726).
+  Next C, command echoes (441), then E, lossless old-plan state (130). All are
+  reversible but require a tested production representation contract before use.
+- A and B would be valuable in read-heavy or verified repair loops, but have no
+  qualifying large body/resolution in this evidence. D's stale listing is too
+  small to improve with a full receipt. G has no old scaffolding to reclaim.
+- I is the largest additional conditional option (2,542), with higher native
+  dependency/retention/pinning integration complexity. Its exact inverse is
+  proven offline, not its complete runtime lifecycle.
+- F and dropping old drafts are highest risk: unresolved rationale/intent and
+  provider requirements are not bounded by tool exit success. Their large raw
+  size is not credited as safe savings. Intent and effects need different
+  qualifications even when they refer to the same file.
+- **34 new Node audit tests pass**, including exact additive inventory, frozen
+  budgets, source-class counts, reversible JSON/string projections, Unicode,
+  non-mutation, prototype-like keys, explicit invalid-range/path failures,
+  non-executable receipts, conservative classifications and context-size arithmetic.
+  **167 existing focused tests / 5 Vitest suites pass** for continuation,
+  protected accounting, compaction and verified receipts: **201 distinct tests**.
+- Full frozen audit and both Node syntax checks pass. Working/staged diff checks
+  pass. No production/TypeScript/Rust source changed, so no unrelated full
+  frontend suite, build, lint, typecheck, Rust or GUI/provider rerun is performed.
+  No claim of native Windows/Linux/macOS or cloud compaction acceptance is made.
+- New files: offline audit, standalone Node checks (not added to Vitest's default
+  test glob), and bounded `long-horizon-audit-20261021.json`. This report is an
+  append-only record. `CLACK.md` gains only the durable principle: deterministic
+  reversible history first, exact user intent separate from workspace facts,
+  with source ownership/provider/freshness obligations before production use.
+- Known limitation: actual production long-horizon cost remains unchanged. The
+  dominant costs remain write arguments, unexecuted drafts and search output.
+  Deterministic compaction is promising but not yet sufficient *as implemented*
+  to sustain this frozen 65K run. The audit does not establish practical long-run
+  sufficiency at any context size, and no fresh acceptance is justified yet.
+  Next: **Design Structured Obligation and Workspace Checkpoint Summaries**,
+  reusing the above primitives and tested lossless options rather than assuming
+  LLM narrative summarization. That checkpoint has **not** been started.
+- Commit: `test(ai): audit long-horizon context representation`. Expected state:
+  `main`, **86 ahead / 0 behind cached origin**; original six dirty contents and
+  report prefix preserved; both stashes and `autonomous_tracker/` untouched;
+  empty index, no checkpoint-owned untracked files. **No push. STOP.**
