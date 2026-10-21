@@ -13329,3 +13329,143 @@ network changes, manual 11435 tunnel mutations, cleanup/reset or push. Commit:
 interrupted setup, not claiming a completed ForgeBoard mission. Expected repository
 state after commit: `main`, **82 ahead / 0 behind cached origin**, original six
 dirty paths and empty index. Stop here.
+
+## Acceptance-host fail-closed context rejection diagnostics
+
+2026-10-21. Base: `b00e3ec`. Completion: **ACCEPTANCE HOST REJECTION
+DIAGNOSTICS READY**. Test-infrastructure repair only; **zero live inference,
+readiness runs, ForgeBoard runs, model downloads or remote changes**.
+
+### Historical failure and evidence limit
+
+At the base revision, `src-tauri/examples/hardened_agent_acceptance.rs:247`,
+`main`'s `invoke_handler` wrapper asserted that outgoing `ai_http_stream`
+`body["options"]["num_ctx"]` was an unsigned integer at/below 65,536. This was
+**after** the IPC body bytes and JSON were deserialized, but **before** the
+`.requests.jsonl` append and before calling the production handler/network path.
+The panic crossed WebView2's non-unwinding native callback and aborted with
+`3221226505 / 0xC0000409`. The second payload therefore never reached the audit.
+
+Preserved chronology: first 4,096-context / 32-output calibration request;
+independent readiness timeout at **75.002 seconds**; later intercepted request;
+context guard rejection; native abort at total **83.752 seconds**. No mission
+specification or mission tools were dispatched. Classification remains
+**TEST_HARNESS / PREMISSION ABORT / INCONCLUSIVE**, not a model-quality or
+production-context verdict. All **eight historical artifact hashes** were
+rechecked unchanged. The event/receive/request logs and isolated profile do not
+contain the second serialized payload. Tool-verification planning state says
+4,096/512, but is not wire evidence. **Historical rejected value remains
+unrecoverable because it was not persisted**; missing, malformed and over-limit
+values cannot retrospectively be distinguished. No speculative builder replay
+was substituted for captured evidence.
+
+### New acceptance-only boundary
+
+`examples/support/acceptance_policy.rs` owns `Gate::inspect`, typed `Outcome`
+(`Accepted`, `AcceptancePolicyRejected`, `EvidenceFailure`) and `PolicyReason`.
+The host invokes it before the existing production handler. Request order is
+assigned, sanitized metadata extracted, policy evaluated, then the attempt is
+appended and `sync_all` completes **before dispatch or rejection**. Rejection is
+terminal for this host; later callbacks cannot retry or become accepted.
+
+The existing evidence directory gains `<phase>.attempts.jsonl`, schema 1:
+
+- Run/evidence ID, phase, process-qualified attempt ID, order and timestamp.
+- Recognized requested model, model-match flag, supplied exact digest when
+  available, sanitized endpoint identity and destination-match flag.
+- Native IPC reservation ID separately from `provider_request_id: null`.
+  Reserving `inference-N` does not prove a provider dispatch.
+- Exact numeric `requested_num_ctx`, plus `requested_num_ctx_exact` decimal
+  spelling so integers beyond JavaScript's precision remain recoverable;
+  explicit missing/null/malformed/redacted type state and max **65,536**.
+- Output allowance/type state; omitted/false/true/named/invalid-redacted thinking
+  state with supported named values retained; message/tool counts; exact native
+  body byte length when available. Protected-budget estimate is **null** because
+  this native interception boundary does not receive one.
+- Accepted/rejected decision, typed reason, eligible/blocked dispatch state,
+  and `network_dispatch: false` for this **pre-dispatch** snapshot.
+
+Accepted requests retain the compatible `.requests.jsonl` body/control audit;
+their actual dispatch remains observable through native transport evidence.
+Rejected requests never enter that legacy full-body audit or the production
+handler. No new rejected prompt/tool argument dumps, headers, authorization
+values, credential references or SSH/password/API-key contents are retained.
+Endpoint userinfo/query/fragment/arbitrary paths are removed. Unrecognized
+string controls and malformed values are redacted rather than echoed.
+
+Adjacent request-derived JSON/body/destination/model/reasoning-output assertions
+were replaced with the same typed fail-closed path. Existing model authorization
+is unchanged; no model-specific context policy was introduced. Non-Agent/direct
+requests retain their previous destination-only policy when no product phase is
+configured. Harness setup assertions outside this incoming request boundary were
+not broadly rewritten.
+
+### Exit and parent classification
+
+The resolver receives `AcceptancePolicyRejected`, and the host requests exit
+**73** after durable evidence. Native `Exit` still shuts down inference state.
+Tests exposed Wry returning zero despite `RequestExit(73)`; the acceptance host
+now preserves the nonzero `ExitRequested` code across `run_return` and exits
+with it **after normal cleanup**. No request-policy panic or process abort.
+Evidence-write failure instead exits **74**, never dispatching an unaudited
+request, and is classified separately rather than claiming durable diagnostics.
+
+`scripts/acceptance-policy.mjs` validates bounded, run/phase-scoped audit data
+and returns typed JS `AcceptancePolicyRejected` with classification
+**TEST_HARNESS / ACCEPTANCE POLICY REJECTION**. The runner stores this in its
+existing `.failure.json` alongside untouched prior event evidence. It recognizes
+the durable result even if a frontend report wins the exit race. Missing,
+corrupt, conflicting, secret-bearing or stale diagnostics fail separately;
+unrelated crashes, provider timeouts and success are not relabeled as policy
+rejections. New attempts cannot overwrite an existing `.attempts.jsonl` run.
+
+The guard is still **65,536 allowed / 65,537 rejected**. Larger values, including
+1,048,576 and `u64::MAX`, retain exact diagnostics. Missing/malformed context
+continues to reject. No silent clamp, automatic retry, timeout change, calibration
+change, tool-verification change, F1 change or production AI source edit.
+
+### Verification and limitations
+
+- **194 focused Vitest tests passed / 9 files**, including **25 parent-policy
+  tests**, **8 compiled-host/process tests**, and existing hardened acceptance,
+  readiness evidence, approval, correction, protected-budget and historical-abort
+  regressions. JSON result: local ignored
+  `src-tauri/target/acceptance-policy-tests/final-vitest.json`.
+- **13 Rust example tests passed**, including boundary/large/malformed values,
+  old guard panic versus normal new result, exact provenance, controls/counts,
+  redaction, independent prior timeout, terminal no-retry, evidence-write failure,
+  concurrent rejection and non-Agent behavior.
+- Windows compiled-host checks used deterministic CLI fixtures and **actual
+  hidden WebView IPC**, not Computer Use/manual GUI control. Actual IPC rejected
+  65,537 and missing context with exit 73, no abort and **zero loopback inference
+  receiver hits**. The 65,536 IPC case made exactly one request to a synthetic
+  loopback HTTP receiver with unchanged controls and exited 0. No Ollama contact.
+- `npm.cmd run check-types`, four affected Node syntax checks, scoped
+  `rustfmt --check --edition 2021`, locked native example build and strict
+  `cargo clippy --locked --example hardened_agent_acceptance --target-dir
+  target/codex-test -- -D warnings` passed. Final Clippy used
+  `CARGO_INCREMENTAL=0`; earlier sandbox Cargo invocations warned about copying
+  incremental cache files when hard-link creation was unavailable. Initial
+  sandbox Vitest temp-file rename failed with EPERM before tests; authorized
+  unrestricted rerun passed. Working and staged `git diff --check` passed.
+- No unrelated full product suites rerun, no native Linux/macOS or live-provider
+  claim. Native policy fixtures are opt-in with `CLACK_POLICY_NATIVE_TESTS=1`
+  after building the example. Durability cannot be guaranteed if the evidence
+  volume itself fails; that condition fails closed with its own status.
+
+Checkpoint-owned files: the hardened native example, its new policy helper, the
+hardened JS runner, new JS policy reader and two test files, the adjusted
+hardened ownership test, and **this appendix only**. Original six dirty contents
+(including the report prefix), both safety stashes and `autonomous_tracker/`
+preserved; no broad formatting, cleanup/reset or push. Expected post-commit
+repository: `main`, **83 ahead / 0 behind cached origin**, original six dirty
+paths and empty index.
+
+Recommended next checkpoint only: one separately authorized fresh Nemotron
+acceptance with unchanged production readiness/settings and the unchanged 65K
+guard. If rejected, use the exact captured controls to distinguish legitimate
+production selection, stale evidence, a selection defect or acceptance-policy
+mismatch; do not pre-decide. A passing boundary permits ordinary mission flow,
+but this diagnostic repair does not establish cold-readiness or task completion.
+**No next acceptance was run in this checkpoint.** Commit:
+`fix(test): preserve rejected context request diagnostics`. Stop here.

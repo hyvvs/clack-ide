@@ -1,4 +1,7 @@
 //! Hardened-runtime acceptance adapter; production behavior remains in registered modules.
+#[path = "support/acceptance_policy.rs"]
+mod acceptance_policy;
+
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use terax_lib::modules::{
     attachments, conversation_memory as memory, fs, git, net, shell, workspace,
@@ -43,6 +46,16 @@ async fn scoped_evidence_retrieve(
 fn main() {
     let root = std::env::var("CLACK_ACCEPTANCE_ROOT").expect("owned fixture root required");
     let root = std::fs::canonicalize(root).expect("fixture root must exist");
+    if std::env::args().nth(1).as_deref() == Some("--policy-fixture") {
+        std::process::exit(acceptance_policy::fixture(root));
+    }
+    let policy = match acceptance_policy::Config::from_env(root.clone()) {
+        Ok(config) => config.map(|c| std::sync::Mutex::new(acceptance_policy::Gate::new(c))),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(acceptance_policy::EVIDENCE_EXIT);
+        }
+    };
     let url: tauri::Url = std::env::var("CLACK_ACCEPTANCE_URL")
         .expect("fixture URL required")
         .parse()
@@ -89,7 +102,9 @@ fn main() {
     } else {
         builder
     };
-    builder
+    let requested_exit = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+    let observed_exit = requested_exit.clone();
+    let exit_code = builder
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(workspace::WorkspaceRegistry::default())
         .manage(memory::MemoryState::default())
@@ -216,50 +231,29 @@ fn main() {
                 ]);
             move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
                 if invoke.message.command() == "ai_http_stream" {
-                    if let Ok(expected) = std::env::var("CLACK_ACCEPTANCE_OLLAMA_URL") {
-                        let tauri::ipc::InvokeBody::Json(value) = invoke.message.payload() else {
-                            panic!("acceptance inference payload must be JSON");
+                    if let Some(policy) = &policy {
+                        let payload = match invoke.message.payload() {
+                            tauri::ipc::InvokeBody::Json(value) => Some(value),
+                            _ => None,
                         };
-                        assert_eq!(
-                            value["url"].as_str(),
-                            Some(expected.as_str()),
-                            "unexpected inference destination"
-                        );
-                        eprintln!("CLACK_ACCEPTANCE_INFERENCE {}", value["url"]);
-                        if let Ok(phase) = std::env::var("CLACK_REAL_PRODUCT_PHASE") {
-                            use std::io::Write;
-                            assert!(phase.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
-                            let bytes: Vec<u8> = serde_json::from_value(value["body"].clone())
-                                .expect("serialized inference body required");
-                            let body: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON body required");
-                            let model = std::env::var("CLACK_ACCEPTANCE_MODEL")
-                                .unwrap_or_else(|_| "qwen38-uncensored:latest".into());
-                            assert!(matches!(model.as_str(), "qwen38-uncensored:latest" | "qwen3-coder:30b" | "qwen38-iq4xs:latest" | "devstral-small-2:24b") || matches!(model.as_str(),
-                                "muse-glimmer:30b" |
-                                "north-mini-code-1.0:q4_K_M" |
-                                "nemotron-3.5-lightning:30b-a3b-q4_K_M" |
-                                "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M"
-                                | "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M"
-                                | "hf.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive:IQ3_M"
-                            ));
-                            assert_eq!(body["model"], model);
-                            assert!(matches!(model.as_str(), "qwen3-coder:30b" | "nemotron-3.5-lightning:30b-a3b-q4_K_M"));
-                            assert!(body["options"]["num_ctx"].as_u64().is_some_and(|n| n <= 65536));
-                            let directory = std::env::var("CLACK_ACCEPTANCE_ROOT").expect("owned root");
-                            let mut file = std::fs::OpenOptions::new().create(true).append(true)
-                                .open(std::path::Path::new(&directory).join(format!("{phase}.requests.jsonl")))
-                                .expect("owned audit file");
-                            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_millis();
-                            writeln!(file, "{}", serde_json::json!({"at": at, "requestId": value["requestId"], "url": value["url"], "body": body})).expect("persist request audit");
-                            if let Ok(think) = std::env::var("CLACK_ACCEPTANCE_EXPECTED_THINK") {
-                                assert!(matches!(think.as_str(), "low" | "false" | "omitted"));
-                                if (think == "low" && body["think"] != "low") || (think == "false" && body["think"] != false) || (think == "omitted" && body.get("think").is_some()) || body["options"]["num_predict"] != 2048 {
-                                    invoke.resolver.reject("Acceptance stopped: serialized reasoning/output controls changed");
-                                    return true;
-                                }
+                        let outcome = match policy.lock() {
+                            Ok(mut policy) => policy.inspect(payload),
+                            Err(_) => acceptance_policy::Outcome::EvidenceFailure,
+                        };
+                        match outcome {
+                            acceptance_policy::Outcome::Accepted(attempt) => {
+                                eprintln!("CLACK_ACCEPTANCE_INFERENCE {}", serde_json::json!(attempt.endpoint));
                             }
-                            if phase.starts_with("offline") {
-                                invoke.resolver.reject("Acceptance connection unavailable");
+                            acceptance_policy::Outcome::AcceptancePolicyRejected(attempt) => {
+                                let app = invoke.message.webview().app_handle().clone();
+                                invoke.resolver.reject(serde_json::json!({"kind":"AcceptancePolicyRejected","attempt":attempt}));
+                                app.exit(acceptance_policy::REJECTION_EXIT);
+                                return true;
+                            }
+                            acceptance_policy::Outcome::EvidenceFailure => {
+                                let app = invoke.message.webview().app_handle().clone();
+                                invoke.resolver.reject(serde_json::json!({"kind":"AcceptanceEvidenceFailure"}));
+                                app.exit(acceptance_policy::EVIDENCE_EXIT);
                                 return true;
                             }
                         }
@@ -270,9 +264,21 @@ fn main() {
         })
         .build(context)
         .expect("acceptance backend must start")
-        .run(|app, event| {
+        .run_return(move |app, event| {
+            if let tauri::RunEvent::ExitRequested { code: Some(code), .. } = event {
+                if code != 0 {
+                    observed_exit.store(code, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             if matches!(event, tauri::RunEvent::Exit) {
                 app.state::<net::inference::InferenceState>().shutdown();
             }
         });
+    // Wry can return zero after RequestExit(nonzero); retain the requested status after cleanup.
+    let requested_exit = requested_exit.load(std::sync::atomic::Ordering::Relaxed);
+    std::process::exit(if requested_exit != 0 {
+        requested_exit
+    } else {
+        exit_code
+    });
 }

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 const entry = readFileSync("src/test/hardenedLocalAgentAcceptance.tsx", "utf8");
 const driver = readFileSync("scripts/check-hardened-local-agent.mjs", "utf8");
 const native = readFileSync("src-tauri/examples/hardened_agent_acceptance.rs", "utf8");
+const policy = readFileSync("src-tauri/examples/support/acceptance_policy.rs", "utf8");
 describe("hardened-runtime acceptance ownership", () => {
   it("uses production context and tool readiness without manual overrides", () => {
     expect(entry).toContain("await ensureSelectedContext(state, selfHostedSelectionId(initial), signal)");
@@ -31,8 +32,8 @@ describe("hardened-runtime acceptance ownership", () => {
     expect(native).toContain("inference_probe::context::self_hosted_context_lease");
     expect(native).not.toContain('assert_eq!(body["options"]["num_ctx"], 32768)');
     expect(native).not.toContain("REQUEST_TIMEOUT");
-    expect(native).toContain('"nemotron-3.5-lightning:30b-a3b-q4_K_M"');
-    expect(native).toContain('assert_eq!(body["model"], model)');
+    expect(policy).toContain('"nemotron-3.5-lightning:30b-a3b-q4_K_M"');
+    expect(policy).toContain('b["model"] == self.config.model');
   });
   it("separates pre-mission requests from mission budget reconstruction", () => {
     expect(driver).toContain("request.at >= (result.readiness?.readyAt ?? Infinity)");

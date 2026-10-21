@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { createServer as createViteServer } from "vite";
 import { evaluateAcceptanceApproval } from "./acceptance-approval.mjs";
 import { createCorrectionObserver } from "./acceptance-correction.mjs";
+import { AcceptancePolicyRejected, nativeExitError, readPolicyRejection } from "./acceptance-policy.mjs";
 
 const phase = process.argv[2];
 assert.equal(phase, "mission-a", "Only one fresh hardened mission is authorized");
@@ -71,7 +72,7 @@ assert((await readdir(root)).includes(".git"), "Prepare the fresh external Git w
 const attempt = process.argv[3] ?? "1";
 assert(/^\d{1,2}$/.test(attempt));
 const output = path.join(owned, `${phase}-${attempt}`);
-for (const suffix of [".json", ".jsonl", ".requests.jsonl", ".receive.jsonl", ".failure.json"]) {
+for (const suffix of [".json", ".jsonl", ".requests.jsonl", ".receive.jsonl", ".failure.json", ".attempts.jsonl"]) {
   try { await readFile(`${output}${suffix}`); throw new Error(`Phase ${phase} attempt ${attempt} already has evidence; choose an explicit new attempt`); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
 }
@@ -164,6 +165,7 @@ try {
   await cp(data, `${output}.data-before`, { recursive: true, errorOnExist: true, force: false });
   const env = Object.fromEntries(["PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "HOME", "LANG"].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []));
   Object.assign(env, { APPDATA: data, LOCALAPPDATA: data, TEMP: owned, TMP: owned, CLACK_ACCEPTANCE_ROOT: owned, CLACK_REAL_PRODUCT_PHASE: `${phase}-${attempt}`, CLACK_ACCEPTANCE_MODEL: modelId, CLACK_ACCEPTANCE_OLLAMA_URL: `${endpoint}/api/chat`, CLACK_ACCEPTANCE_URL: `${vite.resolvedUrls.local[0]}coworking-acceptance.html?configuration=${encodeURIComponent(`${local}/configuration`)}` });
+  Object.assign(env, { CLACK_ACCEPTANCE_RUN_ID: runId ?? "legacy", CLACK_ACCEPTANCE_DIGEST: modelDigest });
   if (reasoningChoice === "low") env.CLACK_ACCEPTANCE_EXPECTED_THINK = "low";
   if (process.env.CLACK_PRODUCT_EXPECT_NO_THINK === "1") {
     assert.equal(reasoningChoice, "none", "Disabled-thinking guard requires explicit None");
@@ -180,8 +182,11 @@ try {
   child.stdout.on("data", b => { nativeLog = (nativeLog + b).slice(-256 * 1024); });
   child.stderr.on("data", b => { nativeLog = (nativeLog + b).slice(-256 * 1024); });
   let timer;
-  const result = await Promise.race([report, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Real product acceptance reached 90-minute bound")), 90 * 60 * 1000); }), new Promise((_, reject) => child.once("exit", code => reject(new Error(`Native host exited before report: ${code}`))))]).finally(() => clearTimeout(timer));
+  const identity = { runId: runId ?? "legacy", phase: `${phase}-${attempt}` };
+  const result = await Promise.race([report, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Real product acceptance reached 90-minute bound")), 90 * 60 * 1000); }), new Promise((_, reject) => child.once("exit", async code => reject(await nativeExitError(code, output, identity))))]).finally(() => clearTimeout(timer));
   await evidenceWrites;
+  const rejection = await readPolicyRejection(output, identity);
+  if (rejection) throw rejection;
   await writeFile(`${output}.native-report.json`, JSON.stringify(result, null, 2), { flag: "wx" });
   const destinations = [...nativeLog.matchAll(/CLACK_ACCEPTANCE_INFERENCE ("[^"\r\n]+")/g)].map(m => JSON.parse(m[1]));
   const finalHealth = streamDiagnostic || traceStreams ? { ps: await metadataHealth("/api/ps"), version: await metadataHealth("/api/version") } : undefined;
@@ -221,7 +226,7 @@ try {
   console.log(`PRESERVED ${phase}: ${destinations.length} native inference attempts; result ${output}.json`);
 } catch (error) {
   await evidenceWrites.catch(() => {});
-  await writeFile(`${output}.failure.json`, JSON.stringify({ error: String(error), startedAt, endedAt: Date.now(), root, nativeLog, initialModels, childExit }, null, 2));
+  await writeFile(`${output}.failure.json`, JSON.stringify({ error: String(error), ...(error instanceof AcceptancePolicyRejected ? { classification: error.classification, policyRejection: error.attempt } : {}), startedAt, endedAt: Date.now(), root, nativeLog, initialModels, childExit }, null, 2));
   throw error;
 } finally {
   if (child?.exitCode === null) {
