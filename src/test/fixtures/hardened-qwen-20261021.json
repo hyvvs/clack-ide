@@ -1,0 +1,1917 @@
+{
+  "model": "qwen3-coder:30b",
+  "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+  "serverVersion": "0.40.5",
+  "connection": {
+    "type": "existing user SSH tunnel / direct production self-hosted endpoint",
+    "endpoint": "http://127.0.0.1:11435/",
+    "logicalEndpoint": "real-qwen",
+    "lazyReconnectRequired": false,
+    "managedPort": null,
+    "manualPort": 11435
+  },
+  "automatic": {
+    "context": {
+      "recommended": 65536,
+      "verified": 65536,
+      "advertised": 262144,
+      "loaded": 65536,
+      "provenance": "measured"
+    },
+    "providerDefault": false,
+    "agentRecommendation": {
+      "choice": "none",
+      "wire": false
+    },
+    "effective": {
+      "ollama": {
+        "think": false
+      }
+    },
+    "tools": "Verified",
+    "calibration": [
+      {
+        "context": 4096,
+        "requested": 4096,
+        "loaded": 4096,
+        "outcome": "success",
+        "at": 1792548937258,
+        "latencyMs": 11514,
+        "thermal": "cold",
+        "finish": "stop",
+        "think": "omitted"
+      },
+      {
+        "context": 8192,
+        "requested": 8192,
+        "loaded": 8192,
+        "outcome": "success",
+        "at": 1792548942715,
+        "latencyMs": 5438,
+        "thermal": "warm",
+        "finish": "stop",
+        "think": "omitted"
+      },
+      {
+        "context": 16384,
+        "requested": 16384,
+        "loaded": 16384,
+        "outcome": "success",
+        "at": 1792548948209,
+        "latencyMs": 5477,
+        "thermal": "warm",
+        "finish": "stop",
+        "think": "omitted"
+      },
+      {
+        "context": 32768,
+        "requested": 32768,
+        "loaded": 32768,
+        "outcome": "success",
+        "at": 1792548953437,
+        "latencyMs": 5212,
+        "thermal": "warm",
+        "finish": "stop",
+        "think": "omitted"
+      },
+      {
+        "context": 49152,
+        "requested": 49152,
+        "loaded": 49152,
+        "outcome": "success",
+        "at": 1792548958494,
+        "latencyMs": 5040,
+        "thermal": "warm",
+        "finish": "stop",
+        "think": "omitted"
+      },
+      {
+        "context": 65536,
+        "requested": 65536,
+        "loaded": 65536,
+        "outcome": "success",
+        "at": 1792548964115,
+        "latencyMs": 5606,
+        "thermal": "warm",
+        "finish": "stop",
+        "think": "omitted"
+      }
+    ]
+  },
+  "readinessRequests": 9,
+  "missionRequests": 20,
+  "structuredCalls": 17,
+  "successfulTools": 17,
+  "failedTools": 0,
+  "fileWrites": 12,
+  "successfulMutations": 16,
+  "directoryCreations": 4,
+  "shellCalls": 0,
+  "textualToolIntents": 1,
+  "userMessages": [
+    {
+      "id": "oaCkRPV2OZiD0nMT",
+      "sha256": "f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801"
+    },
+    {
+      "id": "fNjeovELPY1Y3ZPL",
+      "sha256": "9e532209ebeeb8ca4e061d91f684635cd9a154854ce6a63602801c7bff4b69cc"
+    }
+  ],
+  "correction": {
+    "sent": 1,
+    "boundary": {
+      "at": 1792549092150,
+      "writes": [
+        {
+          "toolCallId": "call_379g6fgb",
+          "type": "tool-write_file",
+          "inputSha256": "6266da57b463c299a8fa730f5b1fbf42dc6a3916b5408e8bf058d2c9a0c74321",
+          "at": 1792548992382,
+          "files": [
+            {
+              "path": "C:\\Users\\Hayden\\Documents\\forgeboard-qwen3coder-20261021-01\\package.json",
+              "sha256": "1b16280b3cdfc5b288e12f00e33d6041a1c5ca86c5438b7619edc6e9278f708a",
+              "bytes": 1136
+            }
+          ]
+        },
+        {
+          "toolCallId": "call_a0fh5u70",
+          "type": "tool-write_file",
+          "inputSha256": "049b47287b1c4dcd8910adfc1e7c2d55910c15ca5bcc350f4cbcf0c757fc1678",
+          "at": 1792549001383,
+          "files": [
+            {
+              "path": "C:\\Users\\Hayden\\Documents\\forgeboard-qwen3coder-20261021-01\\backend\\tsconfig.json",
+              "sha256": "cd6e19ce04e73651c69d4892011dfe3e3d33779145ef8b1fb682bcda26dd6f88",
+              "bytes": 436
+            }
+          ]
+        },
+        {
+          "toolCallId": "call_imhjgod6",
+          "type": "tool-write_file",
+          "inputSha256": "43790ee2ca69b2bdcfbb8dfd56a524b9573082e6410f6d929046afcc32e48a2b",
+          "at": 1792549011632,
+          "files": [
+            {
+              "path": "C:\\Users\\Hayden\\Documents\\forgeboard-qwen3coder-20261021-01\\backend\\src\\types.ts",
+              "sha256": "e2fec2b5fa92bc5ab3201b5aa95a522eda21bd637364c9397442594591a51a90",
+              "bytes": 1259
+            }
+          ]
+        },
+        {
+          "toolCallId": "call_zgt6j832",
+          "type": "tool-write_file",
+          "inputSha256": "9b029bf693a3deea40a717a1b7fdced41c578dbd5c9fde95717c990027fcd109",
+          "at": 1792549021133,
+          "files": [
+            {
+              "path": "C:\\Users\\Hayden\\Documents\\forgeboard-qwen3coder-20261021-01\\backend\\src\\utils.ts",
+              "sha256": "7ad544109741ff3b7ac46158febfad244a27a0457712236f356dc886d40bd536",
+              "bytes": 1482
+            }
+          ]
+        },
+        {
+          "toolCallId": "call_4a5goqck",
+          "type": "tool-write_file",
+          "inputSha256": "d486b61e0f2946bec87224f7ec648252776b991e3581131472f58f9d003b73e4",
+          "at": 1792549044632,
+          "files": [
+            {
+              "path": "C:\\Users\\Hayden\\Documents\\forgeboard-qwen3coder-20261021-01\\backend\\src\\datastore.ts",
+              "sha256": "9bcfc46a77c6694e572844087dca7da626213ee2d3f7f00bf9767cf446a1f5e2",
+              "bytes": 3800
+            }
+          ]
+        },
+        {
+          "toolCallId": "call_4y27txzc",
+          "type": "tool-write_file",
+          "inputSha256": "169a67ff062299695f8de165f5004c29c288568f79953e6f435c43a7bd76f181",
+          "at": 1792549092132,
+          "files": [
+            {
+              "path": "C:\\Users\\Hayden\\Documents\\forgeboard-qwen3coder-20261021-01\\backend\\src\\server.ts",
+              "sha256": "2f295fc03dce471bfaf303d1cd5f95ba7d734a759beb49f2027e45aa26ff8052",
+              "bytes": 7684
+            }
+          ]
+        }
+      ],
+      "thresholdEvent": {
+        "toolCallId": "call_imhjgod6",
+        "type": "tool-write_file",
+        "inputSha256": "43790ee2ca69b2bdcfbb8dfd56a524b9573082e6410f6d929046afcc32e48a2b",
+        "at": 1792549011632,
+        "files": [
+          {
+            "path": "C:\\Users\\Hayden\\Documents\\forgeboard-qwen3coder-20261021-01\\backend\\src\\types.ts",
+            "sha256": "e2fec2b5fa92bc5ab3201b5aa95a522eda21bd637364c9397442594591a51a90",
+            "bytes": 1259
+          }
+        ]
+      },
+      "page": {
+        "kind": "current-authored-code",
+        "path": "C:\\Users\\Hayden\\Documents\\forgeboard-qwen3coder-20261021-01\\backend\\src\\server.ts",
+        "sha256": "2f295fc03dce471bfaf303d1cd5f95ba7d734a759beb49f2027e45aa26ff8052",
+        "line": "pageSize = parseInt(req.query.pageSize as string) || 50"
+      }
+    },
+    "finalBackendPageSize": 25,
+    "frontendPageSize": null
+  },
+  "toolsByRequest": [
+    {
+      "requestId": "inference-10",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "f00a4e3220d9ec0bc185808315dd360aee847c1156b51fb20026ec20f9ac9792"
+    },
+    {
+      "requestId": "inference-11",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "3e7d99f700efd82bc9d7ba2ee105b3436e3b7d1328d38c6ea4473df85fa27342"
+    },
+    {
+      "requestId": "inference-12",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "2ae25a557405190c0b104e1e459158f13c22cd6ba1fdabe8d7f7adfe8b0690d9"
+    },
+    {
+      "requestId": "inference-13",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "903dd432dd6cea4c1d8585506cdbb44117f3537006bbb7ca777b4f345e67e99c"
+    },
+    {
+      "requestId": "inference-14",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "49c6309f3f7cb3881ba45f5719e1a74a45ee4d4fce41cff3ebeef6a665390710"
+    },
+    {
+      "requestId": "inference-15",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "efca41b76354eb3ef53daabbac92079b96387433b5a15aad7de253afc4cd71e2"
+    },
+    {
+      "requestId": "inference-16",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "1e06b642f571398bec1c950932de7d499f6720d2814b5a7ccaae5ddbb17b1e71"
+    },
+    {
+      "requestId": "inference-17",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "6cf6e361e2156e4e0cc36b79d4c1c520be1a6daafa8445093c6b08752d63b182"
+    },
+    {
+      "requestId": "inference-18",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "be81eace7eed3021e47752f355f3cccfac086d45f7c66212cdf751aaec36acf1"
+    },
+    {
+      "requestId": "inference-19",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "7965f3e3863572d20552adde06d481dbf7805a4d7939cd82ac2f9f4c02ce88ca"
+    },
+    {
+      "requestId": "inference-20",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "03cb340505f377e888b7459c92d6dd299805e0dd296bd538d0d323ded71aba80"
+    },
+    {
+      "requestId": "inference-21",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "99d06034db1368cd2f7ad94088e13e2a1dd276e4c2fa5cd89c318071c4034e97"
+    },
+    {
+      "requestId": "inference-22",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "f5041b0a514d956d0b5bf14cd33de823531a50e8e4a40c7ecc4b67567f1a6611"
+    },
+    {
+      "requestId": "inference-23",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "22a50b274fd09ee211037ccdd32d6735231a929cc391603827e120a84c61f1f9"
+    },
+    {
+      "requestId": "inference-24",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "e6b994d8a5905f45e4de4b8c249f3d527f158b247f5fe7bc7ba326017436822a"
+    },
+    {
+      "requestId": "inference-25",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "5f433c1699f8e8e51afd0c5f4800ad30897a4fed09a7f9f50487022e85818a92"
+    },
+    {
+      "requestId": "inference-26",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "e3df6791ed977083c8d7f92ee8ba359a979b79d7cce81c7a2881f5d384b33da6"
+    },
+    {
+      "requestId": "inference-27",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "36fa29f2dea08c9fdd5378f706d834443e9cfd7b916aead469450159603541e0"
+    },
+    {
+      "requestId": "inference-28",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "00017e2ece33acb29b20535d4471915a9c7f7811975b937bd7621c6b0413d7ab"
+    },
+    {
+      "requestId": "inference-29",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "context": 65536,
+      "output": 2048,
+      "think": false,
+      "bodySha256": "428b44ba823278bbf9bc187c732c848de76edbc6670c5557f3fd6d316096a341"
+    }
+  ],
+  "timingsMs": {
+    "missionStartedAt": 1792548971132,
+    "missionEndedAt": 1792549293073,
+    "elapsed": 321941,
+    "firstOutput": 8068,
+    "firstNativeTool": 9631,
+    "firstConfirmedMutation": 21258,
+    "backendEntry": 121008,
+    "datastore": 73508,
+    "substantiveFrontend": null,
+    "modelTests": null,
+    "modelPassingTest": null,
+    "modelBuild": null
+  },
+  "continuations": {
+    "answer": 1,
+    "agentSoftLimit": 0,
+    "manual": 0,
+    "objectiveForgeBoardPresentInContinuation": true
+  },
+  "context": {
+    "budgets": [
+      {
+        "requestId": "inference-10",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 6244,
+        "conversation": 1179,
+        "input": 11178,
+        "reserve": 2048,
+        "margin": 1118,
+        "context": 65536,
+        "required": 14344,
+        "headroom": 51192
+      },
+      {
+        "requestId": "inference-11",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 6244,
+        "conversation": 1432,
+        "input": 11431,
+        "reserve": 2048,
+        "margin": 1144,
+        "context": 65536,
+        "required": 14623,
+        "headroom": 50913
+      },
+      {
+        "requestId": "inference-12",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 6244,
+        "conversation": 2437,
+        "input": 12436,
+        "reserve": 2048,
+        "margin": 1244,
+        "context": 65536,
+        "required": 15728,
+        "headroom": 49808
+      },
+      {
+        "requestId": "inference-13",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 6244,
+        "conversation": 2662,
+        "input": 12661,
+        "reserve": 2048,
+        "margin": 1267,
+        "context": 65536,
+        "required": 15976,
+        "headroom": 49560
+      },
+      {
+        "requestId": "inference-14",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 6244,
+        "conversation": 2863,
+        "input": 12862,
+        "reserve": 2048,
+        "margin": 1287,
+        "context": 65536,
+        "required": 16197,
+        "headroom": 49339
+      },
+      {
+        "requestId": "inference-15",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 6244,
+        "conversation": 3328,
+        "input": 13327,
+        "reserve": 2048,
+        "margin": 1333,
+        "context": 65536,
+        "required": 16708,
+        "headroom": 48828
+      },
+      {
+        "requestId": "inference-16",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 6244,
+        "conversation": 4213,
+        "input": 14212,
+        "reserve": 2048,
+        "margin": 1422,
+        "context": 65536,
+        "required": 17682,
+        "headroom": 47854
+      },
+      {
+        "requestId": "inference-17",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 6244,
+        "conversation": 5186,
+        "input": 15185,
+        "reserve": 2048,
+        "margin": 1519,
+        "context": 65536,
+        "required": 18752,
+        "headroom": 46784
+      },
+      {
+        "requestId": "inference-18",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 6244,
+        "conversation": 7424,
+        "input": 17423,
+        "reserve": 2048,
+        "margin": 1743,
+        "context": 65536,
+        "required": 21214,
+        "headroom": 44322
+      },
+      {
+        "requestId": "inference-19",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 6244,
+        "conversation": 11608,
+        "input": 21607,
+        "reserve": 2048,
+        "margin": 2161,
+        "context": 65536,
+        "required": 25816,
+        "headroom": 39720
+      },
+      {
+        "requestId": "inference-20",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 11700,
+        "input": 21341,
+        "reserve": 2048,
+        "margin": 2135,
+        "context": 65536,
+        "required": 25524,
+        "headroom": 40012
+      },
+      {
+        "requestId": "inference-21",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 15946,
+        "input": 25587,
+        "reserve": 2048,
+        "margin": 2559,
+        "context": 65536,
+        "required": 30194,
+        "headroom": 35342
+      },
+      {
+        "requestId": "inference-22",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 16198,
+        "input": 25839,
+        "reserve": 2048,
+        "margin": 2584,
+        "context": 65536,
+        "required": 30471,
+        "headroom": 35065
+      },
+      {
+        "requestId": "inference-23",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 16722,
+        "input": 26363,
+        "reserve": 2048,
+        "margin": 2637,
+        "context": 65536,
+        "required": 31048,
+        "headroom": 34488
+      },
+      {
+        "requestId": "inference-24",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 17231,
+        "input": 26872,
+        "reserve": 2048,
+        "margin": 2688,
+        "context": 65536,
+        "required": 31608,
+        "headroom": 33928
+      },
+      {
+        "requestId": "inference-25",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 17570,
+        "input": 27211,
+        "reserve": 2048,
+        "margin": 2722,
+        "context": 65536,
+        "required": 31981,
+        "headroom": 33555
+      },
+      {
+        "requestId": "inference-26",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 17898,
+        "input": 27539,
+        "reserve": 2048,
+        "margin": 2754,
+        "context": 65536,
+        "required": 32341,
+        "headroom": 33195
+      },
+      {
+        "requestId": "inference-27",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 18099,
+        "input": 27740,
+        "reserve": 2048,
+        "margin": 2774,
+        "context": 65536,
+        "required": 32562,
+        "headroom": 32974
+      },
+      {
+        "requestId": "inference-28",
+        "provenance": "estimated",
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 18445,
+        "input": 28086,
+        "reserve": 2048,
+        "margin": 2809,
+        "context": 65536,
+        "required": 32943,
+        "headroom": 32593
+      },
+      {
+        "requestId": "inference-29",
+        "provenance": "estimated",
+        "system": 3872,
+        "schemas": 5886,
+        "conversation": 22942,
+        "input": 32700,
+        "reserve": 2048,
+        "margin": 3270,
+        "context": 65536,
+        "required": 38018,
+        "headroom": 27518
+      }
+    ],
+    "minimumReconstructedWireHeadroom": 27518,
+    "directSdkHeadroom": null,
+    "directNativeAcknowledgementHeadroom": null,
+    "telemetryLimit": "Numeric pre-serialization SDK and native-ack budgets were not separately retained; wire budgets are shared-B1 offline reconstruction, not independent measured native counters.",
+    "confirmedWriteResults": 12,
+    "receiptSubstitutions": 0,
+    "receiptSavingsTokens": 0,
+    "compactions": 0,
+    "retrievals": 0,
+    "extractions": 0,
+    "protectedBlock": false
+  },
+  "terminal": {
+    "state": "completed",
+    "phase": "complete",
+    "rawFinish": "stop",
+    "stopReason": null,
+    "classification": "MODEL-INCOMPLETE / TEXTUAL TOOL INTENT / PREMATURE STOP",
+    "providerBoundary": "Ollama returned tool markup as message.content with no native tool_calls; inner model/parser cause is not established.",
+    "confirmedClackDefect": false,
+    "harnessBlocked": null
+  },
+  "responses": [
+    {
+      "requestId": "inference-1",
+      "stage": "readiness",
+      "at": 1792548925758,
+      "firstOutputAt": 1792548936656,
+      "firstToolAt": null,
+      "calls": [],
+      "textChars": 2,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 12,
+      "outputTokens": 2,
+      "contentSha256": "565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-2",
+      "stage": "readiness",
+      "at": 1792548937287,
+      "firstOutputAt": 1792548942267,
+      "firstToolAt": null,
+      "calls": [],
+      "textChars": 2,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 12,
+      "outputTokens": 2,
+      "contentSha256": "565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-3",
+      "stage": "readiness",
+      "at": 1792548942742,
+      "firstOutputAt": 1792548947540,
+      "firstToolAt": null,
+      "calls": [],
+      "textChars": 2,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 12,
+      "outputTokens": 2,
+      "contentSha256": "565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-4",
+      "stage": "readiness",
+      "at": 1792548948235,
+      "firstOutputAt": 1792548952950,
+      "firstToolAt": null,
+      "calls": [],
+      "textChars": 2,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 12,
+      "outputTokens": 2,
+      "contentSha256": "565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-5",
+      "stage": "readiness",
+      "at": 1792548953463,
+      "firstOutputAt": 1792548957946,
+      "firstToolAt": null,
+      "calls": [],
+      "textChars": 2,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 12,
+      "outputTokens": 2,
+      "contentSha256": "565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-6",
+      "stage": "readiness",
+      "at": 1792548958517,
+      "firstOutputAt": 1792548963195,
+      "firstToolAt": null,
+      "calls": [],
+      "textChars": 2,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 12,
+      "outputTokens": 2,
+      "contentSha256": "565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-7",
+      "stage": "readiness",
+      "at": 1792548964535,
+      "firstOutputAt": 1792548965494,
+      "firstToolAt": null,
+      "calls": [],
+      "textChars": 128,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 342,
+      "outputTokens": 34,
+      "contentSha256": "ded1bbe4d729d9e7f753b699cf9b8c918142617598ef553670c04b5dbc5acfb0",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-8",
+      "stage": "readiness",
+      "at": 1792548967520,
+      "firstOutputAt": 1792548968226,
+      "firstToolAt": 1792548968226,
+      "calls": [
+        {
+          "name": "get_probe_value",
+          "argumentsSha256": "4e8941add58a376c9250b41f063b7811ee877b349989b1ab636b5235b6aeb8da"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 342,
+      "outputTokens": 36,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-9",
+      "stage": "readiness",
+      "at": 1792548969200,
+      "firstOutputAt": 1792548969924,
+      "firstToolAt": 1792548969924,
+      "calls": [
+        {
+          "name": "get_probe_value",
+          "argumentsSha256": "4e8941add58a376c9250b41f063b7811ee877b349989b1ab636b5235b6aeb8da"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 342,
+      "outputTokens": 36,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-10",
+      "stage": "mission",
+      "at": 1792548971542,
+      "firstOutputAt": 1792548979200,
+      "firstToolAt": 1792548980763,
+      "calls": [
+        {
+          "name": "list_directory",
+          "argumentsSha256": "8ad57c94abdcc1cc913641f56217339a72d9fcb7a81d791a9c9179187fe68a48"
+        }
+      ],
+      "textChars": 155,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 5087,
+      "outputTokens": 73,
+      "contentSha256": "241b6bbbff8880e4779b33827a045d163960e424b6940a60c9c130aadfb017f8",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-11",
+      "stage": "mission",
+      "at": 1792548980864,
+      "firstOutputAt": 1792548981414,
+      "firstToolAt": 1792548992267,
+      "calls": [
+        {
+          "name": "write_file",
+          "argumentsSha256": "6266da57b463c299a8fa730f5b1fbf42dc6a3916b5408e8bf058d2c9a0c74321"
+        }
+      ],
+      "textChars": 176,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 5206,
+      "outputTokens": 496,
+      "contentSha256": "8cf783ec88d0a191ef0f175029daaded6de09cd54285f5ae7327c3af2e7c4ed2",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-12",
+      "stage": "mission",
+      "at": 1792548992390,
+      "firstOutputAt": 1792548993065,
+      "firstToolAt": 1792548994303,
+      "calls": [
+        {
+          "name": "create_directory",
+          "argumentsSha256": "aaf2232b0785e0d058ff71168b772dd3a011faf3089af642ffcc45b9c50f80ea"
+        }
+      ],
+      "textChars": 60,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 5765,
+      "outputTokens": 58,
+      "contentSha256": "e4dc65e71fcf4832dc889c25c3f0a3abce64a4aa7f1ebdd4bdf5ee2ac0fd15cf",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-13",
+      "stage": "mission",
+      "at": 1792548994405,
+      "firstOutputAt": 1792548996134,
+      "firstToolAt": 1792548996134,
+      "calls": [
+        {
+          "name": "create_directory",
+          "argumentsSha256": "2ef408d7d25fa83b640dc8698002c82a12dad16931b1c1a1b2b7d2cd673088a8"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 5877,
+      "outputTokens": 48,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-14",
+      "stage": "mission",
+      "at": 1792548996218,
+      "firstOutputAt": 1792549001242,
+      "firstToolAt": 1792549001242,
+      "calls": [
+        {
+          "name": "write_file",
+          "argumentsSha256": "049b47287b1c4dcd8910adfc1e7c2d55910c15ca5bcc350f4cbcf0c757fc1678"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 5980,
+      "outputTokens": 196,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-15",
+      "stage": "mission",
+      "at": 1792549001652,
+      "firstOutputAt": 1792549011433,
+      "firstToolAt": 1792549011433,
+      "calls": [
+        {
+          "name": "write_file",
+          "argumentsSha256": "43790ee2ca69b2bdcfbb8dfd56a524b9573082e6410f6d929046afcc32e48a2b"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 6240,
+      "outputTokens": 402,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-16",
+      "stage": "mission",
+      "at": 1792549011560,
+      "firstOutputAt": 1792549021021,
+      "firstToolAt": 1792549021021,
+      "calls": [
+        {
+          "name": "write_file",
+          "argumentsSha256": "9b029bf693a3deea40a717a1b7fdced41c578dbd5c9fde95717c990027fcd109"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 6707,
+      "outputTokens": 378,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-17",
+      "stage": "mission",
+      "at": 1792549021150,
+      "firstOutputAt": 1792549044375,
+      "firstToolAt": 1792549044375,
+      "calls": [
+        {
+          "name": "write_file",
+          "argumentsSha256": "d486b61e0f2946bec87224f7ec648252776b991e3581131472f58f9d003b73e4"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 7150,
+      "outputTokens": 976,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-18",
+      "stage": "mission",
+      "at": 1792549044670,
+      "firstOutputAt": 1792549091885,
+      "firstToolAt": 1792549091885,
+      "calls": [
+        {
+          "name": "write_file",
+          "argumentsSha256": "169a67ff062299695f8de165f5004c29c288568f79953e6f435c43a7bd76f181"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 8192,
+      "outputTokens": 2008,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-19",
+      "stage": "mission",
+      "at": 1792549092164,
+      "firstOutputAt": null,
+      "firstToolAt": null,
+      "calls": [],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": null,
+      "inputTokens": null,
+      "outputTokens": null,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": null
+    },
+    {
+      "requestId": "inference-20",
+      "stage": "mission",
+      "at": 1792549092639,
+      "firstOutputAt": 1792549106894,
+      "firstToolAt": 1792549154288,
+      "calls": [
+        {
+          "name": "write_file",
+          "argumentsSha256": "470f3e792982f5dd03e68f77cef16e11e77518fe725adf6b35a489bef2230e1a"
+        }
+      ],
+      "textChars": 114,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 10106,
+      "outputTokens": 2037,
+      "contentSha256": "33abf3284dbc9daf5b288a38ccc091f3897e429e308e41851aead8ca084514bf",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-21",
+      "stage": "mission",
+      "at": 1792549154592,
+      "firstOutputAt": 1792549155278,
+      "firstToolAt": 1792549156880,
+      "calls": [
+        {
+          "name": "create_directory",
+          "argumentsSha256": "57fdb8248be209214297a91efcd768bbb989bb73fbc7a7cd5448e4085a3335d9"
+        }
+      ],
+      "textChars": 110,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 12208,
+      "outputTokens": 69,
+      "contentSha256": "ea55921be9fdd13c7a83a99541d3bf0770899a3b17d809e647c54ccf089e4919",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-22",
+      "stage": "mission",
+      "at": 1792549156981,
+      "firstOutputAt": 1792549163341,
+      "firstToolAt": 1792549163341,
+      "calls": [
+        {
+          "name": "write_file",
+          "argumentsSha256": "796f45d41562cc73d954233893346bb7f675cd22c9455573b003b990cee8ab53"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 12331,
+      "outputTokens": 243,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-23",
+      "stage": "mission",
+      "at": 1792549163464,
+      "firstOutputAt": 1792549169872,
+      "firstToolAt": 1792549169872,
+      "calls": [
+        {
+          "name": "write_file",
+          "argumentsSha256": "b24223ccb2492e3eed12acea6f74bc968356f74c7cf4ed5193c28914d08406e4"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 12637,
+      "outputTokens": 230,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-24",
+      "stage": "mission",
+      "at": 1792549169979,
+      "firstOutputAt": 1792549173740,
+      "firstToolAt": 1792549173740,
+      "calls": [
+        {
+          "name": "write_file",
+          "argumentsSha256": "afc171bbe11148b86fb465892cf9002f88f4d5227e57dfb97103bdfc03c0d285"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 12931,
+      "outputTokens": 121,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-25",
+      "stage": "mission",
+      "at": 1792549173859,
+      "firstOutputAt": 1792549177462,
+      "firstToolAt": 1792549177462,
+      "calls": [
+        {
+          "name": "write_file",
+          "argumentsSha256": "38da7cc2806c80c9afbe31c3846b376447d5a5d84abb92c43fbc0ceb740f0b95"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 13117,
+      "outputTokens": 116,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-26",
+      "stage": "mission",
+      "at": 1792549177575,
+      "firstOutputAt": 1792549179611,
+      "firstToolAt": 1792549179611,
+      "calls": [
+        {
+          "name": "create_directory",
+          "argumentsSha256": "2574d68a8c9b326d08868cea1af17eddeaa78cfd15d91ffeacb8494a86eac817"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 13298,
+      "outputTokens": 48,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-27",
+      "stage": "mission",
+      "at": 1792549179713,
+      "firstOutputAt": 1792549183181,
+      "firstToolAt": 1792549183181,
+      "calls": [
+        {
+          "name": "write_file",
+          "argumentsSha256": "2feaf4b53331a88013e913c14ee5160236e9b9ee4e3f5ead78ef1a311674777d"
+        }
+      ],
+      "textChars": 0,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 13401,
+      "outputTokens": 115,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-28",
+      "stage": "mission",
+      "at": 1792549183462,
+      "firstOutputAt": 1792549234548,
+      "firstToolAt": null,
+      "calls": [],
+      "textChars": 8724,
+      "thinkingChars": 0,
+      "textualToolIntents": 1,
+      "textualToolExcerpt": "<tool_call>\n<function=write_file>\n<parameter=path>\nC:/Users/Hayden/Documents/forgeboard-qwen3coder-20261021-01/frontend/src/App.tsx\n</parameter>\n<parameter=content>\nimport React, {",
+      "finish": "length",
+      "inputTokens": 13581,
+      "outputTokens": 2048,
+      "contentSha256": "aabb7e8b4e8ac6429ebdc9173d72d0706e6f082526b92a0bd5fbc0d02f23c49a",
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-29",
+      "stage": "mission",
+      "at": 1792549235052,
+      "firstOutputAt": 1792549260172,
+      "firstToolAt": null,
+      "calls": [],
+      "textChars": 7295,
+      "thinkingChars": 0,
+      "textualToolIntents": 0,
+      "finish": "stop",
+      "inputTokens": 15672,
+      "outputTokens": 1293,
+      "contentSha256": "877bd84c31aae3743494913c305c645045e0b5149dfa030fa1a8bc1f960424e4",
+      "settled": "completed"
+    }
+  ],
+  "cloudInference": 0,
+  "modelDownloads": 0,
+  "remoteMutations": 0,
+  "sourceFreeze": {
+    "at": 1792549801129,
+    "root": "C:/Users/Hayden/Documents/forgeboard-qwen3coder-20261021-01",
+    "files": [
+      {
+        "path": "backend/src/datastore.ts",
+        "bytes": 3800,
+        "sha256": "9bcfc46a77c6694e572844087dca7da626213ee2d3f7f00bf9767cf446a1f5e2"
+      },
+      {
+        "path": "backend/src/server.ts",
+        "bytes": 7684,
+        "sha256": "ca62e5ca25a1e638180a63764bc6ed065cadea3f1ee55321289c6e3711561009"
+      },
+      {
+        "path": "backend/src/types.ts",
+        "bytes": 1259,
+        "sha256": "e2fec2b5fa92bc5ab3201b5aa95a522eda21bd637364c9397442594591a51a90"
+      },
+      {
+        "path": "backend/src/utils.ts",
+        "bytes": 1482,
+        "sha256": "7ad544109741ff3b7ac46158febfad244a27a0457712236f356dc886d40bd536"
+      },
+      {
+        "path": "backend/tsconfig.json",
+        "bytes": 436,
+        "sha256": "cd6e19ce04e73651c69d4892011dfe3e3d33779145ef8b1fb682bcda26dd6f88"
+      },
+      {
+        "path": "frontend/package.json",
+        "bytes": 482,
+        "sha256": "328004763a0ea4975bb57fe0ef29f451eff43b511d4cebc860143b2647efde7d"
+      },
+      {
+        "path": "frontend/src/main.tsx",
+        "bytes": 235,
+        "sha256": "f7563ec1433faab8826be79655fbbf39060e89a1c2b8ca7e23effd1df5afa25b"
+      },
+      {
+        "path": "frontend/tsconfig.json",
+        "bytes": 550,
+        "sha256": "99ca7123d52e210065ae4a6881382f5e6007a7c55f45748dd586aa237b6b3793"
+      },
+      {
+        "path": "frontend/tsconfig.node.json",
+        "bytes": 212,
+        "sha256": "6847175da5ab8079db6583b92c209f79a8ae39d35f3b0876ddfb0717b752d4c8"
+      },
+      {
+        "path": "frontend/vite.config.ts",
+        "bytes": 193,
+        "sha256": "93f0a276db1953e970553e496e844e7c304a2f9e9fc9c270bfb78ab9bec0fc8e"
+      },
+      {
+        "path": "package.json",
+        "bytes": 1136,
+        "sha256": "1b16280b3cdfc5b288e12f00e33d6041a1c5ca86c5438b7619edc6e9278f708a"
+      }
+    ]
+  },
+  "postMissionFormatting": [
+    {
+      "path": "scripts/check-hardened-local-agent.mjs",
+      "before": "a611ab1a058dcfb25b932192114ccc7b9aa131c83620473152b8806f9624696b",
+      "after": "b704767749833aaacf909d803644f9a1c77a312f24bd51da8ba7e84471c41855",
+      "change": "Two trailing newlines removed after terminal outcome for git diff --check; executable content identical."
+    }
+  ],
+  "independentApi": {
+    "checks": [
+      {
+        "name": "emitted backend entry starts on 4317",
+        "passed": true,
+        "evidence": {
+          "command": "node backend/dist/server.js",
+          "builtDespiteTypeErrors": true
+        }
+      },
+      {
+        "name": "create project",
+        "passed": true,
+        "evidence": {
+          "status": 201,
+          "json": {
+            "success": true,
+            "data": {
+              "id": "40549c1b-94b4-49a4-bd6c-9aa02f7af54b",
+              "name": "Independent audit",
+              "description": "Restart probe",
+              "createdAt": "2026-10-21T02:35:18.622Z",
+              "updatedAt": "2026-10-21T02:35:18.622Z"
+            }
+          },
+          "type": "application/json; charset=utf-8",
+          "body": "{\"success\":true,\"data\":{\"id\":\"40549c1b-94b4-49a4-bd6c-9aa02f7af54b\",\"name\":\"Independent audit\",\"description\":\"Restart probe\",\"createdAt\":\"2026-10-21T02:35:18.622Z\",\"updatedAt\":\"2026-10-21T02:35:18.622"
+        }
+      },
+      {
+        "name": "list projects",
+        "passed": true,
+        "evidence": {}
+      },
+      {
+        "name": "open project",
+        "passed": true,
+        "evidence": {}
+      },
+      {
+        "name": "edit project",
+        "passed": true,
+        "evidence": {}
+      },
+      {
+        "name": "create task",
+        "passed": true,
+        "evidence": {
+          "status": 201,
+          "json": {
+            "success": true,
+            "data": {
+              "projectId": "40549c1b-94b4-49a4-bd6c-9aa02f7af54b",
+              "title": "Search alpha",
+              "description": "Needle",
+              "status": "Todo",
+              "priority": "High",
+              "tags": [
+                "audit"
+              ],
+              "id": "6e84bc8d-fffa-4068-8fdf-5e21794b664c",
+              "createdAt": "2026-10-21T02:35:18.627Z",
+              "updatedAt": "2026-10-21T02:35:18.627Z"
+            }
+          },
+          "type": "application/json; charset=utf-8",
+          "body": "{\"success\":true,\"data\":{\"projectId\":\"40549c1b-94b4-49a4-bd6c-9aa02f7af54b\",\"title\":\"Search alpha\",\"description\":\"Needle\",\"status\":\"Todo\",\"priority\":\"High\",\"tags\":[\"audit\"],\"id\":\"6e84bc8d-fffa-4068-8fd"
+        }
+      },
+      {
+        "name": "view task",
+        "passed": true,
+        "evidence": {}
+      },
+      {
+        "name": "edit task",
+        "passed": true,
+        "evidence": {}
+      },
+      {
+        "name": "combined filters and description search",
+        "passed": false,
+        "evidence": {
+          "status": 200,
+          "json": {
+            "success": true,
+            "data": {
+              "tasks": [
+                {
+                  "projectId": "40549c1b-94b4-49a4-bd6c-9aa02f7af54b",
+                  "title": "Other",
+                  "description": "Different",
+                  "status": "Done",
+                  "priority": "Low",
+                  "tags": [
+                    "other"
+                  ],
+                  "id": "7c262bee-1543-4f51-a919-98ce1e3fdfce",
+                  "createdAt": "2026-10-21T02:35:18.630Z",
+                  "updatedAt": "2026-10-21T02:35:18.630Z"
+                },
+                {
+                  "projectId": "40549c1b-94b4-49a4-bd6c-9aa02f7af54b",
+                  "title": "Changed alpha",
+                  "description": "Needle",
+                  "status": "Todo",
+                  "priority": "High",
+                  "tags": [
+                    "audit"
+                  ],
+                  "id": "6e84bc8d-fffa-4068-8fdf-5e21794b664c",
+                  "createdAt": "2026-10-21T02:35:18.627Z",
+                  "updatedAt": "2026-10-21T02:35:18.629Z"
+                }
+              ],
+              "total": 2,
+              "page": 1,
+              "pageSize": 25
+            }
+          },
+          "type": "application/json; charset=utf-8",
+          "body": "{\"success\":true,\"data\":{\"tasks\":[{\"projectId\":\"40549c1b-94b4-49a4-bd6c-9aa02f7af54b\",\"title\":\"Other\",\"description\":\"Different\",\"status\":\"Done\",\"priority\":\"Low\",\"tags\":[\"other\"],\"id\":\"7c262bee-1543-4f5"
+        }
+      },
+      {
+        "name": "nonmatching search",
+        "passed": false,
+        "evidence": {
+          "status": 200,
+          "json": {
+            "success": true,
+            "data": {
+              "tasks": [
+                {
+                  "projectId": "40549c1b-94b4-49a4-bd6c-9aa02f7af54b",
+                  "title": "Other",
+                  "description": "Different",
+                  "status": "Done",
+                  "priority": "Low",
+                  "tags": [
+                    "other"
+                  ],
+                  "id": "7c262bee-1543-4f51-a919-98ce1e3fdfce",
+                  "createdAt": "2026-10-21T02:35:18.630Z",
+                  "updatedAt": "2026-10-21T02:35:18.630Z"
+                },
+                {
+                  "projectId": "40549c1b-94b4-49a4-bd6c-9aa02f7af54b",
+                  "title": "Changed alpha",
+                  "description": "Needle",
+                  "status": "Todo",
+                  "priority": "High",
+                  "tags": [
+                    "audit"
+                  ],
+                  "id": "6e84bc8d-fffa-4068-8fdf-5e21794b664c",
+                  "createdAt": "2026-10-21T02:35:18.627Z",
+                  "updatedAt": "2026-10-21T02:35:18.629Z"
+                }
+              ],
+              "total": 2,
+              "page": 1,
+              "pageSize": 25
+            }
+          },
+          "type": "application/json; charset=utf-8",
+          "body": "{\"success\":true,\"data\":{\"tasks\":[{\"projectId\":\"40549c1b-94b4-49a4-bd6c-9aa02f7af54b\",\"title\":\"Other\",\"description\":\"Different\",\"status\":\"Done\",\"priority\":\"Low\",\"tags\":[\"other\"],\"id\":\"7c262bee-1543-4f5"
+        }
+      },
+      {
+        "name": "reject title over 120",
+        "passed": true,
+        "evidence": {}
+      },
+      {
+        "name": "reject invalid status/priority",
+        "passed": false,
+        "evidence": {
+          "status": 201,
+          "json": {
+            "success": true,
+            "data": {
+              "projectId": "40549c1b-94b4-49a4-bd6c-9aa02f7af54b",
+              "title": "Invalid enum",
+              "status": "nonsense",
+              "priority": "nonsense",
+              "tags": [],
+              "id": "e94fb722-572b-4b89-b325-9efec3423405",
+              "createdAt": "2026-10-21T02:35:18.634Z",
+              "updatedAt": "2026-10-21T02:35:18.634Z"
+            }
+          },
+          "type": "application/json; charset=utf-8",
+          "body": "{\"success\":true,\"data\":{\"projectId\":\"40549c1b-94b4-49a4-bd6c-9aa02f7af54b\",\"title\":\"Invalid enum\",\"status\":\"nonsense\",\"priority\":\"nonsense\",\"tags\":[],\"id\":\"e94fb722-572b-4b89-b325-9efec3423405\",\"creat"
+        }
+      },
+      {
+        "name": "missing task JSON 404",
+        "passed": true,
+        "evidence": {}
+      },
+      {
+        "name": "unknown route deterministic JSON",
+        "passed": false,
+        "evidence": {
+          "status": 404,
+          "json": null,
+          "type": "text/html; charset=utf-8",
+          "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /route-not-found</pre>\n</body>\n</html>\n"
+        }
+      },
+      {
+        "name": "SSE endpoint",
+        "passed": false,
+        "evidence": {
+          "status": 404,
+          "json": null,
+          "type": "text/html; charset=utf-8",
+          "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /events</pre>\n</body>\n</html>\n"
+        }
+      },
+      {
+        "name": "corrected default page size 25",
+        "passed": true,
+        "evidence": {
+          "pageSize": 25,
+          "count": 25
+        }
+      },
+      {
+        "name": "delete task",
+        "passed": true,
+        "evidence": {}
+      },
+      {
+        "name": "delete project",
+        "passed": true,
+        "evidence": {}
+      },
+      {
+        "name": "persistence across real backend restart",
+        "passed": false,
+        "evidence": {
+          "project": {
+            "status": 404,
+            "json": {
+              "success": false,
+              "error": "Project not found"
+            },
+            "type": "application/json; charset=utf-8",
+            "body": "{\"success\":false,\"error\":\"Project not found\"}"
+          },
+          "task": {
+            "status": 404,
+            "json": {
+              "success": false,
+              "error": "Task not found"
+            },
+            "type": "application/json; charset=utf-8",
+            "body": "{\"success\":false,\"error\":\"Task not found\"}"
+          }
+        }
+      }
+    ],
+    "passed": 13,
+    "failed": 6
+  },
+  "artifacts": [
+    {
+      "name": "setup.json",
+      "sha256": "19bb53a90533ba926679ed3697ad4ebbe76d69e54af91c2b9e551d084ef8b17b"
+    },
+    {
+      "name": "source-freeze.json",
+      "sha256": "9fff3213d86a88ead10629f7cc6f6feb8b767887444231baa022e3605ab2603d"
+    },
+    {
+      "name": "mission-a-1.json",
+      "sha256": "aa9d4543db19c91e122d0fadb87ed6c015b17c11632bbdac2d47ad776daf1172"
+    },
+    {
+      "name": "mission-a-1.jsonl",
+      "sha256": "788df67fa826742641a1ce3af2f26e6ad8a1ccd63404c0a35bb4851ac612a4a6"
+    },
+    {
+      "name": "mission-a-1.requests.jsonl",
+      "sha256": "b188f5607819fec03130a4fe7da2908070c483791771c6695bf23930d0df983e"
+    },
+    {
+      "name": "mission-a-1.receive.jsonl",
+      "sha256": "30a20a893f8b6097bb846fa92fcb71eb3264232e4a1d4bee7e10b8a82237e97c"
+    },
+    {
+      "name": "independent-api.json",
+      "sha256": "b1afaf463bb8b42c06a3f2f9900226425445b715401afdb9dd12eadf89218982"
+    }
+  ],
+  "usability": "LOCAL AGENT USABILITY STILL LIMITED"
+}

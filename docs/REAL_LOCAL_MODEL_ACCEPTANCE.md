@@ -11560,3 +11560,304 @@ CI/native remote regression on Linux and macOS and resolve only concrete failure
 After that, reassess secure keychain-backed password onboarding versus **Re-run
 Local Agent Usability on the Hardened Runtime** using actual remaining friction.
 Neither next checkpoint was started; no ForgeBoard mission or model download.
+
+## Hardened-runtime qwen autonomous ForgeBoard acceptance
+
+Base: `acaf025 fix(ai): complete remote self-hosted lifecycle`. One fresh
+Windows native mission, not an infrastructure repair or model tuning ladder.
+Final mission classification: **MODEL-INCOMPLETE / TEXTUAL TOOL INTENT /
+PREMATURE STOP**. Product decision: **LOCAL AGENT USABILITY STILL LIMITED**.
+Production Automatic onboarding worked, but the generated application did not
+materially complete. No confirmed Clack defect prevented a fair run. The precise
+observed failure boundary is provider content versus native tool calls; this
+does not establish whether the underlying model generation or Ollama parser
+caused the format change, and does not declare the model globally incompatible.
+
+### Isolation, source ownership and connection
+
+Fresh evidence ID: **forgeboard-qwen-hardened-20261021-01**, under
+`src-tauri/target/real-qwen-product/`. Fresh empty repository:
+**C:/Users/Hayden/Documents/forgeboard-qwen3coder-20261021-01**. The already-supported
+disposable-root name was used instead of the preferred hardened-prefixed folder
+to leave the existing safe-approval policy byte-for-byte unchanged. Only `.git`
+was present initially: no seeded application, dependency scaffold or commit.
+
+Read-only process inspection before dispatch found no Clack application,
+acceptance host, Cargo/rustc build, Vite/test runner or competing Clack harness.
+The existing user SSH process **37440** forwarded local **11435** to the second
+PC's loopback Ollama. Normal app settings had no active managed-SSH endpoint, so
+this acceptance used that existing tunnel through the **production direct
+self-hosted connection** path. No special tunnel was constructed, no existing
+tunnel was altered, and no managed lazy reconnect or transient managed port is
+claimed for this run. The isolated logical endpoint is `real-qwen`, revision 1,
+base URL `http://127.0.0.1:11435/`. Provider health/inventory succeeded before
+inference and included the selected exact model/digest; the ordinary inventory
+listed 10 models, but only Qwen received inference.
+
+The native host was **39400**, owned runner **35440**. Both exited after final
+reporting; the same manual SSH process remained alive. A setup snapshot records
+HEAD, exact task hash and frozen harness-source hashes. No Clack source was
+edited while the native run was active. The six original dirty files and both
+safety stashes were hashed before and after; their original bytes remain
+unchanged. `autonomous_tracker/` was untouched.
+
+### Exact model and production Automatic readiness
+
+- Model: **qwen3-coder:30b**; actual installed digest, verified before inference:
+  `06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca`.
+  Ollama server: **0.40.5**. No model download/update.
+- A fresh isolated profile had no reusable current-host verification. Previous
+  evidence belonged to earlier endpoint/runtime scopes and exited native hosts;
+  it was not copied or retagged as current proof. Production bounded revalidation
+  therefore ran once before mission dispatch, in the **same native host** as
+  the mission. There was no redundant post-readiness compatibility probe.
+- **Six normal context-calibration requests**, `inference-1` through `-6`, used
+  4,096 / 8,192 / 16,384 / 32,768 / 49,152 / **65,536**. Each used the production
+  32-token output allowance and omitted the thinking field. All had successful
+  actual allocation receipts. The default production ceiling, not a benchmark
+  override, allowed verification through 65,536. The earlier 49,152 observation
+  was not manually pinned, promoted or treated as a current maximum.
+- **Three normal Automatic tool-verification requests**, `inference-7` through
+  `-9`, used context 65,536 and output allowance 512. Provider-default omission
+  returned 128 characters of text, **zero native calls**, finish stop, 34 reported
+  output tokens. The supported `None` alternative serialized **think:false** and
+  returned one valid native `get_probe_value` call twice, zero text, 36 reported
+  output tokens each. Neither probe tool has an execution handler/effect.
+- Provider metadata reports thinking default **false**. That metadata is kept
+  distinct from the observed **omission** behavior. Clack's production Automatic
+  Agent resolver retained the verified **None / false** recommendation instead
+  of treating Automatic as mandatory omission. The actual conversation retained
+  choice **automatic**; no explicit None choice or manual wire injection was used.
+- Before dispatch: **tools Verified, context measured/verified 65,536, loaded
+  context 65,536, advertised maximum 262,144**, no manual profile overrides.
+  All mission requests used **num_ctx=65536, num_predict=2048, think:false**.
+  Output 2,048 was the normal resolved profile allowance, not a test override.
+  Fallback remained **Never**, with no cloud destination/credentials available
+  to the guarded native inference path.
+
+Readiness inference count is **9**, separate from **20 mission attempts**. Total
+native inference attempts: **29**, all for this exact Qwen model. Normal readiness
+warmed the model, so first-token latency cannot be causally compared with an older
+cold-start mission. The production 600-second overall request deadline and
+meaningful-progress guards were not changed.
+
+### Single specification, correction and chronology
+
+The unchanged authoritative specification was sent **once**, SHA256
+`f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`.
+The durable conversation has exactly **two user messages**: that specification
+and the authorized correction. No reminders, manual Continue, suggested files,
+commands, package repairs, test prompts or evaluator implementation were supplied.
+Existing production chat transport, Agent bridge, tools, approval observer and
+syntax-aware correction detector executed the mission.
+
+Mission start: **2026-10-21 02:16:11.132 UTC**; terminal state:
+**02:21:33.073 UTC**, elapsed **321.941 seconds**. Times below are relative to
+the first production session run, not readiness start. IPC observation of tool
+effects is sampled at 250ms; native chunk delivery is not physical socket receive.
+
+| Event | Seconds | Evidence/qualification |
+| --- | ---: | --- |
+| First model output | 8.068 | Native IPC response content |
+| First native tool call | 9.631 | Structured list_directory |
+| First confirmed file mutation | 21.258 | package.json write |
+| Datastore authored | 73.508 | In-memory implementation, **not persistence** |
+| Substantive backend entry | 121.008 | server.ts CRUD/API routes |
+| Correction boundary | about 121.018 | Six writes confirmed; current code had page size 50 |
+| Substantive frontend | Not reached | Scaffold only; App.tsx never written |
+| Model test/start/build | Not reached | Zero shell calls/executions |
+
+The detector waited for both required conditions. Its retained boundary contains
+six confirmed file-write events and the actual authored expression
+`pageSize = parseInt(req.query.pageSize as string) || 50` in server.ts, with source
+hash. It sent the exact authorized 50-to-25 correction **once** at
+`02:18:12.242 UTC`. The existing correction flow cancelled the in-flight next
+attempt `inference-19`, then dispatched the correction in the same conversation.
+That attempt has **no provider final frame or usage total**; none is inferred.
+This one authorized correction cancellation is not an engine stall or failure.
+
+Qwen rewrote server.ts with default **25** and continued the existing frontend
+scaffold. The independent pagination test later confirmed the real API returns
+25 items by default; no restart-from-scratch occurred. Frontend propagation of
+25 is **not established** because the frontend implementation is absent.
+
+### Tools, F1, context and continuation
+
+- **20 mission attempts**, including the correction-cancelled attempt;
+  **17 genuine native calls**, **17 successful tools**, **0 failed tools**.
+  Effects: **12 successful file writes** (11 distinct files, server.ts rewritten),
+  **4 directory creations**, **1 directory listing**. Thus **16 successful direct
+  mutations**, with file writes counted separately from directory mutations.
+- **0 shell commands, approvals, tests, builds or Git commits** by the model.
+  Native shell syntax/failure recovery was not exercised. No failed tool result
+  occurred, so natural tool-error recovery cannot be claimed from this run.
+- F1 exposed **14 tools initially, 13 later**; the late set omitted edit but
+  retained write_file, create_directory and bash_run. The only coding capabilities
+  were never removed, including immediately after correction and during length
+  continuation. No F1 or Automatic-configuration regression was observed.
+- `inference-28` returned **8,724 characters of text**, **0 native calls**, provider
+  finish **length**, exactly **2,048 reported output tokens**. Its content began
+  textual `<tool_call><function=write_file>` markup naming frontend/src/App.tsx.
+  Clack performed **one normal automatic length continuation**, `inference-29`:
+  **7,295 text characters**, **0 native calls**, finish **stop**, **1,293 reported
+  output tokens**. The two segments form **one textual pseudo-tool intent**,
+  not two executions or an authored file. Raw native frames prove message.content,
+  not a tool call dropped by the Clack UI. The markup was not executed/promoted.
+- Automatic continuation kept the original conversation/correction and remained
+  on ForgeBoard content, but produced more unexecuted App code. **0 soft-step
+  Agent continuations**, **0 manual continuations**, **0 repair messages**.
+  The final run state was completed, phase complete, last finish stop, no stop
+  reason. This transport/run completion is **not application completion**.
+- **0 completed empty responses, 0 engine stalls/deadline terminations, 0 protected
+  context blocks**. There is no evidence of a confirmed Clack defect blocking
+  further valid native tool execution; the inner cause of the provider's change
+  to text markup remains unproven.
+- **12 confirmed-write result proofs**, **0 historical receipt substitutions**,
+  **0 receipt token savings**, **0 compactions**, **0 evidence retrieval calls**,
+  **0 extraction calls**, **0 durable memory revisions**. No replacement receipt
+  marker appears in the outgoing histories. Context pressure never required those
+  mechanisms, so this run does **not** newly validate their long-run effectiveness.
+
+Every serialized mission request passed the shared B1 reconstruction. Minimum
+reconstructed serialized-wire headroom: **27,518 tokens**, final continuation:
+These are conservative B1 estimates, **not provider-reported input token counts**.
+
+| Budget component | Tokens |
+| --- | ---: |
+| System | 3,872 |
+| Schemas | 5,886 |
+| Conversation | 22,942 |
+| Total input | 32,700 |
+| Output/reserve | 2,048 |
+| Margin | 3,270 |
+| Required | 38,018 |
+| Context | 65,536 |
+| Deficit / headroom | 0 / 27,518 |
+
+**Telemetry limitation:** separate numeric pre-serialization SDK and native-ack
+budget snapshots were not retained by the reused acceptance fixture. The table
+is exact offline reconstruction through shared B1 on the saved native body, not
+a claim of independently measured SDK/native headroom counters. Production
+preflight remained enforced, native requests completed normally, and final
+`/api/ps` still reported the exact model/digest loaded at 65,536.
+
+### Frozen independent product audit
+
+After terminal output, **11 files / 17,469 bytes** were hashed and copied into
+the evidence directory's `independent-project/`. Original and copied source
+hashes remained identical after audit. Evaluator dependency installation used
+only declared npm packages with lifecycle scripts disabled, in that copy.
+No application source, missing test, entry point, manifest or requirement was
+repaired. This is separate from the model's **zero** installs/tests/builds.
+
+- Authored `npm test -- --runInBand`: **exit 1, no tests found**. No model-authored
+  API, validation, persistence, search/filtering or frontend test reached disk.
+- Authored root `npm run build`: **exit 1**. Backend compilation reports TS2322
+  in utils.ts, returning string-or-boolean from a boolean function. Frontend
+  build cannot resolve index.html. The frontend's own build also fails on its
+  missing index.html; no successful production build is claimed.
+- Authored `npm start`: **exit 1**, missing backend/dist/index.js. Dev backend
+  likewise references missing src/index.ts. TypeScript nevertheless emitted
+  server.js despite its error. Independent **node backend/dist/server.js** did
+  start on port **4317**, used only to audit partial functionality; this does
+  not count as a passing normal startup/build. Owned audit children were stopped.
+- Independent backend matrix: **19 checks, 13 passed / 6 failed**. Basic project
+  create/list/open/edit/delete, task create/view/edit/delete, over-120 title
+  rejection, explicit missing-task 404 and default pagination **25** passed.
+- Combined status/priority/tag/description-search filtering and nonmatching
+  search **failed**: datastore.getTasks only applies project ID; the separate
+  applyFilters helper is never wired into the route. Invalid enum values were
+  accepted with 201. Unknown routes return HTML rather than deterministic JSON.
+- Persistence **failed an actual stop/restart**: created project and task became
+  JSON 404 after restart. DataStore contains arrays and regenerated sample data,
+  not durable storage. No persistence file or Git ignore file was authored.
+- SSE **absent**: no implementation in source; /events returned HTML 404.
+  There was no SSE event stream/client lifecycle to test and no polling substitute
+  implemented. This is not a passing realtime result.
+- Frontend is **scaffold only**. main.tsx references missing App.tsx and index.css;
+  index.html/API integration are absent. Project/task controls, search/filtering,
+  loading/error/empty UI, keyboard accessibility, pagination and 750ms debounce
+  cannot be credited from text that was never written. No frontend render/native
+  GUI test is claimed. README/setup instructions are absent. No telemetry, cloud
+  API or external AI implementation was found in the written source.
+
+The first independent API audit completed its checks but hung in evaluator-only
+cleanup: signal-terminated children retain null exitCode, so a second wait never
+resolved. Only that new audit script was corrected to check signalCode too.
+The two verified-owned audit PIDs were stopped, and the independent matrix reran
+successfully. **No model mission or inference was rerun**, and this post-mission
+audit issue does not change the fair native mission classification.
+
+### Historical comparison and decision
+
+Compare only committed historical evidence from
+`forgeboard-qwen3coder-poste56bbe5-01`, not a rerun of old settings. That reference
+used explicit None / 32,768 / 2,048; this one used production Automatic /
+65,536 / 2,048 with current-host verification and one authorized correction.
+Different warm/cold state and generated architectures preclude causal speed claims.
+
+| Observation | Historical reference | Hardened-runtime run |
+| --- | --- | --- |
+| Mission requests | 23 | 20, including one correction cancellation |
+| Native calls / successful / failed | 22 / 21 / 1 | 17 / 17 / 0 |
+| File writes | 12 | 12, including server rewrite |
+| Backend | Partial | Partial CRUD; independent runtime entry works, build/start scripts fail |
+| Frontend | No substantive UI in this exact reference | Scaffold; App only emitted as text |
+| Persistence/SSE | Absent in this exact reference | Absent; restart/SSE checks fail |
+| Broader earlier history | Some earlier runs had persistence/partial frontend evidence | Not reproduced as a completed app here |
+| Tests/build | Not completed | Not authored/executed; independent commands fail |
+| Correction | Boundary not reached | One correction; backend 25 verified |
+| Automatic continuation | None | One length continuation, still textual intent |
+| Stop | Premature text/fabricated receipt | Premature textual tool markup, normal provider stop |
+
+More elapsed time and a larger verified context did **not** yield materially more
+autonomous implementation or completion. The positive result is normal-user
+Automatic readiness, exact native reasoning serialization, correction retention,
+safe continuation and a healthy Windows runtime. It is not an end-to-end local
+coding acceptance pass. Qwen remains the **best-tested local coding reference**
+from the cumulative record, not a demonstrated reliable unattended default.
+
+Recommend **one separate Nemotron hardened-runtime rerun** now that this run was
+fair and no blocking Clack defect was confirmed. No Nemotron/Muse/North/Devstral
+inference or second Qwen mission occurred here. Linux full-app validation and
+macOS compile/native SSH validation remain release gaps from acaf025, but do not
+alone block a separate Windows local-agent comparison. Password SSH authentication
+remains out of scope. No next mission/checkpoint was started.
+
+### Verification, artifacts and repository safety
+
+- Initial focused acceptance/Automatic groups: **132 passed across 6 files**;
+  existing approval/correction groups: **110 passed across 2 files**. Final
+  offline evidence/harness groups: **12 passed across 2 files** (five repeat
+  adapter checks plus seven new evidence checks). **249 distinct focused tests**
+  across nine files; no full product suite rerun, as requested.
+- TypeScript check passed before dispatch and after adding evidence assertions.
+  The new test initially used Array.at outside the repo's library target; it was
+  replaced with ordinary indexing. No tsconfig/product code was changed.
+- New native acceptance example compiled with the existing isolated Cargo target;
+  scoped rustfmt check passed. Both new Node scripts pass syntax checking.
+  `git diff --check` passed. Full frontend/Rust/build/lint gates were intentionally
+  not repeated because production code was unchanged.
+- A mistaken initial plain-Node test invocation could not load Vitest/path aliases;
+  the correct focused Vitest run passed. One sandbox reconstruction attempt could
+  not collect tests because temporary-file rename was denied; the same tests
+  passed with normal local permissions. Neither was a product/test assertion fix.
+- Raw setup/process snapshot, native request bodies, receive diagnostics, IPC
+  events, transcript, correction ownership, source manifest and independent logs
+  remain under the evidence ID above. The bounded committed summary is
+  `src/test/fixtures/hardened-qwen-20261021.json`, with raw artifact/source hashes.
+  `audit-hardened-local-agent.mjs` reconstructs calls, usage and wire budgets;
+  absent usage from the correction-cancelled request remains null.
+- Staged diff checking found two extra trailing newlines in the new runner.
+  They were removed **after** terminal outcome; executable content is unchanged.
+  The evidence explicitly records before/after hashes and verifies that restoring
+  exactly those two newline bytes matches the frozen pre-mission hash.
+- Checkpoint-owned files: new acceptance runner, native host adapter, TypeScript
+  Automatic-readiness adapter, offline reconstruction/API auditor, two tests,
+  evidence fixture and **only this report appendix**. Existing mission text,
+  approval/correction policy and all six original dirty-file bytes were preserved.
+  The original uncommitted report section remains unstaged. No production source
+  change, reset/clean, stash change or autonomous_tracker access.
+- **0 model downloads, 0 cloud inference, 0 remote service/firewall/sshd changes**.
+  Existing manual **11435 tunnel untouched** and still alive after native exit.
+  No push. Commit scope is evidence/test infrastructure only.
