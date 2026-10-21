@@ -11336,3 +11336,227 @@ native acceptance**, followed by prerequisite/agent guidance and saved-chat
 reconnect UX. Password onboarding, trust replacement, SSH certificates/other
 host-key algorithms and jump hosts remain outside this implementation. The
 next checkpoint is recommended from these concrete limitations, not started.
+
+## Remote lifecycle, saved-chat reconnect and cross-platform SSH hardening
+
+Checkpoint base: `77ea941 feat(ai): add secure remote self-hosted connections`.
+Classification: **SECURE REMOTE SELF-HOSTED ONBOARDING PARTIAL**. Saved-chat
+restoration and portable lifecycle ownership are implemented. The remaining
+platform verification gap is full Linux application and macOS compilation/native
+execution, not a claim that those targets were tested by Windows fixtures.
+Password authentication remains intentionally unsupported.
+
+### Saved chats, identity and demand
+
+Previously a saved remote chat retained its logical model binding, but required
+a manual Settings connection before use. Now the normal chat transport acquires
+its managed-SSH prerequisite before context preparation/inference. Picker rows
+can select an offline managed model for reconnect through existing target
+metadata/request preparation. Historical messages remain readable without a
+connection; merely hydrating sessions or starting the background inventory worker
+does not establish every saved SSH server. Explicit provider refresh/runtime
+metadata requests also use the same native prerequisite. No hidden inference,
+calibration or tool-verification request is introduced.
+
+The existing endpoint/model/deployment/digest/profile identity remains the source
+of truth. Transient loopback ports are not persisted in chat/model identity,
+favorites, recents or profile evidence. Existing digest, runtime epoch/version,
+TTL and configuration-revision validation remains authoritative; reconnect does
+not manufacture fresh capability evidence. Native status polling only probes
+provider health after a transport is already connected, at most once per
+endpoint/revision per 30 seconds while inventory is disconnected. A secure SSH
+connection alone is not reported as a healthy provider.
+
+Deleted/revoked connections fail the existing native configuration and consent
+checks; a saved chat cannot recreate them. The existing endpoint schema has no
+separate enabled/disabled flag, so no fictional disable control was added.
+Revoking private-network consent prevents reconnect. Offline hosts preserve
+history/binding and fail new requests truthfully; subsequent demand after the
+bounded cooldown can restore the same server when it returns. No same-tag
+substitution or silent cloud fallback is added. Direct HTTP/HTTPS transport,
+private-network authorization and all existing context/agent safeguards remain
+unchanged.
+
+### Single flight, leases, cancellation and failure states
+
+`remote_ssh/lifecycle.rs` extends the existing native per-endpoint slot, rather
+than introducing a second connection manager or persisted process registry.
+An async per-slot flight mutex coordinates chat, picker and metadata consumers.
+Each has an independent consumer token; releasing one does not disconnect the
+others. Cancellation uses existing inference ownership/Stop plus native
+generation checks. A bounded ephemeral cancellation table handles release before
+registration without recording PIDs. Different servers retain independent slots.
+
+Webview leases renew every 20 seconds and expire after 90 seconds if abandoned.
+Native HTTP streams and metadata operations hold RAII leases for their actual
+request lifetime, independent of background-webview timer throttling. When the
+last demand-owned lease releases, a connected idle tunnel closes after 60
+seconds. An in-progress attempt with no remaining consumers is cancelled safely;
+any worker finishing after revocation cannot publish a connected state. Explicit
+Settings connections remain pinned until disconnect/removal/app exit.
+
+Transient failures get at most two establishment attempts, separated by two
+seconds, then a 30-second cooldown; there is no endless automatic reconnect or
+inference replay. A dead established transport is retried only on fresh demand.
+Host-key change, required trust confirmation, authentication/key/client/trust-store
+failures latch as actionable attention states until explicit reconnect or
+configuration change. Consumer release and idle maintenance preserve those
+latches, preventing auth/host-key retry storms. Previously trusted unchanged
+keys reuse existing trust. Changed keys never silently retrust. Safe status text
+reaches the normal chat error surface without raw key paths/SSH diagnostic leaks.
+
+### Native ownership and portability
+
+Windows retains hidden OpenSSH children in per-child kill-on-close Job Objects.
+Graceful disconnect, removal and application exit kill only owned handles.
+Linux and macOS share a same-executable native guardian entered before GUI
+initialization, not a shell wrapper or Linux-only parent-death assumption.
+Clack alone holds the writer of the guardian's stdin pipe; the SSH worker does
+not inherit it. EOF on normal close or abrupt parent death makes the guardian
+kill and reap its own live child. Normal teardown also has a bounded fallback
+for that unreaped child's private process group. No stored PID, old local port,
+username, broad SSH enumeration/kill or unproven process group is used.
+
+The parent-pipe design covers owning-Clack termination while its guardian is
+alive and scheduled. It is not an absolute guarantee against simultaneous
+guardian destruction, kernel/system failure or a permanently unschedulable
+guardian. Linux execution proved parent-death cleanup below. The same macOS
+code path exists, but a macOS crash-cleanup guarantee is **not** claimed without
+native verification. Standard-library [process-group support](https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html)
+and [POSIX pipe semantics](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pipe.html)
+underpin ownership, not a saved PID recovery heuristic.
+
+OpenSSH resolution prefers `SystemRoot/System32/OpenSSH/{ssh,ssh-keygen}.exe` on
+Windows and `/usr/bin/{ssh,ssh-keygen}` on Unix, with absolute PATH-directory
+fallback only. The current directory/relative PATH entries are not searched.
+Key paths are structured OS arguments, including spaces and Unicode, not shell
+text. Home/trust locations use existing portable application/home APIs; app
+trust remains app-scoped and global known_hosts is not rewritten. Existing
+system-agent behavior is preserved, including `SSH_AUTH_SOCK` on Unix. Cleared
+environments retain only the existing OS/agent necessities, not provider secrets,
+ASKPASS, arbitrary proxy/preload variables or passwords. No custom agent protocol
+or password store was introduced.
+
+### One Windows native live regression
+
+Evidence directory:
+`src-tauri/target/remote-lifecycle/remote-onboarding-lifecycle-20261021-01/`.
+This is one bounded native acceptance run, not a model mission or GUI exercise.
+The hidden native host used production settings/profile/session persistence,
+remote commands and read-only provider probes.
+
+- Host: `hylab@192.168.1.44`, existing Ed25519 key reference.
+- Verified fingerprint: `SHA256:uNYOgw9D37L2JEG7ZzfeD2ODV4xW1+N9oBWoET4hrH4`.
+  Initial trust came from system known_hosts, then app-scoped trust was reused.
+- Initial managed loopback port **57720**; automatic saved-binding reconnect
+  **61984**; final app-exit cleanup check **61526**.
+- A synthetic chat was saved through `conversation_source_set`, disconnected,
+  and restored with `conversation_session_get`. Its historic message remained
+  readable while status stayed disconnected. Its saved logical model binding
+  then drove `remote_ssh_acquire`, not a manual Settings connect.
+- Two simultaneous chat/picker consumers shared the reconnect. Releasing the
+  picker left the chat connected. Normal provider health and inventory then
+  succeeded: **Ollama, 10 models**. Chat binding, profile IDs, favorites and
+  recents remained unchanged across the port change.
+- Removal and normal app exit closed owned transports. Independent post-exit
+  checks found all three ports closed and no surviving owned SSH process.
+  `result.json`, `transport.json`, `exit.json` and `cleanup.json` retain evidence.
+- **0 inference, 0 downloads, 0 cloud inference, 0 remote mutations**. No Ollama
+  rebind/restart, firewall change, sshd change, remote file write or package
+  installation. Manual port **11435 was untouched**; it had no listener before
+  or after, so this run does not claim survival of an active manual tunnel.
+- A WebView2 window-unregister notice (error 1412) occurred at host exit; result
+  completion and independent socket/process cleanup succeeded. No native manual
+  GUI interaction or model response is claimed.
+
+### Platform verification boundaries
+
+| Platform | Implemented | Compile-validated here | Native-tested here |
+| --- | --- | --- | --- |
+| Windows | Managed reconnect, leases and existing Job ownership | All targets, strict Clippy, acceptance example | 32 focused native tests; full suite; one remote saved-chat acceptance |
+| Linux | Same guardian/lease path, Unix executable and agent handling | Exact dependency-free guardian core/tests for x86_64 Linux | WSL Ubuntu, 4 guardian tests passed; 3 ignored subprocess fixtures |
+| macOS | Same POSIX guardian, early entry, Unix executable/agent path | Not performed: target/toolchain unavailable | Not performed: no macOS host |
+
+The Linux tests actually ran Linux processes/listeners under WSL2 kernel
+`6.6.87.2-microsoft-standard-WSL2`, x86_64. They verify abrupt owning-parent death,
+graceful EOF, unrelated-listener survival, same-binary early guardian entry and
+structured space/Unicode arguments. Local standalone compilation imports the
+exact production guardian, with a tiny CLI entry wrapper instead of the full
+Tauri executable. This is **not full Linux application/native OpenSSH acceptance**.
+The available Linux Rust target and existing WSL C linker were used without
+installing toolchains. Full application offline target checking was attempted
+once and stopped in `libdbus-sys`: pkg-config cross-compilation/sysroot was not
+configured (`linux-app-check.log`). No system dependency installation followed.
+
+Existing Linux/Windows/macOS CI now has narrowly scoped remote lifecycle and
+guardian acceptance steps. In CI the early-entry test uses the actual built
+Clack binary. CI was **not triggered or executed** in this checkpoint; no push.
+macOS and full Linux compile/runtime validation remain pending, hence PARTIAL.
+
+### Focused and final gates
+
+- Focused frontend: **264 passed / 1 skipped**, 11 files covering remote leases,
+  saved-chat actual SDK routing, status refresh, proxy lifetime, sessions, profile
+  identity, existing agent configuration, tool verification and calibration.
+  The optional recorded-live-evidence assertion was skipped in that focused run;
+  final full tests supplied the new native evidence and passed that assertion.
+- Focused Windows Rust: **32 passed / 0 failed**. Linux guardian execution:
+  **4 passed / 0 failed / 3 ignored helper fixtures**, as scoped above.
+- `npm.cmd run check-types`: passed.
+- `npm.cmd run lint`: passed at baseline **71 warnings / 2 informational notices**.
+- `npm.cmd run build`: passed; existing ineffective-dynamic-import and plugin
+  timing notices remain.
+- Existing headless onboarding browser fixture: passed direct/remote setup,
+  host trust/changed-key refusal, cancel, offline/stale evidence, controls and
+  keyboard checks at **320/390/1280px**, light/dark and **200% CSS scaling**.
+  This used local mocked IPC, not Computer Use or native Tauri GUI interaction.
+  Screenshots/result are under `src-tauri/target/onboarding/browser/`.
+- `git diff --check`: passed.
+- `npm.cmd test`: **3,311 passed / 1 failed / 2 skipped**, **223 passing / 4 failing
+  files**. The same four baseline failing files remain: the Node-runner
+  `scripts/audit-devstral-latency.test.mjs` has no Vitest suite; the ignored
+  archived `installed-local-models-20261019-01` test has an obsolete comparison
+  allowlist assertion; two generated ForgeBoard backend source/dist tests lack
+  `supertest`. No discovery exclusions or unrelated fixtures were edited to hide
+  these. Final JSON/log evidence is in `target/remote-lifecycle/final-frontend.*`.
+- `cargo fmt --check`: passed without broad formatting.
+- `cargo clippy --all-targets --locked --target-dir target/codex-test -- -D warnings`:
+  passed. Rust emitted incremental-cache hard-link/copy fallback notices, not
+  code/Clippy diagnostics.
+- `cargo test --locked --target-dir target/codex-test`: **714 passed / 0 failed /
+  2 ignored** (661 library, 25 filesystem, 25 Git, 3 real-world integration).
+  Windows compiles the Unix-only guardian integration target with zero cases;
+  the four native Linux cases are separately reported, not added to this total.
+- Staged review found a dispatch gap between async cancellation checks and the
+  blocking worker starting. Admission now rechecks the consumer (or explicit
+  connection pin) and captures the generation under the runtime lock before
+  any SSH command. A regression covers a removed consumer and disconnected
+  explicit owner. The affected native focused/full suites, fmt and strict
+  Clippy were rerun after this native-only correction; frontend code/gates were
+  unchanged. The one bounded live run was not repeated.
+- The final frontend/build/native logs are retained under
+  `src-tauri/target/remote-lifecycle/`. No live inference or native GUI interaction
+  was used for those gates.
+
+### Scope, safety and next checkpoint
+
+Production changes are confined to the existing remote transport/lifecycle,
+POSIX early entry, native metadata/HTTP lease prerequisites, normal chat/proxy
+transport, picker/error/status presentation and startup inventory scheduling.
+Tests extend those paths, the native acceptance example and existing CI.
+`CLACK.md` gains one missing demand/lease/owned-cleanup principle. No conversation
+memory, project memory, PeerTask, scheduler, discovery/profile schema, context
+calibration, tool verification or Automatic Agent semantics were redesigned.
+
+All six original dirty-file byte snapshots and both safety stashes were checked.
+Only this appendix is staged from this report; its original uncommitted 144-line
+section remains outside the commit, and the other five files remain byte-for-byte
+unchanged. `autonomous_tracker/` remains untouched. No cleanup/reset or push.
+
+The largest remaining onboarding gap is **full Linux/macOS validation** of the
+implemented lifecycle, followed by intentionally unsupported password SSH
+authentication. Recommended immediate next checkpoint: run the existing platform
+CI/native remote regression on Linux and macOS and resolve only concrete failures.
+After that, reassess secure keychain-backed password onboarding versus **Re-run
+Local Agent Usability on the Hardened Runtime** using actual remaining friction.
+Neither next checkpoint was started; no ForgeBoard mission or model download.

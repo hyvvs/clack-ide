@@ -77,6 +77,7 @@ import {
 } from "@/modules/ai/store/chatRuntime";
 import { prepareModelSwitch } from "@/modules/ai/store/modelSwitch";
 import { buildConfiguredLanguageModel } from "@/modules/ai/lib/agent";
+import { remoteSshUrl } from "@/modules/ai/lib/remoteSsh";
 import * as attachmentStore from "@/modules/ai/lib/attachmentStore";
 import { toAttachmentMessagePart } from "@/modules/ai/lib/attachmentMessages";
 import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
@@ -138,6 +139,7 @@ const requests: Outgoing[] = [];
 const approvals = new Map<string, (approved: boolean) => void>();
 let snapshot: ProbeSnapshot | null = null;
 let firstReply: string | null = null;
+let remoteStatus="connected";
 let beforeNativeSettlement: (() => Promise<void>) | undefined;
 let beforeNativeReply:
   | ((args: {
@@ -164,6 +166,7 @@ function nativeReply(wire: string) {
 }
 
 beforeEach(() => {
+  remoteStatus="connected";
   vi.stubGlobal(
     "FileReader",
     class {
@@ -236,6 +239,7 @@ beforeEach(() => {
     }),
   );
   vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if(command==="remote_ssh_acquire")return {state:remoteStatus};
     if (command === "project_memory_load") return { workspace: "local:c:/workspace", checkout: "C:/workspace", baseSha: null, revision: 0, entries: [] };
     if (
       command.startsWith("target_context_") ||
@@ -348,6 +352,30 @@ afterEach(() => {
 });
 
 describe("self-hosted actual chat routing", () => {
+  it.each(["connected","host-unreachable"])("a restored offline SSH chat enters the real transport prerequisite: %s",async remote=>{
+    remoteStatus=remote;
+    let state=editSelfHostedEndpoint(hosted,"a",{baseURL:remoteSshUrl("a"),credentialRef:null,ssh:{host:"labpc",username:"user",port:22,keyPath:null,remoteHost:"127.0.0.1",remotePort:11434}});
+    state=setProfileOverride(state,state.profiles[0].id,"workingContext",32768);
+    state=setProfileOverride(state,state.profiles[0].id,"configuredContext",32768);
+    state.inventories=[{endpointId:"a",configurationRevision:2,observedAt:Date.now(),connected:false,models:[{id:"shared-model",name:null,chat:"supported"}],error:"unreachable"}];
+    usePreferencesStore.setState({selfHostedInference:state,favoriteModelIds:[idA],recentModelIds:[idA]});
+    const now=Date.now();
+    snapshot={endpointId:"a",configurationRevision:2,selectedModelId:"shared-model",observedAt:now,connected:true,reachable:true,credentialUsed:false,stale:false,refreshing:false,inventoryTtlMs:300000,instanceTtlMs:30000,models:[{id:"shared-model",name:null,chat:"supported",evidence:[
+      profileEvidence(state,state.profiles[0].id,"probe.runtimeContext","per-request","backend-reported",now,"reported"),
+      profileEvidence(state,state.profiles[0].id,"probe.advertisedContext",32768,"advertised",now,"reported"),
+    ]}],errors:[]};
+    const change=await prepareModelSwitch("a-chat",idA);expect(change.assessment.status,JSON.stringify(change.assessment)).not.toBe("blocked");expect(await change.commit(true)).toEqual({ok:true});
+    const history:UIMessage[]=[{id:"original-history",role:"user",parts:[{type:"text",text:"Original offline history remains readable"}]}];
+    seedMessages.set("a-chat",history);
+    expect(getOrCreateChat("a-chat").messages[0]).toEqual(history[0]);expect(requests).toHaveLength(0);
+    expect(hasKeyForModel(idA)).toBe(true);
+    await sendMessageToSession("a-chat",{text:"Use this saved remote connection"});
+    expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="remote_ssh_acquire")).toBe(true);
+    expect(useChatStore.getState().sessions.find(s=>s.id==="a-chat")?.profile?.modelId).toBe(idA);
+    expect(usePreferencesStore.getState().favoriteModelIds).toEqual([idA]);
+    if(remote==="connected")expect(requests[0]?.url).toBe(`${remoteSshUrl("a")}api/chat`);
+    else {expect(requests).toHaveLength(0);expect(getOrCreateChat("a-chat").error?.message).toContain("remote computer");}
+  });
   it("C2 captures an unloaded Ollama target's working context and sends the same native allocation", async () => {
     const state = setProfileOverride(hosted, hosted.profiles[0].id, "workingContext", 32768);
     usePreferencesStore.setState({ selfHostedInference: state });

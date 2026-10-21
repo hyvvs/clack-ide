@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { acquireRemoteConnection, remoteEndpointFromUrl, RemoteConnectionError } from "@/modules/ai/lib/remoteConnection";
 import {
   beginInference,
   type InferencePhase,
@@ -89,8 +90,11 @@ async function proxyFetchImpl(
   let aborted = false;
   let cancelPromise: Promise<unknown> | undefined;
   let attempt: ReturnType<typeof beginInference> | undefined;
+  let releaseRemote: (() => void) | undefined;
+  const connectionAbort=new AbortController();
   const cancel = () => {
     aborted = true;
+    connectionAbort.abort();
     attempt?.update("stopping");
     if (nativeId && !cancelPromise)
       cancelPromise = invoke("ai_http_cancel", { requestId: nativeId }).catch(
@@ -107,6 +111,7 @@ async function proxyFetchImpl(
   try {
     const url =
       request?.url ?? (input instanceof URL ? input.toString() : String(input));
+    releaseRemote=await acquireRemoteConnection(remoteEndpointFromUrl(url),connectionAbort.signal,opts.scope);
     const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
     const headers = headerInitToRecord(init?.headers ?? request?.headers);
     const body = await bodyToBytes(
@@ -220,6 +225,7 @@ async function proxyFetchImpl(
       const settle = (failure?: unknown) => {
         if (finished) return;
         finished = true;
+        releaseRemote?.();
         clearTimeout(deliveryTimer);
         channel.onmessage = () => {};
         const code = aborted
@@ -286,13 +292,14 @@ async function proxyFetchImpl(
       );
     });
   } catch (error) {
+    releaseRemote?.();
     if (nativeId && !nativeSettled) {
       cancel();
       await cancelPromise;
     }
     attempt.settle();
     signal?.removeEventListener("abort", cancel);
-    throw error instanceof InferenceTransportError ||
+    throw error instanceof RemoteConnectionError || error instanceof InferenceTransportError ||
       error instanceof ContextBudgetError
       ? error
       : new InferenceTransportError("native-transport", nativeId);

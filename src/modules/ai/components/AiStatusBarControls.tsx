@@ -76,7 +76,7 @@ import {
 import { useChatStore } from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
-import { savedSelfHostedModelInfos, selfHostedPickerStatus, canonicalSelfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
+import { savedSelfHostedModelInfos, selfHostedPickerStatus, canonicalSelfHostedSelectionId, managedReconnectAvailable } from "@/modules/ai/lib/selfHostedModels";
 import { useSelfHostedInventory } from "@/modules/ai/hooks/useSelfHostedInventory";
 import { hasKeyForModel } from "@/modules/ai/store/chatStore";
 import { modelConnectionLabel } from "@/modules/ai/lib/connectionPresentation";
@@ -645,7 +645,7 @@ export function ModelDropdown({
                       destination={modelConnectionLabel(m.id, connectionSettings)}
                       selected={m.id === pickerSelection}
                       disabled={locked}
-                      status={selfHostedPickerStatus(m.id, selfHosted)}
+                      status={managedReconnectAvailable(m.id,selfHosted) ? {label:"Offline / reconnect",disabled:false} : selfHostedPickerStatus(m.id, selfHosted)}
                       hasKey={
                         m.id.startsWith("self-hosted:")
                           ? hasKeyForModel(m.id)

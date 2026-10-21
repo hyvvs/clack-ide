@@ -2,7 +2,7 @@
 use serde_json::{json, Value};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_store::StoreExt;
-use terax_lib::modules::{inference_probe, remote_ssh, self_hosted_profiles};
+use terax_lib::modules::{conversation_memory, inference_probe, remote_ssh, self_hosted_profiles};
 
 async fn run(app: tauri::AppHandle, root: std::path::PathBuf) -> Result<(), String> {
     let id = "remote-acceptance";
@@ -46,15 +46,87 @@ async fn run(app: tauri::AppHandle, root: std::path::PathBuf) -> Result<(), Stri
         .unwrap()
         .get("selfHostedInference")
         .unwrap();
+    let profile = &before["profiles"][0];
+    let selection = format!(
+        "self-hosted:{}",
+        json!([
+            id,
+            profile["transportModelId"],
+            profile["deploymentId"],
+            profile["modelRevision"],
+            profile["backend"]
+        ])
+    );
+    let saved = json!({"id":"remote-lifecycle-saved-chat","title":"Offline historical chat","createdAt":1,"updatedAt":1,"profileVersion":1,
+        "profile":{"agentId":"builtin:coder","modelId":selection,"workspaceId":null,"workspaceRoot":null}});
+    let history = json!([{"id":"offline-history","role":"user","parts":[{"type":"text","text":"Historical test conversation, no inference requested."}]}]);
+    conversation_memory::conversation_source_set(
+        app.clone(),
+        app.state::<conversation_memory::MemoryState>(),
+        "sessions".into(),
+        json!([saved]),
+    )
+    .await?;
+    conversation_memory::conversation_source_set(
+        app.clone(),
+        app.state::<conversation_memory::MemoryState>(),
+        "messages:remote-lifecycle-saved-chat".into(),
+        history.clone(),
+    )
+    .await?;
+    let settings = app.store("terax-settings.json").unwrap();
+    settings.set("favoriteModelIds", json!([selection]));
+    settings.set("recentModelIds", json!([selection]));
+    settings.save().map_err(|_| "settings write")?;
     remote_ssh::remote_ssh_disconnect(id.into());
     assert_eq!(
         remote_ssh::remote_ssh_status(id.into()).state,
         "disconnected"
     );
     assert!(std::net::TcpStream::connect(("127.0.0.1", first.port().unwrap())).is_err());
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    let reconnected = remote_ssh::remote_ssh_connect(app.clone(), id.into(), None).await?;
+    assert_eq!(
+        conversation_memory::conversation_session_get(
+            app.clone(),
+            "messages:remote-lifecycle-saved-chat".into()
+        )
+        .await?,
+        Some(history.clone())
+    );
+    assert_eq!(
+        remote_ssh::remote_ssh_status(id.into()).state,
+        "disconnected"
+    );
+    let restored = conversation_memory::conversation_session_get(app.clone(), "sessions".into())
+        .await?
+        .ok_or("saved chat missing")?;
+    assert_eq!(restored[0], saved);
+    let selected = restored[0]["profile"]["modelId"]
+        .as_str()
+        .ok_or("binding missing")?;
+    let logical: Value = serde_json::from_str(
+        selected
+            .strip_prefix("self-hosted:")
+            .ok_or("binding changed")?,
+    )
+    .map_err(|_| "binding malformed")?;
+    let restored_endpoint = logical[0].as_str().ok_or("endpoint missing")?;
+    let (chat, picker) = tokio::join!(
+        remote_ssh::remote_ssh_acquire(
+            app.clone(),
+            restored_endpoint.into(),
+            "saved-chat-consumer".into()
+        ),
+        remote_ssh::remote_ssh_acquire(
+            app.clone(),
+            restored_endpoint.into(),
+            "picker-consumer".into()
+        )
+    );
+    let reconnected = chat?;
+    assert_eq!(picker?.state, "connected");
     assert_eq!(reconnected.state, "connected");
+    remote_ssh::remote_ssh_release(id.into(), "picker-consumer".into());
+    assert_eq!(remote_ssh::remote_ssh_status(id.into()).state, "connected");
     let second = remote_ssh::resolve(format!("{url}api/tags").parse().unwrap())?;
     let again = inference_probe::self_hosted_probe(app.clone(), options())
         .await
@@ -78,6 +150,26 @@ async fn run(app: tauri::AppHandle, root: std::path::PathBuf) -> Result<(), Stri
             .models
             .iter()
             .map(|m| (&m.id, &m.digest))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        conversation_memory::conversation_session_get(app.clone(), "sessions".into()).await?,
+        Some(restored.clone())
+    );
+    assert_eq!(settings.get("favoriteModelIds"), Some(json!([selection])));
+    assert_eq!(settings.get("recentModelIds"), Some(json!([selection])));
+    assert_eq!(
+        before["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| &p["id"])
+            .collect::<Vec<_>>(),
+        after["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| &p["id"])
             .collect::<Vec<_>>()
     );
     let mut removed = after.clone();
@@ -108,10 +200,14 @@ async fn run(app: tauri::AppHandle, root: std::path::PathBuf) -> Result<(), Stri
     let exit_port = remote_ssh::resolve(format!("{url}api/tags").parse().unwrap())?.port();
     std::fs::write(root.join("result.json"),serde_json::to_vec_pretty(&json!({"transport":connected,"reconnected":reconnected,
             "firstPort":first.port(),"secondPort":second.port(),"exitPort":exit_port,"inventory":inventory,"state":after,"removedTunnelClosed":true,
+        "savedChat":saved,"offlineHistory":history,"sameLogicalBinding":true,"concurrentConsumers":2,"sharedConsumerCancellation":true,"automaticReconnect":true,
         "firstTunnelClosed":true,"inference":0,"downloads":0,"cloudInference":0})).unwrap()).map_err(|_| "evidence write")?;
     Ok(())
 }
 fn main() {
+    if remote_ssh::guardian::entry() {
+        return;
+    }
     let root = std::fs::canonicalize(
         std::env::var("CLACK_REMOTE_ROOT").expect("isolated evidence root required"),
     )
@@ -127,6 +223,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(inference_probe::ProbeState::default())
+        .manage(conversation_memory::MemoryState::default())
         .setup(move |app| {
             let data = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data)?;

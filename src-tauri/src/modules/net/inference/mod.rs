@@ -492,6 +492,8 @@ pub async fn ai_http_stream(
     on_event: Channel<Event>,
 ) -> Result<(), Failure> {
     let mut lease = state.start(window.label(), &request_id)?;
+    let _connection = crate::modules::remote_ssh::lifecycle::pin_active_url(&app, &url)
+        .map_err(|_| Failure::new("remote-connection-unavailable"))?;
     lease.require_preflight = require_preflight.unwrap_or(false);
     if let Some(token) = &fallback_token {
         if method != "POST" || !lease.require_preflight {

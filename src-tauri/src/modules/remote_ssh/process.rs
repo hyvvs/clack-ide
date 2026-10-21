@@ -20,9 +20,19 @@ pub fn command(name: &str) -> Result<Command, String> {
         .join(format!("{name}.exe"));
     #[cfg(not(windows))]
     let path = std::path::PathBuf::from("/usr/bin").join(name);
-    if !path.is_file() {
-        return Err("ssh-unavailable".into());
-    }
+    let path = if path.is_file() {
+        path
+    } else {
+        let file = path.file_name().ok_or("ssh-unavailable")?;
+        std::env::var_os("PATH")
+            .and_then(|paths| {
+                std::env::split_paths(&paths)
+                    .filter(|dir| dir.is_absolute())
+                    .map(|dir| dir.join(file))
+                    .find(|path| path.is_file())
+            })
+            .ok_or("ssh-unavailable")?
+    };
     let mut command = Command::new(path);
     command.env_clear();
     // OpenSSH uses the platform agent; no provider credentials or arbitrary
@@ -63,9 +73,15 @@ fn drain(
 }
 
 impl OwnedChild {
-    pub fn spawn(mut command: Command) -> Result<Self, String> {
+    pub fn spawn(command: Command) -> Result<Self, String> {
+        #[cfg(all(unix, not(test)))]
+        let command = super::guardian::command(command)?;
+        let mut command = command;
+        #[cfg(all(unix, not(test)))]
+        command.stdin(Stdio::piped());
+        #[cfg(any(windows, test))]
+        command.stdin(Stdio::null());
         let mut child = command
-            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -129,6 +145,25 @@ impl OwnedChild {
 }
 impl Drop for OwnedChild {
     fn drop(&mut self) {
+        #[cfg(all(unix, not(test)))]
+        {
+            self.child.stdin.take();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(20))
+                    }
+                    _ => break,
+                }
+            }
+            // The unreaped Child owns this private process group. No saved PID,
+            // port lookup, shared group, or unrelated process is involved.
+            unsafe {
+                libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

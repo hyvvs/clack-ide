@@ -76,6 +76,9 @@ pub async fn self_hosted_context_runtime(
     endpoint_id: String,
     allow_private_network: bool,
 ) -> Result<Value, ProbeError> {
+    let _connection = crate::modules::remote_ssh::acquire_for_endpoint(&app, &endpoint_id)
+        .await
+        .map_err(|_| ProbeError::new(ErrorCode::Unreachable))?;
     let endpoint = {
         let _guard = WRITE_LOCK.lock().map_err(|_| internal())?;
         let store = app.store("terax-settings.json").map_err(|_| internal())?;

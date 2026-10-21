@@ -148,6 +148,8 @@ export function normalizeAiError(
   context: AiErrorContext = {},
 ): NormalizedAiError {
   const chain = collectErrorChain(error);
+  const remote=chain.find(node=>node.record?.remoteConnectionFailure===true);
+  if(remote) return {kind:"network",disposition:"terminal",title:"Remote connection needs attention",message:sanitizeAiErrorText(remote.record?.message),errorCode:sanitizeAiErrorText(remote.record?.code),retryable:true};
   const watchdog = chain.map(node => readWatchdogError(node.value)).find(Boolean);
   if (watchdog) return {
     kind: "watchdog", disposition: "terminal", title: "Output watchdog",

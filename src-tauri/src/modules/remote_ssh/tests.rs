@@ -12,12 +12,13 @@ fn config() -> Config {
         remote_port: 11434,
     }
 }
-fn slot() -> Arc<Slot> {
+pub(super) fn slot() -> Arc<Slot> {
     Arc::new(Slot {
         config: config(),
         revision: 1,
         generation: AtomicU64::new(0),
         operation: Mutex::new(()),
+        flight: tokio::sync::Mutex::new(()),
         runtime: Mutex::new(Runtime::default()),
     })
 }
@@ -310,10 +311,11 @@ fn ephemeral_allocation_is_loopback_only_and_independent() {
 fn unreadable_key_does_not_attempt_network_or_authenticate() {
     let mut s = slot();
     Arc::get_mut(&mut s).unwrap().config.key_path = Some("/missing-private-key".into());
-    let result = connect(&s, Path::new("/not-used"), None).unwrap();
+    s.runtime.lock().unwrap().pinned = true;
+    let result = connect(&s, Path::new("/not-used"), None, None).unwrap();
     assert_eq!(result.state, "key-unreadable");
     assert!(
-        connect(&s, Path::new("/not-used"), None).is_err(),
+        connect(&s, Path::new("/not-used"), None, None).is_err(),
         "bounded reconnect backoff"
     );
 }

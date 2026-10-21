@@ -9,6 +9,7 @@ import {
 } from "@/modules/ai/lib/activityStream";
 import type { CustomEndpoint } from "../config";
 import { runAgentStream, type AgentUsageDelta } from "./agent";
+import { acquireRemoteConnection, holdRemoteStream, remoteEndpointForModel } from "@/modules/ai/lib/remoteConnection";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { native } from "./native";
 import type { ToolContext } from "../tools/tools";
@@ -428,17 +429,22 @@ export function createContextAwareTransport(deps: Deps) {
     });
   };
 
+  const connectedRun = async (options: SendOptions, activity?: ActivityStreamContext) => {
+    const release=await acquireRemoteConnection(remoteEndpointForModel(deps.getModelId(),deps.getSelfHostedInference?.()),options.abortSignal,deps.getInferenceScope?.());
+    try { return holdRemoteStream(await run(options,activity),release); }
+    catch(error){release();throw error;}
+  };
   return {
     canRecover: (runId: string) => captured?.runId === runId,
     sendMessages: (options: SendOptions) => {
       const owner = ACTIVITY_ENABLED ? deps.getActivityOwner?.() : undefined;
-      if (!owner) return run(options);
+      if (!owner) return connectedRun(options);
       return Promise.resolve(
         activityStream(
           options.messages,
           owner,
           deps.getInferenceScope?.(),
-          (context) => run(options, context),
+          (context) => connectedRun(options, context),
           (error) =>
             deps.onError?.(error) ??
             "The AI run failed for an unexpected reason.",

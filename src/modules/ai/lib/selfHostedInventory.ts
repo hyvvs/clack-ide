@@ -12,7 +12,7 @@ export function createInventoryRefresh(
   const active = new Map<string, Promise<unknown>>();
   const attempted = new Map<string, number>();
   return async (state: SelfHostedState): Promise<void> => {
-    const endpoints = state.endpoints.filter((e) => e.deletedAt === undefined);
+    const endpoints = state.endpoints.filter((e) => e.deletedAt === undefined && !e.ssh);
     let index = 0;
     const worker = async () => {
       while (index < endpoints.length) {

@@ -1,4 +1,9 @@
+pub mod guardian;
+pub mod lifecycle;
 mod process;
+pub use lifecycle::{
+    acquire_for_endpoint, remote_ssh_acquire, remote_ssh_heartbeat, remote_ssh_release,
+};
 #[cfg(test)]
 mod tests;
 
@@ -96,6 +101,9 @@ struct Runtime {
     status: Status,
     pending: Option<(String, String)>,
     retry_at: Instant,
+    consumers: HashMap<String, Option<Instant>>,
+    pinned: bool,
+    idle_since: Option<Instant>,
 }
 impl Default for Runtime {
     fn default() -> Self {
@@ -105,6 +113,9 @@ impl Default for Runtime {
             status: Status::new("disconnected"),
             pending: None,
             retry_at: Instant::now(),
+            consumers: HashMap::new(),
+            pinned: false,
+            idle_since: None,
         }
     }
 }
@@ -113,6 +124,7 @@ struct Slot {
     revision: u64,
     generation: AtomicU64,
     operation: Mutex<()>,
+    flight: tokio::sync::Mutex<()>,
     runtime: Mutex<Runtime>,
 }
 type Slots = HashMap<String, Arc<Slot>>;
@@ -126,6 +138,9 @@ fn stop(slot: &Slot) {
         r.child = None;
         r.port = None;
         r.pending = None;
+        r.consumers.clear();
+        r.pinned = false;
+        r.idle_since = None;
         r.status = Status::new("disconnected");
     }
 }
@@ -482,20 +497,30 @@ fn ssh_args(config: &Config, known_hosts: &Path, local: u16) -> Vec<String> {
     args
 }
 
-fn connect(slot: &Slot, root: &Path, approval: Option<&str>) -> Result<Status, String> {
+fn connect(
+    slot: &Slot,
+    root: &Path,
+    approval: Option<&str>,
+    consumer: Option<&str>,
+) -> Result<Status, String> {
     let _operation = slot.operation.try_lock().map_err(|_| "connecting")?;
-    let generation = slot.generation.load(Ordering::SeqCst);
     if current_status(slot).state == "connected" {
         return Ok(current_status(slot));
     }
-    {
+    let generation = {
         let mut r = slot.runtime.lock().map_err(|_| "ssh-error")?;
+        if consumer.is_some_and(|id| !r.consumers.contains_key(id))
+            || (consumer.is_none() && !r.pinned)
+        {
+            return Ok(Status::new("cancelled"));
+        }
         if Instant::now() < r.retry_at {
             return Err("retry-later".into());
         }
         r.status = Status::new("connecting");
         r.retry_at = Instant::now() + Duration::from_secs(2);
-    }
+        slot.generation.load(Ordering::SeqCst)
+    };
     let cfg = &slot.config;
     let result = (|| {
         cfg.validate()?;
@@ -694,9 +719,11 @@ fn configured(app: &AppHandle, id: &str) -> Result<Arc<Slot>, String> {
         revision,
         generation: AtomicU64::new(0),
         operation: Mutex::new(()),
+        flight: tokio::sync::Mutex::new(()),
         runtime: Mutex::new(Runtime::default()),
     });
     map.insert(id.into(), slot.clone());
+    lifecycle::start_maintenance();
     Ok(slot)
 }
 #[tauri::command]
@@ -711,11 +738,12 @@ pub async fn remote_ssh_connect(
         .app_data_dir()
         .map_err(|_| "trust-store-unavailable")?
         .join("ssh-hosts");
-    tauri::async_runtime::spawn_blocking(move || {
-        connect(&slot, &root, approve_fingerprint.as_deref())
-    })
-    .await
-    .map_err(|_| "ssh-error")?
+    {
+        let mut r = slot.runtime.lock().map_err(|_| "ssh-error")?;
+        r.pinned = true;
+        r.retry_at = Instant::now();
+    }
+    lifecycle::establish(slot, root, approve_fingerprint, None).await
 }
 #[tauri::command]
 pub fn remote_ssh_disconnect(endpoint_id: String) {

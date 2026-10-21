@@ -25,6 +25,7 @@ export function remoteSshMessage(state: string): string {
     connected: "Connected securely over SSH",
     disconnected: "Disconnected",
     connecting: "Connecting securely",
+    reconnecting: "Reconnecting securely",
     offline: "Remote computer disconnected. Reconnect to try again.",
     "verification-required": "Verify this computer",
     "host-key-changed": "The remote computer's identity changed. Connection was stopped for safety.",

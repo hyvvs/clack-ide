@@ -723,10 +723,13 @@ fn finish(app: &AppHandle, endpoint: &Endpoint, generation: u64, mut outcome: ca
 }
 
 #[tauri::command]
-pub fn self_hosted_probe_cache(
+pub async fn self_hosted_probe_cache(
     app: AppHandle,
     options: ProbeOptions,
 ) -> Result<Option<Snapshot>, ProbeError> {
+    let _connection = super::remote_ssh::acquire_for_endpoint(&app, &options.endpoint_id)
+        .await
+        .map_err(|_| ProbeError::new(ErrorCode::Unreachable))?;
     let _guard = WRITE_LOCK.lock().map_err(|_| internal())?;
     let store = app.store("terax-settings.json").map_err(|_| internal())?;
     let endpoint = configured(&store.get(KEY).unwrap_or(Value::Null), &options.endpoint_id)?;
@@ -756,6 +759,9 @@ pub async fn self_hosted_probe(
     app: AppHandle,
     options: ProbeOptions,
 ) -> Result<Snapshot, ProbeError> {
+    let _connection = super::remote_ssh::acquire_for_endpoint(&app, &options.endpoint_id)
+        .await
+        .map_err(|_| ProbeError::new(ErrorCode::Unreachable))?;
     if let Some(selected) = &options.selected_model_id {
         name(&json!(selected))?;
     }

@@ -1,0 +1,21 @@
+import {beforeEach,afterEach,describe,expect,it,vi} from "vitest";
+import {usePreferencesStore} from "@/modules/settings/preferences";
+import {createSelfHostedEndpoint,emptySelfHostedState,addSelfHostedEndpoint} from "@/modules/ai/lib/selfHostedProfiles";
+import {remoteSshUrl} from "@/modules/ai/lib/remoteSsh";
+const mocks=vi.hoisted(()=>({status:vi.fn(),refresh:vi.fn(),update:vi.fn()}));
+vi.mock("@/modules/ai/lib/remoteSsh",async original=>({...await original<typeof import("@/modules/ai/lib/remoteSsh")>(),remoteSsh:{status:mocks.status}}));
+vi.mock("@/modules/ai/lib/selfHostedProbe",async original=>({...await original<typeof import("@/modules/ai/lib/selfHostedProbe")>(),createSelfHostedProbeClient:()=>({refresh:mocks.refresh})}));
+vi.mock("@/modules/settings/store",async original=>({...await original<typeof import("@/modules/settings/store")>(),updateSelfHostedProfiles:mocks.update}));
+import {refreshRemoteSshStatus} from "@/modules/ai/lib/remoteSshStatus";
+const initial=usePreferencesStore.getState();let sequence=0;
+beforeEach(()=>{vi.clearAllMocks();const id=`status-${++sequence}`;const endpoint=createSelfHostedEndpoint({alias:"Remote",baseURL:remoteSshUrl(id),ssh:{host:"labpc",username:"user",port:22,keyPath:null,remoteHost:"127.0.0.1",remotePort:11434},allowPrivateNetwork:true},id);
+  const state=addSelfHostedEndpoint(emptySelfHostedState(),endpoint);state.inventories=[{endpointId:id,configurationRevision:1,observedAt:Date.now(),connected:false,models:[]}];
+  usePreferencesStore.setState({selfHostedInference:state});mocks.refresh.mockResolvedValue(undefined);mocks.update.mockResolvedValue(undefined);
+});
+afterEach(()=>usePreferencesStore.setState(initial));
+describe("remote transport and provider health remain separate",()=>{
+  it("never starts disconnected transports from startup/status observation",async()=>{mocks.status.mockResolvedValue({state:"disconnected"});await refreshRemoteSshStatus();expect(mocks.refresh).not.toHaveBeenCalled();});
+  it("rechecks provider health after transport restoration without inventing connected inventory",async()=>{mocks.status.mockResolvedValue({state:"connected"});await refreshRemoteSshStatus();expect(mocks.refresh).toHaveBeenCalledOnce();expect(mocks.update).not.toHaveBeenCalled();expect(usePreferencesStore.getState().selfHostedInference.inventories?.[0].connected).toBe(false);});
+  it("bounds failed health refreshes rather than probing every status tick",async()=>{mocks.status.mockResolvedValue({state:"connected"});await refreshRemoteSshStatus();await refreshRemoteSshStatus();expect(mocks.refresh).toHaveBeenCalledOnce();});
+  it("withdraws prior readiness on transport death",async()=>{mocks.status.mockResolvedValue({state:"offline"});const state=usePreferencesStore.getState().selfHostedInference;if(state.inventories)state.inventories[0].connected=true;await refreshRemoteSshStatus();expect(mocks.update).toHaveBeenCalledOnce();});
+});

@@ -94,6 +94,10 @@ jobs:
         working-directory: src-tauri
         run: cargo nextest run --locked
 
+      - name: Remote SSH parent-death and ownership acceptance
+        working-directory: src-tauri
+        run: cargo test --locked --test remote_ssh_guardian -- --test-threads=1
+
   rust-platforms:
     name: rust-test (${{ matrix.os }})
     strategy:
@@ -121,6 +125,14 @@ jobs:
       - name: cargo nextest
         working-directory: src-tauri
         run: cargo nextest run --locked --retries 2
+
+      - name: Remote SSH native lifecycle regression
+        working-directory: src-tauri
+        run: cargo test --locked --lib remote_ssh
+
+      - name: Remote SSH parent-death and ownership acceptance
+        working-directory: src-tauri
+        run: cargo test --locked --test remote_ssh_guardian -- --test-threads=1
 
   t3a-wasi:
     name: T3a WASI adversarial (${{ matrix.os }})

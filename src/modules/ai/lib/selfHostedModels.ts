@@ -174,7 +174,7 @@ export function selfHostedTransportIdentity(
     );
   const { endpoint, profile } = target;
   const status = selfHostedPickerStatus(selectionId, state);
-  if (status?.disabled)
+  if (status?.disabled && !managedReconnectAvailable(selectionId,state))
     throw new Error(`Model unavailable (${status.label}). Refresh this server or explicitly choose another model.`);
   return {
     providerId: endpointProvider(endpoint),
@@ -190,6 +190,13 @@ export function selfHostedTransportIdentity(
       credentialRequired: !!endpoint.credentialRef && !endpoint.legacy,
     },
   };
+}
+
+export function managedReconnectAvailable(selectionId: string,state: SelfHostedState): boolean {
+  const target=resolveSelfHostedSelection(state,selectionId);
+  if(target.status!=="available" || !target.endpoint.ssh || !endpointAllowsPrivate(target.endpoint))return false;
+  const inventory=state.inventories?.find(i=>i.endpointId===target.endpoint.id && i.configurationRevision===target.endpoint.configurationRevision);
+  return !inventory?.connected;
 }
 
 export function selfHostedCredential(
