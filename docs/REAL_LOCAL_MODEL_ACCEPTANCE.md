@@ -15035,3 +15035,317 @@ tests establish pressure-only activation and irreducible-budget failure.
   production files, three test files, offline audit/metrics and this appendix.
   Preserve the original report prefix, other five dirty files, both stashes and
   `autonomous_tracker/`. **No push. STOP.**
+
+## Fresh Nemotron acceptance with revision-pinned long-horizon checkpoints
+
+2026-10-22 Europe/Paris, from `8a4f7bc feat(ai): add revision-pinned agent checkpoints`.
+This separately authorized prospective acceptance follows, rather than rewrites,
+the preceding frozen-replay limitation and recommendation. Repeated-search
+projection was NOT added first. There were **zero production code changes**.
+
+**Result: LOCAL AGENT USABILITY STILL LIMITED.** The precise runtime ending was
+**PRODUCT RUNTIME / ANSWER CONTINUATION DEADLINE / INCOMPLETE**. Native write
+observation works prospectively, but **pressure-driven checkpoint usefulness
+remains PARTIAL / NOT EXERCISED**, not READY in practice. No context block or
+checkpoint payload reduction occurred. No second mission is authorized here.
+
+### Isolation, identity and launch accounting
+
+- Main at `8a4f7bc`, initially 88 ahead / 0 behind cached `origin/main`. Saved
+  byte baselines for the six original dirty contents and `CLACK.md`; retained
+  stash identities without modifying stashes. `autonomous_tracker/` untouched.
+- Exact installed model: `nemotron-3.5-lightning:30b-a3b-q4_K_M`, SHA-256 digest
+  `e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2`.
+  Metadata verified before launch, Ollama **0.40.5**. No model download/update.
+- Existing saved connection `real-qwen`, configuration revision 1, through the
+  unchanged user SSH tunnel `http://127.0.0.1:11435` to remote loopback Ollama.
+  No new route, SSH/service/firewall/bind/model-file/network configuration edits.
+  Manual tunnel PID **34144** remained running and untouched after acceptance.
+- Settings copied byte-for-byte from the prior `20261021-04` evidence, SHA-256
+  `aab9fd811bcd359bfa5d687557e649ee1b3af25ca66af869b623ab60f5a150a5`.
+  Production, not the evaluator, revalidated stale runtime-scoped evidence.
+- The preferred workspace prefix is not recognized by the existing dirty
+  approval allowlist. That file was NOT edited. Actual fresh empty Git root:
+  `C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261022-02`.
+  Evidence ID: **`forgeboard-nemotron-checkpointed-20261022-02`**, under
+  `src-tauri/target/real-qwen-product/`. No seeded implementation or prior files.
+- A preceding **premission** launch, evidence suffix `01`, forwarded **zero
+  inference**, sent **zero specifications**, and left its workspace empty.
+  Evaluator erroneously enabled the strict mission envelope guard during the
+  normal 4096/32 readiness probe. Native policy rejected `reasoning_output_changed`
+  before network dispatch; this was NOT a >65536 attempt or production defect.
+  Its attempts/failure/runner logs and `prelaunch-classification.json` are retained.
+  Removed only that evaluator flag before the single actual mission in suffix
+  `02`. No specification was replayed, and no run was repaired/resumed.
+- Immediately before the actual mission launcher, competing Clack native hosts,
+  Cargo/Rust builds, Vite tests and acceptance runners: **none**. Owned native
+  host **24544**, runner **40844**. Both exited after evidence capture; runner
+  exit **0**, no signal. Runner success does not mean ForgeBoard success.
+  WebView2 logged a class-unregister error 1412 during shutdown after the report;
+  this did not terminate inference or prevent successful native host exit.
+- Frozen **977** existing executable/config/test source hashes before launch;
+  all matched at terminal freeze and independent audit. The only native-host
+  adaptation registered the four new checkpoint IPCs and logged their unchanged
+  production results plus bounded manifests. No production module was edited.
+
+### Readiness and actual Automatic controls
+
+**Nine readiness requests**, separate from mission requests:
+
+| Native IDs | Context | Output | Actual think | Result |
+| --- | ---: | ---: | --- | --- |
+| 1 through 6 | 4096, 8192, 16384, 32768, 49152, 65536 | 32 each | omitted | Normal context calibration completed |
+| 7 | 65536 | 512 | omitted | Text/reasoning, no native call; default tools did not verify |
+| 8 and 9 | 65536 | 512 each | true | Two native tool-call confirmations; On recommendation verified |
+
+Automatic reached **Ready / tools Verified**, profile overrides `{}`, effective
+context **65536**, mission output **2048**, fallback **Never**, cloud inference
+**0**. Advertised maximum remains **1048576**, not the working context.
+Provider-loaded context observed at readiness and after mission: **65536**;
+there is no independent per-request loaded-context measurement.
+
+**Important expected-versus-actual distinction:** the prompt anticipated omitted
+`think`. Actual unchanged production Automatic selected the twice-verified **On**
+agent recommendation, and every mission body serialized **`think:true`**. No
+manual reasoning selection, output override or calibration tuning occurred.
+Provider default was retained as metadata, not forced as a wire constraint. This
+is NOT an exact-wire omitted-thinking comparison with prior `b2cd814`, and does
+not isolate checkpointing as the only behavioral difference. No forced rerun.
+
+### Mission chronology and tool/effect ledger
+
+Specification SHA-256
+`f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`, sent
+**exactly once**. Sole conversation user message; no reminder, manual Continue,
+coaching, package repair or evaluator-created implementation.
+
+| Event | Evidence |
+| --- | --- |
+| Mission start | 00:34:01.520 Europe/Paris |
+| First output | +12.257s, request `inference-10` |
+| First native call | +18.603s, empty-root `list_directory` |
+| Plan | One acknowledged `todo_write`, 13 pending items; no completed claims |
+| Shell calls | Four successful: npm init, npm install, TypeScript config init, mkdir src |
+| Advertised native shell | `PowerShell (pwsh.exe)`; `PowerShell; not POSIX Bash` |
+| First shell syntax | `cd <root> && npm init -y`, accepted by actual pwsh, exit 0 |
+| File read | One `read_file tsconfig.json` |
+| First direct write | +65.808s, `src/types.ts`, 1314 bytes |
+| Second direct write | `src/storage.ts`, 5336 bytes |
+| Final completed responses | IDs 19, 20, 21: length stops, 2048 reported output tokens each, textual tool intents only |
+| Third continuation | ID 22 dispatched, no body output, cancelled after about 0.507s in native transport |
+| Terminal | 00:38:04.388, mission **242.868s**, full runner interval **309.062s** |
+
+**22 actual native inference dispatch records = 9 readiness + 13 mission**.
+Mission: **9 native calls, 9 successful operations, 0 failed operations**:
+one listing, one plan, four shells, one read, two direct source writes. Twelve
+mission responses completed; the thirteenth was cancelled with no engine finish
+or usage. Do not infer token totals for that cancelled request. Readiness native
+tool-call confirmations do not count as workspace operations.
+
+The three length responses contain **7927 / 7971 / 8000** characters of textual
+`<tool_call>`-style server-writing intent. None contained a native call. They
+remain text and were NOT executed. There were no empty completed mission
+responses. No native execution failures, approvals, engine stall, 600-second
+overall inference timeout or harness 90-minute bound caused the stop.
+
+### Native write observations, eligibility and snapshots
+
+The acceptance host forwards `observe`, `prepare`, `validate`, `restore` to the
+production implementation without changing inputs/results. Its
+`mission-a-1.checkpoints.jsonl` captured **two successful native observations**:
+
+| Order / tool ID | Path | Result digest |
+| --- | --- | --- |
+| 1 / `call_jgxznn4f` | `src/types.ts` | `ae3008f9f659be15d4c48177cca89d1ee832b43742fbe4eb8f021cc7f3992cce` |
+| 2 / `call_ilruqg8d` | `src/storage.ts` | `4dd53c0c25157e1ca5cb51707fa366a3e989811292214627b0dba3a0a904a2dc` |
+
+Proven fields: exact conversation `real-mission-a`, workspace identity
+`local:c:/users/hayden/documents/forgeboard-nemotron35-lightning-20261022-02`,
+captured run start ID **1792622041520**, tool identity, path/canonical path,
+canonical input hash, result-byte digest, and insertion order. Both native
+guarded observations completed before their corresponding acknowledged tool
+events. Digests match the exact durable tool input and terminal frozen files;
+canonical input hashes also reconstruct correctly. No missing observations for
+these two direct writes. Shell-generated config/package files are separate
+effects, not fabricated native `write_file` observations.
+
+Lifecycle for BOTH: **observed -> hot/current -> retained raw**. First write
+eligible? **No**. There is no later full overwrite of either path, no subsequent
+user boundary, and the source remains inside the active assistant answer.
+Production would not retire these sources. No path was naturally rewritten, so
+previous/base digest linkage, repeated-write lineage and external-change
+invalidation are **not exercised**, not newly verified. Full-overwrite base
+independence is a production contract, not a newly observed patch lineage.
+
+**Total eligible 0, projected 0, native prepare calls 0, validate/restore calls 0.**
+Native state version 1 retains both observations. Current/previous checkpoint
+snapshots remain explicitly **null**, not missing or reconstructed snapshots.
+No speculative preparation, eligibility forcing, altered dependency rules,
+synthetic pressure or external filesystem intervention was used in the mission.
+
+### Provider payload, context and continuations
+
+Every captured mission body retains the exact specification and full coding
+routes `read_file`, `write_file`, `bash_run` (**14 tools** each). **F1 healthy**.
+Correction was **not sent** because three confirmed successful writes never
+occurred. Page size 25 and post-correction supersession are therefore **not
+exercised**; original page size 50 remains a requirement, not a delivered feature.
+
+All original persisted messages compare exactly with the captured conversation.
+Both full historical native write bodies remain provider-bound after execution.
+No checkpoint/verified-effect receipt was inserted, no raw-plus-receipt
+duplication, no stale checkpoint reuse, no current-state substitution for intent.
+Unresolved failures: none. Historical reasoning policy unchanged. Older textual
+drafts remain raw and non-executable. No draft/reasoning compaction was added.
+
+Actual captured provider-body B1 estimates, not Ollama token measurements:
+context **65536** throughout; requested output reserve **2048** throughout.
+
+| Native request | Input | Reserve | Margin | Required | Headroom |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| inference-10 | 11186 | 2048 | 1119 | 14353 | 51183 |
+| inference-11 | 12293 | 2048 | 1230 | 15571 | 49965 |
+| inference-12 | 13624 | 2048 | 1363 | 17035 | 48501 |
+| inference-13 | 14301 | 2048 | 1431 | 17780 | 47756 |
+| inference-14 | 14836 | 2048 | 1484 | 18368 | 47168 |
+| inference-15 | 15355 | 2048 | 1536 | 18939 | 46597 |
+| inference-16 | 16401 | 2048 | 1641 | 20090 | 45446 |
+| inference-17 | 17248 | 2048 | 1725 | 21021 | 44515 |
+| inference-18 | 18235 | 2048 | 1824 | 22107 | 43429 |
+| inference-19 | 21468 | 2048 | 2147 | 25663 | 39873 |
+| inference-20 | 25768 | 2048 | 2577 | 30393 | 35143 |
+| inference-21 | 30092 | 2048 | 3010 | 35150 | 30386 |
+| inference-22 | 34440 | 2048 | 3444 | 39932 | 25604 |
+
+These are post-hoc native-wire estimates, not an instrumented claim of every
+preparation's SDK pressure calculation. Maximum wire history/working ratio
+**0.48477**, below 0.7; no native checkpoint prepare call occurred. First pressure
+event, first projection request, candidate selection, before/after projected
+payload comparison: **none / not applicable**. Raw tokens replaced **0**, receipt
+cost **0**, net savings **0**, maximum cumulative checkpoint savings **0**,
+existing verified-effect receipt savings **0**, achieved provider reduction **0**.
+No product context block; no >65536 guard rejection in actual readiness/mission.
+The separate premission envelope rejection is disclosed above.
+
+Three automatic continuation dispatches, no manual continuation or tool repair:
+
+| Trigger / next | Exact current partial | Next required / headroom | Outcome |
+| --- | ---: | ---: | --- |
+| 19 -> 20 | 7927 chars | 30393 / 35143 | Another textual length response |
+| 20 -> 21 | 7971 chars | 35150 / 30386 | Another textual length response |
+| 21 -> 22 | 8000 chars | 39932 / 25604 | Existing cumulative continuation deadline cancelled request |
+
+Offline reconstruction checks each prior response's exact SHA/content as a
+verbatim assistant message in the next serialized request and durable transcript.
+All retain original objective, 13 pending plan items, all coding tools and zero
+checkpoint projection. Older partials also remain exact separate messages.
+The 120-second timer began at first length completion, about 00:36:04.4. State
+records `continuationTimeMs:120000`, `continuations:3`, `state:incomplete`, reason
+`Cancelled or deadline expired`. Native request 22 has dispatch then cancellation,
+**zero body bytes**, no final provider usage. This is a bounded product runtime
+ending, NOT a voluntary model completion, a protected-context block or a native
+host failure. No generic Clack defect was confirmed or repaired in this pass.
+
+### Frozen independent product audit
+
+Five non-dependency files frozen with hashes, copied to an independent audit
+directory, checked again after audit: package.json, package-lock.json,
+tsconfig.json, src/types.ts, src/storage.ts. No evaluator repair or source change.
+Native retained observation digests match these frozen source bytes.
+
+- Backend: types and approximately 5.3KB storage logic only. No server/API entry,
+  listening port, validation router or realtime implementation. Static storage
+  is not a working backend. For example, UUID calls lack a definition and Date
+  fields are not revived after JSON load; these were not repaired or runtime-tested.
+- Independent `npm.cmd test`: **exit 1**, default npm-init `no test specified`
+  script. No model-authored API/frontend tests exist. Model itself ran **zero
+  tests**, zero passing tests and zero builds; `tsc --init` is not a build.
+- Independent `npm.cmd run build`: **exit 1**, missing script. Independent
+  `npm.cmd start`: **exit 1**, missing script. No fabricated backend entry or
+  new test suite was created to make the application pass.
+- API matrix: **0 executed / 0 passed / 0 failed executions / 19 blocked**.
+  Project/task CRUD, combined filtering/search, validation/errors/not-found,
+  port 4317, pagination, real SSE mutation/client, and restart persistence cannot
+  be exercised without implementing missing application code. This is not a
+  claim that 19 live endpoints were tested and failed.
+- Frontend: **absent**, not even a React scaffold. Project navigation, task CRUD,
+  statuses/priorities/tags, filters/search, loading/error/empty, keyboard access,
+  title length, page size and debounce are **not implemented / unverified**.
+  No browser or native GUI acceptance is claimed for a nonexistent UI.
+- Persistence source exists but restart behavior is unverified. Real SSE absent.
+  Root README absent, runtime-data ignore absent; node_modules also unignored.
+  No backend-start, persistence, SSE, frontend, authored-test, passing-test or
+  production-build productivity milestone was reached.
+
+### Comparisons and single next checkpoint
+
+| Measure | Qwen hardened 9b4866a | Prior Nemotron b2cd814 | Fresh checkpointed Nemotron |
+| --- | --- | --- | --- |
+| Mission requests | 20 attempts | 33 | 13 |
+| Native calls | 17 | 29 | 9 |
+| Successful / failed | See committed Qwen record | 25 / 4 | 9 / 0 |
+| Direct writes | 12 | 5 | 2 |
+| Delivered application | Backend 13/19; frontend scaffold | Incomplete backend; frontend scaffold | Storage/types only; no server/frontend |
+| Checkpoint savings | Not present | Not present | 0; no pressure/eligibility |
+| Stop | Textual intent | Third continuation protected-budget block | 120s answer-continuation deadline |
+
+Did this pass the old boundary or deliver more software? **No**. Did checkpointing
+materially extend useful autonomy or shrink real context? **Not demonstrated**.
+It neither proves projection failure nor establishes practical projection READY:
+the mission did not naturally create eligible overwritten history or pressure.
+No outperformance of either committed reference is established. The old frozen
+`61132 / 69294 / -3758` calculation remains untouched, not replaced by this run.
+Automatic's newly selected true control is an additional comparison limitation.
+
+Largest remaining final-wire history consumer: textual unexecuted drafts,
+**12621 marginal estimated tokens**, including **8390** older drafts and **4231**
+current partial, out of **24090** history. These are diagnostic marginal
+estimates, NOT safe-removal credit. Current partial must remain exact. No search
+was executed in this mission, so repeated-search projection would save **zero
+here**, although the separately measured 1726-token frozen legacy opportunity
+still exists. Draft representation is numerically larger in this run, but this
+does NOT authorize abandoning drafts or implementing lossy compaction.
+
+Obligation-aware terminal/continuation behavior is more immediately relevant
+than this run's context pressure, but do not simply extend limits. Single next
+recommended checkpoint: **Audit the native-tool to textual-draft transition**,
+with preserved wire/parser/continuation evidence and unresolved obligations,
+before changing production policy. Determine the actual compatibility/model/
+provider/runtime boundary rather than blame the model or redesign memory.
+No next checkpoint started, no extra model experiment or tuning ladder.
+
+### Verification, artifacts and repository safety
+
+- Focused offline preflight: **179 passed / 8 intentionally disabled native
+  policy tests skipped**, 6 suites passed / 1 skipped. After compiling/enabling
+  native fixtures and adding 12 acceptance-evidence assertions: **199/199 passed,
+  8/8 suites passed**, no skips. Includes approval/correction, native policy,
+  lifecycle, production checkpoint frontend behavior and captured-run assertions.
+- Native production checkpoint integrity group: **18/18 passed**, 665 filtered,
+  Windows actual native filesystem/content-store tests. Native acceptance host
+  compiled with locked Cargo successfully. New checkpoint IPCs actually exercised
+  for the two observations; no Linux/macOS native or GUI verification claimed.
+- Offline `audit-checkpointed-nemotron.mjs summary`: passed exact objective,
+  persisted transcript, input/content digests, full retained write bodies,
+  current partials, tool exposure, budget reconstruction and source-freeze checks.
+  Independent `product` audit records the actual npm exits without repairs.
+- TypeScript check passed. New runner/auditor/test syntax checks passed. Scoped
+  rustfmt check passed for the two owned harness Rust files. Working and staged
+  diff whitespace checks passed. Production unchanged, so no unrelated full
+  frontend/Rust suites, full lint/build/Clippy rerun; prior gates are not claimed
+  as newly executed. Existing full-suite baseline limitations remain unchanged.
+- Portable committed summary:
+  `src/test/fixtures/checkpointed-nemotron-20261022.json` (includes original
+  artifacts' SHA-256 hashes, observation lifecycle, all requests/continuations,
+  context trajectory, exact controls, prelaunch rejection and product audit).
+  Scripts: `run-checkpointed-nemotron.mjs`, `audit-checkpointed-nemotron.mjs`,
+  `checkpointed-nemotron.test.mjs`. Harness: `hardened_agent_acceptance.rs` and
+  `support/checkpoint_observation.rs`. Append this report section only.
+- Real inference **22 dispatched requests** including the last cancelled one;
+  first prelaunch rejection **0**. No qwen/other-model run, model download,
+  cloud inference, manual rescue, remote/service/network change or tunnel edit.
+- Commit: `test(ai): evaluate nemotron with agent checkpoints`. Expected after
+  commit: main, **89 ahead / 0 behind cached origin**, empty index, only six
+  original dirty contents, no checkpoint-owned untracked files. All original
+  report bytes and five other dirty files preserved; both stashes and
+  `autonomous_tracker/` untouched. **No push. STOP.**

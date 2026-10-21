@@ -1,0 +1,1649 @@
+{
+  "base": "8a4f7bcff5d9d7b8eac01d344812e72b90484087",
+  "runId": "forgeboard-nemotron-checkpointed-20261022-02",
+  "root": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261022-02",
+  "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+  "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+  "version": "0.40.5",
+  "preflight": {
+    "at": 1792621977076,
+    "isolation": [],
+    "sourceHashCount": 977,
+    "version": {
+      "at": 1792621976646,
+      "elapsedMs": 126,
+      "status": 200,
+      "body": {
+        "version": "0.40.5"
+      }
+    },
+    "loaded": {
+      "at": 1792621976977,
+      "elapsedMs": 99,
+      "status": 200,
+      "body": {
+        "models": []
+      }
+    },
+    "inference": 0
+  },
+  "connection": {
+    "source": "src-tauri/target/real-qwen-product/forgeboard-nemotron-hardened-20261021-04/data/terax-settings.json",
+    "sha256": "aab9fd811bcd359bfa5d687557e649ee1b3af25ca66af869b623ab60f5a150a5",
+    "endpointId": "real-qwen",
+    "configurationRevision": 1,
+    "profileId": "[\"real-qwen\",\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",null]",
+    "calibrationStatus": "verified",
+    "toolStatus": "verified"
+  },
+  "endpoint": "http://127.0.0.1:11435",
+  "sourceFrozen": 977,
+  "automatic": {
+    "requested": "automatic",
+    "effective": "automatic",
+    "overrides": {},
+    "status": "Ready",
+    "tools": "Verified",
+    "context": {
+      "recommended": 65536,
+      "verified": 65536,
+      "advertised": 1048576,
+      "loaded": 65536,
+      "provenance": "measured"
+    },
+    "output": 2048,
+    "actualMissionThink": true,
+    "expectedOmittedThinkObserved": false,
+    "reason": "Unchanged Automatic resolved a twice-confirmed On recommendation after provider-default tool probe did not verify",
+    "fallback": "never"
+  },
+  "readiness": [
+    {
+      "id": "inference-1",
+      "context": 4096,
+      "output": 32,
+      "think": "omitted",
+      "response": {
+        "requestId": "inference-1",
+        "at": 1792621982344,
+        "firstOutputAt": 1792621992668,
+        "firstCallAt": null,
+        "calls": [],
+        "contentChars": 0,
+        "nonWhitespaceContent": 0,
+        "reasoningChars": 115,
+        "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reasoningSha256": "56c396ddb8cebbac3fd59f8cfd3260033c3d6ea43d7414628d7e5c88922fb0b6",
+        "textualIntent": false,
+        "finish": "length",
+        "inputTokens": 20,
+        "outputTokens": 32,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      }
+    },
+    {
+      "id": "inference-2",
+      "context": 8192,
+      "output": 32,
+      "think": "omitted",
+      "response": {
+        "requestId": "inference-2",
+        "at": 1792621993434,
+        "firstOutputAt": 1792621999682,
+        "firstCallAt": null,
+        "calls": [],
+        "contentChars": 0,
+        "nonWhitespaceContent": 0,
+        "reasoningChars": 115,
+        "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reasoningSha256": "56c396ddb8cebbac3fd59f8cfd3260033c3d6ea43d7414628d7e5c88922fb0b6",
+        "textualIntent": false,
+        "finish": "length",
+        "inputTokens": 20,
+        "outputTokens": 32,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      }
+    },
+    {
+      "id": "inference-3",
+      "context": 16384,
+      "output": 32,
+      "think": "omitted",
+      "response": {
+        "requestId": "inference-3",
+        "at": 1792622000560,
+        "firstOutputAt": 1792622006449,
+        "firstCallAt": null,
+        "calls": [],
+        "contentChars": 0,
+        "nonWhitespaceContent": 0,
+        "reasoningChars": 115,
+        "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reasoningSha256": "a1e44b717de2edf88a0212d9b4be75d49cec5e1f017eec2d3b06f600aaab4ae0",
+        "textualIntent": false,
+        "finish": "length",
+        "inputTokens": 20,
+        "outputTokens": 32,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      }
+    },
+    {
+      "id": "inference-4",
+      "context": 32768,
+      "output": 32,
+      "think": "omitted",
+      "response": {
+        "requestId": "inference-4",
+        "at": 1792622007130,
+        "firstOutputAt": 1792622013247,
+        "firstCallAt": null,
+        "calls": [],
+        "contentChars": 0,
+        "nonWhitespaceContent": 0,
+        "reasoningChars": 115,
+        "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reasoningSha256": "a1e44b717de2edf88a0212d9b4be75d49cec5e1f017eec2d3b06f600aaab4ae0",
+        "textualIntent": false,
+        "finish": "length",
+        "inputTokens": 20,
+        "outputTokens": 32,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      }
+    },
+    {
+      "id": "inference-5",
+      "context": 49152,
+      "output": 32,
+      "think": "omitted",
+      "response": {
+        "requestId": "inference-5",
+        "at": 1792622014198,
+        "firstOutputAt": 1792622020150,
+        "firstCallAt": null,
+        "calls": [],
+        "contentChars": 0,
+        "nonWhitespaceContent": 0,
+        "reasoningChars": 115,
+        "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reasoningSha256": "a1e44b717de2edf88a0212d9b4be75d49cec5e1f017eec2d3b06f600aaab4ae0",
+        "textualIntent": false,
+        "finish": "length",
+        "inputTokens": 20,
+        "outputTokens": 32,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      }
+    },
+    {
+      "id": "inference-6",
+      "context": 65536,
+      "output": 32,
+      "think": "omitted",
+      "response": {
+        "requestId": "inference-6",
+        "at": 1792622021078,
+        "firstOutputAt": 1792622027010,
+        "firstCallAt": null,
+        "calls": [],
+        "contentChars": 0,
+        "nonWhitespaceContent": 0,
+        "reasoningChars": 115,
+        "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reasoningSha256": "56c396ddb8cebbac3fd59f8cfd3260033c3d6ea43d7414628d7e5c88922fb0b6",
+        "textualIntent": false,
+        "finish": "length",
+        "inputTokens": 20,
+        "outputTokens": 32,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      }
+    },
+    {
+      "id": "inference-7",
+      "context": 65536,
+      "output": 512,
+      "think": "omitted",
+      "response": {
+        "requestId": "inference-7",
+        "at": 1792622028739,
+        "firstOutputAt": 1792622029944,
+        "firstCallAt": null,
+        "calls": [],
+        "contentChars": 115,
+        "nonWhitespaceContent": 115,
+        "reasoningChars": 1257,
+        "contentSha256": "16c92e15c31f4b1fb78aec66206d1f2c0a9b35e7f0352429a5edbacc2db894cc",
+        "reasoningSha256": "29742ab380d9ce571fc1a3e6de8430f557870f2ddea7479077507d5ba6734ef4",
+        "textualIntent": true,
+        "finish": "stop",
+        "inputTokens": 335,
+        "outputTokens": 365,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      }
+    },
+    {
+      "id": "inference-8",
+      "context": 65536,
+      "output": 512,
+      "think": true,
+      "response": {
+        "requestId": "inference-8",
+        "at": 1792622037031,
+        "firstOutputAt": 1792622037218,
+        "firstCallAt": 1792622038410,
+        "calls": [
+          {
+            "name": "get_probe_value",
+            "inputSha256": "4e8941add58a376c9250b41f063b7811ee877b349989b1ab636b5235b6aeb8da"
+          }
+        ],
+        "contentChars": 1,
+        "nonWhitespaceContent": 0,
+        "reasoningChars": 156,
+        "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+        "reasoningSha256": "c5a4c4094663966e6085bb243787782352d8b26455786f4c689917f51a755ba0",
+        "textualIntent": false,
+        "finish": "stop",
+        "inputTokens": 335,
+        "outputTokens": 84,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      }
+    },
+    {
+      "id": "inference-9",
+      "context": 65536,
+      "output": 512,
+      "think": true,
+      "response": {
+        "requestId": "inference-9",
+        "at": 1792622039464,
+        "firstOutputAt": 1792622039619,
+        "firstCallAt": 1792622040777,
+        "calls": [
+          {
+            "name": "get_probe_value",
+            "inputSha256": "4e8941add58a376c9250b41f063b7811ee877b349989b1ab636b5235b6aeb8da"
+          }
+        ],
+        "contentChars": 1,
+        "nonWhitespaceContent": 0,
+        "reasoningChars": 144,
+        "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+        "reasoningSha256": "1ccb4906e7a68f83ab2aecf2b95f7e5d275653c04315b76f87d4c115445c9180",
+        "textualIntent": false,
+        "finish": "stop",
+        "inputTokens": 335,
+        "outputTokens": 79,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      }
+    }
+  ],
+  "specificationSends": 1,
+  "specificationSha256": "f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801",
+  "correction": {
+    "sent": false,
+    "reason": "Only two confirmed direct writes; three-write correction prerequisite not met",
+    "page25": "not applicable"
+  },
+  "timings": {
+    "start": 1792622041520,
+    "end": 1792622284388,
+    "missionMs": 242868,
+    "runnerMs": 309062,
+    "firstOutputMs": 12257,
+    "firstCallMs": 18603,
+    "firstWriteMs": 65808,
+    "backendStartup": null,
+    "persistence": null,
+    "sse": null,
+    "frontend": null,
+    "firstTest": null,
+    "passingTest": null,
+    "build": null
+  },
+  "missionRequests": 13,
+  "allRequests": 22,
+  "nativeCalls": 9,
+  "successfulOperations": 9,
+  "failedOperations": 0,
+  "directWrites": 2,
+  "tools": [
+    {
+      "id": "call_ncvgtcmo",
+      "name": "tool-list_directory",
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261022-02",
+      "failed": false
+    },
+    {
+      "id": "call_7h60q1pk",
+      "name": "tool-todo_write",
+      "failed": false
+    },
+    {
+      "id": "call_c3lsammv",
+      "name": "tool-bash_run",
+      "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261022-02 && npm init -y",
+      "exit": 0,
+      "failed": false
+    },
+    {
+      "id": "call_94nccwya",
+      "name": "tool-bash_run",
+      "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261022-02 && npm install express cors body-parser @types/express @types/node typescript ts-node nodemon",
+      "exit": 0,
+      "failed": false
+    },
+    {
+      "id": "call_czg4uslc",
+      "name": "tool-bash_run",
+      "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261022-02 && npx tsc --init --target ES2020 --module commonjs --strict --esModuleInterop --outDir ./dist --rootDir ./src --resolveJsonModule --declaration",
+      "exit": 0,
+      "failed": false
+    },
+    {
+      "id": "call_lko1z1mj",
+      "name": "tool-read_file",
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261022-02/tsconfig.json",
+      "failed": false
+    },
+    {
+      "id": "call_i98fuh2c",
+      "name": "tool-bash_run",
+      "command": "mkdir C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261022-02/src",
+      "exit": 0,
+      "failed": false
+    },
+    {
+      "id": "call_jgxznn4f",
+      "name": "tool-write_file",
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261022-02/src/types.ts",
+      "failed": false
+    },
+    {
+      "id": "call_ilruqg8d",
+      "name": "tool-write_file",
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261022-02/src/storage.ts",
+      "failed": false
+    }
+  ],
+  "shellIdentity": [
+    "shell: PowerShell (pwsh.exe)",
+    "shell_syntax: PowerShell; not POSIX Bash"
+  ],
+  "writeObservations": [
+    {
+      "order": 1,
+      "id": "call_jgxznn4f",
+      "path": "src/types.ts",
+      "at": 1792622107263,
+      "workspaceId": "local:c:/users/hayden/documents/forgeboard-nemotron35-lightning-20261022-02",
+      "digest": "ae3008f9f659be15d4c48177cca89d1ee832b43742fbe4eb8f021cc7f3992cce",
+      "inputHash": "96036135c64c8d0e6e620f0a4a5a725508f5ef95cf202bb81496ff1efdcbba0a",
+      "runId": 1792622041520,
+      "observedCount": 1,
+      "observedBeforeAcknowledged": true,
+      "previousDigest": null,
+      "repeatedPath": false,
+      "freshness": "native guarded read at write acknowledgement; matches terminal frozen bytes",
+      "lifecycle": [
+        "observed",
+        "hot/current",
+        "retained raw"
+      ],
+      "eligible": false,
+      "projected": false,
+      "reasons": [
+        "No later full overwrite of this path",
+        "No later user boundary",
+        "Historical source remains in the active assistant answer"
+      ],
+      "currentSnapshot": null,
+      "previousSnapshot": null
+    },
+    {
+      "order": 2,
+      "id": "call_ilruqg8d",
+      "path": "src/storage.ts",
+      "at": 1792622130238,
+      "workspaceId": "local:c:/users/hayden/documents/forgeboard-nemotron35-lightning-20261022-02",
+      "digest": "4dd53c0c25157e1ca5cb51707fa366a3e989811292214627b0dba3a0a904a2dc",
+      "inputHash": "1c97c738df71ac625fe76573b18a2fbbb7037e3b48a57380863ffd384f221caf",
+      "runId": 1792622041520,
+      "observedCount": 2,
+      "observedBeforeAcknowledged": true,
+      "previousDigest": null,
+      "repeatedPath": false,
+      "freshness": "native guarded read at write acknowledgement; matches terminal frozen bytes",
+      "lifecycle": [
+        "observed",
+        "hot/current",
+        "retained raw"
+      ],
+      "eligible": false,
+      "projected": false,
+      "reasons": [
+        "No later full overwrite of this path",
+        "No later user boundary",
+        "Historical source remains in the active assistant answer"
+      ],
+      "currentSnapshot": null,
+      "previousSnapshot": null
+    }
+  ],
+  "eligibleWrites": 0,
+  "projectedWrites": 0,
+  "nativePreparationCalls": 0,
+  "checkpoint": {
+    "activation": null,
+    "rawTokensRemoved": 0,
+    "receiptCost": 0,
+    "netSavings": 0,
+    "maximumCumulativeSavings": 0,
+    "providerReduction": 0,
+    "verifiedEffectReceiptSavings": 0,
+    "rawReceiptDuplication": false,
+    "staleReuse": false,
+    "externalChangeInvalidation": "not exercised",
+    "repeatedWriteLineage": "not exercised",
+    "snapshotRetention": "null current/previous, no snapshot created",
+    "originalWriteBodiesRetained": true,
+    "durableTranscriptExact": true,
+    "objectiveExact": true,
+    "unresolvedFailures": "none",
+    "historicalReasoning": "no new projection; unchanged policy",
+    "olderDraftsRaw": true,
+    "pseudoToolsExecuted": false,
+    "classification": "PARTIAL / OBSERVATIONS PROVEN; PRESSURE PROJECTION NOT EXERCISED"
+  },
+  "nativePayloads": [
+    {
+      "id": "inference-10",
+      "messages": 2,
+      "bytes": 22607,
+      "writeIds": [],
+      "checkpointReceipts": 0
+    },
+    {
+      "id": "inference-11",
+      "messages": 4,
+      "bytes": 24827,
+      "writeIds": [],
+      "checkpointReceipts": 0
+    },
+    {
+      "id": "inference-12",
+      "messages": 6,
+      "bytes": 27600,
+      "writeIds": [],
+      "checkpointReceipts": 0
+    },
+    {
+      "id": "inference-13",
+      "messages": 8,
+      "bytes": 28918,
+      "writeIds": [],
+      "checkpointReceipts": 0
+    },
+    {
+      "id": "inference-14",
+      "messages": 10,
+      "bytes": 29992,
+      "writeIds": [],
+      "checkpointReceipts": 0
+    },
+    {
+      "id": "inference-15",
+      "messages": 12,
+      "bytes": 31026,
+      "writeIds": [],
+      "checkpointReceipts": 0
+    },
+    {
+      "id": "inference-16",
+      "messages": 14,
+      "bytes": 33141,
+      "writeIds": [],
+      "checkpointReceipts": 0
+    },
+    {
+      "id": "inference-17",
+      "messages": 16,
+      "bytes": 34826,
+      "writeIds": [],
+      "checkpointReceipts": 0
+    },
+    {
+      "id": "inference-18",
+      "messages": 18,
+      "bytes": 36875,
+      "writeIds": [
+        "call_jgxznn4f"
+      ],
+      "checkpointReceipts": 0
+    },
+    {
+      "id": "inference-19",
+      "messages": 20,
+      "bytes": 42989,
+      "writeIds": [
+        "call_jgxznn4f",
+        "call_ilruqg8d"
+      ],
+      "checkpointReceipts": 0
+    },
+    {
+      "id": "inference-20",
+      "messages": 21,
+      "bytes": 51649,
+      "writeIds": [
+        "call_jgxznn4f",
+        "call_ilruqg8d"
+      ],
+      "checkpointReceipts": 0
+    },
+    {
+      "id": "inference-21",
+      "messages": 22,
+      "bytes": 60353,
+      "writeIds": [
+        "call_jgxznn4f",
+        "call_ilruqg8d"
+      ],
+      "checkpointReceipts": 0
+    },
+    {
+      "id": "inference-22",
+      "messages": 23,
+      "bytes": 69090,
+      "writeIds": [
+        "call_jgxznn4f",
+        "call_ilruqg8d"
+      ],
+      "checkpointReceipts": 0
+    }
+  ],
+  "responses": [
+    {
+      "requestId": "inference-10",
+      "at": 1792622042090,
+      "firstOutputAt": 1792622053777,
+      "firstCallAt": 1792622060123,
+      "calls": [
+        {
+          "name": "list_directory",
+          "inputSha256": "89bd781ae3a03bcc7db8a9ad88687fa0cbd857c92183fe30536865eb1cc3766c"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 1789,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "bf484dc793bb25cfbfa9bb770e6cca52865184707c55a229905d5e30b50009e0",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 5293,
+      "outputTokens": 441,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-11",
+      "at": 1792622060238,
+      "firstOutputAt": 1792622061141,
+      "firstCallAt": 1792622072623,
+      "calls": [
+        {
+          "name": "todo_write",
+          "inputSha256": "b778722108905eeca5f9396d08b7ff594488bbafb2b513193329c9bc1ffa4361"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 1354,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "14b5b4cc979836cb05b4de41894c98e31ad3e499c9d855089b7381baa3715cb8",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 5788,
+      "outputTokens": 693,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-12",
+      "at": 1792622072818,
+      "firstOutputAt": 1792622075013,
+      "firstCallAt": 1792622076734,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "c028c6454e9fede45f44093a64a03fb9a125a9b7e705c9a1670eebfe41eeed2b"
+        }
+      ],
+      "contentChars": 82,
+      "nonWhitespaceContent": 81,
+      "reasoningChars": 141,
+      "contentSha256": "ca739e9851e2c4808ce97b717127d327fa735772db5d2c32125e537b521d7123",
+      "reasoningSha256": "3e3693be2c6eeeab2db8dff99fa7fdb2637f467a8160c507b94af9b5fcb2f0e8",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 6516,
+      "outputTokens": 106,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-13",
+      "at": 1792622078804,
+      "firstOutputAt": 1792622079952,
+      "firstCallAt": 1792622081292,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "2e1eef05637930ac4dffd6533f4e7a9f9656ba9c86e35c0571d6bd4a9887c5c1"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 72,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "63198da9b2a51a6d920fb99f7d01570488470284548991b08e7a182b6b1039f7",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 6894,
+      "outputTokens": 90,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-14",
+      "at": 1792622085826,
+      "firstOutputAt": 1792622086960,
+      "firstCallAt": 1792622088800,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "d94bc8f2cfb9ba109d2356b6047e06c9bfaf6fbef3d97fdfd1078f7dc7de291e"
+        }
+      ],
+      "contentChars": 44,
+      "nonWhitespaceContent": 43,
+      "reasoningChars": 53,
+      "contentSha256": "fe9be7f8aa446d888c0f0828ddb827e6d9d1644f3834f2bcf76c8b12bb315378",
+      "reasoningSha256": "0c9648e0003d1d2b3271dfdc966fa60df69338831ff63c0c33286896bb34b809",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 7183,
+      "outputTokens": 118,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-15",
+      "at": 1792622091083,
+      "firstOutputAt": 1792622092197,
+      "firstCallAt": 1792622093711,
+      "calls": [
+        {
+          "name": "read_file",
+          "inputSha256": "77bcda615a0288b4018729b64efea3b750199048961e749709ebc58d41aff56f"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 169,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "2a065a5e30db8ec4798341b580b14fab6e00407ed758f66f2d60be89dead9b75",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 7476,
+      "outputTokens": 93,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-16",
+      "at": 1792622093836,
+      "firstOutputAt": 1792622095050,
+      "firstCallAt": 1792622098302,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "e1b8a4c2715b57ea2cb0c55b43a2d4410a52f13fa708ac38ef60f5d8869dc26f"
+        }
+      ],
+      "contentChars": 58,
+      "nonWhitespaceContent": 57,
+      "reasoningChars": 537,
+      "contentSha256": "13923a10917be9eeb67495a2d552e86114fb8a43d9db186f4357a9fd51c5a270",
+      "reasoningSha256": "47e08d3b802eff22b10fdff99e72022d3008ca0527e978a1be37dabb9fd36e07",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 8030,
+      "outputTokens": 188,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-17",
+      "at": 1792622098696,
+      "firstOutputAt": 1792622099943,
+      "firstCallAt": 1792622107140,
+      "calls": [
+        {
+          "name": "write_file",
+          "inputSha256": "60b2125b335a1669e83aded9eec9f156081aa930b70c6c5e655df01e77147336"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 128,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "d88321bcd2d4b07dd9ede160dbd3eaa951194de227803a50720e76b47d0f9e83",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 8597,
+      "outputTokens": 462,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-18",
+      "at": 1792622107406,
+      "firstOutputAt": 1792622108787,
+      "firstCallAt": 1792622130205,
+      "calls": [
+        {
+          "name": "write_file",
+          "inputSha256": "1c97c738df71ac625fe76573b18a2fbbb7037e3b48a57380863ffd384f221caf"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 91,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "2eba72ca0ca2d30f314e12f0e2f08c0dc4e1bb75bc424f880d5592dbf6757acc",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 9135,
+      "outputTokens": 1446,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-19",
+      "at": 1792622130323,
+      "firstOutputAt": 1792622133636,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 7927,
+      "nonWhitespaceContent": 7927,
+      "reasoningChars": 73,
+      "contentSha256": "8b87d507d09df45b3fdbf6df6f94c44f36af8d58d147ca6127d874dd931c8d3d",
+      "reasoningSha256": "61d07ed2c4f08c3eb6babbab562ad6fe46c464bd41b251ced568114f897fc7da",
+      "textualIntent": true,
+      "finish": "length",
+      "inputTokens": 10659,
+      "outputTokens": 2048,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-20",
+      "at": 1792622164502,
+      "firstOutputAt": 1792622193732,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 7971,
+      "nonWhitespaceContent": 7971,
+      "reasoningChars": 0,
+      "contentSha256": "07ce20009c2e5e0d2befc72c7be41e4c3aae766496b3ef983a5127b178981037",
+      "reasoningSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "textualIntent": true,
+      "finish": "length",
+      "inputTokens": 12759,
+      "outputTokens": 2048,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-21",
+      "at": 1792622223358,
+      "firstOutputAt": 1792622254319,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 8000,
+      "nonWhitespaceContent": 8000,
+      "reasoningChars": 0,
+      "contentSha256": "fd6b26de13f6864c8834edbe5c18711c5d8f22fade3c20f2ec4a28163a3919d4",
+      "reasoningSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "textualIntent": true,
+      "finish": "length",
+      "inputTokens": 14870,
+      "outputTokens": 2048,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-22",
+      "at": 1792622283858,
+      "firstOutputAt": null,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 0,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 0,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reasoningSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "textualIntent": false,
+      "finish": null,
+      "inputTokens": null,
+      "outputTokens": null,
+      "trailingPartialFrame": false,
+      "settled": "cancelled"
+    }
+  ],
+  "continuations": [
+    {
+      "after": "inference-19",
+      "next": "inference-20",
+      "partialChars": 7927,
+      "partialSha256": "8b87d507d09df45b3fdbf6df6f94c44f36af8d58d147ca6127d874dd931c8d3d",
+      "exactPartialRetained": true,
+      "objectiveRetained": true,
+      "checkpointProjected": false,
+      "toolsExposed": 14,
+      "plan": [
+        {
+          "title": "Setup backend project structure (Node, TypeScript, Express)",
+          "status": "pending"
+        },
+        {
+          "title": "Implement backend API with projects and tasks CRUD",
+          "status": "pending"
+        },
+        {
+          "title": "Add SSE support for real-time mutations",
+          "status": "pending"
+        },
+        {
+          "title": "Implement input validation, error handling, HTTP status codes",
+          "status": "pending"
+        },
+        {
+          "title": "Add persistence layer (local JSON file) across restarts",
+          "status": "pending"
+        },
+        {
+          "title": "Setup frontend project (React, Vite, TypeScript)",
+          "status": "pending"
+        },
+        {
+          "title": "Implement frontend components (projects/tasks CRUD)",
+          "status": "pending"
+        },
+        {
+          "title": "Connect frontend to backend via SSE and API",
+          "status": "pending"
+        },
+        {
+          "title": "Implement filtering, search, debounce (750ms)",
+          "status": "pending"
+        },
+        {
+          "title": "Write backend API tests",
+          "status": "pending"
+        },
+        {
+          "title": "Run tests, debug failures",
+          "status": "pending"
+        },
+        {
+          "title": "Run production build",
+          "status": "pending"
+        },
+        {
+          "title": "Write README with setup/dev/test/build commands",
+          "status": "pending"
+        }
+      ],
+      "budget": {
+        "id": "inference-20",
+        "input": 25768,
+        "system": 3872,
+        "schemas": 6244,
+        "history": 15652,
+        "reserve": 2048,
+        "margin": 2577,
+        "required": 30393,
+        "ceiling": 65536,
+        "headroom": 35143,
+        "pressureRatio": 0.30814056501624176,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      "settled": "completed",
+      "usefulToolProgress": 0
+    },
+    {
+      "after": "inference-20",
+      "next": "inference-21",
+      "partialChars": 7971,
+      "partialSha256": "07ce20009c2e5e0d2befc72c7be41e4c3aae766496b3ef983a5127b178981037",
+      "exactPartialRetained": true,
+      "objectiveRetained": true,
+      "checkpointProjected": false,
+      "toolsExposed": 14,
+      "plan": [
+        {
+          "title": "Setup backend project structure (Node, TypeScript, Express)",
+          "status": "pending"
+        },
+        {
+          "title": "Implement backend API with projects and tasks CRUD",
+          "status": "pending"
+        },
+        {
+          "title": "Add SSE support for real-time mutations",
+          "status": "pending"
+        },
+        {
+          "title": "Implement input validation, error handling, HTTP status codes",
+          "status": "pending"
+        },
+        {
+          "title": "Add persistence layer (local JSON file) across restarts",
+          "status": "pending"
+        },
+        {
+          "title": "Setup frontend project (React, Vite, TypeScript)",
+          "status": "pending"
+        },
+        {
+          "title": "Implement frontend components (projects/tasks CRUD)",
+          "status": "pending"
+        },
+        {
+          "title": "Connect frontend to backend via SSE and API",
+          "status": "pending"
+        },
+        {
+          "title": "Implement filtering, search, debounce (750ms)",
+          "status": "pending"
+        },
+        {
+          "title": "Write backend API tests",
+          "status": "pending"
+        },
+        {
+          "title": "Run tests, debug failures",
+          "status": "pending"
+        },
+        {
+          "title": "Run production build",
+          "status": "pending"
+        },
+        {
+          "title": "Write README with setup/dev/test/build commands",
+          "status": "pending"
+        }
+      ],
+      "budget": {
+        "id": "inference-21",
+        "input": 30092,
+        "system": 3989,
+        "schemas": 6244,
+        "history": 19859,
+        "reserve": 2048,
+        "margin": 3010,
+        "required": 35150,
+        "ceiling": 65536,
+        "headroom": 30386,
+        "pressureRatio": 0.3952433077918201,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      "settled": "completed",
+      "usefulToolProgress": 0
+    },
+    {
+      "after": "inference-21",
+      "next": "inference-22",
+      "partialChars": 8000,
+      "partialSha256": "fd6b26de13f6864c8834edbe5c18711c5d8f22fade3c20f2ec4a28163a3919d4",
+      "exactPartialRetained": true,
+      "objectiveRetained": true,
+      "checkpointProjected": false,
+      "toolsExposed": 14,
+      "plan": [
+        {
+          "title": "Setup backend project structure (Node, TypeScript, Express)",
+          "status": "pending"
+        },
+        {
+          "title": "Implement backend API with projects and tasks CRUD",
+          "status": "pending"
+        },
+        {
+          "title": "Add SSE support for real-time mutations",
+          "status": "pending"
+        },
+        {
+          "title": "Implement input validation, error handling, HTTP status codes",
+          "status": "pending"
+        },
+        {
+          "title": "Add persistence layer (local JSON file) across restarts",
+          "status": "pending"
+        },
+        {
+          "title": "Setup frontend project (React, Vite, TypeScript)",
+          "status": "pending"
+        },
+        {
+          "title": "Implement frontend components (projects/tasks CRUD)",
+          "status": "pending"
+        },
+        {
+          "title": "Connect frontend to backend via SSE and API",
+          "status": "pending"
+        },
+        {
+          "title": "Implement filtering, search, debounce (750ms)",
+          "status": "pending"
+        },
+        {
+          "title": "Write backend API tests",
+          "status": "pending"
+        },
+        {
+          "title": "Run tests, debug failures",
+          "status": "pending"
+        },
+        {
+          "title": "Run production build",
+          "status": "pending"
+        },
+        {
+          "title": "Write README with setup/dev/test/build commands",
+          "status": "pending"
+        }
+      ],
+      "budget": {
+        "id": "inference-22",
+        "input": 34440,
+        "system": 4106,
+        "schemas": 6244,
+        "history": 24090,
+        "reserve": 2048,
+        "margin": 3444,
+        "required": 39932,
+        "ceiling": 65536,
+        "headroom": 25604,
+        "pressureRatio": 0.4847667726486095,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      "settled": "cancelled",
+      "usefulToolProgress": 0
+    }
+  ],
+  "inventory": {
+    "lastRequest": "inference-22",
+    "history": 24090,
+    "allTextualDraftsMarginal": 12621,
+    "olderDraftsMarginal": 8390,
+    "currentPartialMarginal": 4231,
+    "note": "Native serialized B1 estimate; marginal inventory only, not authorized removal or actual provider token savings"
+  },
+  "context": {
+    "trajectory": [
+      {
+        "id": "inference-10",
+        "input": 11186,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 1187,
+        "reserve": 2048,
+        "margin": 1119,
+        "required": 14353,
+        "ceiling": 65536,
+        "headroom": 51183,
+        "pressureRatio": 0.0226656482719114,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      {
+        "id": "inference-11",
+        "input": 12293,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 2294,
+        "reserve": 2048,
+        "margin": 1230,
+        "required": 15571,
+        "ceiling": 65536,
+        "headroom": 49965,
+        "pressureRatio": 0.043896745058267475,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      {
+        "id": "inference-12",
+        "input": 13624,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 3625,
+        "reserve": 2048,
+        "margin": 1363,
+        "required": 17035,
+        "ceiling": 65536,
+        "headroom": 48501,
+        "pressureRatio": 0.06954303034953765,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      {
+        "id": "inference-13",
+        "input": 14301,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 4302,
+        "reserve": 2048,
+        "margin": 1431,
+        "required": 17780,
+        "ceiling": 65536,
+        "headroom": 47756,
+        "pressureRatio": 0.0826385954128088,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      {
+        "id": "inference-14",
+        "input": 14836,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 4837,
+        "reserve": 2048,
+        "margin": 1484,
+        "required": 18368,
+        "ceiling": 65536,
+        "headroom": 47168,
+        "pressureRatio": 0.09301028747235843,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      {
+        "id": "inference-15",
+        "input": 15355,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 5356,
+        "reserve": 2048,
+        "margin": 1536,
+        "required": 18939,
+        "ceiling": 65536,
+        "headroom": 46597,
+        "pressureRatio": 0.10309318037456933,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      {
+        "id": "inference-16",
+        "input": 16401,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 6402,
+        "reserve": 2048,
+        "margin": 1641,
+        "required": 20090,
+        "ceiling": 65536,
+        "headroom": 45446,
+        "pressureRatio": 0.12347631538342849,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      {
+        "id": "inference-17",
+        "input": 17248,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 7249,
+        "reserve": 2048,
+        "margin": 1725,
+        "required": 21021,
+        "ceiling": 65536,
+        "headroom": 44515,
+        "pressureRatio": 0.1400394096283131,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      {
+        "id": "inference-18",
+        "input": 18235,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 8236,
+        "reserve": 2048,
+        "margin": 1824,
+        "required": 22107,
+        "ceiling": 65536,
+        "headroom": 43429,
+        "pressureRatio": 0.1594115939223846,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      {
+        "id": "inference-19",
+        "input": 21468,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 11469,
+        "reserve": 2048,
+        "margin": 2147,
+        "required": 25663,
+        "ceiling": 65536,
+        "headroom": 39873,
+        "pressureRatio": 0.22338436367885942,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      {
+        "id": "inference-20",
+        "input": 25768,
+        "system": 3872,
+        "schemas": 6244,
+        "history": 15652,
+        "reserve": 2048,
+        "margin": 2577,
+        "required": 30393,
+        "ceiling": 65536,
+        "headroom": 35143,
+        "pressureRatio": 0.30814056501624176,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      {
+        "id": "inference-21",
+        "input": 30092,
+        "system": 3989,
+        "schemas": 6244,
+        "history": 19859,
+        "reserve": 2048,
+        "margin": 3010,
+        "required": 35150,
+        "ceiling": 65536,
+        "headroom": 30386,
+        "pressureRatio": 0.3952433077918201,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      },
+      {
+        "id": "inference-22",
+        "input": 34440,
+        "system": 4106,
+        "schemas": 6244,
+        "history": 24090,
+        "reserve": 2048,
+        "margin": 3444,
+        "required": 39932,
+        "ceiling": 65536,
+        "headroom": 25604,
+        "pressureRatio": 0.4847667726486095,
+        "requestedContext": 65536,
+        "checkpointSavings": 0,
+        "receiptSavings": 0
+      }
+    ],
+    "firstPressure": null,
+    "maximumPressureRatio": 0.4847667726486095,
+    "minimumHeadroom": 25604,
+    "maximumRequired": 39932,
+    "protectedBlock": false,
+    "guardRejected": false,
+    "F1": true,
+    "estimated": true,
+    "loadedContextBeforeAfter": [
+      65536,
+      65536
+    ]
+  },
+  "stop": {
+    "classification": "PRODUCT RUNTIME / ANSWER CONTINUATION DEADLINE / INCOMPLETE",
+    "reason": "Cancelled or deadline expired",
+    "continuationTimeMs": 120000,
+    "recordedContinuations": 3,
+    "dispatchedContinuations": 3,
+    "lastRequest": "inference-22",
+    "finalBodyBytes": 0,
+    "lastCancellationElapsedUs": 507484,
+    "deadlineMs": 120000,
+    "notOverall600s": true,
+    "notHarnessTimeout": true,
+    "modelVoluntaryCompletion": false,
+    "confirmedProductionDefect": false
+  },
+  "application": {
+    "commands": [
+      {
+        "command": [
+          "npm.cmd",
+          "test"
+        ],
+        "startedAt": 1792622467677,
+        "elapsedMs": 1147,
+        "code": 1,
+        "stdout": "\n> forgeboard-nemotron35-lightning-20261022-02@1.0.0 test\n> echo \"Error: no test specified\" && exit 1\n\n\"Error: no test specified\" \r\n",
+        "stderr": ""
+      },
+      {
+        "command": [
+          "npm.cmd",
+          "run",
+          "build"
+        ],
+        "startedAt": 1792622468825,
+        "elapsedMs": 410,
+        "code": 1,
+        "stdout": "",
+        "stderr": "npm error Missing script: \"build\"\nnpm error\nnpm error To see a list of scripts, run:\nnpm error   npm run\nnpm error A complete log of this run can be found in: C:\\Users\\Hayden\\AppData\\Local\\Packages\\sandbox.{***}\\AC\\npm-cache\\_logs\\2026-10-21T22_41_09_069Z-debug-0.log\n"
+      },
+      {
+        "command": [
+          "npm.cmd",
+          "start"
+        ],
+        "startedAt": 1792622469235,
+        "elapsedMs": 737,
+        "code": 1,
+        "stdout": "",
+        "stderr": "npm error Missing script: \"start\"\nnpm error\nnpm error Did you mean one of these?\nnpm error   npm star # Mark your favorite packages\nnpm error   npm stars # View packages marked as favorites\nnpm error\nnpm error To see a list of scripts, run:\nnpm error   npm run\nnpm error A complete log of this run can be found in: C:\\Users\\Hayden\\AppData\\Local\\Packages\\sandbox.{***}\\AC\\npm-cache\\_logs\\2026-10-21T22_41_09_474Z-debug-0.log\n"
+      }
+    ],
+    "checks": [
+      {
+        "name": "backend starts on 4317",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "project create",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "project list",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "project open",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "project edit",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "task create",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "task view",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "task edit",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "combined project/status/priority/tags/search",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "nonmatching search",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "title max 120 validation",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "invalid enum validation",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "missing task JSON 404",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "unknown route JSON 404",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "live SSE client and mutation",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "page size 50 (correction not reached)",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "task delete",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "project delete",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      },
+      {
+        "name": "persistence across restart",
+        "status": "blocked",
+        "reason": "No server entry or API exists; source not repaired"
+      }
+    ],
+    "executedAPI": 0,
+    "passedAPI": 0,
+    "failedAPI": 0,
+    "blockedAPI": 19,
+    "startupCommandFailed": true,
+    "tests": "Default npm-init failure script only; no authored tests",
+    "build": "No build script",
+    "frontend": "Not implemented, not scaffolded",
+    "persistence": "File storage source only; runtime/restart unverified",
+    "sse": "Not implemented",
+    "readme": false,
+    "runtimeIgnore": false,
+    "evaluatorRepairs": 0
+  },
+  "sourceFiles": [
+    {
+      "path": "package-lock.json",
+      "bytes": 64865,
+      "sha256": "e6ed1489084861e88ee6e53831316c50ad2499669164ec2eae9a40bc9436c34c"
+    },
+    {
+      "path": "package.json",
+      "bytes": 499,
+      "sha256": "e333872f8348eb62cd9745c5792330be2ba6f5dd2aceb7d7ecb09af51529bad8"
+    },
+    {
+      "path": "src/storage.ts",
+      "bytes": 5336,
+      "sha256": "4dd53c0c25157e1ca5cb51707fa366a3e989811292214627b0dba3a0a904a2dc"
+    },
+    {
+      "path": "src/types.ts",
+      "bytes": 1314,
+      "sha256": "ae3008f9f659be15d4c48177cca89d1ee832b43742fbe4eb8f021cc7f3992cce"
+    },
+    {
+      "path": "tsconfig.json",
+      "bytes": 1175,
+      "sha256": "68a42a50a9f152663569f8da01129d32a1744de6acf768bfec0d25ff7d8b9c68"
+    }
+  ],
+  "runnerExit": {
+    "startedAt": 1792621977078,
+    "endedAt": 1792622286533,
+    "code": 0,
+    "signal": null,
+    "runnerPid": 40844
+  },
+  "usability": "LOCAL AGENT USABILITY STILL LIMITED",
+  "productionChanges": 0,
+  "modelDownloads": 0,
+  "cloudInference": 0,
+  "networkConfigurationChanges": 0,
+  "manualRescues": 0,
+  "prelaunchRejection": {
+    "classification": "TEST_HARNESS / PREMISSION POLICY GUARD MISMATCH",
+    "inference": 0,
+    "specificationSends": 0,
+    "missionRequests": 0,
+    "sourceWrites": 0,
+    "cause": "Evaluator enabled strict mission output envelope on normal Automatic readiness probe (4096/32). No production defect. Remove only that harness flag before the sole mission.",
+    "originalAttempt": {
+      "schema": 1,
+      "kind": "acceptance-request-attempt",
+      "run_id": "forgeboard-nemotron-checkpointed-20261022-01",
+      "phase": "mission-a-1",
+      "attempt_id": "forgeboard-nemotron-checkpointed-20261022-01:mission-a-1:14876:1",
+      "order": 1,
+      "at": 1792621936205,
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "model_matches": true,
+      "model_digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+      "endpoint": "http://127.0.0.1:11435/api/chat",
+      "destination_matches": true,
+      "native_request_id": "inference-1",
+      "provider_request_id": null,
+      "requested_num_ctx": 4096,
+      "requested_num_ctx_exact": "4096",
+      "context_state": "unsigned",
+      "max_allowed_num_ctx": 65536,
+      "requested_output": 32,
+      "output_state": "unsigned",
+      "think": null,
+      "think_state": "omitted",
+      "message_count": 1,
+      "tool_count": 0,
+      "serialized_bytes": 163,
+      "protected_budget": null,
+      "policy_decision": "rejected",
+      "policy_reason": "reasoning_output_changed",
+      "dispatch_state": "blocked",
+      "network_dispatch": false
+    }
+  },
+  "next": "Audit native tool-call to textual-draft transition and its evidence before changing production continuation or memory policy",
+  "artifacts": [
+    {
+      "name": "setup.json",
+      "bytes": 152752,
+      "sha256": "d3759d6a42966c52f659563f530b1a955a9e7450d426fe0a6b206c55ba9a89b3"
+    },
+    {
+      "name": "preflight.json",
+      "bytes": 343,
+      "sha256": "6e8bc3d2c26b66e3522c3336c6a4dd87c4a4913c6aebc33dbd2097fbfee3b2e6"
+    },
+    {
+      "name": "runner.log",
+      "bytes": 4100,
+      "sha256": "3d52115cf39cd71d18348925214ad1a8c844dc6ba33370421f84686e04ebe8a6"
+    },
+    {
+      "name": "runner-exit.json",
+      "bytes": 113,
+      "sha256": "81cdb90ef3523d5f257f59cb57739e96decbb163e615616b7f98756160eb6328"
+    },
+    {
+      "name": "source-freeze.json",
+      "bytes": 1099,
+      "sha256": "7cac8cb3dc443321f32d0e924a093743bdd8113e8426bc091d133fb4b3e529d1"
+    },
+    {
+      "name": "mission-a-1.json",
+      "bytes": 180127,
+      "sha256": "86dbf12265ede31ba21c6fc4935857ec14a48d446b6d035474e2c744eb93ace5"
+    },
+    {
+      "name": "mission-a-1.native-report.json",
+      "bytes": 159847,
+      "sha256": "b1d5299ea28ecf77713f0dafda5460ed453dfdba61eb5ba6b819a899f349ece9"
+    },
+    {
+      "name": "mission-a-1.requests.jsonl",
+      "bytes": 499083,
+      "sha256": "12336d4933c5e6211ac397e1828ba7e0193fb2e91d19faaf34d29e178831a812"
+    },
+    {
+      "name": "mission-a-1.attempts.jsonl",
+      "bytes": 19933,
+      "sha256": "1b11d7df51d9ed1c4a7b3df6f18d6ba069e8b3402ae12af14cf68fc3d6d51db9"
+    },
+    {
+      "name": "mission-a-1.jsonl",
+      "bytes": 1580091,
+      "sha256": "e1f1aae86f5b37b26e303fd1e68f39377ca13850c8725dadcb1240ff510b822b"
+    },
+    {
+      "name": "mission-a-1.receive.jsonl",
+      "bytes": 601180,
+      "sha256": "04beebf4054c720eb713ad4b205fa2a1d8d646dbba90b5b78def2ef7b43eeae8"
+    },
+    {
+      "name": "mission-a-1.checkpoints.jsonl",
+      "bytes": 6179,
+      "sha256": "b8a30bbe6c01623f1528308d3abfb102c203b350a7224345839681aeca2ee10f"
+    },
+    {
+      "name": "independent-product.json",
+      "bytes": 4708,
+      "sha256": "1557d225197a64df0c6958620909740b821113309ac4aee8f47746c3c5c14fde"
+    },
+    {
+      "name": "data/terax-ai-sessions.json",
+      "bytes": 75673,
+      "sha256": "a89684b0e52df0eb4eb5e6c941daebcac7c088f0e6b4ac706468dab351c148a0"
+    }
+  ]
+}

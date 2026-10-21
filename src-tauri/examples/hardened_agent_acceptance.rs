@@ -1,6 +1,8 @@
 //! Hardened-runtime acceptance adapter; production behavior remains in registered modules.
 #[path = "support/acceptance_policy.rs"]
 mod acceptance_policy;
+#[path = "support/checkpoint_observation.rs"]
+mod checkpoint_observation;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use terax_lib::modules::{
@@ -157,6 +159,10 @@ fn main() {
                     memory::conversation_memory_rebase,
                     memory::conversation_memory_commit,
                     memory::conversation_memory_cancel,
+                    checkpoint_observation::conversation_checkpoint_observe,
+                    checkpoint_observation::conversation_checkpoint_prepare,
+                    checkpoint_observation::conversation_checkpoint_validate,
+                    checkpoint_observation::conversation_checkpoint_restore,
                     memory::retrieval::conversation_memory_retrieve,
                     memory::target_context::target_context_begin,
                     memory::target_context::target_context_cancel,
