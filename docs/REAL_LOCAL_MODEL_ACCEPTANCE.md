@@ -14389,3 +14389,365 @@ summary/extraction inference is implemented here.
   `main`, **86 ahead / 0 behind cached origin**; original six dirty contents and
   report prefix preserved; both stashes and `autonomous_tracker/` untouched;
   empty index, no checkpoint-owned untracked files. **No push. STOP.**
+
+## Structured obligation and workspace checkpoint design
+
+### Outcome and evidence boundary
+
+- Base: `56bb233 test(ai): audit long-horizon context representation`.
+  Classification: **STRUCTURED LONG-HORIZON CHECKPOINT DESIGNED**.
+  This is a completed design/evidence checkpoint, NOT a production compactor.
+  No application source, native schema, persistent memory record, model setting,
+  permission, tool schema or request path was changed. Zero inference, zero
+  ForgeBoard reruns, zero effect execution, zero generated narrative summaries.
+- Reused the frozen `b2cd814` conversation, not another mission. Its blocked
+  third-continuation native body has SHA-256
+  `0f88466b324d320ea8f57d5162fef9c7fc3cecd301309dbebc6931b05141f5df`.
+  The offline auditor reconstructs that body using the production serializer,
+  checks all 22 previously pinned artifact hashes, and compares three latest
+  write-content hashes with the archived file snapshot. That last comparison is
+  NOT a new filesystem observation or proof of dispatch-time freshness.
+- Historical input is **51,374 estimated tokens**: write arguments **15,016**,
+  older unexecuted drafts **7,982**, search results **4,916**. These are local
+  B1 estimates, not provider usage. No new provider token count is inferred.
+- The new standalone design contracts, audit, checks and bounded fixture are
+  `scripts/structured-checkpoint-design.mjs`,
+  `scripts/audit-structured-checkpoint.mjs`,
+  `scripts/check-structured-checkpoint.mjs`, and
+  `src/test/fixtures/structured-checkpoint-design-20261021.json`.
+  No application code imports these helpers. Hypothetical eligibility flags in
+  tests are synthetic witnesses, not a replacement for native authorization.
+
+### Integration and proposed durable record
+
+| Concern | Existing owner to reuse | Proposed extension, not shipped |
+|---|---|---|
+| Conversation, workspace, source versions | `conversationMemory.ts`, native `conversation_memory.rs`, existing session profile | Same `MemoryOwner`; no agent/model/title/window ownership and no second chat database |
+| Exact evidence and recovery | C1 `MemoryEvidence`, message/part/retained locators, immutable attachment content, G1 restoration | Retain original input/result and every required base/dependency in the active revision's evidence closure |
+| Intent and coverage | Original user messages, source-linked C1 requirements/constraints | Ordered exact user-message/slice references and explicit correction links; never derive intent from files |
+| Plan and effects | Acknowledged `todo_write`, `verifiedWriteHistory.ts`, native write results | Typed conservative obligations and ordered full-write lineage, not model-authored verification claims |
+| Workspace observations | M2 native guarded reads, canonical scope, digest/freshness machinery | Reuse guarded observation primitives under private conversation ownership, without promoting chat history into shared M1 memory |
+| Projection and restoration | C1 compaction groups/pins, G1 bounded retrieval, C2 target context, D2 partial answer | Deterministic segment replacement map and provider-adapter eligibility; current B1 remains final dispatch gate |
+| Cancellation and writes | Existing preparation generation/CAS, per-conversation ownership, write leases | Cancel stale preparations; no new global lock; lease is NOT an external-filesystem lock |
+
+The design fixture is a proposed **checkpoint format v1**, not a new on-disk
+production schema. It contains `owner`, `versions`, `sources`, `intent`,
+`obligations`, `workspace`, `validation`, `failures`, `retired`, `edges`, and a
+canonical SHA-256 `revision`. The actual frozen candidate has **13 source
+references**, **10 obligations**, **3 path observations**, **2 retired-write
+candidates**, **2 supersession edges**, and **4 unresolved failures**. Its JSON
+metadata is about 15 KB; file bodies and attachment bytes are not copied into it.
+Only user wording is deliberately exact. The provider text is a smaller projection.
+
+Proposed bounds are within existing C1 limits: 256 KiB per record and 128 unique
+sources; additionally at most 64 obligations, 32 paths and 128 dependency edges.
+These are audit contracts, not production configuration. Exceeding any bound or
+an incomplete closure means keep raw and let B1 block if necessary. Never silently
+truncate intent, sources, unresolved work or dependency edges to meet a quota.
+
+A production implementation would add an explicitly versioned typed checkpoint
+payload to the existing C1 revision envelope and reader/migration path. The current
+native v1 decoder denies unknown fields, and C2 readers check known policies;
+therefore this payload cannot simply be written into today's records. Preserve
+legacy v1 revisions, explicitly migrate/read the new version idempotently, and
+update retained-evidence/target-context readers together. The audit format itself
+must not be mistaken for an accepted native schema. **New persistent state now: none.**
+
+Proposed logical revision inputs are conversation-prefix/intent/correction/plan,
+effect-chain, workspace-observation, validation and failure versions, plus stable
+source locators/digests and policy version. Native request IDs, model name,
+transport ports and timestamps alone are not identities. The fixture's version
+values are deterministic hashes of frozen evidence, not fabricated runtime
+revision counters. Source order comes from transcript parts and acknowledged
+results; capture timestamps are descriptive observation metadata, not authority.
+Part-level replacement coverage identifies exactly which original parts disappear
+from provider projection. C1's source message range must NOT imply that all
+messages/parts in that range were retired or that future messages are covered.
+
+### Exact intent, corrections and obligations
+
+- Original objective stays byte-exact as its original user message, covering
+  React/TypeScript, Node/TypeScript/npm, API port 4317, title maximum 120, debounce
+  750 ms, local persistence, no cloud/telemetry, tests/build/README and all other
+  requirements. The provider checkpoint does not repeat the specification.
+- The full correction remains exact: "Change the task page size requirement from
+  50 to 25. The new value supersedes 50 everywhere. Continue the same project and
+  do not restart from scratch." Its source is user message `97ax5P1CblUCg3O9`;
+  original user message is `a4JKLFU7YSug3Wfv`. Both wording and original evidence
+  remain recoverable. The audit explicitly links the exact original page-size
+  sentence to this correction; it does NOT claim generic automatic natural-language
+  correction extraction already exists. A future safe first slice may keep every
+  user message exact and ordered until a correction link is explicit/authorized.
+- Multiple corrections form a strict ordered supersession chain on the same
+  requirement key. Only the active predecessor may be superseded; ambiguous forks,
+  duplicate identities or out-of-order events refuse normalization. Older values
+  remain historical, not active requirements. Workspace contents cannot revive 50.
+  The complete original spec remains authoritative even when a plan omits a task.
+- Obligation states: `UNATTEMPTED`, `IN_PROGRESS`, `COMPLETED_UNVERIFIED`,
+  `COMPLETED_VERIFIED`, `FAILED`, `BLOCKED`, `SUPERSEDED`. Each needs a stable plan
+  item or exact requirement source, state evidence, dependencies and any explicit
+  disagreement. Not every natural-language requirement is machine-understood.
+- Model prose "Done" or a completed todo is at most `COMPLETED_UNVERIFIED`.
+  A verified file mutation can support progress or an exact file-existence
+  obligation, not proof of CRUD/SSE/runtime correctness. Verification requires
+  direct authorized evidence matching the particular obligation, complete check
+  scope, policy and current source/environment fingerprint. Human-only criteria
+  stay unverified unless explicitly approved; no invented evaluator confidence.
+- Frozen latest acknowledged plan is `call_iw8c7h3w`, not an old cancelled plan
+  snapshot. Items 1-5 are **model-claimed complete, unverified**; item 6 remains
+  in progress; 7-10 remain unattempted by the plan. Vite scaffolding is not a
+  finished frontend. No observed mission test/build pass verifies these claims.
+  Later relevant failure reopens verification; an inconsistent plan is displayed
+  as a claim alongside evidence, never allowed to overwrite the evidence ledger.
+
+### Workspace truth, write lineage and retention
+
+Proposed path record: stable workspace ID, authorized canonical identity plus
+relative path, existence, effect type, content digest, originating source
+locator/tool/result identity, transcript order, observation metadata/freshness,
+optional base/source pins, successor edge and dependency consumers. A digest proves
+only the exact bytes observed at a stated point, not requirement completion or
+continued currentness. The frozen SSE/store/server hashes are labeled HISTORICAL;
+their dispatch-time freshness is unknown. No mutable filename is a content identity.
+
+Conditional older-write replacement requires ALL of:
+
+1. One authentic successful authorized execution and its exact immutable result;
+   failed, denied, ambiguous or provider-executed effects cannot qualify.
+2. Native verification of the resulting bytes, correct workspace/path and source
+   ownership; an archived hash or `ok:true` alone is not the missing native proof.
+3. Immutable base input/source retained when needed. Full-overwrite independence
+   must be established by the actual tool contract AND dependency analysis, not
+   guessed because a later write exists. Patch/read-dependent effects retain bases.
+4. Bounded explicit dependency closure. A live read, decision, error, approval,
+   security denial or unfinished answer needing A2 keeps A2's required evidence
+   hot. An unknown dependency is not an empty dependency set.
+5. Ordered, source-linked A1 -> A2 -> A3 lineage, with each source/base pinned.
+   Latest full body remains hot in the proposed first slice. No broken chain or
+   unobserved intervening write is silently skipped.
+6. Fresh authorized observation of the expected descendant and provider adapter
+   permission to replace the completed native history unit. Active signatures,
+   reasoning and tool continuations remain protected. Unknown adapter = keep raw.
+7. Originals durably retained and hash-verifiable before the projection is used.
+   Provider source references never authorize execution, permission or replay.
+
+The frozen two candidates are `call_fsuo2qna -> call_dsker88h` (`src/store.ts`)
+and `call_072wgud5 -> call_li49alt0` (`src/server.ts`). Exact earlier bodies are
+preserved in source evidence. Their new receipt design replaces raw bodies by
+source links, not by reverse patches sent to the model. The previous reversible
+delta remains a valid optional *storage/restore* optimization; it need not occupy
+provider tokens when the original is already retained. **Neither conditional rule
+is enabled in production.** The frozen run does not establish the seven conditions.
+
+Retention is the existing conversation-memory/content lifecycle, not another
+store. Before committing a replacement, carry the full required source/base
+closure into active C1 evidence with retained locators/content roots. Current
+32-revision pruning must not strand a delta base: carry it forward before eviction
+or refuse the replacement. Pins are content identities, not arbitrary forever
+leases. Release only after no live/current/previous revision, restoration reference
+or active preparation needs them; use existing reconciliation. If source content
+is missing/corrupt, withdraw dependent projections; never recover an older version
+by rereading a changed path and never replay the original write.
+
+Persistence protocol: prepare under existing conversation source/profile/runtime
+generation and expected predecessor; validate and retain all source bytes; write
+immutable revision, then publish manifest atomically under current CAS. Failure,
+cancellation, crash or stale callback leaves the prior valid revision active.
+No durable "compaction running" claim survives restart. Per-conversation operations
+remain independent; shared project state is not implicitly updated. Native change
+events invalidate affected window projections; every dispatch still rechecks its
+captured source and witness versions, rather than trusting event delivery alone.
+
+### Freshness, validation, failures and restoration
+
+- New correction/requirement, conversation prefix, current plan, tracked mutation,
+  relevant file digest, validation/failure revision or authorization change
+  invalidates affected projections. Source/base retention loss does the same.
+  Native guarded reads must reuse canonical workspace/secret-path checks and
+  before/after file identity checks. Unknown shell effects conservatively dirty
+  potentially affected paths/validation scopes; do not claim a complete mutation
+  ledger merely from `write_file` receipts.
+- External changes mark affected paths and transitive consumers stale; unexpected
+  access/security evidence remains hot. Revalidate bounded dependencies before
+  dispatch with an observation generation, compare source/plan/effect epochs
+  again, and reject races. Observations mean "as of this check", not that external
+  writers are locked for the duration of inference. The cooperating-agent lease
+  cannot establish that stronger claim. This native witness protocol remains to
+  be implemented and adversarially tested.
+- Validation record needs source/execution/command digest, cwd/environment, scope,
+  exact exit/timeout/truncation/complete status, transcript order, workspace
+  revision/dependency fingerprints, output reference and current/stale state.
+  `npm test` pass only covers its actual tests at that state. Source, manifests,
+  dependencies, checkout or relevant environment changes stale it. A shell success
+  without a known validation contract is not an application correctness proof.
+- Failure record keeps source, category, affected command/paths, unresolved status
+  and optional direct resolution reference. Only a later complete authorized
+  compatible validation with explicit failure linkage resolves its verbose output.
+  Unrelated successful commands, model claims or elapsed time are insufficient.
+
+| Frozen failed call | Observed outcome | Honest disposition |
+|---|---|---|
+| `call_xjdmv59j` | `wc` unavailable; exit 1 | Unresolved/still-needed native-shell syntax evidence |
+| `call_naozij7z` | cmd/find quoting failure; exit 2 | Unresolved/still-needed syntax evidence |
+| `call_bpsdoytg` | nested PowerShell syntax/quoting; exit 1 | Unresolved/still-needed syntax evidence |
+| `call_6aqynifa` | escaped cmd syntax/quoting; exit 1 | Unresolved/still-needed syntax evidence |
+
+Later `call_tzt42l8u` succeeded at PowerShell line counting and a later file read
+answered the observation need. Neither is a direct repeat/pass proving these failed
+commands valid or an application test/build repair. Zero failures are relabeled
+resolved or irrelevant to earn savings; all four exact outputs remain hot.
+
+When a witness goes stale, withdraw only dependent replacements and retain the
+current exact user correction, latest relevant read, failure, active reasoning/tool
+chain, partial answer and plan. Restore the smallest required original source via
+G1's authorized same-conversation evidence path or re-read current state through
+ordinary authorized tools. Existing retrieval bounds (2 rounds, 12 chunks, 64 KiB)
+and B1 still apply. Do not dump all history automatically. If safe restoration
+cannot fit, fail with protected-budget; missing evidence remains explicit. Exact
+original transcript/history can reconstruct the checkpoint; current observations
+must be reacquired. No broad semantic or cross-conversation retrieval is added.
+
+### Provider projection, lifecycle and remaining classes
+
+- Format is bounded deterministic plain structured text: version/revision;
+  intent precedence without duplicating the exact user messages; conservative
+  obligations; HISTORICAL workspace observations; source-linked prior effects;
+  actual validation/failure state. Paths/titles are quoted data and evidence labels
+  are bounded. A model needs no database jargon, vendor-specific instruction or
+  tool protocol. The full text is preserved in the fixture for inspection.
+- Low pressure keeps raw history. Higher pressure uses existing relative C1
+  pressure policy, oldest eligible complete units first: structural duplicates,
+  proven effects, repeated searches, superseded plans, eligible old writes, then
+  directly resolved validations/failures. Higher-risk prose/reasoning stays raw.
+  Account for the entire checkpoint, position markers and restore pins; apply a
+  replacement only if beneficial and valid, never to every request unconditionally.
+  No fixed 65K production threshold or safety-reserve exception is proposed.
+- The audit places position markers at the two older write sites and one
+  checkpoint after historical evidence, before the exact current partial. It
+  retains native call/result pairing for every remaining call and never converts
+  textual pseudo-tools to native calls. Old effect bodies are not also carried
+  in the checkpoint. Original source records remain outside provider projection.
+- This plaintext transformation is **not yet provider-history authorization**.
+  Future adapter rules must explicitly allow replacement of completed tool units
+  and preserve active reasoning/signatures/required tool-loop structure. Default
+  unknown/unsupported refuses transformation. This remains capability-based, not
+  model-name-based. The audit proves size and byte retention, not provider efficacy.
+- Projection is rebuilt deterministically from immutable checkpoint plus hot tail
+  at ordinary preparation, not recursively summarized. Automatic continuation
+  must reuse one captured projection/revision, append the exact partial only once,
+  and pass existing B1 and D2 checks. A correction/mutation/expired witness while
+  waiting rejects stale dispatch; do not silently splice a different checkpoint
+  into an active provider answer. Current continuation safeguards remain unchanged.
+- Provider reconnect or transient SSH port changes do not change logical intent/
+  workspace ownership. Same-chat model switch preserves those facts, but creates
+  a fresh allowed target projection under current model locks/adapter/B1; old
+  provider signatures cannot be transferred blindly. Native runtime/profile CAS
+  must still reject stale asynchronous preparations. App restart preserves durable
+  source facts, cancels in-flight work, and reacquires native freshness/runtime
+  permissions before reuse. TTL expiry withdraws the witness, not original intent.
+  Cross-workspace and cross-conversation access remain denied even for identical
+  relative paths. No private memory is automatically shared through M1/PeerTasks.
+
+Searches: preserve query/root/flags/order/count/truncation and exact snippets while
+dependencies remain unknown. The existing root/relative-path factoring reconstructs
+all 30 full paths and saves 1,726 tokens. A future discovery-only receipt may say
+"at source R these paths were returned", never "these are all current matches";
+no snippet deletion is credited here. Workspace changes stale exhaustive claims.
+Latest acknowledged plan stays exact; old plan's inverse delta retains prior
+descriptions/statuses, with original source and immutable latest base pinned. No
+unresolved obligation is dropped. Shell factoring removes only eight exact
+duplicate command echoes, retaining command via the same call, all stdout/stderr,
+status/cwd/timeout/truncation and ordering: 441 tokens, no meaningful output loss.
+
+The **7,982-token** older-draft class is precisely two length-truncated assistant
+text spans, from `inference-32` (**7,763 characters**, source part and SHA pinned)
+and `inference-36` (**7,836 characters**). The first proposes `write_file` for
+`frontend/src/App.tsx` in textual `<tool_call>` syntax; the second proposes an
+unfinished `bash_run` `cat > ... << 'ENDOFFILE'` heredoc. Neither was a native tool
+call, neither executed and neither wrote App.tsx. SDK/Ollama serialization coalesces
+each text fragment with later continuation prose; the fixture records exact span
+offsets/hashes, not a guessed whole-message deletion.
+
+Both drafts contain Task/Project/PaginatedTasks types, API/filter assumptions,
+750 ms debounce, SSE handlers and form state. The first also contains lucide
+imports; the second changes imports/tag handlers and ends at a submit handler.
+They overlap but are not byte-identical or proven completely superseded. The
+latest third partial also proposes App.tsx; actual archived App.tsx is still the
+scaffold. No acknowledged discard or dependency proof permits classifying these
+as safely abandoned. Their unresolved design/current-answer dependencies are
+explicit. **Zero draft savings** are credited; all three pseudo-tool fragments
+remain non-executable text. Historical prose (1,019 tokens) and all 29 thinking
+fields (3,601 tokens) remain exact; no blanket reasoning rule was established.
+The current partial's full 3,955-token content field stays exact, not summarized.
+
+### Frozen token simulation
+
+| Representation | Input | Reserve | Margin | Required | Headroom |
+|---|---:|---:|---:|---:|---:|
+| Actual production, unchanged | 61,132 | 2,048 | 6,114 | 69,294 | -3,758 |
+| Prior structural prototypes C/E/H | 58,835 | 2,048 | 5,884 | 66,767 | -1,231 |
+| Prior conditional reverse-write deltas | 56,293 | 2,048 | 5,630 | 63,971 | +1,565 |
+| Proposed source-retained checkpoint, counterfactual | 52,792 | 2,048 | 5,280 | 60,120 | +5,416 |
+
+- Complete new checkpoint message costs **1,392 tokens**, including its envelope.
+  Gross effective history replacement is **9,732 tokens**, net savings **8,340**.
+  Position-marker overhead is already included. Existing C/E/H structural savings
+  **2,297** remain. Retiring the two old write bodies beyond that saves **7,435**
+  before checkpoint cost, instead of putting reverse-write deltas in provider
+  context. Additional net improvement over the prior conditional prototype is
+  **3,501 tokens**. These are NOT additive independent savings tables.
+- The arithmetic uses unchanged B1 margin policy and 2,048 reserve. As a stricter
+  sensitivity check, freezing the original absolute margin at 6,114 gives
+  **60,954 required / +4,582 headroom**. No safety policy was reduced.
+- Thus the old third continuation would fit with the preferred 4,000-token
+  headroom **IF the missing native proofs and provider contract were satisfied**.
+  The frozen evidence lacks those proofs. Its actual eligible new replacement
+  set is empty: **actual production savings 0; actual request still blocked**.
+  A capacity simulation is not authorization, production readiness or acceptance.
+- Same exact payload at 16,384 / 32,768 / 65,536 / 131,072 gives counterfactual
+  headroom **-43,736 / -27,352 / +5,416 / +70,952**. The smaller contexts still
+  fail honestly; 128K already fits raw, so this is not evidence to compact early.
+  These are offline context-size fixtures, not changes to the mission's context.
+- Largest original class remains write arguments (15,016); largest individually
+  retained unstructured class in the proposal is the older drafts (7,982).
+  No additional safe reasoning/draft/failure deletion is claimed. The model's
+  behavior with compact receipts is unmeasured. Deterministic structure is
+  promising enough for implementation, not yet enough for a fresh live mission.
+
+### Verification, limitations and handoff
+
+- **72 new standalone Node design checks pass**: exact objective/corrections,
+  multiple corrections, conservative obligations, scoped completion evidence,
+  reopened failures, all authoritative revision inputs, restart/reconnect/model
+  scope, external changes, permissions/workspace isolation, A1/A2/A3 dependencies,
+  base pins, native-proof absence, missing/corrupt original recovery, validation
+  staleness, current plan, hot partial/failures/drafts/reasoning, no replay,
+  injection-resistant labels, bounded malformed metadata and four context sizes.
+  These test offline contracts and synthetic witnesses, not native implementation.
+- **34 existing Node audit checks** and **167 existing tests / 5 Vitest suites**
+  pass: length-continuation audit, answer continuation, protected accounting,
+  compaction plan and verified-write history. **273 distinct focused tests pass**.
+  Offline artifact/replay audit and new script syntax checks pass; working/staged
+  whitespace checks pass. No production TypeScript/Rust changed, so unrelated
+  full frontend/build/lint/type/Rust gates were intentionally not rerun, as
+  authorized for a design-only checkpoint. No native GUI/provider acceptance.
+- No new durable principle added to `CLACK.md`: its existing long-horizon rules
+  already cover reversible source-linked evidence, intent separation, dependency
+  retention, freshness/provider lifecycle and protected current answers.
+- Remaining unsafe classes: unknown native dependency closure/dispatch witnesses,
+  source/base pins across revision pruning, provider-active history constraints,
+  older unexecuted drafts, reasoning/prose, unresolved failures, and semantic
+  obligation verification. The audit helpers are not a complete native schema
+  validator, freshness implementation, automatic correction parser or evaluator.
+- Single recommended next checkpoint: **Implement revision-pinned conversation
+  checkpoint retention and conditional-write projection**. First add the bounded
+  typed C1 extension and explicit source/base closure with rollback/CAS/GC tests;
+  then guarded digest witnesses, stale re-expansion and capability-gated projection
+  tests. Unsupported/unknown classes remain raw. No other memory architecture,
+  semantic summarizer or new acceptance mission is needed in this checkpoint.
+  That implementation checkpoint has **not** been started here.
+- Commit: `test(ai): design structured agent checkpoints`. Expected post-commit
+  state: `main`, **87 ahead / 0 behind cached origin**, only six original dirty
+  contents remain, empty index, no checkpoint-owned untracked files. Original
+  report prefix and other five dirty files are preserved byte-for-byte; both
+  stashes and `autonomous_tracker/` untouched. **No push. STOP.**
