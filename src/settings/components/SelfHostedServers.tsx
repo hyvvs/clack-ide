@@ -43,6 +43,8 @@ import { serverModelDetails } from "@/modules/ai/lib/selfHostedCapabilities";
 import { useSelfHostedInventory } from "@/modules/ai/hooks/useSelfHostedInventory";
 import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
 import { ModelOnboardingDetails } from "@/settings/components/ModelOnboardingDetails";
+import { remoteSsh, remoteSshMessage, remoteSshUrl, type RemoteSshConfig, type RemoteSshStatus } from "@/modules/ai/lib/remoteSsh";
+import { RemoteSshFields } from "@/settings/components/RemoteSshFields";
 import "@/settings/components/SelfHostedServers.css";
 
 const probeClient = createSelfHostedProbeClient();
@@ -148,6 +150,11 @@ function ServerEditor({
   const [draftId] = useState(() => `sh-${crypto.randomUUID()}`);
   const [alias, setAlias] = useState(endpoint?.alias ?? "AI Server");
   const [baseURL, setBaseURL] = useState(endpoint?.baseURL ?? "");
+  const [mode, setMode] = useState(endpoint?.ssh ? "ssh" : endpoint ? "direct" : "local");
+  const [ssh, setSsh] = useState<RemoteSshConfig>(endpoint?.ssh ?? { host: "", username: "", port: 22, keyPath: null, remoteHost: "127.0.0.1", remotePort: 11434 });
+  const [transport, setTransport] = useState<RemoteSshStatus | null>(null);
+  const remote = mode === "ssh";
+  const address = remote ? remoteSshUrl(endpoint?.id ?? draftId) : baseURL;
   const [backend, setBackend] = useState<SelfHostedBackend | "">(
     endpoint?.backendHint ?? "",
   );
@@ -174,7 +181,8 @@ function ServerEditor({
   const changed =
     !current ||
     alias.trim() !== current.alias ||
-    baseURL.trim() !== current.baseURL ||
+    address.trim() !== current.baseURL ||
+    JSON.stringify(remote ? ssh : null) !== JSON.stringify(current.ssh ?? null) ||
     backend !== (current.backendHint ?? "") ||
     privateNetwork !== endpointAllowsPrivate(current) ||
     !!password ||
@@ -226,6 +234,15 @@ function ServerEditor({
       alive = false;
     };
   }, [endpoint]);
+  const remoteId = remote ? current?.id : undefined;
+  useEffect(() => {
+    if (!remoteId) return;
+    let alive = true;
+    const poll = () => void remoteSsh.status(remoteId).then(status => { if (alive) setTransport(status); }).catch(() => {});
+    poll();
+    const timer = setInterval(poll, 2000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [remoteId]);
   useEffect(
     () => () => {
       epoch.current++;
@@ -233,7 +250,7 @@ function ServerEditor({
     [],
   );
 
-  const connect = async (model?: string) => {
+  const connect = async (model?: string, approveFingerprint?: string) => {
     if (busy) return;
     const token = ++epoch.current;
     setBusy(true);
@@ -255,7 +272,8 @@ function ServerEditor({
             current,
             {
               alias,
-              baseURL: baseURL.trim(),
+              baseURL: address.trim(),
+              ssh: remote ? ssh : null,
               backendHint: backend || undefined,
               allowPrivateNetwork: privateNetwork,
               removeCredential,
@@ -269,10 +287,17 @@ function ServerEditor({
       if (epoch.current !== token) return;
       setBaseURL(server.baseURL);
       setRemoveCredential(false);
+      if (server.ssh) {
+        const status = await remoteSsh.connect(server.id, approveFingerprint);
+        if (epoch.current !== token) return;
+        setTransport(status);
+        if (status.state !== "connected") return;
+      }
       const result = await probeClient.refresh(options(server, model));
       if (epoch.current !== token) return;
       setSnapshot((previous) => retainServerInventory(previous, result));
       setDetailModel(model);
+      if (server.ssh && !result.connected) setError("Connected to the computer, but the provider is unavailable or incompatible on the configured loopback port.");
       searchRef.current?.focus();
       if (!model && result.connected && result.backend === "ollama") {
         const started = Date.now();
@@ -360,7 +385,7 @@ function ServerEditor({
           <HugeiconsIcon icon={Cancel01Icon} size={15} />
         </Button>
       </div>
-      {!endpoint && !current && (
+      {!endpoint && !current && !remote && (
         <ServerDiscovery
           endpoints={state.endpoints}
           onSelect={(candidate) => {
@@ -383,6 +408,18 @@ function ServerEditor({
         }}
       >
         <fieldset disabled={busy || saving} className="server-fields">
+          {!endpoint && <label>Location
+            <select aria-label="Server location" value={mode} onChange={e => {
+              setMode(e.target.value); setTransport(null);
+              if (e.target.value === "local") setBaseURL("http://127.0.0.1:11434/");
+              else if (e.target.value === "direct") setBaseURL("");
+              setPassword(""); setRemoveCredential(remote); setSnapshot(null);
+            }}>
+              <option value="local">On this computer</option>
+              <option value="ssh">Another computer (SSH)</option>
+              <option value="direct">Advanced HTTP / HTTPS endpoint</option>
+            </select>
+          </label>}
           <label htmlFor={`${formId}-name`}>
             Name
             <Input
@@ -394,7 +431,7 @@ function ServerEditor({
               required
             />
           </label>
-          <label htmlFor={`${formId}-address`}>
+          {remote ? <RemoteSshFields value={ssh} onChange={value => { setSsh(value); setTransport(null); }} /> : <label htmlFor={`${formId}-address`}>
             Address
             <Input
               id={`${formId}-address`}
@@ -405,7 +442,7 @@ function ServerEditor({
               onChange={(e) => setBaseURL(e.target.value)}
               required
             />
-          </label>
+          </label>}
           <details className="server-details">
           <summary>Advanced connection settings</summary>
           <label>
@@ -425,7 +462,7 @@ function ServerEditor({
             </select>
           </label>
           </details>
-          <label htmlFor={`${formId}-credential`}>
+          {!remote && <label htmlFor={`${formId}-credential`}>
             {current?.credentialRef
               ? "Replace credential (optional)"
               : "Credential (optional)"}
@@ -437,7 +474,7 @@ function ServerEditor({
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
-          </label>
+          </label>}
           {current?.credentialRef ? (
             <label className="server-check">
               <input
@@ -457,23 +494,36 @@ function ServerEditor({
             Allow localhost and private-network access for this server
           </label>
         </fieldset>
-        <p className="text-xs [overflow-wrap:anywhere]">Destination: {describeConnectionAddress(baseURL).label}{describeConnectionAddress(baseURL).address ? ` - ${describeConnectionAddress(baseURL).address}` : ""}</p>
+        <p className="text-xs [overflow-wrap:anywhere]">Destination: {remote ? `${ssh.username}@${ssh.host} (SSH)` : `${describeConnectionAddress(baseURL).label}${describeConnectionAddress(baseURL).address ? ` - ${describeConnectionAddress(baseURL).address}` : ""}`}</p>
         <div className="server-heading">
           <span className="server-status" role="status">
-            {connectionHealth === "Ready" ? "Connected" : connectionHealth}
+            {remote && transport ? remoteSshMessage(transport.state) : connectionHealth === "Ready" ? "Connected" : connectionHealth}
           </span>
           <Button
             type="submit"
             size="sm"
             variant="outline"
-            disabled={busy || saving || !alias.trim() || !baseURL.trim()}
+            disabled={busy || saving || !alias.trim() || (remote ? !ssh.host || !ssh.username : !baseURL.trim())}
           >
             <HugeiconsIcon icon={RefreshIcon} size={14} />
             {changed || !visibleSnapshot ? "Connect" : "Refresh"}
           </Button>
         </div>
       </form>
-      {baseURL.startsWith("http:") ? (
+      {remote && <div className="server-heading">
+        <Button size="sm" variant="outline" onClick={() => {
+          ++epoch.current; setBusy(false); setTransport(null);
+          void remoteSsh.disconnect(current?.id ?? draftId);
+        }}>{busy ? "Cancel connection" : "Disconnect"}</Button>
+      </div>}
+      {remote && transport?.state === "verification-required" && <section aria-label="Verify this computer" className="server-warning">
+        <h4>Verify this computer</h4>
+        <p>Confirm this fingerprint with the computer's owner before trusting it.</p>
+        <code className="[overflow-wrap:anywhere]">{transport.fingerprint}</code>
+        <Button size="sm" disabled={busy} onClick={() => void connect(undefined, transport.fingerprint ?? undefined)}>Trust &amp; connect</Button>
+      </section>}
+      {remote && transport?.fingerprint && transport.state !== "verification-required" && <details className="server-details"><summary>Host verification</summary><p className="[overflow-wrap:anywhere]">{transport.fingerprint}</p><p>{transport.trustSource}</p></details>}
+      {!remote && baseURL.startsWith("http:") ? (
         <p className="server-warning">
           HTTP is unencrypted. Use HTTPS and authentication on untrusted
           networks. Private-network access is not a local-only guarantee.

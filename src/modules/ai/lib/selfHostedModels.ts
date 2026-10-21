@@ -126,7 +126,7 @@ export function selfHostedPickerStatus(selectionId: string, state: SelfHostedSta
   if (target.status === "missing") return { label: "Unavailable", disabled: true };
   const inventory = state.inventories?.find(i => i.endpointId === target.endpoint.id &&
     i.configurationRevision === target.endpoint.configurationRevision);
-  if (!inventory) return { label: "Unverified", disabled: false };
+  if (!inventory) return { label: target.endpoint.ssh ? "Disconnected" : "Unverified", disabled: !!target.endpoint.ssh };
   if (!inventory.connected) {
     if (inventory.error === "unsupported-probe-route") return { label: "Unverified", disabled: false };
     return { label: inventory.error === "authentication-failed" ? "Authentication required" : "Offline", disabled: true };

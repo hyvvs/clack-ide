@@ -136,7 +136,7 @@ fn validate_url(url: &str, allow_private: bool) -> Result<reqwest::Url, String> 
     }
     // The actual IP classification has to be async — caller does it.
     let _ = allow_private;
-    Ok(parsed)
+    crate::modules::remote_ssh::resolve(parsed)
 }
 
 /// Classify the host AND return safe IPs to pin reqwest's resolver to.

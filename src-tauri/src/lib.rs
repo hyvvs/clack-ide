@@ -316,6 +316,9 @@ pub fn run() {
             secrets::secrets_delete,
             secrets::secrets_get_all,
             net::lm_ping,
+            modules::remote_ssh::remote_ssh_connect,
+            modules::remote_ssh::remote_ssh_disconnect,
+            modules::remote_ssh::remote_ssh_status,
             modules::self_hosted_profiles::self_hosted_profiles_compare_and_swap,
             modules::self_hosted_profiles::self_hosted_profiles_snapshot,
             modules::inference_probe::self_hosted_probe,
@@ -338,6 +341,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                modules::remote_ssh::shutdown();
                 app.state::<net::inference::InferenceState>().shutdown();
             }
         });

@@ -730,6 +730,7 @@ pub fn self_hosted_probe_cache(
     let _guard = WRITE_LOCK.lock().map_err(|_| internal())?;
     let store = app.store("terax-settings.json").map_err(|_| internal())?;
     let endpoint = configured(&store.get(KEY).unwrap_or(Value::Null), &options.endpoint_id)?;
+    transport::route_url(&endpoint, Route::CompatibleModels)?;
     let state = app.state::<ProbeState>();
     let cache = state.cache.lock().map_err(|_| internal())?;
     Ok(cache.snapshot(

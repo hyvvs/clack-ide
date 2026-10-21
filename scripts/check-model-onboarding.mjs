@@ -72,6 +72,17 @@ const entry = `
  import {applyAgentRecommendation,toolEffortCapture} from "/src/modules/ai/lib/agentConfiguration.ts";
  import "/src/styles/globals.css";
  window.probes=[];window.digest="revision-a";window.offline=false;
+ window.remoteState={state:'disconnected',fingerprint:null,trustSource:null};window.remoteCalls=[];
+ window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
+   window.remoteCalls.push({command,args});
+   if(command==='remote_ssh_connect'){
+     window.remoteState=window.remoteFailure?{state:window.remoteFailure,fingerprint:null,trustSource:null}:
+       args.approveFingerprint==='SHA256:fixture-public-fingerprint'?{state:'connected',fingerprint:args.approveFingerprint,trustSource:'Explicit fingerprint confirmation'}:
+       {state:'verification-required',fingerprint:'SHA256:fixture-public-fingerprint',trustSource:null};
+   }
+   if(command==='remote_ssh_disconnect')window.remoteState={state:'disconnected',fingerprint:null,trustSource:null};
+   return window.remoteState;
+ }};
  window.calibrationJobs=useContextCalibrationJobs;
  window.toolJobs=useToolVerificationJobs;
  window.verifyTools=(status='verified')=>{
@@ -224,7 +235,42 @@ try {
   await page.evaluate(()=>{window.verifyContext();window.verifyTools();});
   await settings.getByText('Tools: Verified',{exact:true}).waitFor();
   await settings.getByText('Ready',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Close server setup',exact:true}).click();
+  await page.evaluate(()=>{window.snapshot=null;window.prefs.setState({selfHostedInference:{version:1,revision:0,endpoints:[],profiles:[]}});});
+  await page.getByRole('button',{name:'Add self-hosted server',exact:true}).click();
+  await page.getByLabel('Server location').selectOption('ssh');
+  await page.getByLabel('Name',{exact:true}).fill('Remote laboratory');
+  await page.getByLabel('Computer address',{exact:true}).fill('labpc.example');
+  await page.getByLabel('Username',{exact:true}).fill('remote-user');
+  await page.getByLabel('Authentication',{exact:true}).selectOption('key');
+  await page.getByLabel('Private key file',{exact:true}).fill('C:/A path with spaces/.ssh/key');
+  await page.getByLabel('Allow localhost and private-network access for this server',{exact:true}).check();
+  await page.getByRole('button',{name:'Connect',exact:true}).click();
+  await page.getByRole('region',{name:'Verify this computer'}).waitFor();
+  await page.getByRole('button',{name:'Trust & connect',exact:true}).focus();
+  assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Trust & connect');
+  await page.keyboard.press('Enter');
+  await page.getByText('Connected securely over SSH',{exact:true}).waitFor();
+  assert.equal(await page.locator('.server-model').count(),2);
+  assert.ok(await page.evaluate(()=>window.prefs.getState().selfHostedInference.endpoints[0].baseURL.startsWith('http://clack-ssh.invalid/')));
+  assert.ok(await page.evaluate(()=>!JSON.stringify(window.remoteCalls).includes('PRIVATE KEY')));
+  for(const theme of ['dark','light']){
+    await page.evaluate(theme=>document.documentElement.className=theme,theme);
+    for(const width of [1280,390,320]){
+      await page.setViewportSize({width,height:800});
+      assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),`remote ${theme} overflow at ${width}`);
+      await page.screenshot({path:path.join(output,`remote-${theme}-${width}.png`),fullPage:true});
+    }
+  }
+  await page.setViewportSize({width:640,height:600});await page.evaluate(()=>document.body.style.zoom='2');
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'remote 200% scaling overflow');
+  await page.screenshot({path:path.join(output,'remote-zoom-200.png'),fullPage:true});
+  await page.evaluate(()=>{document.body.style.zoom='1';window.remoteFailure='host-key-changed';});
+  await page.getByRole('button',{name:'Disconnect',exact:true}).click();
+  await page.getByRole('button',{name:'Refresh',exact:true}).click();
+  await page.getByText("The remote computer's identity changed. Connection was stopped for safety.",{exact:true}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'Trust & connect',exact:true}).count(),0);
   assert.deepEqual(errors,[]);
   await writeFile(path.join(output,"result.json"),JSON.stringify({passed:true,toolVerification:["advertised","verified-default","ready","needs-attention-chat-only-available","verifying","cancel","confirmed-automatic-recovery","explicit-control-preservation","provider-default-provenance","server-version-withdrawal"],contextVerification:["conservative","verified-49152","expired-stale","tool-evidence-independent"],widths:[1280,390,320],themes:["dark","light"],cssZoom:2,errors,inference:0,nativeGUI:false},null,2));
-  console.log("Onboarding browser fixture passed: default and recovered Automatic, explicit controls, provenance, stale version/digest, offline, cancel, keyboard, 320/390/1280px, light/dark, 200% CSS scaling. No native GUI or inference.");
+  console.log("Onboarding browser fixture passed: direct and remote setup, explicit host trust, changed-key refusal, default/recovered Automatic, controls, provenance, stale version/digest, offline, cancel, keyboard, 320/390/1280px, light/dark, 200% CSS scaling. No native GUI or inference.");
 } finally {await browser?.close();await server.close();}

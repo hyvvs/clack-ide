@@ -48,6 +48,9 @@ pub(super) fn validate(value: &Value) -> Result<(), String> {
     {
         return Err("Invalid or oversized self-hosted settings".into());
     }
+    for endpoint in value["endpoints"].as_array().into_iter().flatten() {
+        super::remote_ssh::validate_endpoint(endpoint)?;
+    }
     for profile in value["profiles"].as_array().into_iter().flatten() {
         if let Some(record) = profile.get("toolVerification") {
             if !record["configuration"].is_null() {
@@ -385,6 +388,7 @@ pub fn self_hosted_profiles_compare_and_swap(
                 return Err("Could not save self-hosted settings".into());
             }
             super::inference_probe::settings_changed(&app, &next);
+            super::remote_ssh::reconcile(&next);
             Ok(())
         },
     )

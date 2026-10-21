@@ -46,7 +46,8 @@ pub fn route_url(endpoint: &Endpoint, route: Route) -> Result<Url, ProbeError> {
     if raw.len() > 4096 || raw.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return Err(bad());
     }
-    let mut url = Url::parse(raw).map_err(|_| bad())?;
+    let mut url = crate::modules::remote_ssh::resolve(Url::parse(raw).map_err(|_| bad())?)
+        .map_err(|_| ProbeError::new(ErrorCode::Unreachable))?;
     if !matches!(url.scheme(), "http" | "https")
         || !url.username().is_empty()
         || url.password().is_some()

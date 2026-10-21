@@ -11119,3 +11119,220 @@ calibration subsystem. The largest remaining zero-knowledge onboarding gap is
 secure authenticated second-PC connection setup; recommended next checkpoint is
 **Design and Implement Secure Remote Self-Hosted Connection Onboarding**.
 It has not been started. No push.
+
+## Secure remote self-hosted connection onboarding
+
+2026-10-21, base `37743b0`, Windows native + deterministic browser acceptance.
+Classification: **SECURE REMOTE SELF-HOSTED ONBOARDING PARTIAL**.
+The authorized Windows second-PC path works end-to-end. Linux/macOS native
+validation and abnormal-exit ownership on POSIX remain explicit limitations,
+not claims of cross-platform production acceptance.
+
+### Workflow and architecture
+
+Previously, the user needed an external `ssh -L` process and a manually entered
+forwarded HTTP URL. Add self-hosted server now offers On this computer, Another
+computer (SSH), and Advanced HTTP / HTTPS endpoint. Remote setup asks for name,
+computer address, username, and authentication (system agent or existing key
+file reference). Advanced contains SSH port and remote loopback service address
+and port. Default target is `127.0.0.1:11434`. There is no port scan or remote
+service setup. SSH must already be enabled and reachable; the provider must
+already listen on the configured loopback port. Password/interactive key
+unlock, key generation, jump hosts, arbitrary SSH config, SSH host certificates,
+and non-Ed25519 host keys are not implemented. Encrypted keys require an already
+unlocked agent; otherwise authentication fails with actionable guidance.
+
+Native `modules/remote_ssh` owns config validation, app-scoped host trust,
+per-connection operations, child handles, generation cancellation, local port
+allocation and routing. It uses installed system OpenSSH, not a Rust SSH
+dependency, shell command string, Docker, VM or remote installer. Windows uses
+the OS OpenSSH directory and hidden processes; Unix uses `/usr/bin` tools.
+Only `ssh` and `ssh-keygen` are required. Direct HTTP/HTTPS, reverse-proxy paths,
+TLS checking and existing OS-keychain HTTP credentials retain their existing
+paths. No dependency/lockfile changes were needed.
+
+The existing endpoint schema is additively extended with optional `ssh`:
+`{host, username, port, keyPath, remoteHost, remotePort}`. Key content/passwords
+are never imported. Native/frontend reject extra secret fields and mismatched
+connection routing identities. The durable `baseURL` is an internal logical
+route `http://clack-ssh.invalid/<hex UTF-8 endpoint ID>/`, not a listening URL.
+Only native validated live ownership can resolve it. It is never sent to DNS.
+Native metadata and HTTP transport resolve this route to an owned loopback
+forward before network dispatch. No transient port or PID is persisted as
+model identity. Existing endpoint/profile/model/digest IDs, saved selections,
+favorites/recents/chat references and effort/context evidence stay unchanged
+when the port changes. Independent connections with the same model tag remain
+separate. Host/auth/target configuration changes advance configurationRevision;
+alias edits and reconnects do not. There is no new provider/profile store.
+
+### Trust, credentials and permissions
+
+There are two deliberately separate SSH handshakes. Unauthenticated observation
+uses a unique quarantined app-owned public-key file, `PreferredAuthentications=none`,
+public-key/password/interactive authentication disabled, `IdentityAgent=none`,
+and no forwarding or remote command. Its `accept-new` policy observes a key only;
+it grants no trust and sends no key credentials. This avoids a concrete Windows
+OpenSSH 9.5 `ssh-keyscan` failure against the remote OpenSSH 10.6 server:
+`choose_kex: unsupported KEX method sntrup761x25519-sha512@openssh.com`.
+No algorithms or remote server settings were changed.
+
+The actual authenticated forward always uses `StrictHostKeyChecking=yes`, a
+pinned Ed25519 host key, isolated configuration (`-F none`), no global host-file
+writes, no update-hostkeys, proxy/local commands, agent/X11 forwarding or remote
+shell. First use without existing trust presents Verify this computer, the
+SHA256 fingerprint, and Trust & connect. Confirmation must match the pending
+observation and a fresh observation. A matching system known_hosts key may be
+imported read-only; revoked/conflicting entries fail closed. Clack persists
+public host-key trust in app data `ssh-hosts/<hash(host, SSH port)>`, never in
+global SSH configuration. Existing app trust is never overwritten on mismatch.
+Changed keys stop the connection and withdraw runtime availability, retaining
+profile/chat history. There is no automatic key-replacement/reset control.
+
+Only the private key path is stored. Existence/readability is checked without
+reading or displaying private bytes or changing permissions. Provider HTTP
+credentials remain OS-keychain owned; managed SSH has no HTTP credentialRef.
+Child environment is cleared except OS prerequisites and SSH_AUTH_SOCK for the
+selected agent flow. Windows OpenSSH requires non-secret ProgramData even for
+`-V`; that requirement was measured and fixed. No API keys, askpass hooks,
+passwords, raw private keys or provider environment are logged/persisted.
+stderr is internally bounded at 16 KiB and exposed only as categorized errors.
+
+Private-network consent remains mandatory natively and visibly in setup.
+SSH destination validation rejects option/shell injection and metadata targets,
+pins a validated resolved address, and permits only the configured remote
+loopback target. Existing native HTTP private-network/TLS policy still applies.
+No silent cloud fallback was added. No conversation, inference request or model
+content is needed to establish the connection or discover inventory.
+
+### Lifecycle and errors
+
+Allocation binds IPv4 loopback only, using an OS-assigned free port. The small
+release/spawn collision window is handled by at most three collision attempts;
+readiness also requires OpenSSH's own exact listener announcement, preventing
+an unrelated listener from being mistaken for the forward. Separate connection
+records never share child state. No saved server is eagerly connected at
+startup: reconnect is explicit in setup, with a two-second retry cooldown,
+bounded SSH connect/observation timeouts and keepalives. There is no automatic
+inference retry, reconnect storm or background cloud reroute.
+
+The child handle and per-connection generation are native, ephemeral ownership.
+Cancellation invalidates pending work; stale completions cannot install a live
+route or commit trust after cancellation. Config changes/removal close only
+that connection's owned child. A dead child immediately fails native routing;
+active UI polling withdraws connected inventory within two seconds. Restart
+starts disconnected, never replays saved PID state and never kills a process
+by a stale/recycled PID. Clean app Exit shuts down every owned connection.
+Windows reuses the existing kill-on-close Job Object helper, including parent
+process death. POSIX has normal handle/drop/Exit cleanup, but **abrupt parent
+death is not yet guaranteed to reap the persistent SSH child**. No Linux/macOS
+native run was performed. This is the principal remaining lifecycle gap and
+why classification is PARTIAL rather than cross-platform READY.
+
+Transport status is separate from provider health: a connected tunnel is not
+proof that Ollama is running. Existing detection, inventory/digests, model
+picker aggregation, runtime-version/TTL checks, context calibration, tool
+verification and Automatic Agent configuration remain authoritative. Errors
+distinguish missing OpenSSH, unreadable key/authentication failure, unreachable
+host, pending verification, changed host identity, offline transport, and a
+connected computer with unavailable/incompatible provider. Provider-level
+errors remain in existing metadata presentation. The current UI reconnects
+explicitly rather than automatically when a saved chat is opened after restart.
+
+No F1, B1, C1/G1/M1/M2, compaction, context-calibration, tool-verification,
+Automatic Agent, scheduler or PeerTask semantics were changed. No reasoning,
+context/output, model or timeout tuning; no ForgeBoard run.
+
+### Native read-only second-PC acceptance
+
+Final evidence: `src-tauri/target/remote-onboarding/remote-onboarding-20261021-final/`.
+Reproducible native host: `src-tauri/examples/remote_onboarding.rs`, isolated
+app data and hidden Wry window, calling production Tauri command functions.
+This is native production-command evidence, not manual GUI/Computer Use or a
+claim of webview IPC interaction. No inference command is registered.
+
+- Host `hylab@192.168.1.44` (`labpc`), existing
+  `%USERPROFILE%/.ssh/clack_hylab_ed25519` reference; no private content recorded.
+- Ed25519 `SHA256:uNYOgw9D37L2JEG7ZzfeD2ODV4xW1+N9oBWoET4hrH4` matched the
+  existing system known_hosts entry; reconnect used Clack app-scoped trust.
+- First forward `127.0.0.1:62633`, reconnect `127.0.0.1:57986`, each targeting
+  remote loopback `127.0.0.1:11434`. Production detection identified Ollama;
+  both inventory snapshots had the same ten exact IDs/digests. Actual native
+  persisted state passed the normal frontend parser/picker aggregation test:
+  ten distinct model selections, friendly `labpc` owner, retained digests.
+- First disconnect closed port 62633; connection deletion closed 57986.
+  A third owned connection on 57999 remained active until app Exit. Independent
+  post-exit socket checks confirmed all three ports closed (`cleanup.json`).
+  No ssh process remained after the host exited.
+- Port 11435 had no listener and no ssh process was present at the available
+  before/after checks. CIM process enumeration was denied initially; no process
+  was terminated to work around it. The existing manual tunnel configuration
+  was untouched. Managed acceptance did not depend on 11435. This does not claim
+  survival testing of an actively running manual tunnel, since none was listening.
+- Inference **0**, model downloads **0**, cloud inference **0**. No SSH-server,
+  Ollama bind, firewall, package, service or other remote-system mutation.
+  Earlier disposable attempts recorded the missing ProgramData prerequisite
+  and keyscan compatibility error, then stopped without inference; neither is
+  misclassified as model failure. Final native evidence completed successfully.
+- Native host emitted the pre-existing WebView2 shutdown class-unregistration
+  notice (Error 1412). Successful result/exit evidence and closed owned sockets
+  were verified independently, rather than inferring success from console text.
+
+### Verification
+
+- Focused frontend: **264 passed / 9 files**, including **23 new remote tests**
+  and actual native inventory aggregation; existing profile/setup/routing,
+  context-calibration/tool/Automatic Agent regressions passed.
+- Focused native: **22 passed**. Full native rerun also passed all 22 on final
+  source. Covers structured args/key paths with spaces, observation without
+  authentication/effects, trust/changed/revoked keys, consent/config isolation,
+  loopback allocation, cancellation/generation, handle cleanup/no unrelated
+  child termination, dead child, independent slots, stable route/removal,
+  client availability/restricted environment and bounded retries.
+- Deterministic Playwright fixture: direct + remote production React components,
+  first-use trust, changed-key refusal, disconnected state, model inventory,
+  keyboard/focus, dark/light, **320/390/1280 px**, **200% CSS scaling**. Screenshots
+  under `src-tauri/target/onboarding/browser/remote-*`; 320px screenshot inspected.
+  No Computer Use or native GUI interaction. Browser IPC/provider data synthetic;
+  native inventory separately verified as above. Existing local onboarding,
+  calibration, Automatic recovery and provenance fixtures still passed.
+- Final typecheck, lint, build, `cargo fmt --check`, strict all-targets Clippy,
+  and `git diff --check`: passed. One own module-order formatting issue corrected
+  and fmt rechecked; no behavioral suite rerun was needed for that reorder.
+  Lint baseline unchanged: **71 warnings / 2 informational notices**. Build
+  retains INEFFECTIVE_DYNAMIC_IMPORT and PLUGIN_TIMINGS notices. Cargo initially
+  reported sandbox incremental-cache hard-link fallback-to-copy warnings.
+- Full frontend with normal local permissions: **3,287 passed / 1 failed /
+  2 skipped**, **221 passing / 4 failing files**. The four known pre-existing
+  failing files are the Node-only audit-devstral-latency test (no Vitest suite),
+  two ignored generated ForgeBoard backend tests missing supertest, and the
+  ignored archived before-acceptanceComparison copy's obsolete assertion.
+  No test-discovery configuration or unrelated test was changed to hide these.
+- Full Rust with normal local permissions: **704 passed / 0 failed / 2 ignored**
+  (651 library + 25 filesystem + 25 Git + 3 real-world integration). The historical
+  D1 cancellation/revocation timing failure did **not** recur in this run.
+- The first sandbox full-test attempts encountered denied local shell/socket
+  operations; those two suites were rerun with normal local permissions, not
+  patched. Original sandbox logs retained. Normal-permission full results are
+  `final-frontend-native.{json,log}` and `final-rust-native.log` under the evidence
+  parent. Staged review then found a concrete status-publication race: checking
+  cancellation before acquiring the runtime lock allowed a stale completion to
+  report Connected after Disconnect. Generation validation and final publication
+  now share that lock; the existing cancellation test also asserts rejection of
+  a stale completion. The full native gate remained **704 passed / 2 ignored**
+  and strict Clippy/fmt passed again (`final-rust-native-after-review.log`,
+  `final-clippy-after-review.log`). Frontend gates were not repeated for this
+  native-only correction.
+
+### Scope, repository safety and next gap
+
+All six original dirty-file byte snapshots were verified before this appendix;
+this section is appended without changing their original bytes. The other five
+remain byte-identical. Stage only this appendix and checkpoint-owned production,
+tests/browser/native acceptance tooling and the two concise CLACK.md principles.
+Both safety stashes and autonomous_tracker remain untouched. No push.
+
+Largest next gap: **POSIX managed-SSH abnormal-exit ownership and Linux/macOS
+native acceptance**, followed by prerequisite/agent guidance and saved-chat
+reconnect UX. Password onboarding, trust replacement, SSH certificates/other
+host-key algorithms and jump hosts remain outside this implementation. The
+next checkpoint is recommended from these concrete limitations, not started.

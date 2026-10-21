@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { remoteSshSchema, remoteSshUrl, type RemoteSshConfig } from "@/modules/ai/lib/remoteSsh";
 import { calibrationSchema, CALIBRATED_FIELDS } from "@/modules/ai/lib/calibrationSchema";
 import { contextCalibrationSchema } from "@/modules/ai/lib/contextCalibrationSchema";
 import { trustedContext } from "@/modules/ai/lib/contextCalibrationTrust";
@@ -74,6 +75,7 @@ const endpointSchema = z.object({
   id,
   alias: z.string().trim().min(1).max(128),
   baseURL: endpointUrl,
+  ssh: remoteSshSchema.nullish(),
   backendHint: backend.optional(),
   detectedBackend: backend.nullish(),
   credentialRef: credentialReference.nullable(),
@@ -85,7 +87,7 @@ const endpointSchema = z.object({
   updatedAt: timestamp,
   deletedAt: timestamp.optional(),
   legacy: legacyBinding.optional(),
-});
+}).refine(e => e.ssh ? e.baseURL === remoteSshUrl(e.id) && e.credentialRef === null : new URL(e.baseURL).hostname !== "clack-ssh.invalid");
 export type SelfHostedEndpoint = z.infer<typeof endpointSchema>;
 
 export function endpointBackend(endpoint: SelfHostedEndpoint): SelfHostedBackend | undefined {
@@ -321,6 +323,7 @@ export function createSelfHostedEndpoint(
     backendHint?: SelfHostedBackend;
     credentialRef?: EndpointCredentialReference | null;
     allowPrivateNetwork?: boolean;
+    ssh?: RemoteSshConfig | null;
   },
   endpointId = `sh-${crypto.randomUUID()}`,
   now = Date.now(),
@@ -330,6 +333,7 @@ export function createSelfHostedEndpoint(
     id: endpointId,
     alias: input.alias,
     baseURL,
+    ssh: input.ssh,
     backendHint: input.backendHint,
     credentialRef: input.credentialRef ?? null,
     allowPrivateNetwork: input.allowPrivateNetwork,
@@ -364,12 +368,14 @@ export function editSelfHostedEndpoint(
     backendHint?: SelfHostedBackend;
     credentialRef?: EndpointCredentialReference | null;
     allowPrivateNetwork?: boolean;
+    ssh?: RemoteSshConfig | null;
   },
   now = Date.now(),
 ): SelfHostedState {
   const previous = requireEndpoint(state, endpointId);
   const next = endpointSchema.parse({ ...previous, ...patch });
   const configChanged =
+    JSON.stringify(next.ssh ?? null) !== JSON.stringify(previous.ssh ?? null) ||
     next.baseURL !== previous.baseURL ||
     next.backendHint !== previous.backendHint ||
     next.allowPrivateNetwork !== previous.allowPrivateNetwork ||

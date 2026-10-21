@@ -3,6 +3,7 @@ import {
   emitKeysChanged,
 } from "@/modules/settings/store";
 import { setCustomEndpointKey } from "@/modules/ai/lib/keyring";
+import type { RemoteSshConfig } from "@/modules/ai/lib/remoteSsh";
 import {
   addSelfHostedEndpoint,
   createSelfHostedEndpoint,
@@ -21,6 +22,7 @@ export type ServerForm = {
   backendHint?: SelfHostedBackend;
   allowPrivateNetwork: boolean;
   removeCredential: boolean;
+  ssh?: RemoteSshConfig | null;
 };
 
 export async function saveServerConfiguration(
