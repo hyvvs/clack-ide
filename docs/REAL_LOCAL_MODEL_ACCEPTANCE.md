@@ -13743,3 +13743,276 @@ redesign memory here.
   Expected post-commit state: `main`, **84 ahead / 0 behind cached origin**,
   original six dirty paths, no checkpoint-owned untracked files, empty index.
   **No push. No second mission. No subsequent checkpoint started.**
+
+## Length-continuation protected-context preparation audit
+
+### Scope, result and evidence
+
+- Base: `b2cd814 test(ai): rerun nemotron with hardened context diagnostics`.
+  Classification: **LENGTH-CONTINUATION CONTEXT PREPARATION CORRECT** under the
+  current representation and safe compaction rules. No production defect was
+  established, no production files changed, and no budget policy was weakened.
+- **Zero inference, zero network requests, zero real tool executions, zero
+  ForgeBoard reruns.** Neither Ollama nor the SSH tunnel was contacted.
+- Frozen mission: `forgeboard-nemotron-hardened-20261021-04`, workspace
+  `C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04`.
+  The original outcome remains **PRODUCT RUNTIME / PROTECTED CONTEXT BUDGET**,
+  not a model-quality failure, voluntary stop, provider deadline, harness
+  rejection, F1 failure or Automatic-configuration failure.
+- `scripts/audit-length-continuation.mjs` verifies all **22 raw-artifact hashes**,
+  **955 existing Clack source hashes**, and **25 original + 25 independent-copy
+  project file hashes** before replay. It runs the actual AI SDK `streamText`,
+  existing compaction planner, `withAnswerContinuation`, native Ollama response
+  parser and `ollamaBody` serializer. Its injected fetch returns captured NDJSON
+  only; tool execution callbacks return captured results only.
+- **22/22 post-correction native request bodies (`inference-19` through `40`)
+  match exactly**, including tools, history, system text and controls. Twenty
+  ordinary SDK step preparations and three inner continuation preparations are
+  observed. An audit-only in-memory Vite observer captures the production
+  continuation parameters immediately after budget calculation; it does not
+  change the budget, decision, source file or dispatch behavior.
+- Committed fixtures: `length-continuation-replay-20261021.json` retains the last
+  captured request/response for network-free production-wrapper regression tests;
+  `length-continuation-audit-20261021.json` retains bounded chronology, component
+  accounting and artifact identities. Only excluded local segment IDs are
+  normalized in the replay fixture. Exact provider-bound hashes remain stable.
+  The complete never-dispatched projected request is also materialized locally
+  at `src-tauri/target/length-continuation-audit/blocked-third.projected.json`.
+
+### Exact chronological reconstruction
+
+Stable IDs distinguish the actual second continuation (`inference-37`) from the
+last request later in that continuation segment (`inference-40`). They are not
+interchangeable budget stages.
+
+| Stage | Request | Required / headroom | Captured response and next boundary |
+|---|---|---:|---|
+| Before first length stop | `inference-32` | 51,383 / +14,153 | 7,763 text chars + 120 reasoning chars; length; no native call |
+| C1 dispatched | `inference-33` | 55,891 / +9,645 | 565 text chars; one native call; stop |
+| Intermediate | `inference-34` | 56,657 / +8,879 | One native call; stop |
+| Intermediate | `inference-35` | 57,113 / +8,423 | One native call; stop |
+| Before second length stop | `inference-36` | 57,655 / +7,881 | 7,836 text chars + 50 reasoning chars; length; no native call |
+| C2 dispatched | `inference-37` | 62,216 / +3,320 | 453 text chars; one native call; stop |
+| Intermediate | `inference-38` | 63,054 / +2,482 | One native call; stop |
+| Intermediate | `inference-39` | 63,610 / +1,926 | One native call; stop |
+| Last dispatched request | `inference-40` | 64,805 / +731 | 7,760 text chars + 268 reasoning chars; length; no native call |
+| C3 prepared, blocked | `C3-blocked-after-inference-40` | 68,889 / -3,353 | `answer-continuation-budget`; no native request ID or dispatch |
+
+The table above uses actual wire budgets for dispatched requests and the actual
+shared pre-dispatch budget for the blocked stage. Provider input/output on
+`inference-40` was **28,099 / 2,048**, finish **length**. Its requested context
+and final measured loaded context were both **65,536**. That actual provider
+usage belongs to request 40, not to the blocked next request; no next-request
+provider usage exists. These are estimates versus reported usage, not inferred
+token counts.
+
+### Budget representations and exact delta
+
+These are the existing production categories. Objective, plan, correction,
+reasoning and tool pairs are contained within conversation history, not new
+independently instrumented production budget columns. All rows retain ceiling
+65,536, output reserve 2,048, 13 tools, and the same margin policy.
+
+| Component | C1 shared | C1 wire | C2 shared | C2 wire | Last sent 40 wire | C3 shared, blocked | C3 wire, projected only |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| System | 3,888 | 3,872 | 3,888 | 3,872 | 3,755 | 3,888 | 3,872 |
+| Schemas/options | 5,795 | 5,886 | 5,795 | 5,886 | 5,886 | 5,795 | 5,886 |
+| Conversation | 39,134 | 39,190 | 44,924 | 44,940 | 47,410 | 51,081 | 51,374 |
+| Estimated input | 48,817 | 48,948 | 54,607 | 54,698 | 57,051 | 60,764 | 61,132 |
+| Reserve | 2,048 | 2,048 | 2,048 | 2,048 | 2,048 | 2,048 | 2,048 |
+| Safety margin | 4,882 | 4,895 | 5,461 | 5,470 | 5,706 | 6,077 | 6,114 |
+| Required | 55,747 | 55,891 | 62,116 | 62,216 | 64,805 | 68,889 | 69,294 |
+| Headroom | +9,789 | +9,645 | +3,420 | +3,320 | +731 | -3,353 | -3,758 |
+| Message count | 51 | 50 | 57 | 56 | 60 | 62 | 61 |
+
+The exact **40 wire -> C3 shared** increase is:
+
+| Owner | Estimated-input delta |
+|---|---:|
+| Same existing request, wire -> internal representation | -396 |
+| New partial assistant text message, once | +3,979 |
+| New continuation system message, once | +130 |
+| New tool interactions, objective, plan, correction or counted local metadata | 0 |
+| New reasoning included on this inner continuation | 0 |
+| **Input delta** | **+3,713** |
+| Margin delta | +371 |
+| **Required delta** | **+4,084** |
+
+The -396 is exactly **system +3, schema representation -91, conversation
+representation -308**, not missing or removed semantic history. Same-request
+internal-before input is 56,655 (3,758 + 5,795 + 47,102). Adding 130 + 3,979 gives
+60,764. Then **60,764 + 2,048 + 6,077 = 68,889**. The new text's scalar estimate
+is 3,950; the enclosing assistant/text message adds 29 structural tokens, giving
+3,979. These are diagnostic attributions using the real estimator, not new
+product instrumentation or model-reported tokens.
+
+The synthetic directive's scalar wire-system increase is 117; the shared
+separate-system-message representation costs 130. On identical wire-to-wire
+representations, conversation grows by 3,964, system by 117, input by 4,081 and
+margin by 408: **64,805 -> 69,294**. Thus even the actual would-be provider
+payload cannot fit. Different internal/native JSON envelopes explain the
+representation differences; there is no false budget rejection caused by local
+answer annotations here. No gate was bypassed to dispatch the projected body.
+
+Projected C3 canonical SHA-256:
+`0f88466b324d320ea8f57d5162fef9c7fc3cecd301309dbebc6931b05141f5df`.
+It has one system, two user, 30 assistant and 28 tool messages; 28 native call/
+result pairs plus one historical write receipt, 13 unchanged schemas, and no
+`think` override. Actual roles and all serialized parts are retained by the
+local projected body, not reconstructed by a second provider serializer.
+
+### History, answer, reasoning and instruction ownership
+
+- For each C1/C2/C3 boundary, production non-system history is byte-equivalent
+  after JSON normalization to the preceding model prompt, followed by exactly
+  **one** new partial assistant text message. No original/recent overlap, partial
+  answer duplication, duplicate native call/result identity or receipt-plus-
+  original pair is found. All three textual `<tool_call>` fragments remain
+  ordinary answer text, each once. **None is parsed, repaired or executed.**
+- The original specification is present once as the original user message, and
+  the accepted 50-to-25 correction once as the later user message. There is no
+  durable memory revision, separate objective insertion or objective text in
+  the continuation directive. The unchanged original requirement mentioning 50
+  is historical evidence, not a second accepted correction.
+- Two distinct historical `todo_write` pairs remain: `call_g7g3lxci` is the
+  original pending plan with page size 50; `call_iw8c7h3w` is the updated plan
+  with page size 25 and the first five items marked completed by the model.
+  They are chronological plan versions, not two current-plan insertions. The
+  current five unfinished obligations remain visible: frontend setup, frontend
+  implementation, backend tests, frontend tests, and production build/final
+  verification. Model completion marks are not independent verification.
+- Ollama returns `message.thinking`; its native parser emits reasoning parts;
+  Clack preserves those separately from text with local segment annotations.
+  On normal SDK steps, earlier reasoning becomes one `thinking` field per
+  assistant message through the existing adapter. C3 retains **29 historical
+  thinking messages / 6,597 characters**, identical to request 40.
+- On an inner length continuation, existing D2 behavior appends the just-finished
+  **text only**, not that segment's reasoning. New reasoning produced at the
+  three length finishes is 120 / 50 / 268 characters respectively, still in
+  transcript evidence. The final 268-character reasoning has a standalone scalar
+  estimate of 139 (169 with a hypothetical message wrapper), but contributes
+  **zero** to C3 because it is not serialized there. After an ordinary SDK step,
+  prior segment reasoning is part of the normal historical representation.
+  No duplicate reasoning representation is introduced or removed by this audit.
+  The local protocol accepts separate optional `thinking`; no requirement to
+  resend hidden reasoning for this text continuation is established by these
+  offline observations. Provider-specific optimality remains untested.
+- The exact directive is:
+
+  > Continue the SAME assistant answer exactly from its last character. Do not repeat any prior text, restart the task, or add a new introduction. Preserve whitespace, code and Markdown. Existing permissions and approvals remain in force.
+
+  It contains no copied objective, plan, answer or pseudo-tool. In this mission,
+  each continuation is followed by a native tool step, so the ordinary SDK
+  prompt replaces the inner prompt and removes its directive. Each audited
+  continuation has **one** directive, not directives 1 through N. The last sent
+  request has none. The wrapper's generic consecutive-length loop retains prior
+  directives within the same unresolved SDK step; that different pattern is not
+  the source of this frozen stop, and no speculative marker rewrite is made.
+- All **62** known `clackAnswer` annotations remain ignored by shared budgeting.
+  Removing them changes the estimate by zero; native serialization has zero
+  occurrences. Provider metadata/finish/usage and answer-state records remain
+  transcript/runtime evidence, not copied continuation prose or extra budget.
+
+### Code path, limits and safe compaction
+
+- Smallest owner: `src/modules/ai/lib/answerContinuation.ts`,
+  `withAnswerContinuation`'s length-finish branch. `agent.ts` supplies captured
+  model, limits, tool exposure, revision validation, cancellation and run-charge
+  hooks. Ordinary `prepareStep` invokes `conversationCompaction.prepare` with
+  the newly generated SDK tail, not original-plus-tail duplication.
+- The wrapper requires a confirmed length finish, sufficient textual progress
+  (at least 16 trimmed characters), remaining run/token/time allowance, and no
+  unsafe native pending-call repair. It preserves existing tool permissions,
+  validates current identity, constructs the text continuation, measures the
+  shared budget, and blocks **before charging/dispatch** if it cannot fit.
+  Unresolved objective and pending todos remain in history; D2 does not add a
+  separate objective/todo eligibility model or summarize them itself.
+- D2 maximum remains **3** automatic answer continuations, profile-clamped 0..3,
+  with **1** identity-preserving tool repair, **16,384** generated tokens,
+  **120 seconds cumulative continuation time**, 1,048,576 characters,
+  262,144 tool-input characters and 256 segments. The logical run's distinct
+  soft batch/hard step/automatic batch-continuation limits remain **24 / 240 / 9**.
+  C3 increments the preparation count but is stopped by context, not the count
+  ceiling. No limit is changed.
+- Inner continuation preparation performs the direct budget check; it does not
+  invoke the pressure planner itself. The normal planner was invoked before
+  request 40, including its authenticated receipt fallback. Offline simulation
+  explicitly invokes current planning rules for each continuation too.
+- There are **three protected original groups, zero eligible durable compaction
+  groups, zero safe group savings**. Both user messages are protected; the older
+  assistant group contains the latest original-unit plan. The current SDK tail
+  contains all four failed shell results and the updated plan, and
+  is always protected. This is not zero candidates due to a missing invocation.
+- Even granting already verified source-backed receipt eligibility during the
+  simulated continuation path, C3 still throws `compaction-protected-budget`:
+  60,760 input + 2,048 reserve + 6,076 margin = **68,884**, deficit **3,348**.
+  The five-token difference from 68,889 is the planner's system/message envelope,
+  not a successful reduction. C1/C2 simulations return `needed:false` with no
+  summarizable group. Trigger/target remain 0.70/0.55, with current planner rules
+  unchanged. Skipping a second planner invocation did not cause this block.
+
+### Verified effects and failures
+
+| Verified write | Current rule classification |
+|---|---|
+| `call_fsuo2qna`, original `store.ts` | Superseded; repeated path, excluded |
+| `call_lzgqzap2`, `sse.ts` | Eligible, active, authenticated immutable source; followed by a complete write in the same user boundary |
+| `call_072wgud5`, original `server.ts` | Superseded; repeated path, excluded |
+| `call_dsker88h`, corrected `store.ts` | Latest version but repeated path, still excluded |
+| `call_li49alt0`, corrected `server.ts` | Latest version but repeated path, still excluded |
+
+All five have successful native write proof and exact content/byte identity.
+Only SSE satisfies the current non-repeated-path receipt contract. One active
+receipt saves **1,213 wire-estimated tokens**; **zero additional final-state safe
+receipts** exist under these rules. There is no original SSE pair alongside its
+receipt. Original source part/digest/session/message linkage remains restorable
+through existing evidence/history; the source transcript is unchanged. No
+receipt semantics are broadened for recency, repeated writes or supersession.
+
+All four failed shell results remain intact: `call_xjdmv59j` (missing `wc`),
+`call_naozij7z` (`cmd/find` quoting), `call_bpsdoytg` (nested PowerShell quoting),
+and `call_6aqynifa` (escaped nested command). The observation goal is subsequently
+resolved by `call_tzt42l8u`'s valid PowerShell line count and a successful file
+read, but the failed commands remain relevant platform/syntax evidence. They
+are executed shell failures, not the exact pre-execution refusal/adaptation
+contract supported by safe failure receipts. No failed or uncertain effect is
+silently declared successful or removed to fit.
+
+### Verification, decision and remaining limitation
+
+- **167 focused tests / 5 suites pass**, including **18 new frozen-boundary
+  tests** plus existing answer continuation, protected accounting, compaction and
+  verified-write regressions. The new production-wrapper test independently
+  reproduces the 68,889 block with exactly one mocked native request, no next
+  dispatch and no pseudo-tool execution. The serializer hash regression confirms
+  the precise 69,294 would-be native request. Existing single/multiple/count-
+  limit, cancellation, stale-run, provider-option and fail-closed coverage passes.
+- `npm.cmd run check-types`, new-file scoped Biome lint (zero warnings), Node
+  script syntax, offline replay and working/staged diff checks pass. Initial
+  sandbox Vitest startup was blocked by temporary-file rename `EPERM` before any
+  test ran; the authorized outside-sandbox focused run passed. One new test's
+  initially incorrect reasoning-character expectation and JSON fixture type cast
+  were corrected to the actual evidence and TypeScript types before completion.
+- No production or Rust change: per checkpoint instructions, no unnecessary full
+  frontend suite/build/lint, Rust suite or live/native GUI rerun. No claim of a
+  new Linux/macOS/native/provider acceptance run is made.
+- Before and after this evidence-only audit are identical: **60,764 / 68,889 /
+  -3,353** at the shared C3 gate; **61,132 / 69,294 / -3,758** at the projected
+  wire stage. No payload reduction or production repair is claimed. Context,
+  reserve, percentage margin, output 2,048, Automatic reasoning (`think` omitted),
+  F1/tool verification, permissions, memory, retrieval and PeerTask behavior are
+  unchanged. Objective/correction/current plan/failure evidence remain intact.
+- Completed durable compactions and observed retrieval tool calls remain zero;
+  no summarization or retrieval was added to the replay.
+- `b2cd814` demonstrated a genuine bounded-runtime stop with the current
+  long-answer representation. This audit does not prove that representation is
+  globally optimal or that arbitrary-model reasoning can always be omitted.
+  A same-configuration live rerun is not the next justified experiment.
+  Recommended single next checkpoint: **Audit Long-Horizon Continuation
+  Representation and Safe Compaction**. That design/checkpoint is not started.
+- Owned files are this appendix only, the offline audit script, one new test and
+  two fixtures. Original six dirty contents/report prefix, both safety stashes,
+  `autonomous_tracker/` and frozen project/evidence remain untouched. Commit:
+  `test(ai): audit continuation context preparation`. Expected post-commit:
+  `main`, **85 ahead / 0 behind cached origin**, original six dirty paths,
+  empty index, no checkpoint-owned untracked files. **No push. STOP.**

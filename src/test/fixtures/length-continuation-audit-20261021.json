@@ -1,0 +1,1086 @@
+{
+  "base": "b2cd814",
+  "runId": "forgeboard-nemotron-hardened-20261021-04",
+  "inference": 0,
+  "network": 0,
+  "realEffects": 0,
+  "classification": "LENGTH-CONTINUATION CONTEXT PREPARATION CORRECT",
+  "productionChanges": 0,
+  "exactNativeReplays": 22,
+  "normalStepPreparations": 20,
+  "chain": [
+    {
+      "id": "inference-32",
+      "budget": {
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 35209,
+        "input": 44850,
+        "reserve": 2048,
+        "margin": 4485,
+        "required": 51383,
+        "ceiling": 65536,
+        "headroom": 14153
+      },
+      "body": {
+        "sha256": "5f24c51b275804cbfe9fe20bb6f3f179b9012cbd98851695e544c0574d60bea1",
+        "messages": 49,
+        "roles": {
+          "system": 1,
+          "user": 2,
+          "assistant": 23,
+          "tool": 23
+        },
+        "tools": 13,
+        "toolCalls": 23,
+        "toolResults": 23,
+        "thinkingMessages": 23,
+        "thinkingCharacters": 6095,
+        "directiveCount": 0,
+        "localAnnotations": 0,
+        "context": 65536,
+        "output": 2048,
+        "think": "omitted"
+      },
+      "response": {
+        "requestId": "inference-32",
+        "at": 1792602155731,
+        "firstOutputAt": 1792602156868,
+        "firstCallAt": null,
+        "calls": [],
+        "contentChars": 7763,
+        "nonWhitespaceContent": 7763,
+        "reasoningChars": 120,
+        "contentSha256": "70c309055d37783d2659db1ec0bf0b21b1918ff595013f73cb6d7089ea6ad64f",
+        "reasoningSha256": "b6380c78be2d9db6fe234e035f44d20bc99e175ee482d4279fd848de67de32b1",
+        "textualIntent": true,
+        "finish": "length",
+        "inputTokens": 21736,
+        "outputTokens": 2048,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      },
+      "sharedMessages": 49
+    },
+    {
+      "id": "inference-33",
+      "budget": {
+        "system": 3872,
+        "schemas": 5886,
+        "conversation": 39190,
+        "input": 48948,
+        "reserve": 2048,
+        "margin": 4895,
+        "required": 55891,
+        "ceiling": 65536,
+        "headroom": 9645
+      },
+      "body": {
+        "sha256": "278116c57432e38cc375d7bbcb37ede4c16e9699cdeb0e944c9ea601877078a6",
+        "messages": 50,
+        "roles": {
+          "system": 1,
+          "user": 2,
+          "assistant": 24,
+          "tool": 23
+        },
+        "tools": 13,
+        "toolCalls": 23,
+        "toolResults": 23,
+        "thinkingMessages": 23,
+        "thinkingCharacters": 6095,
+        "directiveCount": 1,
+        "localAnnotations": 0,
+        "context": 65536,
+        "output": 2048,
+        "think": "omitted"
+      },
+      "response": {
+        "requestId": "inference-33",
+        "at": 1792602189043,
+        "firstOutputAt": 1792602241884,
+        "firstCallAt": 1792602245323,
+        "calls": [
+          {
+            "name": "bash_run",
+            "inputSha256": "293188b893f5b69410b8b8dac64429b58211e05caa7de52670b533d8530cb79b"
+          }
+        ],
+        "contentChars": 565,
+        "nonWhitespaceContent": 564,
+        "reasoningChars": 0,
+        "contentSha256": "03c8d1e8df6989e9d88e52a7427aad320156c8fc9879f6e1e33d099e37af85eb",
+        "reasoningSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "textualIntent": false,
+        "finish": "stop",
+        "inputTokens": 23815,
+        "outputTokens": 183,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      },
+      "sharedMessages": 51
+    },
+    {
+      "id": "inference-34",
+      "budget": {
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 40003,
+        "input": 49644,
+        "reserve": 2048,
+        "margin": 4965,
+        "required": 56657,
+        "ceiling": 65536,
+        "headroom": 8879
+      },
+      "body": {
+        "sha256": "8e258789bbd901b0199fc9918c4a8d343aed23b4ef1d281c804f33ceb5b62498",
+        "messages": 51,
+        "roles": {
+          "system": 1,
+          "user": 2,
+          "assistant": 24,
+          "tool": 24
+        },
+        "tools": 13,
+        "toolCalls": 24,
+        "toolResults": 24,
+        "thinkingMessages": 24,
+        "thinkingCharacters": 6215,
+        "directiveCount": 0,
+        "localAnnotations": 0,
+        "context": 65536,
+        "output": 2048,
+        "think": "omitted"
+      },
+      "response": {
+        "requestId": "inference-34",
+        "at": 1792602246777,
+        "firstOutputAt": 1792602252453,
+        "firstCallAt": 1792602253674,
+        "calls": [
+          {
+            "name": "bash_run",
+            "inputSha256": "62c1315511266dc918d8ffb8794ba45dfb697a61510b369311fa72fb99b13dca"
+          }
+        ],
+        "contentChars": 1,
+        "nonWhitespaceContent": 0,
+        "reasoningChars": 54,
+        "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+        "reasoningSha256": "f657c6894c85e8d2a4fadb0eb8d18c3e992d839aa64b2d63bc27b0496144fffe",
+        "textualIntent": false,
+        "finish": "stop",
+        "inputTokens": 24203,
+        "outputTokens": 83,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      },
+      "sharedMessages": 51
+    },
+    {
+      "id": "inference-35",
+      "budget": {
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 40418,
+        "input": 50059,
+        "reserve": 2048,
+        "margin": 5006,
+        "required": 57113,
+        "ceiling": 65536,
+        "headroom": 8423
+      },
+      "body": {
+        "sha256": "27d15665838ab35416680a86dc490080e60c6f7ec37294c439a923a7809dcccf",
+        "messages": 53,
+        "roles": {
+          "system": 1,
+          "user": 2,
+          "assistant": 25,
+          "tool": 25
+        },
+        "tools": 13,
+        "toolCalls": 25,
+        "toolResults": 25,
+        "thinkingMessages": 25,
+        "thinkingCharacters": 6269,
+        "directiveCount": 0,
+        "localAnnotations": 0,
+        "context": 65536,
+        "output": 2048,
+        "think": "omitted"
+      },
+      "response": {
+        "requestId": "inference-35",
+        "at": 1792602254105,
+        "firstOutputAt": 1792602255284,
+        "firstCallAt": 1792602257188,
+        "calls": [
+          {
+            "name": "bash_run",
+            "inputSha256": "f80af3ef004d162ba840c4e81ab8ed86bbfbb3445a018bd55a865ef74933c6c1"
+          }
+        ],
+        "contentChars": 70,
+        "nonWhitespaceContent": 69,
+        "reasoningChars": 50,
+        "contentSha256": "03924dd92d464d975683d9e1b3d4afd028bae62446b10a5f446229bb3d2cd755",
+        "reasoningSha256": "e2eff21db0edb7f50eaa849f961b8dd2b6bf721df8b14b36d98e9719e8dc0f26",
+        "textualIntent": false,
+        "finish": "stop",
+        "inputTokens": 24433,
+        "outputTokens": 113,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      },
+      "sharedMessages": 53
+    },
+    {
+      "id": "inference-36",
+      "budget": {
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 40910,
+        "input": 50551,
+        "reserve": 2048,
+        "margin": 5056,
+        "required": 57655,
+        "ceiling": 65536,
+        "headroom": 7881
+      },
+      "body": {
+        "sha256": "1bfff3b12218c476acbcc547b5ebefb7bada8998f73faa543b9ca4d0821bbbe4",
+        "messages": 55,
+        "roles": {
+          "system": 1,
+          "user": 2,
+          "assistant": 26,
+          "tool": 26
+        },
+        "tools": 13,
+        "toolCalls": 26,
+        "toolResults": 26,
+        "thinkingMessages": 26,
+        "thinkingCharacters": 6319,
+        "directiveCount": 0,
+        "localAnnotations": 0,
+        "context": 65536,
+        "output": 2048,
+        "think": "omitted"
+      },
+      "response": {
+        "requestId": "inference-36",
+        "at": 1792602257618,
+        "firstOutputAt": 1792602258815,
+        "firstCallAt": null,
+        "calls": [],
+        "contentChars": 7836,
+        "nonWhitespaceContent": 7835,
+        "reasoningChars": 50,
+        "contentSha256": "8164b7e8d4984864572120a09fa959fae72ad7df417ae0475c28adcc4348bd99",
+        "reasoningSha256": "560d6e6a9a02ef94a44557222ddb460404b8efe0f13237488c94d7ecd9c13382",
+        "textualIntent": true,
+        "finish": "length",
+        "inputTokens": 24701,
+        "outputTokens": 2048,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      },
+      "sharedMessages": 55
+    },
+    {
+      "id": "inference-37",
+      "budget": {
+        "system": 3872,
+        "schemas": 5886,
+        "conversation": 44940,
+        "input": 54698,
+        "reserve": 2048,
+        "margin": 5470,
+        "required": 62216,
+        "ceiling": 65536,
+        "headroom": 3320
+      },
+      "body": {
+        "sha256": "af2bedd66bca7dfc611d8d695be66323f1352a60cdccf1f8b732cd4cfd6787b7",
+        "messages": 56,
+        "roles": {
+          "system": 1,
+          "user": 2,
+          "assistant": 27,
+          "tool": 26
+        },
+        "tools": 13,
+        "toolCalls": 26,
+        "toolResults": 26,
+        "thinkingMessages": 26,
+        "thinkingCharacters": 6319,
+        "directiveCount": 1,
+        "localAnnotations": 0,
+        "context": 65536,
+        "output": 2048,
+        "think": "omitted"
+      },
+      "response": {
+        "requestId": "inference-37",
+        "at": 1792602289477,
+        "firstOutputAt": 1792602347878,
+        "firstCallAt": 1792602351233,
+        "calls": [
+          {
+            "name": "bash_run",
+            "inputSha256": "8ce18f1865c2cc2d4de93618af800767d931c45217da39de5b96991bc6660471"
+          }
+        ],
+        "contentChars": 453,
+        "nonWhitespaceContent": 452,
+        "reasoningChars": 0,
+        "contentSha256": "563de5194ddc4ab0261b13382ee5fd1c58a96ccf8d568674e852747ca845ce80",
+        "reasoningSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "textualIntent": false,
+        "finish": "stop",
+        "inputTokens": 26791,
+        "outputTokens": 176,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      },
+      "sharedMessages": 57
+    },
+    {
+      "id": "inference-38",
+      "budget": {
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 45819,
+        "input": 55460,
+        "reserve": 2048,
+        "margin": 5546,
+        "required": 63054,
+        "ceiling": 65536,
+        "headroom": 2482
+      },
+      "body": {
+        "sha256": "4ce6e1692f1b7ca52d8ad40e209548f50b451f241f894d53a56962e991bd05af",
+        "messages": 57,
+        "roles": {
+          "system": 1,
+          "user": 2,
+          "assistant": 27,
+          "tool": 27
+        },
+        "tools": 13,
+        "toolCalls": 27,
+        "toolResults": 27,
+        "thinkingMessages": 27,
+        "thinkingCharacters": 6369,
+        "directiveCount": 0,
+        "localAnnotations": 0,
+        "context": 65536,
+        "output": 2048,
+        "think": "omitted"
+      },
+      "response": {
+        "requestId": "inference-38",
+        "at": 1792602352360,
+        "firstOutputAt": 1792602358025,
+        "firstCallAt": 1792602359793,
+        "calls": [
+          {
+            "name": "bash_run",
+            "inputSha256": "2962e2ee805c31cc4b1430fbc3589bc21bf42a029490f78ac58198c72c78fdea"
+          }
+        ],
+        "contentChars": 1,
+        "nonWhitespaceContent": 0,
+        "reasoningChars": 107,
+        "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+        "reasoningSha256": "330fbec5d95fa67f5cc15b2579ac51f802d923ebac0907037ef0d38e1c2215b4",
+        "textualIntent": false,
+        "finish": "stop",
+        "inputTokens": 27188,
+        "outputTokens": 101,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      },
+      "sharedMessages": 57
+    },
+    {
+      "id": "inference-39",
+      "budget": {
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 46324,
+        "input": 55965,
+        "reserve": 2048,
+        "margin": 5597,
+        "required": 63610,
+        "ceiling": 65536,
+        "headroom": 1926
+      },
+      "body": {
+        "sha256": "df69e50b13be6f10b86b44b0d538a3579027f71143fefced43380fc35bfc2343",
+        "messages": 59,
+        "roles": {
+          "system": 1,
+          "user": 2,
+          "assistant": 28,
+          "tool": 28
+        },
+        "tools": 13,
+        "toolCalls": 28,
+        "toolResults": 28,
+        "thinkingMessages": 28,
+        "thinkingCharacters": 6476,
+        "directiveCount": 0,
+        "localAnnotations": 0,
+        "context": 65536,
+        "output": 2048,
+        "think": "omitted"
+      },
+      "response": {
+        "requestId": "inference-39",
+        "at": 1792602360728,
+        "firstOutputAt": 1792602361928,
+        "firstCallAt": 1792602363361,
+        "calls": [
+          {
+            "name": "read_file",
+            "inputSha256": "e6ff43fd671671ebd0950d1820e59892ef74dfa534b336cd4054fbac4aaf17d4"
+          }
+        ],
+        "contentChars": 1,
+        "nonWhitespaceContent": 0,
+        "reasoningChars": 121,
+        "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+        "reasoningSha256": "a2c7cc84deb96dbd3d963fb89445eca049dc5a1cad7c9a67c3bf11dedabd06e4",
+        "textualIntent": false,
+        "finish": "stop",
+        "inputTokens": 27454,
+        "outputTokens": 90,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      },
+      "sharedMessages": 59
+    },
+    {
+      "id": "inference-40",
+      "budget": {
+        "system": 3755,
+        "schemas": 5886,
+        "conversation": 47410,
+        "input": 57051,
+        "reserve": 2048,
+        "margin": 5706,
+        "required": 64805,
+        "ceiling": 65536,
+        "headroom": 731
+      },
+      "body": {
+        "sha256": "e189ea03ca3dd02827aadfcc8566b22ad1a451bd695c8929d7ef3ca1c55eb999",
+        "messages": 60,
+        "roles": {
+          "system": 1,
+          "user": 2,
+          "assistant": 29,
+          "tool": 28
+        },
+        "tools": 13,
+        "toolCalls": 28,
+        "toolResults": 28,
+        "thinkingMessages": 29,
+        "thinkingCharacters": 6597,
+        "directiveCount": 0,
+        "localAnnotations": 0,
+        "context": 65536,
+        "output": 2048,
+        "think": "omitted"
+      },
+      "response": {
+        "requestId": "inference-40",
+        "at": 1792602363549,
+        "firstOutputAt": 1792602423113,
+        "firstCallAt": null,
+        "calls": [],
+        "contentChars": 7760,
+        "nonWhitespaceContent": 7760,
+        "reasoningChars": 268,
+        "contentSha256": "0c904533a212a182dc8dfdcd10c18f57874dfdc7cac3e5bd536c7eb8cb721199",
+        "reasoningSha256": "46f76e132da4ba1025a00ff3d311a6ad332a2b74ce22121684530876694fe198",
+        "textualIntent": true,
+        "finish": "length",
+        "inputTokens": 28099,
+        "outputTokens": 2048,
+        "trailingPartialFrame": false,
+        "settled": "completed"
+      },
+      "sharedMessages": 60
+    }
+  ],
+  "preparation": [
+    {
+      "id": "C1",
+      "after": "inference-32",
+      "next": "inference-33",
+      "shared": {
+        "system": 3888,
+        "schemas": 5795,
+        "conversation": 39134,
+        "input": 48817,
+        "reserve": 2048,
+        "margin": 4882,
+        "required": 55747,
+        "ceiling": 65536,
+        "headroom": 9789
+      },
+      "wire": {
+        "system": 3872,
+        "schemas": 5886,
+        "conversation": 39190,
+        "input": 48948,
+        "reserve": 2048,
+        "margin": 4895,
+        "required": 55891,
+        "ceiling": 65536,
+        "headroom": 9645
+      },
+      "body": {
+        "sha256": "278116c57432e38cc375d7bbcb37ede4c16e9699cdeb0e944c9ea601877078a6",
+        "messages": 50,
+        "roles": {
+          "system": 1,
+          "user": 2,
+          "assistant": 24,
+          "tool": 23
+        },
+        "tools": 13,
+        "toolCalls": 23,
+        "toolResults": 23,
+        "thinkingMessages": 23,
+        "thinkingCharacters": 6095,
+        "directiveCount": 1,
+        "localAnnotations": 0,
+        "context": 65536,
+        "output": 2048,
+        "think": "omitted"
+      },
+      "sharedMessages": 51,
+      "partial": {
+        "characters": 7763,
+        "sha256": "70c309055d37783d2659db1ec0bf0b21b1918ff595013f73cb6d7089ea6ad64f",
+        "sharedMessageCost": 3996,
+        "textValueCost": 3967,
+        "producedReasoningCharacters": 120,
+        "producedReasoningValueCost": 60,
+        "producedReasoningMessageCost": 90,
+        "newReasoningCost": 0,
+        "newToolCost": 0,
+        "nativeCalls": 0
+      },
+      "pendingPlan": [
+        "Setup frontend React + TypeScript project with Vite",
+        "Implement frontend: project/task lists, forms, SSE client",
+        "Write backend API tests",
+        "Write frontend behavior tests",
+        "Run production build and final verification"
+      ]
+    },
+    {
+      "id": "C2",
+      "after": "inference-36",
+      "next": "inference-37",
+      "shared": {
+        "system": 3888,
+        "schemas": 5795,
+        "conversation": 44924,
+        "input": 54607,
+        "reserve": 2048,
+        "margin": 5461,
+        "required": 62116,
+        "ceiling": 65536,
+        "headroom": 3420
+      },
+      "wire": {
+        "system": 3872,
+        "schemas": 5886,
+        "conversation": 44940,
+        "input": 54698,
+        "reserve": 2048,
+        "margin": 5470,
+        "required": 62216,
+        "ceiling": 65536,
+        "headroom": 3320
+      },
+      "body": {
+        "sha256": "af2bedd66bca7dfc611d8d695be66323f1352a60cdccf1f8b732cd4cfd6787b7",
+        "messages": 56,
+        "roles": {
+          "system": 1,
+          "user": 2,
+          "assistant": 27,
+          "tool": 26
+        },
+        "tools": 13,
+        "toolCalls": 26,
+        "toolResults": 26,
+        "thinkingMessages": 26,
+        "thinkingCharacters": 6319,
+        "directiveCount": 1,
+        "localAnnotations": 0,
+        "context": 65536,
+        "output": 2048,
+        "think": "omitted"
+      },
+      "sharedMessages": 57,
+      "partial": {
+        "characters": 7836,
+        "sha256": "8164b7e8d4984864572120a09fa959fae72ad7df417ae0475c28adcc4348bd99",
+        "sharedMessageCost": 4045,
+        "textValueCost": 4016,
+        "producedReasoningCharacters": 50,
+        "producedReasoningValueCost": 27,
+        "producedReasoningMessageCost": 57,
+        "newReasoningCost": 0,
+        "newToolCost": 0,
+        "nativeCalls": 0
+      },
+      "pendingPlan": [
+        "Setup frontend React + TypeScript project with Vite",
+        "Implement frontend: project/task lists, forms, SSE client",
+        "Write backend API tests",
+        "Write frontend behavior tests",
+        "Run production build and final verification"
+      ]
+    },
+    {
+      "id": "C3",
+      "after": "inference-40",
+      "next": null,
+      "shared": {
+        "system": 3888,
+        "schemas": 5795,
+        "conversation": 51081,
+        "input": 60764,
+        "reserve": 2048,
+        "margin": 6077,
+        "required": 68889,
+        "ceiling": 65536,
+        "headroom": -3353
+      },
+      "wire": {
+        "system": 3872,
+        "schemas": 5886,
+        "conversation": 51374,
+        "input": 61132,
+        "reserve": 2048,
+        "margin": 6114,
+        "required": 69294,
+        "ceiling": 65536,
+        "headroom": -3758
+      },
+      "body": {
+        "sha256": "0f88466b324d320ea8f57d5162fef9c7fc3cecd301309dbebc6931b05141f5df",
+        "messages": 61,
+        "roles": {
+          "system": 1,
+          "user": 2,
+          "assistant": 30,
+          "tool": 28
+        },
+        "tools": 13,
+        "toolCalls": 28,
+        "toolResults": 28,
+        "thinkingMessages": 29,
+        "thinkingCharacters": 6597,
+        "directiveCount": 1,
+        "localAnnotations": 0,
+        "context": 65536,
+        "output": 2048,
+        "think": "omitted"
+      },
+      "sharedMessages": 62,
+      "partial": {
+        "characters": 7760,
+        "sha256": "0c904533a212a182dc8dfdcd10c18f57874dfdc7cac3e5bd536c7eb8cb721199",
+        "sharedMessageCost": 3979,
+        "textValueCost": 3950,
+        "producedReasoningCharacters": 268,
+        "producedReasoningValueCost": 139,
+        "producedReasoningMessageCost": 169,
+        "newReasoningCost": 0,
+        "newToolCost": 0,
+        "nativeCalls": 0
+      },
+      "pendingPlan": [
+        "Setup frontend React + TypeScript project with Vite",
+        "Implement frontend: project/task lists, forms, SSE client",
+        "Write backend API tests",
+        "Write frontend behavior tests",
+        "Run production build and final verification"
+      ]
+    }
+  ],
+  "delta": {
+    "from": "inference-40",
+    "to": "C3-blocked-after-inference-40",
+    "before": {
+      "system": 3755,
+      "schemas": 5886,
+      "conversation": 47410,
+      "input": 57051,
+      "reserve": 2048,
+      "margin": 5706,
+      "required": 64805,
+      "ceiling": 65536,
+      "headroom": 731
+    },
+    "after": {
+      "system": 3888,
+      "schemas": 5795,
+      "conversation": 51081,
+      "input": 60764,
+      "reserve": 2048,
+      "margin": 6077,
+      "required": 68889,
+      "ceiling": 65536,
+      "headroom": -3353
+    },
+    "sharedBefore": {
+      "system": 3758,
+      "schemas": 5795,
+      "conversation": 47102,
+      "input": 56655,
+      "reserve": 2048,
+      "margin": 5666,
+      "required": 64369,
+      "ceiling": 65536,
+      "headroom": 1167
+    },
+    "stageConversion": {
+      "system": 3,
+      "schemas": -91,
+      "conversation": -308,
+      "total": -396
+    },
+    "newText": 3979,
+    "newDirective": 130,
+    "newReasoning": 0,
+    "newToolInteractions": 0,
+    "newObjectivePlanCorrection": 0,
+    "newMetadata": 0,
+    "input": 3713,
+    "margin": 371,
+    "required": 4084
+  },
+  "unchangedHistory": [
+    "inference-32",
+    "inference-36",
+    "inference-40"
+  ],
+  "annotations": {
+    "excluded": 62,
+    "budgetChange": 0,
+    "nativeOccurrences": 0
+  },
+  "compaction": {
+    "continuationInvokesPlanner": false,
+    "normalPlannerBeforeLast": true,
+    "groups": [
+      {
+        "start": 0,
+        "end": 1,
+        "protected": true
+      },
+      {
+        "start": 1,
+        "end": 2,
+        "protected": true
+      },
+      {
+        "start": 2,
+        "end": 3,
+        "protected": true
+      }
+    ],
+    "eligibleGroups": 0,
+    "safeGroupSavings": 0,
+    "currentTurnProtected": true,
+    "simulation": [
+      {
+        "id": "C1",
+        "needed": false,
+        "groups": [
+          {
+            "start": 0,
+            "end": 1,
+            "protected": true
+          },
+          {
+            "start": 1,
+            "end": 2,
+            "protected": true
+          },
+          {
+            "start": 2,
+            "end": 3,
+            "protected": true
+          }
+        ],
+        "receipts": 1,
+        "budget": {
+          "system": 3884,
+          "schemas": 5795,
+          "conversation": 37922,
+          "input": 47601,
+          "reserve": 2048,
+          "margin": 4761,
+          "required": 54410,
+          "ceiling": 65536,
+          "headroom": 11126
+        }
+      },
+      {
+        "id": "C2",
+        "needed": false,
+        "groups": [
+          {
+            "start": 0,
+            "end": 1,
+            "protected": true
+          },
+          {
+            "start": 1,
+            "end": 2,
+            "protected": true
+          },
+          {
+            "start": 2,
+            "end": 3,
+            "protected": true
+          }
+        ],
+        "receipts": 1,
+        "budget": {
+          "system": 3884,
+          "schemas": 5795,
+          "conversation": 43712,
+          "input": 53391,
+          "reserve": 2048,
+          "margin": 5340,
+          "required": 60779,
+          "ceiling": 65536,
+          "headroom": 4757
+        }
+      },
+      {
+        "id": "C3",
+        "error": "compaction-protected-budget",
+        "budget": {
+          "system": 3884,
+          "schemas": 5795,
+          "conversation": 51081,
+          "input": 60760,
+          "reserve": 2048,
+          "margin": 6076,
+          "required": 68884,
+          "ceiling": 65536,
+          "headroom": -3348
+        }
+      }
+    ],
+    "durableCompactions": 0
+  },
+  "receipts": {
+    "active": 1,
+    "wireSavings": 1213,
+    "candidates": [
+      "call_lzgqzap2"
+    ],
+    "additionalSafe": 0,
+    "writes": [
+      {
+        "id": "call_fsuo2qna",
+        "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/store.ts",
+        "verified": true,
+        "eligible": false,
+        "repeatedPath": true,
+        "version": "superseded by later full write",
+        "reason": "Repeated path across the source history is deliberately excluded, including the latest version"
+      },
+      {
+        "id": "call_lzgqzap2",
+        "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/sse.ts",
+        "verified": true,
+        "eligible": true,
+        "repeatedPath": false,
+        "version": "latest",
+        "reason": "Confirmed full write followed by another complete write in the same user boundary"
+      },
+      {
+        "id": "call_072wgud5",
+        "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/server.ts",
+        "verified": true,
+        "eligible": false,
+        "repeatedPath": true,
+        "version": "superseded by later full write",
+        "reason": "Repeated path across the source history is deliberately excluded, including the latest version"
+      },
+      {
+        "id": "call_dsker88h",
+        "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/store.ts",
+        "verified": true,
+        "eligible": false,
+        "repeatedPath": true,
+        "version": "latest",
+        "reason": "Repeated path across the source history is deliberately excluded, including the latest version"
+      },
+      {
+        "id": "call_li49alt0",
+        "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/server.ts",
+        "verified": true,
+        "eligible": false,
+        "repeatedPath": true,
+        "version": "latest",
+        "reason": "Repeated path across the source history is deliberately excluded, including the latest version"
+      }
+    ]
+  },
+  "failures": [
+    {
+      "id": "call_xjdmv59j",
+      "tool": "tool-bash_run",
+      "command": "wc -l C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/frontend/src/App.tsx",
+      "exit": 1,
+      "retained": true,
+      "status": "Observation goal later resolved by successful PowerShell line count and read_file; failed command remains relevant shell-syntax evidence",
+      "receipt": "Not eligible: executed shell failure, not a proven pre-execution exact-edit guard refusal"
+    },
+    {
+      "id": "call_naozij7z",
+      "tool": "tool-bash_run",
+      "command": "cmd /c \"type C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/frontend/src/App.tsx | find /c /v \"\"\"",
+      "exit": 2,
+      "retained": true,
+      "status": "Observation goal later resolved by successful PowerShell line count and read_file; failed command remains relevant shell-syntax evidence",
+      "receipt": "Not eligible: executed shell failure, not a proven pre-execution exact-edit guard refusal"
+    },
+    {
+      "id": "call_bpsdoytg",
+      "tool": "tool-bash_run",
+      "command": "cmd /c \"powershell -Command \"(Get-Content C:\\\\Users\\\\Hayden\\\\Documents\\\\forgeboard-nemotron35-lightning-20261021-04\\\\frontend\\\\src\\\\App.tsx) -replace '^$', '' | Measure-Object -Line'\"",
+      "exit": 1,
+      "retained": true,
+      "status": "Observation goal later resolved by successful PowerShell line count and read_file; failed command remains relevant shell-syntax evidence",
+      "receipt": "Not eligible: executed shell failure, not a proven pre-execution exact-edit guard refusal"
+    },
+    {
+      "id": "call_6aqynifa",
+      "tool": "tool-bash_run",
+      "command": "cmd /c \"cd C:\\Users\\Hayden\\Documents\\forgeboard-nemotron35-lightning-20261021-04\\frontend && powershell -Command \\\"(Get-Content src\\\\App.tsx).Count\\\"\"",
+      "exit": 1,
+      "retained": true,
+      "status": "Observation goal later resolved by successful PowerShell line count and read_file; failed command remains relevant shell-syntax evidence",
+      "receipt": "Not eligible: executed shell failure, not a proven pre-execution exact-edit guard refusal"
+    }
+  ],
+  "provenance": {
+    "artifactsChecked": 22,
+    "clackSourceFilesChecked": 955,
+    "originalFilesChecked": 25,
+    "independentCopyFilesChecked": 25,
+    "artifacts": [
+      {
+        "name": "setup.json",
+        "sha256": "a2807f8dd121383c3618a464262d55ab9c251872e4c1db98ba4865c6d676889e"
+      },
+      {
+        "name": "preflight.json",
+        "sha256": "757cc0bf3d9515e94fa9680ac7c520f52ee5df963f594b4735c133c57e9bd8b0"
+      },
+      {
+        "name": "source-freeze.json",
+        "sha256": "d53b606b884ccefb70be80910444f149531b32c09edc7659a8cf4bc78ad6ab27"
+      },
+      {
+        "name": "runner-exit.json",
+        "sha256": "a5bbe425f0051c782359270818f1439009ec742a3f5f66638da96ad8204f2ec2"
+      },
+      {
+        "name": "runner.log",
+        "sha256": "478bd9eb39588388af95ffeb28b955334a2463e061cd6b1bd64faf00568fc2e9"
+      },
+      {
+        "name": "mission-a-1.json",
+        "sha256": "146d8951c25e43897966eef4e52db638e66c4bc471aaa131118f1ace6a87c4d1"
+      },
+      {
+        "name": "mission-a-1.native-report.json",
+        "sha256": "404a7c8472ad543fb3cbbaddb98057db724d82e2fd4d4139ee4fa7f6338d1ae6"
+      },
+      {
+        "name": "mission-a-1.jsonl",
+        "sha256": "a356d61f8c8d0e0afd446bc3b134642674edcd09fa37afb670c99baaeadb02b5"
+      },
+      {
+        "name": "mission-a-1.requests.jsonl",
+        "sha256": "060a41a40eb0d6512cebca4ec56bc22c6d77968ac0587271616c8e7f56982bed"
+      },
+      {
+        "name": "mission-a-1.attempts.jsonl",
+        "sha256": "1c8f27763f7fdc91171c7e73c791362df5689b38b52a4e8ce1dbe341bc535c81"
+      },
+      {
+        "name": "mission-a-1.receive.jsonl",
+        "sha256": "2d40916997e13ff27f554d4b7808df02c587dc4b4d3e47193fa7599420be9f87"
+      },
+      {
+        "name": "correction-state.json",
+        "sha256": "52afa6262948b0a2d1a3d35158d2705bdb7593b1c80a5ded4ff80677f37f89c2"
+      },
+      {
+        "name": "independent-api.json",
+        "sha256": "071a957879fedcf1c8e1c434aee775acaacc260fa86f0d58c7513d19b30bfede"
+      },
+      {
+        "name": "independent-test.json",
+        "sha256": "8d6ec5d271dcf9b0f940775155c856d39f57b96410db5b7971758268ca86f15d"
+      },
+      {
+        "name": "independent-build.json",
+        "sha256": "b34fc1b28869ca01c622052d5a73781cf5f9f04797f07e3215b90728c24b8643"
+      },
+      {
+        "name": "independent-start.json",
+        "sha256": "6dd77df5c66098e3e5405ccb2e510f6136aefdf305d4d4ca0a9b76b9266a8a4b"
+      },
+      {
+        "name": "independent-typecheck.json",
+        "sha256": "ab2ab38f820dd2af43d551079ba84114b474d901a85e9114a08723cb859aa8f1"
+      },
+      {
+        "name": "independent-entry.json",
+        "sha256": "87c50eeacf010d7f31fbe60ec9c81737fa609789c80083f4dac4bb9008f0ad74"
+      },
+      {
+        "name": "independent-frontend-build.json",
+        "sha256": "05b814fc2b96ee149a58b863f9341c918c14e2abddbe70de22a93daa955872b3"
+      },
+      {
+        "name": "independent-frontend.json",
+        "sha256": "3846a28e6cfd0c91b554e0b70a2adb0e89e775a87567ddd6205955b04f422e09"
+      },
+      {
+        "name": "independent-frontend-1280.png",
+        "sha256": "42f6a4edc19055b74146fc1b142a6a0a4fc4159b9e836a50d5f48e3679c747a0"
+      },
+      {
+        "name": "independent-frontend-390.png",
+        "sha256": "51dd5801ddd136d3f45e72752d68a5642a6fafe32f45bb692be3edb2aee8ca36"
+      }
+    ],
+    "transcriptUnchanged": true,
+    "specificationSha256": "f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801",
+    "correctionSha256": "9e532209ebeeb8ca4e061d91f684635cd9a154854ce6a63602801c7bff4b69cc"
+  },
+  "nextCheckpoint": "Audit Long-Horizon Continuation Representation and Safe Compaction"
+}
