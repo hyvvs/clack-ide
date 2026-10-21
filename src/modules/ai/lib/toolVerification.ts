@@ -5,6 +5,8 @@ import {
   toolVerificationSchema,
   type ToolVerification,
   type ToolConfiguration,
+  createToolRequestBudget,
+  type ToolRequestBudget,
 } from "@/modules/ai/lib/toolVerificationSchema";
 import {
   contextMetadata,
@@ -191,6 +193,7 @@ export type ToolProbeDependencies = {
     state: SelfHostedState,
     signal: AbortSignal,
     configuration?: ToolConfiguration,
+    output?: number,
   ) => Promise<ProbeObservation>;
   commit: (
     change: (state: SelfHostedState) => SelfHostedState,
@@ -199,7 +202,7 @@ export type ToolProbeDependencies = {
   clock?: () => number;
 };
 export async function runToolVerification(
-  options: { profileId: string; signal: AbortSignal; force?: boolean; configuration?: ToolConfiguration },
+  options: { profileId: string; signal: AbortSignal; force?: boolean; configuration?: ToolConfiguration; requestBudget?: ToolRequestBudget },
   deps: ToolProbeDependencies,
 ) {
   const now = deps.clock ?? Date.now;
@@ -230,6 +233,8 @@ export async function runToolVerification(
   const scope = toolScope(profile, endpoint, now());
   if (!scope) return { status: "unavailable" as const };
   const context = deps.context(state, profile);
+  const overrides = JSON.stringify(profile.overrides);
+  const configuration = options.configuration ? { ...options.configuration } : undefined;
   const previous = verificationRecord(profile, options.configuration),
     comparable =
       previous && previous.context === context && sameToolScope(previous.scope, scope) ? previous : undefined;
@@ -248,6 +253,7 @@ export async function runToolVerification(
     outcome: "interrupted",
     context,
     output: TOOL_VERIFICATION.output,
+    attempts: [],
     startedAt: now(),
     completedAt: null,
     firstBodyAt: null,
@@ -258,7 +264,7 @@ export async function runToolVerification(
     textChars: 0,
     finish: null,
     proof: comparable?.proof ?? null,
-    ...(options.configuration ? {configuration: options.configuration} : {}),
+    ...(configuration ? {configuration: { ...configuration }} : {}),
     ...(comparable?.confirmation ? {confirmation: comparable.confirmation} : {}),
     ...(toolFailure(comparable) ? { failure: toolFailure(comparable) } : {}),
     retryAfter: 0,
@@ -276,41 +282,53 @@ export async function runToolVerification(
     );
   const signal = AbortSignal.any([deadline.signal, options.signal]);
   try {
-    const result = await deps.request(state, signal, options.configuration);
-    signal.throwIfAborted();
-    record.outcome = classifyToolObservation(result);
-    record.calls = Math.min(2, result.calls.length);
-    record.validArguments = record.outcome === "native-call";
-    record.firstBodyAt = result.firstBodyAt;
-    record.callAt = result.callAt;
-    record.finish = result.finish.slice(0, 64);
-    record.textChars = Math.min(65536, result.text.length);
-    record.textualIntent =
-      /<tool|<function|"(?:tool|function|name)"\s*:|\bcall\b/i.test(
-        result.text,
-      );
-    state = await deps.refresh();
-    await deps.inspect();
-    const updated = state.profiles.find((p) => p.id === profile.id),
-      server = state.endpoints.find((e) => e.id === endpoint.id);
-    if (
-      !updated ||
-      !server ||
-      !sameToolScope(scope, toolScope(updated, server, now())) || deps.context(state, updated) !== record.context
-    ) {
-      record.outcome = "revision-changed";
-      record.proof = null;
-      delete record.confirmation;
-      delete record.failure;
-    } else if (
-      !state.inventories?.some(
-        (i) =>
-          i.endpointId === endpoint.id &&
-          i.configurationRevision === endpoint.configurationRevision &&
-          i.connected,
-      )
-    )
-      record.outcome = "offline";
+    const budget = options.requestBudget ?? createToolRequestBudget();
+    const checkCurrent = async () => {
+      state = await deps.refresh();
+      await deps.inspect();
+      signal.throwIfAborted();
+      const updated = state.profiles.find(p => p.id === profile.id);
+      const server = state.endpoints.find(e => e.id === endpoint.id);
+      if (!updated || !server ||
+        !sameToolScope(scope, toolScope(updated, server, now())) ||
+        deps.context(state, updated) !== context ||
+        JSON.stringify(updated.overrides) !== overrides ||
+        !sameToolConfiguration(configuration, options.configuration)) {
+        record.proof = null;
+        delete record.confirmation;
+        delete record.failure;
+        return "revision-changed" as const;
+      }
+      if (!state.inventories?.some(i => i.endpointId === endpoint.id &&
+        i.configurationRevision === endpoint.configurationRevision && i.connected))
+        return "offline" as const;
+    };
+    // A confirmation can reuse its exact same-scope successful allowance.
+    const start = comparable?.status === "verified" && comparable.outcome === "native-call" &&
+      comparable.proof && comparable.proof.expiresAt > now() ? comparable.output : TOOL_VERIFICATION.output;
+    for (const output of TOOL_VERIFICATION.outputs.filter(n => n >= start)) {
+      const before = await checkCurrent();
+      if (before) { record.outcome = before; break; }
+      if (budget.remaining <= 0) { record.outcome = "request-limit"; break; }
+      budget.remaining--;
+      record.output = output;
+      const startedAt = now();
+      const result = await deps.request(state, signal, configuration, output);
+      signal.throwIfAborted();
+      record.outcome = classifyToolObservation(result);
+      record.calls = Math.min(2, result.calls.length);
+      record.validArguments = record.outcome === "native-call";
+      record.firstBodyAt = result.firstBodyAt;
+      record.callAt = result.callAt;
+      record.finish = result.finish.slice(0, 64);
+      record.attempts?.push({ output, outcome: record.outcome, finish: record.finish, startedAt, completedAt: now() });
+      record.textChars = Math.min(65536, result.text.length);
+      record.textualIntent = /<tool|<function|"(?:tool|function|name)"\s*:|\bcall\b/i.test(result.text);
+      const after = await checkCurrent();
+      if (after) record.outcome = after;
+      if (record.outcome !== "output-length" || output === 2048) break;
+      await save();
+    }
     record.status =
       record.outcome === "native-call"
         ? "verified"

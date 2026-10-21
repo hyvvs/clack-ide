@@ -12111,3 +12111,245 @@ which never reached a mission stop. No subsequent checkpoint was started.
   untouched**. The native host and runner exited; no owned acceptance process
   remained. Evidence-only commit: `test(ai): rerun nemotron on hardened local
   runtime`. No push. Stop after this checkpoint.
+
+## Reasoning-aware bounded tool readiness verification
+
+### Scope and reconstructed 512-token request
+
+Base: `9a75ca76a5c9803aeb6d494f907937e222de07f0`, `main`, cached origin
+78 ahead / 0 behind. This checkpoint repairs **verification only**. No ForgeBoard
+specification, coding mission, model download, cloud inference or push occurred.
+The six original dirty paths, both stashes and `autonomous_tracker/` are preserved.
+
+Reconstructed the previous `inference-7` from the raw request audit and all native
+response chunks, not report prose. Exact model:
+`nemotron-3.5-lightning:30b-a3b-q4_K_M`; digest
+`e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2`.
+Ollama 0.40.5, unchanged existing SSH/direct endpoint
+`http://127.0.0.1:11435/api/chat`.
+
+- No system message. One user message, exactly the existing canonical prompt:
+  `Call get_probe_value exactly once with key "clack-probe-v1" and count 1. Use the native tool interface. Do not answer in text or simulate a tool call.`
+- One function schema, `get_probe_value`, description
+  `Return a deterministic compatibility probe value. No side effects.`
+  Object properties: `key` string constant `clack-probe-v1`; `count` number
+  constant 1. Both required; additional properties false; draft-07 schema.
+  No execution handler or tool-result loop.
+- `stream:true`, `options:{num_ctx:65536,num_predict:512}`; **`think` omitted**.
+  No other wire provider options or manual reasoning override. Request body hash:
+  `c675a33230e77aeccf855ab4cc5564b6700bf8dba32c12654b30ded17de0df25`.
+- HTTP 200, valid NDJSON: **441 frames**, including **429 nonempty thinking
+  frames**, then **11 nonempty content frames**, then final `done:true`.
+  Reasoning: 1,604 characters; content: 29 characters of unfinished DSML-looking
+  syntax; **zero native tool frames**. No native parser call began.
+- Provider finish **`length`**, **335 input / 512 generated output tokens**.
+  Clack's normalized finish was length; stream settled completed. Parser state
+  was text-only/incomplete native-tool evidence, not a malformed transport.
+
+The allowance really was exhausted. However, reasoning was **not still streaming
+at the final boundary**: the trace had already transitioned to content. The
+response was cut off while emitting tool-looking text. The earlier readiness
+refusal was correct fail-closed behavior; the deficiency was having no bounded
+way to resolve this output-budget uncertainty.
+
+### Accounting, controlled differential and limits of causality
+
+Ollama documents `eval_count` as generated response tokens and streams thinking
+separately from answer content. The surfaced reasoning in this trace is part of
+the generation constrained by `num_predict`, not an additional free generation
+budget. There is **no independent hidden-reasoning or per-channel token count**
+here; neither hidden-token totals nor a reasoning/answer token split are inferred.
+References: [Ollama chat API](https://docs.ollama.com/api/chat),
+[thinking API behavior](https://docs.ollama.com/capabilities/thinking).
+
+Fresh metadata confirmed the same installed digest and server before inference.
+No competing Clack inference/build/test process was active. Reused the recent
+captured 512 result rather than generating another baseline. The one controlled
+probe cloned the entire captured body and changed **only `num_predict` to 1024**.
+Context, prompt, schema, model, endpoint and reasoning omission stayed equal by
+deep comparison. No seed or sampling adjustment was introduced.
+
+| Probe | Output allowance | Reported output | Finish | Thinking/content | Native calls |
+|---|---:|---:|---|---|---:|
+| Captured baseline, not new inference | 512 | 512 | length | 1,604 / 29 chars | 0 |
+| New controlled differential | 1,024 | 824 | stop | 2,640 / 218 chars | 0 |
+| 2,048 differential | Not sent | N/A | N/A | Normal stop does not justify escalation | N/A |
+
+The new differential ran 2026-10-21 **03:16:42.896-03:17:10.877 UTC**. It returned
+complete tool-looking text, **not native structured calls**. It was not executed
+or accepted as verification. At 1,024, output uncertainty was resolved but native
+protocol compliance was not established. Increasing the allowance alone did not
+make that response a PASS, so no 2,048 probe followed a normal stop.
+
+The later production 512 PASS below used the **identical 512 request body** as the
+earlier failure. Thus 512 is insufficient for some observed generations, not a
+deterministic minimum for this model. Sampling/runtime variation remains; one
+differential is not a reproducible per-model threshold or proof that every
+default-reasoning failure was caused solely by the verifier budget.
+
+### Generic production policy
+
+Initial verification starts at **512**. Only normalized authoritative finish
+**`length` with no native verdict** permits **512 -> 1024 -> 2048**, with at most
+two escalations. The hard cap is **2,048**, independent of Agent mission output.
+No model/family branch, reasoning prediction or provider-default mutation.
+
+| Result | Behavior |
+|---|---|
+| Valid native call, even with length | Native PASS; no escalation |
+| Wrong/multiple/invalid native call | Existing negative verdict; no escalation |
+| No call and authoritative length | Next bounded allowance, same configuration |
+| Length at 2,048 | Incomplete / output-length, backoff; no reasoning search |
+| Normal text or pseudo-call with stop | Existing Needs-attention semantics; no output escalation |
+| Empty stop | Incomplete / empty, no output escalation |
+| Pre-output/idle timeout, transport error, cancellation or offline | Existing incomplete/cancel/offline behavior; no escalation |
+| Shared request cap spent | Incomplete / request-limit; no further dispatch |
+| Digest, endpoint, runtime, context, metadata or explicit-choice change | Reject stale result and stop escalation |
+
+The existing Automatic resolver still considers provider omission plus at most
+two advertised, wire-distinct alternatives. **All actual probe dispatches share
+one five-request budget**, including escalations and alternative confirmations;
+the existing five-call selection bound also remains. Length-incomplete does not
+trigger reasoning-mode search. Completed negative compliance can still enter the
+existing resolver. A confirmation may reuse a still-current, same-scope
+**successful** output allowance instead of spending another known-starved 512
+attempt. It does not reuse failed-budget guesses or waive double confirmation.
+
+All steps of a configuration share the **unchanged 120-second verifier deadline**;
+it is not reset per allowance. Provider-global deadlines, stream-idle limits and
+Agent mission output policy are unchanged. Prompt, schema, context and reasoning
+are held constant during a ladder. Ownership and cancellation are checked before
+and after each request; stale callbacks cannot activate a new proof.
+
+Native structured tools remain mandatory. `canonicalProbeTools` still contains
+exactly one inert function with **no execute handler**. No XML/JSON/DSML parser,
+textual execution fallback, model-specific prompt or synthetic native call was
+added. Explicit user reasoning choices remain respected. The already-demonstrated
+Qwen small native response verifies at the first 512 allowance in deterministic
+regression tests; **no live Qwen/Muse/North or other-model inference occurred**.
+
+### Persistence, UI and native boundary
+
+- Existing version-1 tool evidence and ownership remain. `output` now accepts
+  only 512/1,024/2,048. Additive optional `attempts` contains at most three bounded
+  records: output, outcome, finish, start and completion timestamps. No response
+  text, hidden reasoning or execution payload is copied into profile evidence.
+- Initial verifying state and completed length steps are saved; final success
+  stores normal exact-scope Verified proof. Hard-cap exhaustion stays Incomplete,
+  not Needs attention or Incompatible solely because of length. A restart does
+  not replay an interrupted ladder. Existing failure/proof preservation remains.
+- TS and Rust persistence validation both accept the bounded outputs/attempts and
+  `request-limit` outcome. Existing 512 records without attempts still load.
+  Native CAS/round-trip tests cover all three outputs, preserve ownership and
+  reject excessive/malformed metadata or fabricated proof.
+- Final audit found Rust still required literal 512. That matching validator
+  correction and a TS attempt-outcome refinement were completed **after** the
+  live readiness result, with focused/native tests and full Rust gates below.
+  No wire/ladder policy changed after live verification. The committed fixture
+  records both post-live validation file hashes. No additional inference or
+  repair-and-resume experiment followed.
+- Normal settings retain Verifying -> Verified or Incomplete projections. No
+  user-facing max-token tuning control/message was introduced. Advanced evidence
+  exposes output-length and the bounded attempts. Chat Only remains selectable
+  under its existing policy; it is not forced through Agent verification.
+
+### Single live production readiness acceptance
+
+Evidence ID: **`reasoning-aware-tool-readiness-20261021-01`**, under
+`src-tauri/target/real-qwen-product/`. The existing adapter has an explicit
+**readiness-only branch** that cannot call the product mission even after Ready.
+No new ForgeBoard workspace or specification was created/sent. Isolated test
+preferences do not modify the user's saved application settings.
+
+2026-10-21 **03:24:27.080-03:25:19.414 UTC**: exact same Nemotron revision, current
+production Automatic controls, existing tunnel and Ollama 0.40.5. Previous native
+host was gone and its runtime-scoped context evidence had expired. The new host
+therefore ran normal unchanged context readiness, rather than importing or
+manually pinning old proof: **six calibration requests**, verifying/loading
+4,096 through 65,536 again. Context-calibration policy itself was not modified.
+
+The **first production tool request** used `num_ctx=65536`, `num_predict=512`,
+`think` omitted. This response produced **one genuine native `get_probe_value`
+call**, arguments exactly `{key:"clack-probe-v1",count:1}`. Provider totals:
+**335 input / 82 output tokens**, native finish `stop`; SDK normalized finish
+`tool-calls`. Reasoning 151 characters, content 1 character. Tool request duration
+in evidence is about 2.5s. The returned call **never executed**.
+
+Final persisted profile and projection: **Verified / Ready**, provider default
+On, Automatic recommendation `automatic`, effective provider options empty,
+context recommended/verified/loaded **65,536**. No output escalation or alternate
+reasoning candidate was needed in this live run. This is a real native Automatic
+PASS, **not live proof of an escalated PASS**. All 512->1024->2048 success/failure
+branches were separately verified by deterministic SDK/persistence tests.
+
+**Total new Nemotron inference: 8** = one differential + six legitimate context
+revalidations + one production tool probe. Other models/cloud/downloads/ForgeBoard
+runs/tool execution: **all zero**. No manual overrides or reminders. No F1,
+compaction, context-calibration, Agent mission output, timeout-constant, service,
+firewall, SSH or Ollama configuration changes. Original manual 11435 tunnel
+remained running, untouched. Owned runner/native host no longer present. No
+native GUI or Linux/macOS live verification is claimed.
+
+### Verification and explicit gate limitations
+
+- Final affected frontend group: **122 tests passed across 4 files** (70 core
+  verification, resolver and SDK integration, plus readiness-only ownership).
+  Covers first-allowance PASS, both escalated PASS branches, max-length incomplete,
+  normal-stop negatives, empty/timeout/transport/cancel/offline, stale identity and
+  explicit configuration, unchanged prompt/schema/provider options, shared cap,
+  alternative confirmation, additive persistence and Ready projection.
+- Focused Rust native persistence: **12 passed**, including two new bounded
+  output/attempt and CAS tests. `cargo fmt --check`: passed. Strict
+  `cargo clippy --all-targets --locked --target-dir target/codex-test -- -D warnings`:
+  passed. No broad formatting or unrelated fixes.
+- TypeScript passed, including recheck after the matching validation refinement.
+  `npm.cmd run lint`: passed, unchanged **71 warnings / 2 infos**.
+  `npm.cmd run build`: passed; existing ineffective-dynamic-import/plugin-timing
+  warnings only. New/affected script syntax and working/staged diff checks passed.
+- **Full `npm.cmd test` was run once and is NOT green**: **3,363 passed, 1 failed,
+  3 skipped; 226 passed files, 4 failed files**. Three failed suites are collection
+  issues: the existing Node `audit-devstral-latency.test.mjs` (its 12 TAP checks pass
+  but Vitest reports no suite), plus old ignored generated backend source/emitted
+  tests under `src-tauri/target` missing `supertest`. The one failed assertion is
+  an archived `before-src--test--acceptanceComparison.test.ts` under target testing
+  the unchanged original dirty runner. Those pre-existing artifacts/dirty files
+  were not changed, cleaned, excluded via configuration or repaired here. All
+  current verifier tests passed. No full frontend rerun hid these failures.
+- **Full `cargo test --locked --target-dir target/codex-test` was run once and is
+  NOT green**: library **662 passed, 1 failed, 2 ignored**. Unchanged
+  `d1_cancellation_timeout_and_revocation_prevent_or_interrupt_work` expected
+  `tool-revoked` but received `timed-out`; an isolated rerun fails identically.
+  Its unchanged 10ms deadline races the existing biased timeout/watch selection.
+  No baseline binary run proves when that unrelated failure began. Integration/
+  doc-test execution was not reached after the library failure; no full Rust
+  success is claimed. The checkpoint's native persistence tests and strict Clippy
+  pass. This unrelated execution lifecycle was left untouched.
+
+### Conclusion, artifacts and repository safety
+
+**REASONING-AWARE TOOL READINESS READY**: generic bounded uncertainty resolution
+is implemented, and Nemotron reached production Automatic Verified/Ready without
+manual tuning. **Limitations:** the larger controlled response did not produce
+native calls, the live PASS happened at 512, and full repository gates have the
+explicit unrelated failures above. This is not a causal guarantee, permanent
+cross-runtime proof, ForgeBoard completion claim or universally sufficient budget.
+
+Nemotron is eligible for a **separate fresh Hardened-Runtime Nemotron Autonomous
+ForgeBoard Acceptance** using normal current-scope revalidation. That is the next
+checkpoint, **not started here**. Historical ForgeBoard results remain unchanged.
+
+`scripts/check-tool-output-budget.mjs` retains the exact controlled differential;
+`scripts/audit-tool-output-budget.mjs` checks byte-equivalent controls, raw native
+evidence, call arguments, zero mission sessions and post-live validation hashes.
+Bounded committed summary: `src/test/fixtures/reasoning-tool-readiness-20261021.json`.
+Ignored raw request/response artifacts and their SHA-256 hashes remain available
+under the two evidence IDs above. No private conversation content was promoted
+to project memory or inserted into these probes.
+
+Production changes are limited to `toolVerificationSchema.ts`,
+`toolVerification.ts`, `toolVerificationRuntime.ts`, `agentConfiguration.ts` and
+the matching `self_hosted_profiles.rs` validator. Other changes are focused tests,
+readiness-only harness/evidence and **this report appendix only**. Original six
+dirty contents, both safety stashes and `autonomous_tracker/` are preserved; only
+checkpoint-owned hunks are staged. No clean/reset, no push. Commit:
+`fix(ai): bound reasoning-aware tool verification`. Stop after this checkpoint.

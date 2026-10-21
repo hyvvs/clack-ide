@@ -149,7 +149,7 @@ export async function verifyModelTools(options: {
             throw new Error("Context unavailable for tool verification");
           return context;
         },
-        request: async (state, abortSignal, configuration?: ToolConfiguration) => {
+        request: async (state, abortSignal, configuration?: ToolConfiguration, output = TOOL_VERIFICATION.output) => {
           const currentProfile = state.profiles.find(p => p.id === profile.id);
           if (!currentProfile) throw new Error("Model unavailable");
           const reasoning = toolEffortCapture(state, currentProfile, configuration);
@@ -219,7 +219,7 @@ export async function verifyModelTools(options: {
             model,
             prompt: TOOL_PROBE_PROMPT,
             tools: canonicalProbeTools(),
-            maxOutputTokens: TOOL_VERIFICATION.output,
+            maxOutputTokens: output,
             maxRetries: 0,
             abortSignal,
             providerOptions: effortProviderOptions(reasoning),
@@ -255,7 +255,7 @@ export async function verifyModelTools(options: {
     if (options.resolveAutomatic) {
       await resolveAutomaticAgentTools({...options, signal}, {
         refresh: deps.refresh, inspect: deps.inspect, context: deps.context,
-        verify: (configuration, force) => runToolVerification({...options, configuration, force, signal}, deps),
+        verify: (configuration, force, requestBudget) => runToolVerification({...options, configuration, force, requestBudget, signal}, deps),
       });
       const state = await readToolProfiles(), p = state.profiles.find(p => p.id === profile.id);
       return p ? modelOnboarding(state,p)?.reasoning.agentRecommendation?.record ?? p.toolVerification : undefined;

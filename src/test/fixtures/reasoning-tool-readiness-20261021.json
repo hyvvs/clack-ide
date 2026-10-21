@@ -1,0 +1,307 @@
+{
+  "base": "9a75ca76a5c9803aeb6d494f907937e222de07f0",
+  "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+  "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+  "providerVersion": "0.40.5",
+  "exactBaselineRequest": {
+    "at": 1792551338995,
+    "body": {
+      "messages": [
+        {
+          "content": "Call get_probe_value exactly once with key \"clack-probe-v1\" and count 1. Use the native tool interface. Do not answer in text or simulate a tool call.",
+          "role": "user"
+        }
+      ],
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "options": {
+        "num_ctx": 65536,
+        "num_predict": 512
+      },
+      "stream": true,
+      "tools": [
+        {
+          "function": {
+            "description": "Return a deterministic compatibility probe value. No side effects.",
+            "name": "get_probe_value",
+            "parameters": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "const": 1,
+                  "type": "number"
+                },
+                "key": {
+                  "const": "clack-probe-v1",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "count"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "requestId": "inference-7",
+    "url": "http://127.0.0.1:11435/api/chat"
+  },
+  "baselineResponse": {
+    "frames": 441,
+    "reasoningFrames": 429,
+    "contentFrames": 11,
+    "calls": [],
+    "reasoningChars": 1604,
+    "contentChars": 29,
+    "final": {
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "created_at": "2026-10-21T02:55:53.436802211Z",
+      "message": {
+        "role": "assistant",
+        "content": ""
+      },
+      "done": true,
+      "done_reason": "length",
+      "total_duration": 10238163453,
+      "load_duration": 729518,
+      "prompt_eval_count": 335,
+      "prompt_eval_cached_count": 0,
+      "prompt_eval_duration": 1089031000,
+      "eval_count": 512,
+      "eval_duration": 9132039000
+    },
+    "lastNonemptyField": "content"
+  },
+  "differential": [
+    {
+      "output": 1024,
+      "startedAt": 1792552602896,
+      "endedAt": 1792552630877,
+      "firstOutputAt": 1792552610651,
+      "frames": 734,
+      "reasoningFrames": 680,
+      "textFrames": 53,
+      "textChars": 218,
+      "thinkingChars": 2640,
+      "textSha256": "719afe7549e208d139cda2205dca444f012b1c990b32adefbf7278606395402e",
+      "thinkingSha256": "b3c1b872c84067dba48860b38e76ebfcb9ec762f947a086f348917ddcd887d2e",
+      "calls": [],
+      "validNativeCall": false,
+      "finish": "stop",
+      "inputTokens": 335,
+      "outputTokens": 824,
+      "bodySha256": "74b8fae3456ecd6b27b68bb65bd50c6097c6f25ac6dc6b79991fbda1fa863131",
+      "textTail": "\"arguments\": {\n          \"key\": \"clack-probe-v1\",\n          \"count\": 1\n        }\n      }\n    ]\n  }\n}",
+      "lastFrame": {
+        "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+        "created_at": "2026-10-21T03:17:14.997918293Z",
+        "message": {
+          "role": "assistant",
+          "content": ""
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 27968200621,
+        "load_duration": 6554744205,
+        "prompt_eval_count": 335,
+        "prompt_eval_cached_count": 0,
+        "prompt_eval_duration": 1184827000,
+        "eval_count": 824,
+        "eval_duration": 20225129000
+      }
+    }
+  ],
+  "production": {
+    "requests": 7,
+    "calibrationRequests": 6,
+    "toolRequests": 1,
+    "outputs": [
+      512
+    ],
+    "think": "omitted",
+    "context": {
+      "recommended": 65536,
+      "verified": 65536,
+      "advertised": 1048576,
+      "loaded": 65536,
+      "provenance": "measured"
+    },
+    "effective": {},
+    "tools": "Verified",
+    "readiness": "Ready",
+    "record": {
+      "version": 1,
+      "id": "8ae56818-c009-4f13-86b4-1791af8795f4",
+      "scope": {
+        "endpointId": "real-qwen",
+        "configurationRevision": 1,
+        "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+        "deployment": null,
+        "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+        "backend": "ollama",
+        "runtimeEpoch": "39428:1792553072143940500",
+        "providerVersion": "0.40.5",
+        "reasoning": "[true,\"[false,true,\\\"medium\\\"]\",true]",
+        "protocol": "native-tools-v1"
+      },
+      "status": "verified",
+      "outcome": "native-call",
+      "context": 65536,
+      "output": 512,
+      "attempts": [
+        {
+          "output": 512,
+          "outcome": "native-call",
+          "finish": "tool-calls",
+          "startedAt": 1792553115790,
+          "completedAt": 1792553118316
+        }
+      ],
+      "startedAt": 1792553115538,
+      "completedAt": 1792553118676,
+      "firstBodyAt": 1792553116965,
+      "callAt": 1792553118267,
+      "calls": 1,
+      "validArguments": true,
+      "textualIntent": false,
+      "textChars": 1,
+      "finish": "tool-calls",
+      "proof": {
+        "at": 1792553118676,
+        "expiresAt": 1792639518676
+      },
+      "retryAfter": 1792639518676
+    },
+    "response": {
+      "frames": 41,
+      "reasoningFrames": 39,
+      "contentFrames": 1,
+      "calls": [
+        {
+          "id": "call_socmej5i",
+          "function": {
+            "index": 0,
+            "name": "get_probe_value",
+            "arguments": {
+              "key": "clack-probe-v1",
+              "count": 1
+            }
+          }
+        }
+      ],
+      "reasoningChars": 151,
+      "contentChars": 1,
+      "final": {
+        "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+        "created_at": "2026-10-21T03:25:22.429985752Z",
+        "message": {
+          "role": "assistant",
+          "content": "\n"
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 2486629604,
+        "load_duration": 831311,
+        "prompt_eval_count": 335,
+        "prompt_eval_cached_count": 0,
+        "prompt_eval_duration": 1112352000,
+        "eval_count": 82,
+        "eval_duration": 1342523000
+      },
+      "lastNonemptyField": "content"
+    },
+    "startedAt": 1792553067080,
+    "readyAt": 1792553119129,
+    "endedAt": 1792553119414,
+    "same512RequestBody": true,
+    "executedTools": 0,
+    "sessions": [],
+    "conversations": []
+  },
+  "controls": {
+    "initial": 512,
+    "ladder": [
+      512,
+      1024,
+      2048
+    ],
+    "maxRequests": 5,
+    "deadlineMs": 120000,
+    "trigger": "normalized length without a native verdict"
+  },
+  "newInference": {
+    "total": 8,
+    "differential": 1,
+    "contextRevalidation": 6,
+    "productionTools": 1,
+    "otherModels": 0,
+    "cloud": 0,
+    "downloads": 0,
+    "forgeboard": 0
+  },
+  "classification": "REASONING-AWARE TOOL READINESS READY",
+  "limitations": [
+    "Live production passed at 512; no live escalated native PASS is claimed.",
+    "Same 512 body has both length/no-call and native PASS evidence. No deterministic per-model output threshold is established.",
+    "No separate hidden-reasoning token counter exists in this evidence.",
+    "Native allowance/attempt validation and matching TS outcome refinement were completed after live Ready; focused persistence tests validate all supported allowances, without more inference."
+  ],
+  "postLiveValidationChanges": [
+    {
+      "path": "src-tauri/src/modules/self_hosted_profiles.rs",
+      "sha256": "6ddd51c231b78021ae47d07594e52da3c90c9d963e72cc1005fb702c1b0bbabd",
+      "after": "d61ea7f1458728a29442917d0a94a5fbd593a6a21ff7de454037c36a26f614a7"
+    },
+    {
+      "path": "src/modules/ai/lib/toolVerificationSchema.ts",
+      "sha256": "2c7a7ea2aa132ccb676fd64699fbf46956380303dd18186d56293a0b08df8cb8",
+      "after": "33ce980502bc15b88e067946808239e91cc3d64dd1260193ece80a8a40eadc8a"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "src-tauri/target/real-qwen-product/forgeboard-nemotron-hardened-20261021-01/mission-a-1.requests.jsonl",
+      "sha256": "14175e7a6702771a4c1219cbc1c3f5324e5c527ea8b70a4a5dba93bd7369131f"
+    },
+    {
+      "path": "src-tauri/target/real-qwen-product/forgeboard-nemotron-hardened-20261021-01/mission-a-1.jsonl",
+      "sha256": "0e5efc188d7f215b3720ba2ed9c9e8ef8a68c9c4a431491fda224e34b02ae9a9"
+    },
+    {
+      "path": "src-tauri/target/reasoning-tool-readiness-20261021-01/1024.request.json",
+      "sha256": "83359f48c7375225d5716dc59f2bb4705f8541163425ce1607b5cdb88d21b3cd"
+    },
+    {
+      "path": "src-tauri/target/reasoning-tool-readiness-20261021-01/1024.response.ndjson",
+      "sha256": "2e876c9fda9569f2d45e3b15fbaa285169bef3b0df132e33491d3fc0f674760d"
+    },
+    {
+      "path": "src-tauri/target/reasoning-tool-readiness-20261021-01/differential.json",
+      "sha256": "3fbd40b83c46e928aacf24907ba877fa2344449d19c673db90a8b432423b4e8d"
+    },
+    {
+      "path": "src-tauri/target/real-qwen-product/reasoning-aware-tool-readiness-20261021-01/mission-a-1.json",
+      "sha256": "c008e1bd6b8bf3da74795bea9cfc454139d42cd7a7bdf0e3c4164d4899166816"
+    },
+    {
+      "path": "src-tauri/target/real-qwen-product/reasoning-aware-tool-readiness-20261021-01/mission-a-1.requests.jsonl",
+      "sha256": "939747d1b5b74c184bdc188d7052f6fe792bed8d315931c25c5a1c8bf29b42ed"
+    },
+    {
+      "path": "src-tauri/target/real-qwen-product/reasoning-aware-tool-readiness-20261021-01/mission-a-1.jsonl",
+      "sha256": "f904ae561c8e7b82efdec834004a6f589487224c3250c831059a3ee57a42f994"
+    },
+    {
+      "path": "src-tauri/target/real-qwen-product/reasoning-aware-tool-readiness-20261021-01/mission-a-1.receive.jsonl",
+      "sha256": "accf24097d3bdd99c9b14864070d3164d5e3e4b1ce6f40f1a5e8d8eb1452a3e7"
+    },
+    {
+      "path": "src-tauri/target/real-qwen-product/reasoning-aware-tool-readiness-20261021-01/setup.json",
+      "sha256": "bed0a5c6d802ed4157e68d00ac0eef59129d7fad7c1c69bc072039d6affd3673"
+    }
+  ]
+}

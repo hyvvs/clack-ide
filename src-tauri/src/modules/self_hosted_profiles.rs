@@ -296,9 +296,35 @@ fn validate_tool_verification(
                     | "cancelled"
                     | "unsupported"
                     | "interrupted"
+                    | "request-limit"
             )
         )
-        || record["output"] != 512
+        || !matches!(record["output"].as_u64(), Some(512 | 1024 | 2048))
+        || record.get("attempts").is_some_and(|attempts| {
+            attempts.as_array().is_none_or(|attempts| {
+                attempts.len() > 3
+                    || attempts.iter().any(|attempt| {
+                        attempt.as_object().is_none_or(|object| object.len() != 5)
+                            || !matches!(attempt["output"].as_u64(), Some(512 | 1024 | 2048))
+                            || !matches!(
+                                attempt["outcome"].as_str(),
+                                Some(
+                                    "native-call"
+                                        | "wrong-tool"
+                                        | "invalid-arguments"
+                                        | "multiple-calls"
+                                        | "text-only"
+                                        | "empty"
+                                        | "output-length"
+                                        | "transport"
+                                )
+                            )
+                            || !bounded(&attempt["finish"], 64)
+                            || !time(&attempt["startedAt"])
+                            || !time(&attempt["completedAt"])
+                    })
+            })
+        })
         || !record["context"]
             .as_u64()
             .is_some_and(|n| n > 0 && n <= 2_000_000)
@@ -541,7 +567,7 @@ mod tests {
             ("/validArguments", json!(false)),
             ("/calls", json!(2)),
             ("/proof", Value::Null),
-            ("/output", json!(2048)),
+            ("/output", json!(4096)),
         ] {
             let mut value = tool_verified();
             *value["profiles"][0]["toolVerification"]
@@ -576,6 +602,63 @@ mod tests {
             let mut invalid_record = value.clone();
             invalid_record["profiles"][0]["toolVerification"]["failure"] = invalid;
             assert!(validate(&invalid_record).is_err());
+        }
+    }
+
+    #[test]
+    fn escalated_tool_evidence_is_bounded_and_survives_native_cas() {
+        for output in [512, 1024, 2048] {
+            let mut value = tool_verified();
+            value["profiles"][0]["toolVerification"]["output"] = json!(output);
+            value["profiles"][0]["toolVerification"]["attempts"] = json!([
+                {"output":output,"outcome":"native-call","finish":"tool-calls","startedAt":1,"completedAt":2}
+            ]);
+            let restored: Value =
+                serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(
+                compare_and_save(value.clone(), value, restored, |_| Ok(())),
+                Ok(true)
+            );
+        }
+        let mut incomplete = tool_verified();
+        let record = &mut incomplete["profiles"][0]["toolVerification"];
+        record["status"] = json!("incomplete");
+        record["outcome"] = json!("request-limit");
+        record["proof"] = Value::Null;
+        record["calls"] = json!(0);
+        record["validArguments"] = json!(false);
+        validate(&incomplete).unwrap();
+    }
+
+    #[test]
+    fn native_tool_attempt_metadata_rejects_unbounded_or_malformed_records() {
+        let attempt = json!({"output":512,"outcome":"output-length","finish":"length","startedAt":1,"completedAt":2});
+        for invalid in [
+            json!([
+                attempt.clone(),
+                attempt.clone(),
+                attempt.clone(),
+                attempt.clone()
+            ]),
+            Value::Null,
+            json!({}),
+        ] {
+            let mut value = tool_verified();
+            value["profiles"][0]["toolVerification"]["attempts"] = invalid;
+            assert!(validate(&value).is_err());
+        }
+        for (field, invalid) in [
+            ("output", json!(4096)),
+            ("outcome", json!("invented")),
+            ("finish", json!("x".repeat(65))),
+            ("startedAt", json!(-1)),
+            ("extra", json!(true)),
+        ] {
+            let mut value = tool_verified();
+            let mut changed = attempt.clone();
+            changed[field] = invalid;
+            value["profiles"][0]["toolVerification"]["attempts"] = json!([changed]);
+            assert!(validate(&value).is_err(), "accepted {field}");
         }
     }
 

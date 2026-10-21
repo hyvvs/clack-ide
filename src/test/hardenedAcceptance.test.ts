@@ -48,4 +48,10 @@ describe("hardened-runtime acceptance ownership", () => {
     expect(entry).toContain('initial.modelRevision !== digest');
     expect(driver).toContain('const reasoningChoice = "automatic"');
   });
+  it("readiness-only verification cannot dispatch the product specification", () => {
+    expect(driver).toContain('process.env.CLACK_PRODUCT_READINESS_ONLY === "1"');
+    expect(entry).toContain('if (config.realProduct.readinessOnly)');
+    expect(entry.indexOf('if (config.realProduct.readinessOnly)')).toBeLessThan(entry.indexOf('await runRealLocalProduct(config)'));
+    expect(entry).toContain('sessions: [], conversations: []');
+  });
 });

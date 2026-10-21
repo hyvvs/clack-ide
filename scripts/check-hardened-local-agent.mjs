@@ -21,6 +21,7 @@ assert(path.isAbsolute(root), "Acceptance workspace must be absolute");
 const maxOutput = process.env.CLACK_PRODUCT_MAX_OUTPUT ? Number(process.env.CLACK_PRODUCT_MAX_OUTPUT) : undefined;
 assert(maxOutput === undefined || (Number.isSafeInteger(maxOutput) && maxOutput >= 256 && maxOutput <= 16384), "Output allowance must be 256-16384 whole tokens");
 const singleSpec = process.env.CLACK_PRODUCT_SINGLE_SPEC === "1";
+const readinessOnly = process.env.CLACK_PRODUCT_READINESS_ONLY === "1";
 const traceStreams = process.env.CLACK_PRODUCT_TRACE === "1";
 const modelId = process.env.CLACK_PRODUCT_MODEL ?? "qwen3-coder:30b";
 assert(["qwen3-coder:30b", "nemotron-3.5-lightning:30b-a3b-q4_K_M"].includes(modelId), "An explicit hardened acceptance model is required");
@@ -89,7 +90,7 @@ const server = createServer(async (request, response) => {
   const json = value => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(value)); };
   try {
     if (request.method === "OPTIONS") { response.statusCode = 204; response.end(); return; }
-    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, modelId, modelDigest, toolProtocol, maxOutput, singleSpec, reasoningChoice, traceStreams, prepareOnly }, streamDiagnostic });
+    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, modelId, modelDigest, toolProtocol, maxOutput, singleSpec, reasoningChoice, traceStreams, prepareOnly, readinessOnly }, streamDiagnostic });
     if (!["/report", "/evidence", "/approval", "/correction"].includes(request.url) || request.method !== "POST") { response.statusCode = 404; return json({ error: "Unknown acceptance route" }); }
     let body = "";
     for await (const chunk of request) { body += chunk; assert(body.length < 64 * 1024 * 1024, "Acceptance payload exceeded bound"); }
@@ -215,7 +216,7 @@ try {
     numCtx: request.body.options.num_ctx, numPredict: request.body.options.num_predict,
     think: request.body.think ?? "server-default",
   }));
-  await writeFile(`${output}.json`, JSON.stringify({ ...result, runId, singleSpec, maxOutput, reasoningChoice, replaySource, startedAt, endedAt: Date.now(), root, initialModels, initialHealth, finalModels, finalHealth, destinations, wireBudgets, nativeLog }, null, 2));
+  await writeFile(`${output}.json`, JSON.stringify({ ...result, runId, singleSpec, readinessOnly, maxOutput, reasoningChoice, replaySource, startedAt, endedAt: Date.now(), root, initialModels, initialHealth, finalModels, finalHealth, destinations, wireBudgets, nativeLog }, null, 2));
   assert(result.ok, result.error || JSON.stringify(result));
   console.log(`PRESERVED ${phase}: ${destinations.length} native inference attempts; result ${output}.json`);
 } catch (error) {

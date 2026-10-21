@@ -61,6 +61,9 @@ try {
   readiness = { readyAt: Date.now(), model, digest, before, after: view, profile, effective, context: view.context,
     endpoint, cloudInference: 0, fallback: "never" };
   emit({ kind: "mission-readiness", ...(readiness as Record<string, unknown>) });
+  if (config.realProduct.readinessOnly) {
+    result = { ok: true, readiness, settings: state, sessions: [], conversations: [] };
+  } else {
   const permissions = { "builtin:coder": { mode: "trusted-workspace" as const, categories: {} } };
   await setAgentPermissionProfiles(permissions);
   usePreferencesStore.setState({ selfHostedInference: state, agentPermissionProfiles: permissions });
@@ -85,6 +88,7 @@ try {
   try {
     result = { ok: true, ...(await runRealLocalProduct(config)), readiness, missionStartedAt: startedAt };
   } finally { clearInterval(monitor); }
+  }
 } catch (error) {
   result = { ok: false, stage, error: String(error), stack: error instanceof Error ? error.stack : undefined,
     readiness, sessions: useChatStore.getState().sessions, settings: await readToolProfiles(),

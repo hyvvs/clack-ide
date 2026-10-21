@@ -15,6 +15,7 @@ import {
   commitToolVerification,
   toolVerificationState,
   type ProbeObservation,
+  type ToolProbeDependencies,
 } from "@/modules/ai/lib/toolVerification";
 import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
 import {
@@ -25,6 +26,7 @@ import {
   TOOL_PROBE_NAME,
   TOOL_VERIFICATION,
   toolVerificationSchema,
+  type ToolRequestBudget,
 } from "@/modules/ai/lib/toolVerificationSchema";
 
 const call = {
@@ -95,7 +97,7 @@ function fixture() {
       configurationRevision: state.endpoints[0].configurationRevision,
       at: Date.now(),
     });
-  const request = vi.fn(async () => observed());
+  const request = vi.fn<ToolProbeDependencies["request"]>(async () => observed());
   const deps = {
     refresh: async () => state,
     inspect,
@@ -119,9 +121,9 @@ function fixture() {
     version: (v: string) => {
       version = v;
     },
-    run: (force = false) =>
+    run: (force = false, requestBudget?: ToolRequestBudget) =>
       runToolVerification(
-        { profileId: get().id, signal: controller.signal, force },
+        { profileId: get().id, signal: controller.signal, force, requestBudget },
         deps,
       ),
     verdict: () => toolVerificationState(state, get()),
@@ -130,6 +132,129 @@ function fixture() {
 afterEach(() => {
   forgetContextRuntime("server");
   vi.restoreAllMocks();
+});
+
+describe("bounded verifier output exhaustion", () => {
+  const length = () => observed({ calls: [], text: "", finish: "length", callAt: null });
+  const outputs = (f: ReturnType<typeof fixture>) => f.deps.request.mock.calls.map(c => c[3]);
+
+  it.each([1024, 2048])("only explicit length escalates to a native PASS at %s", async output => {
+    const f = fixture();
+    f.deps.request.mockResolvedValueOnce(length());
+    if (output === 2048) f.deps.request.mockResolvedValueOnce(length());
+    await f.run();
+    expect(outputs(f)).toEqual(output === 1024 ? [512, 1024] : [512, 1024, 2048]);
+    expect(f.get().toolVerification).toMatchObject({ status: "verified", outcome: "native-call", output });
+    expect(f.get().toolVerification?.attempts?.map(a => a.outcome)).toEqual(output === 1024 ?
+      ["output-length", "native-call"] : ["output-length", "output-length", "native-call"]);
+    f.replace(readSelfHostedState(JSON.parse(JSON.stringify(f.state()))));
+    expect(f.verdict()).toBe("Verified");
+    expect(modelOnboarding(f.state(), f.get())?.status).toBe("Ready");
+  });
+  it("hard-cap exhaustion persists Incomplete, never negative compliance, and backs off", async () => {
+    const f = fixture(); f.deps.request.mockResolvedValue(length());
+    await f.run(); await f.run();
+    expect(outputs(f)).toEqual([512, 1024, 2048]);
+    expect(f.get().toolVerification).toMatchObject({ status: "incomplete", outcome: "output-length", output: 2048, proof: null });
+    expect(f.get().toolVerification?.failure).toBeUndefined();
+    f.replace(readSelfHostedState(JSON.parse(JSON.stringify(f.state()))));
+    expect(f.verdict()).toBe("Incomplete");
+  });
+  it.each(["text", "pseudo", "empty"])("normal-stop %s does not escalate", async kind => {
+    const f = fixture();
+    f.deps.request.mockResolvedValue(observed({ calls: [], finish: "stop", callAt: null,
+      text: kind === "pseudo" ? '<function=get_probe_value>{"count":1}</function>' : kind === "text" ? "not native" : "" }));
+    await f.run();
+    expect(outputs(f)).toEqual([512]);
+    expect(f.verdict()).toBe(kind === "empty" ? "Incomplete" : "Needs attention");
+  });
+  it("a native verdict takes precedence over a coincident length finish", async () => {
+    const f = fixture(); f.deps.request.mockResolvedValue(observed({ finish: "length" }));
+    await f.run(); expect(outputs(f)).toEqual([512]); expect(f.verdict()).toBe("Verified");
+  });
+  it("a wrong native call is a verdict, not output uncertainty", async () => {
+    const f = fixture(); f.deps.request.mockResolvedValue(observed({ calls: [{ ...call, name: "wrong" }], finish: "length" }));
+    await f.run(); expect(outputs(f)).toEqual([512]); expect(f.verdict()).toBe("Needs attention");
+  });
+  it("Qwen's already-demonstrated small native response retains the initial allowance", async () => {
+    const f = fixture(); await f.run();
+    expect(outputs(f)).toEqual([512]);
+    expect(f.get().toolVerification?.attempts).toHaveLength(1);
+  });
+  it("reconfirmation reuses a same-scope successful allowance, not a failed one", async () => {
+    const f = fixture(); f.deps.request.mockResolvedValueOnce(length());
+    await f.run(); await f.run(true);
+    expect(outputs(f)).toEqual([512, 1024, 1024]);
+  });
+  it("stops without another dispatch when the shared request budget is spent", async () => {
+    const f = fixture(); f.deps.request.mockResolvedValue(length());
+    await f.run(false, { remaining: 1 });
+    expect(outputs(f)).toEqual([512]);
+    expect(f.get().toolVerification).toMatchObject({ status: "incomplete", outcome: "request-limit", output: 512 });
+  });
+  it.each(["digest", "reasoning", "context", "override"])("a changed %s after length cannot dispatch an escalation", async kind => {
+    const f = fixture();
+    f.deps.request.mockImplementationOnce(async () => {
+      if (kind === "digest") f.get().modelRevision = "new-digest";
+      if (kind === "reasoning") f.add("thinkingDefault", false);
+      if (kind === "context") f.deps.context = () => 8192;
+      if (kind === "override") f.get().overrides.workingContext = { mode: "manual",
+        evidence: profileEvidence(f.state(), f.get().id, "workingContext", 8192, "user-assertion", Date.now(), "unverified") };
+      return length();
+    });
+    if (kind === "digest") await expect(f.run()).rejects.toThrow(/settings changed/);
+    else { await f.run(); expect(f.get().toolVerification?.outcome).toBe("revision-changed"); }
+    expect(outputs(f)).toEqual([512]); expect(f.verdict()).not.toBe("Verified");
+  });
+  it("offline after length withdraws readiness without escalation", async () => {
+    const f = fixture(); f.deps.request.mockImplementationOnce(async () => {
+      const inventory = f.state().inventories?.[0]; if (inventory) inventory.connected = false;
+      return length();
+    });
+    await f.run(); expect(outputs(f)).toEqual([512]); expect(f.get().toolVerification?.outcome).toBe("offline");
+  });
+  it("cancellation between allowances never replays or activates a proof", async () => {
+    const f = fixture(); f.deps.request.mockImplementationOnce(async () => { f.controller.abort(); return length(); });
+    await f.run(); expect(outputs(f)).toEqual([512]);
+    expect(f.get().toolVerification).toMatchObject({ status: "incomplete", outcome: "cancelled", proof: null });
+  });
+  it("explicit reasoning configuration remains byte-equivalent across output steps", async () => {
+    const f = fixture(); const configuration = { choice: "none", wire: false };
+    f.deps.request.mockResolvedValueOnce(length());
+    await runToolVerification({ profileId: f.get().id, signal: f.controller.signal, configuration }, f.deps);
+    expect(f.deps.request.mock.calls.map(c => c[2])).toEqual([configuration, configuration]);
+  });
+  it("mutating the selected explicit configuration cancels escalation", async () => {
+    const f = fixture(); const configuration = { choice: "none", wire: false };
+    f.deps.request.mockImplementationOnce(async () => { configuration.wire = true; return length(); });
+    await runToolVerification({ profileId: f.get().id, signal: f.controller.signal, configuration }, f.deps);
+    expect(outputs(f)).toEqual([512]); expect(f.get().agentToolConfigurations?.[0].outcome).toBe("revision-changed");
+  });
+  it("rejects oversized/unsupported persisted output evidence while retaining legacy 512 records", async () => {
+    const f = fixture(); await f.run(); const record = f.get().toolVerification;
+    expect(toolVerificationSchema.safeParse({ ...record, attempts: undefined }).success).toBe(true);
+    expect(toolVerificationSchema.safeParse({ ...record, output: 4096 }).success).toBe(false);
+    expect(toolVerificationSchema.safeParse({ ...record, attempts: Array(4).fill(record?.attempts?.[0]) }).success).toBe(false);
+  });
+  it("the output ladder shares one unchanged verifier deadline rather than resetting it", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      f.deps.refresh = async () => {
+        f.get().evidence = f.get().evidence.map(e => ({ ...e, observedAt: Date.now() }));
+        return f.state();
+      };
+      f.deps.request.mockImplementation(async (_state, signal) => new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(length()), 65000);
+        signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+      }));
+      const pending = f.run();
+      await vi.advanceTimersByTimeAsync(TOOL_VERIFICATION.deadlineMs + 1);
+      await pending;
+      expect(outputs(f)).toEqual([512, 1024]);
+      expect(f.get().toolVerification?.outcome).toBe("timeout");
+    } finally { vi.useRealTimers(); }
+  });
 });
 describe("canonical native tool evidence", () => {
   it("a revision change during inference cannot activate the old verdict", async () => {

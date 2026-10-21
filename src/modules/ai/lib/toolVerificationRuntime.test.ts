@@ -29,6 +29,8 @@ const h = vi.hoisted(() => ({
   }[],
   text: "",
   busy: false,
+  finishes: [] as ("stop" | "length")[],
+  requests: [] as { output: number | undefined; prompt: unknown; tools: unknown; providerOptions: unknown }[],
 }));
 const state = () => {
   if (!h.state) throw new Error("fixture");
@@ -57,12 +59,14 @@ vi.mock("@/modules/ai/lib/agent", () => ({
       doStream: async (options) => {
         h.modelCalls++;
         expect(options.tools).toHaveLength(1);
-        expect(options.maxOutputTokens).toBe(512);
+        expect([512, 1024, 2048]).toContain(options.maxOutputTokens);
+        h.requests.push({ output: options.maxOutputTokens, prompt: options.prompt, tools: options.tools, providerOptions: options.providerOptions });
+        const finish = h.finishes.shift() ?? "stop";
         return {
           stream: new ReadableStream({
             start(c) {
               if (h.stall) return;
-              for (const call of h.calls) c.enqueue(call);
+              if (finish !== "length") for (const call of h.calls) c.enqueue(call);
               if (h.text) {
                 c.enqueue({ type: "text-start", id: "text" });
                 c.enqueue({ type: "text-delta", id: "text", delta: h.text });
@@ -70,7 +74,7 @@ vi.mock("@/modules/ai/lib/agent", () => ({
               }
               c.enqueue({
                 type: "finish",
-                finishReason: { unified: "stop", raw: "stop" },
+                finishReason: { unified: finish, raw: finish },
                 usage: {
                   inputTokens: {
                     total: 1,
@@ -134,6 +138,8 @@ beforeEach(() => {
   h.stall = false;
   h.busy = false;
   h.text = "";
+  h.finishes = [];
+  h.requests = [];
   h.calls = [
     {
       type: "tool-call",
@@ -177,6 +183,21 @@ it("first tool-capable use verifies once and publishes proof, with no executable
   expect(canonicalProbeTools().get_probe_value.execute).toBeUndefined();
   await ensureSelectedTools(state(), id, new AbortController().signal);
   expect(h.modelCalls).toBe(1);
+});
+it("SDK escalation changes only output while preserving native prompt, schema and provider reasoning", async () => {
+  h.finishes = ["length", "stop"];
+  await ensureSelectedTools(state(), selfHostedSelectionId(state().profiles[0]), new AbortController().signal);
+  expect(h.requests.map(r => r.output)).toEqual([512, 1024]);
+  expect(h.requests[1]).toEqual({ ...h.requests[0], output: 1024 });
+  expect(state().profiles[0].toolVerification).toMatchObject({ status: "verified", output: 1024 });
+  expect(canonicalProbeTools().get_probe_value.execute).toBeUndefined();
+});
+it("SDK length exhaustion reaches 2048 but never tunes reasoning or claims Ready", async () => {
+  h.finishes = ["length", "length", "length"];
+  await expect(ensureSelectedTools(state(), selfHostedSelectionId(state().profiles[0]), new AbortController().signal)).rejects.toThrow(/Incomplete/);
+  expect(h.requests.map(r => r.output)).toEqual([512, 1024, 2048]);
+  expect(h.requests[2]).toEqual({ ...h.requests[0], output: 2048 });
+  expect(state().profiles[0].toolVerification).toMatchObject({ status: "incomplete", outcome: "output-length", output: 2048 });
 });
 it("text-only Agent calls are blocked with Chat Only guidance without claiming incompatibility", async () => {
   h.calls = [];

@@ -37,7 +37,7 @@ const observation = (kind = "pass"): ProbeObservation => ({
       : [],
   text:
     kind === "text" ? '<function=get_probe_value>{"count":1}</function>' : "",
-  finish: "stop",
+  finish: kind === "length" ? "length" : "stop",
   firstBodyAt: Date.now(),
   callAt: kind === "pass" ? Date.now() : null,
 });
@@ -87,6 +87,7 @@ function fixture(
     context = 4096;
   const requests: (boolean | string | undefined)[] = [],
     results = ["text", "pass", "pass"];
+  const outputs: (number | undefined)[] = [];
   const get = () => state.profiles[0];
   const evidence = (metric: string) => {
     const entry = get().evidence.find((e) => e.metric === `probe.${metric}`);
@@ -108,8 +109,9 @@ function fixture(
       state = readSelfHostedState(JSON.parse(JSON.stringify(change(state))));
       return state;
     },
-    request: vi.fn(async (_state, _signal, configuration) => {
+    request: vi.fn(async (_state, _signal, configuration, output) => {
       requests.push(configuration?.wire);
+      outputs.push(output);
       const kind = results.shift() ?? "pass";
       if (kind === "timeout" || kind === "offline")
         throw new Error(
@@ -122,9 +124,10 @@ function fixture(
   const verify = (
     configuration?: import("@/modules/ai/lib/toolVerificationSchema").ToolConfiguration,
     force?: boolean,
+    requestBudget?: import("@/modules/ai/lib/toolVerificationSchema").ToolRequestBudget,
   ) =>
     runToolVerification(
-      { profileId: get().id, signal: controller.signal, configuration, force },
+      { profileId: get().id, signal: controller.signal, configuration, force, requestBudget },
       deps,
     );
   const resolve = (force = false) =>
@@ -137,6 +140,7 @@ function fixture(
     evidence,
     state: () => state,
     requests,
+    outputs,
     results,
     deps,
     resolve,
@@ -169,6 +173,35 @@ it("prefers a working provider default without probing alternatives", async () =
   expect(
     effortProviderOptions(applyAgentRecommendation(f.state(), f.get(), 4096)),
   ).toEqual({});
+});
+it("resolves output uncertainty before considering any alternate reasoning configuration", async () => {
+  const f = fixture(); f.results.splice(0, 3, "length", "pass");
+  await f.resolve();
+  expect(f.requests).toEqual([undefined, undefined]);
+  expect(f.outputs).toEqual([512, 1024]);
+  expect(f.recommendation()?.choice).toBe("automatic");
+});
+it("length at every output allowance stays Incomplete without reasoning search", async () => {
+  const f = fixture(); f.results.splice(0, 3, "length", "length", "length");
+  await f.resolve();
+  expect(f.requests).toEqual([undefined, undefined, undefined]);
+  expect(f.outputs).toEqual([512, 1024, 2048]);
+  expect(f.recommendation()).toBeUndefined();
+});
+it("escalation and alternate confirmation share the five-request cap", async () => {
+  const f = fixture(); f.results.splice(0, 3, "length", "text", "length", "pass", "pass");
+  await f.resolve();
+  expect(f.requests).toEqual([undefined, undefined, false, false, false]);
+  expect(f.outputs).toEqual([512, 1024, 512, 1024, 1024]);
+  expect(f.recommendation()?.configuration).toEqual({ choice: "none", wire: false });
+});
+it("three configuration candidates cannot multiply the global physical request bound", async () => {
+  const f = fixture(); f.results.splice(0, 3, "length", "text", "length", "text", "length", "pass");
+  await f.resolve();
+  expect(f.requests).toHaveLength(5);
+  expect(f.outputs).toEqual([512, 1024, 512, 1024, 512]);
+  expect(f.get().agentToolConfigurations?.some(r => r.outcome === "request-limit")).toBe(true);
+  expect(f.recommendation()).toBeUndefined();
 });
 it("recovers the nearest wire-distinct None, confirms it and persists without erasing provider-default failure", async () => {
   const f = fixture();

@@ -10,7 +10,7 @@ import {
   sameToolScope,
   toolScope,
 } from "@/modules/ai/lib/toolVerification";
-import type { ToolConfiguration } from "@/modules/ai/lib/toolVerificationSchema";
+import { createToolRequestBudget, TOOL_VERIFICATION, type ToolConfiguration, type ToolRequestBudget } from "@/modules/ai/lib/toolVerificationSchema";
 import type {
   SelfHostedProfile,
   SelfHostedState,
@@ -163,6 +163,7 @@ export async function resolveAutomaticAgentTools(
     verify: (
       configuration?: ToolConfiguration,
       force?: boolean,
+      requestBudget?: ToolRequestBudget,
     ) => Promise<unknown>;
   },
 ) {
@@ -194,11 +195,12 @@ export async function resolveAutomaticAgentTools(
   const selected = automaticAgentRecommendation(state, profile, context);
   const candidates = agentToolCandidates(state, profile);
   let requests = 0;
+  const requestBudget = createToolRequestBudget();
   const verify = async (configuration?: ToolConfiguration, force?: boolean) => {
-    if (++requests > 5)
+    if (++requests > TOOL_VERIFICATION.maxRequests)
       throw new Error("Automatic Agent verification bound exceeded");
     options.signal.throwIfAborted();
-    await deps.verify(configuration, force);
+    await deps.verify(configuration, force, requestBudget);
     options.signal.throwIfAborted();
     state = await deps.refresh();
     await deps.inspect();

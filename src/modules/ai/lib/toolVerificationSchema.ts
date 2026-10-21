@@ -3,6 +3,8 @@ import { z } from "zod";
 export const TOOL_VERIFICATION = {
   protocol: "native-tools-v1",
   output: 512,
+  outputs: [512, 1024, 2048],
+  maxRequests: 5,
   deadlineMs: 120_000,
   ttlMs: 86400_000,
   backoffMs: 300_000,
@@ -28,7 +30,13 @@ export const toolOutcome = z.enum([
   "cancelled",
   "unsupported",
   "interrupted",
+  "request-limit",
 ]);
+export type ToolRequestBudget = { remaining: number };
+export const createToolRequestBudget = (): ToolRequestBudget => ({
+  remaining: TOOL_VERIFICATION.maxRequests,
+});
+const probeOutput = z.union([z.literal(512), z.literal(1024), z.literal(2048)]);
 const time = z.number().int().nonnegative().safe();
 export const toolConfigurationSchema = z.object({
   choice: z.string().min(1).max(32),
@@ -68,7 +76,14 @@ export const toolVerificationSchema = z
     ]),
     outcome: toolOutcome,
     context: z.number().int().min(1).max(2_000_000),
-    output: z.literal(TOOL_VERIFICATION.output),
+    output: probeOutput,
+    attempts: z.array(z.object({
+      output: probeOutput,
+      outcome: z.enum(["native-call", "wrong-tool", "invalid-arguments", "multiple-calls", "text-only", "empty", "output-length", "transport"]),
+      finish: z.string().max(64),
+      startedAt: time,
+      completedAt: time,
+    }).strict()).max(3).optional(),
     startedAt: time,
     completedAt: time.nullable(),
     firstBodyAt: time.nullable(),
