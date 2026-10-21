@@ -364,6 +364,34 @@ export function measureRequest(
       )
     );
   };
+  const measureMessage = (value: unknown, section: ContextSection): number => {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return measure(value, section);
+    const message = value as Record<string, unknown>;
+    if (!Array.isArray(message.content)) return measure(value, section);
+    const content = message.content.map((part: unknown) => {
+      if (!part || typeof part !== "object" || Array.isArray(part)) return part;
+      const item = part as Record<string, unknown>;
+      const options = item.providerOptions;
+      if (
+        !["text", "reasoning"].includes(String(item.type)) ||
+        !options ||
+        typeof options !== "object" ||
+        Array.isArray(options) ||
+        !("clackAnswer" in options)
+      )
+        return part;
+      // Answer segment annotations persist for recovery, not provider context.
+      const remaining = Object.fromEntries(
+        Object.entries(options).filter(([key]) => key !== "clackAnswer"),
+      );
+      return {
+        ...item,
+        providerOptions: Object.keys(remaining).length ? remaining : undefined,
+      };
+    });
+    return measure({ ...message, content }, section);
+  };
   for (const [key, value] of Object.entries(body)) {
     if (["system", "instructions", "systemInstruction"].includes(key))
       cost.system += measure(value, "core");
@@ -400,8 +428,8 @@ export function measureRequest(
             typeof item === "object" &&
             ["system", "developer"].includes(String(item.role))
           )
-            cost.system += measure(item, "core");
-          else cost.conversation += measure(item, "history");
+            cost.system += measureMessage(item, "core");
+          else cost.conversation += measureMessage(item, "history");
         }
       } else cost.conversation += measure(value, "history");
     }

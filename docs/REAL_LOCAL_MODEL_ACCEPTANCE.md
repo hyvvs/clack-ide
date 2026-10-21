@@ -12733,3 +12733,358 @@ safety stashes and `autonomous_tracker/` are untouched. No production changes,
 clean/reset, broad formatting, follow-on checkpoint or push. Commit:
 **`test(ai): rerun nemotron after readiness hardening`**. Expected post-commit state:
 `main`, **80 ahead / 0 behind cached origin**, original six dirty paths preserved.
+
+## Protected-context accounting and compaction eligibility audit
+
+### Scope and outcome
+
+2026-10-21, from `04b0e99 test(ai): rerun nemotron after readiness hardening`.
+**PROTECTED CONTEXT ACCOUNTING DEFECT FIXED**. Root category:
+**NON-SERIALIZED STATE COUNTED**, not a proven receipt/compaction eligibility gap.
+Exactly **zero model inference, zero live ForgeBoard reruns, zero real tool
+replays**. No provider/service/model/tunnel/configuration changes or push.
+
+The frozen terminal state reproduces **65,807 required / 65,536 context / 271
+deficit** through the installed SDK and production compaction planner. The
+estimator incorrectly included **78 app-owned answer-segment annotations**,
+costing **3,042 estimated tokens**, which the native serializer never sends.
+Excluding only that namespace yields **62,460 required / 3,076 headroom** with
+the existing receipt proof, output reserve and margin policy. The actual native
+payload is **unchanged**, not made smaller by deleting answer/reasoning content.
+
+Production change is confined to `src/modules/ai/lib/contextBudget.ts`:
+when measuring direct text/reasoning message parts, omit only
+`providerOptions.clackAnswer` from the measurement projection. Persisted objects
+and outgoing messages are not mutated. Other provider namespaces, encrypted/
+provider-owned reasoning options, literal text, tool inputs/results and schemas
+still count. No model/family/ForgeBoard/token-deficit branch, duplicate memory
+store, new compaction rule or additional model call.
+
+### Exact terminal reconstruction
+
+Source evidence is unchanged:
+`forgeboard-nemotron-hardened-20261021-02`, under
+`src-tauri/target/real-qwen-product/`. The standalone audit reconstructs all
+**20 post-correction native bodies, inference-28 through inference-47**, with
+deep equality against the preserved requests. Captured assistant responses and
+tool result values are replayed only inside the SDK's in-memory mock. The mock
+cannot contact Ollama or execute tools. It materializes the projected next native
+body at a diagnostic serialization boundary, without network dispatch.
+
+Last actual provider request: **`inference-47`**, **04:12:59.827 UTC**, epoch
+`1792555979827`. Provider finished **04:13:50.709 UTC**, `done_reason=stop`,
+**27,025 input / 134 output tokens**; SDK normalized the response to tool calls.
+It contained 284 reasoning characters, 54 content characters and one native
+`read_file`, **`call_596zzgip`**, for `src/storage.ts`. The accepted result was
+`{path: ..., unchanged: true, size: 4890}`, observed at epoch `1792556030896`.
+It did **not** append another 4,890-character file read. No new workspace write,
+plan/correction update or memory revision occurred between these requests.
+
+Next state: **SDK step 20 of the correction run**, blocked at epoch
+`1792556031024`, **04:13:51.024 UTC**. There is **no native request ID** for it;
+calling it inference-48 would fabricate dispatch. Error:
+`compaction-protected-budget`, normalized locally as terminal bad_request, not
+provider HTTP 400. Original conversation comprises user objective, one older
+assistant message, user correction and the growing current assistant message.
+The SDK current tail contains 40 model messages, 20 complete call/result pairs.
+
+### Same-stage accounting comparison
+
+These are **production pre-dispatch SDK/planner estimates**. The previous
+acceptance report's 61,289 required / 4,247 headroom were explicitly a
+**post-adapter native-wire reconstruction**, not this earlier preparation stage.
+The audit retains both instead of silently substituting one for the other.
+
+| Component, before fix | Previous inference-47 preparation | Blocked next preparation | Delta |
+|---|---:|---:|---:|
+| System | 3,755 | 3,755 | 0 |
+| Tool schemas/options | 6,244 | 6,244 | 0 |
+| Conversation/history, including plan/objective/environment | 47,456 | 47,963 | +507 |
+| Separate memory/retrieval/extraction | 0 | 0 | 0 |
+| Estimated input | **57,455** | **57,962** | **+507** |
+| Output reserve | 2,048 | 2,048 | 0 |
+| Safety margin | 5,746 | 5,797 | +51 |
+| Required | **65,249** | **65,807** | **+558** |
+| Context | 65,536 | 65,536 | 0 |
+| Headroom | **287** | **-271** | **-558** |
+
+Plan/todo/objective are part of the conversation category; no unsupported additive
+subdivision is invented. Blocked breakdown: core 3,313, agent 442, conversation
+history/tool state 47,470, environment 129, builtin schemas 6,156, other structure
+452. Those diagnostic subdivisions are not another separately added allowance.
+
+Actual/native projected payloads:
+
+| Wire property | Last sent | Blocked projection, never sent |
+|---|---:|---:|
+| Messages | 76 | 78 |
+| Roles | system 1, user 2, assistant 38, tool 35 | system 1, user 2, assistant 39, tool 36 |
+| Tool schemas | 14 | 14 |
+| Serialized JSON characters | 107,285 | 108,072 |
+| Serialized UTF-8 bytes | 107,309 | 108,096 |
+| Thinking-bearing messages | 38 | 39 |
+| Thinking characters | 9,821 | 10,105 |
+| Serialized `clackAnswer` annotations | **0** | **0** |
+| Native B1 conversation estimate | 43,856 | 44,247 |
+| Native B1 input estimate | 53,855 | 54,246 |
+| Native B1 required, including reserve/margin | 61,289 | 61,719 |
+
+Both bodies: `num_ctx=65536`, `num_predict=2048`, `think` omitted, Automatic
+provider-default reasoning. Tools/system/correction/objective remain the same.
+No continuation instruction, retrieved evidence or new schema was appended.
+The 507-token preflight growth decomposes into **429 measured content/structure
+growth plus 78 new local-annotation tokens**; native-wire growth is 391 because
+the SDK and native representations have different framing. The final real
+response's reasoning/text/read-call/cache result accounts for that growth.
+
+Canonical native SHA-256, previous:
+`20c6587120f50ce074fcc065100e3a4dc0ad72a7295bd1c57bf1f18cb7805851`.
+Projected next:
+`b02e93a1bc133552be7285c192b577e8d6e624284b92dc9e013066b28498d14b`.
+Both remain identical after the fix. Root JSON key ordering is not claimed as
+byte-identical HTTP framing; canonical payload equality and serialized size are
+verified. Native materializations remain local as
+`src-tauri/target/protected-context-previous.sent.json` and
+`src-tauri/target/protected-context-blocked.projected.json`.
+
+### Why 27,025 and 65,807 coexist
+
+The original comparison was **not apples-to-apples**: previous provider-tokenizer
+input versus next preflight estimate plus reserves. Exact accounting bridge:
+
+| Difference | Tokens |
+|---|---:|
+| Provider's last aggregate prompt input | 27,025 |
+| Last native-payload heuristic minus provider aggregate | +26,830 |
+| SDK versus native structural estimate, excluding local annotations | +636 |
+| Non-serialized local annotations in previous preparation | **+2,964** |
+| Next-step content/structure plus two new annotations | +507 |
+| Next output reserve | +2,048 |
+| Next margin | +5,797 |
+| Next protected requirement | **65,807** |
+
+`estimateTextTokens` is intentionally conservative, not the Nemotron tokenizer:
+ASCII alphanumeric runs use ceil(length/3), whitespace ceil(length/4), punctuation
+one token and non-ASCII up to UTF-8 bytes, plus structured framing. That explains
+the heuristic's design, but does not prove which specific provider template
+elements account for the entire 26,830 difference.
+
+The native adapter maps `prompt_eval_count` and `eval_count` directly to aggregate
+SDK input/output totals. It does not derive these from Clack's estimator or count
+reasoning output separately. The captured raw final frame also reports cached
+prompt count 4,784; that is not a replacement for prompt total 27,025. No missing
+provider usage was inferred. Last response completed, unlike earlier cancelled
+requests whose usage remains unknown.
+
+**Tokenizer/template limitation:** the exact Ollama tokenizer/template execution
+trace is not in this evidence. System, schemas, tool-call history, tool results
+and retained thinking are present in the submitted body. We cannot independently
+attribute provider tokens to each, prove which historical thinking the model
+template consumes, or enumerate BOS/EOS/template overhead from one aggregate
+counter. There are no images or attachments in these two requests. No server
+inspection, browse, tokenizer installation or inference was needed to prove the
+separate local-annotation defect. The remaining heuristic/template gap is not
+silently labelled another bug or used to tune the safety policy downward.
+
+### Duplicate accounting and reasoning audit
+
+Confirmed incorrect content: `answerContinuation.ts` attaches
+`clackAnswer.segmentId` to reasoning/text stream events for durable answer-segment
+recovery. SDK conversion retains it as `providerOptions.clackAnswer`. The old
+recursive estimator counted these namespace keys/UUID values. `ollamaBody`
+serializes actual text and `thinking`, not that local namespace. Each of 78 parts
+contributed 39 estimated tokens: **78 * 39 = 3,042**. The prior sent request had
+76 such parts: **2,964**. They are UI/recovery metadata, not intentional protected
+token allowances or provider-native reasoning.
+
+Other duplication checks:
+
+- Active receipts replace original call/result pairs; they do not coexist with
+  those pairs in the prepared payload. Source identifiers are links, not copied
+  source bodies. No original-plus-receipt double counting found.
+- The older assistant unit and current SDK tail are distinct, non-overlapping
+  message ranges. No current-turn/history duplication or continuation occurred.
+- Three accepted todo calls remain as real wire history. Current-turn plan
+  retirement has only one current-boundary plan here; two earlier plans are in
+  the protected pre-correction original group. They are not counted a second time
+  as an invented external current-plan allowance. No completed-memory claims exist.
+- The initial objective and later superseding 50-to-25 correction each occur once
+  as user evidence, in order. Keeping the old requirement and its explicit
+  supersession is not an accidental duplicate correction.
+- System/core/agent instructions and 14 selected schemas each occur in their
+  actual provider slots. No historical schema table is added separately. F1
+  remains unchanged and retains read/write/execute routes.
+- Actual reasoning is preserved by the current local-provider contract: persisted
+  UI reasoning becomes native `thinking`. It is **not** stripped to fit. Only the
+  app-owned segment annotation is excluded from measurement. Real provider option
+  namespaces remain conservatively counted. Generic SDK/native protocol framing
+  still differs; this fix is not a new provider tokenizer or blanket metadata skip.
+
+### Receipt eligibility and retained history
+
+All **39 operations / 30 successful operations / 13 verified mutations** are
+listed by stable call ID, outcome, path, exclusion reason and approximate pair
+cost in `protected-context-audit-20261021.json`.
+
+| Successful mutation(s) | Current receipt decision |
+|---|---|
+| `call_m69co753`, storage write | Eligible, durably confirmed, active receipt |
+| `call_ergy6d0y`, schemas write | Eligible, durably confirmed, active receipt |
+| `call_7pkk7vgl`, publisher write | Eligible, durably confirmed, active receipt |
+| `call_966i4g1j`, projects write | Repeated path, including two failed attempts; intentionally ineligible |
+| `call_rh4o6y0a`, `call_roj6d2ge`, tasks writes | Repeated full-write path; intentionally ineligible |
+| `call_cwsee2xf`, `call_wxwvn4u7`, server writes | Repeated full-write path; intentionally ineligible |
+| `call_vke3dh94`, final tsconfig write | No later complete write in same user boundary; recency-protected |
+| `call_ws1f7k3a`, `call_ja814lb1`, `call_5sy6zcq8`, `call_o8q9dnxl` | Four edits, not full-write receipt contract; intentionally ineligible |
+| Other 17 successful operations | Five shell, five read, three directory observations, three todos, one grep; not full-write receipts |
+
+No eligible source was lost through continuation, denied ownership/digest proof
+or transcript representation. All three accepted sources retain the same private
+conversation/workspace ownership and immutable part digests. **Additional safe
+candidates under current rules: zero; additional current-rule savings: zero**.
+No eligibility broadening, filesystem-currentness inference or replay.
+
+Existing three receipts save **3,711 native-wire estimated tokens** in the prior
+acceptance's source-verified reconstruction. At the SDK representation in this
+audit they save **3,708**; these are different representations, not provider-token
+savings. Removing annotation cost alone without authenticated receipts still
+requires **66,539**, failing by 1,003. Existing receipt proof remains necessary.
+
+Retained tool-pair classification, approximate original pair costs only:
+
+| Class | Pairs | Approximate tokens | Actual policy |
+|---|---:|---:|---|
+| Safely represented by verified receipt | 3 | 5,063 before replacement | Current receipts applied |
+| Current-turn hot | 19 | 21,723 | Remain intact |
+| Required verbatim by protected original-group boundary | 17 | 13,776 | Remain intact |
+| Safely extractable summary group under current rules | 0 | 0 reclaimable | None selected |
+
+These standalone pair costs include framing and exclude surrounding prose/
+reasoning; they must not be summed as the exact whole-conversation token count.
+Old full write bodies/edits and command/read outputs remain in the non-receipt
+classes, for the reasons above. Approximate pair costs by tool: writes 22,217,
+edits 3,969, shell 7,909, reads 2,497, todos 2,669, directory observations 743,
+grep 558. This quantifies retained material without claiming it is all safe to
+delete. The final `unchanged` read explicitly depends on prior evidence.
+
+Seven earlier failures had later adapted/successful operations; two compiler
+failures remained unresolved. None matches the existing narrow resolved
+pre-execution single-line guard-refusal receipt contract. Failure evidence is
+therefore retained, including exact compiler diagnostics. No indiscriminate
+resolved-error removal or summary fabrication was introduced.
+
+### Durable compaction trigger and candidate replay
+
+Owners: `agent.ts` prepareStep -> `conversationCompaction.ts` prepare ->
+`compactionPlan.ts` planCompaction -> shared B1. Current flow:
+prepare pressure/projections -> check protected floor -> if over, confirm bounded
+eligible writes and replan -> if protected floor still over, fail closed.
+Only when the floor fits **and** removable intact original groups exist can the
+bounded durable extractor run, commit a validated revision and reprepare.
+
+Threshold **70%** of computed conversation working budget; after successful
+preparation target **55%**. Recent tail target **20%**, extended to whole tool/
+original-message groups. Both user units stay protected. The one older assistant
+unit includes failures and its latest accepted plan, so it is protected as an
+intact group. The growing current SDK tail is always protected. Receipt projection
+can reduce those groups without making their remaining content extractable.
+There is no independent fixed message-count trigger or guessed minimum token
+gain. Candidate requirement is an eligible complete original group outside the
+retained tail/covered prefix; **this run has zero**.
+
+| Preparation | Before conversation estimate | After accounting fix | Pressure reached before | Existing durable candidates |
+|---|---:|---:|---|---:|
+| inference-42 | 42,154 | 39,580 | Yes | 0 |
+| inference-43 | 45,470 | 42,818 | Yes | 0 |
+| inference-44 | 46,100 | 43,370 | Yes | 0 |
+| inference-45 | 46,786 | 43,978 | Yes | 0 |
+| inference-46 | 47,665 | 44,779 | Yes | 0 |
+| inference-47 | 47,456 | 44,492 | Yes | 0 |
+| blocked next step | 47,963 | 44,921 | Yes | 0 |
+
+Three receipts activated at inference-47 after pressure reached the protected
+floor; the next preparation reconfirmed the same three. Zero extraction calls,
+retrieval, compaction publications or memory revisions. The system **knew about
+pressure**; eligibility, not a missing trigger invocation, prevented durable
+extraction. A final LLM summarization attempt could not safely remove protected
+material under existing rules, so adding one is not justified here. No compaction
+trigger/eligibility code changed. This audit does not establish that finer-grained
+future summaries are impossible; it declines to invent their safety proof.
+
+### Before and after offline acceptance
+
+- Before: exact current-code baseline reproduction **65,807 / 65,536**, deficit
+  **271**, with three valid receipts and no eligible durable extraction groups.
+- After: same original SDK state, proof, tools/system/objective/correction,
+  **54,920 input + 2,048 reserve + 5,492 margin = 62,460**, headroom **3,076**.
+- Margin **policy unchanged**, `max(128, ceil(input * 0.1))`. Absolute margin
+  naturally follows corrected input. Even freezing the old absolute **5,797**
+  gives required **62,765**, headroom **2,771**. No safety reduction is needed.
+- Minimum reduction for the legacy input with normal margin recomputation is
+  **246 input-estimate tokens**: 57,716 + 5,772 + 2,048 = 65,536. With the old
+  absolute margin held fixed, **271** is sufficient. It is not mathematically
+  necessary to save more than 271; the original prompt's suggestion is superseded
+  by exact pipeline arithmetic. The actual fix removes 3,042 invalid tokens.
+- Native serialized request is **not materially smaller**: it never contained
+  these annotations. Accounting now excludes their cost while preserving actual
+  output/reasoning and restorable originals. Nothing is executed or replayed.
+- No increased context, lower reserve/margin policy, changed F1, different model
+  settings or hidden summarization. Same 65K Automatic settings. The old stop is
+  now proven to include a Clack accounting defect, not an unavoidable 271-token
+  payload overflow or a fair final Nemotron model-quality verdict.
+
+### Verification and repository safety
+
+Focused deterministic group: **296 passed / 9 files**, including **16 new audit
+checks**. Covers captured before/after accounting, native payload correspondence,
+old absolute margin, objective/correction/plan/error retention, valid versus
+invalid/pinned receipt sources, exact eligibility and immutable originals,
+provider-option siblings and tool/schema/literal payload lookalikes. Existing
+budget/plan/coordinator/write-receipt/failure-retention/Ollama/answer-continuation
+tests cover current tail, repeated/latest/failed effects, reads/shell history,
+bounded compaction and no-candidate/insufficient-budget fail-closed behavior.
+Offline SDK replay verified all 20 captured native bodies and both final states.
+
+Final gates: `npm.cmd run check-types` **passed**;
+`npm.cmd run lint` **passed, unchanged 71 warnings / 2 infos**;
+`npm.cmd run build` **passed**, existing ineffective-dynamic-import/plugin-timing
+warnings only; script syntax and working/staged diff checks **passed**.
+
+Full `npm.cmd test` was attempted in the sandbox: **3,359 passed, 35 failed,
+3 skipped; 224 passed / 8 failed files**. Loopback test-server connections were
+denied with EACCES, and filesystem/PowerShell fixture authorization failed.
+This was not a trustworthy native full-suite result. One environment-only retry
+outside the sandbox completed: **3,393 passed, 1 failed, 3 skipped; 228 passed /
+4 failed files**, total 3,397 tests. All changed/audit tests passed. Remaining
+failures match the documented baseline: Node `audit-devstral-latency.test.mjs`
+is not a Vitest suite; two old ignored generated backend test suites lack
+`supertest`; one archived `before-src--test--acceptanceComparison.test.ts` under
+target asserts an obsolete original dirty runner string. No exclusions, cleanup,
+baseline-file edits or unrelated fixes were used to hide these failures. Full
+repository tests are **not green**. No further full-suite rerun.
+
+No Rust production files changed; no new Rust gate/native GUI/Linux/macOS acceptance
+claim is made. Tests use mocks/local fixtures, not live inference. Initial
+typecheck/build found a new test-helper structural type mismatch; narrowed the
+helper's parameter to its three required fields, then both checks passed.
+
+Only checkpoint-owned source/test/evidence files and this report appendix are
+staged. All original report bytes and the five other original dirty paths remain
+byte-for-byte preserved. Both safety stashes and `autonomous_tracker/` untouched.
+No cleanup/reset or broad formatting. Only the new measurement code was formatted;
+unrelated formatting churn in its file was removed before final review.
+
+Next recommended **separate** checkpoint: fresh live hardened Nemotron acceptance
+at the same production Automatic context/settings, to determine whether it can
+progress beyond the old 40-request boundary after this accounting fix. No run or
+continuation of the old mission was started here, and completion is not promised.
+
+Checkpoint files: `contextBudget.ts`, `protectedContextAudit.test.ts`,
+`scripts/audit-protected-context.mjs`, bounded replay/summary fixtures
+`protected-context-replay-20261021.json` and `protected-context-audit-20261021.json`,
+and this appendix only. The standalone 20-request reconstruction requires the
+preserved local raw evidence; the committed frozen-state regression tests do not.
+Commit: **`fix(ai): exclude local answer metadata from context budgets`**.
+Expected repository state after commit: `main`, **81 ahead / 0 behind cached
+origin**, original six dirty paths, empty index and no checkpoint untracked files.
+No push. Stop here.

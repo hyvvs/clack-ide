@@ -1,0 +1,1283 @@
+{
+  "base": "04b0e99ef05415bcd6a4610ff9aac2a74edd78ed",
+  "runId": "forgeboard-nemotron-hardened-20261021-02",
+  "inference": 0,
+  "realToolExecutions": 0,
+  "classification": "PROTECTED CONTEXT ACCOUNTING DEFECT FIXED",
+  "previous": {
+    "id": "inference-47",
+    "at": 1792555979827,
+    "before": {
+      "ceiling": 65536,
+      "source": "deployed",
+      "output": 2048,
+      "reserve": 2048,
+      "margin": 5746,
+      "working": 47743,
+      "cost": {
+        "system": 3755,
+        "tools": 6244,
+        "conversation": 47456,
+        "uncertainMedia": false,
+        "breakdown": {
+          "core": 3313,
+          "agent": 442,
+          "history": 46971,
+          "other": 444,
+          "environment": 129,
+          "builtin": 6156
+        },
+        "schemas": {
+          "exposed": 14,
+          "bytes": 12764
+        }
+      },
+      "fits": true,
+      "provenance": "estimated"
+    },
+    "after": {
+      "ceiling": 65536,
+      "source": "deployed",
+      "output": 2048,
+      "reserve": 2048,
+      "margin": 5450,
+      "working": 48039,
+      "cost": {
+        "system": 3755,
+        "tools": 6244,
+        "conversation": 44492,
+        "uncertainMedia": false,
+        "breakdown": {
+          "core": 3313,
+          "agent": 442,
+          "history": 44007,
+          "other": 444,
+          "environment": 129,
+          "builtin": 6156
+        },
+        "schemas": {
+          "exposed": 14,
+          "bytes": 12764
+        }
+      },
+      "fits": true,
+      "provenance": "estimated"
+    },
+    "nativeBudget": {
+      "ceiling": 65536,
+      "source": "deployed",
+      "output": 2048,
+      "reserve": 2048,
+      "margin": 5386,
+      "working": 48103,
+      "cost": {
+        "system": 3755,
+        "tools": 6244,
+        "conversation": 43856,
+        "uncertainMedia": false,
+        "breakdown": {
+          "core": 3313,
+          "agent": 442,
+          "history": 43586,
+          "other": 229,
+          "environment": 129,
+          "builtin": 6156
+        },
+        "schemas": {
+          "exposed": 14,
+          "bytes": 12764
+        }
+      },
+      "fits": true,
+      "provenance": "estimated"
+    },
+    "body": {
+      "messages": 76,
+      "roles": {
+        "system": 1,
+        "user": 2,
+        "assistant": 38,
+        "tool": 35
+      },
+      "tools": 14,
+      "characters": 107285,
+      "bytes": 107309,
+      "thinkingMessages": 38,
+      "thinkingChars": 9821,
+      "annotationOccurrences": 0,
+      "options": {
+        "num_ctx": 65536,
+        "num_predict": 2048
+      },
+      "think": "omitted",
+      "sha256": "20c6587120f50ce074fcc065100e3a4dc0ad72a7295bd1c57bf1f18cb7805851"
+    },
+    "provider": {
+      "requestId": "inference-47",
+      "at": 1792555979827,
+      "firstOutputAt": 1792556028502,
+      "firstCallAt": 1792556030661,
+      "calls": [
+        {
+          "name": "read_file",
+          "inputSha256": "3380f3b4e153a93ef523f9edb1339dc0b7fadd6c99b229f2d2996090bb77751e"
+        }
+      ],
+      "contentChars": 54,
+      "nonWhitespaceContent": 53,
+      "reasoningChars": 284,
+      "contentSha256": "1648262eee8f5bfcb84a05cff18b3644a4ea3984685817fe6cce42415bff9cbb",
+      "reasoningSha256": "bc2e8f6cc89c3c28e7ac095afaa690e7f61fb3cc4c19822878b749c1f520a916",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 27025,
+      "outputTokens": 134,
+      "trailingPartialFrame": false,
+      "settled": "completed"
+    }
+  },
+  "blocked": {
+    "state": "never dispatched; offline serialization only",
+    "before": {
+      "ceiling": 65536,
+      "source": "deployed",
+      "output": 2048,
+      "reserve": 2048,
+      "margin": 5797,
+      "working": 47692,
+      "cost": {
+        "system": 3755,
+        "tools": 6244,
+        "conversation": 47963,
+        "uncertainMedia": false,
+        "breakdown": {
+          "core": 3313,
+          "agent": 442,
+          "history": 47470,
+          "other": 452,
+          "environment": 129,
+          "builtin": 6156
+        },
+        "schemas": {
+          "exposed": 14,
+          "bytes": 12764
+        }
+      },
+      "fits": false,
+      "reason": "Request exceeds its context budget (estimated input 57962, output reserve 2048, margin 5797, ceiling 65536). Conversation/task/attachment content exceeds the working budget.",
+      "provenance": "estimated"
+    },
+    "after": {
+      "ceiling": 65536,
+      "source": "deployed",
+      "output": 2048,
+      "reserve": 2048,
+      "margin": 5492,
+      "working": 47997,
+      "cost": {
+        "system": 3755,
+        "tools": 6244,
+        "conversation": 44921,
+        "uncertainMedia": false,
+        "breakdown": {
+          "core": 3313,
+          "agent": 442,
+          "history": 44428,
+          "other": 452,
+          "environment": 129,
+          "builtin": 6156
+        },
+        "schemas": {
+          "exposed": 14,
+          "bytes": 12764
+        }
+      },
+      "fits": true,
+      "provenance": "estimated"
+    },
+    "body": {
+      "messages": 78,
+      "roles": {
+        "system": 1,
+        "user": 2,
+        "assistant": 39,
+        "tool": 36
+      },
+      "tools": 14,
+      "characters": 108072,
+      "bytes": 108096,
+      "thinkingMessages": 39,
+      "thinkingChars": 10105,
+      "annotationOccurrences": 0,
+      "options": {
+        "num_predict": 2048,
+        "num_ctx": 65536
+      },
+      "think": "omitted",
+      "sha256": "b02e93a1bc133552be7285c192b577e8d6e624284b92dc9e013066b28498d14b"
+    },
+    "projectedWireBudget": {
+      "ceiling": 65536,
+      "source": "deployed",
+      "output": 2048,
+      "reserve": 2048,
+      "margin": 5425,
+      "working": 48064,
+      "cost": {
+        "system": 3755,
+        "tools": 6244,
+        "conversation": 44247,
+        "uncertainMedia": false,
+        "breakdown": {
+          "core": 3313,
+          "agent": 442,
+          "history": 43974,
+          "other": 232,
+          "environment": 129,
+          "builtin": 6156
+        },
+        "schemas": {
+          "exposed": 14,
+          "bytes": 12764
+        }
+      },
+      "fits": true,
+      "provenance": "estimated"
+    },
+    "rawWithoutReceipts": {
+      "ceiling": 65536,
+      "source": "deployed",
+      "output": 2048,
+      "reserve": 2048,
+      "margin": 5863,
+      "working": 47626,
+      "cost": {
+        "system": 3755,
+        "tools": 6244,
+        "conversation": 48629,
+        "uncertainMedia": false,
+        "breakdown": {
+          "core": 3313,
+          "agent": 442,
+          "history": 48127,
+          "other": 461,
+          "environment": 129,
+          "builtin": 6156
+        },
+        "schemas": {
+          "exposed": 14,
+          "bytes": 12764
+        }
+      },
+      "fits": false,
+      "reason": "Request exceeds its context budget (estimated input 58628, output reserve 2048, margin 5863, ceiling 65536). Conversation/task/attachment content exceeds the working budget.",
+      "provenance": "estimated"
+    },
+    "withOriginalMargin": {
+      "ceiling": 65536,
+      "source": "deployed",
+      "output": 2048,
+      "reserve": 2048,
+      "margin": 5797,
+      "working": 47692,
+      "cost": {
+        "system": 3755,
+        "tools": 6244,
+        "conversation": 44921,
+        "uncertainMedia": false,
+        "breakdown": {
+          "core": 3313,
+          "agent": 442,
+          "history": 44428,
+          "other": 452,
+          "environment": 129,
+          "builtin": 6156
+        },
+        "schemas": {
+          "exposed": 14,
+          "bytes": 12764
+        }
+      },
+      "fits": true,
+      "provenance": "estimated"
+    },
+    "minimumInputReduction": 246,
+    "fixedMarginReduction": 271
+  },
+  "annotations": {
+    "tokensRemoved": 3042,
+    "parts": 78,
+    "previousTokensRemoved": 2964,
+    "providerPayloadChanged": false
+  },
+  "effects": [
+    {
+      "id": "call_1cr6k9zc",
+      "tool": "list_directory",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02",
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 204,
+      "inputCharacters": 80,
+      "outputCharacters": 93
+    },
+    {
+      "id": "call_u1tu9dtt",
+      "tool": "todo_write",
+      "success": true,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 871,
+      "inputCharacters": 1596,
+      "outputCharacters": 40
+    },
+    {
+      "id": "call_3hxp7d5i",
+      "tool": "bash_run",
+      "success": true,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 491,
+      "inputCharacters": 101,
+      "outputCharacters": 663
+    },
+    {
+      "id": "call_dr5nk5pg",
+      "tool": "bash_run",
+      "success": true,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 498,
+      "inputCharacters": 197,
+      "outputCharacters": 591
+    },
+    {
+      "id": "call_jdqyario",
+      "tool": "bash_run",
+      "success": true,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 332,
+      "inputCharacters": 104,
+      "outputCharacters": 340
+    },
+    {
+      "id": "call_dws99bm3",
+      "tool": "read_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/tsconfig.json",
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 815,
+      "inputCharacters": 94,
+      "outputCharacters": 1368
+    },
+    {
+      "id": "call_ws1f7k3a",
+      "tool": "edit",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/tsconfig.json",
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: exact-edit effect, not full write_file receipt contract",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 1355,
+      "inputCharacters": 2488,
+      "outputCharacters": 168
+    },
+    {
+      "id": "call_ct14yk80",
+      "tool": "bash_run",
+      "success": true,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 472,
+      "inputCharacters": 93,
+      "outputCharacters": 713
+    },
+    {
+      "id": "call_oqbl0v9v",
+      "tool": "todo_write",
+      "success": true,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 903,
+      "inputCharacters": 1594,
+      "outputCharacters": 97
+    },
+    {
+      "id": "call_m69co753",
+      "tool": "write_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/storage.ts",
+      "receiptEligible": true,
+      "reason": "eligible; confirmed durable source and beneficial receipt",
+      "retention": "verified receipt",
+      "approximatePairTokens": 2846,
+      "inputCharacters": 5252,
+      "outputCharacters": 152
+    },
+    {
+      "id": "call_ergy6d0y",
+      "tool": "write_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/schemas.ts",
+      "receiptEligible": true,
+      "reason": "eligible; confirmed durable source and beneficial receipt",
+      "retention": "verified receipt",
+      "approximatePairTokens": 620,
+      "inputCharacters": 823,
+      "outputCharacters": 151
+    },
+    {
+      "id": "call_l2t78ytr",
+      "tool": "write_file",
+      "success": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/routes/projects.ts",
+      "receiptEligible": false,
+      "reason": "failure retained: not the resolved pre-execution single-line guard-refusal contract",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 1364,
+      "inputCharacters": 2212,
+      "outputCharacters": 169
+    },
+    {
+      "id": "call_agaol1sz",
+      "tool": "bash_run",
+      "success": false,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "failure retained: not the resolved pre-execution single-line guard-refusal contract",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 334,
+      "inputCharacters": 96,
+      "outputCharacters": 367
+    },
+    {
+      "id": "call_bzsely2u",
+      "tool": "list_directory",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02",
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 295,
+      "inputCharacters": 80,
+      "outputCharacters": 277
+    },
+    {
+      "id": "call_c326uwpk",
+      "tool": "list_directory",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src",
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 244,
+      "inputCharacters": 84,
+      "outputCharacters": 168
+    },
+    {
+      "id": "call_2ljra1nn",
+      "tool": "write_file",
+      "success": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/routes/projects.ts",
+      "receiptEligible": false,
+      "reason": "failure retained: not the resolved pre-execution single-line guard-refusal contract",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 1364,
+      "inputCharacters": 2212,
+      "outputCharacters": 169
+    },
+    {
+      "id": "call_sr3db7hx",
+      "tool": "bash_run",
+      "success": true,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 481,
+      "inputCharacters": 100,
+      "outputCharacters": 728
+    },
+    {
+      "id": "call_966i4g1j",
+      "tool": "write_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/routes/projects.ts",
+      "receiptEligible": false,
+      "reason": "ineligible: repeated write path (including failed attempts)",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 1355,
+      "inputCharacters": 2212,
+      "outputCharacters": 160
+    },
+    {
+      "id": "call_rh4o6y0a",
+      "tool": "write_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/routes/tasks.ts",
+      "receiptEligible": false,
+      "reason": "ineligible: repeated write path (including failed attempts)",
+      "retention": "verbatim protected original group",
+      "approximatePairTokens": 2398,
+      "inputCharacters": 4246,
+      "outputCharacters": 157
+    },
+    {
+      "id": "call_hwbq4sen",
+      "tool": "grep",
+      "success": true,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 558,
+      "inputCharacters": 101,
+      "outputCharacters": 828
+    },
+    {
+      "id": "call_rsmce72p",
+      "tool": "read_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/routes/tasks.ts",
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 573,
+      "inputCharacters": 123,
+      "outputCharacters": 771
+    },
+    {
+      "id": "call_799yhnxx",
+      "tool": "edit",
+      "success": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/routes/tasks.ts",
+      "receiptEligible": false,
+      "reason": "failure retained: not the resolved pre-execution single-line guard-refusal contract",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 673,
+      "inputCharacters": 835,
+      "outputCharacters": 220
+    },
+    {
+      "id": "call_5k4e595h",
+      "tool": "bash_run",
+      "success": false,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "failure retained: not the resolved pre-execution single-line guard-refusal contract",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 465,
+      "inputCharacters": 129,
+      "outputCharacters": 574
+    },
+    {
+      "id": "call_gifmslvi",
+      "tool": "bash_run",
+      "success": false,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "failure retained: not the resolved pre-execution single-line guard-refusal contract",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 450,
+      "inputCharacters": 119,
+      "outputCharacters": 562
+    },
+    {
+      "id": "call_u1mo7x4o",
+      "tool": "read_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/routes/tasks.ts",
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 657,
+      "inputCharacters": 123,
+      "outputCharacters": 925
+    },
+    {
+      "id": "call_ja814lb1",
+      "tool": "edit",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/routes/tasks.ts",
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: exact-edit effect, not full write_file receipt contract",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 614,
+      "inputCharacters": 814,
+      "outputCharacters": 174
+    },
+    {
+      "id": "call_fvdgww6d",
+      "tool": "todo_write",
+      "success": true,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 895,
+      "inputCharacters": 1600,
+      "outputCharacters": 82
+    },
+    {
+      "id": "call_cwsee2xf",
+      "tool": "write_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/server.ts",
+      "receiptEligible": false,
+      "reason": "ineligible: repeated write path (including failed attempts)",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 4146,
+      "inputCharacters": 7891,
+      "outputCharacters": 151
+    },
+    {
+      "id": "call_7pkk7vgl",
+      "tool": "write_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/publisher.ts",
+      "receiptEligible": true,
+      "reason": "eligible; confirmed durable source and beneficial receipt",
+      "retention": "verified receipt",
+      "approximatePairTokens": 1597,
+      "inputCharacters": 2830,
+      "outputCharacters": 154
+    },
+    {
+      "id": "call_hh3969c3",
+      "tool": "read_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/routes/tasks.ts",
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 228,
+      "inputCharacters": 100,
+      "outputCharacters": 129
+    },
+    {
+      "id": "call_roj6d2ge",
+      "tool": "write_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/routes/tasks.ts",
+      "receiptEligible": false,
+      "reason": "ineligible: repeated write path (including failed attempts)",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 2714,
+      "inputCharacters": 4873,
+      "outputCharacters": 157
+    },
+    {
+      "id": "call_5sy6zcq8",
+      "tool": "edit",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/routes/tasks.ts",
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: exact-edit effect, not full write_file receipt contract",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 506,
+      "inputCharacters": 620,
+      "outputCharacters": 174
+    },
+    {
+      "id": "call_o8q9dnxl",
+      "tool": "edit",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/routes/tasks.ts",
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: exact-edit effect, not full write_file receipt contract",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 821,
+      "inputCharacters": 1247,
+      "outputCharacters": 174
+    },
+    {
+      "id": "call_wxwvn4u7",
+      "tool": "write_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/server.ts",
+      "receiptEligible": false,
+      "reason": "ineligible: repeated write path (including failed attempts)",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 3086,
+      "inputCharacters": 5710,
+      "outputCharacters": 151
+    },
+    {
+      "id": "call_zotl9x6s",
+      "tool": "bash_run",
+      "success": false,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "failure retained: not the resolved pre-execution single-line guard-refusal contract",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 463,
+      "inputCharacters": 122,
+      "outputCharacters": 567
+    },
+    {
+      "id": "call_he64fdvs",
+      "tool": "bash_run",
+      "success": false,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "failure retained: not the resolved pre-execution single-line guard-refusal contract",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 547,
+      "inputCharacters": 111,
+      "outputCharacters": 728
+    },
+    {
+      "id": "call_vke3dh94",
+      "tool": "write_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/tsconfig.json",
+      "receiptEligible": false,
+      "reason": "recency: no later complete write in this user boundary",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 727,
+      "inputCharacters": 1163,
+      "outputCharacters": 150
+    },
+    {
+      "id": "call_nsfr87mc",
+      "tool": "bash_run",
+      "success": false,
+      "path": null,
+      "receiptEligible": false,
+      "reason": "failure retained: not the resolved pre-execution single-line guard-refusal contract",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 3376,
+      "inputCharacters": 111,
+      "outputCharacters": 6085
+    },
+    {
+      "id": "call_596zzgip",
+      "tool": "read_file",
+      "success": true,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-02/src/storage.ts",
+      "receiptEligible": false,
+      "reason": "intentionally ineligible: read, plan, shell or directory observation, not confirmed full file write",
+      "retention": "current-turn hot",
+      "approximatePairTokens": 224,
+      "inputCharacters": 95,
+      "outputCharacters": 124
+    }
+  ],
+  "receipts": {
+    "eligible": 3,
+    "active": 3,
+    "additionalCurrentRuleCandidates": 0,
+    "beforeWireSavings": 3711,
+    "note": "No eligibility or source proof changes; existing safe receipt projection reused"
+  },
+  "compaction": {
+    "groups": [
+      {
+        "start": 0,
+        "end": 1,
+        "protected": true
+      },
+      {
+        "start": 1,
+        "end": 2,
+        "protected": true
+      },
+      {
+        "start": 2,
+        "end": 3,
+        "protected": true
+      }
+    ],
+    "candidateGroups": 0,
+    "candidateSavings": 0,
+    "trigger": 0.7,
+    "target": 0.55,
+    "currentTurnMessages": 40,
+    "successfulCompactions": 0,
+    "reason": "Both user originals are protected; the single older assistant contains failures and latest original plan. Current SDK tail is always protected."
+  },
+  "finalSteps": [
+    {
+      "id": "inference-42",
+      "before": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5216,
+        "working": 48273,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 42154,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 41700,
+            "other": 413,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "after": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 4958,
+        "working": 48531,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 39580,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 39126,
+            "other": 413,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "pressureBefore": true,
+      "currentRuleCandidates": 0,
+      "legacyReceipts": 0,
+      "afterReceipts": 0
+    },
+    {
+      "id": "inference-43",
+      "before": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5547,
+        "working": 47942,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 45470,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 45008,
+            "other": 421,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "after": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5282,
+        "working": 48207,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 42818,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 42356,
+            "other": 421,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "pressureBefore": true,
+      "currentRuleCandidates": 0,
+      "legacyReceipts": 0,
+      "afterReceipts": 0
+    },
+    {
+      "id": "inference-44",
+      "before": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5610,
+        "working": 47879,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 46100,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 45630,
+            "other": 429,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "after": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5337,
+        "working": 48152,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 43370,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 42900,
+            "other": 429,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "pressureBefore": true,
+      "currentRuleCandidates": 0,
+      "legacyReceipts": 0,
+      "afterReceipts": 0
+    },
+    {
+      "id": "inference-45",
+      "before": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5679,
+        "working": 47810,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 46786,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 46308,
+            "other": 437,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "after": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5398,
+        "working": 48091,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 43978,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 43500,
+            "other": 437,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "pressureBefore": true,
+      "currentRuleCandidates": 0,
+      "legacyReceipts": 0,
+      "afterReceipts": 0
+    },
+    {
+      "id": "inference-46",
+      "before": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5767,
+        "working": 47722,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 47665,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 47179,
+            "other": 445,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "after": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5478,
+        "working": 48011,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 44779,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 44293,
+            "other": 445,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "pressureBefore": true,
+      "currentRuleCandidates": 0,
+      "legacyReceipts": 0,
+      "afterReceipts": 0
+    },
+    {
+      "id": "inference-47",
+      "before": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5746,
+        "working": 47743,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 47456,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 46971,
+            "other": 444,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "after": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5450,
+        "working": 48039,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 44492,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 44007,
+            "other": 444,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "pressureBefore": true,
+      "currentRuleCandidates": 0,
+      "legacyReceipts": 3,
+      "afterReceipts": 3
+    },
+    {
+      "id": "blocked-next-step-20",
+      "before": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5797,
+        "working": 47692,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 47963,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 47470,
+            "other": 452,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": false,
+        "reason": "Request exceeds its context budget (estimated input 57962, output reserve 2048, margin 5797, ceiling 65536). Conversation/task/attachment content exceeds the working budget.",
+        "provenance": "estimated"
+      },
+      "after": {
+        "ceiling": 65536,
+        "source": "deployed",
+        "output": 2048,
+        "reserve": 2048,
+        "margin": 5492,
+        "working": 47997,
+        "cost": {
+          "system": 3755,
+          "tools": 6244,
+          "conversation": 44921,
+          "uncertainMedia": false,
+          "breakdown": {
+            "core": 3313,
+            "agent": 442,
+            "history": 44428,
+            "other": 452,
+            "environment": 129,
+            "builtin": 6156
+          },
+          "schemas": {
+            "exposed": 14,
+            "bytes": 12764
+          }
+        },
+        "fits": true,
+        "provenance": "estimated"
+      },
+      "pressureBefore": true,
+      "currentRuleCandidates": 0,
+      "legacyReceipts": null,
+      "afterReceipts": 3
+    }
+  ],
+  "safety": {
+    "context": 65536,
+    "reserve": 2048,
+    "marginPolicy": "max(128, ceil(actual estimated input * 0.1)); unchanged",
+    "f1Changed": false,
+    "objectiveAndCorrectionRetained": true,
+    "nativePayloadSame": true,
+    "originalsUnchanged": true
+  },
+  "retentionClasses": {
+    "verified receipt": {
+      "pairs": 3,
+      "approximateOriginalPairTokens": 5063
+    },
+    "current-turn hot": {
+      "pairs": 19,
+      "approximateOriginalPairTokens": 21723
+    },
+    "verbatim protected original group": {
+      "pairs": 17,
+      "approximateOriginalPairTokens": 13776
+    }
+  }
+}
