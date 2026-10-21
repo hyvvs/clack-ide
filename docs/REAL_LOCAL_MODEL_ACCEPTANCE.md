@@ -13469,3 +13469,277 @@ mismatch; do not pre-decide. A passing boundary permits ordinary mission flow,
 but this diagnostic repair does not establish cold-readiness or task completion.
 **No next acceptance was run in this checkpoint.** Commit:
 `fix(test): preserve rejected context request diagnostics`. Stop here.
+
+## Fresh Nemotron acceptance with hardened context diagnostics
+
+2026-10-21. Base: `88a95ef`. **One fresh run only**, with no production source
+edits before/during/after inference and no manual tuning/rescue. Terminal:
+**PRODUCT RUNTIME / PROTECTED CONTEXT BUDGET**, specifically
+`answer-continuation-budget`. Delivered-product usability remains **LOCAL AGENT
+USABILITY STILL LIMITED**. This is not a harness-rejection result or a completed
+ForgeBoard implementation, and not a conclusive terminal model-quality verdict.
+
+### Identity, isolation and saved connection
+
+- Exact model: `nemotron-3.5-lightning:30b-a3b-q4_K_M`.
+- Verified installed digest:
+  `e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2`.
+- Ollama **0.40.5**, before and after the run. No model update/download.
+- Workspace:
+  `C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04`.
+  The preferred hardened prefix is outside the unchanged approval-root pattern;
+  this supported name avoids editing any of the original six dirty files.
+- Evidence: `src-tauri/target/real-qwen-product/forgeboard-nemotron-hardened-20261021-04`.
+  Initially the workspace contained **only `.git`**, with no seeded code.
+- Existing saved `real-qwen` connection, configuration revision **1**, forwarding
+  through the unchanged manual localhost SSH tunnel at **11435**. This historical
+  logical ID does not select Qwen; only the exact Nemotron revision was invoked.
+  Normal main-app settings were not altered. The prior isolated acceptance store
+  was copied **byte-for-byte**, retaining endpoint/profile identities, controls,
+  provenance and timestamps, rather than creating a benchmark-specific endpoint.
+- The acceptance entry alone was adjusted to require/reuse that saved connection
+  with normalized-URL equality. No provider configuration, evidence scope or
+  production policy was changed. The prior file's SHA-256 remained
+  `017900d9f8cfc4b208b660024f3c8ec69ecfc84ad4a12839ad6db1e8e21702cd`.
+- Initial saved calibration was incomplete and tool verification was verifying
+  from an exited native runtime. Production refresh/revalidation, not a forced
+  Ready state, determined readiness. All explicit overrides remained `{}`.
+- Before launch: no competing Clack/native acceptance, Cargo/Rust build or
+  Vitest/Clack harness. Isolation is saved in `preflight.json`. Other user-owned
+  processes were not terminated. Native host PID **38336**, runner PID **33048**;
+  both were confirmed absent after completion. All **955 captured Clack source
+  hashes** remained unchanged throughout inference.
+- The tunnel initially refused metadata connections. The user restored it;
+  no specification/inference had been sent before digest/version verification.
+  No SSH, service, firewall, Ollama restart/rebind or remote-file changes by the
+  evaluator. Agent npm dependency installation is ordinary application work,
+  not a model download or cloud inference.
+
+### Readiness and every premission context attempt
+
+Normal production revalidation completed with **7 readiness requests**, no
+75-second timeout, and a native tool-verification call on the first **512-output**
+probe. The six calibration attempts all succeeded; first latency was **12.367s**,
+then **6.843 / 6.225 / 6.531 / 6.637 / 6.744s**. No redundant evaluator probe or
+alternate reasoning configuration was tried.
+
+| Native ID | Requested context | Output allowance | Purpose |
+|---|---:|---:|---|
+| inference-1 | 4,096 | 32 | Production calibration |
+| inference-2 | 8,192 | 32 | Production calibration |
+| inference-3 | 16,384 | 32 | Production calibration |
+| inference-4 | 32,768 | 32 | Production calibration |
+| inference-5 | 49,152 | 32 | Production calibration |
+| inference-6 | 65,536 | 32 | Production calibration |
+| inference-7 | 65,536 | 512 | Production tool verification |
+
+Mission preflight: **Tools Verified / Agent Ready**, practical recommendation
+65,536, measured/loaded context 65,536, advertised maximum 1,048,576. Production
+Automatic kept provider-default reasoning: native **`think` omitted**. Every
+mission request used **`num_ctx: 65536`, `num_predict: 2048`**. Fallback Never,
+**zero cloud inference**, no manual context/output/reasoning override.
+
+The hardened audit recorded **40 accepted attempts: 7 readiness + 33 mission**.
+Maximum requested context was **65,536**; **zero >65,536 attempts and zero policy
+rejections**. Thus rejected value/attempt/provider ID, rejected metadata and exit
+73 are **not applicable**, not guessed. The final blocked preparation was not a
+native outgoing request. The 65K guard, calibration, reserve, safety margin, F1,
+tool verification, continuation and timeout constants remained unchanged.
+
+### Mission chronology, tools and correction
+
+The authoritative specification hash was unchanged:
+`f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`.
+Exactly **one initial user submission**, followed only by the authorized
+correction. There were **two user messages total**; normal history appearing in
+later provider requests is not a requirement resend. No benchmark/coaching text
+was added to the mission. No Qwen/other-model inference or evaluator app edits.
+
+Mission ran **581.798s (9m 41.798s)**, from **18:57:51.494 to 19:07:33.292
+Europe/Paris**. Full runner interval, including readiness, was **640.504s**.
+First provider output: **12.189s**; first native tool call: **19.261s**; first
+verified source write/substantive backend source: **92.538s**, relative to the
+initial mission run. Successful backend startup, persistence, live SSE,
+substantive frontend, authored test, passing test and model-run production-build
+milestones were **not reached**, not assigned invented times.
+
+- **33 mission requests**, **29 native structured calls**, **25 successful
+  operations / 4 failed operations**. Twelve shell operations: eight exited 0,
+  four exited nonzero. No direct directory-tool calls; directory creation and
+  scaffolding occurred through shell commands. No evaluator approval messages;
+  existing trusted-workspace production permissions governed execution.
+- **Five verified direct writes**, across three unique files:
+  `src/store.ts`, `src/sse.ts`, `src/server.ts`. Shell-generated package/lock/
+  config/Vite scaffolding is recorded separately, not counted as additional
+  verified direct writes or a substantive frontend.
+- Native shell identity was exposed as **PowerShell (pwsh.exe), not POSIX Bash**.
+  First setup command succeeded. Later `wc` and nested cmd/PowerShell quoting
+  attempts failed; the model eventually used a valid PowerShell line query and
+  native reads. No evaluator explained or repaired those errors.
+- The existing detector confirmed three successful write events and the current
+  accepted plan's page size **50**, then sent the exact authorized **50-to-25**
+  correction **once**. The first following request was `inference-19`, retaining
+  the full original objective and coding tools. Final `PAGE_SIZE = 25` exists in
+  storage code; live behavior is **unverified** because the backend cannot start.
+- F1 remained healthy on **all 33 dispatched requests**: read, write and command
+  routes were present. Some edit exposure changed, but no sole coding capability
+  disappeared. No `CLACK-BLOCKED / F1 REGRESSION` was observed.
+- Eleven responses mixed prose with native calls. Three prose-only responses
+  contained **incomplete textual `<tool_call>` intents**, each ending at provider
+  **length = 2,048 tokens** while attempting a large frontend write. They were
+  **never executed**. Zero completed empty responses or provider deadlines;
+  one in-flight request was cancelled at the authorized correction boundary,
+  with no invented finish or usage totals for that cancelled response.
+
+### Continuations, context trajectory and terminal layer
+
+Recorded answer-continuation count **3** means **two requests dispatched and one
+preparation blocked**, not three extra provider requests. Agent soft-limit
+continuation count **0**, manual continuation count **0**.
+
+| Trigger | Following request | Required estimate | Headroom | Outcome |
+|---|---|---:|---:|---|
+| inference-32 length | inference-33 | 55,891 | +9,645 | Automatic dispatch |
+| inference-36 length | inference-37 | 62,216 | +3,320 | Automatic dispatch |
+| inference-40 length | None | 68,889 | -3,353 | Protected-budget stop |
+
+Both dispatched continuations retained the original ForgeBoard objective,
+contemporaneous durable plan, five unresolved frontend/test/build obligations,
+and read/write/command capabilities. The bounded evidence records their exact
+plan-state timestamps, exposed tools and shared-budget estimates. Todo claims
+that backend work was complete were model plan state, not verified application
+acceptance. Native pseudo-tool output did not become file effects on continuation.
+
+Last dispatched request (`inference-40`) fit the shared estimator: input **57,051**,
+reserve **2,048**, margin **5,706**, required **64,805**, headroom **+731**. This
+was the maximum dispatched requirement/minimum dispatched headroom. The provider
+reported actual input **28,099** and output **2,048** for that response. Provider
+usage and conservative shared estimates are distinct; their difference alone
+does not prove an accounting defect.
+
+Next continuation preparation was blocked with:
+
+| Component | Estimated tokens |
+|---|---:|
+| Core/system | 3,888 |
+| Schemas/options | 5,795 |
+| Conversation | 51,081 |
+| Input total | 60,764 |
+| Output reserve | 2,048 |
+| Safety margin | 6,077 |
+| Required / ceiling | **68,889 / 65,536** |
+| Headroom | **-3,353** |
+
+Error code **`answer-continuation-budget`**, terminal `bad_request`. No native
+request ID or dispatch for that preparation, and no new over-limit `num_ctx`.
+The diagnostic's uncaptured/zero exposed-schema field is not proof F1 removed
+tools: actual last wire evidence has **13 exposed schemas**, including all three
+coding routes. No model voluntary success/terminal stop, acceptance rejection,
+75-second readiness timeout, 600-second deadline or native assertion abort caused
+this ending. Parent runner exited **0** after preserving a harness `ok:true`
+report containing a **failed mission**; `ok` does not mean ForgeBoard is complete.
+The successful-run report does not persist an independent native exit code;
+no such code is invented. Native log contains a WebView cleanup class-unregister
+warning (1412), not a recorded panic/abort.
+
+`f662fb5` accounting remained active: **62 actual converted local answer
+annotations**, **zero wire occurrences**, and deleting just those annotations
+changed the shared estimate by **zero**. Original transcript remained unchanged.
+One source/digest-verified historical SSE write receipt on `inference-40`
+reduced conversation estimate **48,623 -> 47,410**, saving **1,213 estimated
+tokens**, not a claimed provider-token measurement. Durable memory revision was
+null: **0 completed durable compactions**. Observed retrieval tool calls **0**;
+no extraction result was observed. Uninstrumented automatic retrieval/extraction
+totals remain **unavailable**, not fabricated as comprehensive zero counts.
+
+The mission did **not** pass the prior **40-mission-request** boundary. Native
+ID `inference-40` includes seven readiness requests and must not be presented as
+40 mission requests. No new generic Clack defect is established here. The
+current length-continuation budget path is the immediate stopping boundary;
+whether its preparation should be improved needs a separate audit, not a silent
+repair, context-policy relaxation or model-only failure label.
+
+### Frozen independent product audit
+
+All **25 non-dependency/generated files** were hashed before auditing. Existing
+dependencies and identical source were copied into `independent-project`; no
+install, version correction, source repair or missing-test implementation by
+the evaluator. Original and copied source hashes remained unchanged afterwards.
+
+- Backend source is substantive but **not runnable**. Root `npm start` and
+  `npm run build` are absent. Direct unmodified `ts-node src/server.ts` exits 1
+  with `TypeError: Cannot read properties of undefined (reading 'fileExists')`
+  from its TypeScript integration. The installed backend uses TypeScript 7.0.2
+  with ts-node 10.9.2. No downgrade/repair was attempted.
+- Independent `tsc --noEmit` exits 1: frontend files outside backend `rootDir`,
+  plus TS5069 (`declarationMap` without `declaration`/`composite`). Model never
+  ran these checks itself. Static source also casts status/priority instead of
+  runtime-enum validation; those endpoints were not dynamically exercised.
+- Startup check: **1 executed / 0 passed / 1 failed**. The requested **22 API
+  checks** are **0 executed / 0 passed / 0 failed / 22 blocked**, not 22 executed
+  failures. Project/task CRUD/open, validations/errors/search/filters and port
+  checks are individually listed. Persistence across restart and real SSE
+  mutation delivery are **blocked by startup**. No dynamic success claim.
+- Meaningful authored tests **0**, model tests/build executions **0**. Root
+  `npm test` is npm's default failing stub, not a meaningful test suite. No
+  frontend test script or tests were supplied; missing tests were not created.
+- Independent frontend production build **passes**, but builds Vite's unmodified
+  React counter demo. Headless Chromium/Playwright at **1280px and 390px** actually
+  rendered it; its counter works by keyboard, assets load, no page errors or API
+  requests. No ForgeBoard heading, projects, tasks, status/priority/tags, search,
+  filtering, SSE client, loading/error/empty product flows, pagination or debounce
+  implementation. This is not substantive frontend acceptance. No Computer Use
+  or manual/native Tauri GUI verification was performed.
+- No root ForgeBoard README/setup instructions or persistence-data Git ignore.
+  `frontend/README.md` is the generated Vite template documentation. Backend
+  `data/projects.json` / `data/tasks.json` are not covered by a root ignore rule.
+
+### Comparison and next checkpoint
+
+Hardened Qwen `9b4866a` remains the better-tested partial backend reference:
+20 mission requests, 17 native calls, 12 writes and **13/19 backend checks**,
+with retained correction but incomplete frontend/tests/build. Fresh Nemotron:
+33 requests, 29 native calls, 5 verified direct writes, startup blocked, no
+substantive frontend or meaningful tests. More requests did **not** demonstrate
+materially better delivered software. Both remain limited for unattended work.
+
+Prior long Nemotron `04b0e99` reached 40 mission requests/39 calls/13 mutations
+before the later-proven local-annotation accounting defect. That defect is not
+reintroduced here, but this different continuation-budget boundary prevents a
+clean end-to-end model-quality conclusion. `b00e3ec` remains a separate premission
+harness abort with zero task sends and is **not counted against Nemotron**.
+
+This fresh mission fairly exercised production Automatic and normal tools;
+artifact comparisons are factual, but terminal model-quality attribution is
+still inconclusive. Readiness succeeded; no over-guard selection was attempted.
+The immediate remaining boundary is **length-continuation protected-context
+preparation**, alongside real observed model shell/textual-tool execution
+limitations, not a demonstrated provider-readiness failure. Single recommended
+next checkpoint: **Audit Length-Continuation Protected-Context Preparation**.
+Do not start that audit, tune output/reasoning/context, run another comparison or
+redesign memory here.
+
+### Verification, committed evidence and safety
+
+- Preflight: **195 focused tests / 9 files passed**, including eight compiled
+  native policy/process checks. Final saved-connection test group reran **8/8**.
+- New reconstruction regression suite: **19/19 passed**; final evidence/entry
+  group **27/27 passed**. **214 distinct focused tests / 10 files** across this
+  checkpoint, without double-counting reruns.
+- Offline reconstruction passed actual native decode, controls/identity, attempt
+  ordering, source/receipt hashes, annotation-exclusion equivalence and copied/
+  original source checks. **22 immutable raw-artifact SHA-256 references**,
+  including two actual browser screenshots, are retained in the bounded fixture.
+- `npm.cmd run check-types`, locked native example compile, Node syntax checks,
+  scoped Rust formatting and working/staged diff checks passed. No Rust or
+  production changes: no unrelated full Clippy/frontend/Rust/lint/build suites
+  rerun. Cargo noted unavailable hard-link incremental caching and copied files;
+  this was not a compilation failure.
+- Owned files: acceptance entry + ownership regression, new offline reconstruction
+  script/test/fixture, and **this appendix only**. No raw prompts, binary assets,
+  generated application or private settings committed. Original six dirty file
+  contents/report prefix, both stashes and `autonomous_tracker/` preserved.
+- Commit: `test(ai): rerun nemotron with hardened context diagnostics`.
+  Expected post-commit state: `main`, **84 ahead / 0 behind cached origin**,
+  original six dirty paths, no checkpoint-owned untracked files, empty index.
+  **No push. No second mission. No subsequent checkpoint started.**

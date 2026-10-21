@@ -1,0 +1,3195 @@
+{
+  "base": "88a95ef0939dad557253af6f708e7c4e518f28a7",
+  "runId": "forgeboard-nemotron-hardened-20261021-04",
+  "root": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04",
+  "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+  "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+  "providerVersion": "0.40.5",
+  "connection": {
+    "id": "real-qwen",
+    "endpoint": "http://127.0.0.1:11435/",
+    "configurationRevision": 1,
+    "transport": "unchanged existing user SSH tunnel, local port 11435",
+    "newEndpoint": false
+  },
+  "automatic": {
+    "choice": "automatic",
+    "context": {
+      "recommended": 65536,
+      "verified": 65536,
+      "advertised": 1048576,
+      "loaded": 65536,
+      "provenance": "measured"
+    },
+    "output": 2048,
+    "tools": "Verified",
+    "status": "Ready",
+    "providerDefault": true,
+    "profileOverrides": {},
+    "fallback": "never",
+    "cloudInference": 0
+  },
+  "readiness": {
+    "requests": 7,
+    "attempts": [
+      {
+        "context": 4096,
+        "requested": 4096,
+        "loaded": 4096,
+        "outcome": "success",
+        "at": 1792601833647,
+        "latencyMs": 12367,
+        "thermal": "cold",
+        "finish": "length",
+        "think": "omitted"
+      },
+      {
+        "context": 8192,
+        "requested": 8192,
+        "loaded": 8192,
+        "outcome": "success",
+        "at": 1792601840509,
+        "latencyMs": 6843,
+        "thermal": "warm",
+        "finish": "length",
+        "think": "omitted"
+      },
+      {
+        "context": 16384,
+        "requested": 16384,
+        "loaded": 16384,
+        "outcome": "success",
+        "at": 1792601846753,
+        "latencyMs": 6225,
+        "thermal": "warm",
+        "finish": "length",
+        "think": "omitted"
+      },
+      {
+        "context": 32768,
+        "requested": 32768,
+        "loaded": 32768,
+        "outcome": "success",
+        "at": 1792601853307,
+        "latencyMs": 6531,
+        "thermal": "warm",
+        "finish": "length",
+        "think": "omitted"
+      },
+      {
+        "context": 49152,
+        "requested": 49152,
+        "loaded": 49152,
+        "outcome": "success",
+        "at": 1792601859963,
+        "latencyMs": 6637,
+        "thermal": "warm",
+        "finish": "length",
+        "think": "omitted"
+      },
+      {
+        "context": 65536,
+        "requested": 65536,
+        "loaded": 65536,
+        "outcome": "success",
+        "at": 1792601866731,
+        "latencyMs": 6744,
+        "thermal": "warm",
+        "finish": "length",
+        "think": "omitted"
+      }
+    ],
+    "controls": [
+      {
+        "id": "inference-1",
+        "context": 4096,
+        "output": 32,
+        "think": "omitted",
+        "tools": 0
+      },
+      {
+        "id": "inference-2",
+        "context": 8192,
+        "output": 32,
+        "think": "omitted",
+        "tools": 0
+      },
+      {
+        "id": "inference-3",
+        "context": 16384,
+        "output": 32,
+        "think": "omitted",
+        "tools": 0
+      },
+      {
+        "id": "inference-4",
+        "context": 32768,
+        "output": 32,
+        "think": "omitted",
+        "tools": 0
+      },
+      {
+        "id": "inference-5",
+        "context": 49152,
+        "output": 32,
+        "think": "omitted",
+        "tools": 0
+      },
+      {
+        "id": "inference-6",
+        "context": 65536,
+        "output": 32,
+        "think": "omitted",
+        "tools": 0
+      },
+      {
+        "id": "inference-7",
+        "context": 65536,
+        "output": 512,
+        "think": "omitted",
+        "tools": 1
+      }
+    ],
+    "timeouts": 0,
+    "toolOutcome": "native-call"
+  },
+  "guard": {
+    "attempted": 40,
+    "accepted": 40,
+    "rejected": 0,
+    "maxRequested": 65536,
+    "rejectedValue": null,
+    "rejectedAttemptId": null,
+    "rejectedProviderId": null,
+    "rejectionExitCode": null,
+    "note": "Attempt snapshots are pre-dispatch; native response events prove accepted calls. No >65536 attempt occurred."
+  },
+  "specificationSends": 1,
+  "userMessages": [
+    {
+      "sha256": "f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801"
+    },
+    {
+      "sha256": "9e532209ebeeb8ca4e061d91f684635cd9a154854ce6a63602801c7bff4b69cc"
+    }
+  ],
+  "missionRequests": 33,
+  "nativeCalls": 29,
+  "successfulTools": 25,
+  "failedTools": 4,
+  "directWrites": 5,
+  "uniqueDirectFiles": [
+    "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/store.ts",
+    "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/sse.ts",
+    "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/server.ts"
+  ],
+  "directoryTools": 0,
+  "shells": [
+    {
+      "id": "call_lndghevx",
+      "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04 && npm init -y",
+      "exit": 0,
+      "timedOut": false
+    },
+    {
+      "id": "call_0w4o6vr2",
+      "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04 && npm install express cors uuid ts-node @types/express @types/node typescript nodemon",
+      "exit": 0,
+      "timedOut": false
+    },
+    {
+      "id": "call_oa7p16xg",
+      "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04 && npx tsc --init --target ES2020 --module commonjs --esModuleInterop --skipLibCheck --outDir ./dist --rootDir ./src --declaration false",
+      "exit": 0,
+      "timedOut": false
+    },
+    {
+      "id": "call_380cew1z",
+      "command": "mkdir C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src",
+      "exit": 0,
+      "timedOut": false
+    },
+    {
+      "id": "call_xgf4svwg",
+      "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04 && npm create vite@latest frontend -- --template react-ts",
+      "exit": 0,
+      "timedOut": false
+    },
+    {
+      "id": "call_cbkycgzh",
+      "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/frontend && npm install",
+      "exit": 0,
+      "timedOut": false
+    },
+    {
+      "id": "call_d462xe7e",
+      "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/frontend && npm install axios",
+      "exit": 0,
+      "timedOut": false
+    },
+    {
+      "id": "call_xjdmv59j",
+      "command": "wc -l C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/frontend/src/App.tsx",
+      "exit": 1,
+      "timedOut": false
+    },
+    {
+      "id": "call_naozij7z",
+      "command": "cmd /c \"type C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/frontend/src/App.tsx | find /c /v \"\"\"",
+      "exit": 2,
+      "timedOut": false
+    },
+    {
+      "id": "call_bpsdoytg",
+      "command": "cmd /c \"powershell -Command \"(Get-Content C:\\\\Users\\\\Hayden\\\\Documents\\\\forgeboard-nemotron35-lightning-20261021-04\\\\frontend\\\\src\\\\App.tsx) -replace '^$', '' | Measure-Object -Line'\"",
+      "exit": 1,
+      "timedOut": false
+    },
+    {
+      "id": "call_6aqynifa",
+      "command": "cmd /c \"cd C:\\Users\\Hayden\\Documents\\forgeboard-nemotron35-lightning-20261021-04\\frontend && powershell -Command \\\"(Get-Content src\\\\App.tsx).Count\\\"\"",
+      "exit": 1,
+      "timedOut": false
+    },
+    {
+      "id": "call_tzt42l8u",
+      "command": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04 && powershell -Command \"Get-Content frontend\\\\src\\\\App.tsx | Measure-Object -Line\"",
+      "exit": 0,
+      "timedOut": false
+    }
+  ],
+  "effects": [
+    {
+      "id": "call_8wrsbevz",
+      "name": "tool-list_directory",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04",
+      "inputSha256": "93f12dafb90f95efaac3f57d5e936a6bc27bc8c355d240778bd8ef55853ad8be",
+      "outputSha256": "66fcd872fdb8ae6a0422dc7bd173afee2b496f80ade98dadc6dc91f8b96ea835"
+    },
+    {
+      "id": "call_g7g3lxci",
+      "name": "tool-todo_write",
+      "failed": false,
+      "inputSha256": "2c21bbb3e420d02242715238ec0d197e0a46d68723fb008d1960a6e9db646d96",
+      "outputSha256": "076dca3dc72bfd826ca40027cc34d7ba68ee0d793f1c110a2e11aa23d4fb225d"
+    },
+    {
+      "id": "call_lndghevx",
+      "name": "tool-bash_run",
+      "failed": false,
+      "inputSha256": "8d057a778638dfbe8dc593afd71fb5745681d21e037f1ab3e30845b74bddef41",
+      "outputSha256": "aefa609096ef8e5778d59d2c948725d201f6a936f03c06fef9cc226340eab030"
+    },
+    {
+      "id": "call_0w4o6vr2",
+      "name": "tool-bash_run",
+      "failed": false,
+      "inputSha256": "02ee133f41c0fbbfea37e489960c51d6f76cfadc1e6e7ba1667184eb80695d87",
+      "outputSha256": "0d1bbb85ae96b681cfa6e03ce5a943da061500537d721ea6bbb31dc3e795a2c6"
+    },
+    {
+      "id": "call_oa7p16xg",
+      "name": "tool-bash_run",
+      "failed": false,
+      "inputSha256": "1eb30f0acf7a07d2e82a82a4ada17964ff78e1b0f73a08904ca6359f21b3bf98",
+      "outputSha256": "4eaa0be584dbabb172ed3974df36f220d82b29c397762883dea38376302927e5"
+    },
+    {
+      "id": "call_zlaxq06s",
+      "name": "tool-read_file",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/tsconfig.json",
+      "inputSha256": "ca0d84392cbaa6c0cc1200558e913e33200616af241a5736f62c2d0ea24f03e8",
+      "outputSha256": "90aec57c52507d2f1c7c7891eb9756a853284055ec07a63e34112e47125bdaf1"
+    },
+    {
+      "id": "call_380cew1z",
+      "name": "tool-bash_run",
+      "failed": false,
+      "inputSha256": "7c0569e7c4f9b5c841ef3b6d480d67f8509bac73d261814ac3927209dc921e13",
+      "outputSha256": "87ec56fe3800f9935d6a21530ee73a8cecebfb3e0cef6db79bdadce82c826b8b"
+    },
+    {
+      "id": "call_fsuo2qna",
+      "name": "tool-write_file",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/store.ts",
+      "inputSha256": "a49107273eef09301640e39461a80a59fed765951c4c74c02f16fa80084bc045",
+      "outputSha256": "ff49c6d69af137fecd32724e05eec02f0e7fdd9fe7a7693cf90b16ec8042188c"
+    },
+    {
+      "id": "call_lzgqzap2",
+      "name": "tool-write_file",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/sse.ts",
+      "inputSha256": "6a8cc18752b986a5d1ca4c13f14a44573bdc70a40db707abf874129eec90c614",
+      "outputSha256": "40eeff5a3c0093c23929c0f1e5054c30984ac44214714ff06373c1fe0345d079"
+    },
+    {
+      "id": "call_072wgud5",
+      "name": "tool-write_file",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/server.ts",
+      "inputSha256": "4a94d384a84ea461c04f3b0b6a5739da6e8ebb4d049a6867c54a9ba2f4399e46",
+      "outputSha256": "8ba3b1d37f62a5ba51948272d7c562257db189788d1e03c2be45a712f5906fdd"
+    },
+    {
+      "id": "call_oo2pg233",
+      "name": "tool-grep",
+      "failed": false,
+      "inputSha256": "0decffba8854d45da8f0806a538a13288b75106d820165fb229060bd15f865a7",
+      "outputSha256": "e5b227d63f11f1ccd66caefdab77e144f1a1779511d56b607165c460ff32bc98"
+    },
+    {
+      "id": "call_ew5tajw5",
+      "name": "tool-grep",
+      "failed": false,
+      "inputSha256": "2f103c2013dbc64aa85d65d430c355f31c9fa53cb9903044bef80e86439b82a8",
+      "outputSha256": "036804c5e5a7187ad0626aaef8ae6fbf945538183a68a30f2df97f4459d89f48"
+    },
+    {
+      "id": "call_rjmwob4e",
+      "name": "tool-read_file",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/store.ts",
+      "inputSha256": "1a94c7a78d008c33f8ed7b59d1aeb8d0f98a06579c668438090b529c0aa12898",
+      "outputSha256": "24015268a7ddfe84b47cd2b937a0eef51f6e0b7251f97b5b41b73ded64907dec"
+    },
+    {
+      "id": "call_dsker88h",
+      "name": "tool-write_file",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/store.ts",
+      "inputSha256": "c66eb124e4de8e3e53a403c211bacaf83eaa40bd3dd5f35f822cefadbcd839aa",
+      "outputSha256": "0f4a07a7f93bc2479aa43529a2e76e3f59e15668ac1465fdd9c44ac2416aa0e0"
+    },
+    {
+      "id": "call_o8uovr4u",
+      "name": "tool-read_file",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/server.ts",
+      "inputSha256": "d2b08b88912adf2d831b50ecc299317ca37df5899914920a3282ecf56a93f60d",
+      "outputSha256": "e6861db7ce5057577a0fc75d563487e4274a588e3f7875b76dd83ae8db67e61b"
+    },
+    {
+      "id": "call_li49alt0",
+      "name": "tool-write_file",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/server.ts",
+      "inputSha256": "f38f43b979bd26d49a912349d70ba762bdd3a17b911d9ea2ea5316ef2adc5fd9",
+      "outputSha256": "2ad27d0b2d84aac108efcf916dddba6f7db0cffaf30acf536c6dfe2a7d9ef2ab"
+    },
+    {
+      "id": "call_iw8c7h3w",
+      "name": "tool-todo_write",
+      "failed": false,
+      "inputSha256": "cda4284b9f57424c59a7fa160998480193b2987eee54fa99ca7532efccde5cca",
+      "outputSha256": "477a936e866f34fbbe2662e32c6a205f9336e99ec6c7f87afdb9446905b01884"
+    },
+    {
+      "id": "call_xgf4svwg",
+      "name": "tool-bash_run",
+      "failed": false,
+      "inputSha256": "1c47320bbd66d92df9b214778d5833cd6338d98a8a33dbca1e18058c72072239",
+      "outputSha256": "5ed09333a93cf3b2ad14b68fc2cdb8e6c767e3ebb529d9db3ce71a99637b24d3"
+    },
+    {
+      "id": "call_cbkycgzh",
+      "name": "tool-bash_run",
+      "failed": false,
+      "inputSha256": "e3d19ee2c1279e40b7d01a2f08ca94478eeb93640b5f3128a30d2dcb0dab0ec2",
+      "outputSha256": "9f1099dd3c26edd7c815ca7457d94272a328facef01c51ba7aa181ee6563c77a"
+    },
+    {
+      "id": "call_d462xe7e",
+      "name": "tool-bash_run",
+      "failed": false,
+      "inputSha256": "5e52ec0c813f1569c710b95d603482901d2a4549bb35e4dbcd702480e66f4912",
+      "outputSha256": "337418d6a11b87305f1bc574ef717c532dea86d1660c51e416d6e2eef33c48e2"
+    },
+    {
+      "id": "call_2n324vb9",
+      "name": "tool-list_directory",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/frontend",
+      "inputSha256": "d8460d777ab9b6869ff0cc8fc704916c5304c04f2e990b2294c16445ea8979f3",
+      "outputSha256": "96b757118b87987bc75baf7761b9ee35308bc2ba88ab70ab88a5f24eb0c14ef3"
+    },
+    {
+      "id": "call_ddas7ge0",
+      "name": "tool-list_directory",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/frontend/src",
+      "inputSha256": "74a8ed0293541a9a55d26fba63429a89b44e3b62eb34c5aa806b5f613dc08b26",
+      "outputSha256": "6bd50659a29e0d89e26a69f057be1d4522c25ca64a1343df24f0e240c599b114"
+    },
+    {
+      "id": "call_ij6zhem0",
+      "name": "tool-read_file",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/frontend/vite.config.ts",
+      "inputSha256": "f7d3db5eaa9408fb595268a5a3dddbf5d1b7154a741b1bd8d5c26b9cc96863c3",
+      "outputSha256": "40a424b8c047873f9d8f54a1e6534539df6083a80205bfc7532a8a1af0b310c1"
+    },
+    {
+      "id": "call_xjdmv59j",
+      "name": "tool-bash_run",
+      "failed": true,
+      "inputSha256": "293188b893f5b69410b8b8dac64429b58211e05caa7de52670b533d8530cb79b",
+      "outputSha256": "c4495ec35465a7b252c98c463c1853e052b6da9b32a768aeed666dd2e2b7d5b8"
+    },
+    {
+      "id": "call_naozij7z",
+      "name": "tool-bash_run",
+      "failed": true,
+      "inputSha256": "62c1315511266dc918d8ffb8794ba45dfb697a61510b369311fa72fb99b13dca",
+      "outputSha256": "1954f8675d84f74f124a0465c5843321b8bbc7cfcc64bdc3a8734d8cc7f70061"
+    },
+    {
+      "id": "call_bpsdoytg",
+      "name": "tool-bash_run",
+      "failed": true,
+      "inputSha256": "f80af3ef004d162ba840c4e81ab8ed86bbfbb3445a018bd55a865ef74933c6c1",
+      "outputSha256": "0cf77a0ea3146e68dcbab6bf5f76d82a07de6ce168a314e1c86dcfb3169eb0d7"
+    },
+    {
+      "id": "call_6aqynifa",
+      "name": "tool-bash_run",
+      "failed": true,
+      "inputSha256": "8ce18f1865c2cc2d4de93618af800767d931c45217da39de5b96991bc6660471",
+      "outputSha256": "d7c406576d67cc8863ef93f89ab1cff6698017d0be1d6e9294e4ed6ad49e0439"
+    },
+    {
+      "id": "call_tzt42l8u",
+      "name": "tool-bash_run",
+      "failed": false,
+      "inputSha256": "2962e2ee805c31cc4b1430fbc3589bc21bf42a029490f78ac58198c72c78fdea",
+      "outputSha256": "4a6d76ea51ee18f5bd9e697a2bd352f93c18d4693a7cff767a2f2402c733590d"
+    },
+    {
+      "id": "call_qzckb19v",
+      "name": "tool-read_file",
+      "failed": false,
+      "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/frontend/src/App.tsx",
+      "inputSha256": "e6ff43fd671671ebd0950d1820e59892ef74dfa534b336cd4054fbac4aaf17d4",
+      "outputSha256": "d974385ca0d542966529e1dd9909eea2d83d83e5c11f3d9bc3e6929b6ff3c4e2"
+    }
+  ],
+  "approvals": 0,
+  "responseClasses": {
+    "native": 29,
+    "proseAlongsideNative": 11,
+    "proseWithoutNative": 3,
+    "textualPseudoToolIntents": 3,
+    "outputLength": 3,
+    "emptyCompleted": 0,
+    "cancelled": 1,
+    "providerDeadline": 0
+  },
+  "timings": {
+    "start": 1792601871494,
+    "end": 1792602453292,
+    "elapsedMs": 581798,
+    "totalRunnerMs": 640504,
+    "firstOutputMs": 12189,
+    "firstNativeCallMs": 19261,
+    "firstDirectWriteMs": 92538,
+    "backendSourceMs": 92538,
+    "startupMs": null,
+    "persistenceMs": null,
+    "SSEMs": null,
+    "substantiveFrontendMs": null,
+    "authoredTestMs": null,
+    "passingAuthoredTestMs": null,
+    "modelProductionBuildMs": null
+  },
+  "shellIdentity": {
+    "advertised": [
+      "shell: PowerShell (pwsh.exe)",
+      "shell_syntax: PowerShell; not POSIX Bash"
+    ],
+    "firstCommand": "cd C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04 && npm init -y",
+    "laterFailures": "Four shell commands failed; model later used a valid PowerShell content/line query"
+  },
+  "correction": {
+    "count": 1,
+    "at": 1792602010714,
+    "confirmedWriteEvents": 3,
+    "pageEvidence": {
+      "kind": "current-accepted-plan",
+      "todo": {
+        "id": "4",
+        "title": "Implement filtering, search, and pagination",
+        "description": "Combined project/status/priority/tag filters and free-text search over titles/descriptions, page size 50",
+        "status": "pending"
+      },
+      "planSha256": "01e3633d4fa96ec1c9390c0ca06ec3c594d82f081aba47ed200a82bc2d109a7c"
+    },
+    "firstNextRequest": "inference-19",
+    "objectivePresent": true,
+    "codingToolsPresent": true,
+    "sourcePageSize": 25,
+    "livePageSize": null
+  },
+  "continuations": {
+    "answerRecorded": 3,
+    "dispatched": 2,
+    "blocked": 1,
+    "agentSoftLimit": 0,
+    "manual": 0,
+    "records": [
+      {
+        "after": "inference-32",
+        "next": "inference-33",
+        "trigger": "provider length finish",
+        "outcome": "automatic answer continuation dispatched",
+        "objectivePresent": true,
+        "tools": [
+          "read_file",
+          "list_directory",
+          "write_file",
+          "create_directory",
+          "grep",
+          "glob",
+          "bash_run",
+          "bash_list",
+          "open_preview",
+          "todo_write",
+          "request_peer_task",
+          "cancel_peer_task",
+          "propose_custom_tool"
+        ],
+        "budget": {
+          "requestId": "inference-33",
+          "input": 48948,
+          "system": 3872,
+          "schemas": 5886,
+          "history": 39190,
+          "reserve": 2048,
+          "margin": 4895,
+          "ceiling": 65536,
+          "required": 55891,
+          "headroom": 9645,
+          "estimate": true
+        },
+        "planStateAt": 1792602188977,
+        "pendingPlan": [
+          "Setup frontend React + TypeScript project with Vite",
+          "Implement frontend: project/task lists, forms, SSE client",
+          "Write backend API tests",
+          "Write frontend behavior tests",
+          "Run production build and final verification"
+        ]
+      },
+      {
+        "after": "inference-36",
+        "next": "inference-37",
+        "trigger": "provider length finish",
+        "outcome": "automatic answer continuation dispatched",
+        "objectivePresent": true,
+        "tools": [
+          "read_file",
+          "list_directory",
+          "write_file",
+          "create_directory",
+          "grep",
+          "glob",
+          "bash_run",
+          "bash_list",
+          "open_preview",
+          "todo_write",
+          "request_peer_task",
+          "cancel_peer_task",
+          "propose_custom_tool"
+        ],
+        "budget": {
+          "requestId": "inference-37",
+          "input": 54698,
+          "system": 3872,
+          "schemas": 5886,
+          "history": 44940,
+          "reserve": 2048,
+          "margin": 5470,
+          "ceiling": 65536,
+          "required": 62216,
+          "headroom": 3320,
+          "estimate": true
+        },
+        "planStateAt": 1792602289408,
+        "pendingPlan": [
+          "Setup frontend React + TypeScript project with Vite",
+          "Implement frontend: project/task lists, forms, SSE client",
+          "Write backend API tests",
+          "Write frontend behavior tests",
+          "Run production build and final verification"
+        ]
+      },
+      {
+        "after": "inference-40",
+        "next": null,
+        "trigger": "provider length finish",
+        "outcome": "blocked by answer-continuation-budget",
+        "objectivePresent": null,
+        "tools": [],
+        "budget": {
+          "input": 60764,
+          "output": 2048,
+          "margin": 6077,
+          "ceiling": 65536,
+          "system": 3888,
+          "schemas": 5795,
+          "history": 51081,
+          "required": 68889,
+          "headroom": -3353,
+          "requestId": null,
+          "networkDispatch": false,
+          "scope": "Blocked next answer-continuation preparation, not an outgoing native request",
+          "estimate": true
+        },
+        "planStateAt": 1792602453292,
+        "pendingPlan": [
+          "Setup frontend React + TypeScript project with Vite",
+          "Implement frontend: project/task lists, forms, SSE client",
+          "Write backend API tests",
+          "Write frontend behavior tests",
+          "Run production build and final verification"
+        ]
+      }
+    ]
+  },
+  "context": {
+    "dispatched": [
+      {
+        "requestId": "inference-8",
+        "input": 11186,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 1187,
+        "reserve": 2048,
+        "margin": 1119,
+        "ceiling": 65536,
+        "required": 14353,
+        "headroom": 51183,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-9",
+        "input": 12381,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 2382,
+        "reserve": 2048,
+        "margin": 1239,
+        "ceiling": 65536,
+        "required": 15668,
+        "headroom": 49868,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-10",
+        "input": 13850,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 3851,
+        "reserve": 2048,
+        "margin": 1385,
+        "ceiling": 65536,
+        "required": 17283,
+        "headroom": 48253,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-11",
+        "input": 14461,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 4462,
+        "reserve": 2048,
+        "margin": 1447,
+        "ceiling": 65536,
+        "required": 17956,
+        "headroom": 47580,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-12",
+        "input": 15042,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 5043,
+        "reserve": 2048,
+        "margin": 1505,
+        "ceiling": 65536,
+        "required": 18595,
+        "headroom": 46941,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-13",
+        "input": 15563,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 5564,
+        "reserve": 2048,
+        "margin": 1557,
+        "ceiling": 65536,
+        "required": 19168,
+        "headroom": 46368,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-14",
+        "input": 16697,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 6698,
+        "reserve": 2048,
+        "margin": 1670,
+        "ceiling": 65536,
+        "required": 20415,
+        "headroom": 45121,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-15",
+        "input": 17543,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 7544,
+        "reserve": 2048,
+        "margin": 1755,
+        "ceiling": 65536,
+        "required": 21346,
+        "headroom": 44190,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-16",
+        "input": 21312,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 11313,
+        "reserve": 2048,
+        "margin": 2132,
+        "ceiling": 65536,
+        "required": 25492,
+        "headroom": 40044,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-17",
+        "input": 22987,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 12988,
+        "reserve": 2048,
+        "margin": 2299,
+        "ceiling": 65536,
+        "required": 27334,
+        "headroom": 38202,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-18",
+        "input": 26867,
+        "system": 3755,
+        "schemas": 6244,
+        "history": 16868,
+        "reserve": 2048,
+        "margin": 2687,
+        "ceiling": 65536,
+        "required": 31602,
+        "headroom": 33934,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-19",
+        "input": 26601,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 16960,
+        "reserve": 2048,
+        "margin": 2661,
+        "ceiling": 65536,
+        "required": 31310,
+        "headroom": 34226,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-20",
+        "input": 26970,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 17329,
+        "reserve": 2048,
+        "margin": 2697,
+        "ceiling": 65536,
+        "required": 31715,
+        "headroom": 33821,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-21",
+        "input": 32066,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 22425,
+        "reserve": 2048,
+        "margin": 3207,
+        "ceiling": 65536,
+        "required": 37321,
+        "headroom": 28215,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-22",
+        "input": 32651,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 23010,
+        "reserve": 2048,
+        "margin": 3266,
+        "ceiling": 65536,
+        "required": 37965,
+        "headroom": 27571,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-23",
+        "input": 36808,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 27167,
+        "reserve": 2048,
+        "margin": 3681,
+        "ceiling": 65536,
+        "required": 42537,
+        "headroom": 22999,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-24",
+        "input": 37096,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 27455,
+        "reserve": 2048,
+        "margin": 3710,
+        "ceiling": 65536,
+        "required": 42854,
+        "headroom": 22682,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-25",
+        "input": 41037,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 31396,
+        "reserve": 2048,
+        "margin": 4104,
+        "ceiling": 65536,
+        "required": 47189,
+        "headroom": 18347,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-26",
+        "input": 42066,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 32425,
+        "reserve": 2048,
+        "margin": 4207,
+        "ceiling": 65536,
+        "required": 48321,
+        "headroom": 17215,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-27",
+        "input": 42713,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 33072,
+        "reserve": 2048,
+        "margin": 4272,
+        "ceiling": 65536,
+        "required": 49033,
+        "headroom": 16503,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-28",
+        "input": 43112,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 33471,
+        "reserve": 2048,
+        "margin": 4312,
+        "ceiling": 65536,
+        "required": 49472,
+        "headroom": 16064,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-29",
+        "input": 43570,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 33929,
+        "reserve": 2048,
+        "margin": 4357,
+        "ceiling": 65536,
+        "required": 49975,
+        "headroom": 15561,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-30",
+        "input": 44125,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 34484,
+        "reserve": 2048,
+        "margin": 4413,
+        "ceiling": 65536,
+        "required": 50586,
+        "headroom": 14950,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-31",
+        "input": 44493,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 34852,
+        "reserve": 2048,
+        "margin": 4450,
+        "ceiling": 65536,
+        "required": 50991,
+        "headroom": 14545,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-32",
+        "input": 44850,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 35209,
+        "reserve": 2048,
+        "margin": 4485,
+        "ceiling": 65536,
+        "required": 51383,
+        "headroom": 14153,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-33",
+        "input": 48948,
+        "system": 3872,
+        "schemas": 5886,
+        "history": 39190,
+        "reserve": 2048,
+        "margin": 4895,
+        "ceiling": 65536,
+        "required": 55891,
+        "headroom": 9645,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-34",
+        "input": 49644,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 40003,
+        "reserve": 2048,
+        "margin": 4965,
+        "ceiling": 65536,
+        "required": 56657,
+        "headroom": 8879,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-35",
+        "input": 50059,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 40418,
+        "reserve": 2048,
+        "margin": 5006,
+        "ceiling": 65536,
+        "required": 57113,
+        "headroom": 8423,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-36",
+        "input": 50551,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 40910,
+        "reserve": 2048,
+        "margin": 5056,
+        "ceiling": 65536,
+        "required": 57655,
+        "headroom": 7881,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-37",
+        "input": 54698,
+        "system": 3872,
+        "schemas": 5886,
+        "history": 44940,
+        "reserve": 2048,
+        "margin": 5470,
+        "ceiling": 65536,
+        "required": 62216,
+        "headroom": 3320,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-38",
+        "input": 55460,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 45819,
+        "reserve": 2048,
+        "margin": 5546,
+        "ceiling": 65536,
+        "required": 63054,
+        "headroom": 2482,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-39",
+        "input": 55965,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 46324,
+        "reserve": 2048,
+        "margin": 5597,
+        "ceiling": 65536,
+        "required": 63610,
+        "headroom": 1926,
+        "estimate": true
+      },
+      {
+        "requestId": "inference-40",
+        "input": 57051,
+        "system": 3755,
+        "schemas": 5886,
+        "history": 47410,
+        "reserve": 2048,
+        "margin": 5706,
+        "ceiling": 65536,
+        "required": 64805,
+        "headroom": 731,
+        "estimate": true
+      }
+    ],
+    "maximumDispatchedRequired": 64805,
+    "minimumDispatchedHeadroom": 731,
+    "blocked": {
+      "input": 60764,
+      "output": 2048,
+      "margin": 6077,
+      "ceiling": 65536,
+      "system": 3888,
+      "schemas": 5795,
+      "history": 51081,
+      "required": 68889,
+      "headroom": -3353,
+      "requestId": null,
+      "networkDispatch": false,
+      "scope": "Blocked next answer-continuation preparation, not an outgoing native request",
+      "estimate": true
+    },
+    "maximumProtectedRequired": 68889,
+    "minimumProtectedHeadroom": -3353,
+    "memoryRevision": null,
+    "successfulCompactions": 0,
+    "retrievalToolCalls": 0,
+    "retrievalTotal": null,
+    "extractionTotal": null,
+    "note": "No retrieval tool call or extraction result observed; automatic subsystem totals are not independently instrumented"
+  },
+  "controls": [
+    {
+      "requestId": "inference-8",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "862c19b719e5b041b2a902876d75f32bc41588c2b67c885664f76630dd7161d3"
+    },
+    {
+      "requestId": "inference-9",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "aa475c68b785628c80f62d867957bece7d75c12d7e6bbeb62736d2efc190dcd7"
+    },
+    {
+      "requestId": "inference-10",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "90e9187ecae93c95966e41633054cd59567358261bde44aefb7ed06c70628d9a"
+    },
+    {
+      "requestId": "inference-11",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "8936dda5a0ab4b0812fff96bf1851fe7db956e3957422a2701771c0148499453"
+    },
+    {
+      "requestId": "inference-12",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "3be5ddc317cb206f7ccace3552ea9f72b8ca56e45d77ea6ec60624149b414112"
+    },
+    {
+      "requestId": "inference-13",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "4830a74975c2e6385d66a0b9d89f0c07f13b3f94cc2d3a918da28501558d1513"
+    },
+    {
+      "requestId": "inference-14",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "ba51902b78b9a09ae1d27ef31da185f78497d07d7f21d69e75dcfd468839a8f3"
+    },
+    {
+      "requestId": "inference-15",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "ddb290e1723287a0db5eed22eaa642356a1dcaaa0ca5125fa7326ab49a1dab09"
+    },
+    {
+      "requestId": "inference-16",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "06b40658da668bc4b06d7eea8251b190144b99b249252560bfd4f349839c9a0d"
+    },
+    {
+      "requestId": "inference-17",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "76977bcac4b9d626f11ddfa09327e9c36fb730a8dca08e464dcb403aa0cd5382"
+    },
+    {
+      "requestId": "inference-18",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "edit",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "7e0b4f13260bf2cc0955a385331c7e268cce9827b24656614e4c3ac1fc94a5fa"
+    },
+    {
+      "requestId": "inference-19",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "701413945bab417792a2a3976dc1e5c4a423bf16258584f01f6617d4af267298"
+    },
+    {
+      "requestId": "inference-20",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "57d025810c817146aa94ad9de171386f551b2a77285022d91167cd17fbdc72c4"
+    },
+    {
+      "requestId": "inference-21",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "2c4d3602d303830fd67f36b047637be640fcaa4a4f1f3474600b202a9ee99083"
+    },
+    {
+      "requestId": "inference-22",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "40c4b75a390d3ccfddb686d5e39ff4f412507a30cf47a60d9b3028131b842399"
+    },
+    {
+      "requestId": "inference-23",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "e383b334958eae93a9d152022b6d7807333f851badac19ff279b79cf03849cd7"
+    },
+    {
+      "requestId": "inference-24",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "c088ab42a06d30771dade8a8c2995ddbb7c65a30852d3f490b8bc78a4c6dc905"
+    },
+    {
+      "requestId": "inference-25",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "6ca749332a11a89ae1593b6b8dc2c02a2ddf885e960159e0fe8e14ea9b38194a"
+    },
+    {
+      "requestId": "inference-26",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "c60f2ddd25631d9e9cbf70115d98bbd849730d6a71060cea8b5c7e9e3b2df62e"
+    },
+    {
+      "requestId": "inference-27",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "52796d6148863fa019e08d03a0a1c092ec7ba75adb2508548fa92aff38f82668"
+    },
+    {
+      "requestId": "inference-28",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "ebd49085a3a49b084271b88c5f697e504d497a1d3eb8521ec03f3a626cb2a685"
+    },
+    {
+      "requestId": "inference-29",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "6b3f9e1b0b41291da3a45d6b05bf2056838535d16afcab3c1d0ec3f0894b2295"
+    },
+    {
+      "requestId": "inference-30",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "0d533af73ff8feeb673179865aed1463dbb29be6eab6fdf653f57c434415a922"
+    },
+    {
+      "requestId": "inference-31",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "ddc44786b01a5d2550fb5d9b37ac93a5eeeeef05e8d9f8bd6ec0139dd36c1d82"
+    },
+    {
+      "requestId": "inference-32",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "5f24c51b275804cbfe9fe20bb6f3f179b9012cbd98851695e544c0574d60bea1"
+    },
+    {
+      "requestId": "inference-33",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "278116c57432e38cc375d7bbcb37ede4c16e9699cdeb0e944c9ea601877078a6"
+    },
+    {
+      "requestId": "inference-34",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "8e258789bbd901b0199fc9918c4a8d343aed23b4ef1d281c804f33ceb5b62498"
+    },
+    {
+      "requestId": "inference-35",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "27d15665838ab35416680a86dc490080e60c6f7ec37294c439a923a7809dcccf"
+    },
+    {
+      "requestId": "inference-36",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "1bfff3b12218c476acbcc547b5ebefb7bada8998f73faa543b9ca4d0821bbbe4"
+    },
+    {
+      "requestId": "inference-37",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "af2bedd66bca7dfc611d8d695be66323f1352a60cdccf1f8b732cd4cfd6787b7"
+    },
+    {
+      "requestId": "inference-38",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "4ce6e1692f1b7ca52d8ad40e209548f50b451f241f894d53a56962e991bd05af"
+    },
+    {
+      "requestId": "inference-39",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "df69e50b13be6f10b86b44b0d538a3579027f71143fefced43380fc35bfc2343"
+    },
+    {
+      "requestId": "inference-40",
+      "context": 65536,
+      "output": 2048,
+      "think": "omitted",
+      "tools": [
+        "read_file",
+        "list_directory",
+        "write_file",
+        "create_directory",
+        "grep",
+        "glob",
+        "bash_run",
+        "bash_list",
+        "open_preview",
+        "todo_write",
+        "request_peer_task",
+        "cancel_peer_task",
+        "propose_custom_tool"
+      ],
+      "sourceSha256": "e189ea03ca3dd02827aadfcc8566b22ad1a451bd695c8929d7ef3ca1c55eb999"
+    }
+  ],
+  "responses": [
+    {
+      "requestId": "inference-1",
+      "at": 1792601821297,
+      "firstOutputAt": 1792601832849,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 0,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 115,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reasoningSha256": "56c396ddb8cebbac3fd59f8cfd3260033c3d6ea43d7414628d7e5c88922fb0b6",
+      "textualIntent": false,
+      "finish": "length",
+      "inputTokens": 20,
+      "outputTokens": 32,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "readiness"
+    },
+    {
+      "requestId": "inference-2",
+      "at": 1792601833679,
+      "firstOutputAt": 1792601839695,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 0,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 115,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reasoningSha256": "9cd65983f173c1c6680f4e40d9dcd52e38668784141dfabd369a77667ed5762c",
+      "textualIntent": false,
+      "finish": "length",
+      "inputTokens": 20,
+      "outputTokens": 32,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "readiness"
+    },
+    {
+      "requestId": "inference-3",
+      "at": 1792601840539,
+      "firstOutputAt": 1792601845980,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 0,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 115,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reasoningSha256": "9cd65983f173c1c6680f4e40d9dcd52e38668784141dfabd369a77667ed5762c",
+      "textualIntent": false,
+      "finish": "length",
+      "inputTokens": 20,
+      "outputTokens": 32,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "readiness"
+    },
+    {
+      "requestId": "inference-4",
+      "at": 1792601846790,
+      "firstOutputAt": 1792601852578,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 0,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 115,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reasoningSha256": "56c396ddb8cebbac3fd59f8cfd3260033c3d6ea43d7414628d7e5c88922fb0b6",
+      "textualIntent": false,
+      "finish": "length",
+      "inputTokens": 20,
+      "outputTokens": 32,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "readiness"
+    },
+    {
+      "requestId": "inference-5",
+      "at": 1792601853336,
+      "firstOutputAt": 1792601859076,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 0,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 115,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reasoningSha256": "abb03f7f85affb7eb54ccd05696d9577537396a3b82502f9bd1f13c4b4ced427",
+      "textualIntent": false,
+      "finish": "length",
+      "inputTokens": 20,
+      "outputTokens": 32,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "readiness"
+    },
+    {
+      "requestId": "inference-6",
+      "at": 1792601860000,
+      "firstOutputAt": 1792601865881,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 0,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 115,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reasoningSha256": "abb03f7f85affb7eb54ccd05696d9577537396a3b82502f9bd1f13c4b4ced427",
+      "textualIntent": false,
+      "finish": "length",
+      "inputTokens": 20,
+      "outputTokens": 32,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "readiness"
+    },
+    {
+      "requestId": "inference-7",
+      "at": 1792601868046,
+      "firstOutputAt": 1792601869269,
+      "firstCallAt": 1792601870718,
+      "calls": [
+        {
+          "name": "get_probe_value",
+          "inputSha256": "4e8941add58a376c9250b41f063b7811ee877b349989b1ab636b5235b6aeb8da"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 182,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "820a7561dd24a5fd2119fe4d64707d3958372ded944003ba9240d7040fc7aee9",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 335,
+      "outputTokens": 89,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "readiness"
+    },
+    {
+      "requestId": "inference-8",
+      "at": 1792601872080,
+      "firstOutputAt": 1792601883683,
+      "firstCallAt": 1792601890755,
+      "calls": [
+        {
+          "name": "list_directory",
+          "inputSha256": "93f12dafb90f95efaac3f57d5e936a6bc27bc8c355d240778bd8ef55853ad8be"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 1904,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "3ba741cde5cd55034fb2b57b18804c2f2a1f3710dee471e9d84b0b77db01f87e",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 5296,
+      "outputTokens": 472,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-9",
+      "at": 1792601890856,
+      "firstOutputAt": 1792601891734,
+      "firstCallAt": 1792601903742,
+      "calls": [
+        {
+          "name": "todo_write",
+          "inputSha256": "2c21bbb3e420d02242715238ec0d197e0a46d68723fb008d1960a6e9db646d96"
+        }
+      ],
+      "contentChars": 140,
+      "nonWhitespaceContent": 139,
+      "reasoningChars": 802,
+      "contentSha256": "0553e8a5dc599805291aa31ad6cdaa5bee1603092366703a3dcc077545281263",
+      "reasoningSha256": "2925cd1ad996ce18583955b672b8213aaf4f292c0939a43f5cab2a588c6495b7",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 5822,
+      "outputTokens": 716,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-10",
+      "at": 1792601904138,
+      "firstOutputAt": 1792601906281,
+      "firstCallAt": 1792601907461,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "8d057a778638dfbe8dc593afd71fb5745681d21e037f1ab3e30845b74bddef41"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 97,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "c229fee648f62d53e18c60497a37031f77b5433de8bb4c5fbe0295891a87b634",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 6584,
+      "outputTokens": 83,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-11",
+      "at": 1792601914889,
+      "firstOutputAt": 1792601916118,
+      "firstCallAt": 1792601917901,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "02ee133f41c0fbbfea37e489960c51d6f76cfadc1e6e7ba1667184eb80695d87"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 161,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "68e7f1e214ab6de1209d6015654cd8dff09f031a36560a0f6339d33f7b10ca84",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 6939,
+      "outputTokens": 114,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-12",
+      "at": 1792601922758,
+      "firstOutputAt": 1792601923865,
+      "firstCallAt": 1792601925759,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "1eb30f0acf7a07d2e82a82a4ada17964ff78e1b0f73a08904ca6359f21b3bf98"
+        }
+      ],
+      "contentChars": 74,
+      "nonWhitespaceContent": 73,
+      "reasoningChars": 47,
+      "contentSha256": "e4efb225bf4a4cf9d002dc292ba48bd42776fe68442d00762e6375330b689a5c",
+      "reasoningSha256": "890daf13bb289a7475a4d174a67aef1a1fe7a1abf653fc9cb1407c3e4288524c",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 7251,
+      "outputTokens": 121,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-13",
+      "at": 1792601927356,
+      "firstOutputAt": 1792601928449,
+      "firstCallAt": 1792601930929,
+      "calls": [
+        {
+          "name": "read_file",
+          "inputSha256": "ca0d84392cbaa6c0cc1200558e913e33200616af241a5736f62c2d0ea24f03e8"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 360,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "8d151b3fe51587d438e6f2c7bd8755103a659ed60f7f2d494455a1fc1b1afce6",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 7546,
+      "outputTokens": 143,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-14",
+      "at": 1792601930991,
+      "firstOutputAt": 1792601932225,
+      "firstCallAt": 1792601935736,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "7c0569e7c4f9b5c841ef3b6d480d67f8509bac73d261814ac3927209dc921e13"
+        }
+      ],
+      "contentChars": 58,
+      "nonWhitespaceContent": 57,
+      "reasoningChars": 521,
+      "contentSha256": "13923a10917be9eeb67495a2d552e86114fb8a43d9db186f4357a9fd51c5a270",
+      "reasoningSha256": "da90cc5fd5a73c0140659026e0badc08097469cf731f89b645701e6bd6600c3f",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 8141,
+      "outputTokens": 194,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-15",
+      "at": 1792601936269,
+      "firstOutputAt": 1792601937426,
+      "firstCallAt": 1792601963775,
+      "calls": [
+        {
+          "name": "write_file",
+          "inputSha256": "842e7b572c2e52c21fe647f7c4335768b5320322fe3f1fb0c17b9705e13b0d69"
+        }
+      ],
+      "contentChars": 41,
+      "nonWhitespaceContent": 40,
+      "reasoningChars": 81,
+      "contentSha256": "b711021bf4988bff8b505c3d5e826ae941a6e265d65d8d754a5c43f6c2af009a",
+      "reasoningSha256": "8a0e880fa3c7b47efbc6c95c425e31f1988933a91783fd7a1115551d2d8e7a2f",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 8714,
+      "outputTokens": 1806,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-16",
+      "at": 1792601963854,
+      "firstOutputAt": 1792601968200,
+      "firstCallAt": 1792601980703,
+      "calls": [
+        {
+          "name": "write_file",
+          "inputSha256": "d0ea651c44dda9657c1e1c9f248684922113bdfae123d26d1b84fbf954bd3106"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 40,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "4f82cf07b17a74da7aa87bf192fb2f971646346b7f9eb399c285b64f4900a142",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 10594,
+      "outputTokens": 757,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-17",
+      "at": 1792601981062,
+      "firstOutputAt": 1792601983283,
+      "firstCallAt": 1792602009631,
+      "calls": [
+        {
+          "name": "write_file",
+          "inputSha256": "9b66635ab9fbcc364cc43387be100a00e4bafa2e30f3c17da46e35e61fe15011"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 59,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "b46bb2a1eb665c288adfdbf2681c5c43026414fddeb87b8c406a61ea2e6116a9",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 11427,
+      "outputTokens": 1802,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-18",
+      "at": 1792602009751,
+      "firstOutputAt": null,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 0,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 0,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reasoningSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "textualIntent": false,
+      "finish": null,
+      "inputTokens": null,
+      "outputTokens": null,
+      "trailingPartialFrame": false,
+      "settled": "cancelled",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-19",
+      "at": 1792602011256,
+      "firstOutputAt": 1792602037774,
+      "firstCallAt": 1792602039951,
+      "calls": [
+        {
+          "name": "grep",
+          "inputSha256": "0decffba8854d45da8f0806a538a13288b75106d820165fb229060bd15f865a7"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 268,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "8083008fa872823b697f234027ff46b60bcf76d0d2558683b04b71c4f6bc0218",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 12187,
+      "outputTokens": 136,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-20",
+      "at": 1792602040733,
+      "firstOutputAt": 1792602041763,
+      "firstCallAt": 1792602043929,
+      "calls": [
+        {
+          "name": "grep",
+          "inputSha256": "f8725baf1531eae7708eddc57a2b720e7bb30ef675ec777b69c5abe67b286dc8"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 220,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "bfb304d649c6a07f06ffec46ba91d13451baa17c7ec285bbb397ad3579614715",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 12393,
+      "outputTokens": 111,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-21",
+      "at": 1792602044230,
+      "firstOutputAt": 1792602050727,
+      "firstCallAt": 1792602054103,
+      "calls": [
+        {
+          "name": "read_file",
+          "inputSha256": "1a94c7a78d008c33f8ed7b59d1aeb8d0f98a06579c668438090b529c0aa12898"
+        }
+      ],
+      "contentChars": 91,
+      "nonWhitespaceContent": 90,
+      "reasoningChars": 619,
+      "contentSha256": "4537fd58892beafdff7079bdb2f3319441f6103e4f1716d51828d4ab26af4bb4",
+      "reasoningSha256": "5a5512ede960796c33d4a1909872f389aac58653599346ff279b2998b450c1cb",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 15307,
+      "outputTokens": 211,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-22",
+      "at": 1792602054179,
+      "firstOutputAt": 1792602055105,
+      "firstCallAt": 1792602083862,
+      "calls": [
+        {
+          "name": "write_file",
+          "inputSha256": "1f489b0d558a63d388fe9f467de4cd67c9762b065cc1d3e6ae1c076b1c8e2f21"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 91,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "0deb61a7a07969b5f7533f0b0eb77e6d6f46f30f2fee05e43370017580bfacb0",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 15583,
+      "outputTokens": 1996,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-23",
+      "at": 1792602084186,
+      "firstOutputAt": 1792602088735,
+      "firstCallAt": 1792602090111,
+      "calls": [
+        {
+          "name": "read_file",
+          "inputSha256": "d2b08b88912adf2d831b50ecc299317ca37df5899914920a3282ecf56a93f60d"
+        }
+      ],
+      "contentChars": 58,
+      "nonWhitespaceContent": 57,
+      "reasoningChars": 95,
+      "contentSha256": "8c8c09251f654c7a58947c182a7ca4fc98e66e01d3a6673c6953e80c0e6f886f",
+      "reasoningSha256": "0598fc26e99f798fb19cb9c0c3bd637a8f1dffe7e53ff42ed358d1b53af83a45",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 17653,
+      "outputTokens": 87,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-24",
+      "at": 1792602090194,
+      "firstOutputAt": 1792602091144,
+      "firstCallAt": 1792602117261,
+      "calls": [
+        {
+          "name": "write_file",
+          "inputSha256": "d5ab4cf4ec09fbb6fd54059e047d8bb386870acd8beace4549e6a4458ce10f18"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 74,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "0865229bda86537217904ad5adcc9c3ac11f246b2d12a2920926aef08d9d27fb",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 17805,
+      "outputTokens": 1832,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-25",
+      "at": 1792602117679,
+      "firstOutputAt": 1792602122077,
+      "firstCallAt": 1792602129298,
+      "calls": [
+        {
+          "name": "todo_write",
+          "inputSha256": "cda4284b9f57424c59a7fa160998480193b2987eee54fa99ca7532efccde5cca"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 75,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "86f1ab9570aed2a15c960603109bbe1359380c6f4b2865a8b24a82d42a4daf72",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 19723,
+      "outputTokens": 497,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-26",
+      "at": 1792602129390,
+      "firstOutputAt": 1792602130309,
+      "firstCallAt": 1792602132012,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "1c47320bbd66d92df9b214778d5833cd6338d98a8a33dbca1e18058c72072239"
+        }
+      ],
+      "contentChars": 46,
+      "nonWhitespaceContent": 45,
+      "reasoningChars": 119,
+      "contentSha256": "eca1e7085ad3d9800c4a3ee0207fe05532a5530548b1dcc3393454c22719b6ef",
+      "reasoningSha256": "53971060e26aaed5801bff4fb4781cc889af8e41ce0bd6a04dd693e0a383ab04",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 20260,
+      "outputTokens": 107,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-27",
+      "at": 1792602133770,
+      "firstOutputAt": 1792602134966,
+      "firstCallAt": 1792602135940,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "e3d19ee2c1279e40b7d01a2f08ca94478eeb93640b5f3128a30d2dcb0dab0ec2"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 45,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "5913845af3f77b20d237618614ac37d4d8598e47d85ad3e0d850c0646e34a00d",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 20636,
+      "outputTokens": 68,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-28",
+      "at": 1792602143516,
+      "firstOutputAt": 1792602144642,
+      "firstCallAt": 1792602146257,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "5e52ec0c813f1569c710b95d603482901d2a4549bb35e4dbcd702480e66f4912"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 144,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "067396e275d615b17f38c524ceaadb1c0716e86434ef009a8b3b3934d64ae624",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 20862,
+      "outputTokens": 93,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-29",
+      "at": 1792602148569,
+      "firstOutputAt": 1792602149659,
+      "firstCallAt": 1792602151013,
+      "calls": [
+        {
+          "name": "list_directory",
+          "inputSha256": "d8460d777ab9b6869ff0cc8fc704916c5304c04f2e990b2294c16445ea8979f3"
+        }
+      ],
+      "contentChars": 43,
+      "nonWhitespaceContent": 42,
+      "reasoningChars": 113,
+      "contentSha256": "6cc8343ecad0db4a214cbdfafe09ef3f3c00f9d828702acacfa32a00f3745851",
+      "reasoningSha256": "ab844139aa4c788c2d6524034f2708151990a32a1c527c0bf691b63a2b2d590e",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 21115,
+      "outputTokens": 85,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-30",
+      "at": 1792602151097,
+      "firstOutputAt": 1792602152224,
+      "firstCallAt": 1792602153408,
+      "calls": [
+        {
+          "name": "list_directory",
+          "inputSha256": "74a8ed0293541a9a55d26fba63429a89b44e3b62eb34c5aa806b5f613dc08b26"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 100,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "5ab2c1203221889c05e7c79b73c0a1e6adfa1f5f4443b171aa31fc997ccba749",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 21370,
+      "outputTokens": 75,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-31",
+      "at": 1792602153538,
+      "firstOutputAt": 1792602154568,
+      "firstCallAt": 1792602155632,
+      "calls": [
+        {
+          "name": "read_file",
+          "inputSha256": "f7d3db5eaa9408fb595268a5a3dddbf5d1b7154a741b1bd8d5c26b9cc96863c3"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 60,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "af6c984c0d56e3609156f5571d8e4dac3b9616f83ab9203cf14a1464691a3a43",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 21550,
+      "outputTokens": 71,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-32",
+      "at": 1792602155731,
+      "firstOutputAt": 1792602156868,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 7763,
+      "nonWhitespaceContent": 7763,
+      "reasoningChars": 120,
+      "contentSha256": "70c309055d37783d2659db1ec0bf0b21b1918ff595013f73cb6d7089ea6ad64f",
+      "reasoningSha256": "b6380c78be2d9db6fe234e035f44d20bc99e175ee482d4279fd848de67de32b1",
+      "textualIntent": true,
+      "finish": "length",
+      "inputTokens": 21736,
+      "outputTokens": 2048,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-33",
+      "at": 1792602189043,
+      "firstOutputAt": 1792602241884,
+      "firstCallAt": 1792602245323,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "293188b893f5b69410b8b8dac64429b58211e05caa7de52670b533d8530cb79b"
+        }
+      ],
+      "contentChars": 565,
+      "nonWhitespaceContent": 564,
+      "reasoningChars": 0,
+      "contentSha256": "03c8d1e8df6989e9d88e52a7427aad320156c8fc9879f6e1e33d099e37af85eb",
+      "reasoningSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 23815,
+      "outputTokens": 183,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-34",
+      "at": 1792602246777,
+      "firstOutputAt": 1792602252453,
+      "firstCallAt": 1792602253674,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "62c1315511266dc918d8ffb8794ba45dfb697a61510b369311fa72fb99b13dca"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 54,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "f657c6894c85e8d2a4fadb0eb8d18c3e992d839aa64b2d63bc27b0496144fffe",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 24203,
+      "outputTokens": 83,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-35",
+      "at": 1792602254105,
+      "firstOutputAt": 1792602255284,
+      "firstCallAt": 1792602257188,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "f80af3ef004d162ba840c4e81ab8ed86bbfbb3445a018bd55a865ef74933c6c1"
+        }
+      ],
+      "contentChars": 70,
+      "nonWhitespaceContent": 69,
+      "reasoningChars": 50,
+      "contentSha256": "03924dd92d464d975683d9e1b3d4afd028bae62446b10a5f446229bb3d2cd755",
+      "reasoningSha256": "e2eff21db0edb7f50eaa849f961b8dd2b6bf721df8b14b36d98e9719e8dc0f26",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 24433,
+      "outputTokens": 113,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-36",
+      "at": 1792602257618,
+      "firstOutputAt": 1792602258815,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 7836,
+      "nonWhitespaceContent": 7835,
+      "reasoningChars": 50,
+      "contentSha256": "8164b7e8d4984864572120a09fa959fae72ad7df417ae0475c28adcc4348bd99",
+      "reasoningSha256": "560d6e6a9a02ef94a44557222ddb460404b8efe0f13237488c94d7ecd9c13382",
+      "textualIntent": true,
+      "finish": "length",
+      "inputTokens": 24701,
+      "outputTokens": 2048,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-37",
+      "at": 1792602289477,
+      "firstOutputAt": 1792602347878,
+      "firstCallAt": 1792602351233,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "8ce18f1865c2cc2d4de93618af800767d931c45217da39de5b96991bc6660471"
+        }
+      ],
+      "contentChars": 453,
+      "nonWhitespaceContent": 452,
+      "reasoningChars": 0,
+      "contentSha256": "563de5194ddc4ab0261b13382ee5fd1c58a96ccf8d568674e852747ca845ce80",
+      "reasoningSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 26791,
+      "outputTokens": 176,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-38",
+      "at": 1792602352360,
+      "firstOutputAt": 1792602358025,
+      "firstCallAt": 1792602359793,
+      "calls": [
+        {
+          "name": "bash_run",
+          "inputSha256": "2962e2ee805c31cc4b1430fbc3589bc21bf42a029490f78ac58198c72c78fdea"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 107,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "330fbec5d95fa67f5cc15b2579ac51f802d923ebac0907037ef0d38e1c2215b4",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 27188,
+      "outputTokens": 101,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-39",
+      "at": 1792602360728,
+      "firstOutputAt": 1792602361928,
+      "firstCallAt": 1792602363361,
+      "calls": [
+        {
+          "name": "read_file",
+          "inputSha256": "e6ff43fd671671ebd0950d1820e59892ef74dfa534b336cd4054fbac4aaf17d4"
+        }
+      ],
+      "contentChars": 1,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 121,
+      "contentSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "reasoningSha256": "a2c7cc84deb96dbd3d963fb89445eca049dc5a1cad7c9a67c3bf11dedabd06e4",
+      "textualIntent": false,
+      "finish": "stop",
+      "inputTokens": 27454,
+      "outputTokens": 90,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    },
+    {
+      "requestId": "inference-40",
+      "at": 1792602363549,
+      "firstOutputAt": 1792602423113,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 7760,
+      "nonWhitespaceContent": 7760,
+      "reasoningChars": 268,
+      "contentSha256": "0c904533a212a182dc8dfdcd10c18f57874dfdc7cac3e5bd536c7eb8cb721199",
+      "reasoningSha256": "46f76e132da4ba1025a00ff3d311a6ad332a2b74ce22121684530876694fe198",
+      "textualIntent": true,
+      "finish": "length",
+      "inputTokens": 28099,
+      "outputTokens": 2048,
+      "trailingPartialFrame": false,
+      "settled": "completed",
+      "phase": "mission"
+    }
+  ],
+  "terminal": {
+    "classification": "PRODUCT RUNTIME / PROTECTED CONTEXT BUDGET",
+    "errorCode": "answer-continuation-budget",
+    "disposition": "terminal",
+    "modelVoluntaryStop": false,
+    "harnessRejected": false,
+    "contextSelectionOverGuard": false,
+    "confirmedClackDefect": false,
+    "caveat": "Current production continuation budget terminated the mission; this evidence-only checkpoint does not establish whether that preparation is optimal or defective"
+  },
+  "usability": "LOCAL AGENT USABILITY STILL LIMITED",
+  "ranking": "No material outperformance of hardened Qwen demonstrated; terminal model-quality verdict remains inconclusive",
+  "nextCheckpoint": "Audit Length-Continuation Protected-Context Preparation",
+  "productionChanges": 0,
+  "modelDownloads": 0,
+  "cloudInference": 0,
+  "remoteChanges": 0,
+  "manualTunnelChanges": 0,
+  "accounting": {
+    "localAnswer": {
+      "annotationParts": 62,
+      "providerWireOccurrences": 0,
+      "sharedEstimatorDeltaAfterRemovingAnnotations": 0,
+      "originalTranscriptUnchanged": true
+    },
+    "receipts": {
+      "requestId": "inference-40",
+      "count": 1,
+      "receipts": [
+        {
+          "id": "call_lzgqzap2",
+          "source": {
+            "sessionId": "real-mission-a",
+            "messageId": "xw0zqPFGKZuNjSgM",
+            "partIndex": 35,
+            "digest": "1f80411b045dcc8724530c85ca8cc0eb25024a0b08f02d728a5d48728cfb7626"
+          },
+          "path": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-04/src/sse.ts"
+        }
+      ],
+      "before": 48623,
+      "after": 47410,
+      "savedEstimatedTokens": 1213,
+      "providerTokenSavings": null,
+      "method": "Shared B1 estimate after source-verified restoration of captured call/result pairs, not provider token measurement"
+    }
+  },
+  "application": {
+    "independent": {
+      "startup": {
+        "executed": 1,
+        "passed": 0,
+        "failed": 1,
+        "code": 1
+      },
+      "backend": {
+        "executed": 0,
+        "passed": 0,
+        "failed": 0,
+        "blocked": 22,
+        "checks": [
+          {
+            "name": "project create",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "project list",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "project edit",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "project delete",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "project open",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "task create",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "task view/list",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "task edit",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "task delete",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "status validation",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "priority validation",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "title-length validation",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "deterministic JSON errors",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "not-found behavior",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "title search",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "description search",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "project filter",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "status filter",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "priority filter",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "tag filter",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "combined filtering",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          },
+          {
+            "name": "API port 4317",
+            "status": "blocked",
+            "reason": "Unmodified backend cannot start"
+          }
+        ]
+      },
+      "persistence": {
+        "status": "blocked",
+        "reason": "Backend cannot start; no restart claim"
+      },
+      "sse": {
+        "status": "blocked",
+        "reason": "Backend cannot start; no live event claim"
+      },
+      "commands": [
+        {
+          "name": "test",
+          "code": 1,
+          "timedOut": false,
+          "elapsedMs": 404
+        },
+        {
+          "name": "build",
+          "code": 1,
+          "timedOut": false,
+          "elapsedMs": 348
+        },
+        {
+          "name": "start",
+          "code": 1,
+          "timedOut": false,
+          "elapsedMs": 604
+        },
+        {
+          "name": "typecheck",
+          "code": 1,
+          "timedOut": false,
+          "elapsedMs": 533
+        },
+        {
+          "name": "frontend-build",
+          "code": 0,
+          "timedOut": false,
+          "elapsedMs": 2340
+        },
+        {
+          "name": "entry",
+          "code": 1,
+          "timedOut": false,
+          "elapsedMs": 393
+        }
+      ],
+      "evaluatorRepairs": 0
+    },
+    "frontend": {
+      "browser": "headless Chromium / Playwright",
+      "manualNativeGUI": false,
+      "widths": [
+        1280,
+        390
+      ],
+      "rendered": true,
+      "renderedProduct": "Unmodified Vite React counter demo, not ForgeBoard",
+      "scaffoldKeyboardCounter": true,
+      "pageErrors": [],
+      "images": [
+        {
+          "loaded": true,
+          "alt": ""
+        },
+        {
+          "loaded": true,
+          "alt": "React logo"
+        },
+        {
+          "loaded": true,
+          "alt": "Vite logo"
+        },
+        {
+          "loaded": true,
+          "alt": ""
+        },
+        {
+          "loaded": true,
+          "alt": ""
+        }
+      ],
+      "networkAPIRequests": [],
+      "blockedExternal": [],
+      "forgeBoardHeading": 0,
+      "productFunctionality": {
+        "projects": "not implemented",
+        "tasks": "not implemented",
+        "searchFilters": "not implemented",
+        "statusPriorityTags": "not implemented",
+        "SSEClient": "not implemented",
+        "loadingErrorEmpty": "not implemented",
+        "pageSizeDebounce": "not implemented"
+      }
+    },
+    "sourceFilesFrozen": 25,
+    "rootReadme": false,
+    "rootIgnore": false,
+    "frontendReadme": "Unmodified Vite scaffold README, not ForgeBoard setup instructions",
+    "substantiveBackendSource": true,
+    "backendRunnable": false,
+    "meaningfulAuthoredTests": 0,
+    "modelTestsExecuted": 0,
+    "modelBuildsExecuted": 0,
+    "staticCaveats": [
+      "Backend status/priority values are cast but not runtime-enum validated",
+      "Root persistence data lacks a Git ignore rule",
+      "No task/project UI, SSE client, search/filter/loading/error/empty product flows"
+    ]
+  },
+  "savedConnection": {
+    "source": "src-tauri/target/real-qwen-product/forgeboard-nemotron-hardened-20261021-03/data/terax-settings.json",
+    "sha256": "017900d9f8cfc4b208b660024f3c8ec69ecfc84ad4a12839ad6db1e8e21702cd",
+    "endpointId": "real-qwen",
+    "configurationRevision": 1,
+    "profileId": "[\"real-qwen\",\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",null]",
+    "calibrationStatus": "incomplete",
+    "toolStatus": "verifying"
+  },
+  "preflight": {
+    "at": 1792601813828,
+    "head": "88a95ef0939dad557253af6f708e7c4e518f28a7",
+    "isolation": [],
+    "sourceHashCount": 955,
+    "endpoint": "http://127.0.0.1:11435",
+    "version": {
+      "at": 1792601813469,
+      "elapsedMs": 69,
+      "status": 200,
+      "body": {
+        "version": "0.40.5"
+      }
+    },
+    "installed": {
+      "name": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+      "size": 25430749387
+    },
+    "loaded": {
+      "at": 1792601813743,
+      "elapsedMs": 85,
+      "status": 200,
+      "body": {
+        "models": []
+      }
+    },
+    "inference": 0,
+    "cloudInference": 0,
+    "downloads": 0,
+    "remoteMutations": 0
+  },
+  "runnerExit": {
+    "startedAt": 1792601813829,
+    "endedAt": 1792602454780,
+    "code": 0,
+    "signal": null,
+    "runnerPid": 33048
+  },
+  "sourceFreeze": {
+    "sourceFilesUnchanged": 955,
+    "originalWorkspaceUnchanged": true,
+    "evaluatorRepairs": 0
+  },
+  "artifacts": [
+    {
+      "name": "setup.json",
+      "sha256": "a2807f8dd121383c3618a464262d55ab9c251872e4c1db98ba4865c6d676889e"
+    },
+    {
+      "name": "preflight.json",
+      "sha256": "757cc0bf3d9515e94fa9680ac7c520f52ee5df963f594b4735c133c57e9bd8b0"
+    },
+    {
+      "name": "source-freeze.json",
+      "sha256": "d53b606b884ccefb70be80910444f149531b32c09edc7659a8cf4bc78ad6ab27"
+    },
+    {
+      "name": "runner-exit.json",
+      "sha256": "a5bbe425f0051c782359270818f1439009ec742a3f5f66638da96ad8204f2ec2"
+    },
+    {
+      "name": "runner.log",
+      "sha256": "478bd9eb39588388af95ffeb28b955334a2463e061cd6b1bd64faf00568fc2e9"
+    },
+    {
+      "name": "mission-a-1.json",
+      "sha256": "146d8951c25e43897966eef4e52db638e66c4bc471aaa131118f1ace6a87c4d1"
+    },
+    {
+      "name": "mission-a-1.native-report.json",
+      "sha256": "404a7c8472ad543fb3cbbaddb98057db724d82e2fd4d4139ee4fa7f6338d1ae6"
+    },
+    {
+      "name": "mission-a-1.jsonl",
+      "sha256": "a356d61f8c8d0e0afd446bc3b134642674edcd09fa37afb670c99baaeadb02b5"
+    },
+    {
+      "name": "mission-a-1.requests.jsonl",
+      "sha256": "060a41a40eb0d6512cebca4ec56bc22c6d77968ac0587271616c8e7f56982bed"
+    },
+    {
+      "name": "mission-a-1.attempts.jsonl",
+      "sha256": "1c8f27763f7fdc91171c7e73c791362df5689b38b52a4e8ce1dbe341bc535c81"
+    },
+    {
+      "name": "mission-a-1.receive.jsonl",
+      "sha256": "2d40916997e13ff27f554d4b7808df02c587dc4b4d3e47193fa7599420be9f87"
+    },
+    {
+      "name": "correction-state.json",
+      "sha256": "52afa6262948b0a2d1a3d35158d2705bdb7593b1c80a5ded4ff80677f37f89c2"
+    },
+    {
+      "name": "independent-api.json",
+      "sha256": "071a957879fedcf1c8e1c434aee775acaacc260fa86f0d58c7513d19b30bfede"
+    },
+    {
+      "name": "independent-test.json",
+      "sha256": "8d6ec5d271dcf9b0f940775155c856d39f57b96410db5b7971758268ca86f15d"
+    },
+    {
+      "name": "independent-build.json",
+      "sha256": "b34fc1b28869ca01c622052d5a73781cf5f9f04797f07e3215b90728c24b8643"
+    },
+    {
+      "name": "independent-start.json",
+      "sha256": "6dd77df5c66098e3e5405ccb2e510f6136aefdf305d4d4ca0a9b76b9266a8a4b"
+    },
+    {
+      "name": "independent-typecheck.json",
+      "sha256": "ab2ab38f820dd2af43d551079ba84114b474d901a85e9114a08723cb859aa8f1"
+    },
+    {
+      "name": "independent-entry.json",
+      "sha256": "87c50eeacf010d7f31fbe60ec9c81737fa609789c80083f4dac4bb9008f0ad74"
+    },
+    {
+      "name": "independent-frontend-build.json",
+      "sha256": "05b814fc2b96ee149a58b863f9341c918c14e2abddbe70de22a93daa955872b3"
+    },
+    {
+      "name": "independent-frontend.json",
+      "sha256": "3846a28e6cfd0c91b554e0b70a2adb0e89e775a87567ddd6205955b04f422e09"
+    },
+    {
+      "name": "independent-frontend-1280.png",
+      "sha256": "42f6a4edc19055b74146fc1b142a6a0a4fc4159b9e836a50d5f48e3679c747a0"
+    },
+    {
+      "name": "independent-frontend-390.png",
+      "sha256": "51dd5801ddd136d3f45e72752d68a5642a6fafe32f45bb692be3edb2aee8ca36"
+    }
+  ]
+}

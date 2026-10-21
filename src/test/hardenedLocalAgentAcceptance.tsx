@@ -1,6 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { runRealLocalProduct } from "@/test/realLocalProductAcceptance";
-import { addSelfHostedEndpoint, createSelfHostedEndpoint } from "@/modules/ai/lib/selfHostedProfiles";
 import { createSelfHostedProbeClient } from "@/modules/ai/lib/selfHostedProbe";
 import { selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
 import { ensureSelectedContext } from "@/modules/ai/lib/contextCalibrationRuntime";
@@ -8,7 +7,7 @@ import { ensureSelectedTools, readToolProfiles } from "@/modules/ai/lib/toolVeri
 import { applyAgentRecommendation } from "@/modules/ai/lib/agentConfiguration";
 import { effortProviderOptions } from "@/modules/ai/lib/reasoningEffort";
 import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
-import { updateSelfHostedProfiles, setAgentPermissionProfiles } from "@/modules/settings/store";
+import { setAgentPermissionProfiles } from "@/modules/settings/store";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useChatStore, chats } from "@/modules/ai/store/chatStore";
 
@@ -39,9 +38,10 @@ let readiness: unknown;
 let result: Record<string, unknown>;
 let stage = "readiness";
 try {
-  const endpoint = createSelfHostedEndpoint({ alias: "Hardened runtime acceptance", baseURL: config.server,
-    backendHint: "ollama", allowPrivateNetwork: true }, "real-qwen");
-  await updateSelfHostedProfiles(state => addSelfHostedEndpoint(state, endpoint));
+  const saved = await readToolProfiles();
+  const endpoint = saved.endpoints.find(e => e.id === "real-qwen" && new URL(e.baseURL).href === new URL(config.server).href &&
+    (e.backendHint ?? e.detectedBackend) === "ollama" && e.deletedAt == null);
+  if (!endpoint) throw new Error("Existing configured acceptance connection required");
   await createSelfHostedProbeClient().refresh({ endpointId: endpoint.id, selectedModelId: model, allowPrivateNetwork: true });
   let state = await readToolProfiles();
   const initial = state.profiles.find(p => p.transportModelId === model);

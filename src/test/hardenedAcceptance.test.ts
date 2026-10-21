@@ -55,4 +55,13 @@ describe("hardened-runtime acceptance ownership", () => {
     expect(entry.indexOf('if (config.realProduct.readinessOnly)')).toBeLessThan(entry.indexOf('await runRealLocalProduct(config)'));
     expect(entry).toContain('sessions: [], conversations: []');
   });
+  it("reuses the saved connection without forcing readiness or manufacturing another endpoint", () => {
+    expect(entry).toContain("const saved = await readToolProfiles()");
+    expect(entry).toContain('e.id === "real-qwen" && new URL(e.baseURL).href === new URL(config.server).href');
+    expect(entry).toContain("Existing configured acceptance connection required");
+    expect(entry).not.toContain("createSelfHostedEndpoint");
+    expect(entry).not.toContain("addSelfHostedEndpoint");
+    expect(entry).not.toContain("force: true");
+    expect(entry.indexOf("const saved = await readToolProfiles()")).toBeLessThan(entry.indexOf("await ensureSelectedContext"));
+  });
 });
