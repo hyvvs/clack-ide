@@ -1,5 +1,6 @@
 import { Chat, type UIMessage } from "@ai-sdk/react";
 import { confirmWriteSources } from "@/modules/ai/lib/verifiedWriteHistory";
+import { prepareWriteCheckpoint, validateWriteCheckpoint } from "@/modules/ai/lib/writeCheckpoint";
 import { inspectMemorySources, loadConversationMemory } from "@/modules/ai/lib/conversationMemory";
 import { prepareSessionFallback } from "@/modules/ai/store/inferenceFallback";
 import { captureSessionTools } from "@/modules/ai/store/customToolCapture";
@@ -279,6 +280,19 @@ function makeChat(sessionId: string): Chat<UIMessage> {
         owner: { sessionId, workspaceId: session.profile?.workspaceId ?? null },
         originals,
         ready: () => awaitSessionWrites(sessionId),
+        prepareCheckpoint: async () => {
+          const matches = () => {
+            const current = owner()?.run;
+            return current?.state === "running" && current.startedAt === run.startedAt && current.workspaceId === run.workspaceId && current.modelId === run.modelId && current.agentId === run.agentId;
+          };
+          if (!matches()) return null;
+          await persistCompactionSource(sessionId, chats.get(sessionId)?.messages ?? originals);
+          await awaitSessionWrites(sessionId);
+          if (!matches()) return null;
+          const snapshot = await prepareWriteCheckpoint({ sessionId, workspaceId: run.workspaceId ?? null });
+          return matches() ? snapshot : null;
+        },
+        validateCheckpoint: validateWriteCheckpoint,
         confirmWriteSources: async (candidates) => {
           const check = () => {
             const current = owner()?.run;

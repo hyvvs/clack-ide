@@ -18,6 +18,7 @@ const MAX_SOURCES: usize = 128;
 const SESSION_STORE: &str = "terax-ai-sessions.json";
 static MEMORY_EPOCH: LazyLock<String> =
     LazyLock::new(|| format!("{}:{}", std::process::id(), now()));
+pub mod checkpoint;
 pub mod custom_tools;
 pub mod fallback;
 pub mod peer_ledger;
@@ -94,6 +95,8 @@ struct Manifest {
     events: Vec<SelectionEvent>,
     revisions: Vec<String>,
     deleted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint_state: Option<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -430,6 +433,7 @@ fn synchronize(root: &Path, originals: &Originals) -> Result<Manifest> {
         },
         events: vec![],
         revisions: vec![],
+        checkpoint_state: None,
     });
     if manifest.deleted {
         return Err("memory_session_deleted".into());
@@ -1548,6 +1552,7 @@ fn tombstone(root: &Path, session_id: &str) -> Result<()> {
             revision: 0,
             events: vec![],
             revisions: vec![],
+            checkpoint_state: None,
         },
     )
 }
@@ -1572,6 +1577,9 @@ fn collect_roots(root: &Path, live_sessions: &BTreeSet<String>) -> Result<Vec<St
             return Err("memory_gc_invalid_owner".into());
         }
         let mut committed = BTreeSet::new();
+        if !manifest.deleted && live_sessions.contains(&manifest.session_id) {
+            ids.extend(checkpoint::retention_roots(&manifest)?);
+        }
         for revision_id in &manifest.revisions {
             committed.insert(format!("{revision_id}.json"));
             let revision = read_revision(root, &manifest.session_id, revision_id)?;

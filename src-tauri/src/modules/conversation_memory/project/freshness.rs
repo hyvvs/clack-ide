@@ -442,6 +442,42 @@ fn same_checkout(baseline: &str, current: &str) -> bool {
     old_root == new_root && old_branch == new_branch && !old_branch.is_empty()
 }
 
+pub(in crate::modules::conversation_memory) fn checkpoint_observation(
+    registry: &WorkspaceRegistry,
+    originals: &Originals,
+    path: &str,
+) -> Result<(String, String, String, String)> {
+    let (root, env) = location(originals)?;
+    let root =
+        fs::canonicalize(resolve_path(&root, &env)).map_err(|_| "checkpoint_workspace_missing")?;
+    if crate::modules::archive::is_sensitive_archive_path(&path.replace('\\', "/")) {
+        return Err("checkpoint_path_denied".into());
+    }
+    let requested =
+        fs::canonicalize(resolve_path(path, &env)).map_err(|_| "checkpoint_source_missing")?;
+    let relative = requested
+        .strip_prefix(&root)
+        .map_err(|_| "checkpoint_path_denied")?;
+    let relative = relative
+        .to_str()
+        .ok_or("checkpoint_path_denied")?
+        .replace('\\', "/");
+    let observed = Batch::new(registry, &root)?.read(&DependencyInput {
+        path: relative.clone(),
+        environment: false,
+    })?;
+    if fs::canonicalize(resolve_path(path, &env)).ok().as_ref() != Some(&requested) {
+        return Err("checkpoint_source_mutating".into());
+    }
+    let input = hash(&json!({"path":path,"content":observed.text}))?;
+    Ok((
+        relative,
+        observed.dependency.canonical,
+        observed.dependency.content_hash,
+        input,
+    ))
+}
+
 fn compare(
     entry: &Entry,
     git: &str,

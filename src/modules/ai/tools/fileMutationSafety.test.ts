@@ -6,6 +6,7 @@ import { buildEditTools } from "./edit";
 import { buildFsTools } from "./fs";
 import type { ToolContext } from "./context";
 import { buildShellTools } from "@/modules/ai/tools/shell";
+import * as checkpoint from "@/modules/ai/lib/writeCheckpoint";
 
 function context(): ToolContext {
   return {
@@ -125,6 +126,36 @@ describe("file mutation snapshot safety", () => {
       "new content",
       { kind: "local" },
     );
+  });
+
+  it("records the successful write under its captured conversation and native run", async () => {
+    const ctx = context(); ctx.getRunId = () => 123;
+    vi.spyOn(native, "readFile").mockRejectedValue(new Error("No such file or directory (os error 2)"));
+    vi.spyOn(native, "writeFile").mockImplementation(async () => { ctx.getRunId = () => 456; });
+    const observe = vi.spyOn(checkpoint, "observeCheckpointWrite").mockResolvedValue();
+    const result = await executeTool(buildFsTools(ctx).write_file, { path: "/work/new.ts", content: "new content" });
+    expect(result).toMatchObject({ ok: true, clackWorkspaceWrite: true });
+    expect(observe).toHaveBeenCalledWith({ sessionId: "chat-a", workspaceId: "local:/work" }, 123, "test", { path: "/work/new.ts", content: "new content" });
+  });
+
+  it("does not report a completed effect as failed when checkpoint observation is unavailable", async () => {
+    const ctx = context(); ctx.getRunId = () => 123;
+    vi.spyOn(native, "readFile").mockRejectedValue(new Error("No such file or directory (os error 2)"));
+    const write = vi.spyOn(native, "writeFile").mockResolvedValue();
+    vi.spyOn(checkpoint, "observeCheckpointWrite").mockRejectedValue(new Error("checkpoint_changed_write"));
+    expect(await executeTool(buildFsTools(ctx).write_file, { path: "/work/new.ts", content: "new content" })).toEqual({ path: "/work/new.ts", bytesWritten: 11, ok: true, clackWorkspaceWrite: true });
+    expect(write).toHaveBeenCalledOnce();
+  });
+
+  it("failed and review-only writes never create checkpoint observations", async () => {
+    const ctx = context(); ctx.getRunId = () => 123;
+    vi.spyOn(native, "readFile").mockRejectedValue(new Error("No such file or directory (os error 2)"));
+    vi.spyOn(native, "writeFile").mockRejectedValue(new Error("permission denied"));
+    const observe = vi.spyOn(checkpoint, "observeCheckpointWrite").mockResolvedValue();
+    expect(await executeTool(buildFsTools(ctx).write_file, { path: "/work/new.ts", content: "new" })).toMatchObject({ error: expect.any(String) });
+    usePlanStore.setState({ active: true });
+    expect(await executeTool(buildFsTools(ctx).write_file, { path: "/work/review.ts", content: "reviewed later" })).toMatchObject({ queued_for_plan_review: true });
+    expect(observe).not.toHaveBeenCalled();
   });
 
   it("does not treat an arbitrary read failure as proof that a file is new", async () => {

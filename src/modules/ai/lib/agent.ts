@@ -1106,6 +1106,19 @@ export async function runAgentStream(opts: RunAgentOptions) {
         targetSeed,
         context: {
           ...opts.compaction,
+          prepareCheckpoint: permittedTools.request_conversation_evidence && opts.compaction.prepareCheckpoint
+            ? async () => {
+                const allowed = () => ["read_file", "request_conversation_evidence"].every(name => resolveCurrentAgentPermission(name, {}, requestToolContext).outcome === "allow");
+                if (!allowed()) return null;
+                const snapshot = await opts.compaction?.prepareCheckpoint?.();
+                return allowed() ? snapshot ?? null : null;
+              } : undefined,
+          validateCheckpoint: opts.compaction.validateCheckpoint ? async snapshot => {
+            const allowed = () => ["read_file", "request_conversation_evidence"].every(name => resolveCurrentAgentPermission(name, {}, requestToolContext).outcome === "allow");
+            if (!allowed()) throw new Error("Checkpoint evidence access was revoked.");
+            await opts.compaction?.validateCheckpoint?.(snapshot);
+            if (!allowed()) throw new Error("Checkpoint evidence access was revoked.");
+          } : undefined,
           confirmWriteSources: permittedTools.request_conversation_evidence && opts.compaction.confirmWriteSources
             ? async (candidates) => {
                 const confirm = opts.compaction?.confirmWriteSources;
@@ -1132,6 +1145,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
         materialized: opts.uiMessages,
         system: systemMessages,
         keepReasoning: keepsReasoning,
+        checkpointHistory: typeof baseModel !== "string" && baseModel.provider === "ollama" ? "ollama-native-v1" : undefined,
         tools: exposure.schemas,
         model: baseModel,
         scope: inferenceScope,

@@ -7,6 +7,7 @@ import {
 } from "../lib/security";
 import { newQueuedEditId, usePlanStore } from "../store/planStore";
 import { resolvePath, type ToolContext } from "./context";
+import { observeCheckpointWrite } from "@/modules/ai/lib/writeCheckpoint";
 import {
   hashText,
   isMissingPathError,
@@ -142,7 +143,8 @@ export function buildFsTools(ctx: ToolContext) {
         path: z.string(),
         content: z.string(),
       }),
-      execute: async ({ path, content }) => {
+      execute: async ({ path, content }, execution) => {
+        const sessionId = ctx.getSessionId(), workspaceId = ctx.getWorkspaceId?.(), runId = ctx.getRunId?.();
         const reqPath = resolvePath(path, ctx.getCwd());
         const safety = await checkWritableCanonical(reqPath, canonicalize);
         if (!safety.ok) return { error: safety.reason, path: reqPath };
@@ -197,6 +199,10 @@ export function buildFsTools(ctx: ToolContext) {
 
         try {
           await native.writeFile(abs, content, workspace());
+          if (sessionId && workspaceId && runId !== undefined && execution?.toolCallId) {
+            // Observation failure must not misreport or replay an already applied write.
+            await observeCheckpointWrite({ sessionId, workspaceId }, runId, execution.toolCallId, { path: abs, content }).catch(() => undefined);
+          }
           ctx.readCache.set(abs, {
             size: content.length,
             hash: hashText(content),

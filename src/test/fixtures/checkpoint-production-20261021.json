@@ -1,0 +1,89 @@
+{
+  "base": "00453eb",
+  "classification": "REVISION-PINNED LONG-HORIZON CHECKPOINT PARTIAL",
+  "inference": 0,
+  "networkDispatches": 0,
+  "forgeboardRuns": 0,
+  "frozen": {
+    "eligible": 0,
+    "compacted": 0,
+    "checkpointCost": 0,
+    "rawRemoved": 0,
+    "netSaved": 0,
+    "before": {
+      "input": 61132,
+      "reserve": 2048,
+      "margin": 6114,
+      "ceiling": 65536,
+      "required": 69294,
+      "headroom": -3758,
+      "fits": false
+    },
+    "after": {
+      "input": 61132,
+      "reserve": 2048,
+      "margin": 6114,
+      "ceiling": 65536,
+      "required": 69294,
+      "headroom": -3758,
+      "fits": false
+    },
+    "originalPayloadSha256": "0f88466b324d320ea8f57d5162fef9c7fc3cecd301309dbebc6931b05141f5df",
+    "projectedPayloadSha256": "0f88466b324d320ea8f57d5162fef9c7fc3cecd301309dbebc6931b05141f5df",
+    "reason": "No native per-write observations exist in legacy frozen evidence; later shell/read/failure consumers also block dependency closure. Original payload retained."
+  },
+  "nativeCoreToSdkFixture": {
+    "scope": "Synthetic file effects in isolated Rust test workspace, not a live provider/GUI or ForgeBoard run",
+    "observedWrites": 3,
+    "compacted": 2,
+    "checkpointCost": 670,
+    "rawRemoved": 17174,
+    "netSaved": 16504,
+    "before": {
+      "input": 25841,
+      "reserve": 2048,
+      "margin": 2585,
+      "ceiling": 65536,
+      "required": 30474,
+      "headroom": 35062,
+      "fits": true
+    },
+    "after": {
+      "input": 9337,
+      "reserve": 2048,
+      "margin": 934,
+      "ceiling": 65536,
+      "required": 12319,
+      "headroom": 53217,
+      "fits": true
+    },
+    "nativeSnapshotSha256": "74bb47072bccae2ff9b11f5d6cf1eaa3b00c02a3f3649d5f21423e80577d8451",
+    "originalMessagesSha256": "eb4788ac4991a84719989a929f71e49c6db56637ae5ee085bafe0400677d75b8",
+    "beforePayloadSha256": "bacbdc170a60e9843fb80a58c11223763bf779e66657b0c9b7aa5481b649b1ff",
+    "afterPayloadSha256": "8fe4552d01794a72307f9139d08d70ad850d2263bc77432426ed80090ce2f22a",
+    "restoredPayloadSha256": "bacbdc170a60e9843fb80a58c11223763bf779e66657b0c9b7aa5481b649b1ff",
+    "exactUsersRetained": true,
+    "originalBodiesRetained": true,
+    "restorationExecutesTools": false,
+    "restorationUsesNetwork": false
+  },
+  "unchanged": [
+    "context limit",
+    "B1 margin policy",
+    "output reserve",
+    "F1",
+    "reasoning",
+    "tool schemas",
+    "mission output allowance",
+    "Automatic settings"
+  ],
+  "deferred": [
+    "search path factoring",
+    "shell echo factoring",
+    "cross-correction plan retirement",
+    "old drafts",
+    "reasoning",
+    "broad prose",
+    "semantic summaries"
+  ]
+}

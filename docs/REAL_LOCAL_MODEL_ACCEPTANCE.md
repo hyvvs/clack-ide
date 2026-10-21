@@ -14751,3 +14751,287 @@ The current partial's full 3,955-token content field stays exact, not summarized
   contents remain, empty index, no checkpoint-owned untracked files. Original
   report prefix and other five dirty files are preserved byte-for-byte; both
   stashes and `autonomous_tracker/` untouched. **No push. STOP.**
+
+## Revision-pinned conversation checkpoints and conditional-write projection
+
+### Result and narrow production boundary
+
+- Base: `00453eb test(ai): design structured agent checkpoints`. Implementation
+  and final verification completed 2026-10-22 using frozen 2026-10-21 evidence.
+  Classification: **REVISION-PINNED LONG-HORIZON CHECKPOINT PARTIAL**.
+- Production now captures native post-write observations, retains revision-pinned
+  private checkpoint sources, conditionally projects older full writes at pressure,
+  revalidates before dispatch, and restores exact originals without replay.
+  **The frozen third continuation still does not fit.** Its old writes lack native
+  post-write observations and have later unknown/read/failure consumers. These
+  predicates were not retroactively fabricated to reproduce the design's savings.
+- No inference, network dispatch, ForgeBoard rerun, provider tuning, tool-schema
+  change or generated summary. No reasoning, old draft or broad prose compaction.
+  No second database/session store, automatic obligation evaluator, project-memory
+  promotion, new communication protocol or UI control was introduced.
+
+### Actual durable model and ownership
+
+The existing C1 per-session manifest gains one optional `checkpointState` field.
+Its inner format is explicitly versioned (`version: 1`) and contains:
+
+| Record | Actual contents / ownership |
+|---|---|
+| `writes` | Up to 64 native observations: exact tool-call ID, source path, authorized canonical path, raw resulting content SHA-256, canonical input hash, captured numeric run ID |
+| `current`, `previous` | Current and recoverable previous checkpoint snapshot, both private to the existing C1 `MemoryOwner` |
+| Snapshot | Version, canonical revision digest, owner, C1 `SourceVersion`, entries, `MemoryEvidence`, and exact message-prefix/tail coverage hashes |
+| Entry | Relative/canonical path, original write ID, resulting digest, input/output hashes, source evidence ID, source order, latest same-path write ID/digest/input/output hashes/order, `full-overwrite-independent` base contract |
+| Evidence | Existing C1 message/part locator, source revision, source digest, related session identity and existing immutable content references |
+
+Manifest schema v1 remains readable for existing records without this optional
+field; loading is additive and idempotent. The inner checkpoint version is checked
+explicitly. Existing C1 conversation-memory revisions, claims, coverage and policy
+are not repurposed or marked complete. This is a bounded projection extension of
+the existing C1 manifest/content lifecycle, not a competing memory implementation.
+
+Snapshots are bound to the stable conversation and workspace, never title, agent
+display name, model family, window or tunnel port. Canonical revision identity
+includes source transcript/profile hashes and revision counters, exact evidence,
+effect entries/order and message/tail coverage. It does not use timestamps alone
+or ephemeral inference IDs. Model/agent/run changes require a fresh authorized
+preparation; they do not transfer or discard conversation ownership or historical
+observations. Transient transport ports are not inputs to this identity.
+
+Bounds: existing 256 KiB C1 manifest, 64 observed writes, 32 selected entries,
+8 distinct selected paths, 128 source references, 4,096 scanned transcript parts,
+and bounded native preparation/validation time. Oldest eligible sources are selected
+deterministically. Exhaustion keeps raw or blocks, never truncates authoritative
+evidence. Full bodies are retained through the existing content-addressed store,
+not embedded in checkpoint metadata or copied to a new store.
+
+### Observation, eligibility and dependency policy
+
+`write_file` keeps its existing description, input schema and success output.
+After a real successful write, its captured session/workspace/run and tool-call
+identity are sent to the native observation command. Existing M2 guarded file
+observation performs authorized canonical containment, sensitive-path/content
+checks, bounded double reads, digest comparison and path revalidation. The native
+input hash must match actual observed file bytes, and the captured run/profile
+must still be current before atomic publication. A failed observation does NOT
+misreport or replay an already successful filesystem effect; that write simply
+cannot supply the new checkpoint proof. Failed/denied/review-queued writes never
+produce observations. Ordinary chat without a captured Agent run has no observation
+traffic. Native IDs and content hashes, not filenames alone, establish identity.
+
+An older write is eligible only when all of these actual predicates hold:
+
+1. Durable assistant `tool-write_file` source, exactly one call identity,
+   `output-available`, exact supported input/result shape, successful real mutation,
+   no approval ambiguity and no provider-executed effect.
+2. Matching native observation of path, full input hash, result digest and existing
+   byte-count semantics. Legacy `ok:true` or an archived hash alone is insufficient.
+3. A later same-path full write exists and is observed. Every intervening same-path
+   write has its own observation. The latest full call/result remains raw and
+   its hashes must also match the actual SDK history before older pairs disappear.
+4. The older source is behind a later user boundary. Its source answer is not
+   incomplete, and post-write text/reasoning in that original source message keeps
+   needed evidence hot. Non-semantic step markers do not create false dependencies.
+5. The remaining tail has no reads, shell calls, edit/custom tools, failures,
+   approvals, pending effects or other unknown tool consumers. Only acknowledged
+   full writes and plan updates qualify for this deliberately closed first slice.
+   Unknown dependency is NOT treated as proven absence of dependency.
+6. Native current observation matches the latest source's canonical path, digest
+   and input hash. Missing, denied, changed or suspicious paths refuse projection.
+7. Every original/intermediate/latest source and exact user message is retained
+   before publishing; restoration pins prevent retiring explicitly requested sources.
+8. The provider-history adapter is supported, and the compact representation is
+   smaller than the raw pair. Unknown adapters keep raw.
+
+Only full overwrites are supported. Their resulting bytes do not depend on a
+patch base; this is explicit in the entry rather than a guessed base digest.
+Patch/edit/read-dependent operations are not checkpointed. A1 -> A2 -> A3 keeps
+ordered original evidence and digests for all three, even when A1/A2 disappear
+from provider context. An intermediate read/failure/unknown consumer blocks that
+retirement. Latest state means latest observed same-path source in this conversation,
+not a claim that no unrelated writer has ever touched the file or that a feature
+is complete. Current bytes are rechecked, not inferred from source history.
+
+This conservative dependency policy matters: it does **not** solve the entire
+single-spec, still-active assistant/tool chain from the long ForgeBoard mission.
+That history remains hot when closure is uncertain. This limitation is part of
+the PARTIAL classification, not hidden behind the synthetic positive fixture.
+
+### Exact intent, revisions, freshness and recovery
+
+- Original objective and every later correction stay byte-exact, ordered and at
+  their original user role. Snapshots additionally retain their exact message
+  evidence. No normalized requirement text is invented. The old 50 remains
+  historical; later explicit 25 and further corrections remain authoritative by
+  original chronology. Native source version changes force rebuilding rather than
+  reusing a checkpoint across a new user instruction. Existing plan/todo handling
+  stays intact; no model claim becomes verified completion.
+- Full transcript/profile versions bind plans, acknowledged results and failure
+  state. Corrections, source edits, changed revisions, model/agent/run changes,
+  new effects and ownership changes reject stale preparation/publication. The
+  native command rereads durable session state before publishing; stale callbacks
+  cannot overwrite a newer generation. Independent conversations retain existing
+  per-owner locks; no new global conversation serialization is introduced.
+- Automatic answer continuation has an explicit narrow append exception: an
+  unchanged captured prefix/tail may gain text/reasoning or structured, unexecuted
+  `input-streaming` tool arguments. Exact old parts/header still match; user messages,
+  completed effects or changed authoritative parts cannot be appended under this
+  exception. App-owned activity/answer metadata follows existing C1 header rules.
+  This does not parse or execute textual pseudo-tools or weaken D2 repair guards.
+- Every supported dispatch/retry/continuation validates the active checkpoint
+  through existing inference-evidence validation. Native source/profile/owner,
+  retained-content integrity and fresh guarded path digests must still match.
+  Permission checks for reading/evidence are repeated before/after native access.
+  External/out-of-band path changes or newer writes withdraw trust. An active
+  stale dispatch stops; it does not silently reproject a partially answered request.
+  Next ordinary preparation retains raw when no safe checkpoint exists, then B1
+  determines whether it fits.
+- Observations mean bytes verified at a bounded check, not an external filesystem
+  lock throughout inference. The existing cooperating-agent lease is not used as
+  proof that external writers cannot act. Same relative paths in different
+  workspaces cannot reuse sources or observations; knowing a revision ID does not
+  grant access. Workspace registry and secret protections remain authoritative.
+- Immutable source bytes are stored under the existing content-collection lease,
+  then the C1 manifest is published atomically. Current and previous snapshots are
+  content roots alongside existing conversation/project/PeerTask roots. Failed
+  publication leaves the prior disk manifest valid. Replaced/unreferenced snapshots
+  release roots through existing reconciliation; observation metadata alone does
+  not permanently retain unreferenced blobs. No new compaction job resumes on restart.
+- Restart loads versioned metadata, reconstructs from durable originals and
+  reacquires source/path freshness. Reconnect/SSH changes do not themselves change
+  pure workspace facts. An allowed same-chat model switch rebuilds/revalidates under
+  its target adapter and B1; unsupported targets use exact raw history.
+- Corrupt/unsupported checkpoint state disables its projection without corrupting
+  the original session or C1 claims. Collection fails closed while checkpoint roots
+  are indeterminate. Automatic repair of corrupt checkpoint metadata is NOT added;
+  exact source history remains available. Missing/corrupt content never becomes
+  verified evidence or triggers a read of an unrelated current path.
+
+### Provider projection and exact restoration
+
+Only the native Ollama history adapter is enabled in this first slice. The
+receipt format itself is plain model-independent structured text, with no
+qwen/Nemotron/model-name production branches. Other adapters are conservatively
+unsupported, not assumed to share Ollama's tool/thinking lifecycle. Provider-tagged
+or ambiguous pairs stay raw. Historical reasoning, original assistant prose,
+current partial, latest read/write, current plan, failures and both older frontend
+drafts are not summarized or removed by this implementation.
+
+At existing relative context pressure, authenticated older calls/results are
+replaced by one qualified text receipt at the call position; paired old results
+are removed. It gives revision/workspace/path, historical result and latest digest,
+source identity, full-overwrite contract, restoration anchor and `replay: never`.
+It explicitly says requirements were not evaluated. The latest full write and
+unrelated content remain exact. Archived originals are not also charged to the
+provider request. B1 measures the resulting real messages; native serialization
+checks confirm actual bodies are smaller, not just estimator metadata.
+
+Low pressure does not invoke checkpoint preparation. Unsupported providers do
+not incur the extra pressure-budget pass. Selection is bounded and oldest-first;
+no arbitrary ForgeBoard turn count, context increase, reserve exception or reduced
+margin. Superseded plans, repeated-search factoring and shell echo factoring were
+not added here. Existing legacy history receipts and restoration behavior remain.
+
+`request_conversation_evidence` restoration still pins the original tool IDs and
+rebuilds from exact conversation sources under the existing retrieval/B1 bounds.
+A separate native checkpoint restore primitive can read current/previous snapshot
+evidence by owner/revision/evidence ID with content-integrity checks. Neither path
+executes a write, shell command or inference. Restoration is data retrieval, not
+tool replay, and never substitutes current file contents for old evidence.
+
+### Actual frozen replay and positive production-path evidence
+
+| Frozen `b2cd814` | Before | After actual implemented fallback |
+|---|---:|---:|
+| Input | 61,132 | 61,132 |
+| Output reserve | 2,048 | 2,048 |
+| B1 margin | 6,114 | 6,114 |
+| Required | 69,294 | 69,294 |
+| Headroom | -3,758 | -3,758 |
+| Eligible / compacted writes | 0 / 0 | 0 / 0 |
+| New checkpoint cost / raw removed / net savings | 0 / 0 / 0 | 0 / 0 / 0 |
+
+The production serializer reproduces original body SHA-256
+`0f88466b324d320ea8f57d5162fef9c7fc3cecd301309dbebc6931b05141f5df`.
+The implemented no-proof fallback has the **same hash**, so the payload, exact
+objective/correction, current partial, plan, all four unresolved failure outputs,
+29 thinking fields and 7,982-token older draft class are unchanged. The old third
+continuation **still blocks**. The prior +5,416-headroom design simulation is NOT
+reported as production evidence. No provider dispatch occurred.
+
+Positive evidence is separate: an isolated **synthetic native filesystem fixture**
+performs three real file mutations, uses the production M2 observation core, C1
+content retention/checkpoint code, SDK history conversion, production projection
+and native Ollama serializer. Its injected fetch returns a fixed local response;
+no socket/model inference or native GUI is involved. It exports a native snapshot
+only under a test-only evidence flag. `scripts/audit-checkpoint-production.mjs`
+checks the cross-language payload and saves bounded metrics/provenance in
+`src/test/fixtures/checkpoint-production-20261021.json`:
+
+| Synthetic observed-write fixture | Before | After |
+|---|---:|---:|
+| Compacted older write pairs | 0 | 2 |
+| Input | 25,841 | 9,337 |
+| Required, unchanged B1 policy | 30,474 | 12,319 |
+| Headroom at 65,536 | 35,062 | 53,217 |
+
+Gross raw-history replacement is **17,174 tokens**, complete marginal receipt
+cost **670**, net input reduction **16,504**. Hashes of before/after/restored real
+native bodies are retained. Pinning both original IDs reconstructs the exact
+before payload hash. The native unit tests additionally restore immutable source
+bodies after deleting the current file. This proves real representation reduction
+for eligible observed history, not legacy ForgeBoard eligibility or practical model
+completion. The positive serializer fixture already fits raw; separate compactor
+tests establish pressure-only activation and irreducible-budget failure.
+
+### Verification and repository handoff
+
+- Focused frontend: **210 passed / 8 suites**, including **23 new checkpoint tests**
+  and **3 added file-mutation tests**. After lint-only cleanup the two directly
+  changed suites also pass **32/32**. Coverage includes digest/source/lineage
+  mismatches, explicit restoration pins, stale dispatch, cancellation, pressure,
+  unsupported adapters, exact users/partial/reasoning, smaller provider payload,
+  old drafts/pseudo-tools remaining text and reconstruction in a fresh compactor.
+  Existing qwen continuation, normal chat/short Agent, model switching, protected
+  accounting and `clackAnswer` regressions also pass in focused/full coverage.
+- Native Windows: **299 conversation-memory tests pass**, including **18 new
+  checkpoint tests** and existing C1/M1/M2/custom-tool/PeerTask retention/recovery
+  coverage. These use real isolated filesystem/content/manifest operations, not
+  native window interaction. An initial sandbox run could not replace Windows
+  manifest files (Access denied); the same tests pass with normal filesystem access.
+- Final `check-types` passes; production `build` passes, including final TypeScript
+  compilation; `lint` passes at existing **71 warnings / 2 informational notices**.
+  Native formatting and strict `cargo clippy --all-targets --locked -- -D warnings`
+  pass. Offline payload audit, script syntax and working/staged diff checks pass.
+- Full frontend gate ran once: **3,491 passed, 1 failed, 11 skipped**;
+  **233 passed suites, 4 failed suites, 1 skipped suite**. All failures are the
+  already documented baseline classes: the Node-only `audit-devstral-latency`
+  file has no Vitest suite; two archived generated backend tests lack `supertest`;
+  the archived `before-src--test--acceptanceComparison` expects the obsolete
+  three-model runner list. None is a new production checkpoint failure; those
+  unrelated files/dependencies were not repaired or removed. The full Rust suite
+  was not rerun; the required relevant native group and all-target strict Clippy
+  passed. Build retains existing ineffective-dynamic-import/plugin-timing notices.
+- A transient focused cloud-switch timeout was retested after removing unnecessary
+  checkpoint budgeting from unsupported provider paths. Its complete 11-test
+  integration suite, the final 210-test focused group and full active suite pass.
+  No timeout settings were increased or tests weakened.
+- No live provider, native Tauri GUI, Linux/macOS host or WSL runtime verification
+  is claimed. No source-control/explorer/terminal UI changes. `CLACK.md` is unchanged;
+  its existing principles already describe the invariants implemented here.
+- Remaining limits: native observations are prospective, not retroactive;
+  active/unclosed tool chains and unknown dependencies stay raw; only the Ollama
+  adapter is enabled; patch/edit-base projection, automatic corruption repair,
+  repeated searches, shell echo factoring, cross-correction plan retirement,
+  old-draft supersession, reasoning, broad prose and semantic summaries are deferred.
+  Fresh Nemotron acceptance is **not yet justified** by this frozen replay.
+- Single recommended next checkpoint: **Structured repeated-search projection**.
+  The already measured 1,726-token path-factoring class is deterministic and
+  source-reversible, but alone will NOT cover the remaining 3,758-token deficit.
+  Do not infer that this recommendation authorizes another mission or lossy
+  summarization. No subsequent checkpoint has been started.
+- Commit: `feat(ai): add revision-pinned agent checkpoints`. Expected post-commit:
+  `main`, **88 ahead / 0 behind cached origin**, only six original dirty contents,
+  empty index and no checkpoint-owned untracked files. Stage only the nine
+  production files, three test files, offline audit/metrics and this appendix.
+  Preserve the original report prefix, other five dirty files, both stashes and
+  `autonomous_tracker/`. **No push. STOP.**

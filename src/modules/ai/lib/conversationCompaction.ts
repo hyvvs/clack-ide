@@ -56,6 +56,7 @@ import { projectCompletedPeerHistory } from "@/modules/ai/lib/peerHistory";
 import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
 import { contextDigest } from "@/modules/ai/lib/targetContext";
 import { verifiedWriteCandidates, type VerifiedWriteCandidate, type VerifiedWriteSource } from "@/modules/ai/lib/verifiedWriteHistory";
+import { projectCheckpointWrites, type WriteCheckpoint } from "@/modules/ai/lib/writeCheckpoint";
 
 export type CompactionNotice = {
   coveredMessages: number;
@@ -69,6 +70,8 @@ export type ConversationCompactionContext = {
   originals: UIMessage[];
   ready: () => Promise<void>;
   confirmWriteSources?: (candidates: VerifiedWriteCandidate[]) => Promise<VerifiedWriteSource[]>;
+  prepareCheckpoint?: () => Promise<WriteCheckpoint | null>;
+  validateCheckpoint?: (snapshot: WriteCheckpoint) => Promise<void>;
   remainingCalls: () => number;
   chargeCall: () => Promise<void>;
 };
@@ -169,6 +172,7 @@ export async function createConversationCompactor(options: {
   limits: () => Promise<BudgetLimits>;
   signal?: AbortSignal;
   keepReasoning?: boolean;
+  checkpointHistory?: "ollama-native-v1";
   onStep?: (step: string | null) => void;
   onUsage?: (usage: ExtractionUsage) => void;
   onOptimized?: (notice: CompactionNotice) => void;
@@ -256,6 +260,7 @@ export async function createConversationCompactor(options: {
   const verbatimToolCallIds = new Set<string>();
   let receiptSources = new Map<string, number>();
   let pendingOriginal: string | undefined;
+  let activeCheckpoint: WriteCheckpoint | undefined;
   const allowance = options.allowance ?? newRetrievalAllowance();
   const scoped =
     options.scopedEvidence && context.owner.workspaceId
@@ -318,10 +323,18 @@ export async function createConversationCompactor(options: {
     return extractor;
   };
   return {
-    validateEvidence: () => scoped?.validate() ?? Promise.resolve(),
+    validateEvidence: async () => {
+      await scoped?.validate();
+      if (activeCheckpoint) {
+        if (!context.validateCheckpoint) throw new CompactionError("stale", "Checkpoint validation is unavailable.");
+        await context.validateCheckpoint(activeCheckpoint);
+        check();
+      }
+    },
     dispose: () => {
       disposed = true;
       pendingOriginal = undefined;
+      activeCheckpoint = undefined;
       receiptSources.clear();
       verbatimToolCallIds.clear();
       extractor?.dispose();
@@ -369,13 +382,28 @@ export async function createConversationCompactor(options: {
       check();
       for (const id of writes) observedWrites.add(id);
       let verifiedWriteSources: VerifiedWriteSource[] = [];
+      activeCheckpoint = undefined;
+      const rawBlocks = [...units.map(u => u.messages), extra];
+      let checkpointProjection: Awaited<ReturnType<typeof projectCheckpointWrites>> | undefined;
+      if (options.checkpointHistory === "ollama-native-v1" && context.prepareCheckpoint && context.validateCheckpoint) {
+        const rawBudget = resolveContextBudget(limits, measureRequest({ messages: [...options.system, ...rawBlocks.flat()], tools }));
+        if (!rawBudget.fits || rawBudget.cost.conversation >= rawBudget.working * COMPACTION_POLICY.trigger) {
+          const snapshot = await context.prepareCheckpoint().catch(() => null);
+          check();
+          if (snapshot) {
+            checkpointProjection = await projectCheckpointWrites(rawBlocks, snapshot, context.owner, [...verbatimToolCallIds]);
+            check();
+            if (checkpointProjection.receipts.length) activeCheckpoint = snapshot;
+          }
+        }
+      }
       const plan = () => {
         const result = planCompaction({
-          units,
+          units: checkpointProjection ? units.map((u, i) => ({ ...u, messages: checkpointProjection.blocks[i] })) : units,
           limits,
           system: options.system,
           tools,
-          extra,
+          extra: checkpointProjection?.blocks[units.length] ?? extra,
           verbatimToolCallIds: [...verbatimToolCallIds],
           verifiedWriteSources,
           threshold: prepared
@@ -385,6 +413,7 @@ export async function createConversationCompactor(options: {
             ? { end: view.revision.coverage.end, claims: view.revision.claims }
             : undefined,
         });
+        result.toolReceipts.push(...checkpointProjection?.receipts ?? []);
         receiptSources = new Map(result.toolReceipts.map(receipt => [receipt.toolCallId, receipt.sourceBytes]));
         return result;
       };
