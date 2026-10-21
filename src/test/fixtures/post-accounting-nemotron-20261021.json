@@ -1,0 +1,229 @@
+{
+  "base": "f662fb55509ab67d3fe1ed63ff643b0671431630",
+  "runId": "forgeboard-nemotron-hardened-20261021-03",
+  "root": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-03",
+  "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+  "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+  "route": "Existing user SSH tunnel, unchanged, http://127.0.0.1:11435",
+  "providerVersion": "0.40.5",
+  "classification": "TEST_HARNESS / PREMISSION ABORT / INCONCLUSIVE",
+  "completion": "CLACK-BLOCKED / ACCEPTANCE HARNESS",
+  "specificationSends": 0,
+  "missionRequests": 0,
+  "nativeMissionCalls": 0,
+  "sourceMutations": 0,
+  "providerReadinessRequests": 1,
+  "interceptedRequests": 2,
+  "rejectedSecondRequest": {
+    "forwarded": false,
+    "captured": false,
+    "exactBody": null,
+    "reason": "Context assertion failed before audit append and native handler dispatch; missing, invalid or over-limit num_ctx cannot be distinguished from the log"
+  },
+  "coldReadinessTimeoutMs": 75002,
+  "modelQualityVerdict": "Not evaluated; no ForgeBoard task was sent",
+  "confirmedProductionDefect": false,
+  "runner": {
+    "startedAt": 1792559044233,
+    "endedAt": 1792559127985,
+    "elapsedMs": 83752,
+    "hostExit": {
+      "pid": 42444,
+      "code": 3221226505,
+      "signal": null,
+      "at": 1792559127985
+    },
+    "hostExitHex": "0xC0000409",
+    "panic": [
+      "thread 'main' (8276) panicked at examples\\hardened_agent_acceptance.rs:247:29:",
+      "assertion failed: body[\"options\"][\"num_ctx\"].as_u64().is_some_and(|n| n <= 65536)",
+      "thread 'main' (8276) panicked at /rustc/4a4ef493e3a1488c6e321570238084b38948f6db/library\\core\\src\\panicking.rs:225:5:",
+      "panic in a function that cannot unwind",
+      "thread caused non-unwinding panic. aborting."
+    ]
+  },
+  "readiness": {
+    "calibration": {
+      "allocation": null,
+      "attempts": [
+        {
+          "at": 1792559125711,
+          "context": 4096,
+          "finish": null,
+          "latencyMs": 75002,
+          "loaded": null,
+          "outcome": "timeout",
+          "requested": 4096,
+          "thermal": "cold",
+          "think": "omitted"
+        }
+      ],
+      "expiresAt": 0,
+      "failedNext": null,
+      "failure": "timeout",
+      "highest": null,
+      "id": "81054023-0b4f-4703-a091-a4be11d60d49",
+      "retryAfter": 1792559425879,
+      "scope": {
+        "backend": "ollama",
+        "configurationRevision": 1,
+        "deployment": null,
+        "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+        "endpointId": "real-qwen",
+        "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+        "providerVersion": "0.40.5",
+        "reasoning": "[true,\"[false,true,\\\"medium\\\"]\",true]",
+        "runtimeEpoch": "42444:1792559050505494100"
+      },
+      "startedAt": 1792559050693,
+      "status": "incomplete",
+      "updatedAt": 1792559050693,
+      "version": 1
+    },
+    "toolVerification": {
+      "attempts": [],
+      "callAt": null,
+      "calls": 0,
+      "completedAt": null,
+      "context": 4096,
+      "finish": null,
+      "firstBodyAt": null,
+      "id": "3941a3ba-acff-4219-9930-4d1e1bf1c0c3",
+      "outcome": "interrupted",
+      "output": 512,
+      "proof": null,
+      "retryAfter": 0,
+      "scope": {
+        "backend": "ollama",
+        "configurationRevision": 1,
+        "deployment": null,
+        "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+        "endpointId": "real-qwen",
+        "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+        "protocol": "native-tools-v1",
+        "providerVersion": "0.40.5",
+        "reasoning": "[true,\"[false,true,\\\"medium\\\"]\",true]",
+        "runtimeEpoch": "42444:1792559050505494100"
+      },
+      "startedAt": 1792559126514,
+      "status": "verifying",
+      "textChars": 0,
+      "textualIntent": false,
+      "validArguments": false,
+      "version": 1
+    },
+    "overrides": {},
+    "recommendations": {},
+    "ready": false
+  },
+  "request": {
+    "at": 1792559050723,
+    "body": {
+      "messages": [
+        {
+          "content": "Reply with OK.",
+          "role": "user"
+        }
+      ],
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "options": {
+        "num_ctx": 4096,
+        "num_predict": 32
+      },
+      "stream": true
+    },
+    "requestId": "inference-1",
+    "url": "http://127.0.0.1:11435/api/chat",
+    "response": {
+      "requestId": "inference-1",
+      "at": 1792559050723,
+      "firstOutputAt": null,
+      "firstCallAt": null,
+      "calls": [],
+      "contentChars": 0,
+      "nonWhitespaceContent": 0,
+      "reasoningChars": 0,
+      "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reasoningSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "textualIntent": false,
+      "finish": null,
+      "inputTokens": null,
+      "outputTokens": null,
+      "trailingPartialFrame": false,
+      "settled": "cancelled"
+    }
+  },
+  "productAudit": {
+    "performed": false,
+    "executed": 0,
+    "passed": null,
+    "failed": null,
+    "blocked": null,
+    "reason": "No product implementation: premission native harness abort; not a 0/19 model score"
+  },
+  "configuration": {
+    "selectedReasoning": "automatic",
+    "firstProbeThink": "omitted",
+    "missionContext": null,
+    "loadedContext": null,
+    "missionOutput": null,
+    "fallback": "never",
+    "cloudInference": 0,
+    "downloads": 0
+  },
+  "accounting": {
+    "missionObserved": false,
+    "maximumRequired": null,
+    "minimumHeadroom": null,
+    "excludedAnnotations": null,
+    "excludedEstimatedTokens": null,
+    "receiptSavings": null,
+    "compactions": 0,
+    "retrievals": 0,
+    "extractions": 0,
+    "note": "Offline f662fb5 regression passed; no long-session live accounting evidence was produced"
+  },
+  "freeze": {
+    "root": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-03",
+    "files": [],
+    "gitStatus": "",
+    "sourceUnchanged": 948,
+    "missionStarted": false,
+    "note": "Empty Git workspace preserved. No product audit or dependency install: specification never dispatched."
+  },
+  "artifacts": [
+    {
+      "name": "setup.json",
+      "sha256": "68056c70ff4ea46b28f4b0381914c2bbe97b03278effbf117f547ea628567d2d"
+    },
+    {
+      "name": "mission-a-1.failure.json",
+      "sha256": "b589d736344cf33d8d568d0727cd52550fc647e8dbe7ebe12fb663e97fd8b445"
+    },
+    {
+      "name": "mission-a-1.jsonl",
+      "sha256": "1ec70735285c76a0c4988614ce16e66b27a27d59157765ce3fef13eca793877e"
+    },
+    {
+      "name": "mission-a-1.requests.jsonl",
+      "sha256": "969ee112e57d6a703b30c5dac1df650af79c6e3847e08527e647f95b3716dea4"
+    },
+    {
+      "name": "mission-a-1.receive.jsonl",
+      "sha256": "003f1f40f89f7a16eb4e593b9adaef3b1f6b8783fe6e4742a71b9264c43cdf2b"
+    },
+    {
+      "name": "runner.log",
+      "sha256": "5512da86d677f2efa8c375e527fbc5aacea835cb3b3b09183f9bab78c075fc58"
+    },
+    {
+      "name": "source-freeze.json",
+      "sha256": "2134c2e796d7ac9669b803d06bf4b2b1ba4dbf0316f48fe3fd44c461e5c58064"
+    },
+    {
+      "name": "data/terax-settings.json",
+      "sha256": "017900d9f8cfc4b208b660024f3c8ec69ecfc84ad4a12839ad6db1e8e21702cd"
+    }
+  ],
+  "nextRecommendation": "Repair acceptance-host fail-closed diagnostics for readiness requests before separately authorizing a fresh mission; do not tune production readiness or model settings"
+}

@@ -13088,3 +13088,244 @@ Commit: **`fix(ai): exclude local answer metadata from context budgets`**.
 Expected repository state after commit: `main`, **81 ahead / 0 behind cached
 origin**, original six dirty paths, empty index and no checkpoint untracked files.
 No push. Stop here.
+
+## Fresh Nemotron acceptance after protected-context accounting fix
+
+### Outcome: acceptance setup interrupted before the mission
+
+2026-10-21, committed base **`f662fb55509ab67d3fe1ed63ff643b0671431630`**.
+Exactly one fresh acceptance-host attempt was launched. It **did not reach
+ForgeBoard**: no specification was sent, no Agent mission started, no correction
+was sent, and no implementation/test/build tool ran.
+
+Evidence classification: **TEST_HARNESS / PREMISSION ABORT / INCONCLUSIVE**.
+Checkpoint completion category: **CLACK-BLOCKED / ACCEPTANCE HARNESS**, not a
+confirmed production Clack defect or a model product-quality failure. This is
+**not** a completed fair Nemotron product acceptance and does not establish a
+regression in the accounting fix. The blocked setup is preserved rather than
+silently retried, tuned or replaced by another run.
+
+### Isolation, identity and configuration
+
+Before launch, read-only process inspection found no competing Clack executable,
+native acceptance host, Cargo/rustc or Vite/test/build run. Unrelated Codex helper
+processes were left alone. Original SSH process **37440** was preserved.
+Read-only `/api/version`, `/api/tags` and `/api/ps` observations confirmed:
+
+- Exact installed model **`nemotron-3.5-lightning:30b-a3b-q4_K_M`**.
+- Digest **`e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2`**.
+- **Ollama 0.40.5**, existing user SSH tunnel at
+  **`http://127.0.0.1:11435`**, unchanged native transport.
+- Loaded-model list initially empty. No model download, remote service/bind/
+  firewall/SSH/model-file change, cloud inference or alternate-model inference.
+
+Fresh evidence ID **`forgeboard-nemotron-hardened-20261021-03`**, under
+`src-tauri/target/real-qwen-product/`. Fresh empty Git workspace:
+**`C:\Users\Hayden\Documents\forgeboard-nemotron35-lightning-20261021-03`**.
+Used the existing approval-supported workspace prefix instead of changing the
+dirty allowlist to accept the preferred `nemotron-hardened` prefix. Repository
+initialized on `main`, no initial commit or seeded files. It remains `.git` only.
+
+Saved byte baselines for all six original dirty paths and both stash identities.
+Captured **948 tracked source/configuration SHA-256 values**, all still matching
+after termination. No production or pre-existing harness source changed before,
+during or after this attempt. Existing production model, context, compaction,
+F1, continuation, verifier, output and safety-margin policies were not modified.
+
+The authoritative ForgeBoard specification remains unchanged at SHA-256
+`f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`.
+It was prepared but **sent zero times**, not sent once and lost. The only captured
+inference prompt was the production calibration prompt `Reply with OK.`
+
+Selected controls were Automatic reasoning/context/output and fallback Never,
+with no manual overrides. Expected 65,536 practical context and 2,048 mission
+output were **not established or sent in a mission**; they must not be reported
+as achieved live settings for this attempt. Fresh-runtime proof needed legitimate
+normal revalidation because earlier native hosts had exited. No old proof was
+forced current and no diagnostic/tuning ladder was added.
+
+### Chronology and actual request counts
+
+| Event | UTC / evidence |
+|---|---|
+| Runner start | **05:04:04.233**, epoch 1792559044233 |
+| Native host start | **05:04:06.126**, PID **42444**, runner PID **13888** |
+| First calibration request dispatched | **05:04:10.723**, `inference-1` |
+| Probe outcome | Recorded **75,002ms**, cold, timeout, no verified allocation |
+| First request settled | Epoch 1792559125714, **cancelled**, no final provider usage |
+| Tool-verification preparation began | Epoch 1792559126514; interrupted before observation |
+| Native host abort | **05:05:27.985**, epoch 1792559127985 |
+| Whole setup attempt | **83.752s**; this is not ForgeBoard mission duration |
+
+**One native readiness request actually forwarded**: exact selected model,
+`num_ctx=4096`, `num_predict=32`, streaming, native `think` omitted. This was a
+small normal calibration request, not a manual 4K mission pin. No content,
+reasoning, native call or engine-finish frame was observed before cancellation.
+Input/output usage and provider finish remain **unknown**, not inferred zeros.
+
+Persisted calibration: status incomplete, failure timeout, highest/allocation
+null, exactly one attempt, normal five-minute retryAfter recorded. It did not
+verify 4K or 65K capacity and does not prove engine OOM, global provider stall,
+bad model quality or an incorrect 600-second mission deadline.
+
+**Two requests were intercepted by the native host, but only one was forwarded.**
+After the calibration timeout, normal preparation reached tool verification;
+its persisted record says verifying/interrupted, output allowance 512, context
+planning value 4096, zero completed attempts, zero calls and no proof. The second
+request's exact serialized body is **not available**, as explained below. That
+record is not proof the second request serialized those options or reached Ollama.
+No Verified/Ready state or `mission-readiness` event was produced.
+
+### Confirmed host-exit cause and limits of the diagnosis
+
+Native stderr identifies the actual failure:
+
+```text
+examples\hardened_agent_acceptance.rs:247:29
+assertion failed: body["options"]["num_ctx"].as_u64().is_some_and(|n| n <= 65536)
+panic in a function that cannot unwind
+thread caused non-unwinding panic. aborting.
+```
+
+Exit **3221226505 / `0xC0000409`**, signal null. The stack shows the Rust panic
+crossing a non-unwinding WebView2 callback. This is not an assumed OS kill or
+90-minute harness watchdog. The existing 75-second calibration timeout is the
+preceding readiness boundary, not the direct cause of the native process abort.
+The actual mission's unchanged 600-second overall request deadline never ran.
+
+The native interception block checks the 65K assertion **before appending the
+request audit and before calling the production IPC handler**. Hence two
+`CLACK_ACCEPTANCE_INFERENCE` log lines, only one audited/forwarded body, and lost
+diagnostics for the second. Missing, non-integer/invalid, or over-65K `num_ctx`
+would all fail this expression. **The evidence does not distinguish them.**
+It would be speculative to claim Automatic actually selected above 65K, or to
+relax the bound and retry. The failed Boolean assertion proves neither a
+provider-context overrun nor a new context-accounting defect.
+
+Relevant unchanged call path inspected narrowly: normal calibration returns an
+incomplete timeout record; `ensureSelectedContext` returns updated state;
+`ensureSelectedTools` begins normal tool verification; the acceptance native
+guard then aborts. No production code was repaired to complete acceptance.
+Read-only Windows Application Error/Reporting lookup returned no matching
+record; the actionable cause comes from the preserved native panic/backtrace.
+The known native/runner processes were absent after cleanup. SSH **37440** was
+still present; subsequent `/api/ps` returned an empty loaded-model list. No
+unrelated process was terminated and no server cancellation/unload was invoked
+by the evaluator.
+
+### Mission, context and application acceptance: not exercised
+
+| Requested measure | Actual evidence |
+|---|---|
+| Mission requests / native calls | **0 / 0** |
+| Successful / failed mission operations | **0 / 0**, not a model reliability score |
+| Source writes / other filesystem mutations | **0 / 0** by the model |
+| Shell/directory/approval operations | **0 / 0 / 0** |
+| First useful output/call/write/backend/frontend/test/build | **Not reached** |
+| Correction prerequisites / dispatch | Not reached / **0 sends** |
+| Page-size-25 retention | **Not evaluated**, no authored application |
+| F1 and objective continuity after correction/continuation | **Not exercised** |
+| Automatic/manual continuations | **0 / 0** |
+| Failed-tool recovery, repeats, fabricated success | **Not evaluated**, no mission tools |
+| Textual pseudo-tools / mission terminal prose | **0 / 0** |
+| Mission empty responses / engine stalls | **Not evaluated**, no mission responses |
+| Maximum protected required / minimum headroom | **Not measured in a mission** |
+| Peak excluded annotations / estimated exclusion | **Not measured in a mission**, not a fabricated zero |
+| Provider-bound annotation absence | First simple probe has none; long-session regression not exercised |
+| Verified-effect receipts / savings | No mission receipts / **no measured savings** |
+| Durable compaction / retrieval / extraction | **0 / 0 / 0**, no Agent mission |
+| Old request-40 boundary crossed | **No mission began** |
+| Old 65,807 preparation point crossed | **Not tested live**; frozen offline proof remains unchanged |
+| New protected-context block/accounting defect | **Not observed/proven**; native harness assertion is a different boundary |
+
+The independent source freeze contains **zero application files** and a clean
+empty Git status. No dependency installation, app repair or substitute evaluator
+implementation occurred. Backend checks **executed 0**, passed/failed/blocked
+application scores **not applicable**. This is **not 0/19 demonstrated software**
+and not 19 failed or blocked HTTP tests: the model was never given the task.
+
+Project/task CRUD, enum/title validation, deterministic JSON errors/not-found,
+title/description search and individual/combined filters were **not tested**.
+Backend port/startup, persistence create/stop/restart, real SSE delivery/cleanup,
+frontend render/navigation/CRUD/status/priority/tags/search/filter/loading/error/
+empty/keyboard/page-size/title-max/debounce behavior were **not tested**.
+No meaningful tests, build, README or runtime ignore were authored or audited.
+Their absence in this empty setup is not evidence the model omitted requirements.
+No native GUI, Linux/macOS or browser product-acceptance claim.
+
+### Comparison without new inference or a new ranking
+
+References only: hardened Qwen `9b4866a`, prior Nemotron `04b0e99`, accounting
+repair `f662fb5`. No Qwen/other-model invocation in this checkpoint.
+
+| Metric | Hardened Qwen | Previous Nemotron | Fresh attempt |
+|---|---|---|---|
+| Mission context | 65,536 | 65,536 | **Not reached** |
+| Mission requests | 20 | 40 | **0** |
+| Native mission calls | 17 | 39 | **0** |
+| Successful / failed operations | 17 / 0 | 30 / 9 | **Not evaluated** |
+| Verified/direct mutations | 12 | 13 | **0** |
+| Correction retained | Yes, HTTP verified | Yes, AST only | **Not exercised** |
+| Context block | No | Invalid accounting block | **No mission context gate reached** |
+| Backend audit | 13/19 | 0/19 demonstrated; startup failed | **No score, no task dispatched** |
+| Persistence | Real restart failed | Not dynamically verified | **Not tested** |
+| SSE | Missing/404 | Attempted/unwired | **Not tested** |
+| Frontend | Scaffold | None substantive | **Not tested** |
+| Tests / build | Incomplete / failed | None meaningful / unavailable | **Not tested** |
+| Terminal reason | Textual pseudo-tool | Clack accounting defect | **Premission native-harness assertion abort** |
+| Fresh usability verdict | Historical STILL LIMITED | Terminal model verdict inconclusive | **INCONCLUSIVE / harness-blocked** |
+
+Answers to the primary questions: this attempt cannot establish progress beyond
+40 requests, useful-work extension from the accounting fix, greater functionality
+than Qwen or Nemotron's eventual product stopping behavior. **No new operational
+ranking** is justified. Qwen remains the best-tested partial working-backend
+reference, not an unattended-ready default; broader local-Agent usability has
+no new evidence of readiness from this attempt.
+
+Neither model long-horizon completion nor long-horizon context representation
+can be called the dominant limitation on these fresh data. The immediate blocker
+is acceptance readiness/host diagnostics. No additional model shootout, tuning
+ladder or automatic second acceptance attempt is justified here.
+
+Single recommended next checkpoint: **Acceptance Host Readiness Failure
+Diagnostics**. Preserve the 65K gate, record rejected request controls safely
+before rejection, and return a structured harness-blocked result instead of
+panicking across a native callback. Separately establish why the cold calibration
+did not complete within its existing deadline, without treating a timeout as
+capacity proof or changing production deadlines. That is a recommendation only;
+**no host repair, production repair or subsequent mission was started here**.
+
+### Verification, artifacts and repository safety
+
+- Before the attempt: **152 focused tests passed / 6 files**: hardened acceptance,
+  run evidence, readiness, approval, correction and the 16 accounting regression
+  checks. These are deterministic tests, not successful live acceptance evidence.
+- New interrupted-evidence suite: **9 passed / 1 file**. **161 distinct focused
+  tests passed / 7 files total**. Checks exact identity, forwarded versus
+  intercepted counts, zero specification dispatch, unchanged probe controls,
+  cancelled unknown usage, the non-unwinding panic and no fabricated product score.
+- `scripts/audit-post-accounting-nemotron.mjs`: passed reconstruction, same model
+  revision, first-request prompt/options, absent mission events, actual calibration
+  outcome, empty workspace, source hashes and eight immutable raw-artifact hashes.
+- Native host compiled successfully through the unchanged runner's locked Cargo
+  example build before launch. Scoped Rust formatting and Node script/test syntax
+  checks passed. `npm.cmd run check-types` and working/staged diff checks passed.
+- No unrelated full frontend/Rust/build/lint suite reruns: evidence-only checkpoint,
+  no production or Rust source changes. The prior checkpoint's documented full-suite
+  failures remain unresolved; no newly green full-gate claim.
+
+Committed evidence: `src/test/fixtures/post-accounting-nemotron-20261021.json`,
+`scripts/audit-post-accounting-nemotron.mjs`,
+`scripts/post-accounting-nemotron.test.mjs`, and **this appendix only**. Raw
+failure/backtrace, events, request, receive trace, runner log, source/setup freeze
+and isolated settings persist locally under the evidence ID with SHA-256 links.
+The rejected second request is explicitly missing, never reconstructed as fact.
+
+Original six dirty contents/report edits, both safety stashes and
+`autonomous_tracker/` preserved. Only checkpoint-owned evidence/test/report changes
+are staged. Zero production edits, model downloads, cloud requests, remote/service/
+network changes, manual 11435 tunnel mutations, cleanup/reset or push. Commit:
+**`test(ai): rerun nemotron after context accounting fix`**, documenting the
+interrupted setup, not claiming a completed ForgeBoard mission. Expected repository
+state after commit: `main`, **82 ahead / 0 behind cached origin**, original six
+dirty paths and empty index. Stop here.
