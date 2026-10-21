@@ -50,7 +50,25 @@ pub(super) fn validate(value: &Value) -> Result<(), String> {
     }
     for profile in value["profiles"].as_array().into_iter().flatten() {
         if let Some(record) = profile.get("toolVerification") {
+            if !record["configuration"].is_null() {
+                return Err("Provider-default tool evidence cannot be explicit".into());
+            }
             validate_tool_verification(value, profile, record)?;
+        }
+        if let Some(records) = profile.get("agentToolConfigurations") {
+            let records = records
+                .as_array()
+                .filter(|r| r.len() <= 2)
+                .ok_or("Invalid Agent tool configurations")?;
+            let mut wires = std::collections::HashSet::new();
+            for record in records {
+                if record["configuration"].is_null()
+                    || !wires.insert(record["configuration"]["wire"].to_string())
+                {
+                    return Err("Duplicate or missing Agent tool configuration".into());
+                }
+                validate_tool_verification(value, profile, record)?;
+            }
         }
         let Some(record) = profile.get("contextCalibration") else {
             continue;
@@ -226,6 +244,8 @@ fn validate_tool_verification(
     let time = |v: &Value| v.as_u64().is_some_and(|n| n <= 9_007_199_254_740_991);
     let proof = &record["proof"];
     let failure = &record["failure"];
+    let configuration = &record["configuration"];
+    let confirmation = &record["confirmation"];
     if record.to_string().len() > 16 * 1024
         || record["version"] != 1
         || !bounded(&record["id"], 128)
@@ -298,6 +318,18 @@ fn validate_tool_verification(
                     Some("text-only" | "wrong-tool" | "invalid-arguments" | "multiple-calls")
                 )))
         || (record["status"] == "needs-attention" && failure.is_null())
+        || !(configuration.is_null()
+            || (bounded(&configuration["choice"], 32)
+                && (configuration["wire"].is_boolean() || bounded(&configuration["wire"], 32))))
+        || !(confirmation.is_null()
+            || (!configuration.is_null()
+                && !proof.is_null()
+                && bounded(&confirmation["id"], 128)
+                && confirmation["id"] != record["id"]
+                && time(&confirmation["at"])
+                && time(&confirmation["expiresAt"])
+                && confirmation["at"].as_u64() <= proof["at"].as_u64()
+                && confirmation["expiresAt"].as_u64() > confirmation["at"].as_u64()))
         || (record["status"] == "verified"
             && (record["outcome"] != "native-call"
                 || record["calls"] != 1
@@ -540,6 +572,37 @@ mod tests {
             let mut invalid_record = value.clone();
             invalid_record["profiles"][0]["toolVerification"]["failure"] = invalid;
             assert!(validate(&invalid_record).is_err());
+        }
+    }
+
+    #[test]
+    fn agent_configuration_confirmation_is_bounded_owned_and_restart_safe() {
+        let mut value = tool_verified();
+        let mut record = value["profiles"][0]["toolVerification"].clone();
+        record["configuration"] = json!({"choice":"none","wire":false});
+        record["confirmation"] = json!({"id":"earlier-native-pass","at":1,"expiresAt":3});
+        value["profiles"][0]["agentToolConfigurations"] = json!([record.clone()]);
+        let restored: Value = serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
+        validate(&restored).unwrap();
+        for records in [
+            json!([record.clone(), record.clone()]),
+            json!([record.clone(), record.clone(), record.clone()]),
+        ] {
+            let mut invalid = value.clone();
+            invalid["profiles"][0]["agentToolConfigurations"] = records;
+            assert!(validate(&invalid).is_err());
+        }
+        for (path, invalid) in [
+            ("/scope/digest", json!("other")),
+            ("/configuration/wire", json!({})),
+            ("/confirmation/id", json!("tools")),
+            ("/confirmation/at", json!(4)),
+        ] {
+            let mut changed = value.clone();
+            *changed["profiles"][0]["agentToolConfigurations"][0]
+                .pointer_mut(path)
+                .unwrap() = invalid;
+            assert!(validate(&changed).is_err(), "accepted {path}");
         }
     }
 }

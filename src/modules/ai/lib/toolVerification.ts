@@ -4,6 +4,7 @@ import {
   probeArguments,
   toolVerificationSchema,
   type ToolVerification,
+  type ToolConfiguration,
 } from "@/modules/ai/lib/toolVerificationSchema";
 import {
   contextMetadata,
@@ -158,17 +159,30 @@ export function commitToolVerification(
     profile.deploymentId !== record.scope.deployment ||
     (endpoint.backendHint ?? endpoint.detectedBackend) !==
       record.scope.backend ||
-    (profile.toolVerification?.id !== previousId &&
-      profile.toolVerification?.id !== record.id)
+    (verificationRecord(profile, record.configuration)?.id !== previousId &&
+      verificationRecord(profile, record.configuration)?.id !== record.id)
   )
     throw new Error("Tool verification settings changed");
   const parsed = toolVerificationSchema.parse(record);
   return {
     ...state,
     profiles: state.profiles.map((p) =>
-      p.id === profileId ? { ...p, toolVerification: parsed } : p,
+      p.id !== profileId ? p : record.configuration ? {
+        ...p, agentToolConfigurations: [
+          ...(p.agentToolConfigurations ?? []).filter(r => !sameToolConfiguration(r.configuration, record.configuration)), parsed,
+        ].slice(-2),
+      } : { ...p, toolVerification: parsed },
     ),
   };
+}
+export function sameToolConfiguration(a?: ToolConfiguration, b?: ToolConfiguration) {
+  return a?.choice === b?.choice && a?.wire === b?.wire;
+}
+export function verificationRecord(profile: SelfHostedProfile, configuration?: ToolConfiguration) {
+  return configuration ? profile.agentToolConfigurations?.find(r => sameToolConfiguration(r.configuration, configuration)) : profile.toolVerification;
+}
+export function configuredToolState(state: SelfHostedState, profile: SelfHostedProfile, configuration?: ToolConfiguration, now = Date.now(), context?: number) {
+  return toolVerificationState(state, {...profile, toolVerification: verificationRecord(profile, configuration)}, now, context);
 }
 export type ToolProbeDependencies = {
   refresh: () => Promise<SelfHostedState>;
@@ -176,6 +190,7 @@ export type ToolProbeDependencies = {
   request: (
     state: SelfHostedState,
     signal: AbortSignal,
+    configuration?: ToolConfiguration,
   ) => Promise<ProbeObservation>;
   commit: (
     change: (state: SelfHostedState) => SelfHostedState,
@@ -184,7 +199,7 @@ export type ToolProbeDependencies = {
   clock?: () => number;
 };
 export async function runToolVerification(
-  options: { profileId: string; signal: AbortSignal; force?: boolean },
+  options: { profileId: string; signal: AbortSignal; force?: boolean; configuration?: ToolConfiguration },
   deps: ToolProbeDependencies,
 ) {
   const now = deps.clock ?? Date.now;
@@ -215,10 +230,10 @@ export async function runToolVerification(
   const scope = toolScope(profile, endpoint, now());
   if (!scope) return { status: "unavailable" as const };
   const context = deps.context(state, profile);
-  const previous = profile.toolVerification,
+  const previous = verificationRecord(profile, options.configuration),
     comparable =
       previous && previous.context === context && sameToolScope(previous.scope, scope) ? previous : undefined;
-  const current = toolVerificationState(state, profile, now(), context);
+  const current = configuredToolState(state, profile, options.configuration, now(), context);
   if (
     !options.force &&
     (["Verified", "Incompatible", "Needs attention"].includes(current) ||
@@ -243,6 +258,8 @@ export async function runToolVerification(
     textChars: 0,
     finish: null,
     proof: comparable?.proof ?? null,
+    ...(options.configuration ? {configuration: options.configuration} : {}),
+    ...(comparable?.confirmation ? {confirmation: comparable.confirmation} : {}),
     ...(toolFailure(comparable) ? { failure: toolFailure(comparable) } : {}),
     retryAfter: 0,
   };
@@ -259,7 +276,7 @@ export async function runToolVerification(
     );
   const signal = AbortSignal.any([deadline.signal, options.signal]);
   try {
-    const result = await deps.request(state, signal);
+    const result = await deps.request(state, signal, options.configuration);
     signal.throwIfAborted();
     record.outcome = classifyToolObservation(result);
     record.calls = Math.min(2, result.calls.length);
@@ -283,6 +300,7 @@ export async function runToolVerification(
     ) {
       record.outcome = "revision-changed";
       record.proof = null;
+      delete record.confirmation;
       delete record.failure;
     } else if (
       !state.inventories?.some(
@@ -304,8 +322,13 @@ export async function runToolVerification(
             ].includes(record.outcome)
           ? "needs-attention"
           : "incomplete";
-    if (record.status === "verified")
+    if (record.status === "verified") {
       record.proof = { at: now(), expiresAt: now() + TOOL_VERIFICATION.ttlMs };
+      if (record.configuration && comparable?.proof &&
+        comparable.proof.at <= now() && comparable.proof.expiresAt > now() &&
+        configuredToolState(state, profile, options.configuration, now(), context) === "Verified")
+        record.confirmation = {id: comparable.id, ...comparable.proof};
+    }
     if (record.status === "needs-attention")
       record.failure = {
         at: now(),

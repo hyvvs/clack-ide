@@ -57,7 +57,7 @@ export function ModelOnboardingDetails({
       )}
       <dl className="model-onboarding-summary">
         <dt>Reasoning</dt>
-        <dd>Automatic ({view.reasoning.recommended})</dd>
+        <dd>{view.reasoning.agentRecommendation ? "Automatic / Recommended" : `Automatic (${view.reasoning.recommended})`}</dd>
         <dt>Context</dt>
         <dd>
           {view.context.override !== undefined
@@ -99,6 +99,13 @@ export function ModelOnboardingDetails({
                   ? "On"
                   : String(view.reasoning.providerDefault)}
           </dd>
+          <dt>Provider-default tools</dt>
+          <dd>{view.providerDefaultTools}</dd>
+          <dt>Automatic Agent reasoning</dt>
+          <dd>{view.reasoning.agentRecommendation ? view.reasoning.recommended : "Not verified"}</dd>
+          <dt>Agent recommendation source</dt>
+          <dd>{view.reasoning.agentRecommendation?.configuration ? "Confirmed native tool calls / supported explicit control" :
+            view.reasoning.agentRecommendation ? "Verified provider default" : "Provider metadata / unverified"}</dd>
           <dt>Reasoning verification</dt>
           <dd>
             {view.reasoning.verified === undefined

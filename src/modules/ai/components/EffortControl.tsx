@@ -43,14 +43,18 @@ function SessionEffortControl({ sessionId: id }: { sessionId: string }) {
     return null;
   }
   const capability = effort.capability;
+  const displayChoice = effort.unresolvedExplicitChoice ?? effort.choice;
   const target = resolveSelfHostedSelection(preferences.selfHostedInference, session.profile?.modelId ?? "");
   const onboarding = target.status === "available" ? modelOnboarding(preferences.selfHostedInference, target.profile) : null;
   if (capability.status === "unsupported") return null;
   let effective: string;
   try {
-    effective =
-      effort.choice === "automatic"
-        ? "Provider default; no effort override"
+    effective = effort.unresolvedExplicitChoice
+      ? `Explicit ${effortLabel(effort.unresolvedExplicitChoice)} requires revalidation; no Automatic substitution`
+      : effort.choice === "automatic"
+        ? onboarding?.reasoning.agentRecommendation?.configuration
+          ? `Automatic Agent: confirmed ${onboarding.reasoning.recommended}; Chat Only: provider default`
+          : "Provider default; no effort override"
         : JSON.stringify(effortProviderOptions(effort));
   } catch {
     effective = "Evidence expired; start a new request.";
@@ -63,9 +67,9 @@ function SessionEffortControl({ sessionId: id }: { sessionId: string }) {
           size="sm"
           className="h-6 max-w-36 shrink-0 px-1.5 text-[11px]"
           title="Reasoning effort"
-          aria-label={`Reasoning effort: ${effortLabel(effort.choice)}`}
+          aria-label={`Reasoning effort: ${effortLabel(displayChoice)}`}
         >
-          <span className="truncate">Effort: {effortLabel(effort.choice)}</span>
+          <span className="truncate">Effort: {effortLabel(displayChoice)}</span>
         </Button>
       </PopoverTrigger>
       <PopoverContent
@@ -77,7 +81,7 @@ function SessionEffortControl({ sessionId: id }: { sessionId: string }) {
           <select
             aria-label="Reasoning effort"
             className="h-8 w-full min-w-0 rounded border border-border bg-background px-2"
-            value={effort.choice}
+            value={displayChoice}
             disabled={locked || saving || capability.status !== "supported"}
             onChange={(event) => {
               const choice = event.target.value;
@@ -88,7 +92,9 @@ function SessionEffortControl({ sessionId: id }: { sessionId: string }) {
                 .finally(() => setSaving(false));
             }}
           >
-            <option value="automatic">{onboarding ? `Automatic (${onboarding.reasoning.recommended})` : "Automatic"}</option>
+            <option value="automatic">{onboarding?.reasoning.agentRecommendation ? "Automatic (Recommended)" : onboarding ? `Automatic (${onboarding.reasoning.recommended})` : "Automatic"}</option>
+            {effort.unresolvedExplicitChoice && !capability.levels.includes(displayChoice) &&
+              <option value={displayChoice}>{effortLabel(displayChoice)} (Needs revalidation)</option>}
             {capability.levels.map((level) => (
               <option key={level} value={level}>
                 {effortLabel(level)}
@@ -117,6 +123,12 @@ function SessionEffortControl({ sessionId: id }: { sessionId: string }) {
           <dl className="mt-2 space-y-1 break-words [overflow-wrap:anywhere]">
             <dt>Effective request</dt>
             <dd>{effective}</dd>
+            {onboarding && <>
+              <dt>Provider-default behavior</dt>
+              <dd>Automatic / provider-managed</dd>
+              <dt>Agent tools</dt>
+              <dd>{onboarding.tools}</dd>
+            </>}
             <dt>Capability</dt>
             <dd>{capability.status}</dd>
             <dt>Evidence</dt>

@@ -20,6 +20,7 @@ Clack is a Tauri 2 + React 19 + Rust IDE/agent app forked from Terax.
 
 ## Local Provider Compatibility Principles
 
+- Automatic may choose a directly verified supported provider configuration for Agent tools; it does not necessarily mean no wire override. Preserve provider defaults as metadata, keep recommendations capability-scoped, and never replace an explicit user choice.
 - The product goal is excellent compatibility across many capable local/self-hosted models, not selecting one winner and optimizing Clack around its family. An ordinary user should be able to connect a provider, choose a discovered model and use evidence-based recommended settings without understanding engine internals.
 - Separate genuine model limitations, provider/engine limitations, valid capabilities Clack fails to understand, Clack runtime/tool/context/state defects, discoverable configuration gaps, and benchmark/harness limitations. Preserve uncertainty; another model working does not exonerate Clack. A valid capability or protocol Clack cannot consume is a compatibility gap, not evidence of a bad model.
 - Prefer provider metadata -> normalized capabilities -> validation -> truthful UI choices -> runtime serialization. Avoid production model-name branches. A model-specific compatibility entry requires evidence of a genuine nonstandard defect that cannot be represented generically.

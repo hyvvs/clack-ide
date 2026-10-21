@@ -10864,3 +10864,258 @@ checkpoint. Largest separate onboarding gap remains secure authenticated remote
 self-hosted connection setup; recommended next checkpoint is **Design and
 Implement Secure Remote Self-Hosted Connection Onboarding**, with this runtime
 reasoning-default discrepancy retained as an explicit limitation, not hidden.
+
+## Evidence-based Automatic Agent configuration resolution
+
+2026-10-21, base `b7877ba4255343821fae5c60fec10e4da32e092f`, `main`, 73 ahead /
+0 behind cached origin. Completion classification:
+**AUTOMATIC LOCAL AGENT CONFIGURATION READY** for the existing native Ollama
+verification path. No secure-remote onboarding or subsequent checkpoint started.
+
+### Automatic semantics and ownership
+
+Previously Automatic meant provider-default omission. It now means Clack may
+select a directly verified supported configuration for **Agent tools**. The
+provider default remains the first candidate and is retained as factual metadata,
+even when the recommendation differs. Explicit None/On/named user choices remain
+authoritative; they do not invoke recovery. Chat Only does not verify/search and
+continues using provider-default reasoning unless the user explicitly overrides
+it. Cloud/OpenRouter reasoning defaults are unchanged. `CLACK.md` records this
+durable capability-specific principle.
+
+For a saved explicit Ollama choice whose metadata/revision no longer validates,
+capture retains an unresolved-explicit marker instead of treating its legacy
+Automatic fallback as recovery consent. Agent dispatch fails before inference,
+and the selector still displays the explicit choice with revalidation guidance.
+Refresh/reselection is required; no recommended mode is silently substituted.
+This marker does not change cloud-provider capture/default behavior.
+
+The existing native-owned profile/CAS store remains the sole owner:
+
+- `toolVerification` retains provider-default evidence and its negative latch
+  from `b7877ba`, without rewriting metadata or erasing prior native proof.
+- Optional `agentToolConfigurations` holds **at most two** alternative verifier
+  records. Each uses the existing version-1 schema plus
+  `configuration:{choice,wire}`. Absence means provider-default omission; explicit
+  boolean false, boolean true and named strings remain distinct identities, even
+  when labels coincide. Array wire identities are unique and bounded.
+- Alternative native proof uses existing `proof:{at,expiresAt}`. A second PASS
+  adds `confirmation:{id,at,expiresAt}` identifying the first validated request's
+  verifier record and proof lifetime. The active record owns the second PASS.
+  Confirmation cannot identify itself, postdate current proof, or exist without
+  configuration/current proof. A single alternative PASS never activates a
+  recommendation. Existing valid provider-default proof keeps its existing
+  one-probe contract; no needless second-model confirmation is introduced.
+- The durable recommendation is derived from confirmed, currently valid records,
+  not a second mutable pointer/store. Default wins whenever currently Verified;
+  otherwise the first confirmed supported candidate wins. A partial/failed write
+  cannot activate it. Native validation, bounded schema isolation, per-endpoint
+  native lease, frontend single-flight, existing atomic CAS and run cancellation
+  continue owning execution/persistence.
+
+Scope includes endpoint/configuration revision, exact model/deployment/digest,
+backend, native runtime epoch, server version, normalized reasoning metadata,
+tool protocol, exact effective wire configuration and tested context. No evidence
+is inherited across endpoints/tags/digests/configurations. Recommendation lifetime
+is bounded by both successful proofs' existing verifier TTL and fresh metadata /
+runtime trust rules. A model/provider capability change clears derived records
+through existing native refresh; other scope/context changes make them stale.
+Unrelated labels/settings do not invalidate them. Serialization is additive and
+idempotent; malformed alternatives are isolated without erasing the default
+record, pins or context calibration. After process restart records remain stored
+but old native-epoch evidence must be revalidated, not silently treated as fresh.
+There is no startup replay of an old inference request.
+
+### Exact bounded policy
+
+Only first tool-requiring Automatic Agent use and explicit model-settings
+verification resolve configurations. Discovery does not infer. Current valid
+recommendations are reused; completed failed searches are cached by existing
+negative evidence/TTL, not repeated on every run.
+
+Candidate zero is always provider default. Alternatives come only from normalized
+advertised controls supported by the native adapter. An explicit control whose
+actual wire value equals the advertised provider default is ordered first, even
+though omission and that explicit value have different identities. Remaining
+supported alternatives use deterministic cost order:
+`None, Minimal, Low, Medium, On, High, Extra high, Maximum`.
+Unrecognized future values are not invented or probed. Take only the first two
+alternatives: **three configurations total** including provider default.
+
+Fresh Needs-attention evidence skips repeat default inference. A stale/unverified
+default gets one bounded probe. Recovery starts only after completed
+configuration-specific noncompliance (text-only/wrong-tool/invalid arguments/
+multiple calls). Unsupported tools stop. Timeout, transport/offline, empty output,
+cancellation and revision change do not start or advance tuning. A transient
+alternative/confirmation failure stops the search and respects existing backoff.
+No textual pseudo-call is parsed, repaired or executed.
+
+An alternative must PASS once, then receive a separate bounded confirmation PASS
+under identical scope/context/wire configuration. Existing authoritative current
+production proof can supply the first PASS. Negative evidence takes precedence
+for that configuration; later success does not erase a fresh contradictory
+observation. Confirmation failure may consider the one remaining candidate only
+when it is configuration-specific, never on infrastructure failure. Worst case
+is **five requests**: one default and two alternative attempts plus their possible
+confirmations. The candidate cap remains three, not five. Every request retains
+output 512, deadline 120 seconds, zero retries and the identical canonical
+prompt/schema. Context, output, sampling and prompt/schema are not searched.
+
+The actual Agent request captures the confirmed supported control for Automatic
+without changing session/user preferences; normal per-request reasoning
+revalidation and B1 still apply. Explicit choices bypass this substitution.
+Automatic tool dispatch fails closed unless effective native-tool evidence is
+Verified; unresolved/busy/incomplete configurations do not gain Agent access.
+Chat Only remains selectable and never triggers tool recovery. A later callback
+cannot transplant a result across changed settings or stale record IDs.
+
+### Readiness and UI
+
+Settings show `Automatic / Recommended`, Verified tools and Ready when server,
+model, effective configuration and context policy all qualify. Picker uses that
+same projection. Advanced details retain provider default, provider-default tool
+verdict, recommended Agent control and proof provenance; raw wire complexity is
+not shown in the normal view. The chat effort selector keeps Automatic and its
+explicit supported choices, with capability-specific Agent/Chat behavior in
+Advanced. No broad UI redesign or new placeholder controls.
+
+Readiness accepts the **existing conservative unknown-context planning policy**
+when no custom context is pinned and the successful tool configuration was tested
+at that same conservative context. This is not hardware calibration: context
+remains visibly unverified/conservative. Unverified larger/custom contexts do not
+gain readiness through this rule. Actual requests still pass existing B1
+measurement/preflight. No context-calibration, protected-budget, compaction,
+memory, scheduler/F1, permission or timeout architecture was changed.
+
+### Fresh production native acceptance
+
+Existing prior Qwen diagnostic artifacts were not imported into production or
+parsed from Markdown. Their native hosts had exited, making runtime scope stale.
+The user explicitly authorized one fresh default probe plus at most two
+alternative probes. Before inference, version/tags and process inventory were
+checked: existing tunnel reachable, model digest unchanged, no competing Clack
+acceptance, Cargo/Rust build or matching test/Vite harness active. Source was
+frozen throughout live inference. No Computer Use/native GUI interaction.
+
+Run ID: `automatic-agent-configuration-2026-10-20T23-57-15-932Z`, hidden Windows
+native host PID `22416`, isolated application/evidence directory:
+`src-tauri/target/automatic-agent-configuration/automatic-agent-configuration-2026-10-20T23-57-15-932Z/`.
+The native fixture allows only the exact approved harmless bodies, at most three
+Qwen requests and one second-model request, four total. It registers metadata,
+profile and inference IPC, not filesystem/shell/tool execution commands.
+
+Endpoint: existing `http://127.0.0.1:11435/api/chat` SSH tunnel. Ollama before/after
+`0.40.5`. Both models used conservative planning/loaded context **4096**, output
+**512**, no `num_ctx`, no sampling override, identical canonical strict
+`get_probe_value({"key":"clack-probe-v1","count":1})` and identical user prompt.
+All calls completed normally with native `done_reason:stop`; no output limit hit.
+
+| Native request | Model/configuration | Result | Actual provider input/output tokens |
+| --- | --- | --- | --- |
+| `inference-1` | Qwen provider default, `think` omitted | 128-char text pseudo-call, no native call; Needs attention | 342 / 34 |
+| `inference-2` | Closest advertised explicit None, `think:false` | One valid native call; first proof, not yet recommended | 342 / 36 |
+| `inference-3` | Same explicit None | One valid native call; confirmation and Automatic recommendation | 342 / 36 |
+| `inference-4` | Nemotron provider default, `think` omitted | One valid native call; default retained, no alternatives | 335 / 85 |
+
+Qwen exact model `qwen3-coder:30b`, digest
+`06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca`.
+Metadata `thinking:{values:[false],default:false}` remains unchanged. Provider
+default continues displaying None with omission, and its negative evidence stays
+Needs attention. Alternative native IDs `call_lkrqrwya` and `call_l3ndpo84` both
+contain the exact canonical arguments. Recommended Automatic Agent control is
+None with explicit false. Projection: **Ready / Verified**. Applying the
+production Agent recommendation produces `{ollama:{think:false}}` without the
+user selecting None. Subsequent production `ensureSelectedTools` used cached
+confirmation and made **zero** additional inference requests.
+
+Second model `nemotron-3.5-lightning:30b-a3b-q4_K_M`, digest
+`e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2`.
+Controls `[false,true,"medium"]`, default true/On. Its one native call
+`call_c4n8i3wq` was canonical and valid. Automatic remains provider-default omission
+(`{}` provider options), **Ready / Verified**, no alternative configuration or
+unnecessary override. Its next production resolution also made no inference.
+
+Totals: **3 Qwen + 1 Nemotron requests**, zero other models, zero tool executions,
+zero textual-tool executions, zero cloud inference, zero downloads, zero
+server/service/environment/firewall/network/SSH/template changes. No ForgeBoard,
+coding task, filesystem tool or shell command was sent to a model. Native calls
+had no execute handler. Installed sampling defaults were preserved. The internal
+Ollama cause of omitted-versus-false behavior is still unconfirmed; the generic
+resolver uses direct bounded compatibility evidence rather than assuming it.
+
+Raw actual bodies, native response bytes/hashes, final usage, metadata and native
+persisted record/projection evidence are in committed fixture
+`src/test/fixtures/automatic-agent-configuration-20261021.json`. Ignored run
+directory also retains full native channel events, isolated store, metadata and
+build logs. No production model-name conditionals exist: live names occur only
+in acceptance tooling/fixtures. The harness refuses a second live campaign after
+requests have been recorded. No extra inference was used after acceptance.
+
+### Verification and remaining boundaries
+
+Focused automated coverage: **424 passed across 16 files**, counted from the
+final full-suite JSON report for the targeted configuration, verifier, native
+routing, effort UI/session, context and compaction suites. Includes
+default reuse, false/true/named wire identities, nearest explicit default, unknown
+levels, candidate/request caps, one-PASS exclusion, confirmation failure,
+transient backoff, no candidates, scope/version/digest/context/TTL/protocol
+withdrawal, server isolation, explicit None/High, cancellation and bounded record
+migration. Real Agent -> SDK -> native-wire integration proves recovered
+Automatic and explicit None send false while Chat Only omits it. Existing B1,
+context calibration, compaction and original native-response replays passed.
+Stale explicit intent is retained in capture/UI and blocked before any inference
+or Automatic substitution; expiry during settings projection fails closed.
+Focused Windows native profile tests: **10 passed**.
+
+Deterministic Chromium onboarding passed default and recovered Automatic,
+readiness/provenance, explicit-control preservation through production functions,
+negative state, offline, version/digest invalidation, keyboard verification/
+cancellation, **320/390/1280px**, light/dark and **200% CSS scaling**. Browser
+fixtures are supplementary automated evidence, not native GUI acceptance.
+Native live coverage was Windows hidden IPC only; no Linux/macOS native run,
+native dialog/window/manual GUI test or Computer Use was performed.
+
+Final repository gates:
+
+- `npm.cmd run check-types`: passed.
+- `npm.cmd run lint`: passed, unchanged **71 warnings / 2 informational notices**.
+- `npm.cmd test`: **3,264 passed / 1 failed / 2 skipped**, **220 passing / 4
+  failing files**. The same historical failures remain: Node-only
+  `scripts/audit-devstral-latency.test.mjs` is not a Vitest suite, generated
+  ForgeBoard backend source/dist tests under ignored target lack `supertest`,
+  and an archived pre-change `acceptanceComparison` allowlist assertion fails.
+  No new failure or test-discovery masking. The first final frontend pass had
+  3,260 passes; final review then reproduced/fixed a narrow metadata-expiry race
+  in the new settings candidate projection and guarded the existing stale-explicit
+  capture fallback against unintended Automatic recovery. Regression tests cover
+  both. Only affected frontend checks were repeated; no live or native-suite
+  rerun was needed.
+- `npm.cmd run build`: passed, existing ineffective-dynamic-import and
+  plugin-timings notices remain.
+- `cargo fmt --check`: passed.
+- `cargo clippy --all-targets --locked --target-dir target/codex-test -- -D warnings`:
+  passed.
+- `cargo test --locked --target-dir target/codex-test`: **628 passed / 1 failed /
+  2 ignored** in the library. Same historical D1 cancellation/revocation timing
+  assertion at `custom_tools/execution/tests.rs:758`, expected `tool-revoked`, got
+  `timed-out`. Prior ledgers reproduce it on unmodified `346fc35`. Cargo stopped
+  before integration binaries. No unrelated cancellation/timeout code changed.
+- `git diff --check`: passed. Logs are under ignored
+  `src-tauri/target/automatic-agent-configuration/`. Full suites are **not all
+  green**; unchanged baseline failures are not relabeled passes.
+
+Original six dirty paths are byte-preserved (the original report prefix and the
+other five files), both stashes and `autonomous_tracker/` untouched. Only this
+appendix, the requested concise `CLACK.md` principle, and checkpoint-owned
+implementation/tests/acceptance tooling/evidence are staged. No dependencies,
+lockfiles, model-name production branches or unrelated formatting changes.
+
+Limits: this recovery path applies to native Ollama, the backend with existing
+direct tool verification, not an invented compatible-server/cloud contract.
+Two successful probes establish bounded capability evidence, not a statistical
+quality/reliability guarantee or completed Agent coding acceptance. Search is
+intentionally not exhaustive. Larger practical contexts still need the separate
+calibration subsystem. The largest remaining zero-knowledge onboarding gap is
+secure authenticated second-PC connection setup; recommended next checkpoint is
+**Design and Implement Secure Remote Self-Hosted Connection Onboarding**.
+It has not been started. No push.

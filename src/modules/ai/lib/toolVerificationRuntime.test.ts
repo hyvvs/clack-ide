@@ -190,11 +190,14 @@ it("text-only Agent calls are blocked with Chat Only guidance without claiming i
   ).rejects.toThrow(/Chat Only/);
   expect(state().profiles[0].toolVerification?.outcome).toBe("text-only");
   expect(state().profiles[0].toolVerification?.status).toBe("needs-attention");
-  expect(h.modelCalls).toBe(1);
+  expect(h.modelCalls).toBe(3);
   await expect(ensureSelectedTools(state(), selfHostedSelectionId(state().profiles[0]), new AbortController().signal)).rejects.toThrow(/Needs attention/);
-  expect(h.modelCalls).toBe(1);
+  expect(h.modelCalls).toBe(3);
 });
 it("a later successful recheck does not silently restore Agent access after conflicting evidence", async () => {
+  const controls = state().profiles[0].evidence.find(e => e.metric === "probe.thinkingControls");
+  if (!controls) throw new Error("missing controls");
+  controls.value = "[]";
   const id = selfHostedSelectionId(state().profiles[0]);
   await ensureSelectedTools(state(), id, new AbortController().signal);
   const proof = structuredClone(state().profiles[0].toolVerification?.proof);
@@ -208,11 +211,11 @@ it("a later successful recheck does not silently restore Agent access after conf
 });
 it("native competing verification lease performs no inference", async () => {
   h.busy = true;
-  await ensureSelectedTools(
+  await expect(ensureSelectedTools(
     state(),
     selfHostedSelectionId(state().profiles[0]),
     new AbortController().signal,
-  );
+  )).rejects.toThrow(/Chat Only/);
   expect(h.modelCalls).toBe(0);
   expect(useToolVerificationJobs.getState().jobs).toEqual({});
 });

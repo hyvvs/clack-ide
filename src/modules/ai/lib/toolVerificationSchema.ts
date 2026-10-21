@@ -30,6 +30,11 @@ export const toolOutcome = z.enum([
   "interrupted",
 ]);
 const time = z.number().int().nonnegative().safe();
+export const toolConfigurationSchema = z.object({
+  choice: z.string().min(1).max(32),
+  wire: z.union([z.boolean(), z.string().min(1).max(32)]),
+}).strict();
+export type ToolConfiguration = z.infer<typeof toolConfigurationSchema>;
 export const toolFailureSchema = z.object({
   at: time,
   expiresAt: time,
@@ -74,11 +79,15 @@ export const toolVerificationSchema = z
     textChars: z.number().int().min(0).max(65536),
     finish: z.string().max(64).nullable(),
     proof: z.object({ at: time, expiresAt: time }).strict().nullable(),
+    configuration: toolConfigurationSchema.optional(),
+    confirmation: z.object({ id: z.string().min(1).max(128), at: time, expiresAt: time }).strict().optional(),
     failure: toolFailureSchema.optional(),
     retryAfter: time,
   })
   .strict()
   .refine(r => r.status !== "needs-attention" || r.failure !== undefined)
+  .refine(r => !r.confirmation || (!!r.configuration && !!r.proof && r.confirmation.id !== r.id &&
+    r.confirmation.at <= r.proof.at && r.confirmation.expiresAt > r.confirmation.at))
   .refine(
     (r) =>
       r.status !== "verified" ||

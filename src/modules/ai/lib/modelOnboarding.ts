@@ -9,9 +9,10 @@ import {
   effortLabel,
 } from "@/modules/ai/lib/reasoningEffort";
 import { profileBudgetLimits } from "@/modules/ai/lib/contextBudgetProfile";
-import { resolveContextBudget } from "@/modules/ai/lib/contextBudget";
+import { resolveContextBudget, UNKNOWN_CONTEXT_POLICY } from "@/modules/ai/lib/contextBudget";
 import { trustedContext } from "@/modules/ai/lib/contextCalibrationTrust";
 import { toolVerificationState } from "@/modules/ai/lib/toolVerification";
+import {automaticAgentRecommendation} from "@/modules/ai/lib/agentConfiguration";
 import {
   PROBE_INVENTORY_TTL_MS,
   PROBE_INSTANCE_TTL_MS,
@@ -199,7 +200,11 @@ export function modelOnboarding(
       : undefined;
   let status: ModelReadiness = "Unverified";
   const testedContext = typeof profile.overrides.workingContext?.evidence.value === "number" ? profile.overrides.workingContext.evidence.value : context;
-  const tools = profile.toolVerification ? toolVerificationState(state, profile, now, testedContext) : statusFor(value("trainedForTools"), verified("tools"));
+  const providerDefaultTools = profile.toolVerification ? toolVerificationState(state, profile, now, testedContext) : statusFor(value("trainedForTools"), verified("tools"));
+  const agentRecommendation = automaticAgentRecommendation(state, profile, testedContext, now);
+  const tools = agentRecommendation ? "Verified" : providerDefaultTools;
+  const safeConservativeContext = !profile.overrides.workingContext && context !== undefined && context <= UNKNOWN_CONTEXT_POLICY &&
+    agentRecommendation?.record.context === context;
   if (
     !inventory?.connected &&
     inventory?.error !== "unsupported-probe-route" &&
@@ -224,7 +229,7 @@ export function modelOnboarding(
     listed &&
     inventory.observedAt <= now &&
     now - inventory.observedAt < PROBE_INVENTORY_TTL_MS &&
-    verifiedContext &&
+    (verifiedContext || safeConservativeContext) &&
     (tools === "Verified") &&
     (profile.toolVerification || capability.status === "unsupported" || verified("reasoning") === true)
   )
@@ -242,6 +247,7 @@ export function modelOnboarding(
     status,
     problem,
     tools,
+    providerDefaultTools,
     vision: statusFor(value("vision"), verified("vision")),
     structuredOutput: statusFor(
       value("structuredOutput"),
@@ -250,7 +256,8 @@ export function modelOnboarding(
     reasoning: {
       capability,
       providerDefault,
-      recommended: recommendedReasoning,
+      recommended: agentRecommendation?.configuration ? effortLabel(agentRecommendation.choice) : recommendedReasoning,
+      agentRecommendation,
       verified: verified("reasoning"),
       provenance: defaultChoice
         ? "provider-metadata"

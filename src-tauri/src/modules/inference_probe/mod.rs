@@ -467,6 +467,10 @@ fn merge_evidence(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeErr
                 .as_object_mut()
                 .ok_or_else(internal)?
                 .remove("toolVerification");
+            profile
+                .as_object_mut()
+                .ok_or_else(internal)?
+                .remove("agentToolConfigurations");
         }
         if let Some(digest) = model.and_then(|m| m.digest.as_ref()) {
             profile["modelRevision"] = json!(digest);

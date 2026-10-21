@@ -8,6 +8,7 @@ import type {
   SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
 import { toolVerificationState } from "@/modules/ai/lib/toolVerification";
+import {automaticAgentRecommendation} from "@/modules/ai/lib/agentConfiguration";
 
 export function ToolVerificationControl({
   state,
@@ -29,8 +30,9 @@ export function ToolVerificationControl({
   const endpoint = state.endpoints.find((e) => e.id === profile.endpointId);
   const supported =
     (endpoint?.backendHint ?? endpoint?.detectedBackend) === "ollama";
-  const record = profile.toolVerification,
-    verdict = toolVerificationState(state, profile, now, context);
+  const recommendation = automaticAgentRecommendation(state, profile, context, now);
+  const record = recommendation?.record ?? profile.toolVerification,
+    verdict = recommendation ? "Verified" : toolVerificationState(state, profile, now, context);
   return (
     <section className="model-onboarding" aria-label="Tool verification">
       <div className="server-heading">
@@ -66,6 +68,7 @@ export function ToolVerificationControl({
                     profileId: profile.id,
                     signal: new AbortController().signal,
                     force: true,
+                    resolveAutomatic: true,
                   }),
                 )
                 .catch((error) =>
@@ -114,7 +117,7 @@ export function ToolVerificationControl({
                 : "Interrupted or verifying"}
             </dd>
             <dt>Reasoning</dt>
-            <dd>Automatic / provider default</dd>
+            <dd>{recommendation?.configuration ? "Automatic / confirmed Agent recommendation" : "Automatic / provider default"}</dd>
             <dt>Context tested</dt>
             <dd>{record.context.toLocaleString("en-US")}</dd>
             <dt>Runtime</dt>

@@ -23,6 +23,8 @@ export type EffortCapability = {
   expiresAt?: number;
 };
 export type EffortCapture = {
+  automaticAgentRecommendation?: string;
+  unresolvedExplicitChoice?: string;
   version: 1;
   key: string;
   provider: string;
@@ -320,6 +322,8 @@ export function captureEffort(
 ): EffortCapture {
   const capability = effortCapability(identity, state);
   const key = effortKey(selection, identity);
+  const owned = preferences?.version === 1 && Array.isArray(preferences.choices) && preferences.choices.length <= 32
+    ? preferences.choices.filter(e => e?.key === key) : [];
   const matches =
     preferences?.version === 1 &&
     Array.isArray(preferences.choices) &&
@@ -337,6 +341,9 @@ export function captureEffort(
   return {
     version: 1,
     key,
+    ...(choice === "automatic" && identity.selfHosted && identity.providerId === "ollama" && owned.length === 1 &&
+      typeof owned[0].choice === "string" && owned[0].choice.length <= 32 && owned[0].choice !== "automatic"
+      ? {unresolvedExplicitChoice: owned[0].choice} : {}),
     provider: identity.providerId,
     adapter: identity.selfHosted && identity.providerId !== "ollama" ? "openai-compatible" : identity.providerId,
     model: identity.transportModelId,

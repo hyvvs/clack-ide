@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateText, jsonSchema, stepCountIs, streamText, tool } from "ai";
 import { withAnswerContinuation } from "@/modules/ai/lib/answerContinuation";
 import { invoke } from "@tauri-apps/api/core";
-import { buildConfiguredLanguageModel, buildLanguageModel } from "@/modules/ai/lib/agent";
+import { buildConfiguredLanguageModel, buildLanguageModel, runAgentStream } from "@/modules/ai/lib/agent";
+import {rememberContextRuntime, forgetContextRuntime} from "@/modules/ai/lib/contextCalibrationTrust";
+import {toolScope} from "@/modules/ai/lib/toolVerification";
+import type {ToolContext} from "@/modules/ai/tools/context";
+import {usePreferencesStore} from "@/modules/settings/preferences";
 import { endpointInferenceAdmission } from "@/modules/ai/lib/inferenceAdmission";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
 import {
@@ -114,6 +118,7 @@ function metadata(loaded?: number, requested?: number): ProbeSnapshot {
     models: [
       {
         id: profile.transportModelId,
+        digest: profile.modelRevision,
         name: null,
         chat: "supported",
         evidence: [
@@ -228,7 +233,8 @@ beforeEach(() => {
     });
   });
 });
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+const originalPreferences = usePreferencesStore.getState();
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); usePreferencesStore.setState(originalPreferences); forgetContextRuntime("ollama-endpoint"); });
 const params = {
   prompt: [
     {
@@ -267,6 +273,41 @@ async function model(
   return built;
 }
 describe("production Ollama route, B1 and runtime evidence", () => {
+  it.each(["automatic", "none", "chat-only", "stale-explicit"])("the real Agent route uses confirmed reasoning only for Automatic tools, preserving %s", async mode => {
+    const p = state.profiles[0], e = state.endpoints[0], now = Date.now();
+    p.modelRevision = "digest"; snapshot = metadata(32768,32768); p.evidence = snapshot.models[0].evidence;
+    state.inventories = [{endpointId:e.id,configurationRevision:e.configurationRevision,connected:true,observedAt:now,backend:"ollama",
+      models:[{id:p.transportModelId,name:null,chat:"supported",digest:"digest"}]}];
+    rememberContextRuntime(e.id,{epoch:"native",version:"1.2.3",configurationRevision:e.configurationRevision,at:now});
+    const scope = toolScope(p,e);
+    if (!scope) throw new Error("scope missing");
+    const base = {version:1 as const,id:"default",scope,status:"needs-attention" as const,outcome:"text-only" as const,
+      context:32768,output:512 as const,startedAt:now,completedAt:now,firstBodyAt:now,callAt:null,calls:0,validArguments:false,
+      textualIntent:true,textChars:20,finish:"stop",proof:null,retryAfter:now+86400000,
+      failure:{at:now,expiresAt:now+86400000,outcome:"text-only" as const}};
+    p.toolVerification = base;
+    p.agentToolConfigurations = [{...base,id:"confirmed",configuration:{choice:"none",wire:false},status:"verified",outcome:"native-call",
+      calls:1,validArguments:true,callAt:now,proof:{at:now,expiresAt:now+86400000},failure:undefined,
+      confirmation:{id:"first-pass",at:now,expiresAt:now+86400000}}];
+    current = state;
+    usePreferencesStore.setState({agentPermissionProfiles:{"builtin:coder":{mode:mode === "chat-only" ? "chat-only" : "full-access",categories:{}}}});
+    const selection = selfHostedSelectionId(p), identity = selfHostedTransportIdentity(selection,state);
+    if (!identity) throw new Error("identity missing");
+    const automatic = captureEffort(selection,identity,undefined,state);
+    const pending = runAgentStream({keys:EMPTY_PROVIDER_KEYS,modelId:selection,selfHostedInference:state,
+      customEndpointKeys:{"proxy-credential":"only-this-credential"},reasoning:mode === "stale-explicit" ? {...automatic,unresolvedExplicitChoice:"none"} : mode === "none" ? {...automatic,choice:"none"} : automatic,
+      toolContext:{getCwd:()=>"/fixture",getWorkspaceRoot:()=>"/fixture",getAgentId:()=>"builtin:coder",getSessionId:()=>"agent-configuration",
+        readCache:new Map()} as ToolContext,
+      uiMessages:[{id:"u",role:"user",parts:[{type:"text",text:"Say hello without tools."}]}]});
+    if (mode === "stale-explicit") {await expect(pending).rejects.toThrow(/revalidation/);expect(sent).toHaveLength(0);return;}
+    const result = await pending;
+    await result.consumeStream();
+    expect(sent).toHaveLength(1);
+    if (mode === "chat-only") expect(sent[0].body).not.toHaveProperty("think"); else expect(sent[0].body.think).toBe(false);
+    expect(automatic.choice).toBe("automatic");
+    expect(sent[0].body.model).toBe("exact:latest");
+    forgetContextRuntime(e.id);
+  });
   it("verifies a native structured probe through SDK and native HTTP without executing the tool", async () => {
     reply = () => ({ message: { role: "assistant", content: "", tool_calls: [{ function: { name: TOOL_PROBE_NAME, arguments: { key: "clack-probe-v1", count: 1 } } }] }, done_reason: "stop" });
     const built = await buildLanguageModel("ollama", EMPTY_PROVIDER_KEYS, "exact:latest", {

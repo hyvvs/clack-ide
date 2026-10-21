@@ -1,0 +1,1667 @@
+{
+  "base": "b7877ba4255343821fae5c60fec10e4da32e092f",
+  "runId": "automatic-agent-configuration-2026-10-20T23-57-15-932Z",
+  "ok": true,
+  "startedAt": 1792540645088,
+  "endedAt": 1792540669557,
+  "cloudInference": 0,
+  "toolExecutions": 0,
+  "versions": {
+    "before": {
+      "version": "0.40.5"
+    },
+    "after": {
+      "version": "0.40.5"
+    }
+  },
+  "metadata": [
+    {
+      "model": "qwen3-coder:30b",
+      "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+      "thinking": {
+        "values": [
+          false
+        ],
+        "default": false
+      },
+      "installedDefaults": "repeat_penalty                 1.05\nstop                           \"<|im_start|>\"\nstop                           \"<|im_end|>\"\nstop                           \"<|endoftext|>\"\ntemperature                    0.7\ntop_k                          20\ntop_p                          0.8"
+    },
+    {
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+      "thinking": {
+        "values": [
+          false,
+          true,
+          "medium"
+        ],
+        "default": true
+      },
+      "installedDefaults": "draft_num_predict              2\ntemperature                    1\ntop_p                          0.95"
+    }
+  ],
+  "models": [
+    {
+      "model": "qwen3-coder:30b",
+      "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+      "before": {
+        "version": 1,
+        "identity": [
+          "ollama",
+          "agent-configuration",
+          1,
+          "qwen3-coder:30b",
+          null,
+          "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+        ],
+        "status": "Unverified",
+        "tools": "Advertised / unverified",
+        "providerDefaultTools": "Advertised / unverified",
+        "vision": "Unsupported",
+        "structuredOutput": "Unverified",
+        "reasoning": {
+          "capability": {
+            "status": "supported",
+            "levels": [
+              "none"
+            ],
+            "mapping": "ollama-boolean",
+            "evidence": "Ollama native thinking contract; boolean controls are not effort levels",
+            "revision": "[\"r2-2026-10-03-v1\",1,\"[\\\"agent-configuration\\\",\\\"qwen3-coder:30b\\\",null]\",\"06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca\",\"ollama\",[\"none\"],\"ollama-boolean\"]",
+            "expiresAt": 1792540675242
+          },
+          "providerDefault": false,
+          "recommended": "None",
+          "provenance": "provider-metadata",
+          "wire": "omit"
+        },
+        "context": {
+          "recommended": 4096,
+          "advertised": 262144,
+          "provenance": "conservative-policy"
+        },
+        "output": {
+          "recommended": 614,
+          "provenance": "existing-budget-policy"
+        },
+        "fallback": "Explicit policy only",
+        "evidence": [
+          {
+            "metric": "probe.listed",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540645106,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.vision",
+            "value": false,
+            "source": "advertised",
+            "observedAt": 1792540645242,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.trainedForTools",
+            "value": true,
+            "source": "advertised",
+            "observedAt": 1792540645242,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.thinking",
+            "value": false,
+            "source": "advertised",
+            "observedAt": 1792540645242,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.thinkingControls",
+            "value": "[false]",
+            "source": "backend-reported",
+            "observedAt": 1792540645242,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.thinkingDefault",
+            "value": false,
+            "source": "backend-reported",
+            "observedAt": 1792540645242,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.runtimeContext",
+            "value": "per-request",
+            "source": "backend-reported",
+            "observedAt": 1792540645242,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.advertisedContext",
+            "value": 262144,
+            "source": "advertised",
+            "observedAt": 1792540645242,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.loaded",
+            "value": false,
+            "source": "backend-reported",
+            "observedAt": 1792540645246,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          }
+        ]
+      },
+      "startedAt": 1792540645260,
+      "after": {
+        "version": 1,
+        "identity": [
+          "ollama",
+          "agent-configuration",
+          1,
+          "qwen3-coder:30b",
+          null,
+          "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+        ],
+        "status": "Ready",
+        "tools": "Verified",
+        "providerDefaultTools": "Needs attention",
+        "vision": "Unsupported",
+        "structuredOutput": "Unverified",
+        "reasoning": {
+          "capability": {
+            "status": "supported",
+            "levels": [
+              "none"
+            ],
+            "mapping": "ollama-boolean",
+            "evidence": "Ollama native thinking contract; boolean controls are not effort levels",
+            "revision": "[\"r2-2026-10-03-v1\",1,\"[\\\"agent-configuration\\\",\\\"qwen3-coder:30b\\\",null]\",\"06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca\",\"ollama\",[\"none\"],\"ollama-boolean\"]",
+            "expiresAt": 1792540684785
+          },
+          "providerDefault": false,
+          "recommended": "None",
+          "agentRecommendation": {
+            "record": {
+              "version": 1,
+              "id": "319ce796-086e-45f0-9082-29375d0e13d1",
+              "scope": {
+                "endpointId": "agent-configuration",
+                "configurationRevision": 1,
+                "model": "qwen3-coder:30b",
+                "deployment": null,
+                "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+                "backend": "ollama",
+                "runtimeEpoch": "22416:1792540645261952400",
+                "providerVersion": "0.40.5",
+                "reasoning": "[false,\"[false]\",false]",
+                "protocol": "native-tools-v1"
+              },
+              "status": "verified",
+              "outcome": "native-call",
+              "context": 4096,
+              "output": 512,
+              "startedAt": 1792540653778,
+              "completedAt": 1792540654550,
+              "firstBodyAt": 1792540654324,
+              "callAt": 1792540654325,
+              "calls": 1,
+              "validArguments": true,
+              "textualIntent": false,
+              "textChars": 0,
+              "finish": "tool-calls",
+              "proof": {
+                "at": 1792540654550,
+                "expiresAt": 1792627054550
+              },
+              "configuration": {
+                "choice": "none",
+                "wire": false
+              },
+              "confirmation": {
+                "id": "90b9f561-d324-47dd-a513-6b823aa4582f",
+                "at": 1792540653135,
+                "expiresAt": 1792627053135
+              },
+              "retryAfter": 1792627054550
+            },
+            "configuration": {
+              "choice": "none",
+              "wire": false
+            },
+            "choice": "none"
+          },
+          "provenance": "provider-metadata",
+          "wire": "omit"
+        },
+        "context": {
+          "recommended": 4096,
+          "advertised": 262144,
+          "loaded": 4096,
+          "provenance": "conservative-policy"
+        },
+        "output": {
+          "recommended": 614,
+          "provenance": "existing-budget-policy"
+        },
+        "fallback": "Explicit policy only",
+        "evidence": [
+          {
+            "metric": "probe.listed",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540654565,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.vision",
+            "value": false,
+            "source": "advertised",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.trainedForTools",
+            "value": true,
+            "source": "advertised",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.thinking",
+            "value": false,
+            "source": "advertised",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.thinkingControls",
+            "value": "[false]",
+            "source": "backend-reported",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.thinkingDefault",
+            "value": false,
+            "source": "backend-reported",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.runtimeContext",
+            "value": "per-request",
+            "source": "backend-reported",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.advertisedContext",
+            "value": 262144,
+            "source": "advertised",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.loaded",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540654788,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.loadedContext",
+            "value": 4096,
+            "source": "backend-reported",
+            "observedAt": 1792540654788,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.runtimeAllocation",
+            "value": "[\"06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca\",15393578022,15196949052]",
+            "source": "backend-reported",
+            "observedAt": 1792540654788,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          }
+        ]
+      },
+      "profile": {
+        "id": "[\"agent-configuration\",\"qwen3-coder:30b\",null]",
+        "endpointId": "agent-configuration",
+        "transportModelId": "qwen3-coder:30b",
+        "deploymentId": null,
+        "createdAt": 1792540645106,
+        "updatedAt": 1792540654565,
+        "evidence": [
+          {
+            "metric": "probe.listed",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540654565,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.vision",
+            "value": false,
+            "source": "advertised",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.trainedForTools",
+            "value": true,
+            "source": "advertised",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.thinking",
+            "value": false,
+            "source": "advertised",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.thinkingControls",
+            "value": "[false]",
+            "source": "backend-reported",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.thinkingDefault",
+            "value": false,
+            "source": "backend-reported",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.runtimeContext",
+            "value": "per-request",
+            "source": "backend-reported",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.advertisedContext",
+            "value": 262144,
+            "source": "advertised",
+            "observedAt": 1792540654785,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.loaded",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540654788,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.loadedContext",
+            "value": 4096,
+            "source": "backend-reported",
+            "observedAt": 1792540654788,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          },
+          {
+            "metric": "probe.runtimeAllocation",
+            "value": "[\"06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca\",15393578022,15196949052]",
+            "source": "backend-reported",
+            "observedAt": 1792540654788,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "qwen3-coder:30b",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca"
+            }
+          }
+        ],
+        "recommendations": {},
+        "overrides": {},
+        "toolVerification": {
+          "version": 1,
+          "id": "f26367dd-e6c3-4960-bef3-d3ee6eb1cbc8",
+          "scope": {
+            "endpointId": "agent-configuration",
+            "configurationRevision": 1,
+            "model": "qwen3-coder:30b",
+            "deployment": null,
+            "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+            "backend": "ollama",
+            "runtimeEpoch": "22416:1792540645261952400",
+            "providerVersion": "0.40.5",
+            "reasoning": "[false,\"[false]\",false]",
+            "protocol": "native-tools-v1"
+          },
+          "status": "needs-attention",
+          "outcome": "text-only",
+          "context": 4096,
+          "output": 512,
+          "startedAt": 1792540645895,
+          "completedAt": 1792540651629,
+          "firstBodyAt": 1792540650745,
+          "callAt": null,
+          "calls": 0,
+          "validArguments": false,
+          "textualIntent": true,
+          "textChars": 128,
+          "finish": "stop",
+          "proof": null,
+          "failure": {
+            "at": 1792540651629,
+            "expiresAt": 1792627051629,
+            "outcome": "text-only"
+          },
+          "retryAfter": 1792627051629
+        },
+        "agentToolConfigurations": [
+          {
+            "version": 1,
+            "id": "319ce796-086e-45f0-9082-29375d0e13d1",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "configurationRevision": 1,
+              "model": "qwen3-coder:30b",
+              "deployment": null,
+              "digest": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+              "backend": "ollama",
+              "runtimeEpoch": "22416:1792540645261952400",
+              "providerVersion": "0.40.5",
+              "reasoning": "[false,\"[false]\",false]",
+              "protocol": "native-tools-v1"
+            },
+            "status": "verified",
+            "outcome": "native-call",
+            "context": 4096,
+            "output": 512,
+            "startedAt": 1792540653778,
+            "completedAt": 1792540654550,
+            "firstBodyAt": 1792540654324,
+            "callAt": 1792540654325,
+            "calls": 1,
+            "validArguments": true,
+            "textualIntent": false,
+            "textChars": 0,
+            "finish": "tool-calls",
+            "proof": {
+              "at": 1792540654550,
+              "expiresAt": 1792627054550
+            },
+            "configuration": {
+              "choice": "none",
+              "wire": false
+            },
+            "confirmation": {
+              "id": "90b9f561-d324-47dd-a513-6b823aa4582f",
+              "at": 1792540653135,
+              "expiresAt": 1792627053135
+            },
+            "retryAfter": 1792627054550
+          }
+        ],
+        "modelRevision": "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca",
+        "backend": "ollama"
+      },
+      "effective": {
+        "ollama": {
+          "think": false
+        }
+      },
+      "cachedNoInference": true,
+      "endedAt": 1792540655021
+    },
+    {
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+      "before": {
+        "version": 1,
+        "identity": [
+          "ollama",
+          "agent-configuration",
+          1,
+          "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+          null,
+          "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+        ],
+        "status": "Unverified",
+        "tools": "Advertised / unverified",
+        "providerDefaultTools": "Advertised / unverified",
+        "vision": "Unsupported",
+        "structuredOutput": "Unverified",
+        "reasoning": {
+          "capability": {
+            "status": "supported",
+            "levels": [
+              "none",
+              "on",
+              "medium"
+            ],
+            "mapping": "ollama-mixed",
+            "ollamaControls": {
+              "none": false,
+              "on": true,
+              "medium": "medium"
+            },
+            "evidence": "Ollama native thinking contract; boolean controls are not effort levels",
+            "revision": "[\"r2-2026-10-03-v1\",1,\"[\\\"agent-configuration\\\",\\\"nemotron-3.5-lightning:30b-a3b-q4_K_M\\\",null]\",\"e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2\",\"ollama\",[\"none\",\"on\",\"medium\"],\"ollama-mixed\",{\"none\":false,\"on\":true,\"medium\":\"medium\"}]",
+            "expiresAt": 1792540685173
+          },
+          "providerDefault": true,
+          "recommended": "On",
+          "provenance": "provider-metadata",
+          "wire": "omit"
+        },
+        "context": {
+          "recommended": 4096,
+          "advertised": 1048576,
+          "provenance": "conservative-policy"
+        },
+        "output": {
+          "recommended": 614,
+          "provenance": "existing-budget-policy"
+        },
+        "fallback": "Explicit policy only",
+        "evidence": [
+          {
+            "metric": "probe.listed",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540655022,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.vision",
+            "value": false,
+            "source": "advertised",
+            "observedAt": 1792540655173,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.trainedForTools",
+            "value": true,
+            "source": "advertised",
+            "observedAt": 1792540655173,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.thinking",
+            "value": true,
+            "source": "advertised",
+            "observedAt": 1792540655173,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.thinkingControls",
+            "value": "[false,true,\"medium\"]",
+            "source": "backend-reported",
+            "observedAt": 1792540655173,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.thinkingDefault",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540655173,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.runtimeContext",
+            "value": "per-request",
+            "source": "backend-reported",
+            "observedAt": 1792540655173,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.advertisedContext",
+            "value": 1048576,
+            "source": "advertised",
+            "observedAt": 1792540655173,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.loaded",
+            "value": false,
+            "source": "backend-reported",
+            "observedAt": 1792540655178,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          }
+        ]
+      },
+      "startedAt": 1792540655187,
+      "after": {
+        "version": 1,
+        "identity": [
+          "ollama",
+          "agent-configuration",
+          1,
+          "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+          null,
+          "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+        ],
+        "status": "Ready",
+        "tools": "Verified",
+        "providerDefaultTools": "Verified",
+        "vision": "Unsupported",
+        "structuredOutput": "Unverified",
+        "reasoning": {
+          "capability": {
+            "status": "supported",
+            "levels": [
+              "none",
+              "on",
+              "medium"
+            ],
+            "mapping": "ollama-mixed",
+            "ollamaControls": {
+              "none": false,
+              "on": true,
+              "medium": "medium"
+            },
+            "evidence": "Ollama native thinking contract; boolean controls are not effort levels",
+            "revision": "[\"r2-2026-10-03-v1\",1,\"[\\\"agent-configuration\\\",\\\"nemotron-3.5-lightning:30b-a3b-q4_K_M\\\",null]\",\"e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2\",\"ollama\",[\"none\",\"on\",\"medium\"],\"ollama-mixed\",{\"none\":false,\"on\":true,\"medium\":\"medium\"}]",
+            "expiresAt": 1792540699386
+          },
+          "providerDefault": true,
+          "recommended": "On",
+          "agentRecommendation": {
+            "record": {
+              "version": 1,
+              "id": "af61a740-5b90-480a-b967-13fa4206593b",
+              "scope": {
+                "endpointId": "agent-configuration",
+                "configurationRevision": 1,
+                "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+                "deployment": null,
+                "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+                "backend": "ollama",
+                "runtimeEpoch": "22416:1792540645261952400",
+                "providerVersion": "0.40.5",
+                "reasoning": "[true,\"[false,true,\\\"medium\\\"]\",true]",
+                "protocol": "native-tools-v1"
+              },
+              "status": "verified",
+              "outcome": "native-call",
+              "context": 4096,
+              "output": 512,
+              "startedAt": 1792540655775,
+              "completedAt": 1792540669273,
+              "firstBodyAt": 1792540667691,
+              "callAt": 1792540668894,
+              "calls": 1,
+              "validArguments": true,
+              "textualIntent": false,
+              "textChars": 1,
+              "finish": "tool-calls",
+              "proof": {
+                "at": 1792540669273,
+                "expiresAt": 1792627069273
+              },
+              "retryAfter": 1792627069273
+            },
+            "choice": "automatic"
+          },
+          "provenance": "provider-metadata",
+          "wire": "omit"
+        },
+        "context": {
+          "recommended": 4096,
+          "advertised": 1048576,
+          "loaded": 4096,
+          "provenance": "conservative-policy"
+        },
+        "output": {
+          "recommended": 614,
+          "provenance": "existing-budget-policy"
+        },
+        "fallback": "Explicit policy only",
+        "evidence": [
+          {
+            "metric": "probe.listed",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540669289,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.vision",
+            "value": false,
+            "source": "advertised",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.trainedForTools",
+            "value": true,
+            "source": "advertised",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.thinking",
+            "value": true,
+            "source": "advertised",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.thinkingControls",
+            "value": "[false,true,\"medium\"]",
+            "source": "backend-reported",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.thinkingDefault",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.runtimeContext",
+            "value": "per-request",
+            "source": "backend-reported",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.advertisedContext",
+            "value": 1048576,
+            "source": "advertised",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.loaded",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540669403,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.loadedContext",
+            "value": 4096,
+            "source": "backend-reported",
+            "observedAt": 1792540669403,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.runtimeAllocation",
+            "value": "[\"e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2\",15421983946,14956196002]",
+            "source": "backend-reported",
+            "observedAt": 1792540669403,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          }
+        ]
+      },
+      "profile": {
+        "id": "[\"agent-configuration\",\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",null]",
+        "endpointId": "agent-configuration",
+        "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+        "deploymentId": null,
+        "createdAt": 1792540645106,
+        "updatedAt": 1792540669289,
+        "evidence": [
+          {
+            "metric": "probe.listed",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540669289,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.vision",
+            "value": false,
+            "source": "advertised",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.trainedForTools",
+            "value": true,
+            "source": "advertised",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.thinking",
+            "value": true,
+            "source": "advertised",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.thinkingControls",
+            "value": "[false,true,\"medium\"]",
+            "source": "backend-reported",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.thinkingDefault",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.runtimeContext",
+            "value": "per-request",
+            "source": "backend-reported",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.advertisedContext",
+            "value": 1048576,
+            "source": "advertised",
+            "observedAt": 1792540669386,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.loaded",
+            "value": true,
+            "source": "backend-reported",
+            "observedAt": 1792540669403,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.loadedContext",
+            "value": 4096,
+            "source": "backend-reported",
+            "observedAt": 1792540669403,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          },
+          {
+            "metric": "probe.runtimeAllocation",
+            "value": "[\"e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2\",15421983946,14956196002]",
+            "source": "backend-reported",
+            "observedAt": 1792540669403,
+            "confidence": "reported",
+            "scope": {
+              "endpointId": "agent-configuration",
+              "transportModelId": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+              "deploymentId": null,
+              "configurationRevision": 1,
+              "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2"
+            }
+          }
+        ],
+        "recommendations": {},
+        "overrides": {},
+        "toolVerification": {
+          "version": 1,
+          "id": "af61a740-5b90-480a-b967-13fa4206593b",
+          "scope": {
+            "endpointId": "agent-configuration",
+            "configurationRevision": 1,
+            "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+            "deployment": null,
+            "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+            "backend": "ollama",
+            "runtimeEpoch": "22416:1792540645261952400",
+            "providerVersion": "0.40.5",
+            "reasoning": "[true,\"[false,true,\\\"medium\\\"]\",true]",
+            "protocol": "native-tools-v1"
+          },
+          "status": "verified",
+          "outcome": "native-call",
+          "context": 4096,
+          "output": 512,
+          "startedAt": 1792540655775,
+          "completedAt": 1792540669273,
+          "firstBodyAt": 1792540667691,
+          "callAt": 1792540668894,
+          "calls": 1,
+          "validArguments": true,
+          "textualIntent": false,
+          "textChars": 1,
+          "finish": "tool-calls",
+          "proof": {
+            "at": 1792540669273,
+            "expiresAt": 1792627069273
+          },
+          "retryAfter": 1792627069273
+        },
+        "modelRevision": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+        "backend": "ollama"
+      },
+      "effective": {},
+      "cachedNoInference": true,
+      "endedAt": 1792540669557
+    }
+  ],
+  "responses": [
+    {
+      "request": {
+        "at": 1792540646327,
+        "body": {
+          "messages": [
+            {
+              "content": "Call get_probe_value exactly once with key \"clack-probe-v1\" and count 1. Use the native tool interface. Do not answer in text or simulate a tool call.",
+              "role": "user"
+            }
+          ],
+          "model": "qwen3-coder:30b",
+          "options": {
+            "num_predict": 512
+          },
+          "stream": true,
+          "tools": [
+            {
+              "function": {
+                "description": "Return a deterministic compatibility probe value. No side effects.",
+                "name": "get_probe_value",
+                "parameters": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": {
+                      "const": 1,
+                      "type": "number"
+                    },
+                    "key": {
+                      "const": "clack-probe-v1",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "count"
+                  ],
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "requestId": "inference-1"
+      },
+      "rawResponse": "{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:34.825104263Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003cfunction\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:34.841748044Z\",\"message\":{\"role\":\"assistant\",\"content\":\"=get\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:34.855040279Z\",\"message\":{\"role\":\"assistant\",\"content\":\"_probe\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:34.868473947Z\",\"message\":{\"role\":\"assistant\",\"content\":\"_value\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:34.881581067Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:34.908483564Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003cparameter\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:34.921624155Z\",\"message\":{\"role\":\"assistant\",\"content\":\"=key\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:34.935121415Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:34.948529593Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\ncl\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:34.961955911Z\",\"message\":{\"role\":\"assistant\",\"content\":\"ack\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:34.975389589Z\",\"message\":{\"role\":\"assistant\",\"content\":\"-pro\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:34.988511009Z\",\"message\":{\"role\":\"assistant\",\"content\":\"be\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.00202623Z\",\"message\":{\"role\":\"assistant\",\"content\":\"-v\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.015528829Z\",\"message\":{\"role\":\"assistant\",\"content\":\"1\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.043088903Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003c/\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.056499621Z\",\"message\":{\"role\":\"assistant\",\"content\":\"parameter\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.069890237Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.096570618Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003cparameter\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.109987146Z\",\"message\":{\"role\":\"assistant\",\"content\":\"=count\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.123557758Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.136990005Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n1\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.163822841Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003c/\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.17692847Z\",\"message\":{\"role\":\"assistant\",\"content\":\"parameter\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.190472581Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.204003611Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003c/\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.218052735Z\",\"message\":{\"role\":\"assistant\",\"content\":\"function\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.231631367Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.245029294Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\\u003c/tool_call\\u003e\"},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:35.258532003Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":4806497818,\"load_duration\":3921187871,\"prompt_eval_count\":342,\"prompt_eval_cached_count\":0,\"prompt_eval_duration\":432037000,\"eval_count\":34,\"eval_duration\":450495000}\n",
+      "sha256": "0ad8dda58cb71ede063753218c9c8887e41b5979ebd1326dadbbf7f2591255ad",
+      "calls": [],
+      "text": "<function=get_probe_value>\n<parameter=key>\nclack-probe-v1\n</parameter>\n<parameter=count>\n1\n</parameter>\n</function>\n</tool_call>",
+      "final": {
+        "model": "qwen3-coder:30b",
+        "created_at": "2026-10-20T23:57:35.258532003Z",
+        "message": {
+          "role": "assistant",
+          "content": ""
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 4806497818,
+        "load_duration": 3921187871,
+        "prompt_eval_count": 342,
+        "prompt_eval_cached_count": 0,
+        "prompt_eval_duration": 432037000,
+        "eval_count": 34,
+        "eval_duration": 450495000
+      }
+    },
+    {
+      "request": {
+        "at": 1792540652279,
+        "body": {
+          "messages": [
+            {
+              "content": "Call get_probe_value exactly once with key \"clack-probe-v1\" and count 1. Use the native tool interface. Do not answer in text or simulate a tool call.",
+              "role": "user"
+            }
+          ],
+          "model": "qwen3-coder:30b",
+          "options": {
+            "num_predict": 512
+          },
+          "stream": true,
+          "think": false,
+          "tools": [
+            {
+              "function": {
+                "description": "Return a deterministic compatibility probe value. No side effects.",
+                "name": "get_probe_value",
+                "parameters": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": {
+                      "const": 1,
+                      "type": "number"
+                    },
+                    "key": {
+                      "const": "clack-probe-v1",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "count"
+                  ],
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "requestId": "inference-2"
+      },
+      "rawResponse": "{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:36.876063219Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"call_lkrqrwya\",\"function\":{\"index\":0,\"name\":\"get_probe_value\",\"arguments\":{\"key\":\"clack-probe-v1\",\"count\":1}}}]},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:36.889514227Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":496587820,\"load_duration\":1263633,\"prompt_eval_count\":342,\"prompt_eval_cached_count\":341,\"prompt_eval_duration\":13845000,\"eval_count\":36,\"eval_duration\":478530000}\n",
+      "sha256": "f3ebda7f510757c443e2f9507c428283d6f7758b12486fe0304a14612caf27a3",
+      "calls": [
+        {
+          "id": "call_lkrqrwya",
+          "function": {
+            "index": 0,
+            "name": "get_probe_value",
+            "arguments": {
+              "key": "clack-probe-v1",
+              "count": 1
+            }
+          }
+        }
+      ],
+      "text": "",
+      "final": {
+        "model": "qwen3-coder:30b",
+        "created_at": "2026-10-20T23:57:36.889514227Z",
+        "message": {
+          "role": "assistant",
+          "content": ""
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 496587820,
+        "load_duration": 1263633,
+        "prompt_eval_count": 342,
+        "prompt_eval_cached_count": 341,
+        "prompt_eval_duration": 13845000,
+        "eval_count": 36,
+        "eval_duration": 478530000
+      }
+    },
+    {
+      "request": {
+        "at": 1792540653811,
+        "body": {
+          "messages": [
+            {
+              "content": "Call get_probe_value exactly once with key \"clack-probe-v1\" and count 1. Use the native tool interface. Do not answer in text or simulate a tool call.",
+              "role": "user"
+            }
+          ],
+          "model": "qwen3-coder:30b",
+          "options": {
+            "num_predict": 512
+          },
+          "stream": true,
+          "think": false,
+          "tools": [
+            {
+              "function": {
+                "description": "Return a deterministic compatibility probe value. No side effects.",
+                "name": "get_probe_value",
+                "parameters": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": {
+                      "const": 1,
+                      "type": "number"
+                    },
+                    "key": {
+                      "const": "clack-probe-v1",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "count"
+                  ],
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "requestId": "inference-3"
+      },
+      "rawResponse": "{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:38.406957117Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"call_l3ndpo84\",\"function\":{\"index\":0,\"name\":\"get_probe_value\",\"arguments\":{\"key\":\"clack-probe-v1\",\"count\":1}}}]},\"done\":false}\n{\"model\":\"qwen3-coder:30b\",\"created_at\":\"2026-10-20T23:57:38.420555319Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":491817794,\"load_duration\":1183761,\"prompt_eval_count\":342,\"prompt_eval_cached_count\":341,\"prompt_eval_duration\":13447000,\"eval_count\":36,\"eval_duration\":474456000}\n",
+      "sha256": "ab4df6a1772c05e3a9b4da491e4f3d0e71cb6c58ed01c5656a27b873cecec472",
+      "calls": [
+        {
+          "id": "call_l3ndpo84",
+          "function": {
+            "index": 0,
+            "name": "get_probe_value",
+            "arguments": {
+              "key": "clack-probe-v1",
+              "count": 1
+            }
+          }
+        }
+      ],
+      "text": "",
+      "final": {
+        "model": "qwen3-coder:30b",
+        "created_at": "2026-10-20T23:57:38.420555319Z",
+        "message": {
+          "role": "assistant",
+          "content": ""
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 491817794,
+        "load_duration": 1183761,
+        "prompt_eval_count": 342,
+        "prompt_eval_cached_count": 341,
+        "prompt_eval_duration": 13447000,
+        "eval_count": 36,
+        "eval_duration": 474456000
+      }
+    },
+    {
+      "request": {
+        "at": 1792540655798,
+        "body": {
+          "messages": [
+            {
+              "content": "Call get_probe_value exactly once with key \"clack-probe-v1\" and count 1. Use the native tool interface. Do not answer in text or simulate a tool call.",
+              "role": "user"
+            }
+          ],
+          "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+          "options": {
+            "num_predict": 512
+          },
+          "stream": true,
+          "tools": [
+            {
+              "function": {
+                "description": "Return a deterministic compatibility probe value. No side effects.",
+                "name": "get_probe_value",
+                "parameters": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": {
+                      "const": 1,
+                      "type": "number"
+                    },
+                    "key": {
+                      "const": "clack-probe-v1",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "count"
+                  ],
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "requestId": "inference-4"
+      },
+      "rawResponse": "{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.773595914Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"We\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.823824015Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" need\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.823836065Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" to\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.823889767Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" call\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.867718864Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" get\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.905294202Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"_pro\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.905306463Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"be\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.905351584Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"_value\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.944636205Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" with\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.944649786Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" key\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.944707287Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" \\\"\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.985568189Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"cl\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.985579459Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"ack\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:51.985625881Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"-pro\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.02524985Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"be\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.025273731Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"-v\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.025319482Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"1\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.062250643Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"\\\"\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.062259743Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" and\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.062302614Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" count\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.101025621Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" 1\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.101030601Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\".\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.145662137Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" Must\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.183821859Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" use\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.18383054Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" the\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.183887351Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" native\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.22191897Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" tool\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.22192932Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" interface\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.221989202Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\",\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.261497828Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" not\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.261507568Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" answer\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.299715972Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" in\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.299726082Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" text\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.299767043Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\".\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.338409037Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" So\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.338418517Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" we\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.338459408Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" should\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.377977415Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" output\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.377986535Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" the\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.417261546Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" function\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.417278436Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\" call\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.417313627Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\".\"},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:52.975323171Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"call_c4n8i3wq\",\"function\":{\"index\":0,\"name\":\"get_probe_value\",\"arguments\":{\"key\":\"clack-probe-v1\",\"count\":1}}}]},\"done\":false}\n{\"model\":\"nemotron-3.5-lightning:30b-a3b-q4_K_M\",\"created_at\":\"2026-10-20T23:57:53.012176819Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\\n\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":13116232351,\"load_duration\":10786309402,\"prompt_eval_count\":335,\"prompt_eval_cached_count\":0,\"prompt_eval_duration\":1087113000,\"eval_count\":85,\"eval_duration\":1238455000}\n",
+      "sha256": "969336732e4a50579feb202b27b2bf07c1f9fb54a786ff1660d8f233b078eb64",
+      "calls": [
+        {
+          "id": "call_c4n8i3wq",
+          "function": {
+            "index": 0,
+            "name": "get_probe_value",
+            "arguments": {
+              "key": "clack-probe-v1",
+              "count": 1
+            }
+          }
+        }
+      ],
+      "text": "\n",
+      "final": {
+        "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+        "created_at": "2026-10-20T23:57:53.012176819Z",
+        "message": {
+          "role": "assistant",
+          "content": "\n"
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 13116232351,
+        "load_duration": 10786309402,
+        "prompt_eval_count": 335,
+        "prompt_eval_cached_count": 0,
+        "prompt_eval_duration": 1087113000,
+        "eval_count": 85,
+        "eval_duration": 1238455000
+      }
+    }
+  ]
+}

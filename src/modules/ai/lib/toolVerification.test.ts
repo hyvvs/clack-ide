@@ -242,10 +242,11 @@ describe("canonical native tool evidence", () => {
     await f.run();
     expect(f.deps.request).toHaveBeenCalledTimes(2);
   });
-  it("tool success alone cannot claim calibrated Agent readiness", async () => {
+  it("verified tools can use the conservative context policy without claiming a calibrated context", async () => {
     const f = fixture();
     await f.run();
-    expect(modelOnboarding(f.state(), f.get())?.status).toBe("Unverified");
+    expect(modelOnboarding(f.state(), f.get())?.status).toBe("Ready");
+    expect(modelOnboarding(f.state(), f.get())?.context.verified).toBeUndefined();
   });
   it("one text response needs attention, leaves Chat Only selectable and is not automatically retried", async () => {
     const f = fixture();

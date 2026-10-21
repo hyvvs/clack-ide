@@ -8,6 +8,7 @@ import { createConversationProfile } from "@/modules/ai/lib/sessions";
 import { selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
 import { captureEffort, effortLabel } from "@/modules/ai/lib/reasoningEffort";
 import { MUSE_THINKING_VALUES, ollamaEffortFixture } from "@/modules/ai/lib/reasoningEffort.fixture";
+import {sessionEffort} from "@/modules/ai/store/reasoningEffort";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
 vi.mock("@/components/ui/popover", () => {
@@ -33,10 +34,19 @@ function render(values: unknown = MUSE_THINKING_VALUES) {
   const selection = selfHostedSelectionId(fixture.profile);
   useChatStore.setState({ activeSessionId: "muse", sessions: [{ id: "muse", title: "Fixture", createdAt: 1, updatedAt: 1, profileVersion: 1, profile: createConversationProfile({ agentId: "builtin:coder", modelId: selection, workspaceRoot: null }) }] });
   usePreferencesStore.setState({ selfHostedInference: fixture.state });
-  return { html: renderToStaticMarkup(<EffortControl sessionId="muse" />), captured: captureEffort(selection, fixture.identity, undefined, fixture.state) };
+  return { fixture, html: renderToStaticMarkup(<EffortControl sessionId="muse" />), captured: captureEffort(selection, fixture.identity, undefined, fixture.state) };
 }
 
 describe("existing reasoning selector from normalized Ollama metadata", () => {
+  it("shows the saved explicit choice rather than Automatic when its metadata needs revalidation", () => {
+    const {fixture} = render([false,true]);
+    const session = useChatStore.getState().sessions[0], captured = sessionEffort(session);
+    useChatStore.setState({sessions:[{...session,effortPreferences:{version:1,choices:[{key:captured.key,choice:"none",revision:captured.capability.revision}]}}]});
+    fixture.profile.evidence.forEach(e=>{e.observedAt=Date.now()-30_001;});
+    const html=renderToStaticMarkup(<EffortControl sessionId="muse" />);
+    expect(html).toContain("Effort: None");
+    expect(html).toContain("requires revalidation; no Automatic substitution");
+  });
   it("shows Automatic, None, Low, Medium, High and Maximum without UI changes", () => {
     const { html, captured } = render();
     expect(captured.capability.levels).toEqual(["none", "low", "medium", "high", "max"]);

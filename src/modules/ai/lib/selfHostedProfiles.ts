@@ -165,7 +165,9 @@ const profileSchema = z.object({
   overrides: z.partialRecord(field, manual),
   calibration: calibrationSchema.optional(),
   contextCalibration: contextCalibrationSchema.optional(),
-  toolVerification: toolVerificationSchema.optional(),
+  toolVerification: toolVerificationSchema.refine(r => !r.configuration).optional(),
+  agentToolConfigurations: z.array(toolVerificationSchema).max(2).refine(records =>
+    records.every(r => !!r.configuration) && new Set(records.map(r => JSON.stringify(r.configuration?.wire))).size === records.length).optional(),
   saved: z
     .object({ label: z.string().trim().min(1).max(1024).optional() })
     .optional(),
@@ -220,15 +222,18 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
     endpoints.push(endpoint);
   }
   for (const entry of envelope.data.profiles) {
+    const rawConfigurations = z.object({ agentToolConfigurations: z.unknown().optional() }).safeParse(entry);
+    const invalidConfigurations = rawConfigurations.success && rawConfigurations.data.agentToolConfigurations !== undefined &&
+      !profileSchema.shape.agentToolConfigurations.safeParse(rawConfigurations.data.agentToolConfigurations).success;
     const rawTool = z.object({ toolVerification: z.unknown().optional() }).safeParse(entry);
-    const invalidTool = rawTool.success && rawTool.data.toolVerification !== undefined && !toolVerificationSchema.safeParse(rawTool.data.toolVerification).success;
+    const invalidTool = rawTool.success && rawTool.data.toolVerification !== undefined && !profileSchema.shape.toolVerification.safeParse(rawTool.data.toolVerification).success;
     const rawContext = z.object({ contextCalibration: z.unknown().optional() }).safeParse(entry);
     const invalidContext = rawContext.success && rawContext.data.contextCalibration !== undefined && !contextCalibrationSchema.safeParse(rawContext.data.contextCalibration).success;
     const rawCalibration = z.object({ calibration: z.unknown().optional() }).safeParse(entry);
     const invalidCalibration = rawCalibration.success && rawCalibration.data.calibration !== undefined &&
       !calibrationSchema.safeParse(rawCalibration.data.calibration).success;
-    const parsed = profileSchema.safeParse(invalidCalibration || invalidContext || invalidTool
-      ? { ...(entry as Record<string, unknown>), ...(invalidTool ? { toolVerification: undefined } : {}), ...(invalidCalibration ? { calibration: undefined } : {}), ...(invalidContext ? { contextCalibration: undefined } : {}) } : entry);
+    const parsed = profileSchema.safeParse(invalidCalibration || invalidContext || invalidTool || invalidConfigurations
+      ? { ...(entry as Record<string, unknown>), ...(invalidConfigurations ? {agentToolConfigurations: undefined} : {}), ...(invalidTool ? { toolVerification: undefined } : {}), ...(invalidCalibration ? { calibration: undefined } : {}), ...(invalidContext ? { contextCalibration: undefined } : {}) } : entry);
     if (!parsed.success) continue;
     const profile = parsed.data;
     if (invalidContext) delete profile.recommendations.workingContext;

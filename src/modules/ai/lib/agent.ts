@@ -59,7 +59,7 @@ import {
   type InferenceAdmission,
 } from "@/modules/ai/lib/inferenceAdmission";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
-import { effectiveProfileValue } from "@/modules/ai/lib/selfHostedProfiles";
+import { effectiveProfileValue, resolveSelfHostedSelection } from "@/modules/ai/lib/selfHostedProfiles";
 import { createCalibrationCapture, type CalibrationCaptureOptions } from "@/modules/ai/lib/calibrationCapture";
 import { recordPassiveCalibration } from "@/modules/ai/lib/inferenceCalibration";
 import {
@@ -784,11 +784,24 @@ export async function runAgentStream(opts: RunAgentOptions) {
   inferenceScope.validateEvidence = opts.validateRouting ?? inferenceScope.validateEvidence;
   inferenceScope.validateFallback = opts.validateRouting;
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
+  if (opts.reasoning?.unresolvedExplicitChoice)
+    throw new Error("The saved explicit reasoning choice needs revalidation. Refresh model metadata or select the choice again. Automatic Agent recovery was not used.");
   if (opts.selfHostedInference && !opts.recovery && !opts.logicalContinuation && !opts.toolContext.isPeerReplyOnly?.() &&
     (!opts.reasoning || opts.reasoning.choice === "automatic") &&
     resolveCurrentAgentPermission("read_file", {}, opts.toolContext).source !== "chat-only") {
     const { ensureSelectedTools } = await import("@/modules/ai/lib/toolVerificationRuntime");
     opts.selfHostedInference = await ensureSelectedTools(opts.selfHostedInference, modelId, opts.abortSignal ?? new AbortController().signal, inferenceScope);
+  }
+  if (opts.selfHostedInference && (!opts.reasoning || opts.reasoning.choice === "automatic") &&
+    !opts.toolContext.isPeerReplyOnly?.() && resolveCurrentAgentPermission("read_file", {}, opts.toolContext).source !== "chat-only") {
+    const target = resolveSelfHostedSelection(opts.selfHostedInference, modelId);
+    if (target.status === "available" && (target.endpoint.backendHint ?? target.endpoint.detectedBackend) === "ollama" && target.profile.modelRevision) {
+      const {applyAgentRecommendation} = await import("@/modules/ai/lib/agentConfiguration");
+      const {modelOnboarding} = await import("@/modules/ai/lib/modelOnboarding");
+      const view = modelOnboarding(opts.selfHostedInference, target.profile);
+      opts.reasoning = applyAgentRecommendation(opts.selfHostedInference, target.profile,
+        typeof view?.context.override === "number" ? view.context.override : view?.context.recommended, opts.reasoning);
+    }
   }
   const baseModel = await buildConfiguredLanguageModel(modelId, opts.keys, {
     reasoning: opts.reasoning,

@@ -26,7 +26,7 @@ const mocks = new Map([
   ["src/modules/ai/lib/contextRuntimeClient", `
     import {rememberContextRuntime} from "/src/modules/ai/lib/contextCalibrationTrust.ts";
     export async function inspectContextRuntime(endpoint){
-      rememberContextRuntime(endpoint.id,{epoch:"browser-fixture",version:"fixture",configurationRevision:endpoint.configurationRevision,at:Date.now()});
+      rememberContextRuntime(endpoint.id,{epoch:"browser-fixture",version:window.runtimeVersion??"fixture",configurationRevision:endpoint.configurationRevision,at:Date.now()});
     }
   `],
   ["src/modules/ai/lib/selfHostedProbe", `
@@ -69,6 +69,7 @@ const entry = `
  import {useContextCalibrationJobs} from "/src/modules/ai/store/contextCalibrationJobs.ts";
  import {useToolVerificationJobs} from "/src/modules/ai/store/toolVerificationJobs.ts";
  import {commitToolVerification,toolScope} from "/src/modules/ai/lib/toolVerification.ts";
+ import {applyAgentRecommendation,toolEffortCapture} from "/src/modules/ai/lib/agentConfiguration.ts";
  import "/src/styles/globals.css";
  window.probes=[];window.digest="revision-a";window.offline=false;
  window.calibrationJobs=useContextCalibrationJobs;
@@ -81,13 +82,29 @@ const entry = `
      finish:status==='verified'?'tool-calls':'stop',proof:status==='verified'?{at:now,expiresAt:now+86400000}:null,retryAfter:now+86400000};
    window.prefs.setState({selfHostedInference:commitToolVerification(state,p.id,record,p.toolVerification?.id)});
  };
+ window.recoverTools=()=>{
+   window.verifyTools('incompatible');
+   const state=window.prefs.getState().selfHostedInference,p=state.profiles[0],now=Date.now();
+   const record={...p.toolVerification,id:'confirmed-alternative',status:'verified',outcome:'native-call',
+     configuration:{choice:'none',wire:false},calls:1,validArguments:true,callAt:now,finish:'tool-calls',textChars:0,
+     proof:{at:now,expiresAt:now+86400000},confirmation:{id:'first-alternative-pass',at:now-1,expiresAt:now+86400000}};
+   delete record.failure;
+   window.prefs.setState({selfHostedInference:commitToolVerification(state,p.id,record)});
+ };
+ window.checkExplicit=()=>{
+   const state=window.prefs.getState().selfHostedInference,p=state.profiles[0];
+   return ['none','medium'].every(choice=>{
+     const capture=toolEffortCapture(state,p,{choice,wire:choice==='none'?false:choice});
+     return applyAgentRecommendation(state,p,49152,capture)===capture;
+   });
+ };
  window.verifyContext=()=>{
    let state=window.prefs.getState().selfHostedInference;
    const profile=state.profiles[0],endpoint=state.endpoints[0],now=Date.now();
    profile.evidence=profile.evidence.filter(e=>!['probe.loaded','probe.loadedContext','probe.runtimeAllocation'].includes(e.metric));
    for(const [metric,value] of Object.entries({loaded:true,loadedContext:49152,runtimeAllocation:"fixture-allocation"}))
      profile.evidence.push(profileEvidence(state,profile.id,'probe.'+metric,value,'backend-reported',now,'reported'));
-   rememberContextRuntime(endpoint.id,{epoch:"browser-fixture",version:"fixture",configurationRevision:endpoint.configurationRevision,at:now});
+   rememberContextRuntime(endpoint.id,{epoch:"browser-fixture",version:window.runtimeVersion??"fixture",configurationRevision:endpoint.configurationRevision,at:now});
    const record={version:1,id:'browser-proof',scope:{endpointId:endpoint.id,configurationRevision:endpoint.configurationRevision,
      model:profile.transportModelId,deployment:null,digest:profile.modelRevision,backend:'ollama',runtimeEpoch:'browser-fixture',providerVersion:'fixture',
      reasoning:contextReasoningIdentity(profile,endpoint)},status:'verified',highest:49152,failedNext:null,failure:null,allocation:'fixture-allocation',
@@ -150,7 +167,7 @@ try {
   await page.evaluate(()=>window.verifyContext());
   await settings.getByText("Automatic (49,152 tokens) / Verified",{exact:true}).waitFor();
   await settings.getByText("Context: Verified on this server / 49,152 recommended",{exact:true}).waitFor();
-  await settings.getByText("Advertised / unverified",{exact:true}).waitFor();
+  await settings.getByText("Advertised / unverified",{exact:true}).first().waitFor();
   await page.evaluate(()=>{
     const state=window.prefs.getState().selfHostedInference;
     window.prefs.setState({selfHostedInference:{...state,profiles:state.profiles.map((p,i)=>i? p : {...p,contextCalibration:{...p.contextCalibration,expiresAt:0}})}});
@@ -173,6 +190,18 @@ try {
   await settings.getByRole('button',{name:'Cancel tool verification',exact:true}).click();
   assert.equal(await page.evaluate(()=>Object.values(window.toolJobs.getState().jobs)[0].controller.signal.aborted),true);
   await page.evaluate(()=>{window.toolJobs.setState({jobs:{}});window.verifyTools();});
+  await page.evaluate(()=>window.recoverTools());
+  await settings.getByText('Tools: Verified',{exact:true}).waitFor();
+  await settings.getByRole('status').getByText('Ready',{exact:true}).waitFor();
+  await settings.getByText('Automatic / Recommended',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>window.checkExplicit()),true);
+  await settings.getByText('Capability details',{exact:true}).click();
+  await settings.getByText('Confirmed native tool calls / supported explicit control',{exact:true}).waitFor();
+  assert.equal(await settings.getByText('Needs attention',{exact:true}).count(),1);
+  await page.evaluate(()=>{window.runtimeVersion='upgraded';window.verifyContext();});
+  await settings.getByText('Tools: Stale',{exact:true}).waitFor();
+  await page.evaluate(()=>{window.runtimeVersion='fixture';window.verifyContext();window.recoverTools();});
+  await settings.getByText('Tools: Verified',{exact:true}).waitFor();
   for(const theme of ["dark","light"]){
     await page.evaluate(theme=>document.documentElement.className=theme,theme);
     for(const width of [1280,390,320]){
@@ -196,6 +225,6 @@ try {
   await settings.getByText('Tools: Verified',{exact:true}).waitFor();
   await settings.getByText('Ready',{exact:true}).waitFor();
   assert.deepEqual(errors,[]);
-  await writeFile(path.join(output,"result.json"),JSON.stringify({passed:true,toolVerification:["advertised","verified","ready","needs-attention-chat-only-available","verifying","cancel"],contextVerification:["conservative","verified-49152","expired-stale","tool-evidence-independent"],widths:[1280,390,320],themes:["dark","light"],cssZoom:2,errors,inference:0,nativeGUI:false},null,2));
-  console.log("Onboarding browser fixture passed: context preserved, tools verified/Ready, needs attention/Chat Only guidance, cancel, digest withdrawal/reverification, offline/return, keyboard, 320px, light/dark, 200% CSS scaling. No native GUI or inference.");
+  await writeFile(path.join(output,"result.json"),JSON.stringify({passed:true,toolVerification:["advertised","verified-default","ready","needs-attention-chat-only-available","verifying","cancel","confirmed-automatic-recovery","explicit-control-preservation","provider-default-provenance","server-version-withdrawal"],contextVerification:["conservative","verified-49152","expired-stale","tool-evidence-independent"],widths:[1280,390,320],themes:["dark","light"],cssZoom:2,errors,inference:0,nativeGUI:false},null,2));
+  console.log("Onboarding browser fixture passed: default and recovered Automatic, explicit controls, provenance, stale version/digest, offline, cancel, keyboard, 320/390/1280px, light/dark, 200% CSS scaling. No native GUI or inference.");
 } finally {await browser?.close();await server.close();}
