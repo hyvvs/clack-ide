@@ -11861,3 +11861,253 @@ remains out of scope. No next mission/checkpoint was started.
 - **0 model downloads, 0 cloud inference, 0 remote service/firewall/sshd changes**.
   Existing manual **11435 tunnel untouched** and still alive after native exit.
   No push. Commit scope is evidence/test infrastructure only.
+
+## Hardened-runtime Nemotron autonomous ForgeBoard acceptance
+
+### Scope, isolation and exact identity
+
+- Base: `9b4866a4d53baa9a70ac24b6250afc26ca64d6f2`, `main`, cached
+  origin **77 ahead / 0 behind** before this checkpoint. One fresh acceptance
+  setup; **no second run, manual tuning, repair or push**.
+- Exact installed model: `nemotron-3.5-lightning:30b-a3b-q4_K_M`.
+  Digest: `e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2`.
+  Read-only `/api/tags` confirmed the historical digest before any inference;
+  native profile metadata and final `/api/ps` agree. No model download/update.
+- Ollama **0.40.5**, existing authorized direct self-hosted route
+  `http://127.0.0.1:11435`, through the already-running user SSH tunnel.
+  No managed reconnect was needed. The adapter's isolated logical endpoint ID
+  remains `real-qwen` for compatibility with the existing mission fixture;
+  that ID is **not** the inference model. Every serialized request used Nemotron.
+  This test did not change or claim to reproduce the user's saved UI selection.
+- Read-only process inventory found no Clack application/acceptance host,
+  Cargo/rustc, Clack Vite/test/build or competing mission before launch.
+  Existing unrelated Codex processes and user SSH PID **37440** were preserved.
+- Fresh workspace:
+  `C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-01`.
+  The preferred `nemotron-hardened` folder prefix is not in the existing safe
+  approval allowlist. The supported Nemotron prefix avoided modifying the dirty
+  approval file. The directory was newly created and Git-initialized, with no
+  commits, files, seeds or implementation.
+- Fresh evidence ID: **`forgeboard-nemotron-hardened-20261021-01`**, under
+  `src-tauri/target/real-qwen-product/`. The historical evidence-parent name
+  likewise does not imply Qwen inference.
+- Production/test executable sources were frozen before launch. **935 tracked
+  source/configuration hashes matched after the run**. No Clack source was
+  edited while the native host was running. Both native host and runner were
+  observed absent afterwards; the same user SSH process remained alive.
+
+### Production Automatic readiness and wire evidence
+
+| Item | Observed result |
+|---|---|
+| Profile overrides | Empty; no manual context/output/reasoning choice |
+| Advertised context | 1,048,576; not treated as practical capacity |
+| Provider thinking controls | `false`, `true`, `"medium"` |
+| Provider thinking default | `true` / normalized On |
+| Initial metadata recommendation | On, provider metadata, wire omission |
+| Verified Automatic Agent recommendation | **None established**; readiness stopped |
+| Context calibration | Verified: 4,096; 8,192; 16,384; 32,768; 49,152; 65,536 |
+| Requested versus native loaded context | Equal at every calibration step |
+| Final loaded context | 65,536, exact Nemotron digest |
+| Context-calibration inference | **6**, each output allowance 32 |
+| Tool-verification inference | **1**, `num_ctx=65536`, `num_predict=512` |
+| Native reasoning wire | `think` **omitted on all 7 requests**, as production chose |
+| Tool exposed during verification | Only production inert `get_probe_value` |
+| Tool verification result | **Incomplete / output-length**, proof null |
+| Mission context/output | **Not resolved/sent**; do not call probe output a mission setting |
+| Fallback / cloud | Never intended; native destination/model guard, **0 cloud inference** |
+
+Fresh isolated profile state initially had advertised/unverified tool metadata,
+not valid runtime-scoped verification. Old evidence belonging to an exited host
+was not imported or manually promoted. Normal `ensureSelectedContext` and
+`ensureSelectedTools` ran in the same native process. Nothing pinned 32K, 49K or
+65K; 65,536 was the result of the unchanged production bounded calibration.
+No `think:false`, `think:true`, named effort, forced omission guard or mission
+output override was supplied by the evaluator.
+
+The native request audit and raw response reconstruction establish that the
+single tool probe returned a **complete provider response** with:
+
+- finish `length`, **335 reported input tokens**, **512 reported output tokens**;
+- **1,604 characters** of streamed reasoning;
+- **29 characters** of content: an unfinished DSML-looking function-call fragment;
+- **0 native `message.tool_calls`**, zero valid arguments and no verification proof;
+- native request phase **completed**, not cancelled, timed out or stalled.
+
+Reasoning characters are not a token estimate. The 512 count is Ollama's final
+reported total; no reasoning-versus-answer token split is inferred. The fragment
+is retained in ignored raw evidence, with content/reasoning hashes in the
+committed fixture. It is not a complete callable object and was never executed.
+Whether the inner generator/template/parser would produce a valid native call
+under other circumstances is **unproven**. This is not evidence of general model
+tool incompatibility.
+
+### Chronology and precise stopping boundary
+
+| UTC | Event |
+|---|---|
+| 2026-10-21 02:54:44.328 | Runner starts readiness setup |
+| 02:54:45.853 | Hidden native host PID 38712 starts; runner PID 8472 |
+| 02:54:50.187 | Exact revision checked; production readiness begins |
+| 02:55:03.052 | 4,096 context calibration succeeds, initially cold |
+| 02:55:10.107 | 8,192 succeeds |
+| 02:55:17.265 | 16,384 succeeds |
+| 02:55:24.026 | 32,768 succeeds |
+| 02:55:30.884 | 49,152 succeeds |
+| 02:55:38.150 | 65,536 succeeds |
+| 02:55:38.995 | Inference-7: default-reasoning native tool probe dispatched |
+| 02:55:40.189 | Probe first output observed, 1.194s after dispatch |
+| 02:55:49.448 | Probe verification recorded Incomplete / output-length |
+| 02:55:49.593 | Native host exits normally, code 0, after returning its report |
+| 02:55:49.676 | Complete readiness-failure report preserved |
+
+Total setup/readiness time: **65.348s**. The Node runner exits **1** because it
+asserts successful readiness after saving the report; this is not an unexplained
+native host crash. Native cleanup also logged WebView class-unregister error
+1412; host exit remained 0 and all seven provider responses completed. There is
+no evidence that diagnostic caused the readiness failure.
+
+Targeted inspection of the unchanged production path explains the refusal:
+`classifyToolObservation` classifies no-call `length` as `output-length`;
+`resolveAutomaticAgentTools` stops on **Incomplete**, rather than treating it as
+`Needs attention` and trying alternative reasoning configurations;
+`ensureSelectedTools` rejects any verdict other than Verified. This is the
+existing bounded/no-auto-retry behavior, also covered by focused tests. No
+current valid alternative proof was ignored, no unverified configuration was
+selected for a mission, and **no Automatic configuration regression or new Clack
+defect is established**. We did not change that policy or manually retry it.
+
+**Exact classification:**
+`PRODUCT READINESS / TOOL VERIFICATION INCOMPLETE / OUTPUT-LENGTH`.
+
+**ForgeBoard outcome:** `NOT STARTED / AUTONOMOUS PRODUCT ACCEPTANCE INCONCLUSIVE`.
+This is neither a ForgeBoard model failure, an F1 regression, a protected-context
+block, an overall-deadline termination nor a harness timeout.
+
+### Specification, effects, context and independent audit
+
+The authoritative specification was unchanged and hashed before readiness:
+`f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`.
+**It was sent zero times**, because the required readiness gate did not pass.
+No mission session/conversation was created. The normal production tool set would
+have been exposed by the existing mission fixture only after readiness; exposing
+it now would bypass the production gate and invalidate Automatic acceptance.
+
+| Observation | Result |
+|---|---|
+| Mission inference / structured calls | **0 / 0** |
+| Successful / failed executed tools | **0 / 0**; failed verification is not a failed tool execution |
+| Textual tool-looking intents | **1 partial fragment in readiness**, none in a mission |
+| File writes / directory mutations / shell calls | **0 / 0 / 0** |
+| Approvals / evaluator implementation or repairs | **0 / 0** |
+| Corrections / automatic or manual continuations | **0 / 0** |
+| Time to mission output/call/write/backend/frontend/test/build | **Not reached** |
+| Correction boundary / material page size 25 | **Not reached / not evaluated** |
+| F1 after correction / objective retention / natural tool recovery | **Not exercised** |
+| Verified-effect receipts / token savings | **0 / 0** |
+| Compaction / retrieval / extraction | **0 / 0 / 0** |
+| Mission schema/protected/input/reserve/margin/headroom budgets | **Unavailable: no mission request** |
+| Protected-context block / deficit | **No / not applicable** |
+| Premature mission prose stop / empty mission response / engine stall | **Not observed; no mission** |
+
+Post-terminal source freeze confirms the workspace still contains **only `.git`**.
+There is no generated application to copy, repair or evaluate. Therefore backend
+CRUD/filter/search/validation/JSON-error/pagination matrix, real restart
+persistence, SSE connection/mutation/cleanup, frontend render/controls/states/
+keyboard/debounce/title limit, model-authored tests, authored production build,
+README and runtime-data ignore are **NOT IMPLEMENTED / NOT RUN in this workspace**.
+The backend score is **not evaluated**, not `0/19` and not a failed model audit.
+No evaluator tests, packages or source files were added to ForgeBoard. No native
+GUI or browser application acceptance is claimed.
+
+### Comparison and product conclusion
+
+| Metric | Committed hardened Qwen | Current hardened Nemotron setup |
+|---|---:|---|
+| Exact model | `qwen3-coder:30b` | `nemotron-3.5-lightning:30b-a3b-q4_K_M` |
+| Automatic reasoning | Verified None / `think:false` | Provider default On / omitted; Agent proof incomplete |
+| Practical context | 65,536 | Calibration verified 65,536; no mission context |
+| Readiness inference | 9: 6 context + 3 tool | 7: 6 context + 1 incomplete tool |
+| Readiness gate | Verified / Ready | Incomplete; refused Agent mode |
+| Mission requests | 20 | 0 |
+| Native mission calls / failed tools | 17 / 0 | 0 / 0; not exercised |
+| Source write events / final files | 12 / 11 | 0 / 0 |
+| First native call / first write | 9.631s / 21.258s | Not reached |
+| Automatic continuations | 1 length continuation | 0 |
+| Correction materially retained | Backend page size 25 verified | Not reached |
+| F1 coding tools / context block | Retained / no block | Not exercised / no block |
+| Backend independent audit | 13/19 | Not evaluated |
+| Frontend | Scaffold only | No application authored |
+| Model-authored tests / build | Absent/failing / failed | Not authored or run |
+| Terminal issue | Textual write_file intent; premature stop | Bounded tool-readiness output exhaustion |
+| Product outcome | Model-incomplete | Autonomous task acceptance inconclusive |
+
+Older Nemotron evidence remains approximately **19 mission attempts, 17 native
+calls, 14 successful tools, 3 failures, 3 direct verified writes**, config/types
+only, correction reached, then the old confirmed F1 defect; a later run retained
+tools but reached the old 32K protected-context ceiling. That was not a fair final
+quality verdict. This fresh setup verifies current practical 65K allocation but
+does **not** repeat those mission observations or establish post-repair F1/task
+completion quality, since production readiness refused to start.
+
+Current ordinary-user usability is **LOCAL AGENT USABILITY STILL LIMITED**:
+Automatic did not become Agent-ready here. This qualifier concerns onboarding,
+**not a negative autonomous coding-quality verdict**. Nemotron has not shown
+material outperformance of hardened Qwen in this checkpoint, but there is no new
+fair head-to-head application result. Qwen remains the **best-tested reference**,
+not a proven unattended default. No new model-quality ranking is justified.
+
+The premise that both models completed fair current-runtime missions with healthy
+Clack is **not met**. This evidence cannot strengthen the conclusion that
+long-horizon model quality is the dominant Nemotron limitation. Another immediate
+model shootout or manual tuning ladder is not justified. Recommended **one
+separate model-agnostic checkpoint**: **Audit Bounded Tool Readiness Under
+Reasoning-Enabled Defaults**. Determine how to preserve accurate Incomplete
+classification and bounded verification while accounting for a provider's
+reasoning/output needs. This is a recommendation, not a repair plan or authority
+to increase limits, retry inference, force None or execute DSML text. The
+suggested obligation-aware terminal-stop audit is not supported by this run,
+which never reached a mission stop. No subsequent checkpoint was started.
+
+### Verification, artifacts and repository safety
+
+- Before inference: **123 tests passed across 4 files**: hardened ownership (6),
+  frozen Qwen evidence (7), approval/correction safety (110). An extra named
+  nonexistent test filter matched no file; actual Vitest totals are four files.
+  No Qwen inference was performed by these offline tests.
+- After readiness: **133 tests passed across 6 files**: new frozen Nemotron/raw
+  reconstruction (12), existing Automatic resolver, tool verification/runtime
+  and context calibration/runtime (121). **256 distinct focused tests total**,
+  10 files. Includes split UTF-8, partial DSML versus native calls, unknown usage,
+  foreign model/destination rejection, no hidden spec and truncated-frame refusal.
+- `npm.cmd run check-types`: passed. `node --check` acceptance runner and new
+  reconstruction script: passed. Scoped `rustfmt --check --edition 2021` native
+  example: passed. `cargo build --locked --example hardened_agent_acceptance
+  --target-dir target/codex-test`: passed. One existing environment warning:
+  incremental cache hard-link fallback to copying.
+- Working/staged diff checks passed. Full frontend/Rust/lint/build suites were
+  intentionally **not rerun**: no production source changed and this checkpoint
+  requests focused evidence/type/syntax verification. Native Windows IPC and
+  Ollama requests were real; native GUI interaction was not performed.
+- Standing platform gaps are unchanged: Windows managed SSH was previously
+  native-tested; Linux guardian core WSL-tested, full application validation
+  incomplete; macOS implemented but not locally validated. No Linux/macOS native
+  verification or password-auth work is claimed here.
+- New `scripts/audit-hardened-readiness.mjs` reconstructs the actual blocked
+  readiness trace, without requiring or fabricating a mission. Committed summary:
+  `src/test/fixtures/hardened-nemotron-20261021.json`. Raw evidence remains under
+  the evidence ID above; eight raw artifact SHA-256 hashes are in the summary.
+  Frozen Qwen evidence and its comparison fixture are unchanged.
+- Checkpoint changes are limited to the existing test adapter's explicit
+  model/digest guard, its ownership test, the readiness auditor/test/fixture and
+  **this appendix only**. Production C1/G1/M1/M2/F1/PeerTask/scheduler/context/
+  compaction/timeout/tool-verification behavior is unchanged.
+- All six pre-existing dirty-file contents, including the original uncommitted
+  report section, were preserved. Only this appendix is staged from the report;
+  unrelated dirty hunks remain unstaged. Both safety stashes and
+  `autonomous_tracker/` were untouched. No reset, clean or broad formatting.
+- **0 model downloads, 0 cloud inference, 0 remote/service/firewall/network/SSH
+  configuration changes, 0 manual retries.** The manual **11435 tunnel remained
+  untouched**. The native host and runner exited; no owned acceptance process
+  remained. Evidence-only commit: `test(ai): rerun nemotron on hardened local
+  runtime`. No push. Stop after this checkpoint.

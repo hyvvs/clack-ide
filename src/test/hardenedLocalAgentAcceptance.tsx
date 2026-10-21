@@ -12,12 +12,12 @@ import { updateSelfHostedProfiles, setAgentPermissionProfiles } from "@/modules/
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useChatStore, chats } from "@/modules/ai/store/chatStore";
 
-const model = "qwen3-coder:30b";
-const digest = "06c1097efce0431c2045fe7b2e5108366e43bee1b4603a7aded8f21689e90bca";
 const configuration = new URL(location.href).searchParams.get("configuration");
 if (!configuration) throw new Error("Explicit isolated configuration required");
 const config = await (await fetch(configuration)).json();
-if (config.realProduct.modelId !== model || config.realProduct.reasoningChoice !== "automatic" || config.realProduct.maxOutput !== undefined)
+const model: string = config.realProduct.modelId;
+const digest: string = config.realProduct.modelDigest;
+if (!["qwen3-coder:30b", "nemotron-3.5-lightning:30b-a3b-q4_K_M"].includes(model) || !/^[a-f0-9]{64}$/.test(digest) || config.realProduct.reasoningChoice !== "automatic" || config.realProduct.maxOutput !== undefined)
   throw new Error("Only the production Automatic configuration is authorized");
 let pending = Promise.resolve();
 const emit = (event: Record<string, unknown>) => {

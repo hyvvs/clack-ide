@@ -31,12 +31,21 @@ describe("hardened-runtime acceptance ownership", () => {
     expect(native).toContain("inference_probe::context::self_hosted_context_lease");
     expect(native).not.toContain('assert_eq!(body["options"]["num_ctx"], 32768)');
     expect(native).not.toContain("REQUEST_TIMEOUT");
-    expect(native).toContain('assert_eq!(model, "qwen3-coder:30b")');
+    expect(native).toContain('"nemotron-3.5-lightning:30b-a3b-q4_K_M"');
+    expect(native).toContain('assert_eq!(body["model"], model)');
   });
   it("separates pre-mission requests from mission budget reconstruction", () => {
     expect(driver).toContain("request.at >= (result.readiness?.readyAt ?? Infinity)");
     expect(entry).toContain('kind: "mission-readiness"');
     expect(entry).toContain('kind: "hardened-native-event"');
     expect(entry).toContain('kind: "tool-state"');
+  });
+  it("carries the prechecked exact model revision without prescribing reasoning", () => {
+    expect(driver).toContain('process.env.CLACK_PRODUCT_DIGEST');
+    expect(driver).toContain('modelId, modelDigest');
+    expect(entry).toContain('config.realProduct.modelDigest');
+    expect(entry).toContain('config.realProduct.modelId');
+    expect(entry).toContain('initial.modelRevision !== digest');
+    expect(driver).toContain('const reasoningChoice = "automatic"');
   });
 });

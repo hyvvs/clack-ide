@@ -243,7 +243,7 @@ fn main() {
                                 | "hf.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive:IQ3_M"
                             ));
                             assert_eq!(body["model"], model);
-                            assert_eq!(model, "qwen3-coder:30b");
+                            assert!(matches!(model.as_str(), "qwen3-coder:30b" | "nemotron-3.5-lightning:30b-a3b-q4_K_M"));
                             assert!(body["options"]["num_ctx"].as_u64().is_some_and(|n| n <= 65536));
                             let directory = std::env::var("CLACK_ACCEPTANCE_ROOT").expect("owned root");
                             let mut file = std::fs::OpenOptions::new().create(true).append(true)

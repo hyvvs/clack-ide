@@ -23,7 +23,9 @@ assert(maxOutput === undefined || (Number.isSafeInteger(maxOutput) && maxOutput 
 const singleSpec = process.env.CLACK_PRODUCT_SINGLE_SPEC === "1";
 const traceStreams = process.env.CLACK_PRODUCT_TRACE === "1";
 const modelId = process.env.CLACK_PRODUCT_MODEL ?? "qwen3-coder:30b";
-assert.equal(modelId, "qwen3-coder:30b");
+assert(["qwen3-coder:30b", "nemotron-3.5-lightning:30b-a3b-q4_K_M"].includes(modelId), "An explicit hardened acceptance model is required");
+const modelDigest = process.env.CLACK_PRODUCT_DIGEST;
+assert(/^[a-f0-9]{64}$/.test(modelDigest ?? ""), "Verify and provide the exact installed digest before inference");
 assert.equal(maxOutput, undefined, "Output remains Automatic");
 assert.equal(singleSpec, false, "The sole authorized correction must remain enabled");
 assert(["qwen38-uncensored:latest", "qwen3-coder:30b", "qwen38-iq4xs:latest", "devstral-small-2:24b"].includes(modelId) || [
@@ -87,7 +89,7 @@ const server = createServer(async (request, response) => {
   const json = value => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(value)); };
   try {
     if (request.method === "OPTIONS") { response.statusCode = 204; response.end(); return; }
-    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, modelId, toolProtocol, maxOutput, singleSpec, reasoningChoice, traceStreams, prepareOnly }, streamDiagnostic });
+    if (request.url === "/configuration") return json({ root, server: endpoint, report: `${local}/report`, phase: "exercise", realProduct: { phase, modelId, modelDigest, toolProtocol, maxOutput, singleSpec, reasoningChoice, traceStreams, prepareOnly }, streamDiagnostic });
     if (!["/report", "/evidence", "/approval", "/correction"].includes(request.url) || request.method !== "POST") { response.statusCode = 404; return json({ error: "Unknown acceptance route" }); }
     let body = "";
     for await (const chunk of request) { body += chunk; assert(body.length < 64 * 1024 * 1024, "Acceptance payload exceeded bound"); }

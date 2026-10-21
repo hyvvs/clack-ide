@@ -1,0 +1,433 @@
+{
+  "runId": "forgeboard-nemotron-hardened-20261021-01",
+  "root": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-01",
+  "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+  "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+  "version": "0.40.5",
+  "connection": {
+    "endpoint": "http://127.0.0.1:11435",
+    "type": "existing user SSH tunnel / production direct self-hosted route",
+    "logicalEndpoint": "real-qwen",
+    "managedReconnect": false
+  },
+  "automatic": {
+    "providerDefault": true,
+    "supported": {
+      "none": false,
+      "on": true,
+      "medium": "medium"
+    },
+    "recommendationBefore": "On",
+    "verifiedAgentRecommendation": null,
+    "wireReasoning": [
+      "omitted"
+    ],
+    "overrides": {},
+    "advertisedContext": 1048576,
+    "calibration": {
+      "version": 1,
+      "id": "d7c1c835-26e7-4025-ac47-993f5ed60b02",
+      "scope": {
+        "endpointId": "real-qwen",
+        "configurationRevision": 1,
+        "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+        "deployment": null,
+        "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+        "backend": "ollama",
+        "runtimeEpoch": "38712:1792551290189709800",
+        "providerVersion": "0.40.5",
+        "reasoning": "[true,\"[false,true,\\\"medium\\\"]\",true]"
+      },
+      "status": "verified",
+      "highest": 65536,
+      "failedNext": null,
+      "failure": null,
+      "allocation": "[\"e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2\",14736424957,14207722453]",
+      "startedAt": 1792551290342,
+      "updatedAt": 1792551338150,
+      "expiresAt": 1792552238150,
+      "retryAfter": 1792552238150,
+      "attempts": [
+        {
+          "context": 4096,
+          "requested": 4096,
+          "loaded": 4096,
+          "outcome": "success",
+          "at": 1792551303052,
+          "latencyMs": 12694,
+          "thermal": "cold",
+          "finish": "length",
+          "think": "omitted"
+        },
+        {
+          "context": 8192,
+          "requested": 8192,
+          "loaded": 8192,
+          "outcome": "success",
+          "at": 1792551310107,
+          "latencyMs": 7039,
+          "thermal": "warm",
+          "finish": "length",
+          "think": "omitted"
+        },
+        {
+          "context": 16384,
+          "requested": 16384,
+          "loaded": 16384,
+          "outcome": "success",
+          "at": 1792551317265,
+          "latencyMs": 7138,
+          "thermal": "warm",
+          "finish": "length",
+          "think": "omitted"
+        },
+        {
+          "context": 32768,
+          "requested": 32768,
+          "loaded": 32768,
+          "outcome": "success",
+          "at": 1792551324026,
+          "latencyMs": 6740,
+          "thermal": "warm",
+          "finish": "length",
+          "think": "omitted"
+        },
+        {
+          "context": 49152,
+          "requested": 49152,
+          "loaded": 49152,
+          "outcome": "success",
+          "at": 1792551330884,
+          "latencyMs": 6840,
+          "thermal": "warm",
+          "finish": "length",
+          "think": "omitted"
+        },
+        {
+          "context": 65536,
+          "requested": 65536,
+          "loaded": 65536,
+          "outcome": "success",
+          "at": 1792551338150,
+          "latencyMs": 7250,
+          "thermal": "warm",
+          "finish": "length",
+          "think": "omitted"
+        }
+      ]
+    },
+    "tools": {
+      "version": 1,
+      "id": "4f3a02d4-fb50-40e3-82e0-3bb4b4d5e145",
+      "scope": {
+        "endpointId": "real-qwen",
+        "configurationRevision": 1,
+        "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+        "deployment": null,
+        "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+        "backend": "ollama",
+        "runtimeEpoch": "38712:1792551290189709800",
+        "providerVersion": "0.40.5",
+        "reasoning": "[true,\"[false,true,\\\"medium\\\"]\",true]",
+        "protocol": "native-tools-v1"
+      },
+      "status": "incomplete",
+      "outcome": "output-length",
+      "context": 65536,
+      "output": 512,
+      "startedAt": 1792551338964,
+      "completedAt": 1792551349448,
+      "firstBodyAt": 1792551340189,
+      "callAt": null,
+      "calls": 0,
+      "validArguments": false,
+      "textualIntent": false,
+      "textChars": 29,
+      "finish": "length",
+      "proof": null,
+      "retryAfter": 1792551649448
+    },
+    "missionContext": null,
+    "missionOutput": null,
+    "finalLoaded": [
+      {
+        "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+        "digest": "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+        "context": 65536
+      }
+    ]
+  },
+  "chronology": {
+    "startedAt": 1792551284328,
+    "readinessStartedAt": 1792551290187,
+    "endedAt": 1792551349676,
+    "elapsedMs": 65348
+  },
+  "readinessRequests": 7,
+  "calibrationRequests": 6,
+  "toolVerificationRequests": 1,
+  "missionRequests": 0,
+  "specificationSubmissions": 0,
+  "corrections": 0,
+  "continuations": 0,
+  "nativeCalls": 0,
+  "successfulTools": 0,
+  "failedTools": 0,
+  "partialTextualIntents": 1,
+  "writes": 0,
+  "directories": 0,
+  "shells": 0,
+  "approvals": 0,
+  "application": {
+    "authoredFiles": 0,
+    "backendAudit": "NOT RUN - no implementation",
+    "persistence": "NOT IMPLEMENTED",
+    "sse": "NOT IMPLEMENTED",
+    "frontend": "NOT IMPLEMENTED",
+    "tests": "NOT IMPLEMENTED",
+    "build": "NOT IMPLEMENTED",
+    "readme": false,
+    "runtimeIgnore": false
+  },
+  "context": {
+    "verified": 65536,
+    "missionBudgets": [],
+    "minimumHeadroom": null,
+    "protectedBlock": false,
+    "deficit": null,
+    "receipts": 0,
+    "savings": 0,
+    "compactions": 0,
+    "retrievals": 0,
+    "extractions": 0
+  },
+  "f1": "NOT EXERCISED - no mission request or correction",
+  "recovery": "NOT EXERCISED - no tool execution",
+  "terminal": {
+    "classification": "PRODUCT READINESS / TOOL VERIFICATION INCOMPLETE / OUTPUT-LENGTH",
+    "error": "Error: Agent tool verification: Incomplete. Use Chat Only or review tool evidence in model settings.",
+    "missionOutcome": "NOT STARTED / AUTONOMOUS PRODUCT ACCEPTANCE INCONCLUSIVE",
+    "confirmedClackDefect": false,
+    "automaticRegressionEstablished": false,
+    "contextBlock": false,
+    "deadline": false,
+    "engineStall": false,
+    "boundary": "Complete provider length response, not transport termination. Partial tool-looking content is not a native call. Model/parser inner cause remains unproven."
+  },
+  "usability": "LOCAL AGENT USABILITY STILL LIMITED - Automatic readiness blocked; task quality not evaluated",
+  "cloudInference": 0,
+  "modelDownloads": 0,
+  "remoteMutations": 0,
+  "manualRetries": 0,
+  "responses": [
+    {
+      "requestId": "inference-1",
+      "at": 1792551290379,
+      "kind": "context-calibration",
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "context": 4096,
+      "output": 32,
+      "think": "omitted",
+      "toolNames": [],
+      "bodySha256": "45b32993f35090001648bf826a65413c44a394819e7e1f4509902b08f8f72f34",
+      "firstOutputAt": 1792551302220,
+      "textChars": 0,
+      "thinkingChars": 115,
+      "textSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "thinkingSha256": "56c396ddb8cebbac3fd59f8cfd3260033c3d6ea43d7414628d7e5c88922fb0b6",
+      "partialDsmlIntent": false,
+      "nativeCalls": 0,
+      "finish": "length",
+      "inputTokens": 20,
+      "outputTokens": 32,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-2",
+      "at": 1792551303083,
+      "kind": "context-calibration",
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "context": 8192,
+      "output": 32,
+      "think": "omitted",
+      "toolNames": [],
+      "bodySha256": "de121fc2a40592c6b88c956aaeca2f426444dce9cc587a9e5051e463a1830a19",
+      "firstOutputAt": 1792551309187,
+      "textChars": 0,
+      "thinkingChars": 115,
+      "textSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "thinkingSha256": "abb03f7f85affb7eb54ccd05696d9577537396a3b82502f9bd1f13c4b4ced427",
+      "partialDsmlIntent": false,
+      "nativeCalls": 0,
+      "finish": "length",
+      "inputTokens": 20,
+      "outputTokens": 32,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-3",
+      "at": 1792551310140,
+      "kind": "context-calibration",
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "context": 16384,
+      "output": 32,
+      "think": "omitted",
+      "toolNames": [],
+      "bodySha256": "c437bbe0df1c8f2a29e5ccb3f67267aec7100b4da38b7cdb55d23a17e19493be",
+      "firstOutputAt": 1792551316053,
+      "textChars": 0,
+      "thinkingChars": 115,
+      "textSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "thinkingSha256": "a1e44b717de2edf88a0212d9b4be75d49cec5e1f017eec2d3b06f600aaab4ae0",
+      "partialDsmlIntent": false,
+      "nativeCalls": 0,
+      "finish": "length",
+      "inputTokens": 20,
+      "outputTokens": 32,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-4",
+      "at": 1792551317297,
+      "kind": "context-calibration",
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "context": 32768,
+      "output": 32,
+      "think": "omitted",
+      "toolNames": [],
+      "bodySha256": "942a3c6937bfda193429eadd00a2f49790646aa1f6349847102ab349a0153ec4",
+      "firstOutputAt": 1792551323093,
+      "textChars": 0,
+      "thinkingChars": 118,
+      "textSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "thinkingSha256": "066d85c32fda7a76874b5a5986b9ca2ea58b5035187980a7deeaa3d23628eee9",
+      "partialDsmlIntent": false,
+      "nativeCalls": 0,
+      "finish": "length",
+      "inputTokens": 20,
+      "outputTokens": 32,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-5",
+      "at": 1792551324054,
+      "kind": "context-calibration",
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "context": 49152,
+      "output": 32,
+      "think": "omitted",
+      "toolNames": [],
+      "bodySha256": "dea1e8d60edb5f6679a7ce29967b1f63b78a262ce82d2b0d8421b491f435a705",
+      "firstOutputAt": 1792551330128,
+      "textChars": 0,
+      "thinkingChars": 115,
+      "textSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "thinkingSha256": "56c396ddb8cebbac3fd59f8cfd3260033c3d6ea43d7414628d7e5c88922fb0b6",
+      "partialDsmlIntent": false,
+      "nativeCalls": 0,
+      "finish": "length",
+      "inputTokens": 20,
+      "outputTokens": 32,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-6",
+      "at": 1792551330908,
+      "kind": "context-calibration",
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "context": 65536,
+      "output": 32,
+      "think": "omitted",
+      "toolNames": [],
+      "bodySha256": "8b688bf8dbfd6ffc4e0ffec354069dff3034b7a6feabc6288e7fbffd2f18321e",
+      "firstOutputAt": 1792551337164,
+      "textChars": 0,
+      "thinkingChars": 115,
+      "textSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "thinkingSha256": "9cd65983f173c1c6680f4e40d9dcd52e38668784141dfabd369a77667ed5762c",
+      "partialDsmlIntent": false,
+      "nativeCalls": 0,
+      "finish": "length",
+      "inputTokens": 20,
+      "outputTokens": 32,
+      "settled": "completed"
+    },
+    {
+      "requestId": "inference-7",
+      "at": 1792551338995,
+      "kind": "tool-verification",
+      "model": "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+      "context": 65536,
+      "output": 512,
+      "think": "omitted",
+      "toolNames": [
+        "get_probe_value"
+      ],
+      "bodySha256": "c675a33230e77aeccf855ab4cc5564b6700bf8dba32c12654b30ded17de0df25",
+      "firstOutputAt": 1792551340189,
+      "textChars": 29,
+      "thinkingChars": 1604,
+      "textSha256": "42e8cd3e7a8580189196d658f9712351eb9e809560c3747801e39cf2e8d06744",
+      "thinkingSha256": "d09b42048349ed1b5c39b86b38d8ff0915f8d6cb3735b51bed48bc90ee53d1ac",
+      "partialDsmlIntent": true,
+      "nativeCalls": 0,
+      "finish": "length",
+      "inputTokens": 335,
+      "outputTokens": 512,
+      "settled": "completed"
+    }
+  ],
+  "base": "9b4866a4d53baa9a70ac24b6250afc26ca64d6f2",
+  "process": {
+    "runnerPid": 8472,
+    "runnerExit": 1,
+    "native": {
+      "pid": 38712,
+      "code": 0,
+      "signal": null,
+      "at": 1792551349593
+    },
+    "explanation": "Runner asserts Ready and exits nonzero after preserving the production Incomplete report; native host returned its report and exited normally."
+  },
+  "sourceFreeze": {
+    "checkedFiles": 935,
+    "changedDuringRun": [],
+    "root": "C:/Users/Hayden/Documents/forgeboard-nemotron35-lightning-20261021-01",
+    "authoredFiles": [],
+    "head": "9b4866a4d53baa9a70ac24b6250afc26ca64d6f2"
+  },
+  "artifacts": [
+    {
+      "name": "setup.json",
+      "sha256": "507b53b6cc8a12a899ca9defb2ef61231260ebf0b7488171da76324089bb3a2f"
+    },
+    {
+      "name": "mission-a-1.json",
+      "sha256": "3d2966e75b42f3296964faa8333f6aac3ad4eb2e7d76b5881a5654f359bf4c12"
+    },
+    {
+      "name": "mission-a-1.native-report.json",
+      "sha256": "8d72bc913db2d4bd129467fae23e760407cf9307cc0dc75c8064398cb55cba27"
+    },
+    {
+      "name": "mission-a-1.failure.json",
+      "sha256": "b5da52bd01a1d444b24d718ebfcd4f1aad0da4aa715d4cb280cc7902b247c703"
+    },
+    {
+      "name": "mission-a-1.jsonl",
+      "sha256": "0e5efc188d7f215b3720ba2ed9c9e8ef8a68c9c4a431491fda224e34b02ae9a9"
+    },
+    {
+      "name": "mission-a-1.requests.jsonl",
+      "sha256": "14175e7a6702771a4c1219cbc1c3f5324e5c527ea8b70a4a5dba93bd7369131f"
+    },
+    {
+      "name": "mission-a-1.receive.jsonl",
+      "sha256": "9091e4793d80bc3935c0be09b241f0a731a9cfc924b338e6714ee2fac42eebea"
+    },
+    {
+      "name": "runner.log",
+      "sha256": "48e77a1d7926fca9289b4a471d5abd9e7dd4bb5a4d9ec142af5363c9f72896e7"
+    }
+  ]
+}
