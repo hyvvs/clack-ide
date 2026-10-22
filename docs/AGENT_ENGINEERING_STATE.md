@@ -1,6 +1,6 @@
 # Clack Shared Engineering State
 
-Updated: 2026-10-22. Scope: public Chat On Steroids full-platform P0 source audit and long-term Clack roadmap. This is the **shared checkpoint index** for ChatGPT, Chat On Steroids and Codex; it is not an alternative runtime memory or a source of executed-tool truth.
+Updated: 2026-10-22. Scope: P0 whole-platform CoS audit followed by **R1 frozen Nemotron tool-transition diagnosis**. This is the **shared checkpoint index** for ChatGPT, Chat On Steroids and Codex; it is not an alternative runtime memory or a source of executed-tool truth.
 
 ## Current verified state
 
@@ -14,6 +14,8 @@ Updated: 2026-10-22. Scope: public Chat On Steroids full-platform P0 source audi
 | Existing ignored systems | `autonomous_tracker/`, large local fixtures, build products and the P0 CoS snapshot are unrelated |
 | CoS evidence | Public revision [`f50a8d3`](https://github.com/totec448-spec/chat-on-steroids/tree/f50a8d30c1903193a9346f155431b4c57e730955), full local source in ignored `src-tauri/target/p0-cos-audit` at intake; no upstream binaries executed |
 | New P0 artifacts | [`COS_FULL_PLATFORM_AUDIT_2026-10-22.md`](COS_FULL_PLATFORM_AUDIT_2026-10-22.md) is the source-backed product inventory, gap matrix, decisions and R/P roadmap |
+| P0 commit | `f0a099eb389fa04592760cf5f1e1c4b10b568201`, `docs: audit complete CoS platform for Clack roadmap`; no push |
+| R1 committed evidence | [`R1_NATIVE_TOOL_TRANSITION_2026-10-22.md`](R1_NATIVE_TOOL_TRANSITION_2026-10-22.md), an offline source/trace audit; original raw Ollama artifacts remain ignored and protected |
 
 ### Pre-existing modified file fingerprints at intake
 
@@ -44,7 +46,9 @@ These hashes detect accidental replacement of user work; they are not claims tha
 
 **Independent verification performed before/during takeover:** 117 focused frontend tests passed in five suites; `npm run check-types` passed; latest Nemotron fixture suite 12/12 passed. These are intake baseline checks from the earlier turn, not checks of any newly implemented feature. No model inference, benchmark, plugin installation, upstream CoS test execution or Clack app changes have been performed for P0.
 
-**Recommended next bounded checkpoint: `R1`**, offline audit of why verified native Nemotron calls transitioned to unexecuted textual tool drafts and reached the answer-continuation deadline. Start from immutable captured requests, parser behavior and partial answers. Its exit is an evidence-backed owner classification and narrow corrective specification, including an explicit no-defect finding if appropriate. No fresh inference, broad provider tuning, timeline extension or code policy change is implied. After R1, begin `P1` capability registry/index extension through existing Tauri/AI tool authorities.
+**P0 follow-on `R1` is completed in the source-backed audit linked above.** It found an observed model/engine **text-content** tool-format transition with no missing exposed tools or native frames and a correctly enforced 120-second cumulative continuation deadline. Model-versus-template internal attribution is unresolved. No generic Clack/SDK/harness defect was proven, so no production fix was made. See the detailed chronology and owner classification in `R1_NATIVE_TOOL_TRANSITION_2026-10-22.md`.
+
+**Recommended next bounded checkpoint: `P1`**, extend the capability contract and model-efficient tool index through Clack's existing Rust authorization and F1 exposure owners, using the dependency gates in `COS_FULL_PLATFORM_AUDIT_2026-10-22.md`. P1 has **not** begun. Any further live model/template A/B experiment requires separate authorization; do not reinterpret inert XML drafts or alter the current model/deadline/context settings as part of this diagnosis.
 
 ## Shared ChatGPT / Codex workflow
 
@@ -59,8 +63,8 @@ These hashes detect accidental replacement of user work; they are not claims tha
 
 | Checkpoint | State | Evidence and next action |
 | --- | --- | --- |
-| P0 Whole-CoS capability assessment | Complete, source-backed documentation checkpoint | Audit, source map and this shared index; 21 pinned source links and local links validated, no trailing whitespace, `git diff --check` passed for tracked changes, existing dirty hashes preserved |
-| R1 Native-to-textual transition audit | Pending | Use committed `0ace768` local-model fixture and frozen wire evidence |
+| P0 Whole-CoS capability assessment | Completed and committed `f0a099e` | Audit, source map and this shared index; 21 pinned source links and local links validated, no trailing whitespace, existing dirty hashes preserved |
+| R1 Native-to-textual transition audit | Completed; documentation-only | Last native request `inference-18` / `call_ilruqg8d` -> first textual `inference-19`, 14 unchanged tools, `think:true`, length 2048; IDs 20/21 repeat inert drafts; ID22 cancelled with zero bytes at valid 120s deadline. MODEL/ENGINE not separable; no Clack defect proven. 236 focused tests/6 suites passed; TypeScript check passed; zero inference. Full R1 evidence and hashes in linked audit. |
 | R2-R5 Local model reliability/productivity | Planned | See full roadmap and predecessor gates in `COS_FULL_PLATFORM_AUDIT_2026-10-22.md` |
 | P1-P19 Agent capability platform | Planned | One focused verified checkpoint at a time; preserve existing Clack subsystems |
 
