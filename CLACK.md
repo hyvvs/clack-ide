@@ -4,6 +4,8 @@ Clack is a Tauri 2 + React 19 + Rust IDE/agent app forked from Terax.
 
 The current full-platform Agent vision, Chat On Steroids comparison and phased roadmap are in `docs/COS_FULL_PLATFORM_AUDIT_2026-10-22.md`. The shared ChatGPT/Codex checkpoint state and handoff rules are in `docs/AGENT_ENGINEERING_STATE.md`. These supersede older public `README.md`/`ROADMAP.md` progress summaries where implementation has advanced; retain the older AI plans and acceptance records as historical evidence.
 
+**Active engineering order (2026-10-22, authoritative for ChatGPT, Chat On Steroids and Codex): P0 completed (`f0a099e`) → R1 completed (`2648bcb`) → P1 completed (`9c7ea0c`) → finish and independently accept local/self-hosted AI reliability (remaining R-track) → resume the entire P2–P19 Agent platform roadmap.** Both goals are required. P2–P19 are deferred, **neither cancelled nor optional**, and must not be narrowed to an MCP manager or marked complete prematurely. Do not start P2 before the local-AI gate is met or the user explicitly changes this order. The concrete acceptance rules and next authorized-request-only checkpoint are maintained in the full-platform audit and shared engineering state.
+
 ## Project Rules
 
 - Product name: Clack.
@@ -38,13 +40,18 @@ The current full-platform Agent vision, Chat On Steroids comparison and phased r
 - Never silently fall back from local/self-hosted inference to cloud. Fallback requires explicit user policy; local acceptance evidence must record cloud inference count.
 - Benchmarks identify both model quality and compatibility gaps. Keep operational rankings provisional and setting-specific. A generically repaired compatibility gap warrants a fair, separately authorized rerun; do not hide the gap with a model-specific workaround or repair-and-resume the same attempt.
 - Respect each checkpoint's boundaries and stop rules. A confirmed new Clack defect must be preserved and handled separately, not patched to finish a benchmark. These principles do not authorize extra model runs, downloads, broad UI work, context calibration, timeout changes or model-specific tuning.
-- After North and Nemotron sampling is complete, the next dedicated audit is **Local Provider Auto-Configuration and Model Onboarding UX**. Map existing capabilities and gaps in discovery, calibration, per-model persistence, remote-provider UX, Automatic/advanced settings and failure states before implementing broad UI changes. Do not start that audit prematurely.
+- The earlier North/Nemotron follow-on proposal, **Local Provider Auto-Configuration and Model Onboarding UX**, remains a local-AI acceptance workstream, not permission for a new broad UI audit or a replacement for the current R-track order. Check `docs/AGENT_ENGINEERING_STATE.md` for the newest bounded checkpoint; automatic setup and connection evidence must be covered by final local-AI acceptance.
 
 ## Long-Horizon Context Principles
 
 - Prefer deterministic, reversible representations of verified history over lossy freeform summaries. Keep exact originals source-linked and recoverable; never replay an effect to recover evidence.
 - User intent and corrections remain authoritative independently of workspace contents. Historical tool success does not prove current file state, passing validation or requirement completion.
 - A compact representation's byte-level reversibility is necessary, not sufficient: enforce source ownership, dependency retention, provider continuation semantics and freshness before production use. Preserve current partial answers and unresolved evidence; fail closed when safe context cannot fit.
+- A model's `stop` or a run batch marked `complete` is a transport/lifecycle fact, **not** independent evidence that all user requirements, tests, runtime behavior and corrections were satisfied. Show unknown/unfinished/blocked states truthfully; never fabricate validation or continue uncertain effects.
+
+## Capability Platform Completion Standard
+
+After local-AI reliability is accepted and P2–P19 resume, every substantial new integration, plugin, worker/workflow or automation capability needs: deterministic contract tests; real integration and lifecycle tests; permission/secret/sandbox/hostile-input tests; Windows/Linux/macOS verification or explicit platform-unverified labels; actual compatible local-model Agent use; meaningful independently checked end-to-end user results; and existing-provider/F1/tool/context/PeerTask regression gates. Track **implemented**, **tested**, **partially validated**, **platform-unverified** and **production-ready** separately. Neither an API/installer/UI nor mocks or a successful isolated tool call alone establishes product completion. Preserve the full roadmap and owner-specific gates in `docs/COS_FULL_PLATFORM_AUDIT_2026-10-22.md`; do not create a second capability authority.
 
 ## Verification
 
