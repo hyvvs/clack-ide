@@ -34,6 +34,11 @@ test("redacted incremental receipts are durable after killing the receipt host w
       kind: "preflight-decision", at: 1, modelMatches: true, serializedContext: 32768,
       trustedTarget: 32768, admittedByRoute: true, runtimeObserved: false,
     })).status, 200);
+    // Exercise the exact redacted frontend-stage receipts required by R5d.
+    // Each HTTP 200 acknowledges an on-disk append before host termination.
+    assert.equal((await post({ kind: "frontend-native-event", ordinal: 1, phase: "headers", bytes: 0 })).status, 200);
+    assert.equal((await post({ kind: "frontend-native-event", ordinal: 1, phase: "chunk", bytes: 623 })).status, 200);
+    assert.equal((await post({ kind: "frontend-native-event", ordinal: 1, phase: "settled", bytes: 0 })).status, 200);
     assert.equal((await post({ kind: "preflight-decision", at: 2, modelMatches: true,
       serializedContext: null, trustedTarget: null, admittedByRoute: true,
       runtimeObserved: false, prompt: "PRIVATE_CONTENT",
@@ -46,8 +51,14 @@ test("redacted incremental receipts are durable after killing the receipt host w
     await exited;
     const receipts = (await readFile(path.join(root, "redacted-preflight-events.jsonl"), "utf8"))
       .trim().split("\n").map(line => JSON.parse(line));
-    assert.deepEqual(receipts.map(e => e.kind), ["request-started", "preflight-decision", "request-failed"]);
+    assert.deepEqual(receipts.map(e => e.kind), [
+      "request-started", "preflight-decision", "frontend-native-event",
+      "frontend-native-event", "frontend-native-event", "request-failed",
+    ]);
     assert.equal(receipts[1].trustedTarget, 32768);
+    assert.deepEqual(receipts.slice(2, 5).map(e => [e.phase, e.bytes]), [
+      ["headers", 0], ["chunk", 623], ["settled", 0],
+    ]);
     assert(!JSON.stringify(receipts).includes("PRIVATE_CONTENT"));
   } finally {
     if (!killed) child.kill();
