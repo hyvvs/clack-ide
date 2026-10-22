@@ -252,7 +252,7 @@ pub(super) fn validate_connections(connections: &[Connection]) -> Result<()> {
         if let Some(discovery) = &connection.discovery {
             if discovery.revision != current(connection).revision
                 || !hash(&discovery.hash)
-                || discovery.tools.len() > 16
+                || discovery.tools.len() > protocol::MAX_DISCOVERED_TOOLS
                 || discovery
                     .tools
                     .iter()

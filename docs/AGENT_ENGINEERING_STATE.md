@@ -1,6 +1,6 @@
 # Clack Shared Engineering State
 
-Updated: 2026-10-22. Scope: P0 whole-platform CoS audit followed by **R1 frozen Nemotron tool-transition diagnosis**. This is the **shared checkpoint index** for ChatGPT, Chat On Steroids and Codex; it is not an alternative runtime memory or a source of executed-tool truth.
+Updated: 2026-10-22. Scope: P0 whole-platform CoS audit, **R1 frozen Nemotron tool-transition diagnosis** and **P1 capability index/MCP extension**. This is the **shared checkpoint index** for ChatGPT, Chat On Steroids and Codex; it is not an alternative runtime memory or a source of executed-tool truth.
 
 ## Current verified state
 
@@ -48,7 +48,7 @@ These hashes detect accidental replacement of user work; they are not claims tha
 
 **P0 follow-on `R1` is completed in the source-backed audit linked above.** It found an observed model/engine **text-content** tool-format transition with no missing exposed tools or native frames and a correctly enforced 120-second cumulative continuation deadline. Model-versus-template internal attribution is unresolved. No generic Clack/SDK/harness defect was proven, so no production fix was made. See the detailed chronology and owner classification in `R1_NATIVE_TOOL_TRANSITION_2026-10-22.md`.
 
-**Recommended next bounded checkpoint: `P1`**, extend the capability contract and model-efficient tool index through Clack's existing Rust authorization and F1 exposure owners, using the dependency gates in `COS_FULL_PLATFORM_AUDIT_2026-10-22.md`. P1 has **not** begun. Any further live model/template A/B experiment requires separate authorization; do not reinterpret inert XML drafts or alter the current model/deadline/context settings as part of this diagnosis.
+**P1 implementation/evidence:** [`P1_CAPABILITY_INDEX_2026-10-22.md`](P1_CAPABILITY_INDEX_2026-10-22.md) documents the schema-preserving, source-qualified capability index, 4,096 metadata entries and 64-result discovery pages, F1-preserving candidate bridge, 32-tool remote MCP discovery and native Rust execution/scope proof. No plugin executor, installer, local MCP process host, marketplace or P2 adaptive Tool Broker was introduced. Further model/template A/B experiments require separate authorization; inert XML drafts remain non-executable.
 
 ## Shared ChatGPT / Codex workflow
 
@@ -66,6 +66,7 @@ These hashes detect accidental replacement of user work; they are not claims tha
 | P0 Whole-CoS capability assessment | Completed and committed `f0a099e` | Audit, source map and this shared index; 21 pinned source links and local links validated, no trailing whitespace, existing dirty hashes preserved |
 | R1 Native-to-textual transition audit | Completed; documentation-only | Last native request `inference-18` / `call_ilruqg8d` -> first textual `inference-19`, 14 unchanged tools, `think:true`, length 2048; IDs 20/21 repeat inert drafts; ID22 cancelled with zero bytes at valid 120s deadline. MODEL/ENGINE not separable; no Clack defect proven. 236 focused tests/6 suites passed; TypeScript check passed; zero inference. Full R1 evidence and hashes in linked audit. |
 | R2-R5 Local model reliability/productivity | Planned | See full roadmap and predecessor gates in `COS_FULL_PLATFORM_AUDIT_2026-10-22.md` |
-| P1-P19 Agent capability platform | Planned | One focused verified checkpoint at a time; preserve existing Clack subsystems |
+| P1 Capability contract and scalable tool index | Implemented in scoped P1 commit | Metadata contract and disabled/removed registry discovery; F1-preserving candidate bridge; bounded MCP 32-tool discovery/24-tool atomic registration; indexed real native read fixture, stale and foreign-scope denial. Synthetic 54/262/518 catalogs at 16K/32K/64K. See P1 evidence doc. |
+| P2-P19 Agent capability platform | Planned, **not started** | Recommended next only P2 adaptive discovery/activation, after fresh user authorization; preserve native executors and existing policies. |
 
 No push, release or broad implementation is authorized by this P0 planning record.

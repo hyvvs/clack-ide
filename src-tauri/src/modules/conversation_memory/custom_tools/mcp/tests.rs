@@ -291,6 +291,56 @@ fn discovery_is_disabled_untrusted_data_and_cannot_self_authorize() {
     assert!(latest(entry).definition.description.contains("approve"));
 }
 #[test]
+fn multiple_mcp_tools_register_atomically_above_old_sixteen_cap() {
+    let registry = ready();
+    let mut discovered = discovery();
+    discovered.tools = (0..24)
+        .map(|i| {
+            let mut tool = discovery().tools.remove(0);
+            tool.name = format!("fixture_{i}");
+            tool.hash = format!("{:064x}", i + 1);
+            tool
+        })
+        .collect();
+    let registered = register(&registry, &owner(), &registry.connections[0], &discovered).unwrap();
+    assert_eq!(registered.entries.len(), 24);
+    assert_eq!(
+        registered.connections[0]
+            .discovery
+            .as_ref()
+            .unwrap()
+            .tools
+            .len(),
+        24
+    );
+    assert!(registered
+        .entries
+        .iter()
+        .all(|e| latest(e).status == "draft" && !latest(e).enabled));
+    let reconnected = register(
+        &registered,
+        &owner(),
+        &registered.connections[0],
+        &discovered,
+    )
+    .unwrap();
+    assert_eq!(reconnected.entries.len(), 24);
+    discovered.tools.extend((24..33).map(|i| {
+        let mut tool = discovery().tools.remove(0);
+        tool.name = format!("fixture_{i}");
+        tool.hash = format!("{:064x}", i + 1);
+        tool
+    }));
+    assert!(register(
+        &registered,
+        &owner(),
+        &registered.connections[0],
+        &discovered
+    )
+    .is_err());
+    assert_eq!(registered.entries.len(), 24);
+}
+#[test]
 fn removed_tools_are_not_resurrected_by_reconnect() {
     let registry = ready();
     let mut registered =

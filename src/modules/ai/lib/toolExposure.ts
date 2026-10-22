@@ -18,6 +18,7 @@ import { handoffObjective } from "@/modules/ai/lib/peerHistory";
 import { referencedFiles } from "@/modules/ai/lib/scopedEvidence";
 import { operationCapabilities, resolveToolObjective, type ToolCapability, type ToolObjective } from "@/modules/ai/lib/toolObjective";
 import { getTodos } from "@/modules/ai/store/todoStore";
+import { providerCapabilityCandidates } from "@/modules/ai/lib/capabilityIndex";
 
 export const EXPOSURE_POLICY = "f1-exposure-v5";
 export const EXPOSURE_LIMITS = {
@@ -355,7 +356,7 @@ export async function prepareToolExposure(
       usePreferencesStore.getState().agentWorkspacePermissions,
     ]);
   const capturedAuthorization = authorization();
-  const permitted = Object.fromEntries(
+  const eligible = Object.fromEntries(
     Object.entries(tools).filter(
       ([name]) =>
         resolveCurrentAgentPermission(name, {}, input.context).outcome !==
@@ -366,6 +367,19 @@ export async function prepareToolExposure(
         ),
     ),
   );
+  const mandatory = [
+    ...new Set([
+      ...requiredToolNames(input.messages),
+      ...requiredUiToolNames(input.uiMessages ?? []),
+      ...(input.mandatory ?? []),
+    ]),
+  ].sort(compare);
+  // Discover/index independently of the provider's F1 schema ceiling; only
+  // bounded, selected candidates incur JSON-schema serialization.
+  const permitted = providerCapabilityCandidates(eligible, {
+    query: input.query ?? exposureQuery(input.messages),
+    mandatory,
+  });
   const schemas = await serializedToolSchemas(permitted);
   const objectiveMessages = input.objectiveMessages ?? input.uiMessages;
   const objective = objectiveMessages ? resolveToolObjective(objectiveMessages, getTodos(input.context.getSessionId())) : undefined;
@@ -375,13 +389,6 @@ export async function prepareToolExposure(
     return [name, operationCapabilities(binding?.kind === "native" ? binding.operation ?? "" : identity ? "" : name)];
   }));
   const preferences = usePreferencesStore.getState();
-  const mandatory = [
-    ...new Set([
-      ...requiredToolNames(input.messages),
-      ...requiredUiToolNames(input.uiMessages ?? []),
-      ...(input.mandatory ?? []),
-    ]),
-  ].sort(compare);
   const key = await contextDigest({
     policy: EXPOSURE_POLICY,
     source: [input.messages, input.uiMessages],

@@ -90,7 +90,7 @@ export async function buildRuntimeTools(ctx: ToolContext): Promise<ToolSet> {
         };
       },
     });
-    identifyTool(custom[definition.name], { reference, definition });
+    identifyTool(custom[definition.name], { reference, definition, workspaceId: entry.workspaceId, origin: current.source });
   }
   return { ...builtins, ...custom };
 }

@@ -250,7 +250,7 @@ fn schemas_names_annotations_and_metadata_have_finite_contracts() {
 async fn discovery_rejects_duplicate_names_too_many_tools_and_cursor_cycles() {
     for response in [
         json!({"tools":[raw_tool(),raw_tool()]}),
-        json!({"tools":(0..17).map(|i| {let mut t=raw_tool(); t["name"]=json!(format!("t{i}"));t}).collect::<Vec<_>>()}),
+        json!({"tools":(0..33).map(|i| {let mut t=raw_tool(); t["name"]=json!(format!("t{i}"));t}).collect::<Vec<_>>()}),
         json!({"tools":[],"nextCursor":"again"}),
     ] {
         let pages = if response.get("nextCursor").is_some() {
@@ -262,6 +262,35 @@ async fn discovery_rejects_duplicate_names_too_many_tools_and_cursor_cycles() {
         assert!(client.discover(json!({}), None).await.is_err());
         server.join().unwrap();
     }
+}
+#[tokio::test]
+async fn paginated_discovery_indexes_more_than_sixteen_without_relaxing_bounds() {
+    let (client, server) = fixture(2, |index, _, request| {
+        assert_eq!(request["method"], "tools/list");
+        assert_eq!(
+            request["params"].get("cursor").and_then(Value::as_str),
+            if index == 0 { None } else { Some("page2") }
+        );
+        let offset = if index == 0 { 0 } else { 16 };
+        let tools = (offset..offset + 16)
+            .map(|i| {
+                let mut tool = raw_tool();
+                tool["name"] = json!(format!("tool_{i:02}"));
+                tool
+            })
+            .collect::<Vec<_>>();
+        if index == 0 {
+            reply(request, json!({"tools":tools,"nextCursor":"page2"}))
+        } else {
+            reply(request, json!({"tools":tools}))
+        }
+    });
+    // First request + second request only. fixture's count is exact.
+    let result = client.discover(json!({}), None).await.unwrap();
+    assert_eq!(result.tools.len(), MAX_DISCOVERED_TOOLS);
+    assert_eq!(result.tools[0].name, "tool_00");
+    assert_eq!(result.tools[31].name, "tool_31");
+    server.join().unwrap();
 }
 #[tokio::test]
 async fn credentials_redacted_from_discovery_results_and_errors() {

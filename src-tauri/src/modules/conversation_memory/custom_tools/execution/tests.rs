@@ -703,6 +703,78 @@ fn registry_to_real_native_execution_keeps_recipient_scope_and_version() {
     }
 }
 #[test]
+fn source_qualified_index_identity_resolves_to_real_guarded_native_read() {
+    // Matches the P1 TS catalog JSON tuple: [source, workspace, owner, nativeName].
+    // Resolution yields only a native registry version reference, never permission.
+    let registry = authorized();
+    let entry = &registry.entries[0];
+    let index_id = json!([
+        "custom",
+        entry.workspace_id,
+        entry.id,
+        latest(entry).definition.name
+    ]);
+    let resolved = registry
+        .entries
+        .iter()
+        .find(|candidate| {
+            json!([
+                "custom",
+                candidate.workspace_id,
+                candidate.id,
+                latest(candidate).definition.name
+            ]) == index_id
+        })
+        .unwrap();
+    let reference = Reference {
+        id: resolved.id.clone(),
+        version: latest(resolved).version,
+        hash: latest(resolved).hash.clone(),
+    };
+    let selected = authorized_version(&registry, &owner(), &reference).unwrap();
+    assert_eq!(
+        selected.definition.binding,
+        Binding::Native {
+            operation: "read_file".into()
+        }
+    );
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("capability.txt"), "native index fixture").unwrap();
+    let arguments = json!({"path":"capability.txt"});
+    schema::arguments(&selected.definition, &arguments).unwrap();
+    let output =
+        io::read_file(dir.path(), "capability.txt", 8192, &AtomicBool::new(false)).unwrap();
+    schema::value_matches(&selected.definition.output_schema, &output, 0).unwrap();
+    assert_eq!(output, json!("native index fixture"));
+    let revoked = apply(
+        &registry,
+        &owner(),
+        registry.revision,
+        Change::Revoke {
+            id: reference.id.clone(),
+        },
+        Authority::NativeUser,
+    )
+    .unwrap();
+    assert!(authorized_version(&revoked, &owner(), &reference).is_err());
+    for access in [
+        Access {
+            session: "wrong-session".into(),
+            ..owner()
+        },
+        Access {
+            workspace: "local:/wrong".into(),
+            ..owner()
+        },
+        Access {
+            agent: "builtin:reviewer".into(),
+            ..owner()
+        },
+    ] {
+        assert!(authorized_version(&registry, &access, &reference).is_err());
+    }
+}
+#[test]
 fn native_approval_cannot_be_reused_for_another_capture_or_after_consumption() {
     let mut captured = record();
     captured.state = "awaiting-approval".into();

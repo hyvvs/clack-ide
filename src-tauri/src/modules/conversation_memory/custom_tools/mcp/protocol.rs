@@ -3,6 +3,9 @@ use super::*;
 use std::sync::atomic::AtomicU64;
 
 pub(super) const PROTOCOL: &str = "2025-06-18";
+// Discovery catalog capacity, independent of provider F1 exposure (16 optional
+// schemas). Four cursor pages, 64-KiB responses and per-schema limits still apply.
+pub(super) const MAX_DISCOVERED_TOOLS: usize = 32;
 const WIRE_LIMIT: usize = 64 * 1024;
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -432,7 +435,7 @@ impl Client {
             let (value, _) = self.rpc("tools/list", params, secret).await?;
             let value = execution::redact_mcp(value, secret);
             for raw in value["tools"].as_array().ok_or("mcp-tools-list")? {
-                if tools.len() == 16 {
+                if tools.len() == MAX_DISCOVERED_TOOLS {
                     return Err("mcp-tool-count".into());
                 }
                 let item = tool(raw)?;
