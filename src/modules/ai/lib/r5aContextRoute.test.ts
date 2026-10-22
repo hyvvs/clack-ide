@@ -4,6 +4,7 @@ import { normalizeAiError } from "@/modules/ai/lib/errors";
 import {
   assertOllamaContextRoute,
   createRequestPreflight,
+  type OllamaRouteDecision,
 } from "@/modules/ai/lib/requestPreflight";
 import { saveSelfHostedModel } from "@/modules/ai/lib/selfHostedModels";
 import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
@@ -24,7 +25,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const modelId = "generic-model:revision";
 const endpointId = "offline-fixture";
 
-function fixture() {
+function fixture(decisions: OllamaRouteDecision[] = [], failObservation = false) {
   const endpoint = createSelfHostedEndpoint(
     {
       alias: "Local tunnel",
@@ -96,6 +97,10 @@ function fixture() {
     modelId,
     state,
     admission: { endpointId, profileId, capacity: 1 },
+    onOllamaRouteDecision: decision => {
+      decisions.push(decision);
+      if (failObservation) throw new Error("Observation unavailable");
+    },
   });
   const body = (name: unknown = modelId, context: unknown = 32768) => ({
     model: name,
@@ -121,6 +126,35 @@ function fixture() {
 beforeEach(() => vi.clearAllMocks());
 
 describe("R5a: frozen R5 context-route boundary without inference", () => {
+  it("R5b observer failure cannot block a safe request or admit a real mismatch", async () => {
+    const decisions: OllamaRouteDecision[] = [];
+    const f = fixture(decisions, true);
+    await expect(f.preflight.prepare(f.body())).resolves.toBeTypeOf("function");
+    await expect(f.preflight.prepare(f.body(modelId, 4096))).rejects.toMatchObject({ code: "ollama-context-route" });
+    expect(decisions.map(row => row.admittedByRoute)).toEqual([true, false]);
+  });
+  it("R5b captures the same strict comparison for admitted and rejected requests without sensitive route identity", async () => {
+    const decisions: OllamaRouteDecision[] = [];
+    const f = fixture(decisions);
+    await expect(f.preflight.prepare(f.body())).resolves.toBeTypeOf("function");
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      modelMatches: true,
+      serializedContext: 32768,
+      trustedTarget: 32768,
+      admittedByRoute: true,
+      capturedConfigurationRevision: 1,
+      snapshotConfigurationRevision: 1,
+      snapshotConnected: true,
+      snapshotDigestMatches: true,
+      calibrationStatus: null,
+    });
+    await expect(f.preflight.prepare(f.body(modelId, 16384))).rejects.toMatchObject({ code: "ollama-context-route" });
+    expect(decisions[1]).toMatchObject({
+      modelMatches: true, serializedContext: 16384, trustedTarget: 32768, admittedByRoute: false,
+    });
+    expect(JSON.stringify(decisions)).not.toMatch(/generic-model|127\.0\.0\.1|digest-a|Bearer|offline test/);
+  });
   it("accepts matching model, context, route and same-chat continuation", async () => {
     const f = fixture();
     const first = await f.preflight.prepare(f.body());

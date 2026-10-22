@@ -35,6 +35,7 @@ import {
   endpointAllowsPrivate,
   endpointProvider,
 } from "@/modules/ai/lib/selfHostedModels";
+import { contextMetadata, contextRuntime } from "@/modules/ai/lib/contextCalibrationTrust";
 import {
   effortBudget,
   effortCapability,
@@ -115,6 +116,29 @@ export function assertOllamaContextRoute(
   throw new ContextBudgetError("ollama-context-route", `Ollama context-route preflight rejected: ${reasons.join("; ")}. No inference was sent.`);
 }
 
+/** Opt-in, redacted receipt of the actual comparison; no prompt/URL/model identifiers. */
+export type OllamaRouteDecision = {
+  at: number;
+  modelMatches: boolean;
+  serializedContext: number | null;
+  trustedTarget: number | null;
+  admittedByRoute: boolean;
+  capturedStateRevision: number | null;
+  capturedConfigurationRevision: number | null;
+  snapshotConfigurationRevision: number | null;
+  snapshotAgeMs: number | null;
+  snapshotConnected: boolean | null;
+  snapshotDigestMatches: boolean | null;
+  calibrationStatus: string | null;
+  calibratedContext: number | null;
+  calibrationExpired: boolean | null;
+  runtimeObserved: boolean;
+  runtimeAgeMs: number | null;
+  runtimeEpochMatches: boolean | null;
+  runtimeVersionMatches: boolean | null;
+  loadedContextMatchesCalibration: boolean | null;
+};
+
 export function createRequestPreflight(options: {
   validateRouting?: () => Promise<void>;
   requireRequestedOutput?: boolean;
@@ -130,6 +154,7 @@ export function createRequestPreflight(options: {
   optimization?: boolean;
   calibrationContext?: number;
   validateEvidence?: () => Promise<void>;
+  onOllamaRouteDecision?: (decision: OllamaRouteDecision) => void;
 }) {
   const state = options.state;
   const profile =
@@ -362,8 +387,43 @@ export function createRequestPreflight(options: {
       await refresh();
       await reasoningOptions();
       const measured = assertRequestBudget(limits(), body, schemaKinds, availableSchemas);
-      if (options.providerId === "ollama")
-        assertOllamaContextRoute(body, options.modelId, runtimeTarget());
+      if (options.providerId === "ollama") {
+        // Capture exactly once. A refresh/trust transition must not make the
+        // comparison and its diagnostic describe different target values.
+        const target = runtimeTarget();
+        if (options.onOllamaRouteDecision) {
+          const at = Date.now();
+          const calibration = profile?.contextCalibration;
+          const runtime = endpoint && contextRuntime(endpoint.id);
+          const activeModel = snapshot?.models.find(m => m.id === profile?.transportModelId);
+          const serialized = (body.options as { num_ctx?: unknown } | undefined)?.num_ctx;
+          const decision: OllamaRouteDecision = {
+            at,
+            modelMatches: body.model === options.modelId,
+            serializedContext: typeof serialized === "number" && Number.isSafeInteger(serialized) && serialized > 0 ? serialized : null,
+            trustedTarget: target ?? null,
+            admittedByRoute: body.model === options.modelId && serialized === target,
+            capturedStateRevision: state?.revision ?? null,
+            capturedConfigurationRevision: endpoint?.configurationRevision ?? null,
+            snapshotConfigurationRevision: snapshot?.configurationRevision ?? null,
+            snapshotAgeMs: snapshot ? at - snapshot.observedAt : null,
+            snapshotConnected: snapshot?.connected ?? null,
+            snapshotDigestMatches: profile && activeModel ? activeModel.digest === profile.modelRevision : null,
+            calibrationStatus: calibration?.status ?? null,
+            calibratedContext: calibration?.highest ?? null,
+            calibrationExpired: calibration ? calibration.expiresAt <= at : null,
+            runtimeObserved: !!runtime,
+            runtimeAgeMs: runtime ? at - runtime.at : null,
+            runtimeEpochMatches: runtime && calibration ? runtime.epoch === calibration.scope.runtimeEpoch : null,
+            runtimeVersionMatches: runtime && calibration ? runtime.version === calibration.scope.providerVersion : null,
+            loadedContextMatchesCalibration: profile && endpoint && calibration
+              ? contextMetadata(profile, endpoint, "loadedContext", at) === calibration.highest : null,
+          };
+          try { options.onOllamaRouteDecision(decision); }
+          catch { /* Diagnostic delivery must never affect request admission. */ }
+        }
+        assertOllamaContextRoute(body, options.modelId, target);
+      }
       return async () => {
         await checkIdentity();
         // Only stale explicit controls may use bounded metadata revalidation here.

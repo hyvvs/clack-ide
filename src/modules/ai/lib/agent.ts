@@ -73,6 +73,7 @@ import {
   preflightFetch,
   modelBudgetLimits,
   setModelSchemaDiagnostics,
+  type OllamaRouteDecision,
 } from "@/modules/ai/lib/requestPreflight";
 import {
   measureRequest,
@@ -140,6 +141,7 @@ function ellipsize(s: string, max: number): string {
 }
 
 export type BuildModelOptions = {
+  onOllamaRouteDecision?: (decision: OllamaRouteDecision) => void;
   toolVerification?: boolean;
   calibrationContext?: number;
   providerEvidence?: import("@/modules/ai/lib/providerModelEvidence").ProviderModelEvidence;
@@ -264,6 +266,7 @@ export async function buildLanguageModel(
 
   let built: LanguageModel;
   const preflight = createRequestPreflight({
+    onOllamaRouteDecision: options.onOllamaRouteDecision,
     validateRouting: options.inferenceScope?.validateFallback,
     requireRequestedOutput: Boolean(options.inferenceScope?.fallbackToken),
     cachedMetadataOnly: Boolean(options.inferenceScope?.fallbackToken),
@@ -469,6 +472,7 @@ export async function buildLanguageModel(
 }
 
 export type LocalProviderConfig = {
+  onOllamaRouteDecision?: BuildModelOptions["onOllamaRouteDecision"];
   reasoning?: EffortCapture;
   inferenceScope?: InferenceScope;
   selfHostedInference?: SelfHostedState;
@@ -503,6 +507,7 @@ export function buildConfiguredLanguageModel(
       hosted.transportModelId,
       {
         selfHosted: true,
+        onOllamaRouteDecision: local.onOllamaRouteDecision,
         reasoning: local.reasoning,
         selfHostedInference: local.selfHostedInference,
         admission: endpointInferenceAdmission(
