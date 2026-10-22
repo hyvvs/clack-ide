@@ -1,5 +1,5 @@
 /** R5b: only the existing production SDK -> preflight -> Tauri -> Ollama route. */
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { generateText } from "ai";
 import { buildConfiguredLanguageModel } from "@/modules/ai/lib/agent";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
@@ -11,6 +11,7 @@ import {
 import { createSelfHostedProbeClient } from "@/modules/ai/lib/selfHostedProbe";
 import { readToolProfiles } from "@/modules/ai/lib/toolVerificationRuntime";
 import type { OllamaRouteDecision } from "@/modules/ai/lib/requestPreflight";
+import { flushR5bReceipts } from "@/test/r5cReceiptFlush";
 
 const url = new URL(location.href).searchParams.get("configuration");
 if (!url) throw new Error("R5b isolated configuration missing");
@@ -29,6 +30,24 @@ const saveEvent = (event: Record<string, unknown>) => {
     if (!response.ok) throw new Error("R5b incremental evidence not persisted");
   });
 };
+// Acceptance-only observation *after* the real frontend Channel listener
+// returns. Never log response content, headers, request URL, prompt or model.
+const channelDescriptor = Object.getOwnPropertyDescriptor(Channel.prototype, "onmessage");
+if (channelDescriptor?.set && channelDescriptor.get) {
+  Object.defineProperty(Channel.prototype, "onmessage", {
+    ...channelDescriptor,
+    set(previous: (event: Record<string, unknown>) => void) {
+      channelDescriptor.set?.call(this, (event: Record<string, unknown>) => {
+        previous.call(this, event);
+        const match = typeof event.requestId === "string" ? /^inference-([12])$/.exec(event.requestId) : null;
+        if (match && ["headers", "chunk", "settled"].includes(String(event.kind))) {
+          saveEvent({ kind: "frontend-native-event", ordinal: Number(match[1]), phase: event.kind,
+            bytes: event.kind === "chunk" && Array.isArray(event.bytes) ? event.bytes.length : 0 });
+        }
+      });
+    },
+  });
+}
 let submitted = 0;
 const evidence: Record<string, unknown> = { kind: "r5b-result", preflight: receipts, inferenceAttempts: 0, cloudInference: 0, fallback: "never", responses: [] };
 try {
@@ -78,7 +97,9 @@ try {
       saveEvent({ kind: "request-completed", ordinal: i + 1, finishReason: result.finishReason });
     } catch (error) {
       responses.push({ number: i + 1, outcome: "rejected-or-failed", code: error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : null, type: error instanceof Error ? error.name : "unknown" });
-      saveEvent({ kind: "request-failed", ordinal: i + 1 });
+      const kind = error instanceof Error && error.name === "TimeoutError" ? "request-timed-out"
+        : error instanceof Error && error.name === "AbortError" ? "request-cancelled" : "request-failed";
+      saveEvent({ kind, ordinal: i + 1 });
       break; // Do not retry any failed request or obscure its original cause.
     }
   }
@@ -89,7 +110,12 @@ try {
   evidence.setupErrorCode = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : null;
 } finally {
   evidence.inferenceAttempts = submitted;
-  await eventWrites.catch(() => undefined);
-  await fetch(config.report, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(evidence) });
-  await invoke("coworking_exit");
+  evidence.incrementalReceiptStatus = await flushR5bReceipts(eventWrites);
+  try {
+    // The owning runner alone decides whether a final receipt was accepted.
+    // A non-2xx response cannot be promoted into a passed report.
+    await fetch(config.report, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(evidence), signal: AbortSignal.timeout(5_000) });
+  } finally {
+    await invoke("coworking_exit");
+  }
 }

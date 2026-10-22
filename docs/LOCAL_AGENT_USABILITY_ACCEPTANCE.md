@@ -1,5 +1,7 @@
 # Independent local-agent usability acceptance
 
+**2026-10-22 R5c addendum:** [R5c frontend stream and receipt report](R5C_FRONTEND_STREAM_RECEIPT_BOUNDARY_2026-10-22.md) independently revisits R5b's single 623-byte native-delivered response. It was `generateText`/native Ollama `doGenerate` JSON over streaming IPC, *not proof of a valid parsed SDK final event*. Actual frontend Channel handling, SDK completion, and `/report` remained UNKNOWN when the prior native host hit 90 seconds. **Zero R5c inference**; offline real proxy+SDK deterministic cases prove equal-size complete and incomplete provider responses lead to different results. Extracted test-only incremental receipt POST is durably acknowledged and persists after deliberately killing a receipt-only child process without a final report. The later, unexercised R5b harness had an **unbounded flush wait** that could conceal a completed SDK request; R5c bounds it and adds distinct sanitized Channel/SDK stages for future separate verification. This is a **harness fix**, not a demonstrated cause of the earlier R5b timeout or the original R5 context-route failure. R5 LIMITED, packaged R3d BLOCKED, P2–P19 mandatory/deferred; no automatic next live run.
+
 Audit baseline: `09f4a69`, clean `main`, 29 commits ahead of `origin/main`.
 This is an independent audit, not a new runtime or roadmap. No push or Computer
 Use is authorized. Deterministic protocol fixtures prove runtime behavior, not

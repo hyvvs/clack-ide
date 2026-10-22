@@ -2,11 +2,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
+import { createR5bReceiptHandler } from "./r5c-receipt-boundary.mjs";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
 const root = path.join(repo, "src-tauri/target/r5b-native-one-shot-20261022");
@@ -42,39 +43,11 @@ assert((await stat(bin)).size > 0, "Existing approved native acceptance host una
 const evidence = { at: Date.now(), sourceSettingsSha256: createHash("sha256").update(savedBytes).digest("hex"), engineVersion: version.version, modelDigestMatches: true, endpointConfigurationRevision: ep.configurationRevision, requests: [], runner: "r5b-1", child: null };
 let serverUrl = "";
 const result = new Promise(resolve => { reportValue = resolve; });
-server = createServer(async (request, response) => {
-  response.setHeader("access-control-allow-origin", "*");
-  response.setHeader("content-type", "application/json");
-  if (request.url?.startsWith("/configuration") && request.method === "GET") {
-    response.end(JSON.stringify({ report: serverUrl + "/report", events: serverUrl + "/events", digest, model, endpoint }));
-    return;
-  }
-  if (request.url === "/events" && request.method === "POST") {
-    let text = "";
-    for await (const chunk of request) {
-      text += chunk;
-      assert(text.length < 4096, "R5b redacted event too large");
-    }
-    const event = JSON.parse(text);
-    assert(["preflight-decision", "request-started", "request-completed", "request-failed"].includes(event.kind));
-    // Explicitly persist individual decisions as they occur, even when the
-    // consumer never returns its final receipt. This did NOT exist in R5b-1.
-    await appendFile(path.join(root, "redacted-preflight-events.jsonl"), `${JSON.stringify(event)}\n`);
-    response.end('{"ok":true}');
-    return;
-  }
-  if (request.url === "/report" && request.method === "POST") {
-    let text = "";
-    for await (const chunk of request) {
-      text += chunk;
-      assert(text.length < 32_000, "R5b redacted evidence too large");
-    }
-    reportValue(JSON.parse(text));
-    response.end('{"ok":true}');
-    return;
-  }
-  response.statusCode = 404; response.end('{"error":"unrecognized"}');
-});
+server = createServer(createR5bReceiptHandler({
+  root,
+  configuration: () => ({ report: serverUrl + "/report", events: serverUrl + "/events", digest, model, endpoint }),
+  onReport: reportValue,
+}));
 try {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   serverUrl = `http://127.0.0.1:${server.address().port}`;
