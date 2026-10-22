@@ -2,6 +2,8 @@
 
 Clack is a Tauri 2 + React 19 + Rust IDE/agent app forked from Terax.
 
+The current full-platform Agent vision, Chat On Steroids comparison and phased roadmap are in `docs/COS_FULL_PLATFORM_AUDIT_2026-10-22.md`. The shared ChatGPT/Codex checkpoint state and handoff rules are in `docs/AGENT_ENGINEERING_STATE.md`. These supersede older public `README.md`/`ROADMAP.md` progress summaries where implementation has advanced; retain the older AI plans and acceptance records as historical evidence.
+
 ## Project Rules
 
 - Product name: Clack.

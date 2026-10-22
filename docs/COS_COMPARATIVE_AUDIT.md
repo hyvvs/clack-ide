@@ -1,5 +1,7 @@
 # CoS Comparative Audit
 
+This is a historical focused investigation of CoS session/workflow mechanisms. For the **whole public CoS platform** at pinned `f50a8d3` (2026-10-21), including Agent, Goal/Loop, workers, planning, scheduling, code mode, plugin ecosystem, browser/desktop tools, UI, local-model implications and Clack's future checkpoint roadmap, see [`COS_FULL_PLATFORM_AUDIT_2026-10-22.md`](COS_FULL_PLATFORM_AUDIT_2026-10-22.md). Current cross-agent handoff is in [`AGENT_ENGINEERING_STATE.md`](AGENT_ENGINEERING_STATE.md).
+
 ## Independent Re-Investigation: 2026-10-15
 
 Revisited upstream source and tests at

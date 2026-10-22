@@ -1,5 +1,7 @@
 # Roadmap
 
+**Current direction, 2026-10-22:** Clack is expanding toward a complete local-first Agentic IDE and automation platform, including advanced Agent workflows, scalable local-model tools, plugins, browser/desktop capabilities and verified task delivery. The source-backed, ordered roadmap is [`docs/COS_FULL_PLATFORM_AUDIT_2026-10-22.md`](docs/COS_FULL_PLATFORM_AUDIT_2026-10-22.md); live checkpoint state is [`docs/AGENT_ENGINEERING_STATE.md`](docs/AGENT_ENGINEERING_STATE.md). The older scope decisions below are retained as historical context where they conflict with the newer explicit product vision.
+
 Clack direction, what's shipped, what's coming, and what's deliberately out of scope.
 
 This file is updated as direction evolves. For day-to-day work, see [GitHub Issues](https://github.com/crynta/Clack-ai/issues) and the Projects board.

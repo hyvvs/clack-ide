@@ -1,5 +1,7 @@
 # Clack Self-Hosted Inference Plan
 
+Historical summary notice (2026-10-22): the September header and implementation-status overview below are superseded by the later A1-Z checkpoint ledger in this file and by the October source/acceptance evidence. The **new** full-platform Agent/automation/plugin roadmap is [`COS_FULL_PLATFORM_AUDIT_2026-10-22.md`](COS_FULL_PLATFORM_AUDIT_2026-10-22.md); handoff state is [`AGENT_ENGINEERING_STATE.md`](AGENT_ENGINEERING_STATE.md). Preserve historical phase records and their original proof limits.
+
 Status: Complete through R1; 16 of 32 ordered checkpoints complete. R2 is next and unstarted.
 Status updated: 2026-09-27, implementation HEAD `ffd874d`
 Audit date: 2026-09-06

@@ -19,6 +19,8 @@ No telemetry is collected from users. There is no need to create an account. You
 
 ## Development Progress
 
+**Updated roadmap (October 22, 2026):** The full Agentic IDE and automation-platform vision, cross-project source-backed capability inventory and ordered engineering checkpoints are in the [whole-platform audit](docs/COS_FULL_PLATFORM_AUDIT_2026-10-22.md). The [shared engineering state](docs/AGENT_ENGINEERING_STATE.md) identifies the current repository checkpoint. The progress figures below describe the historical **September 27, 2026** snapshot; subsequent implementation and local-model acceptance records have advanced beyond it.
+
 The advanced inference and agent program is complete through **R1: Truthful
 Activity Presentation**: 16 of 32 ordered checkpoints are complete. The earlier
 multi-model/multi-agent foundation has all eight phases complete. **R2: Functional
