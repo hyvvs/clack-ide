@@ -43,6 +43,16 @@ export type RunObligationReport = {
   obligations: ObligationView[];
   writesObserved: number;
   checks: ValidationCheck[];
+  nativeChecks: {
+    id: string;
+    obligationId: string;
+    obligation: string;
+    command: string;
+    purpose: string;
+    outcome: string;
+    freshness: "current-source-check" | "stale" | "unknown";
+    reason: string;
+  }[];
   toolFailures: { id: string; name: string; reason: string }[];
   peerOutstanding: number;
   peerClaimedComplete: number;
@@ -130,7 +140,11 @@ export function inspectRunObligations(input: {
 }): RunObligationReport {
   const { messages, sessionId, workspaceId, run } = input;
   const userTurns = messages.filter((m) => m.role === "user").length;
-  const entries = validateTodos([...input.todos])
+  // Provenance can be larger than the model's bounded plan payload; it is
+  // recorded by native execution and never parsed as model-created plan text.
+  const entries = validateTodos(
+    input.todos.map((t) => ({ ...t, nativeChecks: undefined })),
+  )
     ? []
     : input.todos.slice(0, 16);
   let lastAcceptedPlan = -1;
@@ -236,8 +250,9 @@ export function inspectRunObligations(input: {
     (p) => p.status === "completed",
   ).length;
   const obligations: ObligationView[] = entries.map((todo) => {
-    let state: ObligationState =
-      todo.status === "pending"
+    let state: ObligationState = todo.superseded
+      ? "superseded"
+      : todo.status === "pending"
         ? "not-started"
         : todo.status === "in_progress" || todo.status === "interrupted"
           ? "in-progress"
@@ -255,7 +270,7 @@ export function inspectRunObligations(input: {
         !!workspaceId &&
         p.workspaceId === workspaceId &&
         !!run &&
-        run.workspaceId === workspaceId &&
+        (run.checkoutId ?? run.workspaceId) === workspaceId &&
         p.runStartedAt === run.startedAt &&
         p.source === "trusted-validation" &&
         p.userTurnCount === userTurns &&
@@ -273,16 +288,63 @@ export function inspectRunObligations(input: {
       state === "verified-complete"
         ? "Independent check bound to current workspace revision and all user turns."
         : state === "completed-unverified"
-          ? "Todo reports completion; current independent validation is unavailable or stale."
-          : state === "blocked"
-            ? todo.status === "cancelled"
-              ? "Todo was cancelled; no authoritative replacement or supersession is established."
-              : "Marked blocked in the accepted plan."
-            : state === "failed"
-              ? "Explicit failure or failed scoped verification."
-              : "Still outstanding in the accepted plan.";
+          ? "Todo reports completion; a scoped passing native check validates only its command, not arbitrary application semantics."
+          : state === "superseded"
+            ? "Historical obligation replaced by an explicitly linked accepted Todo."
+            : state === "blocked"
+              ? todo.status === "cancelled"
+                ? "Todo was cancelled; no authoritative replacement or supersession is established."
+                : "Marked blocked in the accepted plan."
+              : state === "failed"
+                ? "Explicit failure or failed scoped verification."
+                : "Still outstanding in the accepted plan.";
     return { id: todo.id, title: todo.title, state, explanation };
   });
+  const nativeChecks: RunObligationReport["nativeChecks"] = entries
+    .flatMap((todo) =>
+      (todo.nativeChecks ?? []).map((c) => {
+        const owner =
+          !todo.superseded &&
+          c.sessionId === sessionId &&
+          c.workspaceId === workspaceId &&
+          !!run &&
+          (run.checkoutId ?? run.workspaceId) === workspaceId &&
+          c.runStartedAt === run.startedAt;
+        const correctTurns =
+          c.userTurnCount === userTurns && !unmatchedInstructions;
+        const unchanged =
+          !!c.beforeRevision && c.beforeRevision === c.afterRevision;
+        const freshness =
+          owner &&
+          correctTurns &&
+          unchanged &&
+          input.currentRevision &&
+          c.afterRevision === input.currentRevision
+            ? ("current-source-check" as const)
+            : owner && correctTurns && unchanged && !input.currentRevision
+              ? ("unknown" as const)
+              : owner && correctTurns && (!c.beforeRevision || !c.afterRevision)
+                ? ("unknown" as const)
+                : ("stale" as const);
+        return {
+          id: c.id,
+          obligationId: todo.id,
+          obligation: todo.title,
+          command: c.command,
+          purpose: c.purpose,
+          outcome: c.status,
+          freshness,
+          reason:
+            freshness === "current-source-check"
+              ? `Native command ${c.status} against the currently matching bounded source tree; no general feature certification.`
+              : freshness === "stale"
+                ? "Run, instruction or working-tree revision changed (or source changed during check)."
+                : (c.reason ??
+                  "Full current source revision unavailable; result is historical only."),
+        };
+      }),
+    )
+    .slice(-24);
   const active = obligations.filter((o) => o.state !== "superseded");
   const outcome: RunObligationReport["outcome"] =
     active.some((o) => o.state === "failed" || o.state === "blocked") ||
@@ -307,6 +369,7 @@ export function inspectRunObligations(input: {
     obligations,
     writesObserved,
     checks: checks.slice(-24),
+    nativeChecks,
     toolFailures: toolFailures.slice(-8),
     peerOutstanding,
     peerClaimedComplete,

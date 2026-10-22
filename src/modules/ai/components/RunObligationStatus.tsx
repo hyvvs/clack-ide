@@ -1,10 +1,12 @@
 import type { UIMessage } from "ai";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { native } from "../lib/native";
 import {
   inspectRunObligations,
   type RunObligationReport,
 } from "../lib/runObligations";
 import type { SessionRun } from "../lib/sessions";
+import { workspaceEnvironmentFromId } from "../lib/sessions";
 import { usePeerTaskStore } from "../store/peerTaskStore";
 import { useTodosStore } from "../store/todoStore";
 
@@ -14,12 +16,14 @@ const EMPTY: never[] = [];
 export function RunObligationStatus({
   sessionId,
   workspaceId,
+  workspaceRoot,
   run,
   messages,
   continuation,
 }: {
   sessionId: string;
   workspaceId: string | null;
+  workspaceRoot?: string | null;
   run: SessionRun;
   messages: UIMessage[];
   continuation:
@@ -32,6 +36,59 @@ export function RunObligationStatus({
   const hydrated = useTodosStore((s) => s.hydrated.has(sessionId));
   const todos = useTodosStore((s) => s.bySession[sessionId]) ?? EMPTY;
   const peerTasks = usePeerTaskStore((s) => s.tasks);
+  const [witness, setWitness] = useState<{
+    key: string;
+    revision: string | null;
+    observedAt: number;
+  } | null>(null);
+  const witnessKey = `${sessionId}:${run.startedAt}:${workspaceId ?? ""}:${workspaceRoot ?? ""}`;
+  const hasNativeEvidence = todos.some((t) => !!t.nativeChecks?.length);
+  useEffect(() => {
+    let alive = true;
+    let sequence = 0;
+    setWitness(null);
+    const refresh = () => {
+      const requested = ++sequence;
+      if (!workspaceRoot || !workspaceId) return;
+      void native
+        .agentWorkspaceFingerprint(
+          workspaceRoot,
+          workspaceEnvironmentFromId(workspaceId) ?? undefined,
+        )
+        .then((result) => {
+          if (alive && requested === sequence)
+            setWitness({
+              key: witnessKey,
+              revision: result.revision,
+              observedAt: Date.now(),
+            });
+        })
+        .catch(() => {
+          if (alive && requested === sequence)
+            setWitness({
+              key: witnessKey,
+              revision: null,
+              observedAt: Date.now(),
+            });
+        });
+    };
+    if (workspaceRoot && workspaceId) {
+      refresh();
+    }
+    // Out-of-band mutations cannot be observed solely from React/store events.
+    // Poll only while an ended run has evidence to compare; refocus also checks.
+    const interval = hasNativeEvidence
+      ? window.setInterval(refresh, 30_000)
+      : null;
+    if (hasNativeEvidence) window.addEventListener("focus", refresh);
+    return () => {
+      alive = false;
+      if (interval !== null) window.clearInterval(interval);
+      if (hasNativeEvidence) window.removeEventListener("focus", refresh);
+    };
+  }, [witnessKey, workspaceRoot, workspaceId, hasNativeEvidence]);
+  const currentRevision =
+    witness?.key === witnessKey ? (witness.revision ?? undefined) : undefined;
   // Ended runs do not mount TodoStrip, and restart recovery only hydrates
   // interrupted chats. Read the accepted persisted plan for every viewed run.
   useEffect(() => {
@@ -46,8 +103,9 @@ export function RunObligationStatus({
         messages,
         todos,
         peerTasks,
+        currentRevision,
       }),
-    [sessionId, workspaceId, run, messages, todos, peerTasks],
+    [sessionId, workspaceId, run, messages, todos, peerTasks, currentRevision],
   );
   if (!hydrated) {
     return (
@@ -60,14 +118,24 @@ export function RunObligationStatus({
       </section>
     );
   }
-  return <RunObligationEvidence report={report} continuation={continuation} />;
+  return (
+    <RunObligationEvidence
+      report={report}
+      continuation={continuation}
+      lastSourceObservation={
+        witness?.key === witnessKey ? witness.observedAt : undefined
+      }
+    />
+  );
 }
 
 export function RunObligationEvidence({
   report,
   continuation,
+  lastSourceObservation,
 }: {
   report: RunObligationReport;
+  lastSourceObservation?: number;
   continuation:
     | "continue"
     | "explicit-limit-extension"
@@ -129,6 +197,30 @@ export function RunObligationEvidence({
           conversation.
         </div>
       )}
+      {report.nativeChecks.length ? (
+        <div>
+          <div className="font-medium">
+            Native checks explicitly associated with accepted Todos:
+          </div>
+          <div className="text-[var(--clack-text-3)]">
+            Source freshness is sampled, not continuously guaranteed.{" "}
+            {lastSourceObservation
+              ? `Last source observation: ${new Date(lastSourceObservation).toISOString()}.`
+              : "No current source observation available."}
+          </div>
+          {report.nativeChecks.map((check) => (
+            <div key={check.id} className="break-words">
+              {check.obligation}: {check.outcome} (
+              {check.freshness.replace(/-/g, " ")}) —{" "}
+              <code>{check.command}</code>
+              <span className="text-[var(--clack-text-3)]">
+                {" "}
+                {check.reason}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       {report.toolFailures.length ? (
         <div>
           {report.toolFailures.map((failure) => (

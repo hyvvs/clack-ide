@@ -1,10 +1,12 @@
+import { currentWorkspaceEnv, workspaceScopeKey } from "@/modules/workspace";
+import type { WorkspaceEnv } from "@/modules/workspace/env";
 import { tool } from "ai";
 import { z } from "zod";
 import { native } from "../lib/native";
 import { checkShellCommand } from "../lib/security";
+import { type NativeTodoCheck, newTodoId } from "../lib/todos";
+import { useTodosStore } from "../store/todoStore";
 import type { ToolContext } from "./context";
-import { currentWorkspaceEnv, workspaceScopeKey } from "@/modules/workspace";
-import type { WorkspaceEnv } from "@/modules/workspace/env";
 
 /**
  * Per-session lazy shell-session id. The agent gets one persistent shell per
@@ -40,12 +42,103 @@ export function buildShellTools(ctx: ToolContext) {
       inputSchema: z.object({
         command: z.string(),
         timeout_secs: z.number().int().min(1).max(300).optional(),
+        verify_todo_id: z
+          .string()
+          .min(1)
+          .max(128)
+          .optional()
+          .describe(
+            "Explicit existing Todo identity to associate the native command's observed outcome with. Does not certify arbitrary application functionality.",
+          ),
+        verification_purpose: z.string().trim().min(1).max(160).optional(),
       }),
-      execute: async ({ command, timeout_secs }) => {
+      execute: async ({
+        command,
+        timeout_secs,
+        verify_todo_id,
+        verification_purpose,
+      }) => {
         const safety = checkShellCommand(command);
-        if (!safety.ok) return { error: safety.reason };
         const sid = ctx.getSessionId();
         if (!sid) return { error: "no active chat session" };
+        // Association is metadata only. The same authorized bash_run executes,
+        // or remains denied; no extra command path or new approval bypass.
+        const todo = verify_todo_id
+          ? useTodosStore
+              .getState()
+              .bySession[sid]?.find(
+                (t) => t.id === verify_todo_id && !t.superseded,
+              )
+          : undefined;
+        if (verify_todo_id && !todo)
+          return {
+            error: "verification Todo identity is not accepted in this session",
+          };
+        const runStartedAt = ctx.getRunId?.();
+        const userTurnCount = ctx.getUserTurnCount?.();
+        const workspaceId = ctx.getWorkspaceId?.();
+        const root = ctx.getWorkspaceRoot();
+        const env = ctx.getWorkspaceEnv?.();
+        const startedAt = Date.now();
+        const witness = async () => {
+          if (!verify_todo_id || !root) return null;
+          try {
+            return await native.agentWorkspaceFingerprint(root, env);
+          } catch {
+            return null;
+          }
+        };
+        const before = safety.ok ? await witness() : null;
+        const record = (
+          status: NativeTodoCheck["status"],
+          exitCode: number | null,
+          after: Awaited<ReturnType<typeof witness>>,
+          reason?: string,
+        ) => {
+          if (
+            !verify_todo_id ||
+            !runStartedAt ||
+            userTurnCount === undefined ||
+            !workspaceId ||
+            !todo
+          )
+            return null;
+          const receipt: NativeTodoCheck = {
+            id: `${sid}:${runStartedAt}:${newTodoId()}`,
+            purpose: (verification_purpose ?? "Native command check").slice(
+              0,
+              160,
+            ),
+            command: command.slice(0, 240),
+            sessionId: sid,
+            workspaceId,
+            runStartedAt,
+            userTurnCount,
+            startedAt,
+            finishedAt: Date.now(),
+            exitCode,
+            status,
+            beforeRevision: before?.revision ?? null,
+            afterRevision: after?.revision ?? null,
+            qualification:
+              before?.qualification === after?.qualification
+                ? (before?.qualification ?? "unavailable")
+                : "unavailable",
+            ...(reason ? { reason: reason.slice(0, 200) } : {}),
+          };
+          return useTodosStore
+            .getState()
+            .recordNativeCheck(sid, verify_todo_id, receipt)
+            ? receipt.id
+            : null;
+        };
+        if (!safety.ok) {
+          const evidenceId = record("blocked", null, null, safety.reason);
+          return {
+            error: safety.reason,
+            ...(evidenceId ? { nativeCheckEvidenceId: evidenceId } : {}),
+          };
+        }
         try {
           const cwd = ctx.getCwd();
           const workspace = ctx.getWorkspaceEnv?.();
@@ -61,6 +154,21 @@ export function buildShellTools(ctx: ToolContext) {
             timeout_secs,
             workspace,
           );
+          const after = await witness();
+          const evidenceId = record(
+            r.timed_out
+              ? "timed-out"
+              : r.exit_code === 0
+                ? "passed"
+                : r.exit_code === null
+                  ? "blocked"
+                  : "failed",
+            r.exit_code,
+            after,
+            r.exit_code === null && !r.timed_out
+              ? "Native exit status unavailable"
+              : undefined,
+          );
           return {
             command,
             stdout: r.stdout,
@@ -69,9 +177,19 @@ export function buildShellTools(ctx: ToolContext) {
             timed_out: r.timed_out,
             truncated: r.truncated,
             cwd_after: r.cwd_after,
+            ...(evidenceId ? { nativeCheckEvidenceId: evidenceId } : {}),
           };
         } catch (e) {
-          return { error: String(e) };
+          const evidenceId = record(
+            "not-started",
+            null,
+            await witness(),
+            String(e),
+          );
+          return {
+            error: String(e),
+            ...(evidenceId ? { nativeCheckEvidenceId: evidenceId } : {}),
+          };
         }
       },
     }),

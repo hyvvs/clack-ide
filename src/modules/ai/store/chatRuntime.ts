@@ -239,6 +239,7 @@ export function sessionToolContext(sessionId: string) {
     getSessionId: () => sessionId,
     getRunId: () =>
       owner()?.run?.state === "running" ? owner()?.run?.startedAt : undefined,
+    getUserTurnCount: () => chats.get(sessionId)?.messages.filter(m => m.role === "user").length,
     getCapturedToolVersions: () =>
       owner()?.run?.state === "running"
         ? owner()?.run?.customTools?.versions

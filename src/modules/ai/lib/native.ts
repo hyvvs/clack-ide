@@ -251,6 +251,11 @@ export const native = {
       cwd: cwd ?? null,
       workspace: workspace ?? currentWorkspaceEnv(),
     }),
+  agentWorkspaceFingerprint: (root: string, workspace?: WorkspaceEnv) =>
+    invoke<{ revision: string | null; qualification: string; reason: string | null }>("agent_workspace_fingerprint", {
+      root,
+      workspace: workspace ?? currentWorkspaceEnv(),
+    }),
   shellSessionRun: (
     id: number,
     command: string,

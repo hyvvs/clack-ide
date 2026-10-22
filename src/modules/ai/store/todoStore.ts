@@ -1,18 +1,26 @@
-import { create } from "zustand";
 import {
+  type NativeTodoCheck,
   deleteTodos as persistDelete,
   loadTodos as persistLoad,
   saveTodos as persistSave,
-  terminalizeTodos,
+  reconcileTodos,
   type Todo,
   type TodoTerminalState,
+  terminalizeTodos,
 } from "@/modules/ai/lib/todos";
+import { create } from "zustand";
 
 type TodosState = {
   bySession: Record<string, Todo[]>;
   hydrated: Set<string>;
   hydrate: (sessionId: string) => Promise<void>;
   setTodos: (sessionId: string, todos: Todo[]) => void;
+  reconcilePlan: (sessionId: string, todos: Todo[]) => string | null;
+  recordNativeCheck: (
+    sessionId: string,
+    todoId: string,
+    receipt: NativeTodoCheck,
+  ) => boolean;
   prepareRun: (sessionId: string) => void;
   finalizeRun: (sessionId: string, state: TodoTerminalState) => void;
   clearSession: (sessionId: string) => Promise<void>;
@@ -66,6 +74,33 @@ export const useTodosStore = create<TodosState>((set, get) => ({
       };
     });
     void queuePersistence(sessionId, () => persistSave(sessionId, todos));
+  },
+  reconcilePlan(sessionId, todos) {
+    let next: Todo[];
+    try {
+      next = reconcileTodos(get().bySession[sessionId] ?? [], todos);
+    } catch (e) {
+      return String(e);
+    }
+    get().setTodos(sessionId, next);
+    return null;
+  },
+  recordNativeCheck(sessionId, todoId, receipt) {
+    const current = get().bySession[sessionId];
+    if (
+      !current ||
+      receipt.sessionId !== sessionId ||
+      !current.some((t) => t.id === todoId && !t.superseded)
+    )
+      return false;
+    const next = current.map((t) =>
+      t.id === todoId
+        ? { ...t, nativeChecks: [...(t.nativeChecks ?? []).slice(-3), receipt] }
+        : t,
+    );
+    if (JSON.stringify(next).length > 8192) return false;
+    get().setTodos(sessionId, next);
+    return true;
   },
 
   prepareRun(sessionId) {

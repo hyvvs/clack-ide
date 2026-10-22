@@ -296,6 +296,7 @@ pub fn run() {
             shell::shell_identity,
             shell::shell_session_open,
             shell::shell_session_run,
+            shell::verification::agent_workspace_fingerprint,
             shell::shell_session_close,
             shell::shell_bg_spawn,
             shell::shell_bg_logs,

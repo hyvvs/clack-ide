@@ -2,6 +2,7 @@ import type { WorkspaceEnv } from "@/modules/workspace/env";
 
 export type ToolContext = {
   getRunId?: () => number | undefined;
+  getUserTurnCount?: () => number | undefined;
   getCapturedToolVersions?: () =>
     | import("@/modules/ai/lib/customTools").CapturedToolVersion[]
     | undefined;

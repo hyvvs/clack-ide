@@ -382,7 +382,7 @@ export function AiChatView({
         ) : null}
         {run && !chatIsBusy && run.budget?.phase !== "auto-continue-pending" ? (
           <RunObligationStatus
-            sessionId={sessionId} workspaceId={run.workspaceId ?? workspaceId} run={run} messages={messages}
+            sessionId={sessionId} workspaceId={run.checkoutId ?? run.workspaceId ?? workspaceId} workspaceRoot={run.checkoutRoot ?? run.workspaceRoot} run={run} messages={messages}
             continuation={showContinue ? "continue" : showHardLimit ? "explicit-limit-extension" :
               recovery.allowed && capturedRecovery ? "recover" : "new-instruction"}
           />

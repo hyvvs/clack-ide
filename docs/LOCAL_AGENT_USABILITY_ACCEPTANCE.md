@@ -537,3 +537,7 @@ resource classification and are not silently retried or converted to cloud calls
 No new schema/store, server manager, installer, tuning suite or roadmap was added.
 Rollback is a normal revert; original conversations/profiles remain intact,
 but the prior compatible route must no longer be described as runtime-controlled.
+
+## 2026-10-22 R3b native revision-bound check qualification (partial)
+
+The [R3b checkpoint report](R3B_NATIVE_REVISION_VERIFICATION_2026-10-22.md) records newly implemented local-only bounded source-tree fingerprints, existing-native-shell `bash_run` check results associated with an explicit accepted Todo and persisted in the existing Todo store, and R3a user-visible stale/unknown/current sampled-status reporting. Structured `supersedesIds` preserves 50→25 history and unrelated work. A Rust fixture executes an actual harmless local shell check against a temporary workspace; frontend tests separately replay native responses through store persistence and rendering. **No live model, complete packaged Tauri native→persisted→restart→GUI roundtrip, Linux/macOS check, or independent functional app acceptance was run.** Native results certify the command executed, not arbitrary feature semantics; R3b is **PARTIAL**. Refer to the report's executed-gate table for current results. Required complete P2–P19 roadmap remains deferred until local-AI acceptance.
