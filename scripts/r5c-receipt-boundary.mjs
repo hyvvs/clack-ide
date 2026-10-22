@@ -56,7 +56,15 @@ export function createR5bReceiptHandler({ root, configuration, onReport }) {
     response.setHeader("access-control-allow-origin", "*");
     response.setHeader("content-type", "application/json");
     try {
-      if (request.url === "/configuration" && request.method === "GET") {
+      // Vite and the native WebView use different local origins. JSON POSTs
+      // trigger a browser OPTIONS preflight; without this response the browser
+      // cannot deliver even a redacted receipt to the local collector.
+      if (request.method === "OPTIONS" && ["/events", "/report"].includes(request.url)) {
+        response.setHeader("access-control-allow-methods", "POST, OPTIONS");
+        response.setHeader("access-control-allow-headers", "content-type");
+        response.statusCode = 204;
+        response.end();
+      } else if (request.url === "/configuration" && request.method === "GET") {
         response.end(JSON.stringify(configuration()));
       } else if (request.url === "/events" && request.method === "POST") {
         const event = validateR5bEvent(await readR5bBody(request));
@@ -65,7 +73,9 @@ export function createR5bReceiptHandler({ root, configuration, onReport }) {
         response.end('{"ok":true}');
       } else if (request.url === "/report" && request.method === "POST") {
         const value = await readR5bBody(request, 32_000);
-        onReport(value);
+        // An async acceptance-only reporter may persist before acknowledging.
+        // R5b's synchronous reporter remains compatible.
+        await onReport(value);
         response.end('{"ok":true}');
       } else {
         response.statusCode = 404;

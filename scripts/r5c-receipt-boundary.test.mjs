@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -76,4 +77,64 @@ test("malformed, unbounded or sensitive receipt fields fail closed", () => {
   assert.deepEqual(validateR5bEvent({ kind: "request-timed-out", ordinal: 2 }), { kind: "request-timed-out", ordinal: 2 });
   assert.deepEqual(validateR5bEvent({ kind: "frontend-native-event", ordinal: 1, phase: "settled", bytes: 0 }), { kind: "frontend-native-event", ordinal: 1, phase: "settled", bytes: 0 });
   assert.throws(() => validateR5bEvent({ kind: "frontend-native-event", ordinal: 1, phase: "chunk", bytes: 12, content: "PRIVATE" }));
+});
+
+test("final report HTTP acknowledgement waits for asynchronous durable persistence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "clack-r5d-report-"));
+  let permit;
+  const gate = new Promise(resolve => { permit = resolve; });
+  const reportFile = path.join(root, "final-report.json");
+  const { writeFile } = await import("node:fs/promises");
+  const server = createServer(createR5bReceiptHandler({ root,
+    configuration: () => ({}),
+    onReport: async report => {
+      await gate;
+      await writeFile(reportFile, JSON.stringify(report), { flag: "wx" });
+    },
+  }));
+  try {
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    const target = `http://127.0.0.1:${server.address().port}/report`;
+    let replied = false;
+    const request = fetch(target, { method: "POST", body: JSON.stringify({ kind: "r5d-result", inferenceAttempts: 1 }) })
+      .then(response => { replied = true; return response; });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(replied, false, "report acknowledged before disk persistence");
+    permit();
+    assert.equal((await request).status, 200);
+    assert.deepEqual(JSON.parse(await readFile(reportFile, "utf8")), { kind: "r5d-result", inferenceAttempts: 1 });
+  } finally {
+    permit();
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    await rm(root, { recursive: true, force: false });
+  }
+});
+
+test("cross-origin JSON POSTs are allowed by the collector's browser preflight", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "clack-r5d-cors-"));
+  const server = createServer(createR5bReceiptHandler({
+    root, configuration: () => ({}), onReport: () => {},
+  }));
+  try {
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    for (const route of ["events", "report"]) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/${route}`, {
+        method: "OPTIONS",
+        headers: {
+          origin: "http://127.0.0.1:5173",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type",
+        },
+      });
+      assert.equal(response.status, 204);
+      assert.equal(response.headers.get("access-control-allow-origin"), "*");
+      assert.match(response.headers.get("access-control-allow-methods") ?? "", /POST/);
+      assert.match(response.headers.get("access-control-allow-headers") ?? "", /content-type/i);
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    await rm(root, { recursive: true, force: false });
+  }
 });
