@@ -1,15 +1,15 @@
-import { expect, vi } from "vitest";
-import type { LanguageModel, UIMessage } from "ai";
-import { createConversationCompactor } from "@/modules/ai/lib/conversationCompaction";
 import type { ExtractionCall } from "@/modules/ai/lib/compactionExtraction";
+import { createConversationCompactor } from "@/modules/ai/lib/conversationCompaction";
 import type {
   MemoryCandidate,
   MemoryEvidence,
   MemoryView,
 } from "@/modules/ai/lib/conversationMemory";
+import type { LanguageModel, UIMessage } from "ai";
+import { expect, vi } from "vitest";
 
 export const limits = { deployed: 32768, workingTarget: 6000 };
-const owner = { sessionId: "chat-a", workspaceId: "local:/workspace-a" };
+const defaultOwner = { sessionId: "chat-a", workspaceId: "local:/workspace-a" };
 export const textMessage = (
   id: string,
   role: "user" | "assistant",
@@ -41,7 +41,7 @@ export function disposeCompactionFixtures() {
   for (const dispose of disposals.splice(0)) dispose();
 }
 
-export function compactionFixture(originals = history()) {
+export function compactionFixture(originals = history(), owner = defaultOwner) {
   let view: MemoryView = {
     preparation: {
       runtimeId: "process",
