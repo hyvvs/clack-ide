@@ -70,6 +70,7 @@ import {
 } from "@/modules/ai/lib/errors";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { PeerTaskFeed } from "./PeerTaskFeed";
+import { RunObligationStatus } from "./RunObligationStatus";
 import { AttachmentMessageCard } from "./AttachmentMessageCard";
 import { isAttachmentMessagePart } from "../lib/attachmentMessages";
 
@@ -378,6 +379,13 @@ export function AiChatView({
         run.state !== "completed" &&
         !(run.state === "failed" && visibleError) ? (
           <RunTerminalStatus state={run.state} commandName={run.commandName} />
+        ) : null}
+        {run && !chatIsBusy && run.budget?.phase !== "auto-continue-pending" ? (
+          <RunObligationStatus
+            sessionId={sessionId} workspaceId={run.workspaceId ?? workspaceId} run={run} messages={messages}
+            continuation={showContinue ? "continue" : showHardLimit ? "explicit-limit-extension" :
+              recovery.allowed && capturedRecovery ? "recover" : "new-instruction"}
+          />
         ) : null}
         {showContinue && (
           <ContinueRow unfinishedWork={run?.budget?.stopReason === "unfinished-work" || run?.budget?.stopReason === "blocked-work"} blocked={run?.budget?.stopReason === "blocked-work"} onContinue={() => void continueRun(sessionId, false)} />

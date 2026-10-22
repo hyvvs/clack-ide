@@ -40,20 +40,24 @@ describe("recoverInterruptedSessions", () => {
 });
 
 describe("terminalizeTodos", () => {
-  it("preserves completed results and terminalizes unfinished work", () => {
+  it.each(["completed", "failed", "interrupted", "cancelled"] as const)("keeps accepted obligation states when a run becomes %s", state => {
     const todos = terminalizeTodos(
       [
         { id: "done", title: "Done", status: "completed" },
         { id: "active", title: "Active", status: "in_progress" },
         { id: "next", title: "Next", status: "pending" },
+        { id: "blocked", title: "Blocked", status: "blocked" },
+        { id: "failed", title: "Failed", status: "failed" },
       ],
-      "cancelled",
+      state,
     );
 
     expect(todos.map((todo) => todo.status)).toEqual([
       "completed",
-      "cancelled",
-      "cancelled",
+      "in_progress",
+      "pending",
+      "blocked",
+      "failed",
     ]);
   });
 });

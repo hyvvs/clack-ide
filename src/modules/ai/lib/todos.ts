@@ -72,11 +72,9 @@ export function validateTodos(todos: Todo[]): string | null {
 
 export function terminalizeTodos(
   todos: readonly Todo[],
-  status: TodoTerminalState,
+  _status: TodoTerminalState,
 ): Todo[] {
-  if (status === "completed") return todos.map(todo => ({ ...todo }));
-  const unfinishedStatus = status;
-  return todos.map((todo) =>
-    todo.status === "completed" ? todo : { ...todo, status: unfinishedStatus },
-  );
+  // A run failure, cancellation or restart is not an obligation failure. Keep the
+  // last accepted plan intact; the run's own durable state carries the stop cause.
+  return todos.map(todo => ({ ...todo }));
 }

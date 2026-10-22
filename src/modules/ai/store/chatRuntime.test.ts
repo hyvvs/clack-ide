@@ -660,7 +660,7 @@ describe("run error state", () => {
   });
 
   it.each([429, 503])(
-    "terminalizes exhausted HTTP %i failures before presenting the card",
+    "records exhausted HTTP %i run failures while preserving active obligations",
     (statusCode) => {
       useChatStore.setState({
         activeSessionId: SESSION_ID,
@@ -699,7 +699,7 @@ describe("run error state", () => {
       expect(shouldShowHeaderStop("failed")).toBe(false);
       expect(shouldShowTodoStrip("failed", 1)).toBe(false);
       expect(useTodosStore.getState().bySession[SESSION_ID]).toEqual([
-        { id: "active", title: "Keep working", status: "failed" },
+        { id: "active", title: "Keep working", status: "in_progress" },
       ]);
     },
   );
@@ -819,7 +819,7 @@ describe("active todo lifecycle", () => {
 
     expect(useTodosStore.getState().bySession[SESSION_ID]).toEqual([
       { id: "done", title: "Done", status: "completed" },
-      { id: "active", title: "Active", status: terminalState === "completed" ? "in_progress" : terminalState },
+      { id: "active", title: "Active", status: "in_progress" },
     ]);
     expect(shouldShowTodoStrip(terminalState, 2)).toBe(false);
     expect(useChatStore.getState().sessions[0].run?.state).toBe(terminalState);

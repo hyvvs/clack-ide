@@ -38,7 +38,7 @@ const continuation = (text: string) =>
   /\b(?:continue|resume|finish|keep going|same (?:project|task|objective)|original (?:implementation|objective))\b/i.test(
     text,
   );
-const continuationOnly = (text: string) =>
+export const continuationOnly = (text: string) =>
   /^(?:(?:continue|resume|finish|complete|proceed with)(?:\s+(?:the\s+)?(?:same|current|original|existing)\b[^\n]*|[.!?\s]*)|keep going[.!?\s]*)$/i.test(
     text.trim(),
   );
