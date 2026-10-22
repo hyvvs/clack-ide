@@ -1,5 +1,7 @@
 # R5 — Independent Real-World Local-Model Application Acceptance
 
+**Subsequent separate R5a diagnosis (does not revise R5 classification):** [R5a evidence](R5A_OLLAMA_CONTEXT_ROUTE_DIAGNOSIS_2026-10-22.md) pinpoints the Clack TypeScript comparator and confirms that `inference-17` / end-state loaded 65,536 do not reveal the missing rejected request's serialized model/`num_ctx` or recomputed trusted target. Diagnostic wording now distinguishes mismatch branches without changing the check. The original R5 root cause remains **UNRESOLVED**; no inference was repeated.
+
 **Outcome: R5 LIMITED.** On 2026-10-22 the sole authorized live, normally configured Clack Agent mission reached its natural terminal state, after seven genuine mission inference requests and seven genuine native tool calls. It produced an npm/TypeScript scaffold but **no runnable ForgeBoard backend, UI, or application functionality**. The Agent stopped with a *local Clack context-route preflight rejection*, not a model answer asserting completion, a provider HTTP outage, a continuation/budget expiration, or a verified model-quality conclusion. The independent software checks below fail to qualify a product. **R3d packaged-desktop acceptance remains BLOCKED. Local/self-hosted Agent readiness is NOT established.** This result does not generalize to other installed local models.
 
 ## Identity, isolation and source custody

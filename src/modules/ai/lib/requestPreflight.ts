@@ -93,6 +93,28 @@ export async function serializedToolSchemas(tools: ToolSet) {
   );
 }
 
+/** Diagnose the *serialized* request versus the captured route; never relax the gate. */
+export function assertOllamaContextRoute(
+  body: Record<string, unknown>,
+  capturedModel: string,
+  trustedRuntimeTarget: number | undefined,
+) {
+  const actualModel = body.model;
+  const actualContext = (body.options as { num_ctx?: unknown } | undefined)?.num_ctx;
+  if (actualModel === capturedModel && actualContext === trustedRuntimeTarget) return;
+  const observed = (value: unknown) =>
+    value === undefined ? "omitted" : Number.isSafeInteger(value) && typeof value === "number" && value > 0
+      ? String(value) : "invalid";
+  const reasons = [
+    ...(actualModel !== capturedModel ? ["serialized model differs from the captured model"] : []),
+    ...(actualContext !== trustedRuntimeTarget ? [
+      `serialized num_ctx ${observed(actualContext)}; trusted runtime target ${trustedRuntimeTarget === undefined ? "unavailable" : trustedRuntimeTarget}`,
+    ] : []),
+  ];
+  // Do not include model IDs, endpoint URLs, prompt material or credential data.
+  throw new ContextBudgetError("ollama-context-route", `Ollama context-route preflight rejected: ${reasons.join("; ")}. No inference was sent.`);
+}
+
 export function createRequestPreflight(options: {
   validateRouting?: () => Promise<void>;
   requireRequestedOutput?: boolean;
@@ -340,9 +362,8 @@ export function createRequestPreflight(options: {
       await refresh();
       await reasoningOptions();
       const measured = assertRequestBudget(limits(), body, schemaKinds, availableSchemas);
-      if (options.providerId === "ollama" && (body.model !== options.modelId ||
-        (body.options as { num_ctx?: unknown } | undefined)?.num_ctx !== runtimeTarget()))
-        throw new ContextBudgetError("ollama-context-route", "Ollama runtime context/model does not match the captured profile.");
+      if (options.providerId === "ollama")
+        assertOllamaContextRoute(body, options.modelId, runtimeTarget());
       return async () => {
         await checkIdentity();
         // Only stale explicit controls may use bounded metadata revalidation here.
