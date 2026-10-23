@@ -120,6 +120,38 @@ afterEach(async () => {
 });
 
 describe("native inference attempt transport", () => {
+  it("records the parent abort before cancelling the native request without persisting its reason", async () => {
+    const signal = new AbortController();
+    const onStop = vi.fn();
+    const request = createProxyFetch({
+      scope: { ...scope(), onStop },
+      selfHosted: true,
+    });
+    const outcome = request("http://localhost", { signal: signal.signal }).catch(error => error);
+    const a = await untilAttempt();
+    signal.abort({ secret: "PRIVATE_ABORT_REASON" });
+    expect(onStop).toHaveBeenCalledExactlyOnceWith({
+      source: "parent-signal", reason: "parent-abort",
+    });
+    a.cancel.resolve();
+    terminal(a, "cancelled");
+    a.done.resolve();
+    expect(await outcome).toMatchObject({ code: "cancelled" });
+    expect(JSON.stringify(onStop.mock.calls)).not.toContain("PRIVATE_ABORT_REASON");
+  });
+  it("does not misidentify an SDK request-settled cleanup as an external parent stop", async () => {
+    const signal = new AbortController();
+    const onStop = vi.fn();
+    const request = createProxyFetch({ scope: { ...scope(), onStop } });
+    const outcome = request("http://localhost", { signal: signal.signal }).catch(error => error);
+    const a = await untilAttempt();
+    signal.abort(new DOMException("Request settled", "AbortError"));
+    expect(onStop).not.toHaveBeenCalled();
+    a.cancel.resolve();
+    terminal(a, "cancelled");
+    a.done.resolve();
+    expect(await outcome).toMatchObject({ code: "cancelled" });
+  });
   it("forwards admission once per attempt, shows native queue state and drains queued Stop", async () => {
     const admission = { endpointId: "server", profileId: "model", capacity: 2 };
     const request = createProxyFetch({ admission, scope: scope(), selfHosted: true });

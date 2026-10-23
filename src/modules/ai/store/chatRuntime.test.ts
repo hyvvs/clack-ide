@@ -61,6 +61,10 @@ import {
 import { useTodosStore } from "./todoStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { AGENT_HARD_STEP_LIMIT, AGENT_SOFT_STEP_LIMIT } from "../lib/runBudget";
+import {
+  beginInference, abortInferencesForHostShutdown,
+} from "../lib/inferenceLifecycle";
+import { inferenceScopeForSession } from "./chatStore";
 import { shouldShowHeaderStop } from "../components/AiMiniWindow";
 import { shouldShowTodoStrip } from "../components/TodoStrip";
 import { useWorkspaceEnvStore } from "@/modules/workspace/env";
@@ -238,6 +242,9 @@ describe("cancelActiveRun", () => {
     expect(respond).toHaveBeenCalledWith("approval-1", false);
     expect(stop).toHaveBeenCalledOnce();
     expect(useChatStore.getState().sessions[0].run?.state).toBe("cancelled");
+    expect(useChatStore.getState().sessions[0].run?.stop).toMatchObject({
+      source: "explicit-user", reason: "user-stop",
+    });
     expect(getAgentMeta(SESSION_ID).status).toBe("idle");
 
     useChatStore.getState().beginRun(SESSION_ID, "builtin:coder");
@@ -266,6 +273,93 @@ describe("cancelActiveRun", () => {
       false,
     );
     expect(useChatStore.getState().sessions[0].run?.state).toBe("cancelled");
+  });
+});
+
+describe("durable Agent cancellation initiator", () => {
+  const seed = (startedAt = 100) => {
+    useChatStore.setState({
+      activeSessionId: SESSION_ID,
+      sessions: [{
+        id: SESSION_ID, title: "Agent", createdAt: 1, updatedAt: 1,
+        run: { state: "running", startedAt },
+      }],
+    });
+    const scope = inferenceScopeForSession(SESSION_ID);
+    if (!scope) throw new Error("Expected running Agent inference scope");
+    return scope;
+  };
+  it("does not invent cancellation on normal completion or a stopped retry that recovers", () => {
+    const scope = seed();
+    scope.onStop?.({ source: "provider-timeout", reason: "provider-retry-deadline", policy: "provider-recovery-120s" });
+    useChatStore.getState().finishRun(SESSION_ID, "completed");
+    expect(useChatStore.getState().sessions[0].run).toMatchObject({ state: "completed" });
+    expect(useChatStore.getState().sessions[0].run?.stop).toBeUndefined();
+  });
+  it("records first source and rejects later simultaneous attempts or unsanitized details", () => {
+    const scope = seed();
+    scope.onStop?.({ source: "provider-timeout", reason: "overall-deadline", policy: "native-self-hosted" });
+    scope.onStop?.({ source: "parent-signal", reason: "parent-abort" });
+    useChatStore.getState().recordRunStop(SESSION_ID, {
+      source: "explicit-user", reason: "user-stop", secret: "PRIVATE_VALUE",
+    } as never);
+    useChatStore.getState().finishRun(SESSION_ID, "cancelled");
+    const stop = useChatStore.getState().sessions[0].run?.stop;
+    expect(stop).toMatchObject({ source: "provider-timeout", reason: "overall-deadline", policy: "native-self-hosted" });
+    expect(JSON.stringify(stop)).not.toContain("PRIVATE_VALUE");
+  });
+  it("classifies an uninstrumented terminal cancellation honestly as unknown", () => {
+    seed();
+    useChatStore.getState().finishRun(SESSION_ID, "cancelled");
+    expect(useChatStore.getState().sessions[0].run?.stop).toMatchObject({
+      source: "unknown", reason: "unspecified",
+    });
+  });
+  it("does not attach an old parent signal to a replacement run", () => {
+    const old = seed(100);
+    seed(200);
+    old.onStop?.({ source: "parent-signal", reason: "parent-abort" });
+    expect(useChatStore.getState().sessions[0].run?.stop).toBeUndefined();
+    inferenceScopeForSession(SESSION_ID)?.onStop?.({
+      source: "parent-signal", reason: "parent-abort",
+    });
+    expect(useChatStore.getState().sessions[0].run?.stop?.source).toBe("parent-signal");
+  });
+  it("marks beforeunload-origin abort distinctly, through the production registry", () => {
+    const scope = seed();
+    const abort = vi.fn();
+    const attempt = beginInference(scope, abort);
+    abortInferencesForHostShutdown();
+    expect(abort).toHaveBeenCalledOnce();
+    expect(useChatStore.getState().sessions[0].run?.stop).toMatchObject({
+      source: "host-shutdown", reason: "host-shutdown",
+    });
+    attempt.settle();
+    useChatStore.getState().finishRun(SESSION_ID, "interrupted");
+    expect(useChatStore.getState().sessions[0].run?.state).toBe("interrupted");
+  });
+  it("preserves user Stop when a late host abort and parent signal compete", async () => {
+    const scope = seed();
+    const abort = vi.fn();
+    const attempt = beginInference(scope, abort);
+    chats.set(SESSION_ID, { stop: vi.fn().mockResolvedValue(undefined), messages: [] } as unknown as Chat<UIMessage>);
+    const stopping = cancelActiveRun();
+    abortInferencesForHostShutdown();
+    scope.onStop?.({ source: "parent-signal", reason: "parent-abort" });
+    attempt.settle();
+    await stopping;
+    expect(useChatStore.getState().sessions[0].run?.stop?.source).toBe("explicit-user");
+  });
+  it("keeps policy deadlines distinct from budget completion without changing limits", () => {
+    const scope = seed();
+    scope.onStop?.({
+      source: "provider-timeout", reason: "provider-retry-deadline",
+      policy: "provider-recovery-120s",
+    });
+    useChatStore.getState().finishRun(SESSION_ID, "failed");
+    expect(useChatStore.getState().sessions[0].run?.stop).toMatchObject({
+      source: "provider-timeout", policy: "provider-recovery-120s",
+    });
   });
 });
 

@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import type { LanguageModel } from "ai";
 import {
   AGENT_PROVIDER_MAX_RETRIES,
   createProviderRetryTracker,
   isRetryableProviderAttempt,
+  withProviderRetryTracking,
 } from "./providerRetry";
 
 function providerError(statusCode: number) {
@@ -58,5 +60,36 @@ describe("provider retry lifecycle", () => {
     expect(tracker.failed(error)).toBe(true);
     expect(tracker.failed(error)).toBe(false);
     expect(onRetry).toHaveBeenCalledTimes(AGENT_PROVIDER_MAX_RETRIES);
+  });
+});
+
+describe("production provider request deadline provenance", () => {
+  it("calls the deadline owner before aborting a hung model request", async () => {
+    vi.useFakeTimers();
+    try {
+      const order: string[] = [];
+      const model = {
+        specificationVersion: "v3",
+        provider: "offline",
+        modelId: "offline",
+        doStream: ({ abortSignal }: { abortSignal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            abortSignal?.addEventListener("abort", () => {
+              order.push("abort");
+              reject(abortSignal.reason);
+            }, { once: true });
+          }),
+      } as unknown as LanguageModel;
+      const tracked = withProviderRetryTracking(model, {
+        onRetry: vi.fn(), onRecovered: vi.fn(),
+      }, 0, { totalMs: 20, onDeadline: () => order.push("deadline") });
+      if (typeof tracked === "string") throw new Error("Expected wrapped v3 model");
+      const pending = Promise.resolve(tracked.doStream({} as never)).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(order).toEqual(["deadline", "abort"]);
+      expect(await pending).toBeInstanceOf(Error);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

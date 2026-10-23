@@ -84,8 +84,13 @@ async function proxyFetchImpl(
 ): Promise<Response> {
   const request = input instanceof Request ? input : null;
   const signal = init?.signal ?? request?.signal;
-  if (signal?.aborted || (opts.scope && !opts.scope.isCurrent()))
+  if (signal?.aborted || (opts.scope && !opts.scope.isCurrent())) {
+    if (signal?.aborted) {
+      try { opts.scope?.onStop?.({ source: "parent-signal", reason: "parent-abort" }); }
+      catch { /* attribution cannot defeat cancellation */ }
+    }
     throw new InferenceTransportError("cancelled");
+  }
   let nativeId: string | undefined;
   let nativeSettled = false;
   let aborted = false;
@@ -106,13 +111,24 @@ async function proxyFetchImpl(
         () => undefined,
       );
   };
+  const isSettledCleanup = () =>
+    signal?.reason instanceof DOMException &&
+    signal.reason.name === "AbortError" &&
+    signal.reason.message === "Request settled";
+  const onAbort = () => {
+    if (!nativeSettled && !aborted && !isSettledCleanup()) {
+      try { opts.scope?.onStop?.({ source: "parent-signal", reason: "parent-abort" }); }
+      catch { /* attribution cannot defeat cancellation */ }
+    }
+    cancel();
+  };
   attempt = beginInference(
     opts.scope,
     cancel,
     opts.admission ? "awaiting-admission" : "connecting",
   );
-  signal?.addEventListener("abort", cancel, { once: true });
-  if (signal?.aborted) cancel();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
   try {
     const url =
       request?.url ?? (input instanceof URL ? input.toString() : String(input));
@@ -245,7 +261,7 @@ async function proxyFetchImpl(
             : undefined);
         attempt?.update(terminal?.phase ?? (aborted ? "cancelled" : "failed"));
         attempt?.settle();
-        signal?.removeEventListener("abort", cancel);
+        signal?.removeEventListener("abort", onAbort);
         if (error) {
           reject(error);
           try {
@@ -305,7 +321,7 @@ async function proxyFetchImpl(
       await cancelPromise;
     }
     attempt.settle();
-    signal?.removeEventListener("abort", cancel);
+    signal?.removeEventListener("abort", onAbort);
     throw error instanceof RemoteConnectionError || error instanceof InferenceTransportError ||
       error instanceof ContextBudgetError
       ? error

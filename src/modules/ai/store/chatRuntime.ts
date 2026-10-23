@@ -529,6 +529,14 @@ function recordTerminalAiFailure(
     ?.run?.state;
   const canTerminalize = runState === "running";
   if (canTerminalize) {
+    if (normalized.kind === "timeout" &&
+        (["connect-timeout", "first-output-timeout", "stream-idle-timeout", "overall-deadline"] as const)
+          .some(code => code === normalized.errorCode)) {
+      state.recordRunStop(sessionId, {
+        source: "provider-timeout",
+        reason: normalized.errorCode as "connect-timeout" | "first-output-timeout" | "stream-idle-timeout" | "overall-deadline",
+      });
+    }
     state.finishRun(
       sessionId,
       normalized.kind === "interrupted"

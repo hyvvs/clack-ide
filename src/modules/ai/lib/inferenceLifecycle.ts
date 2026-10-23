@@ -1,4 +1,5 @@
 import type { AdmissionObservation } from "@/modules/ai/lib/inferenceAdmission";
+import type { RunStopCause } from "@/modules/ai/lib/runStopProvenance";
 export type InferencePhase =
   | "queued"
   | "awaiting-admission"
@@ -21,6 +22,7 @@ export type InferenceScope = {
   isCurrent: () => boolean;
   validateEvidence?: () => Promise<void>;
   onPhase?: (snapshot: InferenceSnapshot) => void;
+  onStop?: (cause: RunStopCause) => void;
 };
 export type InferenceSnapshot = {
   admission?: AdmissionObservation;
@@ -37,6 +39,9 @@ type Attempt = {
 };
 const attempts = new Map<string, Attempt>();
 const listeners = new Set<() => void>();
+function reportStop(scope: InferenceScope | undefined, cause: RunStopCause): void {
+  try { scope?.onStop?.(cause); } catch { /* attribution cannot block cancellation */ }
+}
 const emit = () => {
   for (const listener of listeners) listener();
 };
@@ -119,17 +124,29 @@ export function beginInference(
     },
   };
 }
-export async function cancelSessionInference(sessionId: string): Promise<void> {
+export async function cancelSessionInference(
+  sessionId: string,
+  cause: RunStopCause = { source: "unknown", reason: "cancel-requested" },
+): Promise<void> {
   const owned = [...attempts.values()].filter(
     (a) => a.snapshot.scope?.sessionId === sessionId,
   );
   for (const a of owned) {
+    reportStop(a.snapshot.scope, cause);
     a.snapshot = { ...a.snapshot, phase: "stopping" };
     a.snapshot.scope?.onPhase?.(a.snapshot);
     a.abort();
   }
   emit();
   await Promise.all(owned.map((a) => a.done));
+}
+export function abortInferencesForHostShutdown(): void {
+  for (const attempt of attempts.values()) {
+    reportStop(attempt.snapshot.scope, {
+      source: "host-shutdown", reason: "host-shutdown",
+    });
+    attempt.abort();
+  }
 }
 export async function waitForInferenceSettlement(
   scope: InferenceScope,
@@ -171,6 +188,6 @@ export function inferenceLabel(snapshot: InferenceSnapshot): string {
 }
 if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => {
-    for (const attempt of attempts.values()) attempt.abort();
+    abortInferencesForHostShutdown();
   });
 }

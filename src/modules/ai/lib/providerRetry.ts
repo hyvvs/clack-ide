@@ -26,6 +26,7 @@ type ProviderRetryCallbacks = {
 
 type RecoveryOptions = {
   isCurrent?: () => boolean;
+  onDeadline?: () => void;
   beforeRetry?: () => Promise<void>;
   delayMs?: number;
   totalMs?: number;
@@ -156,11 +157,12 @@ export function withProviderRetryTracking(
           options.totalMs ?? PROVIDER_RECOVERY_LIMITS.totalMs,
           PROVIDER_RECOVERY_LIMITS.totalMs,
         );
-        const timer = setTimeout(
-          () =>
-            controller.abort(new InferenceTransportError("overall-deadline")),
-          totalMs,
-        );
+        const timer = setTimeout(() => {
+          if (!signal.aborted) {
+            try { options.onDeadline?.(); } catch { /* observer cannot defeat deadline */ }
+          }
+          controller.abort(new InferenceTransportError("overall-deadline"));
+        }, totalMs);
         let attempts = 0,
           meaningful = false;
         const current = () => {

@@ -2,6 +2,7 @@ import type { UIMessage } from "@ai-sdk/react";
 import { invoke } from "@tauri-apps/api/core";
 import type { NormalizedAiError } from "@/modules/ai/lib/errors";
 import type { RunBudgetState } from "@/modules/ai/lib/runBudget";
+import type { RunStopProvenance } from "@/modules/ai/lib/runStopProvenance";
 import type { ProviderId } from "@/modules/ai/config";
 import { workspacePermissionKey } from "@/modules/ai/lib/permissions";
 import { normalizeWorkspacePath } from "@/modules/workspace";
@@ -76,6 +77,7 @@ export type SessionRun = {
   startedAt: number;
   budget?: RunBudgetState;
   endedAt?: number;
+  stop?: RunStopProvenance;
   error?: NormalizedAiError;
   recoveryAttempts?: number;
 };

@@ -944,6 +944,11 @@ export async function runAgentStream(opts: RunAgentOptions) {
     const stop = readWatchdogError(error);
     if (!stop || watchdogStopped || !inferenceScope.isCurrent()) return;
     watchdogStopped = true;
+    try {
+      inferenceScope.onStop?.({
+        source: "agent-watchdog", reason: stop.reason, policy: "output-watchdog",
+      });
+    } catch { /* reporting cannot defeat the watchdog */ }
     if (answerState) opts.onAnswerState?.({ ...answerState, state: "incomplete", watchdog: stop, reason: describeWatchdog(stop.reason) });
     void cancelSessionInference(inferenceScope.sessionId);
   };
@@ -992,6 +997,11 @@ export async function runAgentStream(opts: RunAgentOptions) {
     AGENT_PROVIDER_MAX_RETRIES,
     {
       isCurrent: inferenceScope.isCurrent,
+      onDeadline: () => inferenceScope.onStop?.({
+        source: "provider-timeout",
+        reason: "provider-retry-deadline",
+        policy: "provider-recovery-120s",
+      }),
       beforeRetry: async () => {
         await validateRecovery();
         await chargeRecovery();

@@ -60,6 +60,9 @@ import {
 } from "../lib/permissions";
 import type { NormalizedAiError } from "../lib/errors";
 import {
+  safeRunStopCause, unknownRunStop, type RunStopCause,
+} from "../lib/runStopProvenance";
+import {
   consumeAutoContinuation as consumeBudgetAutoContinuation,
   createRunBudget,
   createRunLoopTracker,
@@ -249,6 +252,9 @@ type StoreState = {
     state: Exclude<SessionRunState, "running">,
     error?: NormalizedAiError,
   ) => void;
+  recordRunStop: (
+    id: string, cause: RunStopCause, expectedStartedAt?: number,
+  ) => void;
 
   // Sessions
   sessionsHydrated: boolean;
@@ -325,6 +331,9 @@ export function inferenceScopeForSession(sessionId: string) {
         latest.startedAt === run.startedAt &&
         latest.recoveryAttempts === run.recoveryAttempts
       );
+    },
+    onStop: (cause: RunStopCause) => {
+      useChatStore.getState().recordRunStop(sessionId, cause, run.startedAt);
     },
   };
 }
@@ -1003,6 +1012,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     capturedProviderModelEvidence.delete(id);
     capturedAgentPersonas.delete(id);
     const now = Date.now();
+    const { stop: priorStop, ...runWithoutStop } = currentRun;
     const runError =
       state === "failed" || state === "interrupted"
         ? (error ?? get().runtimeBySession[id]?.error ?? currentRun.error)
@@ -1012,9 +1022,12 @@ export const useChatStore = create<StoreState>((set, get) => ({
         ? {
             ...session,
             run: {
-              ...currentRun,
+              ...runWithoutStop,
               state,
               endedAt: now,
+              ...(state === "completed" ? {} : {
+                stop: priorStop ?? (state === "cancelled" ? unknownRunStop(now) : undefined),
+              }),
               ...(runError ? { error: runError } : {}),
             },
             updatedAt: now,
@@ -1046,6 +1059,19 @@ export const useChatStore = create<StoreState>((set, get) => ({
     useTodosStore.getState().finalizeRun(id, state);
     runLoopTrackers.delete(id);
     releaseWorkspaceWriteLeasesForSession(id);
+  },
+  recordRunStop: (id, cause, expectedStartedAt) => {
+    const safe = safeRunStopCause(cause);
+    if (!safe) return;
+    const run = get().sessions.find(s => s.id === id)?.run;
+    if (run?.state !== "running" || run.stop ||
+        (expectedStartedAt !== undefined && run.startedAt !== expectedStartedAt)) return;
+    const at = Date.now();
+    const next = get().sessions.map(s => s.id === id
+      ? { ...s, run: { ...run, stop: { ...safe, at } }, updatedAt: at }
+      : s);
+    set({ sessions: next });
+    void saveSessionsList(next);
   },
 
   sessionsHydrated: false,
@@ -1245,7 +1271,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
   },
 
   deleteSession: (id) => {
-    void cancelSessionInference(id);
+    void cancelSessionInference(id, { source: "chat-disposal", reason: "session-deleted" });
     const remaining = get().sessions.filter((s) => s.id !== id);
     chats.get(id)?.stop();
     chats.delete(id);
@@ -1479,18 +1505,22 @@ export function pendingApprovalIds(messages: readonly UIMessage[]): string[] {
 export async function cancelActiveRun(): Promise<void> {
   const id = useChatStore.getState().activeSessionId;
   if (!id) return;
-  await cancelRun(id);
+  await cancelRun(id, { source: "explicit-user", reason: "user-stop" });
 }
 
-export async function cancelRun(id: string): Promise<void> {
+export async function cancelRun(
+  id: string,
+  cause: RunStopCause = { source: "unknown", reason: "cancel-requested" },
+): Promise<void> {
   const state = useChatStore.getState();
+  state.recordRunStop(id, cause);
   const chat = chats.get(id);
   const pending = state.pendingApprovalsBySession[id] ?? [];
   const approvalIds =
     pending.length > 0
       ? pending.map((approval) => approval.id)
       : pendingApprovalIds(chat?.messages ?? []);
-  const draining = cancelSessionInference(id);
+  const draining = cancelSessionInference(id, cause);
   state.finishRun(id, "cancelled");
   const stoppedRun = useChatStore
     .getState()
@@ -1519,6 +1549,7 @@ export async function interruptAllRunsForShutdown(): Promise<void> {
     .filter((session) => session.run?.state === "running")
     .map((session) => session.id);
   for (const id of runningIds) {
+    state.recordRunStop(id, { source: "host-shutdown", reason: "host-shutdown" });
     const pending = state.pendingApprovalsBySession[id] ?? [];
     for (const approval of pending) {
       state.respondToApproval(approval.id, false, id);
@@ -1534,7 +1565,7 @@ export async function interruptAllRunsForShutdown(): Promise<void> {
   }
   await Promise.allSettled(
     runningIds.map(async (id) => {
-      const draining = cancelSessionInference(id);
+      const draining = cancelSessionInference(id, { source: "host-shutdown", reason: "host-shutdown" });
       await chats.get(id)?.stop();
       await draining;
       const chat = chats.get(id);

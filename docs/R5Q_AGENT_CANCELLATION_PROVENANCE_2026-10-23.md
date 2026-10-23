@@ -1,0 +1,35 @@
+# R5q — Agent cancellation initiator (offline forensic addendum)
+
+**Starting point:** `c4c0ab933738111f5b974f44ab11e8d6b4f6181a` (R5p). **Historical R5p initiator: UNKNOWN.** No new Ollama inference, calibration, Agent mission, model/runtime modification or independent app rerun. This is a forward-looking instrumentation fix, not a post-hoc claim of historical cause.
+
+## Frozen R5p chronology (UTC, 2026-10-23)
+
+| Observation | Timestamp | Proof and limit |
+| --- | --- | --- |
+| Agent run started | 03:37:54.682 | Persisted session `real-mission-a` |
+| Request 19 dispatched | 03:40:33.340 | Native request ledger |
+| Request 19 completed | 03:41:29.893 | Native receive EOF/completed; JS settled completed at 03:41:29.896 |
+| Request 20 dispatched | 03:41:30.167 (native 03:41:30.178) | 65,536 context, 2,048 output allowance, 14 native schemas |
+| Native request 20 cancelled | 03:41:39.783 | 9.605 seconds after native dispatch; **0 chunks, 0 body bytes** |
+| Agent state `cancelled` | 03:41:39.785 | Saved run; JS channel cancelled 03:41:39.786; native JS settlement 03:41:39.787 |
+| Final runner report complete | 03:41:41.016 | Host later exited 0 after report; NOT Agent/app success |
+
+Frozen receipts: `src-tauri/target/real-qwen-product/forgeboard-nemotron-r5p-20261023-01/mission-a-1.{requests,receive}.jsonl`, `mission-a-1.jsonl`, `mission-a-1.json`, `data/terax-ai-sessions.json`, `correction-state.json`, `r5p-final-technical-ledger.json` and original source manifest. All are historical and remain untouched. R5p had 13 real Agent requests (20 total including six calibration and one capability probe), nine finished native tool parts and zero verified source writes. Request 20 was `waiting-first-output`; session budget was still `running`, with `totalSteps=3`, `continuationCount=0`, `stopReason=null`. No correction boundary, approval rejection or harness-blocked event was saved.
+
+The last verified tool action was `bash_run` creating a source directory in the disposable ForgeBoard workspace, not a source file. Nine successful *native tool parts* comprised one directory listing, one ten-item Todo plan, seven shell commands: two `npm init` command attempts exited 1, a third `npm init` succeeded, two `npm install` operations succeeded, `tsc --init` succeeded and directory creation succeeded. Tool-part completion does not make failing command effects successful. No native `write_file` or `edit` part appeared; no backend or frontend source file survived. The frozen independent copy had only root config files and failing test/build/start checks. Ten Todos stayed outstanding; 50→25 page-size correction was never eligible.
+
+## Source-to-stop classification
+
+The authoritative saved state did **not** contain `stop` source/reason/deadline, and native `cancellation-observed` describes a result, not who caused it. Existing `cancelRun` immediately called `cancelSessionInference` and `finishRun('cancelled')`, silently losing its caller. The inference registry stored plain `() => void` abort callbacks; `beforeunload` aborted all attempts without an origin. Once terminal, `recordTerminalAiFailure` refused a late replacement. The runner's report and redacted channel receipts observed state transitions, not source-specific intents.
+
+Explicit UI Stop, untagged acceptance `cancelRun` callers, Agent output watchdog, parent signal/SDK transport stop and host lifecycle were all feasible in code. **No candidate is independently proven for R5p.** Existing native self-hosted first-output/overall bounds are 120/600 seconds, the provider-retry overall bound is 120 seconds and the acceptance runner overall limit is 90 minutes; request 20 stopped at 9.605 seconds, so these bounds cannot by themselves explain its cancellation. The acceptance approval timer is per-pending-approval, not a whole-run timer; no denial or harness stop was saved. The separate 10-second *preflight recovery* deadline does not establish cause during a native-dispatched Agent inference. The Agent watchdog cannot be assigned without its decision event. No R5m logical continuation was observed and numeric context/Automatic trust passed. Host completed its normal report after state cancellation; that is not evidence it initiated the earlier stop.
+
+## Narrow production repair
+
+An allowlisted `run.stop` object now records `{source,reason,policy?,at}` into the existing durable session record. Values are fixed enumerations, timestamp is local and no arbitrary error/abort reason/content is persisted. The run's `startedAt` is checked when a scope reports a stop; first recorded stop wins synchronous races, later SDK/native settlement cannot relabel it, and a completed run discards tentative stop provenance. Explicit UI Stop is distinct from legacy untagged `cancelRun` (which reports **unknown**, never misclassified as a user); graceful shutdown and `beforeunload` identify host stop, deletion uses chat-disposal while a session is still available, output watchdog reports policy and fixed watchdog reason, provider-retry deadline reports its existing limit and parent AbortSignal reports a fixed parent code. Terminal errors with recognized transport deadline codes preserve those codes; unobserved `cancelled` terminalization uses `unknown/unspecified`.
+
+No numeric context, eligibility, Automatic behavior, permissions, budget, native timeout, retry policy, cancellation semantics or provider identity changed. Observer failures must not prevent abort. A hard process kill / WebView unload cannot guarantee a final storage flush, and deletion intentionally removes a session; these events still require external host evidence if durable storage was impossible. Legacy acceptance cancel callers remain `unknown` unless explicitly tagged in a separately authorized update, since the original acceptance file is protected. No inference replay was attempted to infer R5p's missing history.
+
+## Test and acceptance limits
+
+Deterministic production-layer checks exercise normal completion, explicit UI Stop, deadline callback from provider wrapper, terminal policy-code retention, parent abort through native proxy, host registry abort and graceful shutdown, concurrent Stop/abort ordering, stale run isolation and safe-code filtering. **131 focused Vitest cases in six suites passed**, focused Biome lint passed, and TypeScript plus production Vite build passed; all checks were offline. Existing native Rust timeout tests document native policy behavior; R5q introduced no Rust changes. The preservation audit matched **10/10 protected SHA-256 values**; both original stashes, `autonomous_tracker/`, approved SSH PID 34900 / listener 11435 and all six user-dirty files remained intact. A future **separately authorized** stopped real Agent run would need the persisted `run.stop` initiator/reason/policy *and* a corresponding native request/host boundary to resolve the source prospectively. Historical R5p stays **UNKNOWN**, app unaccepted; R3d packaged-desktop qualification and every P2–P19 integration/security/platform/real-Agent/independent E2E tier remain outstanding. **STOP after R5q.**
