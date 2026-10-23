@@ -5,73 +5,253 @@ use terax_lib::modules::{
     attachments, conversation_memory as memory, fs, git, net, shell, workspace,
 };
 
-// The optional acceptance-only wire assertion covers three existing, distinct
-// request classes; calibration and Automatic native-tool qualification must
-// never be misclassified as an Agent-generation output-limit violation.
-fn acceptance_wire_controls_match(body: &serde_json::Value, expected_think: &str) -> bool {
+// Acceptance-only contract received from the current TypeScript production
+// calibration/verification constants and native built-in tool definitions.
+// No output ladder or model-family exception is duplicated in this host.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcceptanceWireContract {
+    calibration: CalibrationWire,
+    verification: VerificationWire,
+    agent: AgentWire,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CalibrationWire {
+    candidates: Vec<u64>,
+    output: u64,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerificationWire {
+    outputs: Vec<u64>,
+    name: String,
+    parameters: serde_json::Value,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentWire {
+    output: u64,
+    context: u64,
+    #[serde(rename = "toolNames")]
+    tool_names: Vec<String>,
+}
+fn schema_without_meta(value: &serde_json::Value) -> serde_json::Value {
+    let mut schema = value.clone();
+    if let Some(map) = schema.as_object_mut() {
+        map.remove("$schema");
+    }
+    schema
+}
+fn acceptance_model_matches(body: &serde_json::Value, expected: &str) -> bool {
+    body["model"] == expected
+}
+fn acceptance_wire_controls_match(
+    body: &serde_json::Value,
+    expected_think: &str,
+    contract: &AcceptanceWireContract,
+) -> bool {
     let think_matches = match expected_think {
         "low" => body["think"] == "low",
         "false" => body["think"] == false,
         "omitted" => body.get("think").is_none(),
         _ => false,
     };
-    let tools = body["tools"].as_array().map_or(0, Vec::len);
-    let output_matches = match body["options"]["num_predict"].as_u64() {
-        Some(32) => tools == 0,  // bounded context calibration
-        Some(512) => tools == 1, // native Automatic tool verification
-        Some(2048) => true,      // original Agent output allowance
-        _ => false,
+    if !think_matches
+        || body["stream"] != true
+        || (body.get("tools").is_some() && !body["tools"].is_array())
+    {
+        return false;
+    }
+    let Some(output) = body["options"]["num_predict"].as_u64() else {
+        return false;
     };
-    think_matches && output_matches
+    let Some(context) = body["options"]["num_ctx"].as_u64() else {
+        return false;
+    };
+    let tools = body["tools"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if output == contract.calibration.output {
+        return tools.is_empty() && contract.calibration.candidates.contains(&context);
+    }
+    if context != contract.agent.context {
+        return false;
+    }
+    let valid_tools = tools.iter().all(|t| {
+        t["type"] == "function"
+            && t["function"]["name"].as_str().is_some()
+            && t["function"]["description"]
+                .as_str()
+                .is_some_and(|d| !d.is_empty())
+            && t["function"]["parameters"]["type"] == "object"
+            && t["function"]["parameters"]["properties"].is_object()
+    });
+    if !valid_tools {
+        return false;
+    }
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    if names.len() != tools.len()
+        || names
+            .iter()
+            .enumerate()
+            .any(|(i, n)| names[..i].contains(n))
+    {
+        return false;
+    }
+    if names.contains(&contract.verification.name.as_str()) {
+        return tools.len() == 1
+            && contract.verification.outputs.contains(&output)
+            && schema_without_meta(&tools[0]["function"]["parameters"])
+                == schema_without_meta(&contract.verification.parameters);
+    }
+    output == contract.agent.output
+        && names.iter().all(|name| {
+            contract
+                .agent
+                .tool_names
+                .iter()
+                .any(|allowed| allowed == name)
+        })
 }
 
 #[cfg(test)]
 mod acceptance_wire_tests {
-    use super::acceptance_wire_controls_match;
+    use super::{acceptance_model_matches, acceptance_wire_controls_match, AcceptanceWireContract};
     use serde_json::json;
 
-    #[test]
-    fn automatic_guard_allows_original_calibration_tool_probe_and_agent_outputs() {
-        let calibration = json!({"options":{"num_ctx":4096,"num_predict":32},"stream":true});
-        assert!(acceptance_wire_controls_match(&calibration, "omitted"));
-        let tool_probe = json!({"options":{"num_ctx":65536,"num_predict":512},"tools":[{}]});
-        assert!(acceptance_wire_controls_match(&tool_probe, "omitted"));
-        let agent = json!({"options":{"num_ctx":65536,"num_predict":2048},"tools":[{},{}]});
-        assert!(acceptance_wire_controls_match(&agent, "omitted"));
+    fn contract() -> AcceptanceWireContract {
+        serde_json::from_value(json!({
+            "calibration":{"candidates":[4096,8192,16384,32768,49152,65536],"output":32},
+            "verification":{"outputs":[512,1024,2048],"name":"get_probe_value",
+              "parameters":{"type":"object","properties":{"key":{"type":"string"},"count":{"type":"number"}}}},
+            "agent":{"output":2048,"context":65536,"toolNames":["bash_run","read_file"]}
+        })).unwrap()
     }
-
+    fn probe(output: u64) -> serde_json::Value {
+        json!({"stream":true,"options":{"num_ctx":65536,"num_predict":output},
+            "tools":[{"type":"function","function":{"name":"get_probe_value","description":"Probe",
+            "parameters":contract().verification.parameters}}]})
+    }
+    fn agent() -> serde_json::Value {
+        json!({"stream":true,"options":{"num_ctx":65536,"num_predict":2048},
+            "tools":[{"type":"function","function":{"name":"bash_run","description":"Shell",
+            "parameters":{"type":"object","properties":{"command":{"type":"string"}}}}}]})
+    }
     #[test]
-    fn guard_rejects_changed_reasoning_or_mismatched_output_classes() {
-        let calibration = json!({"options":{"num_predict":32}});
-        assert!(!acceptance_wire_controls_match(&calibration, "low"));
-        assert!(!acceptance_wire_controls_match(
-            &json!({"think":true,"options":{"num_predict":32}}),
-            "omitted"
-        ));
-        assert!(!acceptance_wire_controls_match(
-            &json!({"options":{"num_predict":32},"tools":[{}]}),
-            "omitted"
-        ));
-        assert!(!acceptance_wire_controls_match(
-            &json!({"options":{"num_predict":512},"tools":[{},{}]}),
-            "omitted"
-        ));
-        assert!(!acceptance_wire_controls_match(
-            &json!({"options":{"num_predict":4096}}),
-            "omitted"
-        ));
-        assert!(!acceptance_wire_controls_match(
-            &json!({"options":{}}),
-            "omitted"
-        ));
+    fn accepts_all_production_calibration_and_verification_stages_and_agent() {
+        for context in &contract().calibration.candidates {
+            let body = json!({"stream":true,"options":{"num_ctx":context,"num_predict":32}});
+            assert!(acceptance_wire_controls_match(
+                &body,
+                "omitted",
+                &contract()
+            ));
+        }
+        for output in &contract().verification.outputs {
+            assert!(acceptance_wire_controls_match(
+                &probe(*output),
+                "omitted",
+                &contract()
+            ));
+        }
         assert!(acceptance_wire_controls_match(
-            &json!({"think":"low","options":{"num_predict":2048}}),
-            "low"
+            &agent(),
+            "omitted",
+            &contract()
         ));
-        assert!(acceptance_wire_controls_match(
-            &json!({"think":false,"options":{"num_predict":2048}}),
-            "false"
+    }
+    #[test]
+    fn rejects_wrong_context_reasoning_and_unauthorized_tool_shapes() {
+        let valid = json!({"stream":true,"options":{"num_ctx":4096,"num_predict":32}});
+        assert!(!acceptance_wire_controls_match(&valid, "low", &contract()));
+        let mut changed = valid.clone();
+        changed["think"] = json!(true);
+        assert!(!acceptance_wire_controls_match(
+            &changed,
+            "omitted",
+            &contract()
         ));
+        changed = valid.clone();
+        changed["options"]["num_ctx"] = json!(1234);
+        assert!(!acceptance_wire_controls_match(
+            &changed,
+            "omitted",
+            &contract()
+        ));
+        changed = valid.clone();
+        changed["options"]["num_predict"] = json!(1024);
+        assert!(!acceptance_wire_controls_match(
+            &changed,
+            "omitted",
+            &contract()
+        ));
+        changed = probe(1024);
+        changed["options"]["num_ctx"] = json!(8192);
+        assert!(!acceptance_wire_controls_match(
+            &changed,
+            "omitted",
+            &contract()
+        ));
+        changed = probe(1024);
+        changed["tools"][0]["function"]["name"] = json!("evil_probe");
+        assert!(!acceptance_wire_controls_match(
+            &changed,
+            "omitted",
+            &contract()
+        ));
+        changed = probe(1024);
+        changed["tools"][0]["function"]["parameters"] =
+            json!({"type":"object","properties":{"bad":{"type":"string"}}});
+        assert!(!acceptance_wire_controls_match(
+            &changed,
+            "omitted",
+            &contract()
+        ));
+        changed = probe(256);
+        assert!(!acceptance_wire_controls_match(
+            &changed,
+            "omitted",
+            &contract()
+        ));
+        changed = agent();
+        changed["tools"][0]["function"]["name"] = json!("not_a_builtin");
+        assert!(!acceptance_wire_controls_match(
+            &changed,
+            "omitted",
+            &contract()
+        ));
+        changed = agent();
+        changed["tools"][0]["type"] = json!("other");
+        assert!(!acceptance_wire_controls_match(
+            &changed,
+            "omitted",
+            &contract()
+        ));
+        changed = agent();
+        changed["stream"] = json!(false);
+        assert!(!acceptance_wire_controls_match(
+            &changed,
+            "omitted",
+            &contract()
+        ));
+    }
+    #[test]
+    fn preserves_model_identity_and_explicit_reasoning_guards() {
+        let wire = json!({"model":"allowed"});
+        assert!(acceptance_model_matches(&wire, "allowed"));
+        assert!(!acceptance_model_matches(&wire, "other-model"));
+        let mut request = agent();
+        request["think"] = json!("low");
+        assert!(acceptance_wire_controls_match(&request, "low", &contract()));
+        assert!(!acceptance_wire_controls_match(&request, "false", &contract()));
+        request["think"] = json!(false);
+        assert!(acceptance_wire_controls_match(&request, "false", &contract()));
+        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
     }
 }
 
@@ -313,7 +493,7 @@ fn main() {
                                 | "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M"
                                 | "hf.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive:IQ3_M"
                             ));
-                            assert_eq!(body["model"], model);
+                            assert!(acceptance_model_matches(&body, &model), "unexpected inference model");
                             // Observe real serialized context on all calibration and
                             // mission requests; NEVER assert or force a target here.
                             // Production requestPreflight is the fail-closed owner.
@@ -334,7 +514,10 @@ fn main() {
                             })).expect("persist bounded redacted serialized request observation");
                             if let Ok(think) = std::env::var("CLACK_ACCEPTANCE_EXPECTED_THINK") {
                                 assert!(matches!(think.as_str(), "low" | "false" | "omitted"));
-                                if !acceptance_wire_controls_match(&body, &think) {
+                                let contract = std::env::var("CLACK_ACCEPTANCE_WIRE_CONTRACT")
+                                    .ok().and_then(|s| serde_json::from_str::<AcceptanceWireContract>(&s).ok());
+                                if !contract.as_ref().is_some_and(|contract|
+                                    acceptance_wire_controls_match(&body, &think, contract)) {
                                     invoke.resolver.reject("Acceptance stopped: serialized reasoning/output controls changed");
                                     return true;
                                 }

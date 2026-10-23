@@ -1,0 +1,10 @@
+[
+  {"numCtx":4096,"numPredict":32,"toolSchemas":0,"thinkKind":"absent"},
+  {"numCtx":8192,"numPredict":32,"toolSchemas":0,"thinkKind":"absent"},
+  {"numCtx":16384,"numPredict":32,"toolSchemas":0,"thinkKind":"absent"},
+  {"numCtx":32768,"numPredict":32,"toolSchemas":0,"thinkKind":"absent"},
+  {"numCtx":49152,"numPredict":32,"toolSchemas":0,"thinkKind":"absent"},
+  {"numCtx":65536,"numPredict":32,"toolSchemas":0,"thinkKind":"absent"},
+  {"numCtx":65536,"numPredict":512,"toolSchemas":1,"thinkKind":"absent"},
+  {"numCtx":65536,"numPredict":1024,"toolSchemas":1,"thinkKind":"absent"}
+]
