@@ -131,6 +131,42 @@ export function automaticAgentRecommendation(
   }
 }
 
+// A logical continuation must verify the context actually used by the first
+// batch, not a conservative recommendation recomputed from its aging profile
+// snapshot. This does not refresh or grant proof: applyAgentRecommendation still
+// validates the original record, scope, runtime epoch, reasoning and TTL.
+export function automaticAgentBatchContext(
+  profile: SelfHostedProfile,
+  view: { override?: unknown; recommended?: number } | undefined,
+  logicalContinuation: boolean | undefined,
+) {
+  const projected =
+    typeof view?.override === "number" ? view.override : view?.recommended;
+  const record = profile.toolVerification;
+  if (
+    !logicalContinuation ||
+    view?.override !== undefined ||
+    record?.status !== "verified" ||
+    !Number.isSafeInteger(record.context) ||
+    record.context <= 0
+  )
+    return { expected: projected, pinned: undefined };
+  return { expected: record.context, pinned: record.context };
+}
+
+// Proof acceptance is not an allocation waiver. A continuation may use its
+// original verified context only if the normal request preflight independently
+// resolves that same live Ollama runtime target. Otherwise stop before inference.
+export function requireAgentContinuationAllocation(
+  pinned: number | undefined,
+  liveRuntimeTarget: number | undefined,
+) {
+  if (pinned !== undefined && pinned !== liveRuntimeTarget)
+    throw new Error(
+      "Automatic Agent working context changed during continuation. Reverify the original context and tools before starting a new run.",
+    );
+}
+
 export function applyAgentRecommendation(
   state: SelfHostedState,
   profile: SelfHostedProfile,

@@ -10,8 +10,10 @@ import {
 } from "@/modules/ai/lib/contextCalibrationTrust";
 import {
   agentToolCandidates,
+  automaticAgentBatchContext,
   automaticAgentRecommendation,
   applyAgentRecommendation,
+  requireAgentContinuationAllocation,
   resolveAutomaticAgentTools,
   toolEffortCapture,
 } from "@/modules/ai/lib/agentConfiguration";
@@ -528,4 +530,27 @@ it("R5m: the production continuation guard distinguishes every required stale pr
   check(profile);
   await f.deps.inspect(); // real runtime inspection in production, fixture-only in this test
   expect(applyAgentRecommendation(state, profile, 4096)).toBeDefined();
+});
+
+it("R5w: logical continuation retains exact native tool proof context instead of an aged fallback recommendation", async () => {
+  const f = fixture();
+  f.results.splice(0, 3, "pass");
+  await f.resolve();
+  const original = f.get();
+  if (!original.toolVerification) throw new Error("Fixture must verify native tools");
+  // The R5v 65,536/4,096 mismatch is reproduced independently against the
+  // original production eligibility function, without model requests.
+  const profile = { ...original, toolVerification: { ...original.toolVerification, context: 65536 } };
+  const state = { ...f.state(), profiles: [profile] };
+  expect(automaticAgentRecommendation(state, profile, 4096)).toBeUndefined();
+  const batch = automaticAgentBatchContext(profile, { recommended: 4096 }, true);
+  expect(batch).toEqual({ expected: 65536, pinned: 65536 });
+  expect(applyAgentRecommendation(state, profile, batch.expected)).toBeDefined();
+  expect(() => requireAgentContinuationAllocation(batch.pinned, 4096)).toThrow(/working context changed/);
+  expect(() => requireAgentContinuationAllocation(batch.pinned, undefined)).toThrow(/working context changed/);
+  expect(() => requireAgentContinuationAllocation(batch.pinned, 65536)).not.toThrow();
+  expect(automaticAgentBatchContext(profile, { recommended: 4096 }, false)).toEqual({ expected: 4096, pinned: undefined });
+  expect(automaticAgentBatchContext(profile, { recommended: 4096, override: 8192 }, true)).toEqual({ expected: 8192, pinned: undefined });
+  expect(automaticAgentBatchContext({ ...profile, toolVerification: { ...profile.toolVerification, status: "incomplete" } }, { recommended: 4096 }, true)).toEqual({ expected: 4096, pinned: undefined });
+  expect(() => applyAgentRecommendation(state, { ...profile, modelRevision: "wrong-digest" }, batch.expected)).toThrow(/not verified/);
 });

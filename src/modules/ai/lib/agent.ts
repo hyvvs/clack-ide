@@ -785,6 +785,7 @@ export type RunAgentOptions = {
 };
 
 export async function runAgentStream(opts: RunAgentOptions) {
+  let pinnedAutomaticContinuationContext: number | undefined;
   const inferenceScope: InferenceScope = opts.inferenceScope
     ? { ...opts.inferenceScope }
     : {
@@ -807,11 +808,17 @@ export async function runAgentStream(opts: RunAgentOptions) {
     !opts.toolContext.isPeerReplyOnly?.() && resolveCurrentAgentPermission("read_file", {}, opts.toolContext).source !== "chat-only") {
     const target = resolveSelfHostedSelection(opts.selfHostedInference, modelId);
     if (target.status === "available" && (target.endpoint.backendHint ?? target.endpoint.detectedBackend) === "ollama" && target.profile.modelRevision) {
-      const {applyAgentRecommendation} = await import("@/modules/ai/lib/agentConfiguration");
+      const { applyAgentRecommendation, automaticAgentBatchContext } = await import("@/modules/ai/lib/agentConfiguration");
       const {modelOnboarding} = await import("@/modules/ai/lib/modelOnboarding");
       const view = modelOnboarding(opts.selfHostedInference, target.profile);
+      const batchContext = automaticAgentBatchContext(
+        target.profile,
+        view?.context,
+        opts.logicalContinuation,
+      );
+      pinnedAutomaticContinuationContext = batchContext.pinned;
       opts.reasoning = applyAgentRecommendation(opts.selfHostedInference, target.profile,
-        typeof view?.context.override === "number" ? view.context.override : view?.context.recommended, opts.reasoning);
+        batchContext.expected, opts.reasoning);
       // Only publish proof after the real Automatic guard accepts it. The next
       // logical batch must not fall back to the pre-verification run capture.
       opts.onSelfHostedPrepared?.(opts.selfHostedInference);
@@ -836,6 +843,15 @@ export async function runAgentStream(opts: RunAgentOptions) {
     customEndpointKeys: opts.customEndpointKeys,
     capturedModelIdentity: opts.capturedModelIdentity,
   });
+  if (pinnedAutomaticContinuationContext !== undefined) {
+    const { requireAgentContinuationAllocation } = await import(
+      "@/modules/ai/lib/agentConfiguration"
+    );
+    requireAgentContinuationAllocation(
+      pinnedAutomaticContinuationContext,
+      (await modelBudgetLimits(baseModel)).runtimeTarget,
+    );
+  }
   const endpoints = opts.customEndpoints ?? [];
   let info: ModelInfo;
   try {
