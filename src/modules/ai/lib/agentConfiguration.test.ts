@@ -543,14 +543,14 @@ it("R5w: logical continuation retains exact native tool proof context instead of
   const profile = { ...original, toolVerification: { ...original.toolVerification, context: 65536 } };
   const state = { ...f.state(), profiles: [profile] };
   expect(automaticAgentRecommendation(state, profile, 4096)).toBeUndefined();
-  const batch = automaticAgentBatchContext(profile, { recommended: 4096 }, true);
+  const batch = automaticAgentBatchContext(state, profile, { recommended: 4096 }, true);
   expect(batch).toEqual({ expected: 65536, pinned: 65536 });
   expect(applyAgentRecommendation(state, profile, batch.expected)).toBeDefined();
   expect(() => requireAgentContinuationAllocation(batch.pinned, 4096)).toThrow(/working context changed/);
   expect(() => requireAgentContinuationAllocation(batch.pinned, undefined)).toThrow(/working context changed/);
   expect(() => requireAgentContinuationAllocation(batch.pinned, 65536)).not.toThrow();
-  expect(automaticAgentBatchContext(profile, { recommended: 4096 }, false)).toEqual({ expected: 4096, pinned: undefined });
-  expect(automaticAgentBatchContext(profile, { recommended: 4096, override: 8192 }, true)).toEqual({ expected: 8192, pinned: undefined });
-  expect(automaticAgentBatchContext({ ...profile, toolVerification: { ...profile.toolVerification, status: "incomplete" } }, { recommended: 4096 }, true)).toEqual({ expected: 4096, pinned: undefined });
+  expect(automaticAgentBatchContext(state, profile, { recommended: 4096 }, false)).toEqual({ expected: 4096, pinned: undefined });
+  expect(automaticAgentBatchContext(state, profile, { recommended: 4096, override: 8192 }, true)).toEqual({ expected: 8192, pinned: undefined });
+  expect(automaticAgentBatchContext(state, { ...profile, toolVerification: { ...profile.toolVerification, status: "incomplete" } }, { recommended: 4096 }, true)).toEqual({ expected: 4096, pinned: undefined });
   expect(() => applyAgentRecommendation(state, { ...profile, modelRevision: "wrong-digest" }, batch.expected)).toThrow(/not verified/);
 });

@@ -194,7 +194,7 @@ export function createContextAwareTransport(deps: Deps) {
     | undefined;
   // Ephemeral, run-scoped evidence accepted by the production Agent guard.
   // Never replace captured settings/credentials or persist this across restart.
-  let preparedHosted: { runId: string; modelId: string; state: SelfHostedState } | undefined;
+  let preparedHosted: { runId: string; modelId: string; state: SelfHostedState; recordId?: string; variant?: string } | undefined;
   const run = async (
     options: SendOptions,
     activity?: ActivityStreamContext,
@@ -375,10 +375,14 @@ export function createContextAwareTransport(deps: Deps) {
           },
           projectMemory,
           logicalContinuation: batch.isLogicalContinuation,
-          onSelfHostedPrepared: (state) => {
+          retainedAutomaticRecordId: batch.isLogicalContinuation && preparedHosted?.runId === scope?.runId &&
+            preparedHosted?.modelId === configuration.modelId ? preparedHosted?.recordId : undefined,
+          retainedAutomaticVariant: batch.isLogicalContinuation && preparedHosted?.runId === scope?.runId &&
+            preparedHosted?.modelId === configuration.modelId ? preparedHosted?.variant : undefined,
+          onSelfHostedPrepared: (state, recordId, variant) => {
             if (!recovery && scope?.isCurrent() !== false && scope?.runId &&
                 configuration.modelId)
-              preparedHosted = { runId: scope.runId, modelId: configuration.modelId, state };
+              preparedHosted = { runId: scope.runId, modelId: configuration.modelId, state, recordId, variant };
           },
           abortSignal: options.abortSignal,
           ...configuration,

@@ -92,6 +92,7 @@ import {
 import {
   selfHostedTransportIdentity,
   selfHostedCredential,
+  endpointAllowsPrivate,
 } from "@/modules/ai/lib/selfHostedModels";
 import { AGENT_SOFT_STEP_LIMIT, failedCommandOutput, type RunStepObservation } from "@/modules/ai/lib/runBudget";
 import {
@@ -141,6 +142,7 @@ function ellipsize(s: string, max: number): string {
 }
 
 export type BuildModelOptions = {
+  requiredRuntimeContext?: number;
   onOllamaRouteDecision?: (decision: OllamaRouteDecision) => void;
   toolVerification?: boolean;
   calibrationContext?: number;
@@ -263,12 +265,14 @@ export async function buildLanguageModel(
     options.toolVerification,
     reasoning,
     options.providerEvidence,
+    options.requiredRuntimeContext,
   ]);
   const hit = options.inferenceScope || options.calibration ? undefined : modelCache.get(cacheKey);
   if (hit) return hit;
 
   let built: LanguageModel;
   const preflight = createRequestPreflight({
+    requiredRuntimeContext: options.requiredRuntimeContext,
     onOllamaRouteDecision: options.onOllamaRouteDecision,
     validateRouting: options.inferenceScope?.validateFallback,
     requireRequestedOutput: Boolean(options.inferenceScope?.fallbackToken),
@@ -477,6 +481,7 @@ export async function buildLanguageModel(
 }
 
 export type LocalProviderConfig = {
+  requiredRuntimeContext?: number;
   onOllamaRouteDecision?: BuildModelOptions["onOllamaRouteDecision"];
   reasoning?: EffortCapture;
   inferenceScope?: InferenceScope;
@@ -512,6 +517,7 @@ export function buildConfiguredLanguageModel(
       hosted.transportModelId,
       {
         selfHosted: true,
+        requiredRuntimeContext: local.requiredRuntimeContext,
         onOllamaRouteDecision: local.onOllamaRouteDecision,
         reasoning: local.reasoning,
         selfHostedInference: local.selfHostedInference,
@@ -777,8 +783,10 @@ export type RunAgentOptions = {
   planMode?: boolean;
   projectMemory?: string | null;
   logicalContinuation?: boolean;
+  retainedAutomaticRecordId?: string;
+  retainedAutomaticVariant?: string;
   recovery?: boolean;
-  onSelfHostedPrepared?: (state: SelfHostedState) => void;
+  onSelfHostedPrepared?: (state: SelfHostedState, recordId?: string, variant?: string) => void;
   uiMessages: UIMessage[];
   toolSelectionMessages?: UIMessage[];
   abortSignal?: AbortSignal;
@@ -808,24 +816,45 @@ export async function runAgentStream(opts: RunAgentOptions) {
     !opts.toolContext.isPeerReplyOnly?.() && resolveCurrentAgentPermission("read_file", {}, opts.toolContext).source !== "chat-only") {
     const target = resolveSelfHostedSelection(opts.selfHostedInference, modelId);
     if (target.status === "available" && (target.endpoint.backendHint ?? target.endpoint.detectedBackend) === "ollama" && target.profile.modelRevision) {
-      const { applyAgentRecommendation, automaticAgentBatchContext } = await import("@/modules/ai/lib/agentConfiguration");
+      const { applyAgentRecommendation, automaticAgentBatchContext, automaticAgentRecommendation, agentContinuationReasoningMetadata } = await import("@/modules/ai/lib/agentConfiguration");
       const {modelOnboarding} = await import("@/modules/ai/lib/modelOnboarding");
-      const view = modelOnboarding(opts.selfHostedInference, target.profile);
+      let eligibility = opts.selfHostedInference;
+      if (opts.logicalContinuation) {
+        const {createSelfHostedProbeClient} = await import("@/modules/ai/lib/selfHostedProbe");
+        const current = await createSelfHostedProbeClient().read({
+          endpointId: target.endpoint.id,
+          selectedModelId: target.profile.transportModelId,
+          allowPrivateNetwork: endpointAllowsPrivate(target.endpoint),
+        }).catch(() => null);
+        eligibility = agentContinuationReasoningMetadata(eligibility, target.profile, current);
+      }
+      const eligibleProfile = eligibility.profiles.find(p => p.id === target.profile.id) ?? target.profile;
+      const view = modelOnboarding(eligibility, eligibleProfile);
       const batchContext = automaticAgentBatchContext(
-        target.profile,
+        eligibility,
+        eligibleProfile,
         view?.context,
         opts.logicalContinuation,
       );
       pinnedAutomaticContinuationContext = batchContext.pinned;
-      opts.reasoning = applyAgentRecommendation(opts.selfHostedInference, target.profile,
+      opts.reasoning = applyAgentRecommendation(eligibility, eligibleProfile,
         batchContext.expected, opts.reasoning);
+      const accepted = automaticAgentRecommendation(eligibility, eligibleProfile, batchContext.expected);
+      if (opts.logicalContinuation && opts.retainedAutomaticRecordId &&
+          accepted?.record.id !== opts.retainedAutomaticRecordId)
+        throw new Error("Automatic Agent proof selection changed during logical continuation. Start a newly verified run.");
+      const variant = JSON.stringify(accepted?.configuration ?? null);
+      if (opts.logicalContinuation && opts.retainedAutomaticVariant &&
+          variant !== opts.retainedAutomaticVariant)
+        throw new Error("Automatic Agent reasoning variant changed during logical continuation. Start a newly verified run.");
       // Only publish proof after the real Automatic guard accepts it. The next
       // logical batch must not fall back to the pre-verification run capture.
-      opts.onSelfHostedPrepared?.(opts.selfHostedInference);
+      opts.onSelfHostedPrepared?.(opts.selfHostedInference, accepted?.record.id, variant);
     }
   }
   const baseModel = await buildConfiguredLanguageModel(modelId, opts.keys, {
     reasoning: opts.reasoning,
+    requiredRuntimeContext: pinnedAutomaticContinuationContext,
     inferenceScope,
     selfHostedInference: opts.selfHostedInference,
     lmstudioBaseURL: opts.lmstudioBaseURL,

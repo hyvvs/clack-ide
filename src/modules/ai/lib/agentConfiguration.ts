@@ -7,6 +7,7 @@ import { contextMetadata } from "@/modules/ai/lib/contextCalibrationTrust";
 import {
   configuredToolState,
   verificationRecord,
+  sameToolConfiguration,
   sameToolScope,
   toolScope,
   toolEligibilityPredicates,
@@ -16,6 +17,45 @@ import type {
   SelfHostedProfile,
   SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
+import { probeEvidenceIsFresh, type ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
+
+// Only the short-lived reasoning capability metadata may be refreshed from the
+// current native cache. Keep the captured profile's native tool proof, identity,
+// revisions, overrides and confirmation unmodified. Both scope and freshness
+// must be revalidated by the existing Automatic selection on the merged view.
+export function agentContinuationReasoningMetadata(
+  state: SelfHostedState,
+  profile: SelfHostedProfile,
+  snapshot: ProbeSnapshot | null,
+  now = Date.now(),
+): SelfHostedState {
+  const endpoint = state.endpoints.find(e => e.id === profile.endpointId && e.deletedAt == null);
+  const model = snapshot?.models.find(m => m.id === profile.transportModelId);
+  const capturedProofStillEligible = [profile.toolVerification, ...(profile.agentToolConfigurations ?? [])]
+    .some(record => record?.status === "verified" &&
+      (!record.configuration || (!!record.confirmation && record.confirmation.at <= now && record.confirmation.expiresAt > now)) &&
+      configuredToolState(state, profile, record.configuration, now, record.context) === "Verified");
+  if (!endpoint || !snapshot || !model || snapshot.selectedModelId !== profile.transportModelId ||
+      !capturedProofStillEligible ||
+      snapshot.endpointId !== endpoint.id || snapshot.configurationRevision !== endpoint.configurationRevision ||
+      snapshot.stale || !snapshot.connected || model.digest !== profile.modelRevision ||
+      snapshot.observedAt > now || now - snapshot.observedAt >= 30_000)
+    return state;
+  const metrics = new Set(["probe.thinking", "probe.thinkingControls", "probe.thinkingDefault", "probe.trainedForTools"]);
+  const current = model.evidence.filter(e => metrics.has(e.metric) &&
+    e.confidence === "reported" && ["backend-reported", "advertised"].includes(e.source) &&
+    e.scope.transportModelId === profile.transportModelId &&
+    e.scope.modelRevision === profile.modelRevision &&
+    e.scope.deploymentId === profile.deploymentId &&
+    probeEvidenceIsFresh(e, endpoint, snapshot, now));
+  // Do not replace only half a reasoning contract or accept duplicates.
+  if (["probe.thinking", "probe.thinkingControls", "probe.thinkingDefault"].some(metric =>
+    current.filter(e => e.metric === metric).length !== 1)) return state;
+  const replacement = new Set(current.map(e => e.metric));
+  return { ...state, profiles: state.profiles.map(p => p.id !== profile.id ? p : {
+    ...p, evidence: [...p.evidence.filter(e => !replacement.has(e.metric)), ...current],
+  }) };
+}
 
 const order = [
   "none",
@@ -136,22 +176,36 @@ export function automaticAgentRecommendation(
 // snapshot. This does not refresh or grant proof: applyAgentRecommendation still
 // validates the original record, scope, runtime epoch, reasoning and TTL.
 export function automaticAgentBatchContext(
+  state: SelfHostedState,
   profile: SelfHostedProfile,
   view: { override?: unknown; recommended?: number } | undefined,
   logicalContinuation: boolean | undefined,
 ) {
   const projected =
     typeof view?.override === "number" ? view.override : view?.recommended;
-  const record = profile.toolVerification;
   if (
     !logicalContinuation ||
-    view?.override !== undefined ||
-    record?.status !== "verified" ||
-    !Number.isSafeInteger(record.context) ||
-    record.context <= 0
+    view?.override !== undefined
   )
     return { expected: projected, pinned: undefined };
-  return { expected: record.context, pinned: record.context };
+  // Search exactly the same default-then-confirmed alternatives as production
+  // Automatic selection. Each candidate must independently qualify at its OWN
+  // recorded context; a verified default must never lend proof to an alternative.
+  const records = [
+    { record: profile.toolVerification, configuration: undefined },
+    ...agentToolCandidates(state, profile).map((configuration) => ({
+      record: verificationRecord(profile, configuration), configuration,
+    })),
+  ];
+  for (const { record, configuration } of records) {
+    if (record?.status !== "verified" || !Number.isSafeInteger(record.context) || record.context <= 0)
+      continue;
+    const selected = automaticAgentRecommendation(state, profile, record.context);
+    if (selected?.record.id === record.id &&
+        sameToolConfiguration(selected.configuration, configuration))
+      return { expected: record.context, pinned: record.context };
+  }
+  return { expected: projected, pinned: undefined };
 }
 
 // Proof acceptance is not an allocation waiver. A continuation may use its

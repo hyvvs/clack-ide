@@ -13,9 +13,11 @@ it("R5m: logical batches retain only same-run proof accepted by the Agent bounda
   let runId = "run-A";
   let logical = false;
   const seen: unknown[] = [];
+  const owned: Array<{record?: string; variant?: string}> = [];
   runAgentStream.mockImplementation(async (opts) => {
     seen.push(opts.selfHostedInference);
-    if (!logical) opts.onSelfHostedPrepared?.(accepted);
+    owned.push({record: opts.retainedAutomaticRecordId, variant: opts.retainedAutomaticVariant});
+    if (!logical) opts.onSelfHostedPrepared?.(accepted, "verified-variant-record", '{"choice":"none","wire":false}');
     return { toUIMessageStream: () => new ReadableStream() };
   });
   const transport = createContextAwareTransport({
@@ -34,8 +36,11 @@ it("R5m: logical batches retain only same-run proof accepted by the Agent bounda
   await transport.sendMessages({ messages: [] });
   expect(seen[0]).toEqual(original);
   expect(seen[1]).toEqual(accepted);
+  expect(owned[0]).toEqual({record: undefined, variant: undefined});
+  expect(owned[1]).toEqual({record: "verified-variant-record", variant: '{"choice":"none","wire":false}'});
   runId = "run-B";
   await transport.sendMessages({ messages: [] });
   expect(seen[2]).toEqual(original); // no proof from another run
+  expect(owned[2]).toEqual({record: undefined, variant: undefined});
   expect(runAgentStream).toHaveBeenCalledTimes(3);
 });

@@ -35,7 +35,7 @@ import {
   endpointAllowsPrivate,
   endpointProvider,
 } from "@/modules/ai/lib/selfHostedModels";
-import { contextMetadata, contextRuntime } from "@/modules/ai/lib/contextCalibrationTrust";
+import { contextMetadata, contextRuntime, snapshotContext } from "@/modules/ai/lib/contextCalibrationTrust";
 import {
   effortBudget,
   effortCapability,
@@ -153,6 +153,8 @@ export function createRequestPreflight(options: {
   reasoning?: EffortCapture;
   optimization?: boolean;
   calibrationContext?: number;
+  /** Exact verified Agent logical-continuation allocation, not a B1 budget hint. */
+  requiredRuntimeContext?: number;
   validateEvidence?: () => Promise<void>;
   onOllamaRouteDecision?: (decision: OllamaRouteDecision) => void;
 }) {
@@ -448,6 +450,23 @@ export function createRequestPreflight(options: {
         assertMeasuredRequestBudget(limits(), measured.cost, measured.output);
         await options.validateEvidence?.();
         await reasoningOptions();
+        // B1 may legitimately resolve a smaller conservative context for an
+        // independently small request. It may NOT authorize a body serialized
+        // for an older, larger context after the final provider refresh.
+        if (options.providerId === "ollama") {
+          const currentTarget = runtimeTarget();
+          assertOllamaContextRoute(body, options.modelId, currentTarget);
+          if (options.requiredRuntimeContext !== undefined) {
+            if (!profile || !state ||
+                currentTarget !== options.requiredRuntimeContext ||
+                snapshotContext(state, profile, snapshot) !== options.requiredRuntimeContext)
+              throw new ContextBudgetError("ollama-continuation-allocation-stale",
+                "Automatic Agent working context changed during continuation. No inference was sent; reverify context and tools for a new run.");
+          }
+        }
+        // Verify owner/settings again after asynchronous snapshot and control
+        // checks, just before giving the native HTTP dispatch its ACK.
+        await checkIdentity();
       };
     },
     async observeOllamaRuntime() {
