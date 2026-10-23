@@ -145,7 +145,10 @@ export type BuildModelOptions = {
   toolVerification?: boolean;
   calibrationContext?: number;
   providerEvidence?: import("@/modules/ai/lib/providerModelEvidence").ProviderModelEvidence;
-  calibration?: Pick<CalibrationCaptureOptions, "requestClass" | "record" | "onQueued">;
+  calibration?: Pick<CalibrationCaptureOptions, "requestClass" | "record" | "onQueued"> & {
+    onStreamBoundary?: (stage: string) => void;
+    onProxyBoundary?: (stage: string) => void;
+  };
   reasoning?: EffortCapture;
   assertedContext?: number;
   admission?: InferenceAdmission;
@@ -456,8 +459,10 @@ export async function buildLanguageModel(
         fetch: options.selfHosted ? verifiedProviderFetch(createProxyFetch({
           allowPrivateNetwork: options.allowPrivateNetwork === true, selfHosted: true,
           scope: options.inferenceScope, admission, preflight, onAdmission: calibration?.observe,
+          onLifecycleBoundary: options.calibration?.onProxyBoundary,
         }), options.inferenceScope?.onResponseBody) : scopedLocalFetch,
         onFinish: preflight.observeOllamaRuntime,
+        onStreamBoundary: options.calibration?.onStreamBoundary,
       });
       break;
     }

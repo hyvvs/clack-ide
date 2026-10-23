@@ -49,8 +49,15 @@ function synchronize(state: ContextCalibrationOptions["state"]) {
   return state;
 }
 export async function calibrateModelContext(
-  options: ContextCalibrationOptions & { scope?: InferenceScope },
+  options: ContextCalibrationOptions & {
+    scope?: InferenceScope;
+    /** Optional observation only; failures never alter calibration. */
+    onBoundary?: (stage: string) => void;
+  },
 ) {
+  const boundary = (stage: string) => {
+    try { options.onBoundary?.(stage); } catch { /* diagnostics cannot affect trust */ }
+  };
   const profile = options.state.profiles.find(
     (p) => p.id === options.profileId,
   );
@@ -86,6 +93,8 @@ export async function calibrateModelContext(
   let claimed = false;
   const client = createSelfHostedProbeClient();
   const refresh = async () => {
+    boundary("metadata-refresh-start");
+    try {
     const snapshot = await client.refresh({
       endpointId: endpoint.id,
       selectedModelId: profile.transportModelId,
@@ -105,7 +114,9 @@ export async function calibrateModelContext(
     )
       throw new Error("Context verification identity changed");
     synchronize(state);
+    boundary("metadata-refresh-end");
     return { snapshot, state };
+    } catch (error) { boundary("metadata-refresh-failed"); throw error; }
   };
   const work = (async () => {
     await invoke("self_hosted_context_lease", {
@@ -126,7 +137,13 @@ export async function calibrateModelContext(
       },
       {
         refresh,
-        inspectRuntime: () => inspectContextRuntime(endpoint, true),
+        inspectRuntime: async () => {
+          boundary("runtime-inspection-start");
+          try {
+            await inspectContextRuntime(endpoint, true);
+            boundary("runtime-inspection-end");
+          } catch (error) { boundary("runtime-inspection-failed"); throw error; }
+        },
         commit: async (change) =>
           synchronize(await updateSelfHostedProfiles(change)),
         request: async (context, state, abortSignal) => {
@@ -179,6 +196,8 @@ export async function calibrateModelContext(
               calibration: {
                 requestClass: "optimization",
                 record: () => {},
+                onStreamBoundary: boundary,
+                onProxyBoundary: boundary,
                 onQueued: () =>
                   controller.abort(
                     new Error("Server busy; verification deferred"),
@@ -188,6 +207,7 @@ export async function calibrateModelContext(
             selfHostedCredential(identity, keys, endpointKeys),
           );
           abortSignal.throwIfAborted();
+          boundary("sdk-consume-start");
           const result = streamText({
             model,
             prompt: "Reply with OK.",
@@ -203,7 +223,10 @@ export async function calibrateModelContext(
             }),
             abortSignal,
           );
-          return { finish: await result.finishReason };
+          boundary("sdk-consume-end");
+          const finish = await waitForRecovery(result.finishReason, abortSignal);
+          boundary("sdk-finish-end");
+          return { finish };
         },
       },
     );

@@ -270,7 +270,11 @@ export function createOllamaModel(config: {
   fetch: typeof fetch;
   apiKey?: string;
   onFinish?: () => Promise<void>;
+  onStreamBoundary?: (stage: string) => void;
 }): LanguageModelV3 {
+  const boundary = (stage: string) => {
+    try { config.onStreamBoundary?.(stage); } catch { /* diagnostics only */ }
+  };
   const url = ollamaChatURL(config.baseURL);
   const send = async (params: LanguageModelV3CallOptions, stream: boolean) => {
     const body = JSON.stringify(ollamaBody(config.modelId, params, stream));
@@ -400,6 +404,7 @@ export function createOllamaModel(config: {
           );
         }
         if (frame.done) {
+          boundary("sdk-parser-terminal");
           done = true;
           terminal = frame;
           if (reasoning)
@@ -427,6 +432,7 @@ export function createOllamaModel(config: {
                 }
                 const chunk = await reader.read();
                 if (chunk.done) {
+                  boundary("response-body-eof");
                   pending += decoder.decode();
                   if (pending) {
                     const line = pending;
@@ -448,11 +454,12 @@ export function createOllamaModel(config: {
               }
               controller.enqueue(events.shift() as LanguageModelV3StreamPart);
             } catch (error) {
+              boundary("response-body-error");
               await reader.cancel().catch(() => {});
               controller.error(error);
             }
           },
-          cancel: () => reader.cancel(),
+          cancel: () => { boundary("response-body-cancelled"); return reader.cancel(); },
         }),
       };
     },

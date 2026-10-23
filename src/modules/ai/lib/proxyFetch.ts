@@ -64,6 +64,7 @@ async function bodyToBytes(
 }
 
 export type ProxyOptions = {
+  onLifecycleBoundary?: (stage: string) => void;
   onAdmission?: (signal: AbortSignal | null | undefined, observation: AdmissionObservation) => void;
   preflight?: ReturnType<typeof createRequestPreflight>;
   admission?: InferenceAdmission;
@@ -92,7 +93,11 @@ async function proxyFetchImpl(
   let attempt: ReturnType<typeof beginInference> | undefined;
   let releaseRemote: (() => void) | undefined;
   const connectionAbort=new AbortController();
+  const boundary = (stage: string) => {
+    try { opts.onLifecycleBoundary?.(stage); } catch { /* observation only */ }
+  };
   const cancel = () => {
+    boundary("response-cancelled");
     aborted = true;
     connectionAbort.abort();
     attempt?.update("stopping");
@@ -251,6 +256,7 @@ async function proxyFetchImpl(
         } else if (controller) {
           try {
             controller.close();
+            boundary("response-body-closed");
           } catch {
             /* consumer already closed */
           }
@@ -271,6 +277,7 @@ async function proxyFetchImpl(
         onEvent: channel,
       }).then(
         () => {
+          boundary("native-command-ack");
           nativeSettled = true;
           if (terminal) settle();
           else
