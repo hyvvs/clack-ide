@@ -9,6 +9,7 @@ import {
   verificationRecord,
   sameToolScope,
   toolScope,
+  toolEligibilityPredicates,
 } from "@/modules/ai/lib/toolVerification";
 import { createToolRequestBudget, TOOL_VERIFICATION, type ToolConfiguration, type ToolRequestBudget } from "@/modules/ai/lib/toolVerificationSchema";
 import type {
@@ -140,10 +141,24 @@ export function applyAgentRecommendation(
     throw new Error("The saved explicit reasoning choice needs revalidation; Automatic recovery cannot replace it.");
   if (captured && captured.choice !== "automatic") return captured;
   const selected = automaticAgentRecommendation(state, profile, context);
-  if (!selected)
+  if (!selected) {
+    const now = Date.now();
+    // Only stable predicate keys, booleans/null and fixed verdict labels.
+    // No model IDs, endpoint URLs, tool payloads or private exception bodies.
+    console.warn("agent-automatic-eligibility", {
+      default: toolEligibilityPredicates(state, profile, undefined, now, context),
+      alternatives: agentToolCandidates(state, profile).map(configuration => {
+        const record = verificationRecord(profile, configuration);
+        return {
+          ...toolEligibilityPredicates(state, profile, configuration, now, context),
+          confirmationFresh: record ? !!record.confirmation && record.confirmation.at <= now && record.confirmation.expiresAt > now : null,
+        };
+      }),
+    });
     throw new Error(
       "Automatic Agent configuration is not verified. Use Chat Only or verify tools in model settings.",
     );
+  }
   if (!selected.configuration)
     return captured ?? toolEffortCapture(state, profile);
   const effective = toolEffortCapture(state, profile, selected.configuration);

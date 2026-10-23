@@ -773,6 +773,7 @@ export type RunAgentOptions = {
   projectMemory?: string | null;
   logicalContinuation?: boolean;
   recovery?: boolean;
+  onSelfHostedPrepared?: (state: SelfHostedState) => void;
   uiMessages: UIMessage[];
   toolSelectionMessages?: UIMessage[];
   abortSignal?: AbortSignal;
@@ -806,6 +807,9 @@ export async function runAgentStream(opts: RunAgentOptions) {
       const view = modelOnboarding(opts.selfHostedInference, target.profile);
       opts.reasoning = applyAgentRecommendation(opts.selfHostedInference, target.profile,
         typeof view?.context.override === "number" ? view.context.override : view?.context.recommended, opts.reasoning);
+      // Only publish proof after the real Automatic guard accepts it. The next
+      // logical batch must not fall back to the pre-verification run capture.
+      opts.onSelfHostedPrepared?.(opts.selfHostedInference);
     }
   }
   const baseModel = await buildConfiguredLanguageModel(modelId, opts.keys, {

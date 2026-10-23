@@ -186,6 +186,41 @@ export function verificationRecord(profile: SelfHostedProfile, configuration?: T
 export function configuredToolState(state: SelfHostedState, profile: SelfHostedProfile, configuration?: ToolConfiguration, now = Date.now(), context?: number) {
   return toolVerificationState(state, {...profile, toolVerification: verificationRecord(profile, configuration)}, now, context);
 }
+// Failure-only, privacy-safe decision operands. Null means the operand cannot
+// be evaluated from available evidence; it is never an affirmative PASS.
+export function toolEligibilityPredicates(
+  state: SelfHostedState,
+  profile: SelfHostedProfile,
+  configuration?: ToolConfiguration,
+  now = Date.now(),
+  expectedContext?: number,
+) {
+  const endpoint = state.endpoints.find(e => e.id === profile.endpointId && e.deletedAt == null);
+  const runtime = endpoint ? contextRuntime(endpoint.id) : undefined;
+  const record = verificationRecord(profile, configuration);
+  const scope = endpoint ? toolScope(profile, endpoint, now) : undefined;
+  const failure = toolFailure(record);
+  return {
+    endpointPresent: !!endpoint,
+    modelRevisionPresent: !!profile.modelRevision,
+    toolCapabilityNotDenied: endpoint ? contextMetadata(profile, endpoint, "trainedForTools", now, 300_000) !== false : null,
+    recordPresent: !!record,
+    runtimeObserved: !!runtime,
+    runtimeFresh: runtime ? runtime.at <= now && now - runtime.at < 30_000 : null,
+    endpointRevisionMatches: endpoint && runtime ? runtime.configurationRevision === endpoint.configurationRevision : null,
+    modelIdentityMatches: record && scope ? record.scope.model === scope.model && record.scope.deployment === scope.deployment && record.scope.digest === scope.digest && record.scope.endpointId === scope.endpointId : null,
+    runtimeEpochMatches: record && scope ? record.scope.runtimeEpoch === scope.runtimeEpoch : null,
+    providerVersionMatches: record && scope ? record.scope.providerVersion === scope.providerVersion : null,
+    reasoningIdentityMatches: record && scope ? record.scope.reasoning === scope.reasoning : null,
+    toolProtocolMatches: record ? record.scope.protocol === TOOL_VERIFICATION.protocol : null,
+    scopeMatches: record ? sameToolScope(record.scope, scope) : null,
+    expectedContextMatches: record && expectedContext !== undefined ? record.context === expectedContext : null,
+    failureInactive: record ? !(failure && failure.at <= now && failure.expiresAt > now) : null,
+    proofFresh: record ? !!record.proof && record.proof.at <= now && record.proof.expiresAt > now : null,
+    notVerifying: record ? record.status !== "verifying" : null,
+    verdict: configuredToolState(state, profile, configuration, now, expectedContext),
+  };
+}
 export type ToolProbeDependencies = {
   refresh: () => Promise<SelfHostedState>;
   inspect: () => Promise<void>;

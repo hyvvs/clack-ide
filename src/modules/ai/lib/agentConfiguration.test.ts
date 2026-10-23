@@ -18,6 +18,7 @@ import {
 import {
   runToolVerification,
   toolVerificationState,
+  toolEligibilityPredicates,
   type ProbeObservation,
 } from "@/modules/ai/lib/toolVerification";
 import { effortProviderOptions, captureEffort } from "@/modules/ai/lib/reasoningEffort";
@@ -470,4 +471,61 @@ it("a saved explicit choice with stale metadata is not consent to Automatic reco
   expect(stale.unresolvedExplicitChoice).toBe("none");
   expect(()=>applyAgentRecommendation(f.state(),p,4096,stale)).toThrow(/cannot replace/);
   expect(f.requests).toEqual([]); expect(preferences.choices[0].choice).toBe("none");
+});
+
+it("R5m: a same-run pre-verification capture cannot inherit newly verified proof until the prepared state is retained", async () => {
+  const f = fixture();
+  const captured = readSelfHostedState(JSON.parse(JSON.stringify(f.state())));
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  f.results.splice(0, 3, "pass");
+  await f.resolve(); // deterministic native-call fixture; no Ollama or tool execution
+  expect(automaticAgentRecommendation(captured, captured.profiles[0], 4096)).toBeUndefined();
+  expect(() => applyAgentRecommendation(captured, captured.profiles[0], 4096)).toThrow(/not verified/);
+  const diagnostic = warn.mock.calls[warn.mock.calls.length - 1]?.[1] as { default: ReturnType<typeof toolEligibilityPredicates> };
+  expect(diagnostic.default.recordPresent).toBe(false);
+  expect(diagnostic.default.verdict).not.toBe("Verified");
+  expect(JSON.stringify(diagnostic)).not.toContain(f.get().transportModelId);
+  expect(applyAgentRecommendation(f.state(), f.get(), 4096).choice).toBe("automatic");
+  expect(f.requests).toEqual([undefined]);
+  f.restart(); // proof survives deserialization with unchanged, still-fresh runtime evidence
+  expect(applyAgentRecommendation(f.state(), f.get(), 4096).choice).toBe("automatic");
+});
+
+it("R5m: the production continuation guard distinguishes every required stale proof operand", async () => {
+  const f = fixture();
+  f.results.splice(0, 3, "pass");
+  await f.resolve();
+  const state = f.state(), profile = f.get();
+  const restored = readSelfHostedState(JSON.parse(JSON.stringify(state)));
+  expect(applyAgentRecommendation(restored, restored.profiles[0], 4096)).toBeDefined();
+  const check = (p: typeof profile, s = state, expected = 4096) => {
+    expect(automaticAgentRecommendation(s, p, expected)).toBeUndefined();
+    expect(() => applyAgentRecommendation(s, p, expected)).toThrow(/not verified/);
+  };
+  check({ ...profile, toolVerification: undefined });
+  check({ ...profile, modelRevision: "wrong-digest" });
+  check({ ...profile, endpointId: "another-endpoint" });
+  check({ ...profile, evidence: profile.evidence.map(e => e.metric === "probe.thinkingDefault" ? { ...e, value: true } : e) });
+  const proof = profile.toolVerification;
+  if (!proof) throw new Error("Expected fixture proof");
+  check({ ...profile, toolVerification: { ...proof, scope: { ...proof.scope, protocol: "future-tool-schema" as "native-tools-v1" } } });
+  check({ ...profile, evidence: profile.evidence.map(e => e.metric === "probe.trainedForTools" ? { ...e, value: false } : e) });
+  check(profile, state, 8192);
+  check(profile, { ...state, endpoints: [{ ...state.endpoints[0], configurationRevision: 2 }] });
+  const at = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(at + 30_001);
+  expect(toolEligibilityPredicates(state, profile).runtimeFresh).toBe(false);
+  check(profile);
+  vi.mocked(Date.now).mockReturnValue(at + 86400_001);
+  expect(toolEligibilityPredicates(state, profile).proofFresh).toBe(false);
+  check(profile);
+  vi.mocked(Date.now).mockReturnValue(at);
+  forgetContextRuntime(state.endpoints[0].id); // process reload without native runtime observation
+  expect(toolEligibilityPredicates(state, profile).runtimeObserved).toBe(false);
+  check(profile);
+  rememberContextRuntime(state.endpoints[0].id, { epoch: "different-epoch", version: "1.2.3", configurationRevision: 1, at });
+  expect(toolEligibilityPredicates(state, profile).runtimeEpochMatches).toBe(false);
+  check(profile);
+  await f.deps.inspect(); // real runtime inspection in production, fixture-only in this test
+  expect(applyAgentRecommendation(state, profile, 4096)).toBeDefined();
 });

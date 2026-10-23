@@ -192,6 +192,9 @@ export function createContextAwareTransport(deps: Deps) {
         capabilities: ModelInputCapabilities;
       }
     | undefined;
+  // Ephemeral, run-scoped evidence accepted by the production Agent guard.
+  // Never replace captured settings/credentials or persist this across restart.
+  let preparedHosted: { runId: string; modelId: string; state: SelfHostedState } | undefined;
   const run = async (
     options: SendOptions,
     activity?: ActivityStreamContext,
@@ -215,6 +218,8 @@ export function createContextAwareTransport(deps: Deps) {
       ? captured?.configuration.reasoning
       : deps.getReasoning?.();
     const batch = deps.onBatchStart?.() ?? { isLogicalContinuation: false };
+    if (!batch.isLogicalContinuation || preparedHosted?.runId !== scope?.runId)
+      preparedHosted = undefined;
     const compaction = await deps.prepareCompactionContext?.(options.messages);
     const live = deps.getLive();
     const projectMemory = await readProjectMemory(
@@ -233,6 +238,10 @@ export function createContextAwareTransport(deps: Deps) {
         hostedState = await ensureSelectedContext(hostedState, deps.getModelId(), options.abortSignal ?? new AbortController().signal, scope);
       }
     }
+    if (!recovery && batch.isLogicalContinuation && preparedHosted &&
+        preparedHosted.runId === scope?.runId &&
+        preparedHosted.modelId === deps.getModelId())
+      hostedState = preparedHosted.state;
     const capturedIdentity = recovery
       ? captured?.configuration.capturedModelIdentity
       : deps.getCapturedModelIdentity?.();
@@ -366,6 +375,11 @@ export function createContextAwareTransport(deps: Deps) {
           },
           projectMemory,
           logicalContinuation: batch.isLogicalContinuation,
+          onSelfHostedPrepared: (state) => {
+            if (!recovery && scope?.isCurrent() !== false && scope?.runId &&
+                configuration.modelId)
+              preparedHosted = { runId: scope.runId, modelId: configuration.modelId, state };
+          },
           abortSignal: options.abortSignal,
           ...configuration,
           ...(attempt?.configuration ?? {}),
