@@ -25,6 +25,7 @@ import {
 } from "../config";
 import { buildRuntimeTools as buildTools } from "@/modules/ai/tools/customExecution";
 import type { ToolContext } from "@/modules/ai/tools/context";
+import type { ToolVerification } from "@/modules/ai/lib/toolVerificationSchema";
 import { compactModelMessagesDetailed } from "./compact";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
@@ -143,6 +144,7 @@ function ellipsize(s: string, max: number): string {
 
 export type BuildModelOptions = {
   requiredRuntimeContext?: number;
+  requiredContinuationProof?: ToolVerification;
   onOllamaRouteDecision?: (decision: OllamaRouteDecision) => void;
   toolVerification?: boolean;
   calibrationContext?: number;
@@ -266,6 +268,7 @@ export async function buildLanguageModel(
     reasoning,
     options.providerEvidence,
     options.requiredRuntimeContext,
+    options.requiredContinuationProof,
   ]);
   const hit = options.inferenceScope || options.calibration ? undefined : modelCache.get(cacheKey);
   if (hit) return hit;
@@ -273,6 +276,7 @@ export async function buildLanguageModel(
   let built: LanguageModel;
   const preflight = createRequestPreflight({
     requiredRuntimeContext: options.requiredRuntimeContext,
+    requiredContinuationProof: options.requiredContinuationProof,
     onOllamaRouteDecision: options.onOllamaRouteDecision,
     validateRouting: options.inferenceScope?.validateFallback,
     requireRequestedOutput: Boolean(options.inferenceScope?.fallbackToken),
@@ -482,6 +486,7 @@ export async function buildLanguageModel(
 
 export type LocalProviderConfig = {
   requiredRuntimeContext?: number;
+  requiredContinuationProof?: ToolVerification;
   onOllamaRouteDecision?: BuildModelOptions["onOllamaRouteDecision"];
   reasoning?: EffortCapture;
   inferenceScope?: InferenceScope;
@@ -518,6 +523,7 @@ export function buildConfiguredLanguageModel(
       {
         selfHosted: true,
         requiredRuntimeContext: local.requiredRuntimeContext,
+        requiredContinuationProof: local.requiredContinuationProof,
         onOllamaRouteDecision: local.onOllamaRouteDecision,
         reasoning: local.reasoning,
         selfHostedInference: local.selfHostedInference,
@@ -794,6 +800,7 @@ export type RunAgentOptions = {
 
 export async function runAgentStream(opts: RunAgentOptions) {
   let pinnedAutomaticContinuationContext: number | undefined;
+  let pinnedAutomaticContinuationProof: ToolVerification | undefined;
   const inferenceScope: InferenceScope = opts.inferenceScope
     ? { ...opts.inferenceScope }
     : {
@@ -840,6 +847,11 @@ export async function runAgentStream(opts: RunAgentOptions) {
       opts.reasoning = applyAgentRecommendation(eligibility, eligibleProfile,
         batchContext.expected, opts.reasoning);
       const accepted = automaticAgentRecommendation(eligibility, eligibleProfile, batchContext.expected);
+      if (pinnedAutomaticContinuationContext !== undefined) {
+        if (!accepted || accepted.record.context !== pinnedAutomaticContinuationContext)
+          throw new Error("Automatic Agent native-tool proof is unavailable for this continuation.");
+        pinnedAutomaticContinuationProof = structuredClone(accepted.record);
+      }
       if (opts.logicalContinuation && opts.retainedAutomaticRecordId &&
           accepted?.record.id !== opts.retainedAutomaticRecordId)
         throw new Error("Automatic Agent proof selection changed during logical continuation. Start a newly verified run.");
@@ -855,6 +867,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
   const baseModel = await buildConfiguredLanguageModel(modelId, opts.keys, {
     reasoning: opts.reasoning,
     requiredRuntimeContext: pinnedAutomaticContinuationContext,
+    requiredContinuationProof: pinnedAutomaticContinuationProof,
     inferenceScope,
     selfHostedInference: opts.selfHostedInference,
     lmstudioBaseURL: opts.lmstudioBaseURL,

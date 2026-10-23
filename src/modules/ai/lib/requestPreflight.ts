@@ -36,6 +36,9 @@ import {
   endpointProvider,
 } from "@/modules/ai/lib/selfHostedModels";
 import { contextMetadata, contextRuntime, snapshotContext } from "@/modules/ai/lib/contextCalibrationTrust";
+import { agentContinuationReasoningMetadata, automaticAgentRecommendation } from "@/modules/ai/lib/agentConfiguration";
+import { verificationRecord, sameToolConfiguration } from "@/modules/ai/lib/toolVerification";
+import type { ToolVerification } from "@/modules/ai/lib/toolVerificationSchema";
 import {
   effortBudget,
   effortCapability,
@@ -155,6 +158,8 @@ export function createRequestPreflight(options: {
   calibrationContext?: number;
   /** Exact verified Agent logical-continuation allocation, not a B1 budget hint. */
   requiredRuntimeContext?: number;
+  /** Record selected by real Automatic eligibility for this one logical run. */
+  requiredContinuationProof?: ToolVerification;
   validateEvidence?: () => Promise<void>;
   onOllamaRouteDecision?: (decision: OllamaRouteDecision) => void;
 }) {
@@ -466,7 +471,33 @@ export function createRequestPreflight(options: {
         }
         // Verify owner/settings again after asynchronous snapshot and control
         // checks, just before giving the native HTTP dispatch its ACK.
-        await checkIdentity();
+        const currentSettings = await checkIdentity();
+        const originalProof = options.requiredContinuationProof;
+        if (originalProof) {
+          const currentProfile = currentSettings?.profiles.find(p => p.id === profile?.id);
+          if (!currentSettings || !currentProfile || options.providerId !== "ollama" ||
+              options.requiredRuntimeContext === undefined ||
+              originalProof.context !== options.requiredRuntimeContext)
+            throw new ContextBudgetError("agent-tool-proof-stale", "Current Agent native-tool verification is unavailable. No inference was sent.");
+          // Authoritative current settings own proof, failure and confirmation.
+          // The native snapshot can refresh reasoning metadata only, never proof.
+          const eligible = agentContinuationReasoningMetadata(currentSettings, currentProfile, snapshot);
+          const eligibleProfile = eligible.profiles.find(p => p.id === currentProfile.id) ?? currentProfile;
+          const currentProof = verificationRecord(eligibleProfile, originalProof.configuration);
+          const selected = automaticAgentRecommendation(eligible, eligibleProfile, originalProof.context);
+          if (!currentProof || currentProof.id !== originalProof.id ||
+              currentProof.status !== "verified" ||
+              currentProof.context !== originalProof.context ||
+              !sameToolConfiguration(currentProof.configuration, originalProof.configuration) ||
+              JSON.stringify(currentProof.scope) !== JSON.stringify(originalProof.scope) ||
+              !currentProof.proof || !originalProof.proof ||
+              currentProof.proof.at !== originalProof.proof.at ||
+              currentProof.proof.expiresAt !== originalProof.proof.expiresAt ||
+              JSON.stringify(currentProof.confirmation ?? null) !== JSON.stringify(originalProof.confirmation ?? null) ||
+              selected?.record.id !== originalProof.id ||
+              !sameToolConfiguration(selected.configuration, originalProof.configuration))
+            throw new ContextBudgetError("agent-tool-proof-stale", "Current Agent native-tool verification was replaced, revoked or expired. No inference was sent; verify tools before a new run.");
+        }
       };
     },
     async observeOllamaRuntime() {
