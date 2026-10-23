@@ -18,7 +18,7 @@ import {
   setProfileOverride,
   effectiveProfileValue,
 } from "@/modules/ai/lib/selfHostedProfiles";
-import { contextCalibrationSchema } from "@/modules/ai/lib/contextCalibrationSchema";
+import { CONTEXT_CALIBRATION, contextCalibrationSchema } from "@/modules/ai/lib/contextCalibrationSchema";
 import {
   profileSnapshot,
   modelOnboarding,
@@ -160,6 +160,49 @@ afterEach(() => {
   forgetContextRuntime("server");
 });
 describe("bounded practical context calibration", () => {
+  it("bounds post-stream metadata refresh by the existing request deadline", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const f = fixture();
+    const refresh = f.deps.refresh;
+    let calls = 0;
+    let release!: (value: Awaited<ReturnType<typeof refresh>>) => void;
+    const hanging = new Promise<Awaited<ReturnType<typeof refresh>>>((resolve) => { release = resolve; });
+    f.deps.refresh = () => ++calls === 2 ? hanging : refresh();
+    const pending = f.run(4096);
+    try {
+      for (let i = 0; i < 30 && calls < 2; i++) await Promise.resolve();
+      expect(calls).toBe(2);
+      let settled = false;
+      void pending.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(CONTEXT_CALIBRATION.requestMs + 1);
+      expect(settled).toBe(true);
+      const record = await pending;
+      expect(record).toMatchObject({ status: "incomplete", highest: null, failure: "timeout" });
+      expect(record && "attempts" in record ? record.attempts[0] : null).toMatchObject({ context: 4096, outcome: "timeout" });
+      expect(f.trust()).toBeUndefined();
+    } finally {
+      release(await refresh());
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+  it("cancellation during post-response runtime inspection cannot verify a completed stream", async () => {
+    const f = fixture();
+    const inspect = f.deps.inspectRuntime;
+    let calls = 0;
+    f.deps.inspectRuntime = async () => {
+      if (++calls === 2) return new Promise<void>(() => {});
+      return inspect();
+    };
+    const pending = f.run(4096);
+    for (let i = 0; i < 40 && calls < 2; i++) await Promise.resolve();
+    expect(calls).toBe(2);
+    f.controller.abort(new Error("fixture cancellation"));
+    const record = await pending;
+    expect(record).toMatchObject({ status: "cancelled", failure: "cancelled", highest: null });
+    expect(record && "attempts" in record ? record.attempts[0] : null).toMatchObject({ context: 4096, outcome: "cancelled" });
+    expect(f.trust()).toBeUndefined();
+  });
   it("starts conservative without production evidence or historical report parsing", async () => {
     const f = fixture();
     await f.deps.refresh();

@@ -270,7 +270,10 @@ export async function runContextCalibration(
         throw new Error(
           "Context verification did not receive a successful engine finish",
         );
-      const fresh = await deps.refresh();
+      // Stream completion is not the end of the request's deadline: metadata
+      // refresh can stall independently of native/SDK response settlement.
+      const fresh = await waitForRecovery(deps.refresh(), requestSignal);
+      requestSignal.throwIfAborted();
       state = fresh.state;
       const current = state.profiles.find((p) => p.id === profile.id);
       if (
@@ -300,7 +303,8 @@ export async function runContextCalibration(
         );
         allocation =
           typeof runtimeAllocation === "string" ? runtimeAllocation : null;
-        await deps.inspectRuntime();
+        await waitForRecovery(deps.inspectRuntime(), requestSignal);
+        requestSignal.throwIfAborted();
         if (
           contextRuntime(endpoint.id)?.version !==
             record.scope.providerVersion ||
@@ -380,7 +384,7 @@ export async function runContextCalibration(
       record.failure !== "revision-changed" &&
       record.failure !== "cancelled"
     ) {
-      const health = await deps.refresh();
+      const health = await waitForRecovery(deps.refresh(), signal);
       state = health.state;
       if (!health.snapshot.connected) record.failure = "offline";
       else if (
