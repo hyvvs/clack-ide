@@ -16,7 +16,10 @@ const CLASSES = new Set([
 /** An error's message is examined in memory only to choose fixed labels. */
 export function classifyR5hFailure(error, stage, lastDurableStage, nativeDispatchAttempted) {
   const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
-  const nativeFailure = /Context verification is already running|Settings unavailable|Server unavailable|Runtime verification unavailable/.test(message);
+  const stableCode = typeof error === "object" && error !== null &&
+    typeof error.code === "string" && CODES.has(error.code) ? error.code : null;
+  const nativeFailure = ["context-lease-held", "settings-unavailable", "server-unavailable", "runtime-unavailable"].includes(stableCode ?? "") ||
+    /Context verification is already running|Settings unavailable|Server unavailable|Runtime verification unavailable/.test(message);
   const owner = nativeFailure ? "native-ipc"
     : stage === "calibration-invocation" ? "calibration"
     : stage === "numeric-trust-gate" ? "preflight"
@@ -29,8 +32,8 @@ export function classifyR5hFailure(error, stage, lastDurableStage, nativeDispatc
     : /Runtime verification unavailable/.test(message) ? "runtime-unavailable"
     : null;
   const code = nativeCode ??
-    (typeof error === "object" && error !== null && typeof error.code === "string" && CODES.has(error.code)
-      ? error.code
+    (stableCode !== null
+      ? stableCode
       : typeof error === "string" ? "rejected-string"
         : error instanceof TypeError ? "type-error" : "unclassified");
   const name = error instanceof Error && CLASSES.has(error.name) ? error.name : "unknown";

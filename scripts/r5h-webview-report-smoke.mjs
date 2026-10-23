@@ -10,7 +10,9 @@ import { createServer as createViteServer } from "vite";
 import { persistR5hReport } from "./r5h-safe-report.mjs";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
-const root = path.join(repo, "src-tauri/target/r5h-webview-failure-smoke-20261023-01");
+const runName = process.argv[2];
+assert.equal(runName, "r5i-webview-failure-smoke-20261023-01", "One exclusive R5i smoke run required");
+const root = path.join(repo, "src-tauri/target", runName);
 const binary = path.join(repo, "src-tauri/target/codex-test/debug/examples/hardened_agent_acceptance.exe");
 assert((await stat(binary)).size > 0);
 await mkdir(root); // Exclusive; fail on a reused run.
@@ -37,11 +39,12 @@ try {
     const url = req.url;
     if (url === "/configuration") {
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ report: endpoint + "/report", syntheticOnly: true }));
+      res.end(JSON.stringify({ report: endpoint + "/report", events: endpoint + "/events", syntheticOnly: true }));
       return;
     }
-    if (url !== "/report") { res.statusCode = 404; res.end(); return; }
+    if (url !== "/report" && url !== "/events") { res.statusCode = 404; res.end(); return; }
     await appendFile(path.join(root, "origin-audit.jsonl"), JSON.stringify({
+      route: url,
       method: req.method, matchesFrontendOrigin: req.headers.origin === origin,
       preflightContentType: req.headers["access-control-request-headers"] === "content-type",
     }) + "\n");
@@ -53,8 +56,16 @@ try {
         source += part;
         assert(source.length <= 65536, "Oversized synthetic receipt");
       }
-      // Reuses the identical, strict persistence helper the live runner uses.
-      await persistR5hReport(JSON.parse(source), path.join(root, "durable-final-report.json"));
+      const parsed = JSON.parse(source);
+      if (url === "/events") {
+        assert(Object.keys(parsed).sort().join(",") === "kind,ordinal", "Sensitive event keys");
+        assert(["calibration-start", "calibration-failed"].includes(parsed.kind), "Non-synthetic event");
+        assert(parsed.ordinal === (parsed.kind === "calibration-start" ? 1 : 2), "Wrong event ordinal");
+        await appendFile(path.join(root, "durable-incremental-events.jsonl"), JSON.stringify(parsed) + "\n");
+      } else {
+        // Reuses the exact strict persistence helper the live runner uses.
+        await persistR5hReport(parsed, path.join(root, "durable-final-report.json"));
+      }
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ ok: true }));
     } catch {
@@ -83,18 +94,29 @@ try {
   const audit = (await readFile(path.join(root, "origin-audit.jsonl"), "utf8"))
     .trim().split("\n").map(JSON.parse);
   const final = JSON.parse(await readFile(path.join(root, "durable-final-report.json"), "utf8"));
+  const events = (await readFile(path.join(root, "durable-incremental-events.jsonl"), "utf8"))
+    .trim().split("\n").map(JSON.parse);
   assert.deepEqual(outcome, { code: 0, signal: null });
   assert(audit.some(a => a.method === "OPTIONS" && a.matchesFrontendOrigin && a.preflightContentType));
   assert(audit.some(a => a.method === "POST" && a.matchesFrontendOrigin));
+  for (const route of ["/events", "/report"]) {
+    assert(audit.some(a => a.route === route && a.method === "OPTIONS" && a.matchesFrontendOrigin && a.preflightContentType));
+    assert(audit.some(a => a.route === route && a.method === "POST" && a.matchesFrontendOrigin));
+  }
+  assert.deepEqual(events, [
+    { kind: "calibration-start", ordinal: 1 }, { kind: "calibration-failed", ordinal: 2 },
+  ]);
   assert.deepEqual(final, {
     ok: false, kind: "r5h-synthetic-failure", missionStarted: false, calibrationRequests: 0, missionRequests: 0,
     lastDurableStage: "calibration-start-ack", nativeDispatchAttempted: false,
     failureStage: "calibration-invocation", failureCode: "settings-unavailable",
     failureClass: "Error", failureOwner: "native-ipc",
   });
-  assert(!JSON.stringify({ audit, final }).includes("PRIVATE_PROMPT"));
+  assert(!JSON.stringify({ audit, final, events }).includes("PRIVATE_PROMPT"));
   result.passed = true;
-  result.events = { preflight: 1, posted: 1, durableFinal: true, safeCode: final.failureCode };
+  result.events = { preflight: audit.filter(x=>x.method==="OPTIONS").length,
+    posted: audit.filter(x=>x.method==="POST").length,
+    durableIncremental: events.length, durableFinal: true, safeCode: final.failureCode };
 } catch (error) {
   result.failureCode = error instanceof Error ? error.name : "unknown";
 } finally {
