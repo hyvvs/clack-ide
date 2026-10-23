@@ -5,6 +5,76 @@ use terax_lib::modules::{
     attachments, conversation_memory as memory, fs, git, net, shell, workspace,
 };
 
+// The optional acceptance-only wire assertion covers three existing, distinct
+// request classes; calibration and Automatic native-tool qualification must
+// never be misclassified as an Agent-generation output-limit violation.
+fn acceptance_wire_controls_match(body: &serde_json::Value, expected_think: &str) -> bool {
+    let think_matches = match expected_think {
+        "low" => body["think"] == "low",
+        "false" => body["think"] == false,
+        "omitted" => body.get("think").is_none(),
+        _ => false,
+    };
+    let tools = body["tools"].as_array().map_or(0, Vec::len);
+    let output_matches = match body["options"]["num_predict"].as_u64() {
+        Some(32) => tools == 0,  // bounded context calibration
+        Some(512) => tools == 1, // native Automatic tool verification
+        Some(2048) => true,      // original Agent output allowance
+        _ => false,
+    };
+    think_matches && output_matches
+}
+
+#[cfg(test)]
+mod acceptance_wire_tests {
+    use super::acceptance_wire_controls_match;
+    use serde_json::json;
+
+    #[test]
+    fn automatic_guard_allows_original_calibration_tool_probe_and_agent_outputs() {
+        let calibration = json!({"options":{"num_ctx":4096,"num_predict":32},"stream":true});
+        assert!(acceptance_wire_controls_match(&calibration, "omitted"));
+        let tool_probe = json!({"options":{"num_ctx":65536,"num_predict":512},"tools":[{}]});
+        assert!(acceptance_wire_controls_match(&tool_probe, "omitted"));
+        let agent = json!({"options":{"num_ctx":65536,"num_predict":2048},"tools":[{},{}]});
+        assert!(acceptance_wire_controls_match(&agent, "omitted"));
+    }
+
+    #[test]
+    fn guard_rejects_changed_reasoning_or_mismatched_output_classes() {
+        let calibration = json!({"options":{"num_predict":32}});
+        assert!(!acceptance_wire_controls_match(&calibration, "low"));
+        assert!(!acceptance_wire_controls_match(
+            &json!({"think":true,"options":{"num_predict":32}}),
+            "omitted"
+        ));
+        assert!(!acceptance_wire_controls_match(
+            &json!({"options":{"num_predict":32},"tools":[{}]}),
+            "omitted"
+        ));
+        assert!(!acceptance_wire_controls_match(
+            &json!({"options":{"num_predict":512},"tools":[{},{}]}),
+            "omitted"
+        ));
+        assert!(!acceptance_wire_controls_match(
+            &json!({"options":{"num_predict":4096}}),
+            "omitted"
+        ));
+        assert!(!acceptance_wire_controls_match(
+            &json!({"options":{}}),
+            "omitted"
+        ));
+        assert!(acceptance_wire_controls_match(
+            &json!({"think":"low","options":{"num_predict":2048}}),
+            "low"
+        ));
+        assert!(acceptance_wire_controls_match(
+            &json!({"think":false,"options":{"num_predict":2048}}),
+            "false"
+        ));
+    }
+}
+
 #[tauri::command]
 fn coworking_exit(app: tauri::AppHandle) {
     app.exit(0);
@@ -264,7 +334,7 @@ fn main() {
                             })).expect("persist bounded redacted serialized request observation");
                             if let Ok(think) = std::env::var("CLACK_ACCEPTANCE_EXPECTED_THINK") {
                                 assert!(matches!(think.as_str(), "low" | "false" | "omitted"));
-                                if (think == "low" && body["think"] != "low") || (think == "false" && body["think"] != false) || (think == "omitted" && body.get("think").is_some()) || body["options"]["num_predict"] != 2048 {
+                                if !acceptance_wire_controls_match(&body, &think) {
                                     invoke.resolver.reject("Acceptance stopped: serialized reasoning/output controls changed");
                                     return true;
                                 }

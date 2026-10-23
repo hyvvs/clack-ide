@@ -15,6 +15,7 @@ import {
 } from "./inferenceLifecycle";
 import { INFERENCE_ERRORS, InferenceTransportError } from "./inferenceErrors";
 import { normalizeAiError } from "./errors";
+import { classifyContextFailure } from "./contextCalibration";
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -373,6 +374,19 @@ describe("native inference attempt transport", () => {
     expect(sessionInference("a")).not.toBeNull();
     a.cancel.resolve();
     expect(await outcome).toMatchObject({ code: "native-transport" });
+    expect(sessionInference("a")).toBeNull();
+  });
+  it("classifies a pre-handler acceptance rejection as transient without claiming HTTP dispatch", async () => {
+    const outcome = fetchFor()("http://localhost").catch((error) => error);
+    const a = await untilAttempt();
+    // Mirror the frozen R5r native acceptance guard: the command rejects
+    // before native HTTP dispatch, without any Channel headers or chunks.
+    a.done.reject("Acceptance stopped: serialized reasoning/output controls changed");
+    await vi.waitFor(() => expect(cancels()).toHaveLength(1));
+    a.cancel.resolve();
+    const error = await outcome;
+    expect(error).toMatchObject({ code: "native-transport" });
+    expect(classifyContextFailure(error)).toBe("transient");
     expect(sessionInference("a")).toBeNull();
   });
   it("stream consumer cancellation also sends native cancellation", async () => {
