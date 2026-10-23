@@ -11,7 +11,7 @@ import { persistR5hReport } from "./r5h-safe-report.mjs";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
 const runName = process.argv[2];
-assert.equal(runName, "r5i-webview-failure-smoke-20261023-01", "One exclusive R5i smoke run required");
+assert.equal(runName, "r5j-webview-failure-smoke-20261023-01", "One exclusive R5j smoke run required");
 const root = path.join(repo, "src-tauri/target", runName);
 const binary = path.join(repo, "src-tauri/target/codex-test/debug/examples/hardened_agent_acceptance.exe");
 assert((await stat(binary)).size > 0);
