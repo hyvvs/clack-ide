@@ -141,6 +141,7 @@ type Deps = {
     hitStepCap: boolean;
     finishReason: string;
     steps: number;
+    nativeToolImitationBlocked?: boolean;
   }) => void;
   onError?: (error: unknown) => string;
   onProviderRetry?: (event: ProviderRetryEvent) => void;

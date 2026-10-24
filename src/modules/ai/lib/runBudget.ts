@@ -40,6 +40,7 @@ export type RunBatchResult = {
   repeatedFailureDetected?: boolean;
   unfinishedWork?: boolean;
   blockedWork?: boolean;
+  nativeToolImitationBlocked?: boolean;
 };
 
 export type RunStepObservation = {
@@ -117,6 +118,9 @@ export function recordRunBatch(
       stopReason: "repeated-failure",
     };
   }
+
+  if (result.nativeToolImitationBlocked)
+    return { ...next, phase: "soft-limit", stopReason: "blocked-work" };
 
   if (result.finishReason === "stop" && result.blockedWork)
     return { ...next, phase: "soft-limit", stopReason: "blocked-work" };

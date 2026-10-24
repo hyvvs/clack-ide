@@ -47,6 +47,7 @@ import {
   toolRevisionIdentity,
 } from "@/modules/ai/lib/toolExposure";
 import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
+import { actionableCoderRequest, imitatedNativeTool } from "@/modules/ai/lib/nativeToolImitation";
 import { retrieveScopedEvidence } from "@/modules/ai/lib/scopedEvidence";
 import { runRetrievalAllowance } from "@/modules/ai/lib/retrievalAllowance";
 import {
@@ -771,6 +772,7 @@ export type RunAgentOptions = {
     hitStepCap: boolean;
     finishReason: string;
     steps: number;
+    nativeToolImitationBlocked?: boolean;
   }) => void;
   lmstudioBaseURL?: string;
   lmstudioModelId?: string;
@@ -1069,6 +1071,14 @@ export async function runAgentStream(opts: RunAgentOptions) {
   const model = withAnswerContinuation(trackedModel, {
     watchdog,
     onWatchdog: stopWatchdog,
+    imitatedTool: opts.toolContext.getAgentId() === "builtin:coder" && !opts.planMode &&
+      actionableCoderRequest(opts.toolSelectionMessages ?? opts.uiMessages)
+      ? (text, exposed) => {
+          const permitted = new Set([...exposed].filter(name =>
+            resolveCurrentAgentPermission(name, {}, requestToolContext).outcome !== "deny"));
+          return imitatedNativeTool(text, permitted);
+        }
+      : undefined,
     recovery: opts.recovery,
     previous: lastMessage?.role === "assistant"
       ? readAnswer(lastMessage) ?? undefined
@@ -1384,6 +1394,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
           stepsSeen >= AGENT_SOFT_STEP_LIMIT && finishReason === "tool-calls",
         finishReason,
         steps: stepsSeen,
+        nativeToolImitationBlocked: answerState?.nativeToolImitationBlocked === true,
       });
     },
   });

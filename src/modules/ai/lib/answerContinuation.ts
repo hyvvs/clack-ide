@@ -122,6 +122,7 @@ export const answerSchema = z.object({
   runId: z.string().max(1024),
   state: z.enum(["streaming", "preparing", "complete", "incomplete"]),
   reason: z.string().max(256).optional(),
+  nativeToolImitationBlocked: z.boolean().optional(),
   watchdog: watchdogSchema.optional(),
   continuations: z.number().int().min(0).max(3),
   repairs: z.number().int().min(0).max(1),
@@ -508,6 +509,7 @@ export function withAnswerContinuation(
     recovery?: boolean;
     watchdog?: OutputWatchdog;
     onWatchdog?: (error: unknown) => void;
+    imitatedTool?: (text: string, exposed: ReadonlySet<string>) => string | null;
   },
 ): LanguageModel {
   if (typeof model === "string" || model.specificationVersion !== "v3")
@@ -595,6 +597,7 @@ export function withAnswerContinuation(
             let prompt = params.prompt;
             let result = initial;
             let repair: z.infer<typeof pendingSchema> | undefined;
+            let pseudoToolCorrectionSent = false;
             let interruptedCalls: {
               id: string;
               name: string;
@@ -914,7 +917,25 @@ export function withAnswerContinuation(
                   throw new Error(
                     "Tool repair was not complete and identity-preserving; no tool executed.",
                   );
-                if (segment.finish !== "length") {
+                const imitation = !failed && calls.size === 0 && segment.finish === "stop"
+                  ? options.imitatedTool?.(text, allowed) ?? null : null;
+                if (imitation) state.nativeToolImitationBlocked = true;
+                if (pseudoToolCorrectionSent && calls.size && toolComplete)
+                  state.nativeToolImitationBlocked = false;
+                if (pseudoToolCorrectionSent && calls.size === 0) {
+                  state.state = "incomplete";
+                  state.reason = "Coder did not invoke a native tool after the bounded pseudo-tool correction; no tool executed.";
+                  publish();
+                  if (finish)
+                    controller.enqueue({
+                      ...finish,
+                      usage: usage ?? finish.usage,
+                      finishReason: { unified: "other", raw: "native-tool-imitation-unresolved" },
+                    });
+                  else throw new InferenceTransportError("remote-disconnect");
+                  break;
+                }
+                if (segment.finish !== "length" && !imitation) {
                   state.state =
                     segment.finish === "stop" || segment.finish === "tool-calls"
                       ? segment.pending.length
@@ -988,7 +1009,12 @@ export function withAnswerContinuation(
                   );
                 if ((options.maxContinuations ?? 3) <= 0)
                   throw new Error("Automatic output continuation is disabled.");
-                if (calls.size) {
+                if (imitation) {
+                  if (pseudoToolCorrectionSent || state.continuations >= Math.min(3, options.maxContinuations ?? 3))
+                    throw new Error("Native tool correction limit reached; no tool executed.");
+                  pseudoToolCorrectionSent = true;
+                  state.continuations++;
+                } else if (calls.size) {
                   if (
                     calls.size !== 1 ||
                     state.repairs >= ANSWER_LIMITS.repairs ||
@@ -1012,7 +1038,9 @@ export function withAnswerContinuation(
                     );
                   state.continuations++;
                 }
-                const directive = repair
+                const directive = imitation
+                  ? `Your previous response imitated the exposed ${JSON.stringify(imitation)} tool in plain text. No tool was called or executed. For the still-requested workspace action, invoke the *actual native structured function interface* with valid tool arguments. Do not print XML, JSON, Markdown, or function-call text as a substitute. Only one corrective attempt is available; if no authorized tool can be invoked, report the limitation honestly.`
+                  : repair
                   ? `Complete the interrupted tool call ONLY. Re-emit the full JSON object for tool ${JSON.stringify(repair.name)} with the SAME call ID ${JSON.stringify(repair.id)}. Preserve this exact argument prefix: ${JSON.stringify(repair.input)}. Do not execute anything or create another call.`
                   : "Continue the SAME assistant answer exactly from its last character. Do not repeat any prior text, restart the task, or add a new introduction. Preserve whitespace, code and Markdown. Existing permissions and approvals remain in force.";
                 prompt = [

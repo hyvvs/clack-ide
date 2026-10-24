@@ -452,6 +452,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
         steps: info.steps,
         hitSoftLimit: info.hitStepCap,
         finishReason: info.finishReason,
+        nativeToolImitationBlocked: info.nativeToolImitationBlocked,
         unfinishedWork: !peerWaitingSessions.has(sessionId) && !peerReplySessions.has(sessionId) &&
           getTodos(sessionId).some(todo => todo.status === "pending" || todo.status === "in_progress"),
         blockedWork: !peerWaitingSessions.has(sessionId) && !peerReplySessions.has(sessionId) &&
