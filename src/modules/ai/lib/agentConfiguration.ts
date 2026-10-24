@@ -21,8 +21,9 @@ import { probeEvidenceIsFresh, type ProbeSnapshot } from "@/modules/ai/lib/selfH
 
 // Only the short-lived reasoning capability metadata may be refreshed from the
 // current native cache. Keep the captured profile's native tool proof, identity,
-// revisions, overrides and confirmation unmodified. Both scope and freshness
-// must be revalidated by the existing Automatic selection on the merged view.
+// revisions, overrides and confirmation unmodified. Validate proof on the
+// refreshed view: checking the old 300-second reasoning metadata first blocks
+// legitimate long-running Agents before the matching fresh metadata can arrive.
 export function agentContinuationReasoningMetadata(
   state: SelfHostedState,
   profile: SelfHostedProfile,
@@ -31,12 +32,7 @@ export function agentContinuationReasoningMetadata(
 ): SelfHostedState {
   const endpoint = state.endpoints.find(e => e.id === profile.endpointId && e.deletedAt == null);
   const model = snapshot?.models.find(m => m.id === profile.transportModelId);
-  const capturedProofStillEligible = [profile.toolVerification, ...(profile.agentToolConfigurations ?? [])]
-    .some(record => record?.status === "verified" &&
-      (!record.configuration || (!!record.confirmation && record.confirmation.at <= now && record.confirmation.expiresAt > now)) &&
-      configuredToolState(state, profile, record.configuration, now, record.context) === "Verified");
   if (!endpoint || !snapshot || !model || snapshot.selectedModelId !== profile.transportModelId ||
-      !capturedProofStillEligible ||
       snapshot.endpointId !== endpoint.id || snapshot.configurationRevision !== endpoint.configurationRevision ||
       snapshot.stale || !snapshot.connected || model.digest !== profile.modelRevision ||
       snapshot.observedAt > now || now - snapshot.observedAt >= 30_000)
@@ -52,9 +48,32 @@ export function agentContinuationReasoningMetadata(
   if (["probe.thinking", "probe.thinkingControls", "probe.thinkingDefault"].some(metric =>
     current.filter(e => e.metric === metric).length !== 1)) return state;
   const replacement = new Set(current.map(e => e.metric));
-  return { ...state, profiles: state.profiles.map(p => p.id !== profile.id ? p : {
+  const merged = { ...state, profiles: state.profiles.map(p => p.id !== profile.id ? p : {
     ...p, evidence: [...p.evidence.filter(e => !replacement.has(e.metric)), ...current],
   }) };
+  const freshProfile = merged.profiles.find(p => p.id === profile.id);
+  const capturedReasoningConsistent = (record: NonNullable<SelfHostedProfile["toolVerification"]>) => {
+    let recorded: unknown;
+    try { recorded = JSON.parse(record.scope.reasoning); }
+    catch { return false; }
+    if (!Array.isArray(recorded) || recorded.length !== 3) return false;
+    // Aging metadata may be supplied by the native cache, but a still-fresh
+    // contradictory captured value must never be replaced to revive a proof.
+    return ["thinking", "thinkingControls", "thinkingDefault"].every((metric, index) => {
+      const captured = contextMetadata(profile, endpoint, metric, now, 300_000);
+      return captured === undefined || JSON.stringify(captured) === JSON.stringify(recorded[index]);
+    });
+  };
+  // No proof is refreshed or newly granted: a captured record must still be
+  // verified under the standard native-tool validators (including scope,
+  // epoch, negative observations, context, proof TTL and confirmation).
+  const capturedProofStillEligible = freshProfile &&
+    [freshProfile.toolVerification, ...(freshProfile.agentToolConfigurations ?? [])]
+      .some(record => record?.status === "verified" &&
+        capturedReasoningConsistent(record) &&
+        (!record.configuration || (!!record.confirmation && record.confirmation.at <= now && record.confirmation.expiresAt > now)) &&
+        configuredToolState(merged, freshProfile, record.configuration, now, record.context) === "Verified");
+  return capturedProofStillEligible ? merged : state;
 }
 
 const order = [

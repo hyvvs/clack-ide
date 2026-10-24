@@ -5,6 +5,8 @@ import { createRequestPreflight } from "@/modules/ai/lib/requestPreflight";
 import { createProxyFetch } from "@/modules/ai/lib/proxyFetch";
 import { runContextCalibration } from "@/modules/ai/lib/contextCalibration";
 import { runToolVerification, toolVerificationState } from "@/modules/ai/lib/toolVerification";
+import { toolEligibilityPredicates } from "@/modules/ai/lib/toolVerification";
+import { agentContinuationReasoningMetadata, automaticAgentBatchContext, automaticAgentRecommendation } from "@/modules/ai/lib/agentConfiguration";
 import { ollamaEffortFixture } from "@/modules/ai/lib/reasoningEffort.fixture";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
 import { profileSnapshot, modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
@@ -24,12 +26,23 @@ vi.mock("@/modules/ai/tools/customExecution", async () => {
   return { buildRuntimeTools: async () => ({ read_file: read }) };
 });
 
-async function fixture(outputAllowance = 2048, alternative = false, ageMs = 194000) {
-  let now = 1_800_000_000_000;
+// Minimal privacy-safe representative of R5x's saved native record/scope and
+// measured 304441ms proof-to-continuation gap; never loads the ignored receipts.
+const R5X_NATIVE = {
+  digest: "e7a64ff15fb174c42b4f463e5c888c4f2c7b9cabf9e8d65a1c0874405426c1b2",
+  epoch: "34568:1792797471822992400",
+  version: "0.40.7",
+  proofAt: 1792797523969,
+  continuationAt: 1792797828410,
+  thinkingControls: '[false,true,"medium"]',
+} as const;
+
+async function fixture(outputAllowance = 2048, alternative = false, ageMs = 194000, r5xRepresentative = false) {
+  let now = r5xRepresentative ? R5X_NATIVE.proofAt : 1_800_000_000_000;
   vi.spyOn(Date, "now").mockImplementation(() => now);
-  const f = ollamaEffortFixture([false, true], "r5w-review-only");
+  const f = ollamaEffortFixture(r5xRepresentative ? [false, true, "medium"] : [false, true], "r5w-review-only");
   let state = f.state;
-  state.profiles[0].modelRevision = "review-digest";
+  state.profiles[0].modelRevision = r5xRepresentative ? R5X_NATIVE.digest : "review-digest";
   state.profiles[0].backend = "ollama";
   if (outputAllowance !== 2048) {
     state = setProfileOverride(state, state.profiles[0].id, "maxOutput", outputAllowance);
@@ -37,8 +50,8 @@ async function fixture(outputAllowance = 2048, alternative = false, ageMs = 1940
   }
   let loaded = 0;
   let requested = 0;
-  let epoch = "review-process";
-  let version = "1.2.3";
+  let epoch = r5xRepresentative ? R5X_NATIVE.epoch : "review-process";
+  let version = r5xRepresentative ? R5X_NATIVE.version : "1.2.3";
   const profile = () => state.profiles[0];
   const inspect = async () => rememberContextRuntime(f.endpoint.id, {
     epoch, version, configurationRevision: f.endpoint.configurationRevision, at: now,
@@ -46,8 +59,8 @@ async function fixture(outputAllowance = 2048, alternative = false, ageMs = 1940
   const refresh = async () => {
     const p = profile();
     p.evidence = Object.entries({
-      runtimeContext: "per-request", advertisedContext: 262144,
-      thinking: true, thinkingControls: "[false,true]", thinkingDefault: true,
+      runtimeContext: "per-request", advertisedContext: r5xRepresentative ? 1048576 : 262144,
+      thinking: true, thinkingControls: r5xRepresentative ? R5X_NATIVE.thinkingControls : "[false,true]", thinkingDefault: true,
       trainedForTools: true, loaded: loaded > 0,
       ...(requested ? { requestedContext: requested } : {}),
       ...(loaded ? { loadedContext: loaded, runtimeAllocation: JSON.stringify([p.modelRevision, loaded]) } : {}),
@@ -371,5 +384,62 @@ describe("R5y independent production-path re-review", () => {
     expect(newChunks.some(c => c.type === "error")).toBe(false);
     expect(f.decisions).toEqual([false, true]);
     expect(f.bodies).toHaveLength(1);
+  });
+
+  // R5x frozen run: real tool proof at 1792797523969, natural failed batch at
+  // 1792797828410 (+304441ms). The saved provider's reasoning contract was
+  // unchanged and freshly observed at 1792797812125, but the PREPARED first-
+  // batch settings capture had passed the 300000ms metadata age boundary.
+  it.each([false, true])("R5x-aged Automatic continuation retains its own proof alternative=%s", async alternative => {
+    const f = await fixture(2048, alternative, R5X_NATIVE.continuationAt - R5X_NATIVE.proofAt, true);
+    const record = alternative ? f.captured.profiles[0].agentToolConfigurations?.[0] : f.captured.profiles[0].toolVerification;
+    if (!record) throw new Error("Expected original verified R5x-shaped proof");
+    const eligibility = toolEligibilityPredicates(f.captured, f.captured.profiles[0], record.configuration, Date.now(), 65536);
+    expect(eligibility.proofFresh).toBe(true);
+    expect(eligibility.runtimeFresh).toBe(true);
+    expect(eligibility.expectedContextMatches).toBe(true);
+    expect(eligibility.reasoningIdentityMatches).toBe(false);
+    const view = modelOnboarding(f.captured, f.captured.profiles[0]);
+    expect(automaticAgentBatchContext(f.captured, f.captured.profiles[0], view?.context, true).pinned).toBeUndefined();
+    const live = agentContinuationReasoningMetadata(f.captured, f.captured.profiles[0], profileSnapshot(f.state(), f.profile()));
+    expect(automaticAgentRecommendation(live, live.profiles[0], 65536)?.record.id).toBe(record.id);
+    const chunks = await f.run({ retainedAutomaticRecordId: record.id,
+      retainedAutomaticVariant: JSON.stringify(record.configuration ?? null) });
+    expect(chunks.some(c => c.type === "error")).toBe(false);
+    expect(f.decisions).toEqual([true]);
+    expect(f.bodies).toHaveLength(1);
+    expect(f.bodies[0]).toMatchObject({ options: { num_ctx: 65536 } });
+    if (alternative) expect(f.bodies[0].think).toBe(false);
+    else expect(f.bodies[0]).not.toHaveProperty("think");
+  });
+
+  it.each(["stale-current-metadata", "reasoning-changed", "epoch-changed", "captured-proof-expired"] as const)(
+    "R5x-aged continuation must deny %s before native HTTP", async kind => {
+      const f = await fixture(2048, false, R5X_NATIVE.continuationAt - R5X_NATIVE.proofAt, true);
+      if (kind === "stale-current-metadata") f.transformSnapshot(s => ({ ...s, stale: true }));
+      if (kind === "reasoning-changed") f.transformSnapshot(s => ({ ...s, models: s.models.map(m => ({
+        ...m, evidence: m.evidence.map(e => e.metric === "probe.thinkingDefault" ? { ...e, value: false } : e),
+      })) }));
+      if (kind === "epoch-changed") await f.changeEpoch();
+      if (kind === "captured-proof-expired") {
+        const record = f.captured.profiles[0].toolVerification;
+        if (!record?.proof) throw new Error("Expected native proof");
+        record.proof.expiresAt = Date.now() - 1;
+      }
+      await expect(f.run()).rejects.toThrow();
+      expect(f.decisions).toEqual([]);
+      expect(f.bodies).toEqual([]);
+    });
+
+  it.each([false, true])("R5x-aged current revoked proof denies at ACK alternative=%s", async alternative => {
+    const f = await fixture(2048, alternative, R5X_NATIVE.continuationAt - R5X_NATIVE.proofAt, true);
+    const original = alternative ? f.captured.profiles[0].agentToolConfigurations?.[0] : f.captured.profiles[0].toolVerification;
+    if (!original) throw new Error("Expected verified tool record");
+    f.beforeAck(async () => { await f.revoke(); });
+    const chunks = await f.run({ retainedAutomaticRecordId: original.id,
+      retainedAutomaticVariant: JSON.stringify(original.configuration ?? null) });
+    expect(chunks.some(c => c.type === "error")).toBe(true);
+    expect(f.decisions).toEqual([false]);
+    expect(f.bodies).toEqual([]);
   });
 });
