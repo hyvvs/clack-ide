@@ -14,7 +14,7 @@ export const probeArguments = z
   .strict();
 export const TOOL_PROBE_NAME = "get_probe_value";
 export const TOOL_PROBE_PROMPT =
-  'Call get_probe_value exactly once with key "clack-probe-v1" and count 1. Use the native tool interface. Do not answer in text or simulate a tool call.';
+  'Your next response must be exactly one native function call to get_probe_value with key "clack-probe-v1" and count 1. Invoke the provided function tool directly. Do not write an answer, describe the call, or output a text imitation (including JSON, XML, or code).';
 export const toolOutcome = z.enum([
   "native-call",
   "wrong-tool",

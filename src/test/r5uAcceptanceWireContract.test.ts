@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { streamText, tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { createOllamaModel } from "@/modules/ai/lib/ollamaModel";
+import { canonicalProbeTools } from "@/modules/ai/lib/toolVerificationRuntime";
 import { CONTEXT_CALIBRATION } from "@/modules/ai/lib/contextCalibrationSchema";
 import {
-  TOOL_VERIFICATION, TOOL_PROBE_NAME, TOOL_PROBE_PROMPT, probeArguments,
+  TOOL_VERIFICATION, TOOL_PROBE_PROMPT,
 } from "@/modules/ai/lib/toolVerificationSchema";
 import { productionAcceptanceWireContract } from "./r5uAcceptanceWireContract";
 import frozenR5t from "./fixtures/r5t-wire-shapes.json";
@@ -20,7 +21,7 @@ const fixture = {
   eval_count: 2,
 };
 async function serialized(options: {
-  output: number; context: number; tools?: ToolSet;
+  output: number; context: number; tools?: ToolSet; think?: boolean;
 }) {
   let wire: Record<string, unknown> | undefined;
   const model = createOllamaModel({
@@ -37,7 +38,7 @@ async function serialized(options: {
     prompt: options.tools ? TOOL_PROBE_PROMPT : "Reply OK.",
     tools: options.tools,
     maxOutputTokens: options.output,
-    providerOptions: { ollama: { numCtx: options.context } },
+    providerOptions: { ollama: { numCtx: options.context, ...(options.think === undefined ? {} : { think: options.think }) } },
     maxRetries: 0,
   });
   await result.consumeStream();
@@ -45,12 +46,6 @@ async function serialized(options: {
   expect(wire).toBeDefined();
   return wire as Record<string, unknown>;
 }
-const toolSet = () => ({
-  [TOOL_PROBE_NAME]: tool({
-    description: "Return a deterministic compatibility probe value. No side effects.",
-    inputSchema: probeArguments,
-  }),
-});
 const contract = productionAcceptanceWireContract(2048, 65536, ["bash_run", "read_file"]);
 
 describe("R5u native acceptance contract from production serialization", () => {
@@ -81,7 +76,7 @@ describe("R5u native acceptance contract from production serialization", () => {
   it("matches every native verification escalation including final 2048", async () => {
     expect(contract.verification.outputs).toEqual([...TOOL_VERIFICATION.outputs]);
     for (const output of TOOL_VERIFICATION.outputs) {
-      const wire = await serialized({ output, context: 65536, tools: toolSet() });
+      const wire = await serialized({ output, context: 65536, tools: canonicalProbeTools() });
       expect(wire.options).toMatchObject({ num_ctx: 65536, num_predict: output });
       const schemas = wire.tools as { type: string; function: { name: string; parameters: Record<string, unknown> } }[];
       expect(schemas).toHaveLength(1);
@@ -93,7 +88,22 @@ describe("R5u native acceptance contract from production serialization", () => {
       delete actual.$schema;
       expect(actual).toEqual(expected);
       expect(wire.think).toBeUndefined();
+      expect(wire.messages).toEqual([{ role: "user", content: TOOL_PROBE_PROMPT }]);
+      expect(wire.options).not.toHaveProperty("temperature");
+      expect(wire).not.toHaveProperty("tool_choice");
     }
+  });
+  it("preserves an explicit authorized boolean reasoning choice without changing prompt, schema or sampling on repeat confirmation", async () => {
+    const baseline = await serialized({ output: 512, context: 65536, tools: canonicalProbeTools() });
+    const alternative = await serialized({ output: 512, context: 65536, tools: canonicalProbeTools(), think: false });
+    const confirmation = await serialized({ output: 512, context: 65536, tools: canonicalProbeTools(), think: false });
+    expect(baseline).not.toHaveProperty("think");
+    expect(alternative).toEqual({ ...baseline, think: false });
+    expect(confirmation).toEqual(alternative);
+    expect((alternative.tools as {function:{parameters:Record<string,unknown>}}[])[0].function.parameters)
+      .toEqual((baseline.tools as {function:{parameters:Record<string,unknown>}}[])[0].function.parameters);
+    expect(TOOL_PROBE_PROMPT).toContain("next response must be exactly one native function call");
+    expect(TOOL_PROBE_PROMPT).toContain("Do not write an answer");
   });
   it("serializes original Agent allowance with a normal named native tool", async () => {
     const wire = await serialized({

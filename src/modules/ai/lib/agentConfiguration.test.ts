@@ -258,6 +258,26 @@ it("one alternative PASS alone is not a durable recommendation", async () => {
   expect(f.requests).toEqual([undefined, false, false]);
   expect(f.recommendation()).toBeDefined();
 });
+it("R5af: the historical Qwen default-text, alternative-call, confirmation-text sequence remains fail-closed after persistence", async () => {
+  const f = fixture([false], false);
+  f.results.splice(0, 3, "text", "pass", "text");
+  await f.resolve();
+  expect(f.requests).toEqual([undefined, false, false]);
+  expect(f.get().toolVerification).toMatchObject({ status: "needs-attention", outcome: "text-only", calls: 0 });
+  expect(f.get().agentToolConfigurations?.[0]).toMatchObject({
+    configuration: { choice: "none", wire: false },
+    status: "needs-attention", outcome: "text-only", calls: 0,
+  });
+  expect(f.get().agentToolConfigurations?.[0].proof).not.toBeNull();
+  expect(f.get().agentToolConfigurations?.[0].confirmation).toBeUndefined();
+  expect(f.recommendation()).toBeUndefined();
+  const before = JSON.stringify(f.state());
+  f.restart();
+  await f.resolve();
+  expect(f.requests).toHaveLength(3);
+  expect(JSON.stringify(f.state())).toBe(before);
+  expect(f.recommendation()).toBeUndefined();
+});
 it.each([
   false,
   true,
