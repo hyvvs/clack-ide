@@ -1,0 +1,36 @@
+# R5ai — real coding-Agent native tool invocation
+
+Date: 2026-10-24. Base: 4970928e1734492b3c558e21037b523da999384c. One production guidance change, one fresh Qwen notes API Agent acceptance. No ForgeBoard, alternate model, cloud fallback, timeout changes or manual continuation.
+
+## R5ah boundary and classification
+
+The frozen R5ah Agent request (inference-8) was admitted, dispatched and streamed to completion with 18 Ollama native function schemas, 65536 context and 2048 output tokens under saved Automatic with think omitted. The historical acceptance interceptor persisted schema count, not individual names, so it does **not** independently prove exact R5ah tool names. Production builds tools and selects eligible schemas under F1/permission policy. Qwen's saved assistant response contained plain message text imitating a list_directory tool call in XML-style markup, with no structured native tool part. The Ollama adapter only turns provider message.tool_calls into SDK tool calls; message.content remains text, never an executable tool. No discarded genuine call, unsafe pseudo-call execution or integration defect was established. The successful Qwen qualification had one harmless probe tool, whereas normal Agent had 18 exposed native functions and ordinary optional tool choice; Ollama's native API does not guarantee a tool call. An instruction-level adjustment is supported; forcing all turns to call tools is not.
+
+## One focused production change
+
+The built-in Coder persona in src/modules/ai/lib/agents.ts now explicitly directs the model to invoke actual exposed structured native function tools for reads, edits, writes and commands, never print imitations as a substitute; when a tool is missing or denied, explain the limitation. Ordinary text-only work needs no tool call. R5ag coding-completion, truthful-reporting and build/test/repair guidance is retained verbatim. There is no pseudo-tool parsing, artificial tool execution, tool-choice forcing, altered sampling, verification/proof/permission bypass, timeout increase or new automatic prompting.
+
+Deterministic regressions prove that F1 selects permitted filesystem and shell schemas; actual native Ollama payloads serialize a list_directory JSON function schema; ordinary tool-looking message text yields no SDK calls and no effects; structured provider tool_calls execute through the real SDK and the result returns in tool history. Coder tests assert the instruction, blocked-tool honesty and the earlier truthful completion behavior; production permission, native tool verification, SDK model, F1, proxy and continuation suites remain green.
+
+## Offline gates
+
+- TypeScript check PASS; frontend production build PASS.
+- Rust isolated acceptance-host tests 6/6 PASS and native host build PASS.
+- Focused Vitest native-tool, Coder, Ollama, F1 exposure, inference gate, proxy, Agent configuration, Agent continuation, Agent bridge and compaction suites PASS (10 files).
+- Lint exit 0, 79 warnings / 2 infos; no automatic fixes.
+
+## Exactly one bounded real Qwen coding smoke
+
+Fresh run: qwen-smoke-r5ai-20261024-01. Owned Git workspace: src-tauri/target/qwen-smoke-r5ai-20261024-01/. Preserved run evidence: src-tauri/target/real-qwen-product/qwen-smoke-r5ai-20261024-01/. Byte-identical original R5ah/R5af notes API user mission; same frozen original Qwen Automatic settings, ordinary approvals and proof path. One mission-a launch, no correction/retry/continuation prompt by operator, no model override. R5ai isolated acceptance host adds **names-only** serialized function inventory to redacted request records; no prompt, code, arguments, response text or credentials logged.
+
+Six context calibrations succeeded through 65536; default Automatic native tool verification succeeded. All 33 native inference requests reached native HTTP and completed: six calibration, one verification, 26 Agent requests. Actual Agent requests contained exactly 18 schemas including list_directory, read_file, write_file, create_directory, grep, glob, bash_run, bash_background, bash_logs, bash_list, bash_kill, run_subagent, get_terminal_output, open_preview, todo_write, promote_peer_finding, request_peer_task and propose_custom_tool. Tool choice was not forcibly required. Saved Agent parts prove genuine native calls, with 25 completed tool results: one list_directory, one read_file, 11 write_file, one create_directory and 11 bash_run. App files, lockfile, scripts, TypeScript config, Jest config and tests were genuinely written; Coder tool-use guidance was exercised.
+
+The Agent attempted npm run build three times (all observed exit 2), npm test once (exit 1), revised authored code/tests/config and installed @types/jest while trying to repair compilation. Its next native bash_run command was npm run dev (a foreground long-lived server, contrary to that tool's schema). The persisted tool remained input-available with no terminal result and the normal shell timeout had already elapsed; an owned nodemon descendant was still running. Source shell code has a bounded command wait but then joins stdout/stderr drain threads, which can remain blocked if descendants retain pipes; this is a plausible explanation, **not** a confirmed root cause from R5ai alone. No further model inference followed request 33. This prerequisite failure stopped the acceptance.
+
+Operator terminated **only** the identified isolated R5ai acceptance host/process tree and its owned orphaned nodemon; the runner recorded mission-a-1.failure.json (native host exit before report). The saved Agent state still says running with 24 steps and one normal internal continuation because no natural finish occurred. These are not completed acceptance results. There were no further Agent retries, injected instructions, model changes, repairs by evaluator or ForgeBoard. An immutable names-and-SHA-256 partial-source-manifest.json captures eight authored/build files, including dist output, without changing the source. The independent application evaluator was deliberately **not run** because the Agent never naturally stopped. No successful build, startup, CRUD, restart persistence, automated test run or README has been independently established. Generated software is **not accepted**.
+
+## Preservation and next action
+
+Protected six original dirty user files remain byte-for-byte, both stashes remain, autonomous_tracker/ and saved settings remain, historical R5af/R5ag/R5ah evidence and inactive Codex worktree remain, the SSH listener 127.0.0.1:11435 / PID 36768 was untouched, and no reset/clean/push/cloud/model download/remote config or other production change occurred. Only checkpoint-owned production guidance/test, isolated smoke/host/evaluator, ledger and this document are committed.
+
+**Single next practical action under a future separate authorization:** bound and clean up **foreground native shell commands with long-lived descendants**, ensuring the existing timeout resolves the Agent tool instead of leaving it pending; then independently re-accept the full notes API. This is not an authorization for additional work in R5ai. Original full ForgeBoard is not yet proven; R3d packaged desktop remains OPEN and the complete P2–P19 security, integration, Windows/Linux/macOS, real-Agent and E2E roadmap remains MANDATORY / DEFERRED. STOP.

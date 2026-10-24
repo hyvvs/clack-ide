@@ -15,10 +15,16 @@ describe("R5ag truthful coding completion guidance (no new completion authority)
     expect(instructions).toContain("inspect exit codes and errors, repair failures");
     expect(instructions).toContain("Do not claim a build, test or behavior passed unless you actually observed it pass");
     expect(instructions).toContain("within the normal run budget and permissions");
+    expect(instructions).toContain("invoke the actual exposed native function tools with structured arguments");
+    expect(instructions).toContain("Do not print XML, JSON, Markdown, or function-call-looking text as a substitute");
+    expect(instructions).toContain("such text does not execute anything");
+    expect(instructions).toContain("If the necessary tool is unavailable or denied");
     expect(buildStableSystem("example", reviewer!, undefined, null)).not.toContain("implement the necessary scripts and automated tests");
+    expect(buildStableSystem("example", reviewer!, undefined, null)).not.toContain("function-call-looking text as a substitute");
   });
   it("does not require tests or builds for legitimate short and non-executable work", () => {
     expect(coder!.instructions).toContain("For tasks that do not require runnable software");
+    expect(coder!.instructions).toContain("ordinary explanations do not require a tool call");
     expect(coder!.instructions).toContain("do not invent a build or tests");
     expect(recordRunBatch(createRunBudget("full-access"), {
       steps: 1, finishReason: "stop", hitSoftLimit: false, unfinishedWork: false,
