@@ -1,5 +1,7 @@
 # Clack Shared Engineering State
 
+**R5ac offline tool-verification closeout (2026-10-24):** [Focused R5ab verification report](R5AC_OFFLINE_R5AB_NATIVE_TOOL_VERIFICATION_2026-10-24.md). R5ab default `text-only` was correctly refused; alternative `think:true` was rejected by a reproducible **acceptance-host-only** omitted-reasoning guard after IPC request observation, before native provider dispatch. Minimal strict-probe-only host correction passes 4/4 offline Rust example tests (red before fix); **no production change, new inference or Agent mission**. Next suggested *separately authorized* test: one existing Qwen3-Coder 30b production native-tool verification comparison, not ForgeBoard. R5aa continuation unqualified live, ForgeBoard NOT ACCEPTED, R3d OPEN, P2–P19 MANDATORY / DEFERRED; **STOP**.
+
 Updated: 2026-10-22. Scope: completed P0/R1/P1 **and the user-corrected local-AI-first development order**. This is the **shared checkpoint index** for ChatGPT, Chat On Steroids and Codex; it is not an alternative runtime memory or a source of executed-tool truth.
 
 ## Current verified state
