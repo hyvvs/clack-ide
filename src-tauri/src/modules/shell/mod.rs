@@ -7,10 +7,17 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+struct CancelForegroundOnDrop(Arc<AtomicBool>);
+impl Drop for CancelForegroundOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
 
 use serde::Serialize;
 use shared_child::SharedChild;
@@ -114,14 +121,13 @@ pub async fn shell_run_command(
             .clamp(1, MAX_TIMEOUT_SECS),
     );
 
-    // The blocking spawn + wait runs on a worker thread so the Tauri async
-    // runtime stays unblocked.
-    let (tx, rx) = mpsc::channel::<Result<CommandOutput, String>>();
-    thread::spawn(move || {
-        let _ = tx.send(run_blocking(trimmed, cwd_path, workspace, dur));
-    });
-
-    rx.recv().map_err(|e| e.to_string())?
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _cancel_on_drop = CancelForegroundOnDrop(cancelled.clone());
+    tokio::task::spawn_blocking(move || {
+        run_blocking_cancelable(trimmed, cwd_path, workspace, dur, cancelled)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 pub(crate) fn run_blocking_inner(
@@ -139,7 +145,28 @@ fn run_blocking(
     workspace: WorkspaceEnv,
     dur: Duration,
 ) -> Result<CommandOutput, String> {
+    run_blocking_cancelable(
+        command,
+        cwd,
+        workspace,
+        dur,
+        Arc::new(AtomicBool::new(false)),
+    )
+}
+
+fn run_blocking_cancelable(
+    command: String,
+    cwd: Option<String>,
+    workspace: WorkspaceEnv,
+    dur: Duration,
+    cancelled: Arc<AtomicBool>,
+) -> Result<CommandOutput, String> {
     let mut cmd = build_oneshot_command(&command, &workspace, cwd.as_deref())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     if let (WorkspaceEnv::Local, Some(dir)) = (&workspace, cwd) {
         cmd.current_dir(dir);
     }
@@ -152,6 +179,13 @@ fn run_blocking(
         log::warn!("shell_run_command spawn failed: {e}");
         e.to_string()
     })?);
+    #[cfg(windows)]
+    let owned_job = crate::modules::pty::job::PtyJob::create_for(child.id()).map_err(|e| {
+        let _ = child.kill();
+        format!("Unable to bind foreground command to owned Windows job: {e}")
+    })?;
+    #[cfg(unix)]
+    let owned_group = child.id() as i32;
     let mut stdout_pipe = child.take_stdout().ok_or_else(|| {
         let _ = child.kill();
         "no stdout pipe".to_string()
@@ -170,21 +204,53 @@ fn run_blocking(
         let _ = tx.send(waiter.wait());
     });
 
-    let (exit_code, timed_out) = match rx.recv_timeout(dur) {
-        Ok(Ok(status)) => (status.code(), false),
-        Ok(Err(e)) => return Err(e.to_string()),
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            (None, true)
+    let start = Instant::now();
+    let mut was_cancelled = false;
+    let mut wait_error = None;
+    let (exit_code, timed_out) = loop {
+        if cancelled.load(Ordering::Acquire) {
+            was_cancelled = true;
+            break (None, false);
         }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            return Err("shell wait thread disconnected".into());
+        let remaining = dur.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            break (None, true);
+        }
+        match rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+            Ok(Ok(status)) => break (status.code(), false),
+            Ok(Err(e)) => {
+                log::warn!("foreground shell wait error: {e}");
+                wait_error = Some(e.to_string());
+                break (None, false);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                wait_error = Some("Foreground shell wait disconnected".to_string());
+                break (None, false);
+            }
         }
     };
+    // The process tree owns the pipes. Always dispose it BEFORE joining
+    // readers, even when the shell exited but a dev-server child survived.
+    #[cfg(windows)]
+    drop(owned_job);
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-owned_group, libc::SIGKILL);
+    }
+    if exit_code.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 
     let (stdout_bytes, stdout_truncated) = stdout_handle.join().unwrap_or((Vec::new(), false));
     let (stderr_bytes, stderr_truncated) = stderr_handle.join().unwrap_or((Vec::new(), false));
+    if was_cancelled {
+        return Err("Foreground shell command cancelled; owned processes terminated".into());
+    }
+    if let Some(error) = wait_error {
+        return Err(error);
+    }
 
     Ok(CommandOutput {
         stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
@@ -213,6 +279,24 @@ impl Default for ShellState {
             bg: RwLock::new(HashMap::new()),
             next_session_id: AtomicU32::new(1),
             next_bg_id: AtomicU32::new(1),
+        }
+    }
+}
+
+impl Drop for ShellState {
+    fn drop(&mut self) {
+        // Readers retain Arc<BackgroundProc> while descendants hold pipes open.
+        // Stop only this state's registered processes rather than relying on
+        // BackgroundProc's final Arc reference to close its owned job/group.
+        if let Ok(sessions) = self.sessions.get_mut() {
+            for session in sessions.values() {
+                session.close();
+            }
+        }
+        if let Ok(background) = self.bg.get_mut() {
+            for proc in background.values() {
+                proc.kill();
+            }
         }
     }
 }
@@ -268,16 +352,20 @@ pub async fn shell_session_run(
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .clamp(1, MAX_TIMEOUT_SECS),
     );
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = tx.send(session.run(command, cwd, workspace, dur));
-    });
-    rx.recv().map_err(|e| e.to_string())?
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _cancel_on_drop = CancelForegroundOnDrop(cancelled.clone());
+    tokio::task::spawn_blocking(move || {
+        session.run_cancelable(command, cwd, workspace, dur, cancelled)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub fn shell_session_close(state: tauri::State<ShellState>, id: u32) -> Result<(), String> {
-    state.sessions.write().unwrap().remove(&id);
+    if let Some(session) = state.sessions.write().unwrap().remove(&id) {
+        session.close();
+    }
     Ok(())
 }
 
@@ -516,5 +604,153 @@ mod tests {
         assert_eq!(cmd.get_program(), "/bin/sh");
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(args, vec!["-c", "echo hi"]);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod foreground_lifecycle_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    #[test]
+    fn foreground_normal_exit_and_failure_are_truthful() {
+        let ok = run_blocking_inner(
+            "Write-Output 'shell-finite-ok'".into(),
+            None,
+            WorkspaceEnv::Local,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(ok.exit_code, Some(0));
+        assert!(!ok.timed_out);
+        assert!(ok.stdout.contains("shell-finite-ok"));
+        let fail = run_blocking_inner(
+            "Write-Error 'shell-finite-failed'; exit 7".into(),
+            None,
+            WorkspaceEnv::Local,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(fail.exit_code, Some(7));
+        assert!(!fail.timed_out);
+    }
+
+    #[test]
+    fn cancellation_token_and_session_close_settle_foreground_commands() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel = cancelled.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(400));
+            cancel.store(true, Ordering::Release);
+        });
+        let started = Instant::now();
+        let err = run_blocking_cancelable(
+            "Start-Sleep -Seconds 30".into(),
+            None,
+            WorkspaceEnv::Local,
+            Duration::from_secs(30),
+            cancelled,
+        )
+        .err()
+        .expect("cancellation must terminate owned command");
+        assert!(err.contains("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(8));
+
+        let session = Arc::new(ShellSession::new(
+            std::env::temp_dir().to_string_lossy().to_string(),
+            WorkspaceEnv::Local,
+        ));
+        let running = session.clone();
+        let started = Instant::now();
+        let worker = thread::spawn(move || {
+            running.run_cancelable(
+                "Start-Sleep -Seconds 30".into(),
+                None,
+                None,
+                Duration::from_secs(30),
+                Arc::new(AtomicBool::new(false)),
+            )
+        });
+        thread::sleep(Duration::from_millis(400));
+        session.close();
+        match worker.join().unwrap() {
+            Err(error) => assert!(error.contains("cancelled")),
+            Ok(_) => panic!("closed session must cancel running command"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(8));
+        assert!(session
+            .run(
+                "Write-Output ignored".into(),
+                None,
+                None,
+                Duration::from_secs(1)
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn owned_child_is_killed_but_unrelated_process_is_not() {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("owned-pid.txt");
+        let path = marker.to_string_lossy().replace('\'', "''");
+        let script = format!(
+            "{0}",
+            // Place marker before long sleep, so the checked PID belongs
+            // only to this disposable command tree.
+            format!("$p = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -NoNewWindow -PassThru; [IO.File]::WriteAllText('{path}', [string]$p.Id); Start-Sleep -Seconds 30"),
+        );
+        let mut unrelated = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
+            .spawn()
+            .expect("isolated unrelated process");
+        let output = run_blocking_inner(script, None, WorkspaceEnv::Local, Duration::from_secs(2))
+            .expect("foreground timeout");
+        assert!(output.timed_out);
+        let pid: u32 = std::fs::read_to_string(marker)
+            .expect("owned child marker")
+            .trim()
+            .parse()
+            .unwrap();
+        let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+        let exited = if !handle.is_null() {
+            // Job termination is asynchronous; the command can settle before
+            // the kernel has signalled every descendant process handle.
+            let exited = unsafe { WaitForSingleObject(handle, 3000) } == WAIT_OBJECT_0;
+            unsafe {
+                CloseHandle(handle);
+            }
+            exited
+        } else {
+            true
+        };
+        let unrelated_alive = unrelated.try_wait().unwrap().is_none();
+        if unrelated_alive {
+            unrelated.kill().unwrap();
+        }
+        unrelated.wait().unwrap();
+        assert!(exited, "owned descendant survived shell timeout");
+        assert!(unrelated_alive, "unrelated process was killed");
+    }
+
+    #[test]
+    fn foreground_timeout_kills_owned_descendants_and_settles_with_open_pipes() {
+        // The grandchild inherits stdout/stderr. Killing the shell alone
+        // leaves read_to_end blocked even after the timeout fires.
+        let started = Instant::now();
+        let output = run_blocking_inner(
+            "Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -NoNewWindow; Start-Sleep -Seconds 30".into(),
+            None, WorkspaceEnv::Local, Duration::from_secs(1),
+        ).expect("bounded foreground result");
+        assert!(output.timed_out);
+        assert!(output.exit_code.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "timeout blocked on inherited pipe"
+        );
     }
 }

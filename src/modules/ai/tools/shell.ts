@@ -180,14 +180,16 @@ export function buildShellTools(ctx: ToolContext) {
             ...(evidenceId ? { nativeCheckEvidenceId: evidenceId } : {}),
           };
         } catch (e) {
+          const cancelled = String(e).includes("Foreground shell command cancelled");
           const evidenceId = record(
-            "not-started",
+            cancelled ? "cancelled" : "not-started",
             null,
             await witness(),
             String(e),
           );
           return {
             error: String(e),
+            ...(cancelled ? { cancelled: true } : {}),
             ...(evidenceId ? { nativeCheckEvidenceId: evidenceId } : {}),
           };
         }

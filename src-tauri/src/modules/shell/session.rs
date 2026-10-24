@@ -1,12 +1,13 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
+use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::Duration;
 
 use serde::Serialize;
 
-use super::run_blocking_inner;
+use super::run_blocking_cancelable;
 use crate::modules::fs::to_canon;
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
 
@@ -17,6 +18,8 @@ pub struct ShellSession {
     #[allow(dead_code)]
     pub started_at_ms: u64,
     sentinel: String,
+    closed: AtomicBool,
+    active: Mutex<Vec<Weak<AtomicBool>>>,
 }
 
 #[derive(Serialize)]
@@ -56,11 +59,22 @@ impl ShellSession {
             pristine: AtomicBool::new(true),
             started_at_ms,
             sentinel: generate_sentinel(),
+            closed: AtomicBool::new(false),
+            active: Mutex::new(Vec::new()),
         }
     }
 
     pub fn current_cwd(&self) -> String {
         self.cwd.lock().unwrap().clone()
+    }
+
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        for entry in self.active.lock().unwrap().drain(..) {
+            if let Some(token) = entry.upgrade() {
+                token.store(true, Ordering::Release);
+            }
+        }
     }
 
     pub fn run(
@@ -70,6 +84,34 @@ impl ShellSession {
         workspace_hint: Option<WorkspaceEnv>,
         timeout: Duration,
     ) -> Result<SessionRunOutput, String> {
+        self.run_cancelable(
+            command,
+            cwd_hint,
+            workspace_hint,
+            timeout,
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    pub fn run_cancelable(
+        &self,
+        command: String,
+        cwd_hint: Option<String>,
+        workspace_hint: Option<WorkspaceEnv>,
+        timeout: Duration,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<SessionRunOutput, String> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err("Shell session closed".into());
+        }
+        {
+            let mut active = self.active.lock().unwrap();
+            active.retain(|entry| entry.strong_count() > 0);
+            active.push(Arc::downgrade(&cancelled));
+            if self.closed.load(Ordering::Acquire) {
+                cancelled.store(true, Ordering::Release);
+            }
+        }
         let trimmed = command.trim().to_string();
         if trimmed.is_empty() {
             return Err("empty command".into());
@@ -90,11 +132,12 @@ impl ShellSession {
         let (tx, rx) = mpsc::channel::<Result<super::CommandOutput, String>>();
         let cwd_for_thread = cwd.clone();
         thread::spawn(move || {
-            let _ = tx.send(run_blocking_inner(
+            let _ = tx.send(run_blocking_cancelable(
                 wrapped,
                 Some(cwd_for_thread),
                 effective_workspace,
                 timeout,
+                cancelled,
             ));
         });
         let raw = rx.recv().map_err(|e| e.to_string())??;

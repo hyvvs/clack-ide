@@ -18,6 +18,10 @@ pub struct BackgroundProc {
     pub cwd: Option<String>,
     pub started_at_ms: u64,
     pub child: Arc<SharedChild>,
+    #[cfg(windows)]
+    pub owned_job: crate::modules::pty::job::PtyJob,
+    #[cfg(unix)]
+    pub owned_group: i32,
     pub buffer: Mutex<BoundedRingBuffer>,
     pub exited: AtomicBool,
     pub exit_code: AtomicI32,
@@ -62,6 +66,12 @@ impl BackgroundProc {
     }
 
     pub fn kill(&self) {
+        #[cfg(windows)]
+        self.owned_job.terminate();
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-self.owned_group, libc::SIGKILL);
+        }
         let _ = self.child.kill();
     }
 
@@ -105,6 +115,11 @@ pub fn spawn(
     }
 
     let mut cmd = super::build_oneshot_command(&trimmed, &workspace, cwd.as_deref())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     if let (WorkspaceEnv::Local, Some(ref dir)) = (&workspace, &cwd) {
         cmd.current_dir(dir);
     }
@@ -114,6 +129,13 @@ pub fn spawn(
     crate::modules::proc::hide_console(&mut cmd);
 
     let shared = Arc::new(SharedChild::spawn(&mut cmd).map_err(|e| e.to_string())?);
+    #[cfg(windows)]
+    let owned_job = crate::modules::pty::job::PtyJob::create_for(shared.id()).map_err(|e| {
+        let _ = shared.kill();
+        format!("Unable to bind background process to owned Windows job: {e}")
+    })?;
+    #[cfg(unix)]
+    let owned_group = shared.id() as i32;
     let kill_on_fail = || {
         let _ = shared.kill();
     };
@@ -137,6 +159,10 @@ pub fn spawn(
         cwd,
         started_at_ms,
         child,
+        #[cfg(windows)]
+        owned_job,
+        #[cfg(unix)]
+        owned_group,
         buffer: Mutex::new(BoundedRingBuffer::new(RING_CAP)),
         exited: AtomicBool::new(false),
         exit_code: AtomicI32::new(0),
@@ -187,4 +213,93 @@ pub fn spawn(
     }
 
     Ok(proc)
+}
+
+#[cfg(all(test, windows))]
+mod managed_background_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
+
+    #[test]
+    fn managed_server_has_handle_logs_and_kills_its_owned_descendant() {
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("server-owned-pid.txt");
+        let path = marker.to_string_lossy().replace('\'', "''");
+        let command = format!(
+            "Write-Output 'managed-ready'; $p = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -NoNewWindow -PassThru; [IO.File]::WriteAllText('{path}', [string]$p.Id); Start-Sleep -Seconds 30"
+        );
+        let proc = spawn(command, None, WorkspaceEnv::Local).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !marker.is_file() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            marker.is_file(),
+            "background server did not spawn owned child"
+        );
+        let pid: u32 = std::fs::read_to_string(marker)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(!proc.info(91).exited);
+        let (logs, _, _, _, _) = {
+            let r = proc.read_logs(0);
+            (r.bytes, r.next_offset, r.dropped, r.exited, r.exit_code)
+        };
+        assert!(logs.contains("managed-ready"));
+        proc.kill();
+        let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+        if !handle.is_null() {
+            let status = unsafe { WaitForSingleObject(handle, 3000) };
+            unsafe {
+                CloseHandle(handle);
+            }
+            assert_eq!(
+                status, WAIT_OBJECT_0,
+                "managed background descendant was not stopped"
+            );
+        }
+    }
+
+    #[test]
+    fn dropping_shell_owner_stops_registered_server_even_with_reader_refs() {
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("owned-background-pid.txt");
+        let path = marker.to_string_lossy().replace('\'', "''");
+        let command = format!(
+            "$p = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -NoNewWindow -PassThru; [IO.File]::WriteAllText('{path}', [string]$p.Id); Start-Sleep -Seconds 30"
+        );
+        let proc = spawn(command, None, WorkspaceEnv::Local).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !marker.is_file() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            marker.is_file(),
+            "registered server did not start its child"
+        );
+        let pid: u32 = std::fs::read_to_string(marker)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let owner = super::super::ShellState::default();
+        owner.bg.write().unwrap().insert(1, proc.clone());
+        drop(owner);
+        let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+        if !handle.is_null() {
+            let status = unsafe { WaitForSingleObject(handle, 3000) };
+            unsafe {
+                CloseHandle(handle);
+            }
+            assert_eq!(status, WAIT_OBJECT_0, "owner disposal left a child alive");
+        }
+        // The extra reference proves disposal doesn't wait for pipe readers or Arc::drop.
+        drop(proc);
+    }
 }

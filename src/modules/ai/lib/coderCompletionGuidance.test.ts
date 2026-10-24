@@ -15,6 +15,9 @@ describe("R5ag truthful coding completion guidance (no new completion authority)
     expect(instructions).toContain("inspect exit codes and errors, repair failures");
     expect(instructions).toContain("Do not claim a build, test or behavior passed unless you actually observed it pass");
     expect(instructions).toContain("within the normal run budget and permissions");
+    expect(instructions).toContain("Never run a persistent server through a foreground command tool");
+    expect(instructions).toContain("inspect existing handles first, then start, inspect logs, and stop the owned background handle");
+    expect(instructions).toContain("if background capabilities are unavailable, report that limitation");
     expect(instructions).toContain("invoke the actual exposed native function tools with structured arguments");
     expect(instructions).toContain("Do not print XML, JSON, Markdown, or function-call-looking text as a substitute");
     expect(instructions).toContain("such text does not execute anything");
