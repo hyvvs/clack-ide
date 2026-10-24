@@ -75,9 +75,6 @@ fn acceptance_wire_controls_match(
     if output == contract.calibration.output {
         return think_matches && tools.is_empty() && contract.calibration.candidates.contains(&context);
     }
-    if context != contract.agent.context {
-        return false;
-    }
     let valid_tools = tools.iter().all(|t| {
         t["type"] == "function"
             && t["function"]["name"].as_str().is_some()
@@ -111,11 +108,16 @@ fn acceptance_wire_controls_match(
             || (expected_think == "omitted" && body["think"].is_boolean());
         return probe_think_matches
             && tools.len() == 1
+            // A model's verified runtime target may be below the previously
+            // accepted ForgeBoard target. Production preflight is the owner
+            // of actual context trust; the host checks its candidate range.
+            && contract.calibration.candidates.contains(&context)
             && contract.verification.outputs.contains(&output)
             && schema_without_meta(&tools[0]["function"]["parameters"])
                 == schema_without_meta(&contract.verification.parameters);
     }
     think_matches
+        && context == contract.agent.context
         && output == contract.agent.output
         && names.iter().all(|name| {
             contract
@@ -201,6 +203,8 @@ mod acceptance_wire_tests {
         request = probe(512);
         request["think"] = json!(true);
         request["options"]["num_ctx"] = json!(8192);
+        assert!(acceptance_wire_controls_match(&request, "omitted", &contract()));
+        request["options"]["num_ctx"] = json!(1234);
         assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
         request = probe(512);
         request["think"] = json!(true);
@@ -232,7 +236,7 @@ mod acceptance_wire_tests {
             &contract()
         ));
         changed = probe(1024);
-        changed["options"]["num_ctx"] = json!(8192);
+        changed["options"]["num_ctx"] = json!(1234);
         assert!(!acceptance_wire_controls_match(
             &changed,
             "omitted",
@@ -357,6 +361,7 @@ fn main() {
         assert!(
             phase.starts_with("stream-diagnostic-")
                 || phase.starts_with("mission-a-")
+                || phase.starts_with("qualification-")
                 || phase.starts_with("system-preflight-")
         );
         assert!(phase
