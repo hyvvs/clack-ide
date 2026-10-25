@@ -27,6 +27,7 @@ import {
 } from "@/modules/ai/lib/selfHostedProbe";
 import {
   readSelfHostedState,
+  effectiveProfileValue,
   type SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
 import { probeEvidenceIsFresh } from "@/modules/ai/lib/selfHostedProbe";
@@ -35,7 +36,7 @@ import {
   endpointAllowsPrivate,
   endpointProvider,
 } from "@/modules/ai/lib/selfHostedModels";
-import { contextMetadata, contextRuntime, snapshotContext } from "@/modules/ai/lib/contextCalibrationTrust";
+import { contextMetadata, contextRuntime } from "@/modules/ai/lib/contextCalibrationTrust";
 import { freshVerifiedContextTiers, minimumSafeContext } from "@/modules/ai/lib/minimumSafeContext";
 import { agentContinuationReasoningMetadata, automaticAgentRecommendation } from "@/modules/ai/lib/agentConfiguration";
 import { verificationRecord, sameToolConfiguration } from "@/modules/ai/lib/toolVerification";
@@ -161,6 +162,9 @@ export function createRequestPreflight(options: {
   requiredRuntimeContext?: number;
   /** Record selected by real Automatic eligibility for this one logical run. */
   requiredContinuationProof?: ToolVerification;
+  toolVerificationContext?: number;
+  verifyAgentTier?: (tier: number) => Promise<SelfHostedState>;
+  onAgentTierSelected?: (state: SelfHostedState, proof: ToolVerification) => void;
   validateEvidence?: () => Promise<void>;
   onOllamaRouteDecision?: (decision: OllamaRouteDecision) => void;
 }) {
@@ -186,7 +190,8 @@ export function createRequestPreflight(options: {
   const limits = (): BudgetLimits => ({
     ...(options.optimization ? { inputCap: 1365, outputCap: 170 } : {}),
     ...(profile && state
-      ? profileBudgetLimits(state, profile.id, snapshot, Date.now(), options.calibrationContext)
+      ? profileBudgetLimits(state, profile.id, snapshot, Date.now(),
+          options.calibrationContext ?? options.toolVerificationContext ?? options.requiredRuntimeContext)
       : options.local
         ? { asserted: options.assertedContext }
         : {
@@ -395,13 +400,25 @@ export function createRequestPreflight(options: {
         throw new ContextBudgetError("invalid-context-calibration", "Context verification requires a bounded native request without tools.");
       await refresh();
       await reasoningOptions();
+      const pinnedTier = options.requiredRuntimeContext ?? options.toolVerificationContext;
+      if (pinnedTier !== undefined && profile?.overrides.workingContext && state &&
+          effectiveProfileValue(state, profile.id, "workingContext").value !== pinnedTier)
+        throw new ContextBudgetError("ollama-context-tier-stale",
+          "An explicit manual working-context pin differs from the Agent's verified tier. No inference was sent.");
+      if (options.toolVerificationContext !== undefined &&
+          (!profile || !state || !freshVerifiedContextTiers(state, profile, snapshot).includes(options.toolVerificationContext)))
+        throw new ContextBudgetError("ollama-context-tier-stale",
+          "The native-tool verification context is not freshly calibrated. No inference was sent.");
       const measured = assertRequestBudget(limits(), body, schemaKinds, availableSchemas);
       // Select from successful, still-trusted *loaded* calibration attempts.
       // Native tools also require a fresh proof for the chosen exact context.
       const originalTarget = runtimeTarget();
       let selectedTarget = originalTarget;
+      let selectedProof: ToolVerification | undefined;
+      let selectedProofState: SelfHostedState | undefined;
       if (options.providerId === "ollama" && profile && state && originalTarget !== undefined &&
-          options.calibrationContext === undefined && options.requiredRuntimeContext === undefined &&
+          options.calibrationContext === undefined && options.toolVerificationContext === undefined &&
+          options.requiredRuntimeContext === undefined &&
           !profile.overrides.workingContext &&
           // Preserve historical rejection diagnostics and never rewrite an
           // adapter request that was already mismatched before tier selection.
@@ -414,7 +431,36 @@ export function createRequestPreflight(options: {
           return !!proof && proof.choice === (options.reasoning?.choice ?? "automatic");
         };
         selectedTarget = minimumSafeContext(limits(), measured.cost, measured.output, tiers,
-          tier => !hasNativeTools || verifiedAtCapturedReasoning(tier)) ?? originalTarget;
+          tier => !hasNativeTools || !!options.verifyAgentTier || verifiedAtCapturedReasoning(tier)) ?? originalTarget;
+        if (hasNativeTools && selectedTarget !== undefined &&
+            (options.verifyAgentTier || selectedTarget !== originalTarget)) {
+          const current = await checkIdentity();
+          const currentProfile = current?.profiles.find(p => p.id === profile.id);
+          const existing = current && currentProfile ?
+            automaticAgentRecommendation(current, currentProfile, selectedTarget) : undefined;
+          if (!existing || existing.choice !== (options.reasoning?.choice ?? "automatic")) {
+            if (!options.verifyAgentTier)
+              throw new ContextBudgetError("agent-tier-tool-unverified",
+                "The smaller Agent tier has no current native-tool proof. No inference was sent.");
+            selectedProofState = await options.verifyAgentTier(selectedTarget);
+          } else {
+            selectedProofState = current;
+          }
+          // Verification executes actual provider inference and may change the
+          // loaded KV allocation. Re-read the native snapshot before admission.
+          await refresh();
+          const authoritative = await checkIdentity();
+          const authoritativeProfile = authoritative?.profiles.find(p => p.id === profile.id);
+          const selected = authoritative && authoritativeProfile ?
+            automaticAgentRecommendation(authoritative, authoritativeProfile, selectedTarget) : undefined;
+          if (!authoritative || !authoritativeProfile || !selected ||
+              selected.choice !== (options.reasoning?.choice ?? "automatic") ||
+              !freshVerifiedContextTiers(authoritative, authoritativeProfile, snapshot).includes(selectedTarget))
+            throw new ContextBudgetError("agent-tier-tool-unverified",
+              "Exact-context native-tool verification did not pass or is stale. No Agent request was sent.");
+          selectedProof = structuredClone(selected.record);
+          selectedProofState = authoritative;
+        }
         if (selectedTarget !== originalTarget) {
           const optionsBody = body.options;
           if (!optionsBody || typeof optionsBody !== "object" || Array.isArray(optionsBody))
@@ -484,7 +530,7 @@ export function createRequestPreflight(options: {
         if (options.providerId === "ollama" && selectedTarget !== originalTarget) {
           if (!profile || !state || selectedTarget === undefined ||
               !freshVerifiedContextTiers(state, profile, snapshot).includes(selectedTarget) ||
-              (Array.isArray(body.tools) && body.tools.length > 0 &&
+              (!selectedProof && Array.isArray(body.tools) && body.tools.length > 0 &&
                 !(automaticAgentRecommendation(state, profile, selectedTarget)?.choice ===
                   (options.reasoning?.choice ?? "automatic"))))
             throw new ContextBudgetError("ollama-context-tier-stale",
@@ -506,7 +552,7 @@ export function createRequestPreflight(options: {
           if (options.requiredRuntimeContext !== undefined) {
             if (!profile || !state ||
                 currentTarget !== options.requiredRuntimeContext ||
-                snapshotContext(state, profile, snapshot) !== options.requiredRuntimeContext)
+                !freshVerifiedContextTiers(state, profile, snapshot).includes(options.requiredRuntimeContext))
               throw new ContextBudgetError("ollama-continuation-allocation-stale",
                 "Automatic Agent working context changed during continuation. No inference was sent; reverify context and tools for a new run.");
           }
@@ -525,7 +571,7 @@ export function createRequestPreflight(options: {
           // The native snapshot can refresh reasoning metadata only, never proof.
           const eligible = agentContinuationReasoningMetadata(currentSettings, currentProfile, snapshot);
           const eligibleProfile = eligible.profiles.find(p => p.id === currentProfile.id) ?? currentProfile;
-          const currentProof = verificationRecord(eligibleProfile, originalProof.configuration);
+          const currentProof = verificationRecord(eligibleProfile, originalProof.configuration, originalProof.context);
           const selected = automaticAgentRecommendation(eligible, eligibleProfile, originalProof.context);
           if (!currentProof || currentProof.id !== originalProof.id ||
               currentProof.status !== "verified" ||
@@ -539,6 +585,22 @@ export function createRequestPreflight(options: {
               selected?.record.id !== originalProof.id ||
               !sameToolConfiguration(selected.configuration, originalProof.configuration))
             throw new ContextBudgetError("agent-tool-proof-stale", "Current Agent native-tool verification was replaced, revoked or expired. No inference was sent; verify tools before a new run.");
+        }
+        if (selectedProof) {
+          const p = currentSettings?.profiles.find(p => p.id === profile?.id);
+          const record = p && verificationRecord(p, selectedProof.configuration, selectedProof.context);
+          const current = p && currentSettings &&
+            automaticAgentRecommendation(currentSettings, p, selectedProof.context);
+          if (!p || !record || !current || current.record.id !== selectedProof.id ||
+              record.id !== selectedProof.id || record.status !== "verified" ||
+              record.context !== selectedTarget ||
+              JSON.stringify(record.scope) !== JSON.stringify(selectedProof.scope) ||
+              !record.proof || !selectedProof.proof || record.proof.at !== selectedProof.proof.at ||
+              record.proof.expiresAt !== selectedProof.proof.expiresAt ||
+              JSON.stringify(record.confirmation ?? null) !== JSON.stringify(selectedProof.confirmation ?? null))
+            throw new ContextBudgetError("agent-tier-tool-unverified",
+              "Native-tool proof changed before Agent dispatch. No inference was sent.");
+          if (selectedProofState) options.onAgentTierSelected?.(selectedProofState, selectedProof);
         }
         if (options.providerId === "ollama")
           lastSelectedRequestTarget = selectedTarget;

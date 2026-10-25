@@ -146,6 +146,7 @@ export function commitToolVerification(
   profileId: string,
   record: ToolVerification,
   previousId?: string,
+  tierProof = false,
 ) {
   const profile = state.profiles.find((p) => p.id === profileId),
     endpoint = state.endpoints.find(
@@ -161,15 +162,22 @@ export function commitToolVerification(
     profile.deploymentId !== record.scope.deployment ||
     (endpoint.backendHint ?? endpoint.detectedBackend) !==
       record.scope.backend ||
-    (verificationRecord(profile, record.configuration)?.id !== previousId &&
-      verificationRecord(profile, record.configuration)?.id !== record.id)
+    (verificationRecord(profile, record.configuration, tierProof ? record.context : undefined)?.id !== previousId &&
+      verificationRecord(profile, record.configuration, tierProof ? record.context : undefined)?.id !== record.id)
   )
     throw new Error("Tool verification settings changed");
   const parsed = toolVerificationSchema.parse(record);
   return {
     ...state,
     profiles: state.profiles.map((p) =>
-      p.id !== profileId ? p : record.configuration ? {
+      p.id !== profileId ? p : tierProof ? {
+        ...p,
+        agentToolTierProofs: [
+          ...(p.agentToolTierProofs ?? []).filter(r => r.context !== record.context ||
+            !sameToolConfiguration(r.configuration, record.configuration)),
+          parsed,
+        ].slice(-18),
+      } : record.configuration ? {
         ...p, agentToolConfigurations: [
           ...(p.agentToolConfigurations ?? []).filter(r => !sameToolConfiguration(r.configuration, record.configuration)), parsed,
         ].slice(-2),
@@ -180,11 +188,17 @@ export function commitToolVerification(
 export function sameToolConfiguration(a?: ToolConfiguration, b?: ToolConfiguration) {
   return a?.choice === b?.choice && a?.wire === b?.wire;
 }
-export function verificationRecord(profile: SelfHostedProfile, configuration?: ToolConfiguration) {
-  return configuration ? profile.agentToolConfigurations?.find(r => sameToolConfiguration(r.configuration, configuration)) : profile.toolVerification;
+export function verificationRecord(profile: SelfHostedProfile, configuration?: ToolConfiguration, context?: number) {
+  if (context !== undefined) {
+    const tier = profile.agentToolTierProofs?.find(r => r.context === context &&
+      sameToolConfiguration(r.configuration, configuration));
+    if (tier) return tier;
+  }
+  const legacy = configuration ? profile.agentToolConfigurations?.find(r => sameToolConfiguration(r.configuration, configuration)) : profile.toolVerification;
+  return context === undefined || legacy?.context === context ? legacy : undefined;
 }
 export function configuredToolState(state: SelfHostedState, profile: SelfHostedProfile, configuration?: ToolConfiguration, now = Date.now(), context?: number) {
-  return toolVerificationState(state, {...profile, toolVerification: verificationRecord(profile, configuration)}, now, context);
+  return toolVerificationState(state, {...profile, toolVerification: verificationRecord(profile, configuration, context)}, now, context);
 }
 // Failure-only, privacy-safe decision operands. Null means the operand cannot
 // be evaluated from available evidence; it is never an affirmative PASS.
@@ -197,7 +211,7 @@ export function toolEligibilityPredicates(
 ) {
   const endpoint = state.endpoints.find(e => e.id === profile.endpointId && e.deletedAt == null);
   const runtime = endpoint ? contextRuntime(endpoint.id) : undefined;
-  const record = verificationRecord(profile, configuration);
+  const record = verificationRecord(profile, configuration, expectedContext);
   const scope = endpoint ? toolScope(profile, endpoint, now) : undefined;
   const failure = toolFailure(record);
   return {
@@ -237,7 +251,7 @@ export type ToolProbeDependencies = {
   clock?: () => number;
 };
 export async function runToolVerification(
-  options: { profileId: string; signal: AbortSignal; force?: boolean; configuration?: ToolConfiguration; requestBudget?: ToolRequestBudget },
+  options: { profileId: string; signal: AbortSignal; force?: boolean; configuration?: ToolConfiguration; requestBudget?: ToolRequestBudget; tierContext?: number },
   deps: ToolProbeDependencies,
 ) {
   const now = deps.clock ?? Date.now;
@@ -268,9 +282,11 @@ export async function runToolVerification(
   const scope = toolScope(profile, endpoint, now());
   if (!scope) return { status: "unavailable" as const };
   const context = deps.context(state, profile);
+  if (options.tierContext !== undefined && options.tierContext !== context)
+    throw new Error("Requested native tool verification context differs from the proof tier");
   const overrides = JSON.stringify(profile.overrides);
   const configuration = options.configuration ? { ...options.configuration } : undefined;
-  const previous = verificationRecord(profile, options.configuration),
+  const previous = verificationRecord(profile, options.configuration, options.tierContext),
     comparable =
       previous && previous.context === context && sameToolScope(previous.scope, scope) ? previous : undefined;
   const current = configuredToolState(state, profile, options.configuration, now(), context);
@@ -306,7 +322,7 @@ export async function runToolVerification(
   };
   const save = async () => {
     state = await deps.commit((s) =>
-      commitToolVerification(s, profile.id, record, previous?.id),
+      commitToolVerification(s, profile.id, record, previous?.id, options.tierContext !== undefined),
     );
   };
   await save();

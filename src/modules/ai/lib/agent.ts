@@ -149,6 +149,9 @@ export type BuildModelOptions = {
   requiredContinuationProof?: ToolVerification;
   onOllamaRouteDecision?: (decision: OllamaRouteDecision) => void;
   toolVerification?: boolean;
+  toolVerificationContext?: number;
+  verifyAgentTier?: (tier: number) => Promise<SelfHostedState>;
+  onAgentTierSelected?: (state: SelfHostedState, proof: ToolVerification) => void;
   calibrationContext?: number;
   providerEvidence?: import("@/modules/ai/lib/providerModelEvidence").ProviderModelEvidence;
   calibration?: Pick<CalibrationCaptureOptions, "requestClass" | "record" | "onQueued"> & {
@@ -267,6 +270,7 @@ export async function buildLanguageModel(
     options.assertedContext,
     options.calibrationContext,
     options.toolVerification,
+    options.toolVerificationContext,
     reasoning,
     options.providerEvidence,
     options.requiredRuntimeContext,
@@ -279,6 +283,9 @@ export async function buildLanguageModel(
   const preflight = createRequestPreflight({
     requiredRuntimeContext: options.requiredRuntimeContext,
     requiredContinuationProof: options.requiredContinuationProof,
+    toolVerificationContext: options.toolVerificationContext,
+    verifyAgentTier: options.verifyAgentTier,
+    onAgentTierSelected: options.onAgentTierSelected,
     onOllamaRouteDecision: options.onOllamaRouteDecision,
     validateRouting: options.inferenceScope?.validateFallback,
     requireRequestedOutput: Boolean(options.inferenceScope?.fallbackToken),
@@ -489,6 +496,9 @@ export async function buildLanguageModel(
 export type LocalProviderConfig = {
   requiredRuntimeContext?: number;
   requiredContinuationProof?: ToolVerification;
+  toolVerificationContext?: number;
+  verifyAgentTier?: (tier: number) => Promise<SelfHostedState>;
+  onAgentTierSelected?: (state: SelfHostedState, proof: ToolVerification) => void;
   onOllamaRouteDecision?: BuildModelOptions["onOllamaRouteDecision"];
   reasoning?: EffortCapture;
   inferenceScope?: InferenceScope;
@@ -526,6 +536,9 @@ export function buildConfiguredLanguageModel(
         selfHosted: true,
         requiredRuntimeContext: local.requiredRuntimeContext,
         requiredContinuationProof: local.requiredContinuationProof,
+        toolVerificationContext: local.toolVerificationContext,
+        verifyAgentTier: local.verifyAgentTier,
+        onAgentTierSelected: local.onAgentTierSelected,
         onOllamaRouteDecision: local.onOllamaRouteDecision,
         reasoning: local.reasoning,
         selfHostedInference: local.selfHostedInference,
@@ -804,6 +817,7 @@ export type RunAgentOptions = {
 export async function runAgentStream(opts: RunAgentOptions) {
   let pinnedAutomaticContinuationContext: number | undefined;
   let pinnedAutomaticContinuationProof: ToolVerification | undefined;
+  let automaticTierConfiguration: import("@/modules/ai/lib/toolVerificationSchema").ToolConfiguration | undefined;
   const inferenceScope: InferenceScope = opts.inferenceScope
     ? { ...opts.inferenceScope }
     : {
@@ -845,11 +859,13 @@ export async function runAgentStream(opts: RunAgentOptions) {
         eligibleProfile,
         view?.context,
         opts.logicalContinuation,
+        opts.retainedAutomaticRecordId,
       );
       pinnedAutomaticContinuationContext = batchContext.pinned;
       opts.reasoning = applyAgentRecommendation(eligibility, eligibleProfile,
         batchContext.expected, opts.reasoning);
       const accepted = automaticAgentRecommendation(eligibility, eligibleProfile, batchContext.expected);
+      automaticTierConfiguration = accepted?.configuration;
       if (pinnedAutomaticContinuationContext !== undefined) {
         if (!accepted || accepted.record.context !== pinnedAutomaticContinuationContext)
           throw new Error("Automatic Agent native-tool proof is unavailable for this continuation.");
@@ -871,6 +887,18 @@ export async function runAgentStream(opts: RunAgentOptions) {
     reasoning: opts.reasoning,
     requiredRuntimeContext: pinnedAutomaticContinuationContext,
     requiredContinuationProof: pinnedAutomaticContinuationProof,
+    verifyAgentTier: !opts.logicalContinuation && !opts.recovery && opts.selfHostedInference &&
+      (!opts.reasoning || opts.reasoning.choice === "automatic" ||
+        automaticTierConfiguration !== undefined)
+      ? async (tier: number) => {
+          const { ensureVerifiedAgentTier } = await import("@/modules/ai/lib/toolVerificationRuntime");
+          return ensureVerifiedAgentTier(opts.selfHostedInference!, modelId, tier,
+            automaticTierConfiguration, opts.abortSignal ?? new AbortController().signal);
+        } : undefined,
+    onAgentTierSelected: (state, proof) => {
+      opts.selfHostedInference = state;
+      opts.onSelfHostedPrepared?.(state, proof.id, JSON.stringify(proof.configuration ?? null));
+    },
     inferenceScope,
     selfHostedInference: opts.selfHostedInference,
     lmstudioBaseURL: opts.lmstudioBaseURL,

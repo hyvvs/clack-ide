@@ -16,6 +16,7 @@ import {
   toolVerificationState,
   type ProbeObservation,
   type ToolProbeDependencies,
+  verificationRecord,
 } from "@/modules/ai/lib/toolVerification";
 import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
 import {
@@ -135,6 +136,71 @@ afterEach(() => {
 });
 
 describe("bounded verifier output exhaustion", () => {
+  it("preserves 65K proof when genuinely verifying 32K; caches the exact tier after native success", async () => {
+    const f = fixture();
+    await f.run();
+    const original = f.get().toolVerification;
+    expect(original).toMatchObject({ status: "verified", context: 4096 });
+    const tier = await runToolVerification({
+      profileId: f.get().id, signal: f.controller.signal, tierContext: 32768,
+    }, { ...f.deps, context: () => 32768 });
+    expect(tier).toMatchObject({ status: "verified", context: 32768, outcome: "native-call" });
+    if (!tier || !("id" in tier)) throw new Error("Expected a persisted exact-tier native record");
+    expect(f.get().toolVerification).toEqual(original);
+    expect(f.get().agentToolTierProofs).toHaveLength(1);
+    expect(verificationRecord(f.get(), undefined, 32768)?.id).toBe(tier.id);
+    expect(verificationRecord(f.get(), undefined, 4096)?.id).toBe(original?.id);
+    expect(toolVerificationState(f.state(), { ...f.get(),
+      toolVerification: verificationRecord(f.get(), undefined, 32768) }, Date.now(), 32768)).toBe("Verified");
+    f.deps.request.mockClear();
+    await runToolVerification({
+      profileId: f.get().id, signal: f.controller.signal, tierContext: 32768,
+    }, { ...f.deps, context: () => 32768 });
+    expect(f.deps.request).not.toHaveBeenCalled();
+    f.replace(readSelfHostedState(JSON.parse(JSON.stringify(f.state()))));
+    expect(verificationRecord(f.get(), undefined, 32768)?.id).toBe(tier.id);
+  });
+  it("failed tier verification is isolated, and cannot borrow a different-context proof", async () => {
+    const f = fixture();
+    await f.run();
+    f.deps.request.mockResolvedValueOnce(observed({ calls: [], callAt: null, text: "text only", finish: "stop" }));
+    const failed = await runToolVerification({
+      profileId: f.get().id, signal: f.controller.signal, tierContext: 32768,
+    }, { ...f.deps, context: () => 32768 });
+    expect(failed).toMatchObject({ context: 32768, status: "needs-attention" });
+    expect(verificationRecord(f.get(), undefined, 32768)?.status).toBe("needs-attention");
+    expect(toolVerificationState(f.state(), { ...f.get(),
+      toolVerification: verificationRecord(f.get(), undefined, 32768) }, Date.now(), 32768)).not.toBe("Verified");
+    expect(verificationRecord(f.get(), undefined, 4096)?.status).toBe("verified");
+    f.deps.request.mockClear();
+    await runToolVerification({ profileId: f.get().id, signal: f.controller.signal, tierContext: 32768 },
+      { ...f.deps, context: () => 32768 });
+    expect(f.deps.request).not.toHaveBeenCalled(); // bounded negative observation
+  });
+  it("digest, runtime epoch, provider version and expiration invalidate a stored tier proof", async () => {
+    const f = fixture();
+    await runToolVerification({ profileId: f.get().id, signal: f.controller.signal, tierContext: 32768 },
+      { ...f.deps, context: () => 32768 });
+    const check = () => toolVerificationState(f.state(), { ...f.get(),
+      toolVerification: verificationRecord(f.get(), undefined, 32768) }, Date.now(), 32768);
+    expect(check()).toBe("Verified");
+    f.get().modelRevision = "another-digest";
+    expect(check()).not.toBe("Verified");
+    f.get().modelRevision = "digest";
+    f.version("new-version");
+    await f.deps.inspect();
+    expect(check()).not.toBe("Verified");
+    f.version("1.2.3");
+    await f.deps.inspect();
+    expect(check()).toBe("Verified");
+    rememberContextRuntime(f.endpoint.id, { epoch: "different-runtime", version: "1.2.3",
+      configurationRevision: 1, at: Date.now() });
+    expect(check()).not.toBe("Verified");
+    await f.deps.inspect();
+    const proof = verificationRecord(f.get(), undefined, 32768);
+    if (proof?.proof) proof.proof.expiresAt = Date.now() - 1;
+    expect(check()).not.toBe("Verified");
+  });
   const length = () => observed({ calls: [], text: "", finish: "length", callAt: null });
   const outputs = (f: ReturnType<typeof fixture>) => f.deps.request.mock.calls.map(c => c[3]);
 

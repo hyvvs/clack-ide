@@ -9,6 +9,7 @@ import {
   TOOL_VERIFICATION,
   TOOL_PROBE_NAME,
   TOOL_PROBE_PROMPT,
+  createToolRequestBudget,
   probeArguments,
   type ToolConfiguration,
 } from "@/modules/ai/lib/toolVerificationSchema";
@@ -44,6 +45,10 @@ import { useToolVerificationJobs } from "@/modules/ai/store/toolVerificationJobs
 import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
 import {resolveAutomaticAgentTools, toolEffortCapture} from "@/modules/ai/lib/agentConfiguration";
 import {effortProviderOptions} from "@/modules/ai/lib/reasoningEffort";
+import { automaticAgentRecommendation } from "@/modules/ai/lib/agentConfiguration";
+import { freshVerifiedContextTiers } from "@/modules/ai/lib/minimumSafeContext";
+import { profileSnapshot } from "@/modules/ai/lib/modelOnboarding";
+import { sameToolConfiguration } from "@/modules/ai/lib/toolVerification";
 
 export const canonicalProbeTools = () => ({
   [TOOL_PROBE_NAME]: tool({
@@ -75,6 +80,8 @@ export async function verifyModelTools(options: {
   force?: boolean;
   scope?: InferenceScope;
   resolveAutomatic?: boolean;
+  tierContext?: number;
+  tierConfiguration?: ToolConfiguration;
 }) {
   options.signal.throwIfAborted();
   const profile = options.state.profiles.find(
@@ -88,7 +95,7 @@ export async function verifyModelTools(options: {
     return { status: "unavailable" as const };
   const view = modelOnboarding(options.state, profile);
   const verdict = view?.tools ?? "Unverified";
-  if (
+  if (options.tierContext === undefined &&
     !options.force &&
     (options.resolveAutomatic ? ["Verified", "Unsupported"] : ["Verified", "Incompatible", "Needs attention", "Unsupported"]).includes(verdict)
   )
@@ -143,6 +150,12 @@ export async function verifyModelTools(options: {
         commit: async (change) =>
           synchronize(await updateSelfHostedProfiles(change)),
         context: (state, p) => {
+          if (options.tierContext !== undefined) {
+            const snapshot = profileSnapshot(state, p);
+            if (!freshVerifiedContextTiers(state, p, snapshot).includes(options.tierContext))
+              throw new Error("Tool tier is not freshly calibrated under the current provider runtime");
+            return options.tierContext;
+          }
           const view = modelOnboarding(state, p);
           const context = view?.context.override ?? view?.context.recommended;
           if (typeof context !== "number")
@@ -189,6 +202,7 @@ export async function verifyModelTools(options: {
               selfHosted: true,
               selfHostedInference: state,
               toolVerification: true,
+              toolVerificationContext: options.tierContext,
               reasoning,
               ollamaBaseURL: endpoint.baseURL,
               openaiCompatibleBaseURL: compatibleServerBaseURL(endpoint),
@@ -252,6 +266,28 @@ export async function verifyModelTools(options: {
           return observed;
         },
       };
+    if (options.tierContext !== undefined) {
+      const configuration = options.tierConfiguration;
+      const budget = createToolRequestBudget();
+      await runToolVerification({ ...options, configuration, tierContext: options.tierContext,
+        requestBudget: budget, signal }, deps);
+      let current = await readToolProfiles();
+      let profile = current.profiles.find(p => p.id === options.profileId);
+      let chosen = profile && automaticAgentRecommendation(current, profile, options.tierContext);
+      // The established alternate reasoning proof requires independent
+      // confirmation. Never bypass its second genuine native verification.
+      if (configuration && !chosen && budget.remaining > 0) {
+        await runToolVerification({ ...options, configuration, tierContext: options.tierContext,
+          force: true, requestBudget: budget, signal }, deps);
+        current = await readToolProfiles();
+        profile = current.profiles.find(p => p.id === options.profileId);
+        chosen = profile && automaticAgentRecommendation(current, profile, options.tierContext);
+      }
+      if (!chosen || !sameToolConfiguration(chosen.configuration, configuration) ||
+          chosen.record.context !== options.tierContext)
+        throw new Error("Exact-tier native tool verification did not pass");
+      return chosen.record;
+    }
     if (options.resolveAutomatic) {
       await resolveAutomaticAgentTools({...options, signal}, {
         refresh: deps.refresh, inspect: deps.inspect, context: deps.context,
@@ -339,4 +375,45 @@ export async function ensureSelectedTools(
     ),
     inventories: current.inventories,
   };
+}
+
+/** One bounded native verification at the smallest safe *calibrated* tier.
+ * Return the authoritative persisted profile, not the earlier Agent capture. */
+export async function ensureVerifiedAgentTier(
+  state: SelfHostedState,
+  selectionId: string,
+  tier: number,
+  configuration: ToolConfiguration | undefined,
+  signal: AbortSignal,
+): Promise<SelfHostedState> {
+  const target = resolveSelfHostedSelection(state, selectionId);
+  if (target.status !== "available" || !target.profile.modelRevision ||
+      (target.endpoint.backendHint ?? target.endpoint.detectedBackend) !== "ollama")
+    throw new Error("Exact-tier verification requires the selected Ollama model");
+  signal.throwIfAborted();
+  const before = await readToolProfiles();
+  const profile = before.profiles.find(p => p.id === target.profile.id);
+  const endpoint = before.endpoints.find(e => e.id === target.endpoint.id);
+  if (!profile || !endpoint || profile.modelRevision !== target.profile.modelRevision ||
+      endpoint.configurationRevision !== target.endpoint.configurationRevision ||
+      JSON.stringify(profile.overrides) !== JSON.stringify(target.profile.overrides))
+    throw new Error("Agent settings changed before tier verification");
+  const selected = automaticAgentRecommendation(before, profile, tier);
+  if (!selected || !sameToolConfiguration(selected.configuration, configuration))
+    await verifyModelTools({ state: before, profileId: profile.id, signal,
+      tierContext: tier, tierConfiguration: configuration });
+  signal.throwIfAborted();
+  const current = await readToolProfiles();
+  const p = current.profiles.find(p => p.id === profile.id);
+  const e = current.endpoints.find(e => e.id === endpoint.id);
+  if (!p || !e || p.modelRevision !== profile.modelRevision ||
+      e.configurationRevision !== endpoint.configurationRevision ||
+      JSON.stringify(p.overrides) !== JSON.stringify(profile.overrides) ||
+      !freshVerifiedContextTiers(current, p, profileSnapshot(current, p)).includes(tier))
+    throw new Error("Agent tier calibration or identity changed during verification");
+  const verified = automaticAgentRecommendation(current, p, tier);
+  if (!verified || !sameToolConfiguration(verified.configuration, configuration) ||
+      verified.record.context !== tier)
+    throw new Error("Agent exact-tier native tool proof is absent, failed or stale");
+  return current;
 }

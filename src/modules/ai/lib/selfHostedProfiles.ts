@@ -170,6 +170,10 @@ const profileSchema = z.object({
   toolVerification: toolVerificationSchema.refine(r => !r.configuration).optional(),
   agentToolConfigurations: z.array(toolVerificationSchema).max(2).refine(records =>
     records.every(r => !!r.configuration) && new Set(records.map(r => JSON.stringify(r.configuration?.wire))).size === records.length).optional(),
+  // Non-primary exact-context proofs remain independently scoped; a 65K proof
+  // never authorizes native tools at 32K. Preserve legacy primary fields.
+  agentToolTierProofs: z.array(toolVerificationSchema).max(18).refine(records =>
+    new Set(records.map(r => JSON.stringify([r.context, r.configuration ?? null]))).size === records.length).optional(),
   saved: z
     .object({ label: z.string().trim().min(1).max(1024).optional() })
     .optional(),
@@ -227,6 +231,9 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
     const rawConfigurations = z.object({ agentToolConfigurations: z.unknown().optional() }).safeParse(entry);
     const invalidConfigurations = rawConfigurations.success && rawConfigurations.data.agentToolConfigurations !== undefined &&
       !profileSchema.shape.agentToolConfigurations.safeParse(rawConfigurations.data.agentToolConfigurations).success;
+    const rawTiers = z.object({ agentToolTierProofs: z.unknown().optional() }).safeParse(entry);
+    const invalidTiers = rawTiers.success && rawTiers.data.agentToolTierProofs !== undefined &&
+      !profileSchema.shape.agentToolTierProofs.safeParse(rawTiers.data.agentToolTierProofs).success;
     const rawTool = z.object({ toolVerification: z.unknown().optional() }).safeParse(entry);
     const invalidTool = rawTool.success && rawTool.data.toolVerification !== undefined && !profileSchema.shape.toolVerification.safeParse(rawTool.data.toolVerification).success;
     const rawContext = z.object({ contextCalibration: z.unknown().optional() }).safeParse(entry);
@@ -234,8 +241,8 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
     const rawCalibration = z.object({ calibration: z.unknown().optional() }).safeParse(entry);
     const invalidCalibration = rawCalibration.success && rawCalibration.data.calibration !== undefined &&
       !calibrationSchema.safeParse(rawCalibration.data.calibration).success;
-    const parsed = profileSchema.safeParse(invalidCalibration || invalidContext || invalidTool || invalidConfigurations
-      ? { ...(entry as Record<string, unknown>), ...(invalidConfigurations ? {agentToolConfigurations: undefined} : {}), ...(invalidTool ? { toolVerification: undefined } : {}), ...(invalidCalibration ? { calibration: undefined } : {}), ...(invalidContext ? { contextCalibration: undefined } : {}) } : entry);
+    const parsed = profileSchema.safeParse(invalidCalibration || invalidContext || invalidTool || invalidConfigurations || invalidTiers
+      ? { ...(entry as Record<string, unknown>), ...(invalidTiers ? {agentToolTierProofs: undefined} : {}), ...(invalidConfigurations ? {agentToolConfigurations: undefined} : {}), ...(invalidTool ? { toolVerification: undefined } : {}), ...(invalidCalibration ? { calibration: undefined } : {}), ...(invalidContext ? { contextCalibration: undefined } : {}) } : entry);
     if (!parsed.success) continue;
     const profile = parsed.data;
     if (invalidContext) delete profile.recommendations.workingContext;

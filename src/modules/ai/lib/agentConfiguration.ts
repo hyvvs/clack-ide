@@ -169,16 +169,16 @@ export function automaticAgentRecommendation(
   now = Date.now(),
 ) {
   if (
-    profile.toolVerification &&
+    verificationRecord(profile, undefined, context) &&
     configuredToolState(state, profile, undefined, now, context) === "Verified"
   )
     return {
-      record: profile.toolVerification,
+      record: verificationRecord(profile, undefined, context)!,
       configuration: undefined,
       choice: "automatic",
     };
   for (const configuration of agentToolCandidates(state, profile)) {
-    const record = verificationRecord(profile, configuration);
+    const record = verificationRecord(profile, configuration, context);
     if (
       record?.confirmation &&
       record.confirmation.at <= now &&
@@ -199,6 +199,7 @@ export function automaticAgentBatchContext(
   profile: SelfHostedProfile,
   view: { override?: unknown; recommended?: number } | undefined,
   logicalContinuation: boolean | undefined,
+  retainedRecordId?: string,
 ) {
   const projected =
     typeof view?.override === "number" ? view.override : view?.recommended;
@@ -212,10 +213,18 @@ export function automaticAgentBatchContext(
   // recorded context; a verified default must never lend proof to an alternative.
   const records = [
     { record: profile.toolVerification, configuration: undefined },
+    ...(profile.agentToolTierProofs ?? []).map(record => ({ record, configuration: record.configuration })),
     ...agentToolCandidates(state, profile).map((configuration) => ({
       record: verificationRecord(profile, configuration), configuration,
     })),
   ];
+  if (retainedRecordId) {
+    const retained = records.find(({record}) => record?.id === retainedRecordId);
+    if (!retained || !retained.record ||
+        automaticAgentRecommendation(state, profile, retained.record.context)?.record.id !== retainedRecordId)
+      return { expected: projected, pinned: undefined };
+    return { expected: retained.record.context, pinned: retained.record.context };
+  }
   for (const { record, configuration } of records) {
     if (record?.status !== "verified" || !Number.isSafeInteger(record.context) || record.context <= 0)
       continue;
