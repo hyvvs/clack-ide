@@ -53,10 +53,18 @@ mod enabled {
     type Sink = Arc<dyn Fn(&Snapshot) + Send + Sync>;
 
     /// Only the invisible acceptance example installs this state. No IPC enable route.
-    pub struct AcceptanceDiagnostics(Sink);
+    pub struct AcceptanceDiagnostics(Sink, Option<Sink>);
     impl AcceptanceDiagnostics {
         pub fn new(sink: impl Fn(&Snapshot) + Send + Sync + 'static) -> Self {
-            Self(Arc::new(sink))
+            Self(Arc::new(sink), None)
+        }
+        /// Debug acceptance-host-only event tap. Never installed in a normal app.
+        /// It preserves partial evidence even if a stream never reaches EOF.
+        pub fn new_live(
+            completed: impl Fn(&Snapshot) + Send + Sync + 'static,
+            each_event: impl Fn(&Snapshot) + Send + Sync + 'static,
+        ) -> Self {
+            Self(Arc::new(completed), Some(Arc::new(each_event)))
         }
         pub(crate) fn request(&self, id: &str) -> Trace {
             if id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
@@ -64,6 +72,7 @@ mod enabled {
             }
             Trace(Some(Box::new(Recording {
                 sink: self.0.clone(),
+                live_sink: self.1.clone(),
                 start: Instant::now(),
                 snapshot: Snapshot {
                     boundary: "reqwest-http-body-delivery",
@@ -81,6 +90,7 @@ mod enabled {
 
     struct Recording {
         sink: Sink,
+        live_sink: Option<Sink>,
         start: Instant,
         snapshot: Snapshot,
     }
@@ -119,6 +129,9 @@ mod enabled {
                 snapshot.dropped_events += 1;
             }
             snapshot.events.push_back(stamp);
+            if let Some(sink) = &recording.live_sink {
+                sink(snapshot);
+            }
         }
         pub fn finish(&mut self, result: &Result<(), super::super::Failure>) {
             let kind = match result.as_ref().err().map(|e| e.code.as_str()) {
@@ -216,5 +229,27 @@ mod tests {
         trace.finish(&Ok(()));
         let state = AcceptanceDiagnostics::new(|_| panic!("unexpected trace"));
         state.request("invalid/private?credential");
+    }
+    #[test]
+    fn diagnostic_live_events_are_saved_before_terminal_completion() {
+        let live = Arc::new(Mutex::new(Vec::new()));
+        let completed = Arc::new(Mutex::new(Vec::new()));
+        let streamed = live.clone();
+        let finished = completed.clone();
+        let sink = AcceptanceDiagnostics::new_live(
+            move |snapshot| finished.lock().unwrap().push(snapshot.request_id.clone()),
+            move |snapshot| streamed.lock().unwrap().push(
+                (snapshot.request_id.clone(), snapshot.events.back().unwrap().kind)
+            ),
+        );
+        let mut request = sink.request("inference-8");
+        request.record(Kind::Dispatch, 0);
+        request.record(Kind::Headers, 0);
+        request.record(Kind::Body, 154);
+        assert_eq!(live.lock().unwrap().len(), 3);
+        assert!(completed.lock().unwrap().is_empty());
+        request.finish(&Ok(()));
+        assert_eq!(completed.lock().unwrap().as_slice(), &["inference-8"]);
+        assert_eq!(live.lock().unwrap().last().unwrap().1, Kind::Completed);
     }
 }

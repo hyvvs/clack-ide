@@ -456,21 +456,28 @@ fn main() {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-'));
         let destination = root.join(format!("{phase}.receive.jsonl"));
-        builder.manage(net::inference::diagnostics::AcceptanceDiagnostics::new(
-            move |snapshot| {
-                let mut file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&destination)
-                    .expect("owned receive audit");
-                writeln!(
-                    file,
-                    "{}",
-                    serde_json::to_string(snapshot).expect("receive metadata")
-                )
+        let complete = move |snapshot: &net::inference::diagnostics::Snapshot| {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true).append(true).open(&destination).expect("owned receive audit");
+            writeln!(file, "{}", serde_json::to_string(snapshot).expect("receive metadata"))
                 .expect("persist receive audit");
-            },
-        ))
+        };
+        if phase == "stream-diagnostic-tier-02" {
+            let events = root.join("stream-diagnostic-tier-02.native-events.jsonl");
+            builder.manage(net::inference::diagnostics::AcceptanceDiagnostics::new_live(
+                complete,
+                move |snapshot| {
+                    let Some(last) = snapshot.events.back() else { return };
+                    let mut file = std::fs::OpenOptions::new()
+                        .create(true).append(true).open(&events).expect("owned event audit");
+                    writeln!(file, "{}", serde_json::json!({
+                        "requestId": snapshot.request_id, "event":last,
+                    })).expect("persist per-event receive audit");
+                },
+            ))
+        } else {
+            builder.manage(net::inference::diagnostics::AcceptanceDiagnostics::new(complete))
+        }
     } else {
         builder
     };
