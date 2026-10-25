@@ -11,7 +11,9 @@ import { ContextBudgetError } from "@/modules/ai/lib/contextBudget";
 import {
   knownTransportContextLimit,
   modelBudgetLimits,
+  createRequestPreflight,
 } from "@/modules/ai/lib/requestPreflight";
+import { createProxyFetch } from "@/modules/ai/lib/proxyFetch";
 import { hostedEffortFixture } from "@/modules/ai/lib/reasoningEffort.fixture";
 import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
 import { selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
@@ -100,6 +102,36 @@ async function model(provider: ProviderId, id: string) {
   return built;
 }
 describe("real installed adapters serialize shared output/preflight", () => {
+  it("native dispatch sends only the checked tier change, retaining all serialized tool/history state", async () => {
+    const original = {
+      model: "fixture", stream: true, options: { num_ctx: 65536, num_predict: 8192 },
+      messages: [
+        { role: "system", content: "Preserve all obligations" },
+        { role: "user", content: "Write the application" },
+        { role: "assistant", content: [{ type: "tool_calls", calls: [{ name: "write_file", path: "notes.ts" }] }] },
+        { role: "tool", content: [{ type: "tool_result", result: "File already written" }] },
+      ],
+      tools: [{ type: "function", function: { name: "write_file", parameters: { type: "object", properties: { content: { type: "string" } } } } }],
+    };
+    const preflight = {
+      prepare: async (body: Record<string, unknown>) => {
+        expect(body).toEqual(original);
+        (body.options as { num_ctx: number }).num_ctx = 32768;
+        return async () => {
+          expect((body.options as { num_ctx: number }).num_ctx).toBe(32768);
+        };
+      },
+    } as ReturnType<typeof createRequestPreflight>;
+    const proxied = createProxyFetch({ preflight, allowPrivateNetwork: true });
+    const response = await proxied("http://127.0.0.1:11435/api/chat", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(original),
+    });
+    await response.text();
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toEqual({ ...original, options: { num_ctx: 32768, num_predict: 8192 } });
+    expect(original.options.num_ctx).toBe(65536);
+  });
   it.each(["removed", "incompatible", "changed-digest", "offline"])("rejects %s discovery state before sending inference, without fallback", async scenario => {
     const fixture = hostedEffortFixture();
     fixture.profile.modelRevision = "rev-a";

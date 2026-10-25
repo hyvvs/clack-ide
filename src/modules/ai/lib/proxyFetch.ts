@@ -135,14 +135,19 @@ async function proxyFetchImpl(
     releaseRemote=await acquireRemoteConnection(remoteEndpointFromUrl(url),connectionAbort.signal,opts.scope);
     const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
     const headers = headerInitToRecord(init?.headers ?? request?.headers);
-    const body = await bodyToBytes(
+    let body = await bodyToBytes(
       init?.body ?? (request ? await request.arrayBuffer() : undefined),
     );
-    const revalidate = opts.preflight
-      ? await opts.preflight.prepare(
-          JSON.parse(new TextDecoder().decode(Uint8Array.from(body ?? []))),
-        )
-      : undefined;
+    let revalidate: Awaited<ReturnType<NonNullable<typeof opts.preflight>["prepare"]>> | undefined;
+    if (opts.preflight) {
+      const parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(body ?? [])));
+      const original = JSON.stringify(parsed);
+      revalidate = await opts.preflight.prepare(parsed);
+      // Preserve the original wire bytes unless the verified context changed.
+      // Messages, history, native schemas, and output allowance are untouched.
+      if (JSON.stringify(parsed) !== original)
+        body = [...new TextEncoder().encode(JSON.stringify(parsed))];
+    }
     if (aborted) throw new InferenceTransportError("cancelled");
     nativeId = await invoke<string>("ai_http_open");
     if (!nativeId) throw new InferenceTransportError("native-transport");

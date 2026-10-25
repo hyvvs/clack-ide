@@ -36,6 +36,7 @@ import {
   endpointProvider,
 } from "@/modules/ai/lib/selfHostedModels";
 import { contextMetadata, contextRuntime, snapshotContext } from "@/modules/ai/lib/contextCalibrationTrust";
+import { freshVerifiedContextTiers, minimumSafeContext } from "@/modules/ai/lib/minimumSafeContext";
 import { agentContinuationReasoningMetadata, automaticAgentRecommendation } from "@/modules/ai/lib/agentConfiguration";
 import { verificationRecord, sameToolConfiguration } from "@/modules/ai/lib/toolVerification";
 import type { ToolVerification } from "@/modules/ai/lib/toolVerificationSchema";
@@ -178,6 +179,7 @@ export function createRequestPreflight(options: {
   let refreshAttemptedAt = 0;
   let schemaKinds: Record<string, SchemaKind> = {};
   let availableSchemas: number | undefined;
+  let lastSelectedRequestTarget: number | undefined;
   let providerLimits: BudgetLimits = {};
   const reasoning = options.reasoning ? structuredClone(options.reasoning) : undefined;
   let reasoningValidation: Promise<ReturnType<typeof effortProviderOptions>> | undefined;
@@ -394,10 +396,36 @@ export function createRequestPreflight(options: {
       await refresh();
       await reasoningOptions();
       const measured = assertRequestBudget(limits(), body, schemaKinds, availableSchemas);
+      // Select from successful, still-trusted *loaded* calibration attempts.
+      // Native tools also require a fresh proof for the chosen exact context.
+      const originalTarget = runtimeTarget();
+      let selectedTarget = originalTarget;
+      if (options.providerId === "ollama" && profile && state && originalTarget !== undefined &&
+          options.calibrationContext === undefined && options.requiredRuntimeContext === undefined &&
+          !profile.overrides.workingContext &&
+          // Preserve historical rejection diagnostics and never rewrite an
+          // adapter request that was already mismatched before tier selection.
+          body.model === options.modelId &&
+          (body.options as { num_ctx?: unknown } | undefined)?.num_ctx === originalTarget) {
+        const tiers = freshVerifiedContextTiers(state, profile, snapshot);
+        const hasNativeTools = Array.isArray(body.tools) && body.tools.length > 0;
+        const verifiedAtCapturedReasoning = (tier: number) => {
+          const proof = automaticAgentRecommendation(state, profile, tier);
+          return !!proof && proof.choice === (options.reasoning?.choice ?? "automatic");
+        };
+        selectedTarget = minimumSafeContext(limits(), measured.cost, measured.output, tiers,
+          tier => !hasNativeTools || verifiedAtCapturedReasoning(tier)) ?? originalTarget;
+        if (selectedTarget !== originalTarget) {
+          const optionsBody = body.options;
+          if (!optionsBody || typeof optionsBody !== "object" || Array.isArray(optionsBody))
+            throw new ContextBudgetError("ollama-context-route", "Serialized Ollama context options are unavailable.");
+          (optionsBody as Record<string, unknown>).num_ctx = selectedTarget;
+        }
+      }
       if (options.providerId === "ollama") {
         // Capture exactly once. A refresh/trust transition must not make the
         // comparison and its diagnostic describe different target values.
-        const target = runtimeTarget();
+        const target = selectedTarget;
         if (options.onOllamaRouteDecision) {
           const at = Date.now();
           const calibration = profile?.contextCalibration;
@@ -453,6 +481,17 @@ export function createRequestPreflight(options: {
             options.providerEvidence,
           );
         assertMeasuredRequestBudget(limits(), measured.cost, measured.output);
+        if (options.providerId === "ollama" && selectedTarget !== originalTarget) {
+          if (!profile || !state || selectedTarget === undefined ||
+              !freshVerifiedContextTiers(state, profile, snapshot).includes(selectedTarget) ||
+              (Array.isArray(body.tools) && body.tools.length > 0 &&
+                !(automaticAgentRecommendation(state, profile, selectedTarget)?.choice ===
+                  (options.reasoning?.choice ?? "automatic"))))
+            throw new ContextBudgetError("ollama-context-tier-stale",
+              "Verified context or native-tool proof changed. No inference was sent.");
+          assertMeasuredRequestBudget({ ...limits(), runtimeTarget: selectedTarget, deployed: undefined },
+            measured.cost, measured.output);
+        }
         await options.validateEvidence?.();
         await reasoningOptions();
         // B1 may legitimately resolve a smaller conservative context for an
@@ -460,7 +499,10 @@ export function createRequestPreflight(options: {
         // for an older, larger context after the final provider refresh.
         if (options.providerId === "ollama") {
           const currentTarget = runtimeTarget();
-          assertOllamaContextRoute(body, options.modelId, currentTarget);
+          if (currentTarget !== originalTarget)
+            throw new ContextBudgetError("ollama-context-tier-stale",
+              "Trusted context changed before dispatch. No inference was sent.");
+          assertOllamaContextRoute(body, options.modelId, selectedTarget);
           if (options.requiredRuntimeContext !== undefined) {
             if (!profile || !state ||
                 currentTarget !== options.requiredRuntimeContext ||
@@ -498,11 +540,13 @@ export function createRequestPreflight(options: {
               !sameToolConfiguration(selected.configuration, originalProof.configuration))
             throw new ContextBudgetError("agent-tool-proof-stale", "Current Agent native-tool verification was replaced, revoked or expired. No inference was sent; verify tools before a new run.");
         }
+        if (options.providerId === "ollama")
+          lastSelectedRequestTarget = selectedTarget;
       };
     },
     async observeOllamaRuntime() {
       if (options.providerId !== "ollama" || !endpoint || !profile) return;
-      const target = runtimeTarget();
+      const target = lastSelectedRequestTarget ?? runtimeTarget();
       const current = snapshot?.models.find(m => m.id === profile.transportModelId);
       try {
         await checkIdentity();
@@ -532,7 +576,9 @@ export function preflightFetch(
         "Cannot account for this request body before inference.",
       );
     const body = JSON.parse(init.body) as Record<string, unknown>;
+    const before = JSON.stringify(body);
     await (await preflight.prepare(body))();
-    return fetcher(input, init);
+    const updated = JSON.stringify(body);
+    return fetcher(input, updated === before ? init : { ...init, body: updated });
   };
 }

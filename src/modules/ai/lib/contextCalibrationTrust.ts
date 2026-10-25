@@ -97,10 +97,22 @@ export function trustedContext(
     record.scope.reasoning !==
       contextReasoningIdentity(profile, endpoint, now) ||
     contextMetadata(profile, endpoint, "loaded", now) !== true ||
-    contextMetadata(profile, endpoint, "loadedContext", now) !==
-      record.highest ||
-    contextMetadata(profile, endpoint, "runtimeAllocation", now) !==
-      record.allocation
+    !(() => {
+      const loaded = contextMetadata(profile, endpoint, "loadedContext", now);
+      const allocation = contextMetadata(profile, endpoint, "runtimeAllocation", now);
+      if (loaded === record.highest && allocation === record.allocation) return true;
+      // A *known successful* per-request tier changes the live KV allocation.
+      // Retain the upper verified ceiling only if the current process reports
+      // exactly that lower requested/loaded tier and a fresh real allocation.
+      // Silent or arbitrary capacity changes remain untrusted.
+      return record.status === "verified" &&
+        typeof loaded === "number" && loaded < record.highest &&
+        contextMetadata(profile, endpoint, "requestedContext", now) === loaded &&
+        typeof allocation === "string" && allocation.length > 0 &&
+        record.attempts.some(a =>
+          a.context === loaded && a.requested === loaded &&
+          a.loaded === loaded && a.outcome === "success");
+    })()
   )
     return undefined;
   return record.highest;
