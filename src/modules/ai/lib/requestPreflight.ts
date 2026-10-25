@@ -37,6 +37,7 @@ import {
   endpointProvider,
 } from "@/modules/ai/lib/selfHostedModels";
 import { contextMetadata, contextRuntime } from "@/modules/ai/lib/contextCalibrationTrust";
+import { CONTEXT_CALIBRATION } from "@/modules/ai/lib/contextCalibrationSchema";
 import { freshVerifiedContextTiers, minimumSafeContext } from "@/modules/ai/lib/minimumSafeContext";
 import { agentContinuationReasoningMetadata, automaticAgentRecommendation } from "@/modules/ai/lib/agentConfiguration";
 import { verificationRecord, sameToolConfiguration } from "@/modules/ai/lib/toolVerification";
@@ -396,7 +397,7 @@ export function createRequestPreflight(options: {
     },
     async prepare(body: Record<string, unknown>) {
       if (options.calibrationContext !== undefined && (options.providerId !== "ollama" || !Number.isSafeInteger(options.calibrationContext) ||
-        options.calibrationContext < 1 || options.calibrationContext > 65536 || (Array.isArray(body.tools) && body.tools.length > 0)))
+        options.calibrationContext < 1 || options.calibrationContext > CONTEXT_CALIBRATION.ceiling || (Array.isArray(body.tools) && body.tools.length > 0)))
         throw new ContextBudgetError("invalid-context-calibration", "Context verification requires a bounded native request without tools.");
       await refresh();
       await reasoningOptions();

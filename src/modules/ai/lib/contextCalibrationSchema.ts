@@ -2,9 +2,10 @@ import { z } from "zod";
 
 export const CONTEXT_CALIBRATION = {
   version: 1,
-  candidates: [4096, 8192, 16384, 32768, 49152, 65536],
-  ceiling: 65536,
-  requests: 7,
+  candidates: [4096, 8192, 16384, 32768, 49152, 65536, 73728],
+  ceiling: 73728,
+  // Seven candidates plus at most one restore of a previously loaded tier.
+  requests: 8,
   output: 32,
   wallMs: 240_000,
   requestMs: 75_000,
@@ -76,7 +77,7 @@ export const contextCalibrationSchema = z
           })
           .strict(),
       )
-      .max(7),
+      .max(CONTEXT_CALIBRATION.requests),
   })
   .strict()
   .refine(

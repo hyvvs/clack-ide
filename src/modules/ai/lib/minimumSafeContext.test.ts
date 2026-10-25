@@ -142,6 +142,38 @@ describe("minimum-safe calibrated context", () => {
   it("advances to next successful tier when the full cost exceeds 32K", () => {
     expect(minimumSafeContext(limits, cost(3000, 3000, 24100), 8192, contexts)).toBe(49152);
   });
+  it("only admits the saved 69,238-token requirement after a separate 73,728 loaded tier and its own native-tool proof", () => {
+    const budget = { ...limits, runtimeTarget: 73728 };
+    const complete = cost(4729, 7888, 42879);
+    const expanded = [...contexts, 73728];
+    expect(minimumSafeContext(budget, complete, 8192, contexts)).toBeUndefined();
+    expect(minimumSafeContext(budget, complete, 8192, expanded)).toBe(73728);
+    // A verified 65K native-tool call is not proof for the larger allocation.
+    expect(minimumSafeContext(budget, complete, 8192, expanded, tier => tier === 65536)).toBeUndefined();
+    expect(minimumSafeContext(limits, cost(3000, 3000, 24100), 8192, expanded)).toBe(49152);
+  });
+  it("does not inherit 65K native-tool proof at 73,728 or trust stale higher-tier identity", () => {
+    const f = fixture();
+    const record = f.profile.contextCalibration!;
+    record.highest = 73728;
+    record.attempts.push({ ...record.attempts[record.attempts.length - 1],
+      context: 73728, requested: 73728, loaded: 73728, at: f.now });
+    const updated = profileEvidence(f.state, f.profile.id, "probe.loadedContext", 73728,
+      "backend-reported", f.now, "reported");
+    f.profile.evidence = [...f.profile.evidence.filter(e => e.metric !== "probe.loadedContext"), updated];
+    f.snapshot.models[0].evidence = f.profile.evidence;
+    f.profile.toolVerification = tierProof(f, 65536);
+    expect(freshVerifiedContextTiers(f.state, f.profile, f.snapshot, f.now)).toContain(73728);
+    expect(automaticAgentRecommendation(f.state, f.profile, 73728, f.now)).toBeFalsy();
+    f.profile.agentToolTierProofs = [tierProof(f, 73728)];
+    expect(automaticAgentRecommendation(f.state, f.profile, 73728, f.now)?.record.context).toBe(73728);
+    record.scope.runtimeEpoch = "stale-server";
+    expect(freshVerifiedContextTiers(f.state, f.profile, f.snapshot, f.now)).toEqual([]);
+    // A runtime change must also invalidate the exact-tier proof, independently
+    // of the calibration gate enforced again at native preflight.
+    f.profile.agentToolTierProofs[0].scope.runtimeEpoch = "stale-server";
+    expect(automaticAgentRecommendation(f.state, f.profile, 73728, f.now)).toBeFalsy();
+  });
   it("does not select absent, failed, unsafe or unverified smaller tiers", () => {
     expect(minimumSafeContext(limits, cost(200, 300, 100), 8192, [4096, 8192, 65536])).toBe(65536);
     expect(minimumSafeContext(limits, cost(200, 300, 100), 8192, [])).toBeUndefined();

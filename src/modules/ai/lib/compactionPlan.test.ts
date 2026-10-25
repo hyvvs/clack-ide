@@ -169,6 +169,38 @@ describe("compaction source/tool boundaries", () => {
 });
 
 describe("protected working-context planning", () => {
+  it("preserves complete intra-run SDK steps when only the user's original message was captured", () => {
+    const originals = [unit("mission", "user", "Finish the notes API and independently running tests.")];
+    const extra: ModelMessage[] = [];
+    for (let i = 0; i < 19; i++) {
+      extra.push({ role: "assistant", content: [{ type: "tool-call", toolCallId: `write-${i}`, toolName: "write_file", input: {
+        path: "tests/test.js", content: i === 0 ? "initial" : "revision",
+      } }] });
+      extra.push({ role: "tool", content: [{ type: "tool-result", toolCallId: `write-${i}`, toolName: "write_file", output: {
+        type: "json", value: { ok: true, clackWorkspaceWrite: true },
+      } }] });
+    }
+    // Add sufficient completed, formerly sent tool content to straddle the
+    // historical 65K ceiling and the next strictly bounded candidate.
+    let length = 2500;
+    const build = () => [
+      ...extra,
+      { role: "assistant" as const, content: "historical-source ".repeat(length) },
+    ];
+    const budget = (ceiling: number) => resolveContextBudget({ deployed: ceiling, outputReserve: 8192 },
+      measureRequest({ messages: [...system, ...originals[0].messages, ...build()], tools: [] }));
+    while (budget(65536).fits) length += 25;
+    expect(budget(73728).fits).toBe(true);
+    expect(groupCompactionUnits(originals)).toEqual([{ start: 0, end: 1, protected: true }]);
+    expect(() => planCompaction({ units: originals, extra: build(), system, tools: [],
+      limits: { deployed: 65536, outputReserve: 8192 } })).toThrow(/Protected instructions/);
+    const result = planCompaction({ units: originals, extra: build(), system, tools: [],
+      limits: { deployed: 73728, outputReserve: 8192 } });
+    expect(result.budget.fits).toBe(true);
+    expect(result.needed).toBe(false);
+    expect(result.messages).toContainEqual(extra[0]);
+    expect(result.messages).toContainEqual(extra[extra.length - 1]);
+  });
   it("pages irrelevant completed claims without evicting unresolved decisions or contradiction links", () => {
     const completed: MemoryClaim[] = Array.from({ length: 10 }, (_, i) => ({
       id: `done-${i}`,

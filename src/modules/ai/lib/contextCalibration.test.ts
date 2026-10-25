@@ -253,10 +253,35 @@ describe("bounded practical context calibration", () => {
   });
   it("never pursues huge model maxima and respects a lower advertised ceiling", () => {
     expect(calibrationCandidates(1_048_576)).toEqual([
-      4096, 8192, 16384, 32768, 49152, 65536,
+      4096, 8192, 16384, 32768, 49152, 65536, 73728,
     ]);
     expect(calibrationCandidates(12000)).toEqual([4096, 8192]);
     expect(calibrationCandidates(2048)).toEqual([2048]);
+    expect(calibrationCandidates(70000)).toEqual([4096, 8192, 16384, 32768, 49152, 65536]);
+  });
+  it("qualifies 73,728 only after seven measured allocations; preserves legacy 65K records", async () => {
+    const f = fixture();
+    const verified = await f.run(73728);
+    expect(verified).toMatchObject({ status: "verified", highest: 73728, failure: null });
+    expect(f.deps.request.mock.calls.map(([tier]) => tier)).toEqual(CONTEXT_CALIBRATION.candidates);
+    expect(verified && "attempts" in verified ? verified.attempts : []).toHaveLength(7);
+    expect(f.trust()).toBe(73728);
+    expect(contextCalibrationSchema.safeParse(verified).success).toBe(true);
+    if (!verified || !("attempts" in verified)) throw new Error("missing calibration");
+    const legacy = { ...verified, highest: 65536, attempts: verified.attempts.slice(0, 6) };
+    expect(contextCalibrationSchema.safeParse(legacy).success).toBe(true);
+    expect(contextCalibrationSchema.safeParse({ ...verified, highest: 81920 }).success).toBe(false);
+  });
+  it("fails closed when the new tier cannot load and retains only proven 65K capacity", async () => {
+    const f = fixture();
+    f.deps.request.mockImplementation(async (tier) => {
+      f.loaded(tier === 73728 ? 65536 : tier);
+      return { finish: "stop" };
+    });
+    const outcome = await f.run(73728);
+    expect(outcome).toMatchObject({ status: "capacity", highest: 65536, failedNext: 73728, failure: "allocation-mismatch" });
+    expect(f.trust()).toBe(65536);
+    expect(f.deps.request.mock.calls.map(([tier]) => tier)).toEqual(CONTEXT_CALIBRATION.candidates);
   });
   it("stops upward at one resource failure, retains 32K and never retries known-failing 48K", async () => {
     const f = fixture();
