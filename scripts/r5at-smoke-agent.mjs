@@ -15,7 +15,7 @@ const phase = process.argv[2];
 assert(phase === "mission-a" || phase === "qualification", "Only one separate qualification and one conditional Agent mission");
 const repository = fileURLToPath(new URL("../", import.meta.url));
 const runId = process.env.CLACK_PRODUCT_RUN_ID;
-assert.equal(runId, phase === "qualification" ? "laguna-r5at-qualification-20261025-01" : "laguna-r5at-notes-20261025-01", "Exclusive candidate/phase ID required; prior Laguna mission cannot be replayed");
+assert.equal(runId, phase === "qualification" ? "laguna-r5at-qualification-20261025-02" : "laguna-r5at-notes-20261025-02", "Exclusive candidate/phase ID required; prior Laguna qualification or mission cannot be replayed");
 assert(!runId || /^[a-z0-9][a-z0-9-]{0,63}$/.test(runId), "Use a bounded run ID, not a path");
 const owned = path.join(repository, "src-tauri/target/real-qwen-product", runId ?? "");
 const root = process.env.CLACK_PRODUCT_WORKSPACE;

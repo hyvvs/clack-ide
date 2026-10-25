@@ -12,6 +12,9 @@ describe("Laguna acceptance-host WebView2 crash isolation", () => {
     expect(position).toBeGreaterThan(0);
     expect(runner.slice(position, position + 125)).toContain("--disable-gpu --disable-gpu-compositing");
     expect(runner.indexOf("child = spawn(")).toBeGreaterThan(position);
+    expect(runner).toContain("laguna-r5at-qualification-20261025-02");
+    expect(runner).toContain("laguna-r5at-notes-20261025-02");
+    expect(runner).not.toContain("laguna-r5at-qualification-20261025-01");
     expect(runner).not.toMatch(/process\.env\.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS\s*=/);
     expect(runner).not.toMatch(/CLACK_PRODUCT_MAX_OUTPUT\s*=\s*['"](?:4096|8192)/);
     expect(runner).toContain('assert(maxOutput === undefined, "Original Agent output limits cannot be overridden")');
