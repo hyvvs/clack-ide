@@ -47,6 +47,42 @@ export function contextMetadata(
   );
   return matches.length === 1 ? matches[0].value : undefined;
 }
+// Clack's native Ollama probe writes the *requested* context as measured,
+// observed evidence (not backend-reported metadata). Keep that distinction:
+// the provider can report the loaded allocation, but cannot attest what Clack
+// actually asked for on the preceding native request.
+function observedRequestedContext(
+  profile: SelfHostedProfile,
+  endpoint: SelfHostedEndpoint,
+  calibratedAt: number,
+  loaded: number,
+  now: number,
+) {
+  const receipts = profile.evidence.filter(e =>
+    e.metric === "probe.requestedContext" &&
+    e.source === "measured" && e.confidence === "observed" &&
+    e.scope.endpointId === endpoint.id &&
+    e.scope.configurationRevision === endpoint.configurationRevision &&
+    e.scope.transportModelId === profile.transportModelId &&
+    e.scope.deploymentId === profile.deploymentId &&
+    e.scope.modelRevision === profile.modelRevision &&
+    e.observedAt !== null && e.observedAt >= calibratedAt &&
+    e.observedAt <= now && now - e.observedAt < CONTEXT_CALIBRATION.runtimeMs &&
+    (e.expiresAt === undefined || e.expiresAt > now));
+  if (receipts.length !== 1 || receipts[0].value !== loaded) return false;
+  // The reported *loaded* context and allocation must come from the same or
+  // a later live probe than the Clack-issued request, never older metadata.
+  return ["probe.loadedContext", "probe.runtimeAllocation"].every(metric =>
+    profile.evidence.some(e => e.metric === metric &&
+      e.source === "backend-reported" && e.confidence === "reported" &&
+      e.scope.endpointId === endpoint.id &&
+      e.scope.configurationRevision === endpoint.configurationRevision &&
+      e.scope.transportModelId === profile.transportModelId &&
+      e.scope.deploymentId === profile.deploymentId &&
+      e.scope.modelRevision === profile.modelRevision &&
+      e.observedAt !== null && e.observedAt >= receipts[0].observedAt! &&
+      e.observedAt <= now && now - e.observedAt < CONTEXT_CALIBRATION.runtimeMs));
+}
 export function contextReasoningIdentity(
   profile: SelfHostedProfile,
   endpoint: SelfHostedEndpoint,
@@ -107,7 +143,7 @@ export function trustedContext(
       // Silent or arbitrary capacity changes remain untrusted.
       return record.status === "verified" &&
         typeof loaded === "number" && loaded < record.highest &&
-        contextMetadata(profile, endpoint, "requestedContext", now) === loaded &&
+        observedRequestedContext(profile, endpoint, record.updatedAt, loaded, now) &&
         typeof allocation === "string" && allocation.length > 0 &&
         record.attempts.some(a =>
           a.context === loaded && a.requested === loaded &&

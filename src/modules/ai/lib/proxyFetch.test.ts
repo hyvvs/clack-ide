@@ -16,6 +16,9 @@ import {
 import { INFERENCE_ERRORS, InferenceTransportError } from "./inferenceErrors";
 import { normalizeAiError } from "./errors";
 import { classifyContextFailure } from "./contextCalibration";
+import { streamText, tool } from "ai";
+import { z } from "zod";
+import { createOllamaModel } from "./ollamaModel";
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -121,6 +124,54 @@ afterEach(async () => {
 });
 
 describe("native inference attempt transport", () => {
+  it.each(["terminal-before-ack", "ack-before-terminal"])(
+    "completes one valid structured native tool call and SDK finish across %s ordering",
+    async ordering => {
+      const onFinish = vi.fn(async () => {});
+      const model = createOllamaModel({
+        modelId: "fixture", baseURL: "http://localhost", fetch: fetchFor(), onFinish,
+      });
+      const result = streamText({
+        model, prompt: "Invoke the one available probe tool.", maxOutputTokens: 512,
+        maxRetries: 0, tools: {
+          get_probe_value: tool({ inputSchema: z.object({
+            key: z.literal("clack-probe-v1"), count: z.literal(1),
+          }) }),
+        },
+      });
+      const parts = (async () => {
+        const seen: { type: string; toolName?: string; input?: unknown }[] = [];
+        for await (const part of result.fullStream) {
+          if (part.type === "error") throw part.error;
+          if (part.type === "tool-call")
+            seen.push({ type: part.type, toolName: part.toolName, input: part.input });
+        }
+        return seen;
+      })();
+      const a = await untilAttempt();
+      headers(a);
+      chunk(a, JSON.stringify({
+        model: "fixture", done: true, done_reason: "stop", message: { role: "assistant",
+          tool_calls: [{ function: { name: "get_probe_value", arguments: {
+            key: "clack-probe-v1", count: 1,
+          } } }],
+        },
+      }) + "\n");
+      if (ordering === "terminal-before-ack") {
+        terminal(a);
+        a.done.resolve();
+      } else {
+        a.done.resolve();
+        await Promise.resolve();
+        terminal(a);
+      }
+      expect(await parts).toEqual([{ type: "tool-call", toolName: "get_probe_value",
+        input: { key: "clack-probe-v1", count: 1 } }]);
+      expect(await result.finishReason).toBe("tool-calls");
+      expect(onFinish).toHaveBeenCalledTimes(1);
+      expect(cancels()).toHaveLength(0);
+    },
+  );
   it("records the parent abort before cancelling the native request without persisting its reason", async () => {
     const signal = new AbortController();
     const onStop = vi.fn();

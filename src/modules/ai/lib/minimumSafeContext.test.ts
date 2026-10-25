@@ -7,10 +7,13 @@ import type { ToolVerification } from "@/modules/ai/lib/toolVerificationSchema";
 import { ollamaEffortFixture } from "@/modules/ai/lib/reasoningEffort.fixture";
 import { contextReasoningIdentity, forgetContextRuntime, rememberContextRuntime } from "@/modules/ai/lib/contextCalibrationTrust";
 import { profileEvidence } from "@/modules/ai/lib/selfHostedProfiles";
+import { readSelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { freshVerifiedContextTiers, minimumSafeContext } from "@/modules/ai/lib/minimumSafeContext";
 import { measureRequest, type RequestCost } from "@/modules/ai/lib/contextBudget";
 import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
 import { profileBudgetLimits } from "@/modules/ai/lib/contextBudgetProfile";
+import { profileSnapshot } from "@/modules/ai/lib/modelOnboarding";
+import { runToolVerification } from "@/modules/ai/lib/toolVerification";
 
 const contexts = [4096, 8192, 16384, 32768, 49152, 65536];
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -192,7 +195,8 @@ describe("minimum-safe calibrated context", () => {
       f.profile.evidence = [
         ...f.profile.evidence.filter(item => item.metric !== "probe." + metric),
         profileEvidence(f.state, f.profile.id, "probe." + metric, value,
-          "backend-reported", f.now, "reported"),
+          metric === "requestedContext" ? "measured" : "backend-reported", f.now,
+          metric === "requestedContext" ? "observed" : "reported"),
       ];
       f.snapshot.models[0].evidence = f.profile.evidence;
     };
@@ -209,6 +213,79 @@ describe("minimum-safe calibrated context", () => {
     set("loadedContext", 32768);
     set("runtimeAllocation", ""); // missing fresh allocation is not trusted
     expect(freshVerifiedContextTiers(f.state, f.profile, f.snapshot, f.now)).toEqual([]);
+  });
+  it("rejects unmeasured, stale, misordered or cross-identity lower-tier request receipts", () => {
+    const f = fixture();
+    const set = (metric: string, value: string | number, source: "measured" | "backend-reported",
+      at = f.now, scope = {}) => {
+      f.profile.evidence = [
+        ...f.profile.evidence.filter(e => e.metric !== "probe." + metric),
+        { ...profileEvidence(f.state, f.profile.id, "probe." + metric, value,
+          source, at, source === "measured" ? "observed" : "reported"), scope: {
+          ...f.profile.evidence[0].scope, ...scope,
+        } },
+      ];
+      f.snapshot.models[0].evidence = f.profile.evidence;
+    };
+    set("loadedContext", 32768, "backend-reported");
+    set("runtimeAllocation", "fresh-lower-allocation", "backend-reported");
+    set("requestedContext", 32768, "backend-reported");
+    expect(freshVerifiedContextTiers(f.state, f.profile, f.snapshot, f.now)).toEqual([]);
+    set("requestedContext", 32768, "measured");
+    expect(freshVerifiedContextTiers(f.state, f.profile, f.snapshot, f.now)).toEqual(contexts);
+    set("requestedContext", 32768, "measured", f.now - 30_001);
+    expect(freshVerifiedContextTiers(f.state, f.profile, f.snapshot, f.now)).toEqual([]);
+    set("requestedContext", 32768, "measured", f.now, { modelRevision: "different-digest" });
+    expect(freshVerifiedContextTiers(f.state, f.profile, f.snapshot, f.now)).toEqual([]);
+    set("requestedContext", 32768, "measured", f.now);
+    set("loadedContext", 32768, "backend-reported", f.now - 1);
+    expect(freshVerifiedContextTiers(f.state, f.profile, f.snapshot, f.now)).toEqual([]);
+  });
+  it("persists 32K proof after genuine completed tool call and native-observed lower allocation, without inheriting 65K", async () => {
+    const f = fixture(Date.now());
+    let state = f.state;
+    const profile = () => state.profiles[0];
+    profile().toolVerification = tierProof(f, 65536);
+    const originalProofId = profile().toolVerification?.id;
+    const request = vi.fn(async () => {
+      const receipt = (metric: string, value: number | string, measured = false) =>
+        profileEvidence(state, profile().id, "probe." + metric, value,
+          measured ? "measured" : "backend-reported", f.now,
+          measured ? "observed" : "reported");
+      profile().evidence = [
+        ...profile().evidence.filter(e => !["probe.requestedContext", "probe.loadedContext", "probe.runtimeAllocation"].includes(e.metric)),
+        receipt("requestedContext", 32768, true),
+        receipt("loadedContext", 32768),
+        receipt("runtimeAllocation", "genuine-32k-allocation"),
+      ];
+      return { calls: [{ name: "get_probe_value", input: { key: "clack-probe-v1", count: 1 } }],
+        text: "", finish: "tool-calls", firstBodyAt: f.now, callAt: f.now };
+    });
+    const record = await runToolVerification({
+      profileId: profile().id, tierContext: 32768, signal: new AbortController().signal,
+    }, {
+      refresh: async () => state,
+      inspect: async () => rememberContextRuntime(f.state.endpoints[0].id, {
+        epoch: "running-process", version: "0.40.11", at: f.now,
+        configurationRevision: f.state.endpoints[0].configurationRevision,
+      }),
+      context: (s, p) => {
+        const tiers = freshVerifiedContextTiers(s, p, profileSnapshot(s, p), f.now);
+        if (!tiers.includes(32768)) throw new Error("Tool tier is not freshly calibrated under the current provider runtime");
+        return 32768;
+      },
+      request,
+      commit: async change => { state = readSelfHostedState(structuredClone(change(state))); return state; },
+      clock: () => f.now,
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(record).toMatchObject({ status: "verified", outcome: "native-call", context: 32768,
+      calls: 1, validArguments: true });
+    expect(profile().agentToolTierProofs?.[0]).toMatchObject({ context: 32768, status: "verified",
+      proof: record && "proof" in record ? record.proof : null });
+    expect(record && "proof" in record && record.proof).not.toBeNull();
+    expect(profile().toolVerification?.id).toBe(originalProofId);
+    expect(profile().toolVerification?.context).toBe(65536);
   });
 });
 
