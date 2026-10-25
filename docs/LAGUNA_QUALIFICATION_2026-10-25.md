@@ -1,0 +1,26 @@
+# Laguna XS 2.1 — fresh production qualification stopped at transport boundary
+
+**Date:** 2026-10-25. **Baseline HEAD:** `f0ad0f5e86a2e9b2c37781be08830cec8162df61`.
+
+**Verdict:** **QUALIFICATION FAIL / INCOMPLETE (ENVIRONMENT / acceptance-host stream integration stall; precise underlying cause not established).** No Agent eligibility, no notes mission, no application acceptance. No demonstrated model fault or generic Clack defect. No production Clack modifications, overrides, retries, alternate models, ForgeBoard or model-store changes.
+
+## Live exact model and ordinary profile
+
+- Existing local SSH tunnel `127.0.0.1:11435` and Ollama `/api/version` confirmed **0.40.11**. `/api/tags` returned exact model `laguna-xs-2.1:q4_K_M`, **full digest `0175be1e57f44bb4a96779d1840dbadd84399ab87bf70688c321ecadeadd757f`** (the previously supplied `0175be1e57f4` was only its prefix). Original 15 installed tags remained visible.
+- `/api/show` reported 33.4B parameters, GGUF/Q4_K_M, Laguna architecture, completion/tools/thinking, advertised 262144-token context, no explicit output budget. Initial `/api/ps` was unloaded. Actual loaded `/api/ps` **only showed 4096 context** during the first request, GPU allocation `15245424721` bytes. Do **not** treat the advertised 262144 as a verified runtime allocation.
+- Isolated production settings were cloned byte-for-byte from the protected original (original checksum `2d39dcfdd946acc733ba77ac1c8e68a226aeb46f013e68902a71002bd54592bb`). The existing production self-hosted discovery and `saveSelfHostedModel` onboarding persisted the **correct exact Laguna digest**, `backend=ollama`, **`overrides={}`**, normal Automatic reasoning, profile ID `["real-qwen","laguna-xs-2.1:q4_K_M",null]`. Calibration state is **`verifying`**, not verified. No calibration or native-tool proof fabricated or copied.
+- Test-only clones `r5at` of the committed Flint production harness; mission text compared byte-for-byte equal to the original `r5ap` mission. The original independent evaluator and all historic evidence remain unchanged. `npm.cmd run check-types`: **PASS**. `cargo test --example r5at_acceptance --locked --target-dir target/codex-test`: **6/6 PASS** (existing two Rust dead-code warnings). These are **Clack host/harness** checks, not Laguna notes-app tests.
+
+## Exactly one fresh qualification attempt — INCOMPLETE
+
+- Exclusive worktree (only `.git`): `src-tauri/target/laguna-r5at-qualification-20261025-01/`. Preserved isolated host evidence: `src-tauri/target/real-qwen-product/laguna-r5at-qualification-20261025-01/`.
+- **One** actual Ollama inference request, native request `inference-1`, `num_ctx=4096`, `num_predict=32`, `stream=true`, no `think` field (Automatic), `toolSchemas=0`. No higher-context request and no native-tool verification was dispatched. There was never a production Agent-generation request; therefore the newly fixed 8192-token thinking-Agent output policy was **not exercised** (no model-specific override).
+- The native transport `qualification-1.receive.jsonl` shows complete **499-byte response**, headers, `provider-done`, `ipc-forwarded`, `eof`, `completed`, **zero dropped events**, approximately **16.24 seconds** after native dispatch. The WebView audit `qualification-1.jsonl` ends at `channel-registered`; it has **no** subsequent `channel-first-chunk`, `sdk-consume-end`, `calibration-returned` or 15-second `webview-heartbeat`. No second calibration request followed.
+- The host and process remained alive and Ollama `/api/ps` showed Laguna loaded at 4096, but after **378,520 ms** without SDK progress (beyond Clack's documented **75-second/request** and **240-second calibration** bounds), the observer saved `qualification-1.observer-stop.json` and then stopped **only the exclusive acceptance-host PID 36352**. The runner persisted `qualification-1.failure.json` with child-exit code `4294967295`; that exit is from the **explicit bounded observation stop**, not a provider rejection or a natural Agent failure. The runner PID 34272 also exited. Do not claim that the production calibration returned a substantive status: it remained stuck in `verifying`.
+- **Failure classification:** **ENVIRONMENT / isolated host-WebView/stream integration stall, unresolved root cause**. Ollama completed the native response; the browser/SDK consumer did not advance. Evidence is insufficient to identify a reusable generic Clack source defect or blame Laguna's model output. No production source changes or inference retries were justified solely to make this model qualify.
+
+## Application gate and preservation
+
+**Qualification PASS? NO. Agent genuine tool-call count: 0, names: none.** Application files authored: **none**. Notes mission: **NOT STARTED**. Original independent evaluator: **NOT RUN**, because the required qualification never passed. TypeScript/build, authored app tests, server start, CRUD, invalid inputs, README/ignore and persistence after restart: **NOT RUN / BLOCKED (no application)**. **Notes-app acceptance: NOT PASSED**.
+
+The six protected pre-existing dirty files, both stashes, `autonomous_tracker/`, original saved settings and profiles, all previous evidence, other Ollama models and the SSH tunnel were kept intact. No reset, clean, push or destructive repository cleanup. **R3d OPEN; P2–P19 mandatory/deferred. STOP.**
