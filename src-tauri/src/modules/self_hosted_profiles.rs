@@ -5,6 +5,11 @@ use tauri_plugin_store::StoreExt;
 
 pub(super) const KEY: &str = "selfHostedInference";
 pub(super) static WRITE_LOCK: Mutex<()> = Mutex::new(());
+// Keep in sync with the bounded TypeScript CONTEXT_CALIBRATION ceiling and
+// request limit. This validates persisted native evidence; it never grants
+// context allocation or substitutes for an actual successful Ollama probe.
+const MAX_CONTEXT_CALIBRATION_TOKENS: u64 = 73_728;
+const MAX_CONTEXT_CALIBRATION_ATTEMPTS: usize = 8;
 const SNAPSHOT_KEYS: &[&str] = &[
     KEY,
     "ollamaBaseURL",
@@ -77,7 +82,10 @@ pub(super) fn validate(value: &Value) -> Result<(), String> {
             continue;
         };
         let scope = &record["scope"];
-        let tokens = |v: &Value| v.as_u64().is_some_and(|n| n > 0 && n <= 65536);
+        let tokens = |v: &Value| {
+            v.as_u64()
+                .is_some_and(|n| n > 0 && n <= MAX_CONTEXT_CALIBRATION_TOKENS)
+        };
         let string = |v: &Value, max: usize| {
             v.as_str().is_some_and(|s| {
                 !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control)
@@ -137,7 +145,7 @@ pub(super) fn validate(value: &Value) -> Result<(), String> {
             && (record["allocation"].is_null() || string(&record["allocation"], 1024))
             && (record["failure"].is_null() || outcome(&record["failure"]))
             && record["attempts"].as_array().is_some_and(|a| {
-                a.len() <= 7
+                a.len() <= MAX_CONTEXT_CALIBRATION_ATTEMPTS
                     && a.iter().all(|entry| {
                         tokens(&entry["context"])
                             && entry["requested"] == entry["context"]
@@ -495,6 +503,75 @@ mod tests {
             )),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn seven_exact_loaded_context_tiers_through_73728_are_persistable_but_larger_or_unproved_are_not(
+    ) {
+        let mut value = calibrated();
+        let original = value["profiles"][0]["contextCalibration"]["attempts"][0].clone();
+        let ladder = [4096_u64, 8192, 16384, 32768, 49152, 65536, 73728];
+        let attempts: Vec<Value> = ladder
+            .iter()
+            .enumerate()
+            .map(|(i, context)| {
+                let mut attempt = original.clone();
+                attempt["context"] = json!(context);
+                attempt["requested"] = json!(context);
+                attempt["loaded"] = json!(context);
+                attempt["at"] = json!(i + 1);
+                attempt
+            })
+            .collect();
+        let record = &mut value["profiles"][0]["contextCalibration"];
+        record["attempts"] = json!(attempts);
+        record["highest"] = json!(73728);
+        record["updatedAt"] = json!(7);
+        record["expiresAt"] = json!(15);
+        record["retryAfter"] = json!(15);
+        validate(&value).unwrap();
+        let roundtrip: Value =
+            serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
+        validate(&roundtrip).unwrap();
+        assert_eq!(roundtrip, value);
+        assert_eq!(
+            compare_and_save(value.clone(), value.clone(), roundtrip, |_| Ok(())),
+            Ok(true)
+        );
+
+        let mut invalid = value.clone();
+        invalid["profiles"][0]["contextCalibration"]["highest"] = json!(81920);
+        assert!(validate(&invalid).is_err());
+        invalid = value.clone();
+        invalid["profiles"][0]["contextCalibration"]["attempts"][6]["loaded"] = json!(65536);
+        assert!(validate(&invalid).is_err());
+        invalid = value.clone();
+        invalid["profiles"][0]["contextCalibration"]["attempts"][6]["context"] = json!(81920);
+        invalid["profiles"][0]["contextCalibration"]["attempts"][6]["requested"] = json!(81920);
+        invalid["profiles"][0]["contextCalibration"]["attempts"][6]["loaded"] = json!(81920);
+        invalid["profiles"][0]["contextCalibration"]["highest"] = json!(81920);
+        assert!(validate(&invalid).is_err());
+
+        let mut bounded_restore = value.clone();
+        let retained = bounded_restore["profiles"][0]["contextCalibration"]["attempts"][5].clone();
+        bounded_restore["profiles"][0]["contextCalibration"]["attempts"]
+            .as_array_mut()
+            .unwrap()
+            .push(retained);
+        validate(&bounded_restore).unwrap(); // seventh probe plus a bounded restore
+        let overflow = bounded_restore["profiles"][0]["contextCalibration"]["attempts"][0].clone();
+        bounded_restore["profiles"][0]["contextCalibration"]["attempts"]
+            .as_array_mut()
+            .unwrap()
+            .push(overflow);
+        assert!(validate(&bounded_restore).is_err());
+        let mut legacy = value;
+        legacy["profiles"][0]["contextCalibration"]["highest"] = json!(65536);
+        legacy["profiles"][0]["contextCalibration"]["attempts"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        validate(&legacy).unwrap();
     }
 
     #[test]
