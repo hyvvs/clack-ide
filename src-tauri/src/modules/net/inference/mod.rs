@@ -97,7 +97,13 @@ impl Timeouts {
         Self {
             connect: Duration::from_secs(10),
             first: matches!(policy, Policy::SelfHosted).then_some(Duration::from_secs(120)),
-            idle: matches!(policy, Policy::SelfHosted).then_some(Duration::from_secs(60)),
+            // Verified live Ollama runner remained healthy at ~46 tokens/s for
+            // 60 seconds after its last delivered byte. At that measured rate,
+            // the unchanged 8,192-token Agent output allowance takes ~178s.
+            // A bounded 180s inactivity window lets active local generation
+            // complete without treating lack of *client* bytes as a liveness
+            // guarantee. Explicit cancel still wins and overall stays 600s.
+            idle: matches!(policy, Policy::SelfHosted).then_some(Duration::from_secs(180)),
             overall: Duration::from_secs(600),
         }
     }

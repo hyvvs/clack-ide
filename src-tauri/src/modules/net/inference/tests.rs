@@ -35,6 +35,15 @@ fn server(parts: Vec<Vec<u8>>, close: bool, heartbeat: bool) -> Server {
     paced_server(parts, close, heartbeat, Duration::ZERO)
 }
 fn paced_server(parts: Vec<Vec<u8>>, close: bool, heartbeat: bool, pace: Duration) -> Server {
+    paced_server_with_gap(parts, close, heartbeat, pace, None)
+}
+fn paced_server_with_gap(
+    parts: Vec<Vec<u8>>,
+    close: bool,
+    heartbeat: bool,
+    pace: Duration,
+    gap: Option<(usize, Duration)>,
+) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
         "http://{}/v1/chat/completions",
@@ -82,8 +91,8 @@ fn paced_server(parts: Vec<Vec<u8>>, close: bool, heartbeat: bool, pace: Duratio
             }
         }
         let _ = accepted_tx.send(());
-        for part in parts {
-            std::thread::sleep(pace);
+        for (index, part) in parts.into_iter().enumerate() {
+            std::thread::sleep(gap.filter(|(at, _)| *at == index).map_or(pace, |(_, d)| d));
             if socket.write_all(&part).is_err() {
                 break;
             }
@@ -828,6 +837,80 @@ async fn first_chunk_then_stall_is_idle_timeout() {
         1
     );
 }
+// Regression for the observed Ollama task 1806: its generated-token counter
+// climbed for a full minute while no further body bytes reached native IPC.
+// The test uses real elapsed seconds, not a shortened simulated clock.
+#[tokio::test]
+async fn self_hosted_real_61_second_silence_then_native_chunks_resume_and_finish() {
+    let fixture = paced_server_with_gap(
+        vec![headers(), delta(), delta(), b"data: [DONE]\n\n".to_vec()],
+        false,
+        false,
+        Duration::ZERO,
+        Some((2, Duration::from_secs(61))),
+    );
+    let state = InferenceState::default();
+    let id = state.open("main").unwrap();
+    let lease = state.start("main", &id).unwrap();
+    let forwarded = Mutex::new(Vec::<u8>::new());
+    let started = Instant::now();
+    let result = execute(
+        &lease,
+        request(fixture.url),
+        Timeouts::for_policy(Policy::SelfHosted),
+        &|event| {
+            if let Payload::Chunk { bytes } = event {
+                forwarded.lock().unwrap().extend_from_slice(&bytes);
+            }
+            true
+        },
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "resuming after >60s must complete: {result:?}"
+    );
+    assert!(started.elapsed() >= Duration::from_secs(61));
+    // reqwest may coalesce the second delta and [DONE] into a single chunk.
+    assert_eq!(
+        String::from_utf8_lossy(&forwarded.lock().unwrap())
+            .matches("hello")
+            .count(),
+        2,
+        "both pre-gap and post-gap deltas reached native IPC"
+    );
+    drop(lease);
+    assert_eq!(state.len(), 0, "no retained request/timer after success");
+    tokio::time::timeout(Duration::from_secs(4), fixture.closed)
+        .await
+        .unwrap()
+        .unwrap();
+    fixture.thread.join().unwrap();
+}
+#[tokio::test]
+async fn self_hosted_dead_stream_is_bounded_and_stale_request_cannot_resume() {
+    // Scale the same 180:600 idle/overall ratio down for deterministic testing;
+    // the real-second success regression above exercises the actual policy.
+    let bounds = Timeouts {
+        connect: Duration::from_secs(2),
+        first: Some(Duration::from_millis(120)),
+        idle: Some(Duration::from_millis(180)),
+        overall: Duration::from_millis(600),
+    };
+    let (outcome, events) = run_fault(vec![headers(), delta()], false, false, bounds, None).await;
+    assert_eq!(outcome.unwrap_err().code, "stream-idle-timeout");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Payload::Chunk { .. }))
+            .count(),
+        1,
+    );
+    assert_eq!(
+        terminal(&Err(Failure::new("stream-idle-timeout"))),
+        Phase::TimedOut
+    );
+}
 #[tokio::test]
 async fn heartbeat_and_empty_events_do_not_prevent_first_output_timeout() {
     let (result, _) = run_fault(vec![headers()], false, true, limits(), None).await;
@@ -945,11 +1028,13 @@ fn policy_defaults_and_deadline_priority_are_finite() {
     let policy = Timeouts::for_policy(Policy::SelfHosted);
     assert_eq!(policy.connect.as_secs(), 10);
     assert_eq!(policy.first.unwrap().as_secs(), 120);
-    assert_eq!(policy.idle.unwrap().as_secs(), 60);
+    assert_eq!(policy.idle.unwrap().as_secs(), 180);
     assert_eq!(policy.overall.as_secs(), 600);
     let legacy = Timeouts::for_policy(Policy::Legacy);
+    assert_eq!(legacy.connect.as_secs(), 10);
     assert!(legacy.first.is_none());
     assert!(legacy.idle.is_none());
+    assert_eq!(legacy.overall.as_secs(), 600);
     let now = Instant::now();
     let deadline = Deadline {
         overall: now,
