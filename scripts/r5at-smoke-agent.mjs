@@ -218,6 +218,14 @@ try {
   await cp(data, `${output}.data-before`, { recursive: true, errorOnExist: true, force: false });
   const env = Object.fromEntries(["PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "HOME", "LANG"].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []));
   Object.assign(env, { APPDATA: data, LOCALAPPDATA: data, TEMP: owned, TMP: owned, CLACK_ACCEPTANCE_ROOT: owned, CLACK_REAL_PRODUCT_PHASE: `${phase}-${attempt}`, CLACK_ACCEPTANCE_MODEL: modelId, CLACK_ACCEPTANCE_OLLAMA_URL: `${endpoint}/api/chat`, CLACK_ACCEPTANCE_URL: `${vite.resolvedUrls.local[0]}coworking-acceptance.html?configuration=${encodeURIComponent(`${local}/configuration`)}` });
+  // Acceptance-host isolation only: the preserved Laguna WebView2 Crashpad
+  // minidump records a 0xC0000005 access violation inside injected
+  // RTSSHooks64.dll before the native provider response arrived. Avoid the
+  // host's graphics/overlay-hook path without touching operator RTSS settings,
+  // production Clack, Ollama, or any other model's acceptance harness.
+  // Microsoft WebView2 reads this process-local environment variable when its
+  // child browser process starts; only this fresh acceptance child inherits it.
+  env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--disable-gpu --disable-gpu-compositing";
   if (reasoningChoice === "low") env.CLACK_ACCEPTANCE_EXPECTED_THINK = "low";
   if (process.env.CLACK_PRODUCT_EXPECT_NO_THINK === "1") {
     assert.equal(reasoningChoice, "none", "Disabled-thinking guard requires explicit None");
