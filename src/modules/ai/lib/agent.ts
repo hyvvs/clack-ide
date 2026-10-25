@@ -47,6 +47,7 @@ import {
   toolRevisionIdentity,
 } from "@/modules/ai/lib/toolExposure";
 import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
+import { resolveAgentOutputBudget } from "@/modules/ai/lib/agentOutputBudget";
 import { actionableCoderRequest, imitatedNativeTool } from "@/modules/ai/lib/nativeToolImitation";
 import { retrieveScopedEvidence } from "@/modules/ai/lib/scopedEvidence";
 import { runRetrievalAllowance } from "@/modules/ai/lib/retrievalAllowance";
@@ -887,6 +888,13 @@ export async function runAgentStream(opts: RunAgentOptions) {
     customEndpointKeys: opts.customEndpointKeys,
     capturedModelIdentity: opts.capturedModelIdentity,
   });
+  // Agent budget selection precedes tool exposure and compaction. All planning
+  // stages reserve the same bounded output that is sent on the SDK/wire.
+  const agentLimits = async () => {
+    const limits = await modelBudgetLimits(baseModel);
+    const output = resolveAgentOutputBudget(limits, opts.reasoning, opts.requiredOutput);
+    return { ...limits, outputReserve: Math.max(limits.outputReserve ?? 0, output) };
+  };
   if (pinnedAutomaticContinuationContext !== undefined) {
     const { requireAgentContinuationAllocation } = await import(
       "@/modules/ai/lib/agentConfiguration"
@@ -977,7 +985,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     objectiveMessages: opts.toolSelectionMessages ?? opts.uiMessages,
     target: exposureTarget,
     system: stableSystem + (opts.planMode ? PLAN_MODE_PROMPT : ""),
-    limits: await modelBudgetLimits(baseModel),
+    limits: await agentLimits(),
   });
   const pinnedTools = new Set(exposure.names);
   setModelSchemaDiagnostics(
@@ -1030,7 +1038,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
         objectiveMessages: opts.toolSelectionMessages ?? opts.uiMessages,
         target: exposureTarget,
         system: stableSystem,
-        limits: await modelBudgetLimits(baseModel),
+        limits: await agentLimits(),
         mandatory: [...pinnedTools],
       },
     );
@@ -1095,7 +1103,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     maxContinuations: continuationSetting === false ? 0
       : typeof continuationCount === "number"
         ? Math.max(0, Math.min(3, continuationCount)) : 3,
-    limits: () => modelBudgetLimits(baseModel),
+    limits: agentLimits,
     remaining: runCalls
       ? () => Math.max(0, runCalls.remainingCalls() - stepsSeen)
       : undefined,
@@ -1117,7 +1125,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     opts.abortSignal,
   );
   const preparationBudget = resolveContextBudget(
-    await modelBudgetLimits(baseModel),
+    await agentLimits(),
     measureRequest({
       system: stableSystem + (opts.planMode ? PLAN_MODE_PROMPT : ""),
       tools: exposure.schemas,
@@ -1172,7 +1180,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
           : []),
       ],
       tools: { exposure: exposure.identity, schemas: exposure.schemas },
-      limits: await modelBudgetLimits(baseModel),
+      limits: await agentLimits(),
       capabilities: opts.inputCapabilities,
       permissions: [
         preferences.agentPermissionProfiles,
@@ -1241,7 +1249,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
         tools: exposure.schemas,
         model: baseModel,
         scope: inferenceScope,
-        limits: () => modelBudgetLimits(baseModel),
+        limits: agentLimits,
         signal: opts.abortSignal,
         onStep: opts.onStep,
         onOptimized: opts.onOptimized,
@@ -1271,7 +1279,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     await opts.toolContext.validatePeerReview?.();
   };
   return streamText({
-    maxOutputTokens: opts.requiredOutput,
+    maxOutputTokens: preparationBudget.output,
     model,
     messages: finalMessages,
     tools,
@@ -1310,7 +1318,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
           objectiveMessages: opts.toolSelectionMessages ?? opts.uiMessages,
           target: exposureTarget,
           system: systemMessages,
-          limits: await modelBudgetLimits(baseModel),
+          limits: await agentLimits(),
           mandatory: [...pinnedTools],
         },
       );

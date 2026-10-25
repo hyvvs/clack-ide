@@ -15,7 +15,7 @@ const phase = process.argv[2];
 assert(phase === "mission-a" || phase === "qualification", "Only one separate qualification and one conditional Agent mission");
 const repository = fileURLToPath(new URL("../", import.meta.url));
 const runId = process.env.CLACK_PRODUCT_RUN_ID;
-assert.equal(runId, phase === "qualification" ? "flint-r5as-qualification-20261025-01" : "flint-r5as-notes-20261025-01", "Exclusive candidate/phase ID required");
+assert.equal(runId, phase === "qualification" ? "flint-r5as-qualification-20261025-01" : "flint-budget-notes-20261025-02", "Exclusive candidate/phase ID required; prior Flint mission cannot be replayed");
 assert(!runId || /^[a-z0-9][a-z0-9-]{0,63}$/.test(runId), "Use a bounded run ID, not a path");
 const owned = path.join(repository, "src-tauri/target/real-qwen-product", runId ?? "");
 const root = process.env.CLACK_PRODUCT_WORKSPACE;
@@ -199,7 +199,14 @@ try {
   const sourceToolNames = await productionBuiltinToolNames(repository);
   // Explicit original Agent allowance/context; calibration and verification
   // classes come from current production TypeScript, never a Rust copy.
-  const wireContract = productionAcceptanceWireContract(2048, 65536, sourceToolNames);
+  // The native host guard follows the actual generic production Agent budget,
+  // not the historical hard-coded 2048 test expectation. It cannot change the
+  // runtime profile, model reasoning selection, or dispatched output allowance.
+  const { resolveAgentOutputBudget } = await vite.ssrLoadModule("/src/modules/ai/lib/agentOutputBudget.ts");
+  const agentOutput = resolveAgentOutputBudget({ deployed: 65536, runtimeTarget: 65536 },
+    { choice: "automatic", capability: { status: "supported" } });
+  assert.equal(agentOutput, 8192, "Production bounded thinking-Agent output policy changed");
+  const wireContract = productionAcceptanceWireContract(agentOutput, 65536, sourceToolNames);
   assert(wireContract.verification.outputs.includes(1024) &&
     wireContract.verification.outputs.includes(2048), "Full native verification ladder required");
   const data = path.join(owned, "data"); await mkdir(data);
