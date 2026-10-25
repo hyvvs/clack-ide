@@ -26,6 +26,146 @@ vi.mock("@/modules/ai/tools/customExecution", async () => {
   return { buildRuntimeTools: async () => ({ read_file: read }) };
 });
 
+describe("R5da native runtime observation refresh at the Automatic continuation boundary", () => {
+  const original = (f: Awaited<ReturnType<typeof fixture>>) => {
+    const record = f.captured.profiles[0].toolVerification;
+    if (!record) throw new Error("Expected saved genuine native proof");
+    return record;
+  };
+  const continueOriginal = (f: Awaited<ReturnType<typeof fixture>>) => {
+    const r = original(f);
+    return f.run({ retainedAutomaticRecordId: r.id, retainedAutomaticVariant: JSON.stringify(r.configuration ?? null) });
+  };
+  it("1. unchanged within the native observation TTL does not force inspection", async () => {
+    const f = await fixture(128, false, 0);
+    const chunks = await continueOriginal(f);
+    expect(chunks.some(c => c.type === "error")).toBe(false);
+    expect(f.inspectionCount()).toBe(0);
+    expect(f.decisions).toEqual([true]);
+    expect(f.bodies).toHaveLength(1);
+  });
+  it("2. a >30s inference permits precisely one real matching inspection with the original proof intact", async () => {
+    const f = await fixture(128, false, 0);
+    const proof = JSON.stringify(original(f));
+    const calibration = JSON.stringify(f.captured.profiles[0].contextCalibration);
+    await f.staleRuntime(46_342);
+    expect(toolEligibilityPredicates(f.captured, f.captured.profiles[0], undefined, Date.now(), 65536).runtimeFresh).toBe(false);
+    const chunks = await continueOriginal(f);
+    expect(chunks.some(c => c.type === "error")).toBe(false);
+    expect(f.inspectionCount()).toBe(1);
+    expect(f.decisions).toEqual([true]);
+    expect(f.bodies).toHaveLength(1);
+    expect(JSON.stringify(original(f))).toBe(proof);
+    expect(JSON.stringify(f.captured.profiles[0].contextCalibration)).toBe(calibration);
+  });
+  it("3. changed full native model digest blocks before HTTP", async () => {
+    const f = await fixture(128, false, 0);
+    await f.staleRuntime();
+    f.transformSnapshot((s, command) => command === "self_hosted_probe" ? {
+      ...s, models: s.models.map(m => ({ ...m, digest: "different-full-digest" })),
+    } : s);
+    await expect(continueOriginal(f)).rejects.toThrow(/runtime identity/);
+    expect(f.inspectionCount()).toBe(1);
+    expect(f.bodies).toHaveLength(0);
+  });
+  it.each(["epoch", "version"] as const)("4-5. changed native %s blocks before HTTP", async change => {
+    const f = await fixture(128, false, 0);
+    await f.staleRuntime();
+    if (change === "epoch") f.nativeEpoch("new-epoch");
+    else f.nativeVersion("new-version");
+    await expect(continueOriginal(f)).rejects.toThrow(/runtime identity/);
+    expect(f.inspectionCount()).toBe(1);
+    expect(f.bodies).toHaveLength(0);
+  });
+  it("6a. failed inspection blocks with no loop and no inference", async () => {
+    const f = await fixture(128, false, 0);
+    await f.staleRuntime();
+    f.runtimeFailure("throw");
+    await expect(continueOriginal(f)).rejects.toThrow(/runtime identity/);
+    expect(f.inspectionCount()).toBe(1);
+    expect(f.bodies).toHaveLength(0);
+  });
+  it("6b. hung inspection times out once without native HTTP", async () => {
+    const f = await fixture(128, false, 0);
+    await f.staleRuntime();
+    f.runtimeFailure("timeout");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pending = expect(continueOriginal(f)).rejects.toThrow(/runtime identity/);
+      await vi.advanceTimersByTimeAsync(30_200);
+      await pending;
+      expect(f.inspectionCount()).toBe(1);
+      expect(f.bodies).toHaveLength(0);
+    } finally { vi.useRealTimers(); }
+  });
+  it("7. expired native-tool proof is never renewed by runtime inspection", async () => {
+    const f = await fixture(128, false, 0);
+    await f.staleRuntime();
+    const record = original(f);
+    if (!record.proof) throw new Error("Missing proof");
+    record.proof.expiresAt = Date.now() - 1;
+    await expect(continueOriginal(f)).rejects.toThrow(/runtime identity/);
+    expect(f.inspectionCount()).toBe(0);
+    expect(record.proof.expiresAt).toBe(Date.now() - 1);
+  });
+  it("8. expired calibration is never renewed by inspection", async () => {
+    const f = await fixture(128, false, 0);
+    await f.staleRuntime();
+    const record = f.captured.profiles[0].contextCalibration;
+    if (!record) throw new Error("Missing calibration");
+    record.expiresAt = Date.now() - 1;
+    await expect(continueOriginal(f)).rejects.toThrow(/runtime identity/);
+    expect(f.inspectionCount()).toBe(0);
+    expect(record.expiresAt).toBe(Date.now() - 1);
+  });
+  it("9. an invalid exact-tier proof cannot be revived", async () => {
+    const f = await fixture(128, false, 0);
+    await f.staleRuntime();
+    original(f).scope.protocol = "different" as "native-tools-v1";
+    await expect(continueOriginal(f)).rejects.toThrow(/runtime identity/);
+    expect(f.inspectionCount()).toBe(0);
+    expect(f.bodies).toHaveLength(0);
+  });
+  it("10. mismatched loaded allocation cannot pass stale-only refresh", async () => {
+    const f = await fixture(128, false, 0);
+    await f.staleRuntime();
+    await f.changeLoaded(4096);
+    await expect(continueOriginal(f)).rejects.toThrow(/runtime identity/);
+    expect(f.inspectionCount()).toBe(0);
+    expect(f.bodies).toHaveLength(0);
+  });
+  it("10b. peer-reply-only permission never enters the Automatic proof refresh path", async () => {
+    const f = await fixture(128, false, 0);
+    await f.staleRuntime();
+    await f.run({ toolContext: { getCwd: () => "/review", getWorkspaceRoot: () => "/review",
+      getSessionId: () => "review-session", getAgentId: () => "coder",
+      isPeerReplyOnly: () => true } as ToolContext });
+    // Ordinary context preflight may still inspect runtime, without granting tools.
+    expect(f.inspectionCount()).toBe(1);
+    expect(f.bodies.every(body => !Array.isArray(body.tools) || body.tools.length === 0)).toBe(true);
+  });
+  it("11. the final native preflight independently rejects changed proof after a good refresh", async () => {
+    const f = await fixture(128, false, 0);
+    await f.staleRuntime();
+    f.beforeAck(() => { if (f.profile().toolVerification) f.profile().toolVerification!.failure = {
+      at: Date.now(), expiresAt: Date.now() + 1000, outcome: "text-only",
+    }; });
+    const chunks = await continueOriginal(f);
+    expect(chunks.some(c => c.type === "error")).toBe(true);
+    expect(f.inspectionCount()).toBe(1);
+    expect(f.decisions).toEqual([false]);
+    expect(f.bodies).toHaveLength(0);
+  });
+  it("12. a provider refresh failure cannot trigger repeated runtime inspections", async () => {
+    const f = await fixture(128, false, 0);
+    await f.staleRuntime();
+    f.transformSnapshot((s, command) => command === "self_hosted_probe" ? { ...s, stale: true } : s);
+    await expect(continueOriginal(f)).rejects.toThrow(/runtime identity/);
+    expect(f.inspectionCount()).toBe(1);
+    expect(f.bodies).toHaveLength(0);
+  });
+});
+
 // Minimal privacy-safe representative of R5x's saved native record/scope and
 // measured 304441ms proof-to-continuation gap; never loads the ignored receipts.
 const R5X_NATIVE = {
@@ -52,6 +192,8 @@ async function fixture(outputAllowance = 2048, alternative = false, ageMs = 1940
   let requested = 0;
   let epoch = r5xRepresentative ? R5X_NATIVE.epoch : "review-process";
   let version = r5xRepresentative ? R5X_NATIVE.version : "1.2.3";
+  let runtimeInspections = 0;
+  let runtimeFailure: "none" | "throw" | "timeout" = "none";
   const profile = () => state.profiles[0];
   const inspect = async () => rememberContextRuntime(f.endpoint.id, {
     epoch, version, configurationRevision: f.endpoint.configurationRevision, at: now,
@@ -111,14 +253,20 @@ async function fixture(outputAllowance = 2048, alternative = false, ageMs = 1940
   const decisions: boolean[] = [];
   const acknowledgments = new Map<string, (approved: boolean) => void>();
   let beforeAck: (() => void | Promise<void>) | undefined;
-  let snapshotTransform: ((snapshot: ReturnType<typeof liveSnapshot>) => ReturnType<typeof liveSnapshot>) | undefined;
+  let snapshotTransform: ((snapshot: ReturnType<typeof liveSnapshot>, command: string) => ReturnType<typeof liveSnapshot>) | undefined;
   let current = true;
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "self_hosted_profiles_snapshot") return [["selfHostedInference", structuredClone(state)]];
-    if (command === "self_hosted_context_runtime") return { epoch, version, configurationRevision: 1, at: now };
+    if (command === "self_hosted_context_runtime") {
+      runtimeInspections++;
+      if (runtimeFailure === "throw") throw new Error("Native inspection unavailable");
+      if (runtimeFailure === "timeout") return new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Native inspection timed out")), 30_100));
+      return { epoch, version, configurationRevision: 1, at: now };
+    }
     if (command === "self_hosted_probe_cache" || command === "self_hosted_probe") {
       const snapshot = structuredClone(liveSnapshot());
-      return snapshotTransform ? snapshotTransform(snapshot) : snapshot;
+      return snapshotTransform ? snapshotTransform(snapshot, command) : snapshot;
     }
     if (command === "ai_http_open") return crypto.randomUUID();
     if (command === "ai_http_preflight") {
@@ -163,6 +311,11 @@ async function fixture(outputAllowance = 2048, alternative = false, ageMs = 1940
     return chunks;
   };
   return { captured, profile, state: () => state, run, bodies, decisions, controller,
+    inspectionCount: () => runtimeInspections,
+    runtimeFailure: (kind: typeof runtimeFailure) => { runtimeFailure = kind; },
+    nativeEpoch: (value: string) => { epoch = value; },
+    nativeVersion: (value: string) => { version = value; },
+    staleRuntime: async (ms = 31_000) => { now += ms; await refresh(); },
     transformSnapshot: (callback: typeof snapshotTransform) => { snapshotTransform = callback; },
     beforeAck: (callback: typeof beforeAck) => { beforeAck = callback; },
     changeLoaded: async (value: number) => { loaded = value; await refresh(); },

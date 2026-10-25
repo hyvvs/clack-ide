@@ -3,7 +3,11 @@ import {
   effortProviderOptions,
   type EffortCapture,
 } from "@/modules/ai/lib/reasoningEffort";
-import { contextMetadata } from "@/modules/ai/lib/contextCalibrationTrust";
+import { contextMetadata, contextReasoningIdentity, contextRuntime, snapshotContext } from "@/modules/ai/lib/contextCalibrationTrust";
+import { CONTEXT_CALIBRATION } from "@/modules/ai/lib/contextCalibrationSchema";
+import { inspectContextRuntime } from "@/modules/ai/lib/contextRuntimeClient";
+import { createSelfHostedProbeClient } from "@/modules/ai/lib/selfHostedProbe";
+import { endpointAllowsPrivate } from "@/modules/ai/lib/selfHostedModels";
 import {
   configuredToolState,
   verificationRecord,
@@ -18,6 +22,123 @@ import type {
   SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
 import { probeEvidenceIsFresh, type ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
+
+// A long native inference can outlive the *observation* TTL without outliving
+// calibration or native-tool proof. This is only an admission to inspect again,
+// never a substitute for trustedContext/configuredToolState or final preflight.
+// In particular, do not manufacture a newer runtime timestamp or proof.
+export async function refreshStaleAutomaticContinuationRuntime(
+  state: SelfHostedState,
+  profile: SelfHostedProfile,
+  cachedProvider: ProbeSnapshot | null,
+  retainedRecordId: string | undefined,
+  retainedVariant: string | undefined,
+  signal?: AbortSignal,
+): Promise<ProbeSnapshot | null> {
+  const now = Date.now();
+  const endpoint = state.endpoints.find(e => e.id === profile.endpointId && e.deletedAt == null);
+  const runtime = endpoint && contextRuntime(endpoint.id);
+  if (!endpoint || !runtime || runtime.at > now ||
+      runtime.configurationRevision !== endpoint.configurationRevision ||
+      now - runtime.at < CONTEXT_CALIBRATION.runtimeMs) return cachedProvider;
+
+  const fail = (): never => { throw new Error("Automatic Agent runtime identity could not be reverified. No inference was sent."); };
+  signal?.throwIfAborted();
+  const calibration = profile.contextCalibration;
+  const records = [profile.toolVerification, ...(profile.agentToolTierProofs ?? []),
+    ...(profile.agentToolConfigurations ?? [])].filter(r => r?.status === "verified");
+  // A stale observation alone may trigger a single inspection only for an
+  // original, identified, unexpired and otherwise matching proof and context.
+  const record = retainedRecordId
+    ? records.find(r => r?.id === retainedRecordId)
+    : records.length === 1 ? records[0] : undefined;
+  if (!record) throw new Error("Automatic Agent runtime identity could not be reverified. No inference was sent.");
+  const snapshotModel = cachedProvider?.models.find(m => m.id === profile.transportModelId);
+  const recentReasoning = snapshotModel &&
+    contextReasoningIdentity({ ...profile, evidence: snapshotModel.evidence }, endpoint, now);
+  if (!record.proof || record.proof.at > now || record.proof.expiresAt <= now ||
+      (retainedVariant && JSON.stringify(record.configuration ?? null) !== retainedVariant) ||
+      (record.configuration && (!record.confirmation || record.confirmation.at > now || record.confirmation.expiresAt <= now)) ||
+      (record.failure && record.failure.at <= now && record.failure.expiresAt > now) ||
+      verificationRecord(profile, record.configuration, record.context)?.id !== record.id ||
+      !calibration?.highest || calibration.status !== "verified" ||
+      calibration.updatedAt > now || calibration.expiresAt <= now ||
+      record.context > calibration.highest ||
+      (endpoint.backendHint ?? endpoint.detectedBackend) !== "ollama" ||
+      contextMetadata(profile, endpoint, "trainedForTools", now, 300_000) === false ||
+      record.scope.endpointId !== endpoint.id ||
+      record.scope.configurationRevision !== endpoint.configurationRevision ||
+      record.scope.model !== profile.transportModelId ||
+      record.scope.deployment !== profile.deploymentId ||
+      record.scope.digest !== profile.modelRevision ||
+      record.scope.backend !== "ollama" ||
+      record.scope.runtimeEpoch !== runtime.epoch ||
+      record.scope.providerVersion !== runtime.version ||
+      record.scope.reasoning !== recentReasoning ||
+      record.scope.protocol !== TOOL_VERIFICATION.protocol ||
+      calibration.scope.endpointId !== endpoint.id ||
+      calibration.scope.configurationRevision !== endpoint.configurationRevision ||
+      calibration.scope.model !== profile.transportModelId ||
+      calibration.scope.deployment !== profile.deploymentId ||
+      calibration.scope.digest !== profile.modelRevision ||
+      calibration.scope.backend !== "ollama" ||
+      calibration.scope.runtimeEpoch !== runtime.epoch ||
+      calibration.scope.providerVersion !== runtime.version ||
+      calibration.scope.reasoning !== recentReasoning ||
+      !cachedProvider || !cachedProvider.connected || cachedProvider.stale ||
+      cachedProvider.backend !== "ollama" ||
+      cachedProvider.endpointId !== endpoint.id ||
+      cachedProvider.configurationRevision !== endpoint.configurationRevision ||
+      cachedProvider.selectedModelId !== profile.transportModelId ||
+      cachedProvider.observedAt > now || now - cachedProvider.observedAt >= CONTEXT_CALIBRATION.runtimeMs ||
+      snapshotModel?.digest !== profile.modelRevision || snapshotModel.chat === "unsupported" ||
+      contextMetadata({ ...profile, evidence: snapshotModel.evidence }, endpoint, "loadedContext", now) !== record.context) fail();
+
+  // Native inspection and a genuinely new provider probe are both bounded.
+  // No retries, native-tool verifier or context calibrator are invoked.
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const bounded = async <T>(work: () => Promise<T>): Promise<T> => {
+    signal?.throwIfAborted();
+    const deadline = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error("Runtime inspection timed out")), 30_000);
+      onAbort = () => reject(new Error("Runtime inspection cancelled"));
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+    try { return await Promise.race([work(), deadline]); }
+    finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    }
+  };
+  try {
+    await bounded(() => inspectContextRuntime(endpoint, true));
+    signal?.throwIfAborted();
+    const inspected = contextRuntime(endpoint.id);
+    if (!inspected || inspected.at < now || inspected.at > Date.now() ||
+        inspected.configurationRevision !== runtime.configurationRevision ||
+        inspected.epoch !== runtime.epoch || inspected.version !== runtime.version) fail();
+    const refreshed = await bounded(() => createSelfHostedProbeClient().refresh({
+      endpointId: endpoint.id,
+      selectedModelId: profile.transportModelId,
+      allowPrivateNetwork: endpointAllowsPrivate(endpoint),
+    }));
+    signal?.throwIfAborted();
+    const selected = refreshed.models.find(m => m.id === profile.transportModelId);
+    if (!refreshed.connected || refreshed.stale || refreshed.backend !== "ollama" ||
+        refreshed.endpointId !== endpoint.id ||
+        refreshed.configurationRevision !== endpoint.configurationRevision ||
+        refreshed.selectedModelId !== profile.transportModelId ||
+        refreshed.observedAt < now || refreshed.observedAt > Date.now() ||
+        selected?.digest !== profile.modelRevision || selected?.chat === "unsupported" ||
+        (selected && contextMetadata({ ...profile, evidence: selected.evidence }, endpoint, "loadedContext") !== record.context) ||
+        snapshotContext(state, profile, refreshed) === undefined) fail();
+    const eligibility = agentContinuationReasoningMetadata(state, profile, refreshed);
+    const acceptedProfile = eligibility.profiles.find(p => p.id === profile.id) ?? profile;
+    if (configuredToolState(eligibility, acceptedProfile, record.configuration, Date.now(), record.context) !== "Verified") fail();
+    return refreshed;
+  } catch { return fail(); }
+}
 
 // Only the short-lived reasoning capability metadata may be refreshed from the
 // current native cache. Keep the captured profile's native tool proof, identity,

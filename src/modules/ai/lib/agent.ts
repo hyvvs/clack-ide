@@ -840,16 +840,18 @@ export async function runAgentStream(opts: RunAgentOptions) {
     !opts.toolContext.isPeerReplyOnly?.() && resolveCurrentAgentPermission("read_file", {}, opts.toolContext).source !== "chat-only") {
     const target = resolveSelfHostedSelection(opts.selfHostedInference, modelId);
     if (target.status === "available" && (target.endpoint.backendHint ?? target.endpoint.detectedBackend) === "ollama" && target.profile.modelRevision) {
-      const { applyAgentRecommendation, automaticAgentBatchContext, automaticAgentRecommendation, agentContinuationReasoningMetadata } = await import("@/modules/ai/lib/agentConfiguration");
+      const { applyAgentRecommendation, automaticAgentBatchContext, automaticAgentRecommendation, agentContinuationReasoningMetadata, refreshStaleAutomaticContinuationRuntime } = await import("@/modules/ai/lib/agentConfiguration");
       const {modelOnboarding} = await import("@/modules/ai/lib/modelOnboarding");
       let eligibility = opts.selfHostedInference;
       if (opts.logicalContinuation) {
         const {createSelfHostedProbeClient} = await import("@/modules/ai/lib/selfHostedProbe");
-        const current = await createSelfHostedProbeClient().read({
+        let current = await createSelfHostedProbeClient().read({
           endpointId: target.endpoint.id,
           selectedModelId: target.profile.transportModelId,
           allowPrivateNetwork: endpointAllowsPrivate(target.endpoint),
         }).catch(() => null);
+        current = await refreshStaleAutomaticContinuationRuntime(eligibility, target.profile, current,
+          opts.retainedAutomaticRecordId, opts.retainedAutomaticVariant, opts.abortSignal);
         eligibility = agentContinuationReasoningMetadata(eligibility, target.profile, current);
       }
       const eligibleProfile = eligibility.profiles.find(p => p.id === target.profile.id) ?? target.profile;
