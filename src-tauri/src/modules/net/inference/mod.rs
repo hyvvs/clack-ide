@@ -10,6 +10,7 @@ use super::{
 use futures_util::StreamExt;
 use progress::Progress;
 pub use registry::InferenceState;
+use registry::{CancelOrigin, CancellationProvenance};
 pub(crate) use registry::Lease;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -69,6 +70,8 @@ pub enum Payload {
     Settled {
         phase: Phase,
         error: Option<Failure>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cancellation: Option<CancellationProvenance>,
     },
 }
 #[derive(Debug, Clone, Serialize)]
@@ -231,6 +234,7 @@ async fn execute_traced(
     if !emit(Payload::Phase {
         phase: Phase::Connecting,
     }) {
+        lease.note_ipc_rejected();
         return Err(Failure::new("cancelled"));
     }
     let parsed = validate_url(&request.url, request.allow_private)
@@ -277,9 +281,11 @@ async fn execute_traced(
     if !emit(Payload::Phase {
         phase: Phase::WaitingFirstOutput,
     }) {
+        lease.note_ipc_rejected();
         return Err(Failure::new("cancelled"));
     }
     trace.record(Kind::Dispatch, 0);
+    lease.mark_provider_dispatched();
     let response = guarded(lease, deadline.next(), async {
         req.send().await.map_err(network_error)
     })
@@ -292,6 +298,7 @@ async fn execute_traced(
         .get("content-type")
         .is_some_and(|s| s.contains("text/event-stream"));
     if !emit(Payload::Headers { status, headers }) {
+        lease.note_ipc_rejected();
         return Err(Failure::new("cancelled"));
     }
     let mut stream = response.bytes_stream();
@@ -317,6 +324,7 @@ async fn execute_traced(
                 if !emit(Payload::Phase {
                     phase: Phase::Generating,
                 }) {
+                    lease.note_ipc_rejected();
                     return Err(Failure::new("cancelled"));
                 }
             }
@@ -332,6 +340,7 @@ async fn execute_traced(
             bytes: bytes.to_vec(),
         }) {
             trace.record(Kind::IpcRejected, bytes.len());
+            lease.note_ipc_rejected();
             return Err(Failure::new("cancelled"));
         }
         trace.record(Kind::IpcForwarded, bytes.len());
@@ -393,6 +402,7 @@ async fn execute_admitted(
     if lease.require_preflight {
         let mut verdict = lease.request_preflight();
         if !emit(Payload::Preflight {}) {
+            lease.note_ipc_rejected();
             return Err(Failure::new("cancelled"));
         }
         guarded(
@@ -465,8 +475,10 @@ pub async fn ai_http_cancel(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, InferenceState>,
     request_id: String,
+    cancellation_origin: Option<CancelOrigin>,
 ) -> Result<(), Failure> {
-    state.cancel(window.label(), &request_id).await;
+    state.cancel_with_origin(window.label(), &request_id,
+        cancellation_origin.unwrap_or(CancelOrigin::Unspecified)).await;
     Ok(())
 }
 #[allow(clippy::too_many_arguments)]
@@ -543,12 +555,16 @@ pub async fn ai_http_stream(
     )
     .await;
     let phase = terminal(&result);
+    let cancellation = if phase == Phase::Cancelled {
+        lease.cancellation_provenance()
+    } else { None };
     drop(lease);
     let _ = on_event.send(Event {
         request_id,
         payload: Payload::Settled {
             phase,
             error: result.err(),
+            cancellation,
         },
     });
     Ok(())

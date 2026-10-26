@@ -20,8 +20,21 @@ type AiStreamEvent = { requestId: string } & (
   | { kind: "headers"; status: number; headers: Record<string, string> }
   | { kind: "chunk"; bytes: number[] }
   | { kind: "phase"; phase: InferencePhase }
-  | { kind: "settled"; phase: InferencePhase; error?: { code: string } }
+  | { kind: "settled"; phase: InferencePhase; error?: { code: string };
+      cancellation?: { requestId: string; at: number; source: string;
+        initiatingLayer: string; reason: string; category: string;
+        providerRequestInFlight: boolean } }
 );
+
+// Closed vocabulary sent to native cancellation provenance. Never forward
+// AbortSignal.reason, provider error text, prompts, URLs or stream bytes.
+type CancelOrigin =
+  | "stream-consumer" | "parent-signal" | "session-stop"
+  | "scope-superseded" | "preflight-failure"
+  | "response-construction-failure" | "native-command-failure"
+  | "fetch-preparation-failure" | "sdk-stream-error"
+  | "provider-retry-error" | "provider-retry-finalizer"
+  | "settled-cleanup";
 
 type RequestHeaders = Record<string, string>;
 
@@ -101,13 +114,13 @@ async function proxyFetchImpl(
   const boundary = (stage: string) => {
     try { opts.onLifecycleBoundary?.(stage); } catch { /* observation only */ }
   };
-  const cancel = () => {
+  const cancel = (origin: CancelOrigin) => {
     boundary("response-cancelled");
     aborted = true;
     connectionAbort.abort();
     attempt?.update("stopping");
     if (nativeId && !cancelPromise)
-      cancelPromise = invoke("ai_http_cancel", { requestId: nativeId }).catch(
+      cancelPromise = invoke("ai_http_cancel", { requestId: nativeId, cancellationOrigin: origin }).catch(
         () => undefined,
       );
   };
@@ -120,11 +133,11 @@ async function proxyFetchImpl(
       try { opts.scope?.onStop?.({ source: "parent-signal", reason: "parent-abort" }); }
       catch { /* attribution cannot defeat cancellation */ }
     }
-    cancel();
+    cancel(isSettledCleanup() ? "settled-cleanup" : "parent-signal");
   };
   attempt = beginInference(
     opts.scope,
-    cancel,
+    () => cancel("session-stop"),
     opts.admission ? "awaiting-admission" : "connecting",
   );
   signal?.addEventListener("abort", onAbort, { once: true });
@@ -160,7 +173,7 @@ async function proxyFetchImpl(
       nativeId,
     );
     if (aborted || (opts.scope && !opts.scope.isCurrent())) {
-      cancel();
+      cancel(aborted ? "parent-signal" : "scope-superseded");
       await cancelPromise;
       throw new InferenceTransportError("cancelled", nativeId);
     }
@@ -181,7 +194,7 @@ async function proxyFetchImpl(
           return;
         }
         if (aborted || (opts.scope && !opts.scope.isCurrent())) {
-          cancel();
+          cancel(aborted ? "parent-signal" : "scope-superseded");
           return;
         }
         switch (event.kind) {
@@ -207,7 +220,7 @@ async function proxyFetchImpl(
                 await invoke("ai_http_preflight", {
                   requestId: nativeId,
                   approved: false,
-                }).catch(() => cancel());
+                }).catch(() => cancel("preflight-failure"));
               }
             })();
             break;
@@ -225,8 +238,11 @@ async function proxyFetchImpl(
               start(c) {
                 controller = c;
               },
-              cancel() {
-                cancel();
+              cancel(reason) {
+                cancel(reason === "ollama-sdk-stream-error" ? "sdk-stream-error"
+                  : reason === "provider-retry-stream-error" ? "provider-retry-error"
+                  : reason === "provider-retry-finalizer" ? "provider-retry-finalizer"
+                  : "stream-consumer");
                 return cancelPromise?.then(() => undefined);
               },
             });
@@ -238,7 +254,7 @@ async function proxyFetchImpl(
                 }),
               );
             } catch {
-              cancel();
+              cancel("response-construction-failure");
             }
             break;
           }
@@ -310,8 +326,8 @@ async function proxyFetchImpl(
         async (error) => {
           // Invocation failure is not proof of a drained native request.
           if (!cancelPromise)
-            cancelPromise = invoke("ai_http_cancel", {
-              requestId: nativeId,
+              cancelPromise = invoke("ai_http_cancel", {
+                requestId: nativeId, cancellationOrigin: "native-command-failure",
             }).catch(() => undefined);
           await cancelPromise;
           nativeSettled = true;
@@ -322,7 +338,7 @@ async function proxyFetchImpl(
   } catch (error) {
     releaseRemote?.();
     if (nativeId && !nativeSettled) {
-      cancel();
+      cancel("fetch-preparation-failure");
       await cancelPromise;
     }
     attempt.settle();

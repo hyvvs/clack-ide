@@ -299,7 +299,7 @@ export function withProviderRetryTracking(
                       throw new InferenceTransportError("missing-final-event");
                     break;
                   } catch (error) {
-                    await reader.cancel().catch(() => {});
+                    await reader.cancel("provider-retry-stream-error").catch(() => {});
                     reader = undefined;
                     await retry(error);
                     result = await open();
@@ -312,7 +312,7 @@ export function withProviderRetryTracking(
                   output.close();
                 }
               } finally {
-                await reader?.cancel().catch(() => {});
+                await reader?.cancel("provider-retry-finalizer").catch(() => {});
                 cleanup();
               }
             },

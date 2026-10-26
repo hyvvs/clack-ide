@@ -182,6 +182,9 @@ describe("native inference attempt transport", () => {
     const outcome = request("http://localhost", { signal: signal.signal }).catch(error => error);
     const a = await untilAttempt();
     signal.abort({ secret: "PRIVATE_ABORT_REASON" });
+    expect(cancels()[0]).toEqual(["ai_http_cancel", {
+      requestId: a.args.requestId, cancellationOrigin: "parent-signal",
+    }]);
     expect(onStop).toHaveBeenCalledExactlyOnceWith({
       source: "parent-signal", reason: "parent-abort",
     });
@@ -217,6 +220,7 @@ describe("native inference attempt transport", () => {
     expect(current("a").admission).toEqual(observation);
     expect(inferenceLabel(current("a"))).toContain("at capacity");
     const stopping = cancelSessionInference("a");
+    expect(cancels()[0][1]).toMatchObject({ cancellationOrigin: "session-stop" });
     expect(current("a").phase).toBe("stopping");
     a.cancel.resolve();
     terminal(a, "cancelled");
@@ -305,7 +309,7 @@ describe("native inference attempt transport", () => {
     signal.abort();
     const stopping = cancelSessionInference("a");
     expect(cancels()).toEqual([
-      ["ai_http_cancel", { requestId: a.args.requestId }],
+      ["ai_http_cancel", { requestId: a.args.requestId, cancellationOrigin: "parent-signal" }],
     ]);
     expect(sessionInference("a")?.phase).toBe("stopping");
     chunk(a, "must not append");
@@ -345,7 +349,7 @@ describe("native inference attempt transport", () => {
     expect(sessionInference("a")?.phase).toBe("stopping");
     opened.resolve("reserved");
     expect(await outcome).toMatchObject({ code: "cancelled" });
-    expect(cancels()).toEqual([["ai_http_cancel", { requestId: "reserved" }]]);
+    expect(cancels()).toEqual([["ai_http_cancel", { requestId: "reserved", cancellationOrigin: "parent-signal" }]]);
     expect(sessionInference("a")).toBeNull();
   });
   it("pre-abort and superseded logical scopes cannot start another request", async () => {
@@ -448,12 +452,39 @@ describe("native inference attempt transport", () => {
     if (!response.body) throw new Error("Expected response stream");
     const cancellation = response.body.cancel();
     expect(cancels()).toHaveLength(1);
+    expect(cancels()[0]).toEqual(["ai_http_cancel", {
+      requestId: a.args.requestId, cancellationOrigin: "stream-consumer",
+    }]);
     expect(sessionInference("a")?.phase).toBe("stopping");
     a.cancel.resolve();
     terminal(a, "cancelled");
     a.done.resolve();
     await cancellation;
     await Promise.resolve();
+    expect(sessionInference("a")).toBeNull();
+  });
+  it("marks SDK stream parse failure without retaining provider content or changing cancellation", async () => {
+    const model = createOllamaModel({ modelId: "fixture", baseURL: "http://localhost", fetch: fetchFor() });
+    const result = streamText({ model, prompt: "offline fixture", maxOutputTokens: 512, maxRetries: 0 });
+    const completion = (async () => {
+      try {
+        for await (const part of result.fullStream) if (part.type === "error") throw part.error;
+      } catch (error) { return error; }
+      return null;
+    })();
+    const a = await untilAttempt();
+    headers(a);
+    chunk(a, '{"message":{"thinking":"partial fixture"},"done":false}\n');
+    chunk(a, '{"error":"PRIVATE_PROVIDER_CONTENT"}\n');
+    await vi.waitFor(() => expect(cancels()).toHaveLength(1));
+    expect(cancels()[0]).toEqual(["ai_http_cancel", {
+      requestId: a.args.requestId, cancellationOrigin: "sdk-stream-error",
+    }]);
+    expect(JSON.stringify(cancels())).not.toContain("PRIVATE_PROVIDER_CONTENT");
+    a.cancel.resolve();
+    terminal(a, "cancelled");
+    a.done.resolve();
+    expect(await completion).not.toBeNull();
     expect(sessionInference("a")).toBeNull();
   });
   it("preserves non-2xx provider bodies for existing structured SDK diagnostics", async () => {

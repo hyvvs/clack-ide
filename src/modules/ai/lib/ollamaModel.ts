@@ -455,11 +455,12 @@ export function createOllamaModel(config: {
               controller.enqueue(events.shift() as LanguageModelV3StreamPart);
             } catch (error) {
               boundary("response-body-error");
-              await reader.cancel().catch(() => {});
+              // Fixed metadata only, not the error message/provider content.
+              await reader.cancel("ollama-sdk-stream-error").catch(() => {});
               controller.error(error);
             }
           },
-          cancel: () => { boundary("response-body-cancelled"); return reader.cancel(); },
+          cancel: (reason) => { boundary("response-body-cancelled"); return reader.cancel(reason); },
         }),
       };
     },

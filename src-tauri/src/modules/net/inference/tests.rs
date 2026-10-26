@@ -619,6 +619,66 @@ async fn active_cancel_waits_for_drop_and_stale_cancel_cannot_affect_next() {
     assert_eq!(state.len(), 0);
 }
 #[tokio::test]
+async fn cancellation_provenance_keeps_first_webview_initiator_and_in_flight_state() {
+    let state = InferenceState::default();
+    let id = state.open("main").unwrap();
+    let lease = state.start("main", &id).unwrap();
+    lease.mark_provider_dispatched();
+    let first = state.cancel_with_origin("main", &id, registry::CancelOrigin::StreamConsumer);
+    tokio::pin!(first);
+    tokio::select! { _ = &mut first => panic!("cancel completed before lease drop"),
+        _ = tokio::time::sleep(Duration::from_millis(2)) => {} }
+    let receipt = lease.cancellation_provenance().unwrap();
+    assert_eq!(receipt.request_id, id);
+    assert!(receipt.at > 0);
+    assert_eq!(receipt.source, "webview-cancel-ipc");
+    assert_eq!(receipt.initiating_layer, "response-stream-consumer");
+    assert_eq!(receipt.reason, "response-reader-cancelled");
+    assert_eq!(receipt.category, "consumer-cleanup");
+    assert!(receipt.provider_request_in_flight);
+    assert!(!serde_json::to_string(&receipt).unwrap().contains("prompt"));
+    state.shutdown();
+    assert_eq!(lease.cancellation_provenance(), Some(receipt));
+    drop(lease);
+    first.await;
+}
+#[test]
+fn diagnostic_cancellation_origin_is_strict_and_sdk_errors_are_redacted() {
+    let sdk: registry::CancelOrigin = serde_json::from_str("\"sdk-stream-error\"").unwrap();
+    assert_eq!(sdk, registry::CancelOrigin::SdkStreamError);
+    assert!(serde_json::from_str::<registry::CancelOrigin>("\"secret arbitrary provider text\"").is_err());
+    let state = InferenceState::default();
+    let id = state.open("main").unwrap();
+    let lease = state.start("main", &id).unwrap();
+    // The native cancellation command is asynchronous; directly check the
+    // fixed reason mapping and first-signal storage at the registry boundary.
+    state.close_owner("another-window");
+    assert!(!lease.cancelled());
+    lease.note_ipc_rejected();
+    assert_eq!(lease.cancellation_provenance().unwrap().category, "transport");
+}
+#[test]
+fn cancellation_provenance_distinguishes_native_shutdown_and_ipc_delivery_failure() {
+    let state = InferenceState::default();
+    let id = state.open("main").unwrap();
+    let lease = state.start("main", &id).unwrap();
+    lease.note_ipc_rejected();
+    assert!(!lease.cancelled(), "diagnostics must not change cancellation semantics");
+    assert_eq!(lease.cancellation_provenance().unwrap().reason, "ipc-event-delivery-rejected");
+    state.close_owner("main");
+    assert!(lease.cancelled());
+    assert_eq!(lease.cancellation_provenance().unwrap().reason, "ipc-event-delivery-rejected");
+    drop(lease);
+    let id = state.open("main").unwrap();
+    let lease = state.start("main", &id).unwrap();
+    state.shutdown();
+    let receipt = lease.cancellation_provenance().unwrap();
+    assert_eq!(receipt.source, "host-shutdown");
+    assert_eq!(receipt.initiating_layer, "native-lifecycle");
+    assert!(!receipt.provider_request_in_flight);
+    assert!(lease.cancelled());
+}
+#[tokio::test]
 async fn cancellation_drops_dns_or_connect_future_before_it_can_start_http() {
     let state = InferenceState::default();
     let id = state.open("main").unwrap();
