@@ -230,11 +230,14 @@ try {
   // The native host guard follows the actual generic production Agent budget,
   // not the historical hard-coded 2048 test expectation. It cannot change the
   // runtime profile, model reasoning selection, or dispatched output allowance.
-  const { resolveAgentOutputBudget } = await vite.ssrLoadModule("/src/modules/ai/lib/agentOutputBudget.ts");
-  const agentOutput = resolveAgentOutputBudget({ deployed: 73728, runtimeTarget: 73728 },
-    { choice: "automatic", capability: { status: "supported" } });
+  const { r5deAcceptanceOutputContract } = await vite.ssrLoadModule("/src/test/r5deAcceptanceOutputContract.ts");
+  const { CONTEXT_CALIBRATION } = await vite.ssrLoadModule("/src/modules/ai/lib/contextCalibrationSchema.ts");
+  const outputPolicy = r5deAcceptanceOutputContract(CONTEXT_CALIBRATION.candidates, 73728);
+  const agentOutput = outputPolicy.originalOutput;
   assert.equal(agentOutput, 8192, "Production bounded thinking-Agent output policy changed");
   const wireContract = productionAcceptanceWireContract(agentOutput, 73728, sourceToolNames);
+  wireContract.agent.continuationOutputs = outputPolicy.continuationOutputs;
+  wireContract.agent.continuationMarker = outputPolicy.continuationMarker;
   assert(wireContract.verification.outputs.includes(1024) &&
     wireContract.verification.outputs.includes(2048), "Full native verification ladder required");
   const data = path.join(owned, "data"); await mkdir(data);
