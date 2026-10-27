@@ -11,6 +11,7 @@ import type {
   AdmissionObservation,
 } from "@/modules/ai/lib/inferenceAdmission";
 import { ContextBudgetError } from "@/modules/ai/lib/contextBudget";
+import { associateNativeResponse } from "@/modules/ai/lib/ollamaParserFailureDiagnostics";
 import type { createRequestPreflight } from "@/modules/ai/lib/requestPreflight";
 
 /** Streaming events emitted by the Rust `ai_http_stream` command. */
@@ -247,12 +248,12 @@ async function proxyFetchImpl(
               },
             });
             try {
-              resolve(
-                new Response([204, 205, 304].includes(status) ? null : stream, {
+              const response = new Response([204, 205, 304].includes(status) ? null : stream, {
                   status,
                   headers: event.headers,
-                }),
-              );
+                });
+              associateNativeResponse(response, nativeId);
+              resolve(response);
             } catch {
               cancel("response-construction-failure");
             }

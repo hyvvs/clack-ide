@@ -22,6 +22,7 @@ import {
   deferStreamFailure,
 } from "@/modules/ai/lib/inferenceErrors";
 import { sanitizeAiErrorText } from "@/modules/ai/lib/errors";
+import { OllamaParserFailureState, copyNativeResponseAssociation } from "@/modules/ai/lib/ollamaParserFailureDiagnostics";
 import { createOutputWatchdog, readWatchdogError, describeWatchdog, watchdogSchema, watchdogInstruction, type OutputWatchdog } from "@/modules/ai/lib/outputWatchdog";
 
 export const ANSWER_LIMITS = {
@@ -290,6 +291,7 @@ export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: ()
         : path.endsWith("/responses")
           ? "responses"
           : null;
+    const scannerDiagnostic = new OllamaParserFailureState();
     const decoder = new TextDecoder();
     let buffer = "",
       data: string[] = [],
@@ -329,7 +331,10 @@ export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: ()
         buffer = buffer.slice(newline.index + newline[0].length);
         if (protocol === "ollama") {
           if (line.trim()) {
+            scannerDiagnostic.readingFrame(line);
+            scannerDiagnostic.phase = "scan-frame";
             const value = JSON.parse(line);
+            scannerDiagnostic.parsed(value);
             if (value.done === true) complete = true;
           }
           continue;
@@ -348,21 +353,29 @@ export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: ()
     const signal =
       init?.signal ?? (input instanceof Request ? input.signal : undefined);
     let release: (() => void) | undefined;
-    return new Response(
+    const wrapped = new Response(
       new ReadableStream<Uint8Array>({
         async pull(controller) {
           try {
+            scannerDiagnostic.phase = "reader-read";
             const next = await reader.read();
             if (!next.done) {
+              scannerDiagnostic.observeChunk(next.value);
               if (next.value.length) onResponseBody?.();
+              scannerDiagnostic.phase = "decode";
               buffer += decoder.decode(next.value, { stream: true });
+              scannerDiagnostic.phase = "scan";
               scan();
               controller.enqueue(next.value);
               return;
             }
+            scannerDiagnostic.phase = "decoder-flush";
+            scannerDiagnostic.flushed = true;
             buffer += decoder.decode();
             if (protocol === "ollama" && buffer.trim()) {
+              scannerDiagnostic.readingFrame(buffer);
               const value = JSON.parse(buffer);
+              scannerDiagnostic.parsed(value);
               if (value.done === true) complete = true;
               buffer = "";
             }
@@ -371,6 +384,7 @@ export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: ()
               throw new InferenceTransportError("missing-final-event");
             controller.close();
           } catch (error) {
+            scannerDiagnostic.failure("completion-scanner", response, error, buffer, false);
             // Drain adapter buffers before reporting failure; tool quarantine remains closed.
             if (deferStreamFailure(signal, error)) {
               await new Promise<void>((resolve) => {
@@ -391,6 +405,8 @@ export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: ()
         headers: response.headers,
       },
     );
+    copyNativeResponseAssociation(wrapped, response);
+    return wrapped;
   };
 }
 

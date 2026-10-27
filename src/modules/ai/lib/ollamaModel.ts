@@ -1,4 +1,5 @@
 import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
+import { OllamaParserFailureState } from "@/modules/ai/lib/ollamaParserFailureDiagnostics";
 import { normalizeEndpointUrl } from "@/modules/ai/lib/selfHostedProfiles";
 import {
   APICallError,
@@ -352,14 +353,18 @@ export function createOllamaModel(config: {
       let terminal: Frame | undefined;
       const decoder = new TextDecoder("utf-8", { fatal: true });
       const reader = response.body.getReader();
+      const parseDiagnostic = new OllamaParserFailureState();
       const ids = priorCallIds(params);
       const events: LanguageModelV3StreamPart[] = [
         { type: "stream-start", warnings: warnings(params) },
       ];
       const parse = async (line: string) => {
         if (!line.trim()) return;
+        parseDiagnostic.phase = "parse-frame";
+        parseDiagnostic.readingFrame(line);
         if (done) throw new Error("Ollama sent data after completion");
         const frame = frameSchema.parse(JSON.parse(line));
+        parseDiagnostic.parsed(frame);
         if (frame.error) throw new Error(frame.error);
         if (!frame.message && frame.done !== true)
           throw new Error("Invalid Ollama stream frame");
@@ -433,6 +438,8 @@ export function createOllamaModel(config: {
                 const chunk = await reader.read();
                 if (chunk.done) {
                   boundary("response-body-eof");
+                  parseDiagnostic.phase = "decoder-flush";
+                  parseDiagnostic.flushed = true;
                   pending += decoder.decode();
                   if (pending) {
                     const line = pending;
@@ -448,12 +455,17 @@ export function createOllamaModel(config: {
                     finishReason: finish(terminal, calls > 0),
                     usage: usage(terminal),
                   });
-                } else pending += decoder.decode(chunk.value, { stream: true });
+                } else {
+                  parseDiagnostic.observeChunk(chunk.value);
+                  parseDiagnostic.phase = "decode";
+                  pending += decoder.decode(chunk.value, { stream: true });
+                }
                 if (pending.length > 4 * 1024 * 1024)
                   throw new Error("Ollama stream frame exceeds limit");
               }
               controller.enqueue(events.shift() as LanguageModelV3StreamPart);
             } catch (error) {
+              parseDiagnostic.failure("native-adapter", response, error, pending, true);
               boundary("response-body-error");
               // Fixed metadata only, not the error message/provider content.
               await reader.cancel("ollama-sdk-stream-error").catch(() => {});

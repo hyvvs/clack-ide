@@ -1,0 +1,37 @@
+# R5dg — offline Ollama verifier cancellation forensics and opt-in diagnostic capture
+
+**Starting HEAD:** `a8580320c0cd2ee026eb6d0355a3886c9afb2d18`. **Authorization:** offline evidence/code investigation, bounded failure-only diagnostics if the historical response cannot be replayed; **zero** live model or verifier inference, Muse notes retry, alternate models or ForgeBoard.
+
+## Exact historical evidence and limits
+
+R5df `mission-a-1` `inference-8` requested the genuine `get_probe_value` native schema at **73728 / 512**. Its Rust native trace records **451** body chunks, **67,871** forwarded bytes, **zero** IPC drops, and native chunk sequence/timestamps (last `ipc-forwarded` sequence **451**, size **87**). No Ollama provider `done` or HTTP EOF occurred before cancellation. First-cause metadata records `requestId=inference-8`, timestamp **1793140109997**, `source=webview-cancel-ipc`, `reason=sdk-stream-parser-failed`, `initiatingLayer=ollama-sdk-stream-parser`, `category=error-cleanup`, `providerRequestInFlight=true`. The typed cancellation IPC origin was `sdk-stream-error`; it establishes where reader cancellation was *requested*, **not the underlying exception type or its triggering frame**.
+
+The existing R5df files contain only bounded, content-free trace events. There is **no saved native response byte array, parser error/stack, last valid JSON object, pending JSONL buffer, active failed line, or pending UTF-8 decoder bytes** for `inference-8`. R5df's original WebView event collector recorded chunk *counts/times*, not content. The arbitrary original 451 chunks cannot be recreated from lengths and timestamps. No valid vs malformed provider-frame determination or byte-identical original/rechunked/contiguous replay is possible. Do **not** infer a generic Clack defect from the SDK-cancel provenance alone.
+
+## Actual parse route and competing error origins
+
+1. `src-tauri/src/modules/net/inference/mod.rs`: reqwest `response.bytes_stream()` returns arbitrary byte partitions; the native host emits each `Payload::Chunk { bytes: bytes.to_vec() }` directly over Tauri IPC, maintaining sequence and zero dropped events. This layer does *not* use those chunks as JSON frame boundaries. Its separate `progress.feed` heuristic is for progress/deadline and provider-done observation; it does not replace actual SDK JSON parsing.
+2. `src/modules/ai/lib/proxyFetch.ts`: WebView receives native `chunk.bytes`, constructs a `Uint8Array` and enqueues it in a `ReadableStream` delivered in a native `Response`; it does not parse JSON.
+3. `src/modules/ai/lib/answerContinuation.ts` `verifiedProviderFetch`: for native Ollama NDJSON it incrementally decodes bytes and scans arbitrarily split lines; it calls `JSON.parse` to identify `done`. It can reject malformed/incomplete frames, UTF-8 (the scanner uses nonfatal TextDecoder), or propagate an upstream reader error. Its response is rewrapped before the Ollama adapter.
+4. `src/modules/ai/lib/ollamaModel.ts`: the adapter separately incrementally decodes with **fatal UTF-8**, buffers until `\n`, parses JSON, checks a Zod frame schema, emits SDK reasoning/text/tool-call events, then requires the terminal `done` frame. It can reject malformed JSON, schema/tool-call identity/argument shapes, oversized frames, unexpected post-done data, missing final event or upstream reader errors. When caught, it cancels the reader with `ollama-sdk-stream-error` and preserves the original thrown error for the SDK consumer.
+5. `src/modules/ai/lib/proxyFetch.ts`: the reader cancellation maps to typed native `sdk-stream-error`, yielding R5df's first-cause record. Therefore a scanner failure **or** a native-adapter failure can lead to that same native provenance. Neither exact failure class nor ownership can be resolved from the saved R5df trace.
+
+There is no evidence proving the sequence of actual Ollama tool/reasoning response shapes; Zod's requirement that `tool_calls[].function.arguments` is an object is *not* proof this instance failed schema validation. Chunk/framing/multi-frame/UTF-8 bugs are not proven either.
+
+## Bounded, model-neutral diagnostic instrumentation (no parser fix)
+
+The minimal opted-in observer in `src/modules/ai/lib/ollamaParserFailureDiagnostics.ts` is **disabled by default**: no writes, logs or raw-byte retention without `installOllamaParserFailureObserver`. When a future separately authorized acceptance wrapper registers it, each parser failure (and any chained reader error from the other layer) can emit an independently labeled record with:
+
+- stage (`completion-scanner` or `native-adapter`), native inference request ID associated to the native `Response` and carried across the continuation wrapper, timestamp;
+- exception name, message **up to 512 chars**, stack **up to 2048 chars**;
+- parse/read phase, read chunk sequence and cumulative byte count, successfully parsed frame count, incremental-decoder/fatal/flush flags;
+- pending character length, **last 384 chars**, active failing line tail **up to 384 chars**, last parsed **structural shape only** (frame keys, `done`, message keys and content/thinking lengths, tool-call argument types; no complete successful content, thinking or tool values);
+- **last 128 raw bytes**, hexadecimal, available only when explicitly opted in.
+
+There is no platform-level way to introspect `TextDecoder`'s private pending multibyte bytes, so recorded decoder flags and bounded recent source bytes are diagnostic metadata, **not** an assertion of complete UTF-8 internal state. The observer is invoked defensively and its errors cannot replace the original parser exception. It never bypasses a failed schema/JSON check, never adds an automatic retry, and never changes output, reasoning, tool, context, trust, cancellation, streaming or timeout policies. Its receipts, if enabled later, may contain a short fragment of model output and must be stored only in a newly authorized isolated evidence root with access controls and bounded retention. The historical R5df run was **not modified** or replayed.
+
+## Offline parity and classification
+
+New tests use fully synthetic NDJSON consisting of separate reasoning/text/structured tool-call/terminal frames with multibyte emoji. Original byte partitions, arbitrary three-byte partitions, a split UTF-8 sequence, several concatenated objects and one contiguous buffer generate the same SDK event progression. Malformed JSON, invalid UTF-8, data after `done` and truncated streams continue to fail closed, with opt-in bounded error receipts and preserved request ID. The existing proxy/native suites additionally verify typed SDK cancellation, original first cause and no duplicate terminal dispatch.
+
+**Generic Clack parser defect established: NO.** The exact original parser exception, failed frame and protocol-validity determination remain **UNKNOWN**. Therefore **no production parser correction** is justified by current evidence. A separate, explicitly authorized **single instrumented verifier-only Muse diagnostic** is technically justified if an operator wishes to resolve this gap, after wiring the opt-in observer into a fresh WebView acceptance collector; it is *not* automatic permission for another full Muse notes mission. A fresh complete notes acceptance is premature until the verifier can legitimately qualify and the actual failure class is resolved. No new inference was performed here.
