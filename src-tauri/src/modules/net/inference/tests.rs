@@ -143,8 +143,10 @@ fn headers() -> Vec<u8> {
 
 #[cfg(debug_assertions)]
 async fn traced_fixture(mode: &str) -> (Result<(), Failure>, serde_json::Value, usize) {
-    let mut parts = vec![b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nX-Private: SECRET_HEADER\r\nConnection: close\r\n\r\n".to_vec(),
-        b"{\"message\":{\"content\":\"SECRET_TEXT\"},\"done\":false}\n".to_vec()];
+    let mut parts = if mode == "no-headers" { vec![] } else {
+        vec![b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nX-Private: SECRET_HEADER\r\nConnection: close\r\n\r\n".to_vec(),
+            b"{\"message\":{\"content\":\"SECRET_TEXT\"},\"done\":false}\n".to_vec()]
+    };
     if mode == "idle" {
         for _ in 0..4 {
             parts.push(b"{\"message\":{\"content\":\"  \"},\"done\":false}\n".to_vec());
@@ -244,6 +246,32 @@ async fn acceptance_body_and_ipc_sequences_track_real_delivery_not_whitespace_pr
         (95_000..190_000).contains(&idle_us),
         "byte-only activity must not extend idle: {idle_us}"
     );
+}
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn request_stage_trace_distinguishes_no_headers_from_completed_synthetic_http() {
+    for (mode, expected_terminal, has_headers) in [
+        ("done", "completed", true),
+        ("no-headers", "deadline-observed", false),
+    ] {
+        let (result, snapshot, bytes) = traced_fixture(mode).await;
+        if has_headers { result.unwrap(); } else {
+            assert_eq!(result.unwrap_err().code, "first-output-timeout");
+        }
+        let events = snapshot["events"].as_array().unwrap();
+        let kinds: Vec<&str> = events.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+        let index = |kind: &str| kinds.iter().position(|value| *value == kind).unwrap();
+        assert!(index("resolve-start") < index("resolve-end"));
+        assert!(index("resolve-end") < index("request-built"));
+        assert!(index("request-built") < index("send-await-start"));
+        assert_eq!(kinds.contains(&"headers"), has_headers);
+        assert_eq!(bytes > 0, has_headers);
+        assert_eq!(kinds.last().copied(), Some(expected_terminal));
+        if has_headers { assert!(index("send-await-start") < index("headers")); }
+        else { assert!(!kinds.contains(&"body")); }
+        // The trace deliberately claims nothing about physical TCP/write phases.
+        assert!(!snapshot.to_string().contains("SECRET"));
+    }
 }
 
 #[cfg(debug_assertions)]

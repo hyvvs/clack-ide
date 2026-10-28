@@ -782,6 +782,7 @@ export type RunAgentOptions = {
   onRunStep?: (observation: RunStepObservation) => void;
   onProviderRetry?: (event: ProviderRetryEvent) => void;
   onProviderRecovered?: () => void;
+  onProviderRecoveryPhase?: (event: import("@/modules/ai/lib/providerRetry").ProviderRecoveryObservation) => void;
   onFinishMeta?: (info: {
     hitStepCap: boolean;
     finishReason: string;
@@ -1095,6 +1096,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     AGENT_PROVIDER_MAX_RETRIES,
     {
       isCurrent: inferenceScope.isCurrent,
+      ...(opts.onProviderRecoveryPhase ? { onDiagnostic: opts.onProviderRecoveryPhase } : {}),
       onDeadline: () => inferenceScope.onStop?.({
         source: "provider-timeout",
         reason: "provider-retry-deadline",

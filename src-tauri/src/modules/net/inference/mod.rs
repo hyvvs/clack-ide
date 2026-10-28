@@ -243,6 +243,7 @@ async fn execute_traced(
         .host_str()
         .ok_or_else(|| Failure::new("unsafe-endpoint"))?
         .to_string();
+    trace.record(Kind::ResolveStart, 0);
     let ips = guarded(
         lease,
         (
@@ -252,6 +253,7 @@ async fn execute_traced(
         resolve(host.clone(), request.allow_private),
     )
     .await?;
+    trace.record(Kind::ResolveEnd, 0);
     let remaining = (start + limits.connect)
         .saturating_duration_since(Instant::now())
         .max(Duration::from_millis(1));
@@ -276,6 +278,7 @@ async fn execute_traced(
         request.body,
     )
     .map_err(|_| Failure::new("invalid-request"))?;
+    trace.record(Kind::RequestBuilt, 0);
     // Headers may be withheld while the server computes. reqwest separately
     // bounds TCP/TLS connection establishment; first-output includes header wait.
     if !emit(Payload::Phase {
@@ -286,6 +289,9 @@ async fn execute_traced(
     }
     trace.record(Kind::Dispatch, 0);
     lease.mark_provider_dispatched();
+    // This marks the await boundary, NOT proof of TCP connect, an HTTP write,
+    // or Ollama receipt. reqwest returns here only when headers are available.
+    trace.record(Kind::SendAwaitStart, 0);
     let response = guarded(lease, deadline.next(), async {
         req.send().await.map_err(network_error)
     })

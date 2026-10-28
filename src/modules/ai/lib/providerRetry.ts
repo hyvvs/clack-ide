@@ -27,9 +27,19 @@ type ProviderRetryCallbacks = {
 type RecoveryOptions = {
   isCurrent?: () => boolean;
   onDeadline?: () => void;
+  onDiagnostic?: (event: ProviderRecoveryObservation) => void;
   beforeRetry?: () => Promise<void>;
   delayMs?: number;
   totalMs?: number;
+};
+
+// Optional, content-free lifecycle observation. This is the provider wrapper's
+// clock, not a socket-level or Ollama scheduling trace.
+export type ProviderRecoveryObservation = {
+  stage: "deadline-start" | "attempt-start" | "retry-scheduled" |
+    "retry-ready" | "first-meaningful-output" | "deadline-fire" | "settled";
+  at: number;
+  attempt: number;
 };
 
 export function retryDelay(
@@ -153,24 +163,36 @@ export function withProviderRetryTracking(
         const signal = controller.signal;
         const validation = beginStreamValidation(signal);
         const started = Date.now();
+        let attempts = 0,
+          meaningful = false;
+        const observe = (stage: ProviderRecoveryObservation["stage"]) => {
+          if (!options.onDiagnostic) return;
+          try { options.onDiagnostic({ stage, at: Date.now(), attempt: attempts }); }
+          catch { /* diagnostics cannot affect a provider attempt */ }
+        };
         const totalMs = Math.min(
           options.totalMs ?? PROVIDER_RECOVERY_LIMITS.totalMs,
           PROVIDER_RECOVERY_LIMITS.totalMs,
         );
         const timer = setTimeout(() => {
           if (!signal.aborted) {
+            observe("deadline-fire");
             try { options.onDeadline?.(); } catch { /* observer cannot defeat deadline */ }
           }
           controller.abort(new InferenceTransportError("overall-deadline"));
         }, totalMs);
-        let attempts = 0,
-          meaningful = false;
+        observe("deadline-start");
+        let settledObserved = false;
         const current = () => {
           if (signal.aborted) throw signal.reason;
           if (options.isCurrent?.() === false)
             throw new DOMException("Stale request", "AbortError");
         };
         const cleanup = () => {
+          if (!settledObserved) {
+            settledObserved = true;
+            observe("settled");
+          }
           clearTimeout(timer);
           params.abortSignal?.removeEventListener("abort", stop);
           validation.dispose();
@@ -196,6 +218,7 @@ export function withProviderRetryTracking(
             throw error;
           attempts++;
           tracker.failed(error);
+          observe("retry-scheduled");
           let timeout: ReturnType<typeof setTimeout> | undefined;
           try {
             await waitForRecovery(
@@ -215,6 +238,7 @@ export function withProviderRetryTracking(
               signal,
             );
             current();
+            observe("retry-ready");
           } finally {
             clearTimeout(timeout);
           }
@@ -224,6 +248,7 @@ export function withProviderRetryTracking(
             current();
             validation.reset();
             try {
+              observe("attempt-start");
               return await waitForRecovery(
                 underlying
                   .doStream({ ...params, abortSignal: signal })
@@ -288,6 +313,7 @@ export function withProviderRetryTracking(
                       if (!meaningful) {
                         meaningful = true;
                         clearTimeout(timer);
+                        observe("first-meaningful-output");
                         tracker.succeeded();
                         for (const buffered of prefix) output.enqueue(buffered);
                         prefix.length = 0;

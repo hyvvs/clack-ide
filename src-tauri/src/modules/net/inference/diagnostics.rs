@@ -2,6 +2,12 @@
 #[derive(Clone, Copy, serde::Serialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
+    // Application-level boundaries only. In particular, reqwest's send future
+    // does not expose socket connect or request-write completion timestamps.
+    ResolveStart,
+    ResolveEnd,
+    RequestBuilt,
+    SendAwaitStart,
     Dispatch,
     Headers,
     Body,

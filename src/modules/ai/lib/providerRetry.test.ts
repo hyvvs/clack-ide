@@ -92,4 +92,32 @@ describe("production provider request deadline provenance", () => {
       vi.useRealTimers();
     }
   });
+  it("observes a first no-header attempt and deadline without claiming a retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const stages: string[] = [];
+      const model = {
+        specificationVersion: "v3", provider: "offline", modelId: "offline",
+        doStream: ({ abortSignal }: { abortSignal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => abortSignal?.addEventListener("abort", () =>
+            reject(abortSignal.reason), { once: true })),
+      } as unknown as LanguageModel;
+      const tracked = withProviderRetryTracking(model, {
+        onRetry: () => { throw new Error("no retry expected"); },
+        onRecovered: () => { throw new Error("no recovery expected"); },
+      }, 2, {
+        totalMs: 30,
+        onDiagnostic: e => stages.push(`${e.stage}:${e.at}:${e.attempt}`),
+      });
+      if (typeof tracked === "string") throw new Error("Expected wrapped model");
+      const pending = Promise.resolve(tracked.doStream({} as never)).catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(30);
+      await pending;
+      expect(stages.map(s => s.split(":")[0])).toEqual([
+        "deadline-start", "attempt-start", "deadline-fire", "settled",
+      ]);
+      expect(stages.every(s => s.endsWith(":0"))).toBe(true);
+      expect(Number(stages[2].split(":")[1]) - Number(stages[0].split(":")[1])).toBe(30);
+    } finally { vi.useRealTimers(); }
+  });
 });
