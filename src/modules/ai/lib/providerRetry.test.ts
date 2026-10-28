@@ -92,6 +92,32 @@ describe("production provider request deadline provenance", () => {
       vi.useRealTimers();
     }
   });
+  it("cannot change the deadline or retries when diagnostic callbacks throw", async () => {
+    vi.useFakeTimers();
+    try {
+      const steps: string[] = [];
+      const model = {
+        specificationVersion: "v3", provider: "offline", modelId: "offline",
+        doStream: ({ abortSignal }: { abortSignal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => abortSignal?.addEventListener("abort", () => {
+            steps.push("aborted"); reject(abortSignal.reason);
+          }, { once: true })),
+      } as unknown as LanguageModel;
+      const retry = vi.fn();
+      const tracked = withProviderRetryTracking(model, {
+        onRetry: retry, onRecovered: vi.fn(),
+      }, 2, {
+        totalMs: 25, onDiagnostic: () => { throw new Error("PRIVATE_OBSERVER_FAILURE"); },
+        onDeadline: () => steps.push("deadline"),
+      });
+      if (typeof tracked === "string") throw new Error("Expected v3 model");
+      const outcome = Promise.resolve(tracked.doStream({} as never)).catch(e => e);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(await outcome).toBeInstanceOf(Error);
+      expect(steps).toEqual(["deadline", "aborted"]);
+      expect(retry).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
   it("observes a first no-header attempt and deadline without claiming a retry", async () => {
     vi.useFakeTimers();
     try {

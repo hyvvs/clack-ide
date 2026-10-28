@@ -262,16 +262,89 @@ async fn request_stage_trace_distinguishes_no_headers_from_completed_synthetic_h
         let kinds: Vec<&str> = events.iter().map(|e| e["kind"].as_str().unwrap()).collect();
         let index = |kind: &str| kinds.iter().position(|value| *value == kind).unwrap();
         assert!(index("resolve-start") < index("resolve-end"));
-        assert!(index("resolve-end") < index("request-built"));
+        assert!(index("resolve-end") < index("http-client-build-start"));
+        assert!(index("http-client-build-start") < index("http-client-ready"));
+        assert!(index("http-client-ready") < index("request-built"));
         assert!(index("request-built") < index("send-await-start"));
         assert_eq!(kinds.contains(&"headers"), has_headers);
         assert_eq!(bytes > 0, has_headers);
         assert_eq!(kinds.last().copied(), Some(expected_terminal));
-        if has_headers { assert!(index("send-await-start") < index("headers")); }
-        else { assert!(!kinds.contains(&"body")); }
+        if has_headers {
+            assert!(index("send-await-start") < index("headers"));
+            assert!(index("headers") < index("first-body-chunk"));
+            assert!(index("first-body-chunk") < index("provider-done"));
+            assert_eq!(snapshot["httpStatus"], 200);
+            assert_eq!(snapshot["resolvedIpScope"], "loopback");
+            assert!(snapshot["destinationPort"].as_u64().unwrap() > 0);
+            assert_eq!(snapshot["lastRequestStage"], "eof");
+        } else {
+            assert!(!kinds.contains(&"body"));
+            assert_eq!(snapshot["httpStatus"], serde_json::Value::Null);
+            assert_eq!(snapshot["resolvedIpScope"], "loopback");
+            assert_eq!(snapshot["lastRequestStage"], "send-await-start");
+            assert_eq!(snapshot["failureCode"], "first-output-timeout");
+        }
         // The trace deliberately claims nothing about physical TCP/write phases.
         assert!(!snapshot.to_string().contains("SECRET"));
     }
+}
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn diagnostic_connect_failure_keeps_last_genuine_phase_and_safe_code() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+    drop(listener);
+    let captured = Arc::new(Mutex::new(None));
+    let out = captured.clone();
+    let sink = diagnostics::AcceptanceDiagnostics::new(move |s| {
+        *out.lock().unwrap() = Some(serde_json::to_value(s).unwrap());
+    });
+    // Use an explicitly no-proxy synthetic client to make the refused TCP
+    // connection deterministic even on machines with system HTTP proxies.
+    // Production connector selection and connection pooling are untouched.
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let err = client.get(url).send().await.unwrap_err();
+    let failure = network_error(err);
+    assert_eq!(failure.code, "connection-failed");
+    let mut trace = sink.request("inference-connection-test");
+    trace.record(diagnostics::Kind::HttpClientReady, 0);
+    trace.record(diagnostics::Kind::SendAwaitStart, 0);
+    trace.finish(&Err(failure));
+    let snapshot = captured.lock().unwrap().take().unwrap();
+    assert_eq!(snapshot["lastRequestStage"], "send-await-start");
+    assert_eq!(snapshot["failureCode"], "connection-failed");
+    assert!(snapshot["httpStatus"].is_null());
+    assert!(!snapshot.to_string().contains("/v1/chat/completions"));
+}
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn diagnostic_parent_cancel_during_no_header_wait_preserves_transport_stage() {
+    let fixture = server(vec![], false, false);
+    let state = Arc::new(InferenceState::default());
+    let id = state.open("main").unwrap();
+    let lease = state.start("main", &id).unwrap();
+    let captured = Arc::new(Mutex::new(None));
+    let out = captured.clone();
+    let sink = diagnostics::AcceptanceDiagnostics::new(move |s| {
+        *out.lock().unwrap() = Some(serde_json::to_value(s).unwrap());
+    });
+    let mut req = request(fixture.url);
+    req.trace = sink.request(&id);
+    let owner = state.clone();
+    let canceller = tokio::spawn(async move {
+        fixture.accepted.await.unwrap();
+        owner.close_owner("main");
+        tokio::time::timeout(Duration::from_secs(3), fixture.closed).await.unwrap().unwrap();
+        fixture.thread.join().unwrap();
+    });
+    let result = execute(&lease, req, limits(), &|_| true).await;
+    assert_eq!(result.unwrap_err().code, "cancelled");
+    drop(lease);
+    canceller.await.unwrap();
+    let snapshot = captured.lock().unwrap().take().unwrap();
+    assert_eq!(snapshot["lastRequestStage"], "send-await-start");
+    assert_eq!(snapshot["events"].as_array().unwrap().last().unwrap()["kind"], "cancellation-observed");
+    assert!(snapshot["httpStatus"].is_null());
 }
 
 #[cfg(debug_assertions)]

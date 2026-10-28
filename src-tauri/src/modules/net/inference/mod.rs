@@ -254,11 +254,25 @@ async fn execute_traced(
     )
     .await?;
     trace.record(Kind::ResolveEnd, 0);
+    let first_kind = ip_kind(ips[0]); // resolve() already rejects an empty vector.
+    let scope = if ips.iter().any(|ip| ip_kind(*ip) != first_kind) {
+        "mixed"
+    } else {
+        match first_kind {
+            IpKind::Loopback => "loopback",
+            IpKind::Private => "private",
+            IpKind::Public => "public",
+            IpKind::BlockedMetadata => "blocked",
+        }
+    };
+    trace.destination(parsed.port_or_known_default(), scope);
+    trace.record(Kind::HttpClientBuildStart, 0);
     let remaining = (start + limits.connect)
         .saturating_duration_since(Instant::now())
         .max(Duration::from_millis(1));
     let client = build_safe_client(request.allow_private, &[(host, ips)], Some(remaining))
         .map_err(|_| Failure::new("invalid-request"))?;
+    trace.record(Kind::HttpClientReady, 0);
     if let Some((app, token)) = &request.fallback {
         crate::modules::conversation_memory::fallback::dispatch(
             app,
@@ -296,8 +310,9 @@ async fn execute_traced(
         req.send().await.map_err(network_error)
     })
     .await?;
-    trace.record(Kind::Headers, 0);
     let status = response.status().as_u16();
+    trace.http_status(status);
+    trace.record(Kind::Headers, 0);
     let headers = header_map_to_strings(response.headers());
     let mut progress = Progress::default();
     progress.sse = headers
@@ -309,6 +324,7 @@ async fn execute_traced(
     }
     let mut stream = response.bytes_stream();
     let mut generating = false;
+    let mut first_chunk = true;
     loop {
         let Some(bytes) = guarded(lease, deadline.next(), async {
             stream.next().await.transpose().map_err(network_error)
@@ -318,6 +334,10 @@ async fn execute_traced(
             trace.record(Kind::Eof, 0);
             break;
         };
+        if first_chunk {
+            first_chunk = false;
+            trace.record(Kind::FirstBodyChunk, bytes.len());
+        }
         trace.record(Kind::Body, bytes.len());
         let was_complete = progress.complete;
         if progress.feed(&bytes) {
@@ -536,11 +556,13 @@ pub async fn ai_http_stream(
     if matches!(timeout_policy, Some(Policy::SelfHosted)) && admission.is_none() {
         return Err(Failure::new("invalid-capacity"));
     }
+    let mut trace = diagnostics::Trace::from_app(&app, &request_id);
+    trace.record(diagnostics::Kind::NativeIpcReady, 0);
     let result = execute_admitted(
         &state,
         &lease,
         Request {
-            trace: diagnostics::Trace::from_app(&app, &request_id),
+            trace,
             url,
             method,
             headers,

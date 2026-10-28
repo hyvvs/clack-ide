@@ -6,10 +6,14 @@ pub enum Kind {
     // does not expose socket connect or request-write completion timestamps.
     ResolveStart,
     ResolveEnd,
+    NativeIpcReady,
+    HttpClientBuildStart,
+    HttpClientReady,
     RequestBuilt,
     SendAwaitStart,
     Dispatch,
     Headers,
+    FirstBodyChunk,
     Body,
     MeaningfulProgress,
     IpcAttempt,
@@ -48,6 +52,13 @@ mod enabled {
     pub struct Snapshot {
         pub boundary: &'static str,
         pub request_id: String,
+        // The latest stage genuinely observed, retained even at cancellation.
+        pub last_request_stage: Option<Kind>,
+        pub http_status: Option<u16>,
+        pub failure_code: Option<String>,
+        // Intended target only; not proof of the actual remote socket peer.
+        pub destination_port: Option<u16>,
+        pub resolved_ip_scope: Option<&'static str>,
         pub events: VecDeque<Stamp>,
         pub dropped_events: u64,
         pub body_chunks: u64,
@@ -83,6 +94,11 @@ mod enabled {
                 snapshot: Snapshot {
                     boundary: "reqwest-http-body-delivery",
                     request_id: id.into(),
+                    last_request_stage: None,
+                    http_status: None,
+                    failure_code: None,
+                    destination_port: None,
+                    resolved_ip_scope: None,
                     events: VecDeque::new(),
                     dropped_events: 0,
                     body_chunks: 0,
@@ -113,6 +129,12 @@ mod enabled {
         pub fn record(&mut self, kind: Kind, bytes: usize) {
             let Some(recording) = &mut self.0 else { return };
             let snapshot = &mut recording.snapshot;
+            if matches!(kind, Kind::NativeIpcReady | Kind::ResolveStart |
+                Kind::ResolveEnd | Kind::HttpClientBuildStart | Kind::HttpClientReady |
+                Kind::RequestBuilt | Kind::SendAwaitStart | Kind::Headers |
+                Kind::FirstBodyChunk | Kind::ProviderDone | Kind::Eof) {
+                snapshot.last_request_stage = Some(kind);
+            }
             if kind == Kind::Body {
                 snapshot.body_chunks += 1;
                 snapshot.body_bytes += bytes as u64;
@@ -139,7 +161,23 @@ mod enabled {
                 sink(snapshot);
             }
         }
+        pub fn http_status(&mut self, status: u16) {
+            if let Some(recording) = &mut self.0 {
+                recording.snapshot.http_status = Some(status);
+            }
+        }
+        pub fn destination(&mut self, port: Option<u16>, scope: &'static str) {
+            if let Some(recording) = &mut self.0 {
+                recording.snapshot.destination_port = port;
+                recording.snapshot.resolved_ip_scope = Some(scope);
+            }
+        }
         pub fn finish(&mut self, result: &Result<(), super::super::Failure>) {
+            if let Some(recording) = &mut self.0 {
+                // Failure.code comes exclusively from internal closed-vocabulary
+                // constructors, never provider text or HTTP response bodies.
+                recording.snapshot.failure_code = result.as_ref().err().map(|e| e.code.clone());
+            }
             let kind = match result.as_ref().err().map(|e| e.code.as_str()) {
                 None => Kind::Completed,
                 Some("cancelled") => Kind::CancellationObserved,
@@ -185,6 +223,8 @@ impl Trace {
         Self
     }
     pub fn record(&mut self, _: Kind, _: usize) {}
+    pub fn http_status(&mut self, _: u16) {}
+    pub fn destination(&mut self, _: Option<u16>, _: &'static str) {}
     pub fn finish(&mut self, _: &Result<(), super::Failure>) {}
 }
 

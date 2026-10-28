@@ -1,5 +1,7 @@
 import { wrapLanguageModel, type LanguageModel } from "ai";
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
+import { attachNativeDiagnosticSignal, detachNativeDiagnosticSignal,
+  type NativeDiagnosticStage, type InferenceDiagnosticControls } from "@/modules/ai/lib/inferenceDiagnosticCorrelation";
 import { normalizeAiError } from "@/modules/ai/lib/errors";
 import {
   InferenceTransportError,
@@ -37,10 +39,15 @@ type RecoveryOptions = {
 // clock, not a socket-level or Ollama scheduling trace.
 export type ProviderRecoveryObservation = {
   stage: "deadline-start" | "attempt-start" | "retry-scheduled" |
-    "retry-ready" | "first-meaningful-output" | "deadline-fire" | "settled";
+    "retry-ready" | "first-meaningful-output" | "deadline-clear" |
+    "deadline-fire" | "parent-abort-propagated" | "settled" | NativeDiagnosticStage;
   at: number;
   attempt: number;
-};
+  generationId: string;
+  nativeRequestId?: string;
+  /** Last genuinely observed bridge phase; not a TCP/socket assertion. */
+  transportStage?: NativeDiagnosticStage;
+} & InferenceDiagnosticControls;
 
 export function retryDelay(
   error: unknown,
@@ -153,47 +160,70 @@ export function withProviderRetryTracking(
           Math.min(maxRetries, AGENT_PROVIDER_MAX_RETRIES),
         );
         const controller = new AbortController();
-        const stop = () =>
+        const generationId = options.onDiagnostic ? crypto.randomUUID() : "";
+        let attempts = 0, meaningful = false;
+        let nativeRequestId: string | undefined;
+        let transportStage: NativeDiagnosticStage | undefined;
+        let wireControls: InferenceDiagnosticControls = {};
+        const observe = (stage: ProviderRecoveryObservation["stage"]) => {
+          if (!options.onDiagnostic) return;
+          try { options.onDiagnostic({ stage, at: Date.now(), attempt: attempts,
+            generationId, ...(nativeRequestId ? { nativeRequestId } : {}),
+            ...(transportStage ? { transportStage } : {}), ...wireControls }); }
+          catch { /* diagnostics cannot affect a provider attempt */ }
+        };
+        const stop = () => {
+          observe("parent-abort-propagated");
           controller.abort(
             params.abortSignal?.reason ??
               new DOMException("Cancelled", "AbortError"),
           );
+        };
         if (params.abortSignal?.aborted) stop();
         params.abortSignal?.addEventListener("abort", stop, { once: true });
         const signal = controller.signal;
         const validation = beginStreamValidation(signal);
         const started = Date.now();
-        let attempts = 0,
-          meaningful = false;
-        const observe = (stage: ProviderRecoveryObservation["stage"]) => {
-          if (!options.onDiagnostic) return;
-          try { options.onDiagnostic({ stage, at: Date.now(), attempt: attempts }); }
-          catch { /* diagnostics cannot affect a provider attempt */ }
-        };
+        let settledObserved = false;
+        if (options.onDiagnostic) attachNativeDiagnosticSignal(signal, (stage, id, controls) => {
+          nativeRequestId = id;
+          transportStage = stage;
+          if (controls) wireControls = controls;
+          observe(stage);
+          // The parent recovery promise can settle *before* Rust acknowledges
+          // cancellation. Keep the weak signal join until the native terminal
+          // event, if one arrives. No native transport is kept alive by this.
+          if (stage === "native-settled" && settledObserved)
+            detachNativeDiagnosticSignal(signal);
+        });
         const totalMs = Math.min(
           options.totalMs ?? PROVIDER_RECOVERY_LIMITS.totalMs,
           PROVIDER_RECOVERY_LIMITS.totalMs,
         );
+        let deadlineFired = false;
         const timer = setTimeout(() => {
           if (!signal.aborted) {
+            deadlineFired = true;
             observe("deadline-fire");
             try { options.onDeadline?.(); } catch { /* observer cannot defeat deadline */ }
           }
           controller.abort(new InferenceTransportError("overall-deadline"));
         }, totalMs);
         observe("deadline-start");
-        let settledObserved = false;
         const current = () => {
           if (signal.aborted) throw signal.reason;
           if (options.isCurrent?.() === false)
             throw new DOMException("Stale request", "AbortError");
         };
         const cleanup = () => {
+          if (!meaningful && !deadlineFired) observe("deadline-clear");
           if (!settledObserved) {
             settledObserved = true;
             observe("settled");
           }
           clearTimeout(timer);
+          if (!nativeRequestId || transportStage === "native-settled")
+            detachNativeDiagnosticSignal(signal);
           params.abortSignal?.removeEventListener("abort", stop);
           validation.dispose();
           controller.abort(new DOMException("Request settled", "AbortError"));
@@ -248,6 +278,9 @@ export function withProviderRetryTracking(
             current();
             validation.reset();
             try {
+              nativeRequestId = undefined;
+              transportStage = undefined;
+              wireControls = {};
               observe("attempt-start");
               return await waitForRecovery(
                 underlying
@@ -313,6 +346,7 @@ export function withProviderRetryTracking(
                       if (!meaningful) {
                         meaningful = true;
                         clearTimeout(timer);
+                        observe("deadline-clear");
                         observe("first-meaningful-output");
                         tracker.succeeded();
                         for (const buffered of prefix) output.enqueue(buffered);

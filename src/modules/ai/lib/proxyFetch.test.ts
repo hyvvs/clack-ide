@@ -19,6 +19,8 @@ import { classifyContextFailure } from "./contextCalibration";
 import { streamText, tool } from "ai";
 import { z } from "zod";
 import { createOllamaModel } from "./ollamaModel";
+import { withProviderRetryTracking, type ProviderRecoveryObservation } from "./providerRetry";
+import { installOllamaParserFailureObserver } from "./ollamaParserFailureDiagnostics";
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -96,7 +98,7 @@ beforeEach(() => {
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockImplementation((command, args) => {
     if (command === "ai_http_open")
-      return Promise.resolve(`native-${++sequence}`) as never;
+      return Promise.resolve(`inference-${++sequence}`) as never;
     if (command === "ai_http_stream") {
       const a = {
         args: args as NativeArgs,
@@ -124,6 +126,72 @@ afterEach(async () => {
 });
 
 describe("native inference attempt transport", () => {
+  it("joins Agent recovery generation, native IPC, response and done without changing the payload", async () => {
+    const observations: ProviderRecoveryObservation[] = [];
+    const model = withProviderRetryTracking(createOllamaModel({
+      modelId: "fixture", baseURL: "http://localhost", fetch: fetchFor(),
+    }), { onRetry: vi.fn(), onRecovered: vi.fn() }, 0, {
+      onDiagnostic: entry => observations.push(entry),
+    });
+    const result = streamText({ model, prompt: "PRIVATE_PROMPT_VALUE", maxOutputTokens: 512, maxRetries: 0 });
+    const completed = (async () => {
+      for await (const part of result.fullStream) if (part.type === "error") throw part.error;
+    })();
+    const a = await untilAttempt();
+    expect(observations.some(o => o.stage === "native-id-linked" && o.nativeRequestId === a.args.requestId)).toBe(true);
+    headers(a);
+    chunk(a, '{"model":"fixture","message":{"content":"PRIVATE_GENERATED_TEXT"},"done":true,"done_reason":"stop"}\n');
+    terminal(a);
+    a.done.resolve();
+    await completed;
+    const id = observations[0].generationId;
+    expect(id).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(observations.every(o => o.generationId === id)).toBe(true);
+    const stages = observations.map(o => o.stage);
+    expect(stages).toContain("native-ipc-start");
+    expect(stages).toContain("native-response-headers");
+    expect(stages).toContain("native-first-chunk");
+    expect(stages).toContain("native-settled");
+    expect(stages).toContain("first-meaningful-output");
+    expect(stages).toContain("deadline-clear");
+    expect(stages).not.toContain("retry-scheduled");
+    expect(JSON.stringify(observations)).not.toMatch(/PRIVATE_|http:\/\/localhost|authorization/i);
+    expect(attempts).toHaveLength(1);
+  });
+  it("joins a pre-header recovery deadline, parent cancellation and delayed native settlement", async () => {
+    vi.useFakeTimers();
+    const observations: ProviderRecoveryObservation[] = [];
+    const tracked = withProviderRetryTracking(createOllamaModel({
+      modelId: "fixture", baseURL: "http://localhost", fetch: fetchFor(),
+    }), { onRetry: vi.fn(), onRecovered: vi.fn() }, 0, {
+      totalMs: 30, onDiagnostic: event => observations.push(event),
+    });
+    if (typeof tracked === "string") throw new Error("Expected v3 wrapped model");
+    const result = Promise.resolve(tracked.doStream({ prompt: [] } as never)).catch(e => e);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(attempts).toHaveLength(1);
+    const a = attempts[0];
+    expect(observations.some(o => o.stage === "native-id-linked" && o.nativeRequestId === a.args.requestId)).toBe(true);
+    await vi.advanceTimersByTimeAsync(30);
+    const failure = await result;
+    expect(failure).toBeInstanceOf(Error);
+    expect(cancels()[0]).toEqual(["ai_http_cancel", {
+      requestId: a.args.requestId, cancellationOrigin: "parent-signal",
+    }]);
+    const deadline = observations.find(o => o.stage === "deadline-fire");
+    expect(deadline).toMatchObject({ nativeRequestId: a.args.requestId, attempt: 0,
+      transportStage: "native-ipc-start" });
+    expect(observations.some(o => o.stage === "native-parent-abort" &&
+      o.nativeRequestId === a.args.requestId)).toBe(true);
+    a.cancel.resolve();
+    terminal(a, "cancelled");
+    a.done.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(observations.some(o => o.stage === "native-settled" &&
+      o.nativeRequestId === a.args.requestId && o.generationId === deadline?.generationId)).toBe(true);
+    expect(observations.filter(o => o.stage === "retry-scheduled")).toHaveLength(0);
+    expect(JSON.stringify(observations)).not.toContain("PRIVATE_");
+  });
   it.each(["terminal-before-ack", "ack-before-terminal"])(
     "completes one valid structured native tool call and SDK finish across %s ordering",
     async ordering => {
@@ -464,6 +532,9 @@ describe("native inference attempt transport", () => {
     expect(sessionInference("a")).toBeNull();
   });
   it("marks SDK stream parse failure without retaining provider content or changing cancellation", async () => {
+    const failures: { requestId: string | null }[] = [];
+    const uninstall = installOllamaParserFailureObserver(record => failures.push(record));
+    try {
     const model = createOllamaModel({ modelId: "fixture", baseURL: "http://localhost", fetch: fetchFor() });
     const result = streamText({ model, prompt: "offline fixture", maxOutputTokens: 512, maxRetries: 0 });
     const completion = (async () => {
@@ -486,6 +557,8 @@ describe("native inference attempt transport", () => {
     a.done.resolve();
     expect(await completion).not.toBeNull();
     expect(sessionInference("a")).toBeNull();
+    expect(failures.some(record => record.requestId === a.args.requestId)).toBe(true);
+    } finally { uninstall(); }
   });
   it("preserves non-2xx provider bodies for existing structured SDK diagnostics", async () => {
     const pending = createProxyFetch()("https://provider.test");

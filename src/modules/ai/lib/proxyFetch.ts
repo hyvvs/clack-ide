@@ -12,6 +12,8 @@ import type {
 } from "@/modules/ai/lib/inferenceAdmission";
 import { ContextBudgetError } from "@/modules/ai/lib/contextBudget";
 import { associateNativeResponse } from "@/modules/ai/lib/ollamaParserFailureDiagnostics";
+import { nativeDiagnosticSignalObserved, observeNativeDiagnostic, safeInferenceControls,
+  type InferenceDiagnosticControls } from "@/modules/ai/lib/inferenceDiagnosticCorrelation";
 import type { createRequestPreflight } from "@/modules/ai/lib/requestPreflight";
 
 /** Streaming events emitted by the Rust `ai_http_stream` command. */
@@ -121,6 +123,8 @@ async function proxyFetchImpl(
     connectionAbort.abort();
     attempt?.update("stopping");
     if (nativeId && !cancelPromise)
+      observeNativeDiagnostic(signal, "native-cancel-ipc", nativeId);
+    if (nativeId && !cancelPromise)
       cancelPromise = invoke("ai_http_cancel", { requestId: nativeId, cancellationOrigin: origin }).catch(
         () => undefined,
       );
@@ -130,6 +134,7 @@ async function proxyFetchImpl(
     signal.reason.name === "AbortError" &&
     signal.reason.message === "Request settled";
   const onAbort = () => {
+    observeNativeDiagnostic(signal, "native-parent-abort", nativeId);
     if (!nativeSettled && !aborted && !isSettledCleanup()) {
       try { opts.scope?.onStop?.({ source: "parent-signal", reason: "parent-abort" }); }
       catch { /* attribution cannot defeat cancellation */ }
@@ -153,6 +158,7 @@ async function proxyFetchImpl(
       init?.body ?? (request ? await request.arrayBuffer() : undefined),
     );
     let revalidate: Awaited<ReturnType<NonNullable<typeof opts.preflight>["prepare"]>> | undefined;
+    let preparedControls: InferenceDiagnosticControls | undefined;
     if (opts.preflight) {
       const parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(body ?? [])));
       const original = JSON.stringify(parsed);
@@ -161,10 +167,15 @@ async function proxyFetchImpl(
       // Messages, history, native schemas, and output allowance are untouched.
       if (JSON.stringify(parsed) !== original)
         body = [...new TextEncoder().encode(JSON.stringify(parsed))];
+      if (nativeDiagnosticSignalObserved(signal))
+        preparedControls = safeInferenceControls(parsed);
     }
     if (aborted) throw new InferenceTransportError("cancelled");
     nativeId = await invoke<string>("ai_http_open");
     if (!nativeId) throw new InferenceTransportError("native-transport");
+    observeNativeDiagnostic(signal, "native-id-linked", nativeId);
+    if (preparedControls)
+      observeNativeDiagnostic(signal, "native-controls-prepared", nativeId, preparedControls);
     attempt.update(
       aborted
         ? "stopping"
@@ -186,10 +197,12 @@ async function proxyFetchImpl(
       let deliveryTimer: ReturnType<typeof setTimeout> | undefined;
       let preflightError: unknown;
       let validating = false;
+      let firstChunkObserved = false;
       const channel = new Channel<AiStreamEvent>();
       channel.onmessage = (event) => {
         if (finished || terminal || event.requestId !== nativeId) return;
         if (event.kind === "settled") {
+          observeNativeDiagnostic(signal, "native-settled", nativeId);
           terminal = event;
           if (nativeSettled) settle();
           return;
@@ -234,6 +247,7 @@ async function proxyFetchImpl(
             break;
           case "headers": {
             if (status) return;
+            observeNativeDiagnostic(signal, "native-response-headers", nativeId);
             status = event.status;
             const stream = new ReadableStream<Uint8Array>({
               start(c) {
@@ -260,6 +274,10 @@ async function proxyFetchImpl(
             break;
           }
           case "chunk":
+            if (!firstChunkObserved && event.bytes.length) {
+              firstChunkObserved = true;
+              observeNativeDiagnostic(signal, "native-first-chunk", nativeId);
+            }
             if (status >= 200 && status < 300 && event.bytes.length) opts.scope?.onResponseBody?.();
             controller?.enqueue(Uint8Array.from(event.bytes));
             break;
@@ -301,6 +319,7 @@ async function proxyFetchImpl(
         } else
           reject(new InferenceTransportError("native-transport", nativeId));
       };
+      observeNativeDiagnostic(signal, "native-ipc-start", nativeId);
       void invoke("ai_http_stream", {
         requestId: nativeId,
         url,

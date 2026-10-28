@@ -29,6 +29,7 @@ import type { ToolVerification } from "@/modules/ai/lib/toolVerificationSchema";
 import { compactModelMessagesDetailed } from "./compact";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
+import { emitSelfHostedInferencePhase, selfHostedInferencePhaseObserved } from "./inferenceDiagnosticCorrelation";
 import { cancelSessionInference, type InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import { createOutputWatchdog, describeWatchdog, readWatchdogError, watchdogInstruction, type OutputWatchdog } from "@/modules/ai/lib/outputWatchdog";
 import { gateInferenceTools } from "@/modules/ai/lib/inferenceToolGate";
@@ -1035,6 +1036,22 @@ export async function runAgentStream(opts: RunAgentOptions) {
     ? effectiveProfileValue(opts.selfHostedInference, hostedProfile.id, "continuationCount").value
     : undefined;
   const runCalls = opts.compaction;
+  const phaseDiagnostic = hostedProfile &&
+    (opts.onProviderRecoveryPhase || selfHostedInferencePhaseObserved())
+    ? (event: import("@/modules/ai/lib/providerRetry").ProviderRecoveryObservation) => {
+        try { opts.onProviderRecoveryPhase?.(event); } catch { /* observer only */ }
+        emitSelfHostedInferencePhase({
+          sessionId: inferenceScope.sessionId,
+          runId: inferenceScope.runId,
+          provider,
+          modelRef: opts.capturedModelIdentity?.transportModelId ?? modelId,
+          ...(hostedProfile.modelRevision ? { digestRef: hostedProfile.modelRevision } : {}),
+          ...(hostedProfile.contextCalibration?.scope.runtimeEpoch
+            ? { runtimeEpochRef: hostedProfile.contextCalibration.scope.runtimeEpoch } : {}),
+          event,
+        });
+      }
+    : opts.onProviderRecoveryPhase;
   const lastMessage = opts.uiMessages[opts.uiMessages.length - 1];
   const watchdog = opts.watchdog ?? createOutputWatchdog(watchdogInstruction(opts.uiMessages));
   let answerState: AnswerState | undefined;
@@ -1096,7 +1113,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     AGENT_PROVIDER_MAX_RETRIES,
     {
       isCurrent: inferenceScope.isCurrent,
-      ...(opts.onProviderRecoveryPhase ? { onDiagnostic: opts.onProviderRecoveryPhase } : {}),
+      ...(phaseDiagnostic ? { onDiagnostic: phaseDiagnostic } : {}),
       onDeadline: () => inferenceScope.onStop?.({
         source: "provider-timeout",
         reason: "provider-retry-deadline",
