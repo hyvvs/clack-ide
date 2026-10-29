@@ -8,8 +8,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repository=fileURLToPath(new URL("../",import.meta.url));
-const owned=path.join(repository,"src-tauri/target/remote-controls/post-policy-laguna-notes-20261029-01");
-const root=path.join(owned,"post-policy-hosted-notes-20261029-01"), dest=path.join(owned,"evaluation-snapshot");
+const owned=path.join(repository,"src-tauri/target/remote-controls/post-policy-laguna-notes-live-20261029-02");
+const root=path.join(owned,"post-policy-hosted-notes-20261029-02"), dest=path.join(owned,"evaluation-snapshot");
 const outcome=path.join(owned,"independent-evaluation.json");
 const receipt=JSON.parse(await readFile(path.join(owned,"mission-a-1.native-report.json"),"utf8"));
 assert.equal(receipt.missionStarted,true,"Only one terminated replacement mission may be evaluated");

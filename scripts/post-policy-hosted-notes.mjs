@@ -30,9 +30,10 @@ if (offlineDryRun) throw new Error(
 );
 const runName = offlineDryRun
   ? `post-policy-harness-offline-${offlineLabel}-20261029-01`
-  : "post-policy-laguna-notes-20261029-01";
+  : "post-policy-laguna-notes-live-20261029-02";
 const owned = path.join(repo, "src-tauri", "target", "remote-controls", runName);
-const root = path.join(owned, "post-policy-hosted-notes-20261029-01");
+const root = path.join(owned, offlineDryRun
+  ? "post-policy-hosted-notes-20261029-01" : "post-policy-hosted-notes-20261029-02");
 const modelId = "poolside/laguna-s-2.1:free";
 const selectionId = "saved-provider:spm-79c4acdb-3952-4379-a3e2-55d9a38928e3";
 const phase = "mission-a-1";
