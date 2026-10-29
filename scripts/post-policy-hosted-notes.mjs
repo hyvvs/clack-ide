@@ -17,6 +17,17 @@ const offlineDryRun = process.argv[2]?.startsWith("--offline-dry-run=") ?? false
 const offlineLabel = offlineDryRun ? process.argv[2].slice("--offline-dry-run=".length) : "";
 if (offlineDryRun) assert(/^(probe|verify)$/.test(offlineLabel), "Use only isolated offline probe/verify modes");
 else assert(process.argv.length === 2, "Unrecognized runner arguments");
+// An earlier WebView dry run reached the real hosted model despite its native
+// ai_http_stream guard: the production OpenRouter path uses browser fetch.
+// A JavaScript fetch wrapper or WebView2 HTTP proxy is not a kernel-enforced,
+// protocol-complete process-tree egress boundary. Until an independent OS
+// sandbox with verified loopback and external-denial proofs is installed, do
+// not even create the test workspace or start Vite/WebView/native host.
+if (offlineDryRun) throw new Error(
+  "POST-POLICY HOSTED TEST ISOLATION UNSAFE: independent process-tree " +
+  "network-egress containment has not been proven; offline WebView launch " +
+  "is prohibited before any settings, workspace, or provider initialization."
+);
 const runName = offlineDryRun
   ? `post-policy-harness-offline-${offlineLabel}-20261029-01`
   : "post-policy-laguna-notes-20261029-01";
