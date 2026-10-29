@@ -920,11 +920,17 @@ export async function runAgentStream(opts: RunAgentOptions) {
     customEndpointKeys: opts.customEndpointKeys,
     capturedModelIdentity: opts.capturedModelIdentity,
   });
-  // Agent budget selection precedes tool exposure and compaction. All planning
-  // stages reserve the same bounded output that is sent on the SDK/wire.
+  // Compute the prospective Agent budget for native-tool discovery first.
+  // Ordinary conversations also use this stream path: only keep the *new*
+  // hosted default-reasoning promotion when native tools are actually exposed.
+  // Previously verified effort contracts preserve their existing behavior.
+  let hasExposedAgentTools: boolean | undefined;
   const agentLimits = async () => {
     const limits = await modelBudgetLimits(baseModel);
-    const output = resolveAgentOutputBudget(limits, opts.reasoning, opts.requiredOutput);
+    const output = hasExposedAgentTools === false &&
+      opts.reasoning?.capability.status !== "supported"
+      ? resolveContextBudget(limits, undefined, opts.requiredOutput).output
+      : resolveAgentOutputBudget(limits, opts.reasoning, opts.requiredOutput);
     return { ...limits, outputReserve: Math.max(limits.outputReserve ?? 0, output) };
   };
   if (pinnedAutomaticContinuationContext !== undefined) {
@@ -1019,6 +1025,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     system: stableSystem + (opts.planMode ? PLAN_MODE_PROMPT : ""),
     limits: await agentLimits(),
   });
+  hasExposedAgentTools = exposure.names.length > 0;
   const pinnedTools = new Set(exposure.names);
   setModelSchemaDiagnostics(
     baseModel,

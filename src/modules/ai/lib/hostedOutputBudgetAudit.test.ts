@@ -11,6 +11,7 @@ import { resolveContextBudget } from "@/modules/ai/lib/contextBudget";
 import { modelBudgetLimits } from "@/modules/ai/lib/requestPreflight";
 import { captureEffort, type EffortCapture } from "@/modules/ai/lib/reasoningEffort";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
+import { parseProviderContextCatalog } from "@/modules/ai/lib/providerModelEvidence";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
 
@@ -25,15 +26,20 @@ afterEach(() => {
   records.length = 0;
 });
 
-function offlineFetch(): void {
+function offlineFetch(options: { outputOverride?: number | null; reasoningDefault?: boolean } = {}): void {
   vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     if (String(url) === "https://openrouter.ai/api/v1/models") {
       return new Response(JSON.stringify({ data: cases.map(([id, context, output]) => ({
         id,
         context_length: context,
-        top_provider: { context_length: context, max_completion_tokens: output },
+        top_provider: {
+          context_length: context,
+          ...(options.outputOverride === null ? {} : {
+            max_completion_tokens: options.outputOverride ?? output,
+          }),
+        },
         supported_parameters: ["tools", "reasoning", "max_tokens"],
-        reasoning: { default_enabled: true },
+        reasoning: { default_enabled: options.reasoningDefault ?? true },
       })) }), { headers: { "content-type": "application/json" } });
     }
     if (String(url).startsWith("https://openrouter.ai/api/v1/model/"))
@@ -54,14 +60,27 @@ function offlineFetch(): void {
 }
 
 const fixtureKeys = { ...EMPTY_PROVIDER_KEYS, openrouter: "offline-fixture-key" };
+function freshFixtureEvidence(id: string, options: {
+  output?: number; defaultEnabled?: boolean;
+}) {
+  const model = {
+    id, context_length: 262144,
+    top_provider: { context_length: 262144, ...(options.output ? { max_completion_tokens: options.output } : {}) },
+    reasoning: { default_enabled: options.defaultEnabled ?? true },
+    supported_parameters: ["tools", "reasoning", "max_tokens"],
+  };
+  const evidence = parseProviderContextCatalog({ data: [model] }).get(id);
+  if (!evidence) throw new Error("Test provider evidence is not valid");
+  return evidence;
+}
 function unknownEffort(model: string): EffortCapture {
   return captureEffort(`saved-provider:${model}`, {
     providerId: "openrouter", transportModelId: model,
   });
 }
 
-describe("frozen hosted 2048 output-budget source — no inference", () => {
-  it.each(cases)("conservatively sends max_tokens=2048 for %s through the production OpenRouter route", async (id, context, outputCap) => {
+describe("hosted reasoning-capacity policy — offline-only production serializer", () => {
+  it.each(cases)("promotes automatic reasoning to bounded max_tokens=8192 for %s with fresh metadata", async (id, context, outputCap) => {
     offlineFetch();
     const reasoning = unknownEffort(id);
     expect(reasoning).toMatchObject({ choice: "automatic", capability: { status: "unknown" } });
@@ -70,9 +89,9 @@ describe("frozen hosted 2048 output-budget source — no inference", () => {
     expect(limits).toMatchObject({ reported: context, outputCap });
     expect(limits.maxOutput).toBeUndefined();
     const allowance = resolveAgentOutputBudget(limits, reasoning);
-    expect(allowance).toBe(2048);
+    expect(allowance).toBe(8192);
     const budget = resolveContextBudget({ ...limits, outputReserve: allowance });
-    expect(budget).toMatchObject({ output: 2048, source: "reported", fits: true });
+    expect(budget).toMatchObject({ output: 8192, source: "reported", fits: true });
     const result = streamText({
       model,
       prompt: "Offline SDK request, no network",
@@ -82,9 +101,13 @@ describe("frozen hosted 2048 output-budget source — no inference", () => {
     });
     expect(await result.text).toBe("Fixture.");
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ model: id, max_tokens: 2048, stream: true });
+    expect(records[0]).toMatchObject({ model: id, max_tokens: 8192, stream: true });
     expect(records[0]).not.toHaveProperty("max_completion_tokens");
     expect(records[0]).toHaveProperty("tools");
+    // Output capacity is independent of whether Clack can send effort controls.
+    expect(records[0]).not.toHaveProperty("reasoning_effort");
+    expect(records[0]).not.toHaveProperty("reasoning");
+    expect(records[0]).not.toHaveProperty("include_reasoning");
   });
 
   it("keeps ordinary hosted chat at its existing 2048 default", () => {
@@ -121,6 +144,7 @@ describe("frozen hosted 2048 output-budget source — no inference", () => {
     expect(resolveAgentOutputBudget({ reported: 262_144, outputCap: 1024 }, supported)).toBe(1024);
     expect(resolveAgentOutputBudget({ reported: 262_144, maxOutput: 1024, outputCap: 32_768 }, supported)).toBe(1024);
     expect(resolveAgentOutputBudget({ reported: 262_144, outputCap: 32_768 }, supported, 1024)).toBe(1024);
+    // No bound reasoning metadata: the old conservative fallback still applies.
     expect(resolveAgentOutputBudget({ reported: 262_144, outputCap: 32_768 }, unknownEffort(cases[1][0]))).toBe(2048);
   });
 
@@ -139,5 +163,44 @@ describe("frozen hosted 2048 output-budget source — no inference", () => {
     expect(records[0]).toMatchObject({ model: id, max_tokens: 8192 });
     expect(await streamText({ model, prompt: "Offline explicit lower output", maxOutputTokens: 1024, maxRetries: 0 }).text).toBe("Fixture.");
     expect(records[1]).toMatchObject({ model: id, max_tokens: 1024 });
+  });
+
+  it("uses only the available provider maximum, not an invented reasoning control", async () => {
+    offlineFetch();
+    const id = "fixture/capped-reasoning:free";
+    const reasoning = {
+      ...unknownEffort(id),
+      capability: { ...unknownEffort(id).capability, status: "unsupported" as const },
+    };
+    const model = await buildLanguageModel("openrouter", fixtureKeys, id, {
+      reasoning, providerEvidence: freshFixtureEvidence(id, { output: 4096 }),
+    });
+    const limits = await modelBudgetLimits(model);
+    expect(limits).toMatchObject({ outputCap: 4096 });
+    const allowance = resolveAgentOutputBudget(limits, reasoning);
+    expect(allowance).toBe(4096);
+    expect(await streamText({ model, prompt: "Offline, capped Agent", maxOutputTokens: allowance, maxRetries: 0 }).text).toBe("Fixture.");
+    expect(records[0]).toMatchObject({ model: id, max_tokens: 4096 });
+    expect(records[0]).not.toHaveProperty("reasoning_effort");
+    expect(records[0]).not.toHaveProperty("reasoning");
+    expect(records[0]).not.toHaveProperty("max_completion_tokens");
+  });
+
+  it.each([
+    ["no provider output maximum", "fixture/no-output-ceiling:free", { output: undefined, defaultEnabled: true }],
+    ["not default-on reasoning", "fixture/not-default-reasoning:free", { output: 32768, defaultEnabled: false }],
+  ] as const)("keeps the conservative request when %s", async (_reason, id, options) => {
+    offlineFetch();
+    const reasoning = unknownEffort(id);
+    const model = await buildLanguageModel("openrouter", fixtureKeys, id, {
+      reasoning, providerEvidence: freshFixtureEvidence(id, options),
+    });
+    const limits = await modelBudgetLimits(model);
+    const allowance = resolveAgentOutputBudget(limits, reasoning);
+    expect(allowance).toBe(2048);
+    expect(await streamText({ model, prompt: "Offline conservative Agent", maxOutputTokens: allowance, maxRetries: 0 }).text).toBe("Fixture.");
+    expect(records[0]).toMatchObject({ model: id, max_tokens: 2048 });
+    expect(records[0]).not.toHaveProperty("reasoning_effort");
+    expect(records[0]).not.toHaveProperty("reasoning");
   });
 });

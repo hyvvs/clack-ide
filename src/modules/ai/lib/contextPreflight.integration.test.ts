@@ -17,6 +17,9 @@ import { prepareToolExposure } from "@/modules/ai/lib/toolExposure";
 import { buildRuntimeTools } from "@/modules/ai/tools/customExecution";
 import type { ToolContext } from "@/modules/ai/tools/context";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { parseProviderContextCatalog } from "@/modules/ai/lib/providerModelEvidence";
+import { createSavedProviderModel, savedProviderModelSelectionId } from "@/modules/ai/lib/savedProviderModels";
+import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
 import {
   addSelfHostedEndpoint,
   createSelfHostedEndpoint,
@@ -98,9 +101,10 @@ async function hello(
   modelId = "openrouter-custom",
   model = "anthropic/claude-sonnet-4.6",
   overrides: Partial<Parameters<typeof createContextAwareTransport>[0]> = {},
+  prompt = "Hello",
 ) {
   const originals: UIMessage[] = [
-    { id: "u", role: "user", parts: [{ type: "text", text: "Hello" }] },
+    { id: "u", role: "user", parts: [{ type: "text", text: prompt }] },
   ];
   const before = structuredClone(originals);
   const transport = createContextAwareTransport({
@@ -130,6 +134,35 @@ async function hello(
   while (!(await reader.read()).done) {}
   expect(originals).toEqual(before);
 }
+
+it("promotes a tool-exposed hosted Agent through normal transport without an effort-control field", async () => {
+  const transportModelId = "fixture/default-reasoning-native-tools:free";
+  const providerEvidence = parseProviderContextCatalog({ data: [{
+    id: transportModelId,
+    context_length: 262144,
+    top_provider: { max_completion_tokens: 32768 },
+    reasoning: { default_enabled: true },
+    supported_parameters: ["tools", "max_tokens", "reasoning"],
+  }] }).get(transportModelId);
+  if (!providerEvidence) throw new Error("Missing offline capability fixture");
+  const saved = createSavedProviderModel({
+    providerId: "openrouter", transportModelId, providerEvidence,
+  }, "native-agent-fixture");
+  const selection = savedProviderModelSelectionId(saved.id);
+  const reasoning = captureEffort(selection, { providerId: "openrouter", transportModelId });
+  expect(reasoning.capability.status).toBe("unknown");
+  await hello(selection, "", {
+    getSavedProviderModels: () => [saved],
+    getReasoning: () => reasoning,
+  }, "Inspect the contents of the workspace directory using native list_directory and report what you find.");
+  expect(errors).toEqual([]);
+  expect(bodies).toHaveLength(1);
+  expect(bodies[0]).toMatchObject({ model: transportModelId, max_tokens: 8192 });
+  expect((bodies[0].tools as unknown[]).length).toBeGreaterThan(0);
+  expect(bodies[0]).not.toHaveProperty("reasoning_effort");
+  expect(bodies[0]).not.toHaveProperty("reasoning");
+  expect(bodies[0]).not.toHaveProperty("max_completion_tokens");
+});
 
 it.each([
   [
