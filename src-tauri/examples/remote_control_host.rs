@@ -869,6 +869,13 @@ fn main() {
                         }
                     }
                 }
+                // Test-host-only independent native offline dispatch barrier:
+                // even a missing frontend observer cannot emit provider HTTP.
+                if std::env::var("CLACK_HOSTED_OFFLINE_DRY_RUN").as_deref() == Ok("1") &&
+                    matches!(command, "ai_http_stream" | "ai_http_request") {
+                    invoke.resolver.reject("OFFLINE_DRY_RUN: native provider transport prohibited");
+                    return true;
+                }
                 if invoke.message.command() == "ai_http_stream" {
                     if let Ok(expected) = std::env::var("CLACK_ACCEPTANCE_OLLAMA_URL") {
                         let tauri::ipc::InvokeBody::Json(value) = invoke.message.payload() else {

@@ -23,11 +23,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { resolveProviderContext } from "@/modules/ai/lib/providerContext";
 import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
 import { resolveAgentOutputBudget } from "@/modules/ai/lib/agentOutputBudget";
+import { installHostedFetchCapture, diagnoseHostedHarnessFailure } from "@/test/hostedFetchCapture";
 
 const mission = `Build a tiny local-first Node + TypeScript notes API from scratch in this EMPTY workspace. You own all implementation, tests, debugging and build using Clack's real tools; do not only describe code. Work as a single persistent Coder, using npm only. Do not use any cloud APIs or hosted databases.
 Implement GET /health, GET /notes, POST /notes, GET /notes/:id, PATCH /notes/:id and DELETE /notes/:id on port 4321. Notes have id, non-empty title (maximum 120 characters), optional body and createdAt/updatedAt timestamps. Validate inputs and return deterministic JSON errors and meaningful HTTP codes, including missing IDs. Persist notes locally in a data file across backend restart, and ignore the runtime file in Git. Write automated executable backend API tests including CRUD, malformed input, missing resource, and persistence across restart. Provide a useful README with npm commands. Actually run your automated tests and the production TypeScript build and debug any failures; use native workspace tools and report results honestly. Do not create a frontend or ForgeBoard.`;
 
-type Config = { root: string; report: string; modelId: string; selectionId: string; provider: "openrouter" };
+type Config = { root: string; report: string; modelId: string; selectionId: string; provider: "openrouter"; offlineDryRun?: boolean };
 const url = new URL(location.href).searchParams.get("configuration");
 if (!url) throw new Error("Missing exclusive remote-control configuration");
 const cfg = await (await fetch(url)).json() as Config;
@@ -45,48 +46,30 @@ const send = async (payload: Record<string, unknown>) => {
 };
 const evidence = (kind: string, details: Record<string, unknown>) =>
   void send({ kind, at: Date.now(), ...details }).catch(() => {});
+const offline = cfg.offlineDryRun === true;
+let milestone = "configuration-loaded";
+const mark = (value: string) => {
+  milestone = value;
+  if (offline) void send({ kind: "milestone", at: Date.now(), stage: value }).catch(() => {});
+};
 
-// One-shot capture of the actual finalized Clack -> Tauri native HTTP request.
-// proxyFetch has already applied provider preflight before it calls
-// __TAURI_INTERNALS__.invoke("ai_http_stream", { body: serializedBytes, ... }).
-// Record ONLY bounded numeric controls and metadata, never credentials, prompts,
-// tool arguments, full body, headers or response text. Forward unchanged after
-// synchronous collector acknowledgement; abort the request if capture fails.
+// The Tauri injected invoke function is READ ONLY; cloud OpenRouter requests
+// actually use preflightFetch -> globalThis.fetch. Observe that *real* final
+// fetch body, never patch Tauri, never change arguments or response streams.
 function installWireCapture() {
-  type Ipc = { invoke: (command: string, args?: Record<string, unknown>, options?: unknown) => Promise<unknown> };
-  const internals = (window as Window & { __TAURI_INTERNALS__?: Ipc }).__TAURI_INTERNALS__;
-  if (!internals || typeof internals.invoke !== "function")
-    throw new Error("No Tauri IPC boundary available for required live wire capture");
-  const original = internals.invoke;
-  let observed = 0;
-  internals.invoke = (command, args, options) => {
-    if (command !== "ai_http_stream" ||
-        args?.url !== "https://openrouter.ai/api/v1/chat/completions")
-      return original.call(internals, command, args, options);
-    const bytes = args.body;
-    if (!Array.isArray(bytes) || bytes.some((v) => !Number.isInteger(v) || v < 0 || v > 255))
-      return Promise.reject(new Error("Unsupported actual native body encoding; capture failed closed"));
-    let json: Record<string, unknown>;
-    try { json = JSON.parse(new TextDecoder().decode(Uint8Array.from(bytes))) as Record<string, unknown>; }
-    catch { return Promise.reject(new Error("Cannot decode actual serialized provider request")); }
-    const controls = ["max_tokens", "max_completion_tokens", "max_output_tokens", "reasoning", "reasoning_effort", "include_reasoning"];
-    const seen = Object.fromEntries(controls.map(k => [
-      k, Object.prototype.hasOwnProperty.call(json, k),
-    ]));
-    if (json.model !== cfg.modelId || !Number.isSafeInteger(json.max_tokens) ||
-        (json.max_tokens as number) < 1)
-      return Promise.reject(new Error("Unexpected model or absent numeric outbound max_tokens; no provider request sent"));
-    observed++;
-    return send({
-      kind: "wire-serialized", at: Date.now(), ordinal: observed,
-      nativeRequestId: args.requestId, modelId: json.model,
-      outputFieldsPresent: seen, max_tokens: json.max_tokens,
-      max_completion_tokens: json.max_completion_tokens ?? null,
-      toolsCount: Array.isArray(json.tools) ? json.tools.length : 0,
-      byteLength: bytes.length,
-    }).then(() => original.call(internals, command, args, options));
-  };
-  return () => { internals.invoke = original; };
+  let ordinal = 0;
+  return installHostedFetchCapture({ modelId: cfg.modelId, offline,
+    record: async receipt => {
+      await send({ kind: "wire-serialized", at: Date.now(), ordinal: ++ordinal,
+        nativeRequestId: null, modelId: receipt.modelId,
+        outputFieldsPresent: receipt.outputFieldsPresent,
+        max_tokens: receipt.max_tokens,
+        max_completion_tokens: receipt.max_completion_tokens,
+        toolsCount: receipt.toolsCount, byteLength: receipt.serializedBytes,
+        captureStage: receipt.stage,
+      });
+    },
+  });
 }
 let started = false;
 let sent = false;
@@ -95,13 +78,20 @@ let uninstall = () => {};
 let restoreWire = () => {};
 const sessionId = "post-policy-hosted-notes-control";
 try {
+  // Offline: block external fetch BEFORE model metadata hydration or any
+  // provider construction; the native test-host barrier is only a backstop.
+  if (offline) { restoreWire = installWireCapture(); mark("offline-browser-fetch-guard-installed"); }
+  mark("settings-load");
   await usePreferencesStore.getState().init();
+  mark("settings-loaded");
   const pref = usePreferencesStore.getState();
   const selected = findSavedProviderModel(cfg.selectionId, pref.savedProviderModels);
   if (!selected?.enabled || selected.providerId !== cfg.provider || selected.transportModelId !== cfg.modelId)
     throw new Error("Saved OpenRouter model changed before control");
   getProvider(cfg.provider);
+  mark("provider-selection-resolved");
   const limits = await resolveProviderContext(cfg.modelId, cfg.provider, false, selected.providerEvidence);
+  mark("model-metadata-resolved");
   const effort = captureEffort(cfg.selectionId, {
     providerId: cfg.provider, transportModelId: cfg.modelId,
   });
@@ -117,23 +107,30 @@ try {
     reasoningDefaultEnabled: limits.reportedEvidence?.capabilities?.reasoning?.defaultEnabled ?? null,
     metadataOrigin: limits.reportedEvidence?.origin ?? null,
   });
+  mark("budget-computed");
   if (allowance !== 8192 || limits.outputCap === undefined ||
       limits.reportedEvidence?.capabilities?.reasoning?.defaultEnabled !== true)
     throw new Error("Post-policy model budget is not trusted/eligible; no inference sent");
   // The production Clack keyring is accessed through ordinary Tauri IPC; no
   // credential is recorded in diagnostic receipts or copied to app settings.
   const keys = await getAllKeys();
+  mark("keyring-read");
   if (!keys.openrouter) throw new Error("Saved OpenRouter credential unavailable");
   useChatStore.getState().setApiKeys(keys);
+  mark("keys-in-chat-store");
   const root = await native.workspaceAuthorize(cfg.root);
+  mark("workspace-authorized");
   useChatStore.getState().setLive({
     ...useChatStore.getState().live,
     getCwd: () => root,
     getWorkspaceRoot: () => root,
     getActiveFile: () => null,
   });
+  mark("workspace-live");
   await useAgentsStore.getState().hydrate();
+  mark("agents-hydrated");
   await useChatStore.getState().hydrateSessions();
+  mark("sessions-hydrated");
   if (useChatStore.getState().sessions.some(s => s.id === sessionId))
     throw new Error("Control session already exists; no replay");
   const session = {
@@ -146,15 +143,19 @@ try {
   };
   useChatStore.setState(s => ({ sessions: [...s.sessions, session] }));
   await saveSessionsList(useChatStore.getState().sessions);
+  mark("session-created");
   await usePeerTaskStore.getState().hydrate({
     sessions: useChatStore.getState().sessions,
     isAgentConfigured: id => useAgentsStore.getState().all().some(a => a.id === id),
     isModelConfigured: id => id === cfg.selectionId,
   });
+  mark("peers-hydrated");
   const element = document.getElementById("root");
   if (!element) throw new Error("Missing Agent UI root");
   createRoot(element).render(<><AgentRunBridge openAiDiffTab={() => null} closeAiDiffTab={() => {}} /><PeerTaskQueueBridge /></>);
-  restoreWire = installWireCapture();
+  mark("react-mounted");
+  if (!offline) restoreWire = installWireCapture();
+  mark("wire-capture-installed");
   // Opt-in diagnostic observer is passive and bounded, never logs content.
   let observedPhases = 0;
   uninstall = installSelfHostedInferencePhaseObserver(({ event }) => {
@@ -164,6 +165,7 @@ try {
       nativeRequestId: event.nativeRequestId,
     });
   });
+  mark("phase-observer-installed");
   let previous = "";
   const unsubscribe = useChatStore.subscribe(s => {
     const value = s.sessions.find(item => item.id === sessionId);
@@ -181,7 +183,25 @@ try {
         compactionAt: meta?.compactionNotice?.at ?? null, runStartedAt: value.run.startedAt });
     }
   });
+  mark("store-subscription-installed");
   try {
+    if (offline) {
+      failureStage = "offline-preflight";
+      mark("offline-preparing-session");
+      await prepareSessionChat(sessionId);
+      useChatStore.setState({ activeSessionId: sessionId });
+      mark("offline-request-construction");
+      // Strictly NOT the notes acceptance mission: synthetic read-only tool
+      // objective. The IPC observer/native test-host gate blocks provider I/O.
+      await sendMessageToSession(sessionId, {
+        text: "Inspect the current workspace directory using native list_directory and report its file names.",
+      });
+      mark("offline-send-returned");
+      await new Promise(r => setTimeout(r, 1500));
+      await send({ kind: "final", at: Date.now(), modelId: cfg.modelId, provider: cfg.provider,
+        missionStarted: false, state: "offline-dry-run-complete", lastMilestone: milestone });
+      sent = true;
+    } else {
     failureStage = "mission";
     await prepareSessionChat(sessionId);
     useChatStore.setState({ activeSessionId: sessionId });
@@ -268,12 +288,13 @@ try {
       toolCalls: unique.length, byName, harnessBlocked: !!harnessBlocked,
     });
     sent = true;
+    }
   } finally { unsubscribe(); }
 } catch (error) {
   if (!sent) {
     await send({ kind: "final", at: Date.now(), missionStarted: started,
       modelId: cfg.modelId, provider: cfg.provider, state: "failed",
-      failureStage, failureClass: error instanceof Error ? error.name : "Unknown",
+      failureStage, ...diagnoseHostedHarnessFailure(error, milestone),
     }).catch(() => {});
   }
 } finally {

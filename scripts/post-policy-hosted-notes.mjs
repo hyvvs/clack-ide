@@ -13,7 +13,13 @@ import { createServer as createViteServer } from "vite";
 import { evaluateAcceptanceApproval } from "./strong-hosted-approval.mjs";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
-const runName = "post-policy-laguna-notes-20261029-01";
+const offlineDryRun = process.argv[2]?.startsWith("--offline-dry-run=") ?? false;
+const offlineLabel = offlineDryRun ? process.argv[2].slice("--offline-dry-run=".length) : "";
+if (offlineDryRun) assert(/^(probe|verify)$/.test(offlineLabel), "Use only isolated offline probe/verify modes");
+else assert(process.argv.length === 2, "Unrecognized runner arguments");
+const runName = offlineDryRun
+  ? `post-policy-harness-offline-${offlineLabel}-20261029-01`
+  : "post-policy-laguna-notes-20261029-01";
 const owned = path.join(repo, "src-tauri", "target", "remote-controls", runName);
 const root = path.join(owned, "post-policy-hosted-notes-20261029-01");
 const modelId = "poolside/laguna-s-2.1:free";
@@ -36,6 +42,17 @@ await mkdir(path.join(owned, "data"));
 const isolatedSettings = JSON.parse(original.toString("utf8"));
 isolatedSettings.lastUsedModelId = selectionId;
 isolatedSettings.lastUsedProviderId = "openrouter";
+if (offlineDryRun) {
+  // Synthetic exact-ID catalog evidence, accepted through the *existing*
+  // freshness/identity contract. Prevent any OpenRouter metadata HTTP lookup.
+  const chosen = isolatedSettings.savedProviderModels.find(m => m.id === selected.id);
+  chosen.providerEvidence = {
+    version: 1, providerId: "openrouter", modelId, origin: "provider-metadata",
+    lookup: "catalog", observedAt: Date.now(), context: 262144, output: 32768,
+    capabilities: { supportedParameters: ["tools", "tool_choice", "max_tokens", "reasoning"],
+      reasoning: { mandatory: false, defaultEnabled: true } },
+  };
+}
 await writeFile(path.join(owned, "data", "terax-settings.json"), JSON.stringify(isolatedSettings), { flag: "wx" });
 const originalHash = createHash("sha256").update(original).digest("hex");
 const eventFile = path.join(owned, `${phase}.events.jsonl`);
@@ -57,7 +74,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "OPTIONS") return void (response.statusCode = 204, response.end());
     if (request.method === "GET" && request.url === "/configuration")
       return json({ root, report: `http://127.0.0.1:${server.address().port}/report`,
-        modelId, selectionId, provider: "openrouter" });
+        modelId, selectionId, provider: "openrouter", offlineDryRun });
     if (request.method !== "POST" || !["/report", "/approval"].includes(request.url)) {
       response.statusCode = 404; return json({ error: "Unrecognized control route" });
     }
@@ -77,6 +94,8 @@ const server = createServer(async (request, response) => {
         value.outputFieldsPresent?.reasoning === false &&
         value.outputFieldsPresent?.include_reasoning === false,
         "Unverified reasoning control was sent");
+      assert(value.captureStage === "after-sdk-and-preflight",
+        "Hosted capture must observe the final browser fetch after preflight");
       assert(computedBudget?.outputAllowance === 8192, "No trusted computed Agent allowance");
       assert(value.max_tokens === computedBudget.outputAllowance,
         "Preflight/SDK/native serialized output differs from computed policy allowance");
@@ -87,6 +106,7 @@ const server = createServer(async (request, response) => {
         max_completion_tokens: value.max_completion_tokens,
         fields: value.outputFieldsPresent, toolsCount: value.toolsCount,
         byteLength: value.byteLength,
+        captureStage: value.captureStage,
         computedAllowance: computedBudget.outputAllowance,
         providerOutputCap: computedBudget.providerOutputCap,
         reportedContext: computedBudget.reportedContext,
@@ -157,6 +177,8 @@ const server = createServer(async (request, response) => {
         retry: Number.isSafeInteger(value.retry) ? value.retry : undefined,
         compactionAt: Number.isSafeInteger(value.compactionAt) ? value.compactionAt : undefined,
         nativeRequestId: typeof value.nativeRequestId === "string" && /^inference-\d+$/.test(value.nativeRequestId) ? value.nativeRequestId : undefined,
+        ...(offlineDryRun && value.kind === "milestone" && typeof value.stage === "string"
+          ? { stage: value.stage.slice(0, 80) } : {}),
       }) + "\n");
     }
     return json({ ok: true });
@@ -188,6 +210,7 @@ try {
     .flatMap(key => process.env[key] ? [[key, process.env[key]]] : []));
   Object.assign(env, { APPDATA: path.join(owned, "data"), LOCALAPPDATA: path.join(owned, "data"),
     TEMP: owned, TMP: owned, CLACK_ACCEPTANCE_ROOT: owned, CLACK_REAL_PRODUCT_PHASE: phase,
+    ...(offlineDryRun ? { CLACK_HOSTED_OFFLINE_DRY_RUN: "1" } : {}),
     CLACK_ACCEPTANCE_URL: `${vite.resolvedUrls.local[0]}coworking-acceptance.html?configuration=${encodeURIComponent(url + "/configuration")}`,
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "--disable-gpu --disable-gpu-compositing" });
   // No CLACK_ACCEPTANCE_OLLAMA_URL and no local inference. The production
@@ -211,6 +234,10 @@ try {
     const limit = setTimeout(() => reject(new Error("Native host did not close after terminal receipt")), 30000);
     child.once("exit", () => { clearTimeout(limit); resolve(); });
   });
+  const nativeWire = await readFile(wireFile, "utf8").catch(() => "");
+  wireCount = nativeWire.trim() ? nativeWire.trim().split("\n").length : 0;
+  if (offlineDryRun && terminal.state === "offline-dry-run-complete" && wireCount < 1)
+    throw new Error("Offline dry-run did not reach preflighted SDK serialization");
   await writeFile(path.join(owned, `${phase}.json`), JSON.stringify({
     startedAt, endedAt: Date.now(), modelId, provider: "openrouter", selectionId,
     settingsSourceSha256: originalHash, missionStarted: terminal.missionStarted,
