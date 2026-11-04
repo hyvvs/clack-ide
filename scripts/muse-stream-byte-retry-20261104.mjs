@@ -21,7 +21,7 @@ const endpoint = "http://127.0.0.1:11438";
 const digest = "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1";
 assert.deepEqual(process.argv.slice(2), ["one"], "One exclusive long-stream diagnostic, never replay");
 assert.equal(process.env.CLACK_BYTE_DIAGNOSTIC_RUN_ID, runId);
-assert.deepEqual((await readdir(owned)).sort(), ["diagnostic-tunnel.json", "workspace"], "Owned evidence root must be fresh, except the pinned SSH receipt and Git workspace");
+assert.deepEqual((await readdir(owned)).sort(), ["diagnostic-tunnel.json", "original-forward-restoration.json", "workspace"], "Owned evidence root must be fresh, except the pinned original and diagnostic SSH receipts and Git workspace");
 assert((await readdir(workspace)).includes(".git"));
 
 let local, vite, child, server, childExit = null, reportReceived = false;
