@@ -108,6 +108,9 @@ type Options = {
   signal: AbortSignal;
   ceiling?: number;
   force?: boolean;
+  /** Safe-boundary renewal of a previously successful exact Agent tier.
+   * Must be measured anew; the earlier upper ceiling and other tiers do not renew. */
+  renewalTier?: number;
   onProgress?: (record: ContextCalibration) => void;
 };
 export type ContextCalibrationOptions = Options;
@@ -152,6 +155,13 @@ export async function runContextCalibration(
   const runtime = contextRuntime(endpoint.id);
   if (!runtime) throw new Error("Runtime verification unavailable");
   const prior = profile.contextCalibration;
+  if (options.renewalTier !== undefined &&
+      (!Number.isSafeInteger(options.renewalTier) ||
+        options.renewalTier < 1 || options.renewalTier > CONTEXT_CALIBRATION.ceiling ||
+        !prior || prior.status !== "verified" ||
+        !prior.attempts.some(a => a.context === options.renewalTier &&
+          a.requested === a.context && a.loaded === a.context && a.outcome === "success")))
+    throw new Error("Agent renewal requires a previously measured successful exact tier");
   if (!options.force && trustedContext(initial.state, profile, now()))
     return prior;
   if (
@@ -174,6 +184,8 @@ export async function runContextCalibration(
     prior.scope.configurationRevision === endpoint.configurationRevision
       ? prior
       : undefined;
+  if (options.renewalTier !== undefined && !comparable)
+    throw new Error("Agent renewal identity changed; start a new verified run");
   const advertised = contextMetadata(
     profile,
     endpoint,
@@ -183,14 +195,17 @@ export async function runContextCalibration(
   );
   if (typeof advertised !== "number" || !Number.isSafeInteger(advertised))
     return { status: "unsupported" as const };
-  const candidates = calibrationCandidates(
-    advertised,
-    options.ceiling,
-    comparable,
-  );
+  const candidates = options.renewalTier !== undefined
+    ? (options.renewalTier <= Math.min(advertised, options.ceiling ?? CONTEXT_CALIBRATION.ceiling)
+      ? [options.renewalTier] : [])
+    : calibrationCandidates(advertised, options.ceiling, comparable);
+  if (options.renewalTier !== undefined && candidates.length !== 1)
+    throw new Error("Agent renewal tier exceeds the current provider ceiling");
   if (!candidates.length && !comparable?.highest)
     return { status: "unsupported" as const };
-  const retained = comparable?.highest ?? undefined;
+  // Renewal is a NEW measured calibration of exactly one tier. Never extend the
+  // old 15-minute lease or inherit its successful attempts/allocation.
+  const retained = options.renewalTier === undefined ? (comparable?.highest ?? undefined) : undefined;
   const record: ContextCalibration = {
     version: 1,
     id: crypto.randomUUID(),

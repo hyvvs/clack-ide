@@ -77,6 +77,7 @@ import {
   preflightFetch,
   modelBudgetLimits,
   setModelSchemaDiagnostics,
+  updateModelAgentTrust,
   type OllamaRouteDecision,
 } from "@/modules/ai/lib/requestPreflight";
 import {
@@ -819,6 +820,7 @@ export type RunAgentOptions = {
 export async function runAgentStream(opts: RunAgentOptions) {
   let pinnedAutomaticContinuationContext: number | undefined;
   let pinnedAutomaticContinuationProof: ToolVerification | undefined;
+  let activeAutomaticProof: ToolVerification | undefined;
   let automaticTierConfiguration: import("@/modules/ai/lib/toolVerificationSchema").ToolConfiguration | undefined;
   const inferenceScope: InferenceScope = opts.inferenceScope
     ? { ...opts.inferenceScope }
@@ -869,6 +871,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
       opts.reasoning = applyAgentRecommendation(eligibility, eligibleProfile,
         batchContext.expected, opts.reasoning);
       const accepted = automaticAgentRecommendation(eligibility, eligibleProfile, batchContext.expected);
+      activeAutomaticProof = accepted?.record ? structuredClone(accepted.record) : undefined;
       automaticTierConfiguration = accepted?.configuration;
       if (pinnedAutomaticContinuationContext !== undefined) {
         if (!accepted || accepted.record.context !== pinnedAutomaticContinuationContext)
@@ -901,6 +904,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
         } : undefined,
     onAgentTierSelected: (state, proof) => {
       opts.selfHostedInference = state;
+      activeAutomaticProof = structuredClone(proof);
       opts.onSelfHostedPrepared?.(state, proof.id, JSON.stringify(proof.configuration ?? null));
     },
     inferenceScope,
@@ -1353,6 +1357,27 @@ export async function runAgentStream(opts: RunAgentOptions) {
     onAbort: () => compactor?.dispose(),
     prepareStep: async ({ messages: stepMessages, stepNumber }) => {
       if (watchdog.error) throw watchdog.error;
+      if (activeAutomaticProof && opts.selfHostedInference &&
+          !opts.recovery && inferenceScope.isCurrent() &&
+          !opts.toolContext.isPeerReplyOnly?.()) {
+        const current = opts.selfHostedInference.profiles.find(p =>
+          p.endpointId === activeAutomaticProof?.scope.endpointId &&
+          p.transportModelId === activeAutomaticProof.scope.model &&
+          p.modelRevision === activeAutomaticProof.scope.digest);
+        const { agentCalibrationRenewalDue, renewAgentCalibrationAtBoundary } =
+          await import("@/modules/ai/lib/agentCalibrationRenewal");
+        if (current && !current.overrides.workingContext &&
+            agentCalibrationRenewalDue(current.contextCalibration?.expiresAt)) {
+          const refreshed = await renewAgentCalibrationAtBoundary(opts.selfHostedInference,
+            current.id, activeAutomaticProof, opts.abortSignal ?? new AbortController().signal,
+            inferenceScope.isCurrent);
+          updateModelAgentTrust(baseModel, refreshed.state, refreshed.proof);
+          opts.selfHostedInference = refreshed.state;
+          activeAutomaticProof = structuredClone(refreshed.proof);
+          opts.onSelfHostedPrepared?.(refreshed.state, refreshed.proof.id,
+            JSON.stringify(refreshed.proof.configuration ?? null));
+        }
+      }
       const currentTools =
         opts.toolContext.isPeerReplyOnly?.() ||
         opts.inputCapabilities?.tools === "unsupported"

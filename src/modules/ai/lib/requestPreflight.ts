@@ -41,6 +41,7 @@ import { CONTEXT_CALIBRATION } from "@/modules/ai/lib/contextCalibrationSchema";
 import { freshVerifiedContextTiers, minimumSafeContext } from "@/modules/ai/lib/minimumSafeContext";
 import { agentContinuationReasoningMetadata, automaticAgentRecommendation } from "@/modules/ai/lib/agentConfiguration";
 import { verificationRecord, sameToolConfiguration } from "@/modules/ai/lib/toolVerification";
+import { sameAgentRenewalIdentity } from "@/modules/ai/lib/agentRenewalIdentity";
 import type { ToolVerification } from "@/modules/ai/lib/toolVerificationSchema";
 import {
   effortBudget,
@@ -73,6 +74,16 @@ const modelDiagnostics = new WeakMap<
   object,
   (kinds: Record<string, SchemaKind>, available: number) => void
 >();
+const modelAgentTrust = new WeakMap<object, (state: SelfHostedState, proof: ToolVerification) => void>();
+
+/** Rebind ONLY genuinely requalified Agent evidence at the safe step boundary.
+ * This never skips the independent final native pre-dispatch checks. */
+export function updateModelAgentTrust(model: LanguageModel, state: SelfHostedState, proof: ToolVerification) {
+  const update = typeof model === "object" && modelAgentTrust.get(model);
+  if (!update) throw new ContextBudgetError("agent-calibration-renewal-unavailable",
+    "The selected model cannot accept renewed Agent trust. No inference was sent.");
+  update(state, proof);
+}
 export function setModelSchemaDiagnostics(
   model: LanguageModel,
   kinds: Record<string, SchemaKind>,
@@ -169,7 +180,9 @@ export function createRequestPreflight(options: {
   validateEvidence?: () => Promise<void>;
   onOllamaRouteDecision?: (decision: OllamaRouteDecision) => void;
 }) {
-  const state = options.state;
+  // Keep a private mutable evidence view; renewal must never rewrite the
+  // captured store snapshot or weaken its transport identity.
+  const state = options.state ? structuredClone(options.state) : undefined;
   const profile =
     state?.profiles.find((p) => p.id === options.admission?.profileId) ??
     state?.profiles.find(
@@ -178,7 +191,7 @@ export function createRequestPreflight(options: {
         p.transportModelId === options.modelId,
     );
   const endpoint = state?.endpoints.find((e) => e.id === profile?.endpointId);
-  const identity =
+  let identity =
     state && profile ? budgetIdentity(state, profile.id) : undefined;
   let snapshot: ProbeSnapshot | null = null;
   let refreshAttemptedAt = 0;
@@ -186,6 +199,7 @@ export function createRequestPreflight(options: {
   let availableSchemas: number | undefined;
   let lastSelectedRequestTarget: number | undefined;
   let providerLimits: BudgetLimits = {};
+  let requiredProof = options.requiredContinuationProof;
   const reasoning = options.reasoning ? structuredClone(options.reasoning) : undefined;
   let reasoningValidation: Promise<ReturnType<typeof effortProviderOptions>> | undefined;
   const limits = (): BudgetLimits => ({
@@ -268,6 +282,7 @@ export function createRequestPreflight(options: {
   };
   const checkIdentity = async () => {
     if (!profile || !identity) return;
+    const capturedProfileId = profile.id;
     const entries = await invoke<[string, unknown][]>(
       "self_hosted_profiles_snapshot",
     ).catch(() => {
@@ -279,7 +294,7 @@ export function createRequestPreflight(options: {
     const current = readSelfHostedState(
       new Map(entries).get("selfHostedInference"),
     );
-    if (budgetIdentity(current, profile.id) !== identity)
+    if (budgetIdentity(current, capturedProfileId) !== identity)
       throw new ContextBudgetError(
         "context-settings-changed",
         "Endpoint/model/profile settings changed while this request was waiting. Start a new request with the current settings.",
@@ -340,6 +355,24 @@ export function createRequestPreflight(options: {
     return reasoningValidation;
   };
   return {
+    updateAgentTrust(next: SelfHostedState, proof: ToolVerification) {
+      const nextProfile = next.profiles.find(p => p.id === profile?.id);
+      if (!state || !profile || !nextProfile || !identity ||
+          (budgetIdentity(next, nextProfile.id) !== identity &&
+            !sameAgentRenewalIdentity(state, next, nextProfile.id)) ||
+          (options.requiredRuntimeContext !== undefined &&
+            (proof.context !== options.requiredRuntimeContext ||
+              !requiredProof || JSON.stringify(proof.scope) !== JSON.stringify(requiredProof.scope) ||
+              !sameToolConfiguration(proof.configuration, requiredProof.configuration))))
+        throw new ContextBudgetError("agent-calibration-renewal-identity",
+          "Requalified Agent settings or native-tool identity changed. No inference was sent.");
+      Object.assign(state, structuredClone(next));
+      Object.assign(profile, structuredClone(nextProfile));
+      identity = budgetIdentity(next, nextProfile.id);
+      if (options.requiredRuntimeContext !== undefined) requiredProof = structuredClone(proof);
+      snapshot = null;
+      refreshAttemptedAt = 0;
+    },
     thermal(): "cold" | "warm" | "unknown" {
       if (!endpoint || !profile) return "unknown";
       const loaded = snapshot?.models.find(m => m.id === profile.transportModelId)?.evidence.find(e =>
@@ -393,6 +426,7 @@ export function createRequestPreflight(options: {
         schemaKinds = { ...kinds };
         availableSchemas = available;
       });
+      modelAgentTrust.set(wrapped, (next, proof) => this.updateAgentTrust(next, proof));
       return wrapped;
     },
     async prepare(body: Record<string, unknown>) {
@@ -561,7 +595,7 @@ export function createRequestPreflight(options: {
         // Verify owner/settings again after asynchronous snapshot and control
         // checks, just before giving the native HTTP dispatch its ACK.
         const currentSettings = await checkIdentity();
-        const originalProof = options.requiredContinuationProof;
+        const originalProof = requiredProof;
         if (originalProof) {
           const currentProfile = currentSettings?.profiles.find(p => p.id === profile?.id);
           if (!currentSettings || !currentProfile || options.providerId !== "ollama" ||

@@ -243,6 +243,28 @@ export function createContextAwareTransport(deps: Deps) {
         preparedHosted.runId === scope?.runId &&
         preparedHosted.modelId === deps.getModelId())
       hostedState = preparedHosted.state;
+    if (!recovery && batch.isLogicalContinuation && preparedHosted?.recordId &&
+        preparedHosted.runId === scope?.runId &&
+        preparedHosted.modelId === deps.getModelId() && hostedState) {
+      const selected = resolveSelfHostedSelection(hostedState, deps.getModelId());
+      if (selected.status === "available" &&
+          !selected.profile.overrides.workingContext &&
+          endpointBackend(selected.endpoint) === "ollama") {
+        const { agentCalibrationRenewalDue, renewAgentCalibrationAtBoundary } =
+          await import("@/modules/ai/lib/agentCalibrationRenewal");
+        if (agentCalibrationRenewalDue(selected.profile.contextCalibration?.expiresAt)) {
+          const retained = [selected.profile.toolVerification,
+            ...(selected.profile.agentToolTierProofs ?? []),
+            ...(selected.profile.agentToolConfigurations ?? [])].find(r => r?.id === preparedHosted?.recordId);
+          if (!retained) throw new Error("Retained Agent proof unavailable for calibration renewal. No inference was sent.");
+          const renewed = await renewAgentCalibrationAtBoundary(hostedState, selected.profile.id,
+            retained, options.abortSignal ?? new AbortController().signal, () => scope?.isCurrent() !== false);
+          hostedState = renewed.state;
+          preparedHosted = { ...preparedHosted, state: hostedState, recordId: renewed.proof.id,
+            variant: JSON.stringify(renewed.proof.configuration ?? null) };
+        }
+      }
+    }
     const capturedIdentity = recovery
       ? captured?.configuration.capturedModelIdentity
       : deps.getCapturedModelIdentity?.();

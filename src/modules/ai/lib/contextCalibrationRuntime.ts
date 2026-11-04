@@ -65,7 +65,8 @@ export async function calibrateModelContext(
     (e) => e.id === profile?.endpointId && e.deletedAt == null,
   );
   if (!profile || !endpoint) throw new Error("Model unavailable");
-  if (!options.force && trustedContext(options.state, profile)) return profile.contextCalibration;
+  if (!options.force && trustedContext(options.state, profile) &&
+      options.renewalTier === undefined) return profile.contextCalibration;
   const existing = flights.get(endpoint.id);
   if (existing) {
     await waitForRecovery(existing, options.signal);
