@@ -61,3 +61,18 @@ export function resolveAgentOutputBudget(
   );
   return resolveContextBudget(limits, undefined, requested).output;
 }
+
+/** Shared Agent context contract: preparation must reserve exactly the same
+ * output as the eventual request before committing a target-context key.
+ * This is a budget projection, not proof of runtime context or model trust. */
+export function agentBudgetLimits(
+  limits: BudgetLimits,
+  reasoning?: EffortCapture,
+  options: { hasExposedAgentTools?: boolean; requiredOutput?: number } = {},
+): BudgetLimits {
+  const output = options.hasExposedAgentTools === false &&
+    reasoning?.capability.status !== "supported"
+    ? resolveContextBudget(limits, undefined, options.requiredOutput).output
+    : resolveAgentOutputBudget(limits, reasoning, options.requiredOutput);
+  return { ...limits, outputReserve: Math.max(limits.outputReserve ?? 0, output) };
+}

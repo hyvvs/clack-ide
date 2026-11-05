@@ -2,6 +2,7 @@ import type { LanguageModel, ModelMessage, UIMessage } from "ai";
 import { generateText, convertToModelMessages } from "ai";
 import { prepareToolExposure } from "@/modules/ai/lib/toolExposure";
 import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
+import { agentBudgetLimits } from "@/modules/ai/lib/agentOutputBudget";
 import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -126,12 +127,14 @@ export async function prepareTarget(options: {
         uiMessages: options.originals,
         target: { modelId: options.modelId, configuration },
         system: options.system,
-        limits: await modelBudgetLimits(model),
+        limits: agentBudgetLimits(await modelBudgetLimits(model), configuration.reasoning),
       },
     );
     const tools = exposure.schemas;
     check();
-    const limits = await modelBudgetLimits(model);
+    const limits = agentBudgetLimits(await modelBudgetLimits(model), configuration.reasoning, {
+      hasExposedAgentTools: exposure.names.length > 0,
+    });
     check();
     const key = await targetContextKey({
       modelId: options.modelId,
@@ -290,7 +293,9 @@ export async function prepareTarget(options: {
           options.modelId,
         );
         check();
-        const currentLimits = await modelBudgetLimits(model);
+        const currentLimits = agentBudgetLimits(await modelBudgetLimits(model), configuration.reasoning, {
+          hasExposedAgentTools: exposure.names.length > 0,
+        });
         check();
         const latestCapabilities = resolveModelInputCapabilities(
           options.modelId,

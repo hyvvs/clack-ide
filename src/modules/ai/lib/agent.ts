@@ -48,7 +48,7 @@ import {
   toolRevisionIdentity,
 } from "@/modules/ai/lib/toolExposure";
 import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
-import { resolveAgentOutputBudget } from "@/modules/ai/lib/agentOutputBudget";
+import { agentBudgetLimits } from "@/modules/ai/lib/agentOutputBudget";
 import { actionableCoderRequest, imitatedNativeTool } from "@/modules/ai/lib/nativeToolImitation";
 import { retrieveScopedEvidence } from "@/modules/ai/lib/scopedEvidence";
 import { runRetrievalAllowance } from "@/modules/ai/lib/retrievalAllowance";
@@ -931,11 +931,9 @@ export async function runAgentStream(opts: RunAgentOptions) {
   let hasExposedAgentTools: boolean | undefined;
   const agentLimits = async () => {
     const limits = await modelBudgetLimits(baseModel);
-    const output = hasExposedAgentTools === false &&
-      opts.reasoning?.capability.status !== "supported"
-      ? resolveContextBudget(limits, undefined, opts.requiredOutput).output
-      : resolveAgentOutputBudget(limits, opts.reasoning, opts.requiredOutput);
-    return { ...limits, outputReserve: Math.max(limits.outputReserve ?? 0, output) };
+    return agentBudgetLimits(limits, opts.reasoning, {
+      hasExposedAgentTools, requiredOutput: opts.requiredOutput,
+    });
   };
   if (pinnedAutomaticContinuationContext !== undefined) {
     const { requireAgentContinuationAllocation } = await import(
