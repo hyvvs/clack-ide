@@ -53,6 +53,10 @@ import {
 
 // Native admission allows five seconds for its acknowledgement.
 const REASONING_REVALIDATION_MS = 3_000;
+// A completed native Ollama request is the only safe time to re-observe its
+// actual selected context. Never reuse a nearly expired measured request
+// receipt across a subsequent Agent step (even when cached allocation matches).
+const OLLAMA_REQUEST_RECEIPT_RENEWAL_LEAD_MS = 5_000;
 const reasoningUnavailable = () => new ContextBudgetError(
   "reasoning-evidence-unavailable",
   "The captured reasoning control could not be revalidated with fresh model metadata. No inference was sent. Check the endpoint and retry explicitly; reasoning was not changed.",
@@ -444,6 +448,12 @@ export function createRequestPreflight(options: {
           (!profile || !state || !freshVerifiedContextTiers(state, profile, snapshot).includes(options.toolVerificationContext)))
         throw new ContextBudgetError("ollama-context-tier-stale",
           "The native-tool verification context is not freshly calibrated. No inference was sent.");
+      if (options.providerId === "ollama" && profile?.contextCalibration?.status === "verified" &&
+          (options.verifyAgentTier || options.requiredRuntimeContext !== undefined) &&
+          options.calibrationContext === undefined && options.toolVerificationContext === undefined &&
+          runtimeTarget() === undefined)
+        throw new ContextBudgetError("ollama-context-unverified",
+          "The Agent's calibrated runtime allocation or measured context receipt is no longer fresh. Requalify the same context and native tools before continuing; no inference was sent.");
       const measured = assertRequestBudget(limits(), body, schemaKinds, availableSchemas);
       // Select from successful, still-trusted *loaded* calibration attempts.
       // Native tools also require a fresh proof for the chosen exact context.
@@ -647,10 +657,19 @@ export function createRequestPreflight(options: {
       const current = snapshot?.models.find(m => m.id === profile.transportModelId);
       try {
         await checkIdentity();
-        if (snapshot && Date.now() - snapshot.observedAt < PROBE_INSTANCE_TTL_MS &&
+        const now = Date.now();
+        // The request/loaded pair can be valid *now* but expire a few
+        // milliseconds before the next step. Refresh the measured receipt
+        // after this genuine completed request, never by inventing allocation.
+        const requestedFreshForNextStep = target !== undefined &&
+          current?.evidence.some(e => e.metric === "probe.requestedContext" &&
+            e.value === target && e.source === "measured" && e.confidence === "observed" &&
+            e.observedAt !== null && e.observedAt <= now &&
+            now - e.observedAt < PROBE_INSTANCE_TTL_MS - OLLAMA_REQUEST_RECEIPT_RENEWAL_LEAD_MS);
+        if (snapshot && now - snapshot.observedAt < PROBE_INSTANCE_TTL_MS &&
           (target === undefined ? current?.evidence.some(e => e.metric === "probe.loaded" && e.value === true)
-            : current?.evidence.some(e => e.metric === "probe.requestedContext" && e.value === target) &&
-              current.evidence.some(e => e.metric === "probe.loadedContext" && e.value === target))) return;
+            : requestedFreshForNextStep &&
+              current?.evidence.some(e => e.metric === "probe.loadedContext" && e.value === target))) return;
         snapshot = await createSelfHostedProbeClient().refresh({
           endpointId: endpoint.id, selectedModelId: profile.transportModelId,
           allowPrivateNetwork: endpointAllowsPrivate(endpoint), requestedContext: target,

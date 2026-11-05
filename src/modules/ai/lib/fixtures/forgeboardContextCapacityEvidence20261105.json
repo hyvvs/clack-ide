@@ -1,0 +1,586 @@
+{
+  "source": "forgeboardmuse-20261104-02 preserved data/terax-settings.json and native request log",
+  "sourceSha256": "ee9c9e403c51912dd25ed94876e96f60a0c5b07700205759f7f2759be02f9ecd",
+  "contract": "Preserved original model trust records; only non-trust endpoint alias/credentials and unrelated profiles are omitted",
+  "request14At": 1793833021086,
+  "request15At": 1793833029834,
+  "model": "muse-glimmer:30b",
+  "digest": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+  "provider": "ollama",
+  "state": {
+    "version": 1,
+    "revision": 388,
+    "endpoints": [
+      {
+        "alias": "Preserved local diagnostic",
+        "allowPrivateNetwork": true,
+        "backendHint": "ollama",
+        "baseURL": "http://127.0.0.1:11438/",
+        "configurationRevision": 1,
+        "credentialRef": null,
+        "createdAt": 1792559050162,
+        "detectedBackend": "ollama",
+        "id": "real-qwen",
+        "revision": 1,
+        "transportSecurity": "http-unencrypted",
+        "updatedAt": 1792559050162
+      }
+    ],
+    "profiles": [
+      {
+        "agentToolTierProofs": [
+          {
+            "attempts": [
+              {
+                "completedAt": 1793832880035,
+                "finish": "tool-calls",
+                "outcome": "native-call",
+                "output": 512,
+                "startedAt": 1793832826255
+              }
+            ],
+            "callAt": 1793832879260,
+            "calls": 1,
+            "completedAt": 1793832880781,
+            "context": 32768,
+            "finish": "tool-calls",
+            "firstBodyAt": 1793832832183,
+            "id": "cb19394f-4fa7-4af8-ac6d-1a28486d16a0",
+            "outcome": "native-call",
+            "output": 512,
+            "proof": {
+              "at": 1793832880781,
+              "expiresAt": 1793919280781
+            },
+            "retryAfter": 1793919280781,
+            "scope": {
+              "backend": "ollama",
+              "configurationRevision": 1,
+              "deployment": null,
+              "digest": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "endpointId": "real-qwen",
+              "model": "muse-glimmer:30b",
+              "protocol": "native-tools-v1",
+              "providerVersion": "0.40.11",
+              "reasoning": "[true,\"[false,\\\"low\\\",\\\"medium\\\",\\\"high\\\",\\\"max\\\"]\",\"high\"]",
+              "runtimeEpoch": "40776:1793832712338782000"
+            },
+            "startedAt": 1793832825537,
+            "status": "verified",
+            "textChars": 0,
+            "textualIntent": false,
+            "validArguments": true,
+            "version": 1
+          }
+        ],
+        "backend": "ollama",
+        "calibration": {
+          "lastTunedAt": 1793833030276,
+          "samples": [
+            {
+              "concurrency": 1,
+              "configurationRevision": 1,
+              "generationMs": 11860,
+              "id": "41ed4f0b-5f79-49aa-91c8-861be37a70d8",
+              "inputTokens": 5466,
+              "latencyMs": 20710,
+              "maxGapMs": 8087,
+              "observedAt": 1793832901604,
+              "outcome": "success",
+              "outputKind": "tool",
+              "outputTokens": 115,
+              "queueMs": 0,
+              "requestClass": "generation",
+              "thermal": "warm",
+              "ttftMs": 8835
+            },
+            {
+              "concurrency": 1,
+              "configurationRevision": 1,
+              "generationMs": 97085,
+              "id": "f77e3b3a-677b-4caa-9c8d-71a19a68b8c2",
+              "inputTokens": 5638,
+              "latencyMs": 98808,
+              "maxGapMs": 39993,
+              "observedAt": 1793833000517,
+              "outcome": "success",
+              "outputKind": "tool",
+              "outputTokens": 903,
+              "queueMs": 0,
+              "requestClass": "generation",
+              "thermal": "warm",
+              "ttftMs": 966
+            },
+            {
+              "concurrency": 1,
+              "configurationRevision": 1,
+              "generationMs": 10393,
+              "id": "963291be-522f-4470-891b-aff486cea445",
+              "inputTokens": 6579,
+              "latencyMs": 11651,
+              "maxGapMs": 8334,
+              "observedAt": 1793833012367,
+              "outcome": "success",
+              "outputKind": "tool",
+              "outputTokens": 100,
+              "queueMs": 0,
+              "requestClass": "generation",
+              "thermal": "warm",
+              "ttftMs": 1248
+            },
+            {
+              "concurrency": 1,
+              "configurationRevision": 1,
+              "generationMs": 0,
+              "id": "eaade1de-2e24-440b-ab7a-9e9a0d0fe956",
+              "inputTokens": 6745,
+              "latencyMs": 8536,
+              "maxGapMs": 0,
+              "observedAt": 1793833021007,
+              "outcome": "success",
+              "outputKind": "tool",
+              "outputTokens": 74,
+              "queueMs": 0,
+              "requestClass": "generation",
+              "thermal": "warm",
+              "ttftMs": 8514
+            },
+            {
+              "concurrency": 1,
+              "configurationRevision": 1,
+              "generationMs": 0,
+              "id": "57154197-aff9-4e33-8951-8f29dc1e5068",
+              "inputTokens": 6885,
+              "latencyMs": 8656,
+              "maxGapMs": 0,
+              "observedAt": 1793833029760,
+              "outcome": "success",
+              "outputKind": "tool",
+              "outputTokens": 75,
+              "queueMs": 0,
+              "requestClass": "generation",
+              "thermal": "warm",
+              "ttftMs": 8630
+            }
+          ],
+          "tuning": {
+            "idleTimeoutMs": {
+              "configurationRevision": 1,
+              "sampleIds": [
+                "41ed4f0b-5f79-49aa-91c8-861be37a70d8",
+                "f77e3b3a-677b-4caa-9c8d-71a19a68b8c2",
+                "963291be-522f-4470-891b-aff486cea445",
+                "eaade1de-2e24-440b-ab7a-9e9a0d0fe956",
+                "57154197-aff9-4e33-8951-8f29dc1e5068"
+              ],
+              "updatedAt": 1793833030276
+            },
+            "prefillTimeoutMs": {
+              "configurationRevision": 1,
+              "sampleIds": [
+                "41ed4f0b-5f79-49aa-91c8-861be37a70d8",
+                "f77e3b3a-677b-4caa-9c8d-71a19a68b8c2",
+                "963291be-522f-4470-891b-aff486cea445",
+                "eaade1de-2e24-440b-ab7a-9e9a0d0fe956",
+                "57154197-aff9-4e33-8951-8f29dc1e5068"
+              ],
+              "updatedAt": 1793833030276
+            }
+          },
+          "version": 1
+        },
+        "contextCalibration": {
+          "allocation": "[\"de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1\",17585909265,13083722382]",
+          "attempts": [
+            {
+              "at": 1793832722092,
+              "context": 4096,
+              "finish": "length",
+              "latencyMs": 8971,
+              "loaded": 4096,
+              "outcome": "success",
+              "requested": 4096,
+              "thermal": "cold",
+              "think": "omitted"
+            },
+            {
+              "at": 1793832731855,
+              "context": 8192,
+              "finish": "length",
+              "latencyMs": 9716,
+              "loaded": 8192,
+              "outcome": "success",
+              "requested": 8192,
+              "thermal": "warm",
+              "think": "omitted"
+            },
+            {
+              "at": 1793832741548,
+              "context": 16384,
+              "finish": "length",
+              "latencyMs": 9647,
+              "loaded": 16384,
+              "outcome": "success",
+              "requested": 16384,
+              "thermal": "warm",
+              "think": "omitted"
+            },
+            {
+              "at": 1793832751440,
+              "context": 32768,
+              "finish": "length",
+              "latencyMs": 9839,
+              "loaded": 32768,
+              "outcome": "success",
+              "requested": 32768,
+              "thermal": "warm",
+              "think": "omitted"
+            },
+            {
+              "at": 1793832761516,
+              "context": 49152,
+              "finish": "length",
+              "latencyMs": 10028,
+              "loaded": 49152,
+              "outcome": "success",
+              "requested": 49152,
+              "thermal": "warm",
+              "think": "omitted"
+            },
+            {
+              "at": 1793832771414,
+              "context": 65536,
+              "finish": "length",
+              "latencyMs": 9846,
+              "loaded": 65536,
+              "outcome": "success",
+              "requested": 65536,
+              "thermal": "warm",
+              "think": "omitted"
+            },
+            {
+              "at": 1793832781648,
+              "context": 73728,
+              "finish": "length",
+              "latencyMs": 10188,
+              "loaded": 73728,
+              "outcome": "success",
+              "requested": 73728,
+              "thermal": "warm",
+              "think": "omitted"
+            }
+          ],
+          "expiresAt": 1793833681648,
+          "failedNext": null,
+          "failure": null,
+          "highest": 73728,
+          "id": "9bc2ae35-e3ac-46b2-92fc-c5ea55bef30d",
+          "retryAfter": 1793833681648,
+          "scope": {
+            "backend": "ollama",
+            "configurationRevision": 1,
+            "deployment": null,
+            "digest": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+            "endpointId": "real-qwen",
+            "model": "muse-glimmer:30b",
+            "providerVersion": "0.40.11",
+            "reasoning": "[true,\"[false,\\\"low\\\",\\\"medium\\\",\\\"high\\\",\\\"max\\\"]\",\"high\"]",
+            "runtimeEpoch": "40776:1793832712338782000"
+          },
+          "startedAt": 1793832713081,
+          "status": "verified",
+          "updatedAt": 1793832781648,
+          "version": 1
+        },
+        "createdAt": 1792559050175,
+        "deploymentId": null,
+        "endpointId": "real-qwen",
+        "evidence": [
+          {
+            "confidence": "observed",
+            "metric": "probe.requestedContext",
+            "observedAt": 1793832999823,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "measured",
+            "value": 32768
+          },
+          {
+            "confidence": "reported",
+            "metric": "probe.listed",
+            "observedAt": 1793832999823,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "backend-reported",
+            "value": true
+          },
+          {
+            "confidence": "reported",
+            "metric": "probe.vision",
+            "observedAt": 1793833000498,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "advertised",
+            "value": true
+          },
+          {
+            "confidence": "reported",
+            "metric": "probe.trainedForTools",
+            "observedAt": 1793833000498,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "advertised",
+            "value": true
+          },
+          {
+            "confidence": "reported",
+            "metric": "probe.thinking",
+            "observedAt": 1793833000498,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "advertised",
+            "value": true
+          },
+          {
+            "confidence": "reported",
+            "metric": "probe.thinkingControls",
+            "observedAt": 1793833000498,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "backend-reported",
+            "value": "[false,\"low\",\"medium\",\"high\",\"max\"]"
+          },
+          {
+            "confidence": "reported",
+            "metric": "probe.thinkingDefault",
+            "observedAt": 1793833000498,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "backend-reported",
+            "value": "high"
+          },
+          {
+            "confidence": "reported",
+            "metric": "probe.runtimeContext",
+            "observedAt": 1793833000498,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "backend-reported",
+            "value": "per-request"
+          },
+          {
+            "confidence": "reported",
+            "metric": "probe.advertisedContext",
+            "observedAt": 1793833000498,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "advertised",
+            "value": 131072
+          },
+          {
+            "confidence": "reported",
+            "metric": "probe.loaded",
+            "observedAt": 1793833000503,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "backend-reported",
+            "value": true
+          },
+          {
+            "confidence": "reported",
+            "metric": "probe.loadedContext",
+            "observedAt": 1793833000503,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "backend-reported",
+            "value": 32768
+          },
+          {
+            "confidence": "reported",
+            "metric": "probe.runtimeAllocation",
+            "observedAt": 1793833000503,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "backend-reported",
+            "value": "[\"de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1\",17500974609,13347743333]"
+          }
+        ],
+        "id": "[\"real-qwen\",\"muse-glimmer:30b\",null]",
+        "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+        "overrides": {},
+        "recommendations": {
+          "idleTimeoutMs": {
+            "confidence": "observed",
+            "expiresAt": 1794437830276,
+            "metric": "idleTimeoutMs",
+            "observedAt": 1793833030276,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "recommendation",
+            "value": 54000
+          },
+          "prefillTimeoutMs": {
+            "confidence": "observed",
+            "expiresAt": 1794437830276,
+            "metric": "prefillTimeoutMs",
+            "observedAt": 1793833030276,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "recommendation",
+            "value": 108000
+          },
+          "workingContext": {
+            "confidence": "observed",
+            "expiresAt": 1793833681648,
+            "metric": "workingContext",
+            "observedAt": 1793832781648,
+            "scope": {
+              "configurationRevision": 1,
+              "deploymentId": null,
+              "endpointId": "real-qwen",
+              "modelRevision": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+              "transportModelId": "muse-glimmer:30b"
+            },
+            "source": "measured",
+            "value": 73728
+          }
+        },
+        "toolVerification": {
+          "attempts": [
+            {
+              "completedAt": 1793832822655,
+              "finish": "tool-calls",
+              "outcome": "native-call",
+              "output": 512,
+              "startedAt": 1793832785555
+            }
+          ],
+          "callAt": 1793832821973,
+          "calls": 1,
+          "completedAt": 1793832823514,
+          "context": 73728,
+          "finish": "tool-calls",
+          "firstBodyAt": 1793832786815,
+          "id": "7a4774db-370c-42f5-803a-9316b57eb8a8",
+          "outcome": "native-call",
+          "output": 512,
+          "proof": {
+            "at": 1793832823514,
+            "expiresAt": 1793919223514
+          },
+          "retryAfter": 1793919223514,
+          "scope": {
+            "backend": "ollama",
+            "configurationRevision": 1,
+            "deployment": null,
+            "digest": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+            "endpointId": "real-qwen",
+            "model": "muse-glimmer:30b",
+            "protocol": "native-tools-v1",
+            "providerVersion": "0.40.11",
+            "reasoning": "[true,\"[false,\\\"low\\\",\\\"medium\\\",\\\"high\\\",\\\"max\\\"]\",\"high\"]",
+            "runtimeEpoch": "40776:1793832712338782000"
+          },
+          "startedAt": 1793832784823,
+          "status": "verified",
+          "textChars": 0,
+          "textualIntent": false,
+          "validArguments": true,
+          "version": 1
+        },
+        "transportModelId": "muse-glimmer:30b",
+        "updatedAt": 1793833030276
+      }
+    ],
+    "inventories": [
+      {
+        "backend": "ollama",
+        "configurationRevision": 1,
+        "connected": true,
+        "endpointId": "real-qwen",
+        "error": null,
+        "models": [
+          {
+            "chat": "supported",
+            "digest": "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1",
+            "id": "muse-glimmer:30b",
+            "modifiedAt": "2026-10-19T20:13:17.322928066+02:00",
+            "name": null,
+            "size": 18157010252
+          }
+        ],
+        "observedAt": 1793832999823
+      }
+    ]
+  }
+}
