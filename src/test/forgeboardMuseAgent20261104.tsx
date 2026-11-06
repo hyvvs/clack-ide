@@ -68,6 +68,7 @@ import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import { assertRequestBudget } from "@/modules/ai/lib/contextBudget";
 import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
 import { AcceptanceApprovalBlocked, observeAcceptanceRun, type AcceptanceSnapshot } from "@/test/acceptanceApprovalLifecycle";
+import { shouldObserveForgeBoardCorrection } from "@/test/forgeboardCorrectionMode";
 
 type Phase =
   | "stream-diagnostic"
@@ -616,7 +617,13 @@ export async function runRealLocalProduct(config: Configuration) {
           JSON.stringify(planSnapshots[planSnapshots.length - 1])
         )
           planSnapshots.push(plan);
-        if (config.realProduct?.singleSpec || alreadyCorrected || correcting || harnessStop) return;
+        if (!shouldObserveForgeBoardCorrection({
+          phase,
+          singleSpec: config.realProduct?.singleSpec === true,
+          alreadyCorrected,
+          correcting,
+          harnessStopped: !!harnessStop,
+        })) return;
         const snapshot = JSON.stringify({ parts: parts ?? [], plan });
         if (observed === snapshot) return;
         observed = snapshot;
