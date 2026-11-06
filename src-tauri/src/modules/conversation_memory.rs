@@ -16,6 +16,10 @@ const MAX_RECORD: usize = 256 * 1024;
 const MAX_REVISIONS: usize = 32;
 const MAX_SOURCES: usize = 128;
 const SESSION_STORE: &str = "terax-ai-sessions.json";
+// Opt-in revision coverage over complete SDK Agent steps. The original source
+// remains a single durable UI assistant message; no synthetic UI messages are
+// ever written to the session store.
+const AGENT_STEP_UNITS: &str = "agent-steps-v1";
 static MEMORY_EPOCH: LazyLock<String> =
     LazyLock::new(|| format!("{}:{}", std::process::id(), now()));
 pub mod checkpoint;
@@ -124,6 +128,10 @@ pub enum SourceLocator {
         message_id: String,
         part_index: usize,
     },
+    AgentStep {
+        message_id: String,
+        step_index: usize,
+    },
     TaskResult {
         task_id: String,
     },
@@ -196,6 +204,8 @@ pub struct Coverage {
     digest: String,
     latest_message_id: String,
     source_message_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unit_mode: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -219,6 +229,8 @@ pub struct Candidate {
     policy_version: String,
     start: usize,
     end: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unit_mode: Option<String>,
     sources: Vec<SourceLocator>,
     claims: Vec<Claim>,
 }
@@ -493,13 +505,69 @@ fn check_owner(originals: &Originals, owner: &Owner) -> Result<()> {
     Ok(())
 }
 
+fn agent_step_ranges(message: &Value) -> Option<Vec<(usize, usize)>> {
+    if message["role"] != "assistant" { return None; }
+    let id = message["id"].as_str()?;
+    // Reserve the suffix for the deterministic synthetic unit identity.
+    if id.len() > 225 || id.is_empty() || id.chars().any(char::is_control) { return None; }
+    let parts = message["parts"].as_array()?;
+    if parts.is_empty() || parts[0]["type"] != "step-start" { return None; }
+    let mut result = vec![];
+    let mut start = 0;
+    for index in 1..parts.len() {
+        if parts[index]["type"] == "step-start" {
+            result.push((start,index));
+            start = index;
+        }
+    }
+    result.push((start,parts.len()));
+    Some(result)
+}
+
+fn agent_step_value(message: &Value, step_index: usize) -> Result<Value> {
+    let ranges = agent_step_ranges(message).ok_or("memory_invalid_agent_steps")?;
+    let (start,end) = *ranges.get(step_index).ok_or("memory_missing_agent_step")?;
+    let id = message["id"].as_str().ok_or("memory_missing_message_identity")?;
+    let parts = message["parts"].as_array().ok_or("memory_invalid_agent_steps")?;
+    Ok(json!({"id": format!("agent-step:{id}:{step_index}"), "role": "assistant", "parts": &parts[start..end]}))
+}
+
+/// Canonical virtual source projection. Only the opt-in memory revision uses
+/// this numbering: ordinary revisions continue to count durable UI messages.
+fn coverage_units(messages: &[Value], mode: Option<&str>) -> Result<Vec<Value>> {
+    match mode {
+        None => Ok(messages.to_vec()),
+        Some(AGENT_STEP_UNITS) => {
+            let mut result = vec![];
+            for message in messages {
+                if let Some(ranges) = agent_step_ranges(message) {
+                    for i in 0..ranges.len() { result.push(agent_step_value(message,i)?); }
+                } else { result.push(message.clone()); }
+            }
+            // Synthetic identities must not shadow another durable message or
+            // another virtual unit. Both the frontend grouping and the native
+            // commit/reload contract reject collisions independently.
+            let mut ids = BTreeSet::new();
+            for source in &result {
+                let id = source["id"].as_str().ok_or("memory_missing_message_identity")?;
+                valid_id(id)?;
+                if !ids.insert(id) {
+                    return Err("memory_duplicate_message_identity".into());
+                }
+            }
+            Ok(result)
+        },
+        _ => Err("memory_unknown_coverage_mode".into()),
+    }
+}
+
 fn source_value(
     originals: &Originals,
     owner: &Owner,
     locator: &SourceLocator,
 ) -> Result<(Value, Vec<String>)> {
     match locator {
-        SourceLocator::Message { message_id } | SourceLocator::Part { message_id, .. } => {
+        SourceLocator::Message { message_id } | SourceLocator::Part { message_id, .. } | SourceLocator::AgentStep { message_id, .. } => {
             let message = originals
                 .messages
                 .iter()
@@ -510,6 +578,9 @@ fn source_value(
                     .as_array()
                     .and_then(|parts| parts.get(*part_index))
                     .ok_or("memory_missing_part")?,
+                SourceLocator::AgentStep { step_index, .. } => {
+                    return Ok((agent_step_value(message, *step_index)?, vec![owner.session_id.clone()]));
+                },
                 _ => message,
             };
             Ok((value.clone(), vec![owner.session_id.clone()]))
@@ -701,6 +772,8 @@ fn read_revision(root: &Path, session_id: &str, id: &str) -> Result<Revision> {
         || revision.policy_version.is_empty()
         || revision.policy_version.len() > 128
         || !valid_hash(&revision.coverage.digest)
+        || (revision.coverage.unit_mode.as_deref() != None
+            && revision.coverage.unit_mode.as_deref() != Some(AGENT_STEP_UNITS))
         || !valid_hash(&revision.preparation.source.transcript_hash)
         || !valid_hash(&revision.preparation.source.profile_hash)
         || revision.coverage.start >= revision.coverage.end
@@ -849,10 +922,20 @@ fn prepare_revision(
         return Err("memory_stale_preparation".into());
     }
     if let Some(previous) = manifest.revisions.last() {
-        read_revision(root, &manifest.session_id, previous)?;
+        let previous = read_revision(root, &manifest.session_id, previous)?;
+        // Never reinterpret an existing persisted message-index revision using
+        // a step-index cursor (or vice versa) without an explicit migration.
+        if previous.coverage.unit_mode != candidate.unit_mode {
+            return Err("memory_coverage_mode_migration_required".into());
+        }
+    }
+    let source_units = coverage_units(&originals.messages, candidate.unit_mode.as_deref())?;
+    if (candidate.unit_mode.as_deref() == Some(AGENT_STEP_UNITS))
+        != (candidate.policy_version == "c1b-extraction-agent-steps-v1") {
+        return Err("memory_coverage_policy_mismatch".into());
     }
     if candidate.start >= candidate.end
-        || candidate.end > originals.messages.len()
+        || candidate.end > source_units.len()
         || candidate.policy_version.is_empty()
         || candidate.policy_version.len() > 128
         || candidate.sources.is_empty()
@@ -890,12 +973,13 @@ fn prepare_revision(
         coverage: Coverage {
             start: candidate.start,
             end: candidate.end,
-            digest: hash(&originals.messages[candidate.start..candidate.end])?,
-            latest_message_id: originals.messages[candidate.end - 1]["id"]
+            digest: hash(&source_units[candidate.start..candidate.end])?,
+            latest_message_id: source_units[candidate.end - 1]["id"]
                 .as_str()
                 .ok_or("memory_missing_message_identity")?
                 .into(),
-            source_message_count: originals.messages.len(),
+            source_message_count: source_units.len(),
+            unit_mode: candidate.unit_mode,
         },
         preparation: candidate.preparation,
         evidence,
@@ -956,8 +1040,10 @@ fn load(root: &Path, content: &Path, originals: &Originals, owner: &Owner) -> Re
         }
         verify_evidence(root, content, &revision.evidence, originals)?;
         let coverage = &revision.coverage;
-        source_changed = coverage.end > originals.messages.len()
-            || hash(&originals.messages[coverage.start..coverage.end])? != coverage.digest;
+        let source_units = coverage_units(&originals.messages, coverage.unit_mode.as_deref())?;
+        uncovered_messages = source_units.len();
+        source_changed = coverage.end > source_units.len()
+            || hash(&source_units[coverage.start..coverage.end])? != coverage.digest;
         if !source_changed {
             uncovered_messages -= coverage.end - coverage.start;
         }

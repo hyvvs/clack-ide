@@ -351,7 +351,8 @@ export function createConversationRetriever(options: {
           const messageId =
             evidence &&
             (evidence.locator.kind === "message" ||
-              evidence.locator.kind === "part")
+              evidence.locator.kind === "part" ||
+              evidence.locator.kind === "agentStep")
               ? evidence.locator.messageId
               : id;
           const n = options.originals.findIndex(
@@ -390,7 +391,8 @@ export function createConversationRetriever(options: {
                 );
               if (
                 evidence.locator.kind === "message" ||
-                evidence.locator.kind === "part"
+                evidence.locator.kind === "part" ||
+                evidence.locator.kind === "agentStep"
               ) {
                 const id = evidence.locator.messageId;
                 const n = options.originals.findIndex((m) => m.id === id);

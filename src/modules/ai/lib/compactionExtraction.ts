@@ -28,6 +28,11 @@ export const COMPACTION_POLICY = Object.freeze({
   claimAllowanceTokens: 128,
 });
 
+/** Opt-in durable source cursor for completed Agent steps inside a single SDK
+ * assistant UI message. Existing whole-message revisions retain their policy. */
+export const AGENT_STEP_COMPACTION_VERSION = "c1b-extraction-agent-steps-v1";
+export const AGENT_STEP_UNIT_MODE = "agent-steps-v1";
+
 export class CompactionError extends ContextBudgetError {
   constructor(code: string, detail: string, budget?: ContextBudget) {
     super(

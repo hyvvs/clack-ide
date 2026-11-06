@@ -41,7 +41,7 @@ import { awaitSessionWrites } from "@/modules/ai/lib/sessions";
 import { loadConversationMemory } from "@/modules/ai/lib/conversationMemory";
 import { conversationCompactionUnits } from "@/modules/ai/lib/conversationCompaction";
 import { planCompaction } from "@/modules/ai/lib/compactionPlan";
-import { COMPACTION_POLICY } from "@/modules/ai/lib/compactionExtraction";
+import { COMPACTION_POLICY, AGENT_STEP_COMPACTION_VERSION, AGENT_STEP_UNIT_MODE } from "@/modules/ai/lib/compactionExtraction";
 import { validatePeerReview } from "@/modules/ai/lib/peerReview";
 import {
   measureRequest,
@@ -512,9 +512,15 @@ async function prepareTask(
     await check();
     if (view.sourceChanged) throw new Error("peer_handoff_history_changed");
     if (view.revision) {
-      if (view.revision.policyVersion !== COMPACTION_POLICY.version || view.revision.coverage.start !== 0)
+      const stepMode = view.revision.coverage.unitMode === AGENT_STEP_UNIT_MODE;
+      if (![COMPACTION_POLICY.version, AGENT_STEP_COMPACTION_VERSION].includes(view.revision.policyVersion) ||
+          stepMode !== (view.revision.policyVersion === AGENT_STEP_COMPACTION_VERSION) ||
+          view.revision.coverage.start !== 0)
         throw new Error("peer_handoff_memory_policy_changed");
-      const units = await conversationCompactionUnits(history, materialized.slice(0, history.length), sessionId);
+      const units = await conversationCompactionUnits(history, materialized.slice(0, history.length), sessionId, false,
+        stepMode);
+      if (stepMode && !units.some(unit => unit.source))
+        throw new Error("peer_handoff_agent_steps_missing");
       const preparedHistory = planCompaction({ units, system: [{ role: "system", content: system }], tools: exposure.schemas, limits, threshold: 1, memory: { end: view.revision.coverage.end, claims: view.revision.claims } });
       recipientMessages = [...preparedHistory.messages.slice(1), ...await convertToModelMessages(materialized.slice(history.length))];
     }

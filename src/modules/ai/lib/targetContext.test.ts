@@ -213,6 +213,45 @@ function revision(c: MemoryCandidate): MemoryRevision {
   };
 }
 describe("uncommitted target drafts", () => {
+  it("preserves Agent-step source coordinates and exact locators across staged target previews", async () => {
+    const captured = source();
+    const draft = createTargetDraft(captured);
+    const step: MemoryCandidate = {
+      ...candidate(captured),
+      policyVersion: "c1b-extraction-agent-steps-v1",
+      unitMode: "agent-steps-v1",
+      end: 2,
+      sources: [{ kind: "agentStep", messageId: "original-assistant", stepIndex: 0 }],
+    };
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      expect(command).toBe("target_context_preview");
+      const received = (args as { candidate: MemoryCandidate }).candidate;
+      expect(received.unitMode).toBe("agent-steps-v1");
+      const preview = revision(received);
+      preview.coverage.unitMode = "agent-steps-v1";
+      preview.coverage.latestMessageId = "agent-step:original-assistant:1";
+      preview.coverage.sourceMessageCount = 4;
+      preview.evidence[0].locator = { kind: "agentStep", messageId: "original-assistant", stepIndex: 0 };
+      return preview;
+    });
+    const id = await draft.memory.commit(step);
+    expect(draft.view().revision?.coverage.unitMode).toBe("agent-steps-v1");
+    expect(draft.view().uncoveredMessages).toBe(2);
+    expect(draft.candidate()).toMatchObject({
+      policyVersion: "c1b-extraction-agent-steps-v1", unitMode: "agent-steps-v1",
+      end: 2,
+    });
+    await draft.memory.commit({
+      ...step,
+      end: 3,
+      sources: [{ kind: "retained", revisionId: id, evidenceId: "d".repeat(64) }],
+    });
+    expect(draft.candidate()?.sources).toEqual([
+      { kind: "agentStep", messageId: "original-assistant", stepIndex: 0 },
+    ]);
+    expect(captured.view.revision).toBeNull();
+  });
+
   it("keeps original memory unchanged and resolves staged citations back to originals", async () => {
     const captured = source();
     const before = structuredClone(captured);

@@ -92,12 +92,16 @@ fn validate_snapshot(snapshot: &Snapshot, originals: &Originals) -> Result<bool>
     }
     if let Some(revision) = &snapshot.revision {
         check_owner(originals, &revision.preparation.owner)?;
+        let mode = revision.coverage.unit_mode.as_deref();
+        let source_units = coverage_units(&originals.messages[..snapshot.source_count], mode)?;
         if revision.schema_version != SCHEMA
-            || revision.policy_version != "c1b-extraction-v1"
+            || (revision.policy_version != "c1b-extraction-v1"
+                && revision.policy_version != "c1b-extraction-agent-steps-v1")
+            || (mode == Some(AGENT_STEP_UNITS)) != (revision.policy_version == "c1b-extraction-agent-steps-v1")
             || revision.coverage.start != 0
-            || revision.coverage.end > snapshot.source_count
+            || revision.coverage.end > source_units.len()
             || revision.coverage.end == 0
-            || hash(&originals.messages[..revision.coverage.end])? != revision.coverage.digest
+            || hash(&source_units[..revision.coverage.end])? != revision.coverage.digest
         {
             return Err("target_context_corrupt".into());
         }
@@ -464,6 +468,47 @@ mod tests {
             .push(json!({"id":"new","role":"user","parts":[]}));
         assert!(validate_snapshot(&snapshot, &f.originals).unwrap());
         f.originals.messages[0]["parts"][0]["text"] = json!("changed requirement");
+        assert!(!validate_snapshot(&snapshot, &f.originals).unwrap());
+    }
+
+    #[test]
+    fn virtual_agent_step_target_snapshot_keeps_exact_source_and_mode() {
+        let mut f = Fixture::new();
+        f.originals.messages[1]["parts"] = json!([
+            {"type":"step-start"},
+            {"type":"tool-write_file","toolCallId":"write","state":"output-available",
+                "input":{"path":"src/a.ts"},"output":{"ok":true,"clackWorkspaceWrite":true}},
+            {"type":"step-start"},
+            {"type":"tool-bash_run","toolCallId":"failure","state":"output-available",
+                "input":{"command":"false"},"output":{"error":"exit 1"}},
+            {"type":"step-start"},
+            {"type":"text","text":"Current working set"}
+        ]);
+        let mut candidate = f.candidate();
+        candidate.policy_version = "c1b-extraction-agent-steps-v1".into();
+        candidate.unit_mode = Some(AGENT_STEP_UNITS.into());
+        candidate.end = 3;
+        candidate.sources.push(SourceLocator::AgentStep { message_id: "a1".into(), step_index: 0 });
+        candidate.sources.push(SourceLocator::AgentStep { message_id: "a1".into(), step_index: 1 });
+        let revision = prepare_revision(&f.root, &f.content, &f.originals, candidate, false, |_| Ok(())).unwrap().1;
+        let next = switched_session(&f.originals, &request(&f), Some(revision)).unwrap();
+        let snapshot: Snapshot = serde_json::from_value(next["targetContext"].clone()).unwrap();
+        assert!(validate_snapshot(&snapshot, &f.originals).unwrap());
+        assert_eq!(snapshot.revision.as_ref().unwrap().coverage.unit_mode.as_deref(), Some(AGENT_STEP_UNITS));
+        assert_eq!(snapshot.revision.as_ref().unwrap().coverage.latest_message_id, "agent-step:a1:1");
+        let mut mismatch = snapshot.clone();
+        mismatch.revision.as_mut().unwrap().coverage.unit_mode = None;
+        mismatch.integrity = snapshot_integrity(&mismatch).unwrap();
+        assert!(validate_snapshot(&mismatch, &f.originals).is_err());
+        mismatch = snapshot.clone();
+        mismatch.revision.as_mut().unwrap().policy_version = "c1b-extraction-v1".into();
+        mismatch.integrity = snapshot_integrity(&mismatch).unwrap();
+        assert!(validate_snapshot(&mismatch, &f.originals).is_err());
+        // A different continuation to the *same* original UI message is a
+        // different source snapshot. It cannot silently reuse staged context.
+        f.originals.messages[1]["parts"].as_array_mut().unwrap().extend([
+            json!({"type":"step-start"}), json!({"type":"text","text":"New continuation"})
+        ]);
         assert!(!validate_snapshot(&snapshot, &f.originals).unwrap());
     }
 

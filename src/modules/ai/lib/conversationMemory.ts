@@ -18,6 +18,7 @@ export type MemoryPreparation = {
 export type MemorySourceLocator =
   | { kind: "message"; messageId: string }
   | { kind: "part"; messageId: string; partIndex: number }
+  | { kind: "agentStep"; messageId: string; stepIndex: number }
   | { kind: "taskResult"; taskId: string }
   | { kind: "artifact"; taskId: string; artifactId: string }
   | { kind: "retained"; revisionId: string; evidenceId: string };
@@ -61,6 +62,7 @@ export type MemoryCandidate = {
   policyVersion: string;
   start: number;
   end: number;
+  unitMode?: "agent-steps-v1";
   sources: MemorySourceLocator[];
   claims: MemoryClaim[];
 };
@@ -77,6 +79,7 @@ export type MemoryRevision = {
     digest: string;
     latestMessageId: string;
     sourceMessageCount: number;
+    unitMode?: "agent-steps-v1";
   };
   evidence: MemoryEvidence[];
   claims: MemoryClaim[];

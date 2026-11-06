@@ -150,6 +150,34 @@ function fixture(sessionId = "a") {
 }
 
 describe("automatic same-conversation evidence retrieval", () => {
+  it("resolves virtual Agent-step evidence hashes to their original durable assistant message", async () => {
+    const f = fixture();
+    const evidenceId = "f".repeat(64);
+    if (!f.view.revision) throw new Error("Expected committed fixture revision");
+    f.view.revision.policyVersion = "c1b-extraction-agent-steps-v1";
+    f.view.revision.coverage.unitMode = "agent-steps-v1";
+    f.view.revision.evidence.push({
+      id: evidenceId, digest: "d".repeat(64), sourceRevision: 1,
+      locator: { kind: "agentStep", messageId: "early", stepIndex: 0 },
+      contentIds: [], relatedSessions: ["a"],
+    });
+    f.view.revision.claims.push({
+      id: "stale-step", section: "errors", status: "stale",
+      text: "Historical port 1420 step requires original verification",
+      sources: [evidenceId], observedAt: 1, contradicts: [],
+    });
+    const originalGroups = f.groups.map(group => ({ ...group, protected: true }));
+    const anchored = f.make();
+    expect(anchored.request("verify the original port 1420 observation", evidenceId)).toMatchObject({ status: "queued" });
+    const output = await anchored.prepare(f.view, originalGroups, f.messages, limits, []);
+    expect(JSON.stringify(output)).toContain("Do NOT use port 8080");
+    expect(f.read).toHaveBeenCalledWith(expect.objectContaining({ messageIds: ["early"] }));
+    const recalled = f.make();
+    expect(recalled.request("port 1420")).toMatchObject({ status: "queued" });
+    const unresolvedOutput = await recalled.prepare(f.view, originalGroups, f.messages, limits, []);
+    expect(JSON.stringify(unresolvedOutput)).toContain("deployed proxy requires it");
+  });
+
   it("recovers the early decision absent from summary with exact negation and links", async () => {
     const f = fixture();
     const before = JSON.stringify([f.originals, f.view]);

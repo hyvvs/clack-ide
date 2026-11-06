@@ -7,6 +7,8 @@ import {
 } from "ai";
 import {
   COMPACTION_POLICY,
+  AGENT_STEP_COMPACTION_VERSION,
+  AGENT_STEP_UNIT_MODE,
   CompactionError,
   createBoundedExtractor,
   extractionMessages,
@@ -16,6 +18,7 @@ import {
 } from "@/modules/ai/lib/compactionExtraction";
 import {
   planCompaction,
+  groupCompactionUnits,
   confirmedWorkspaceWrites,
   type CompactionUnit,
 } from "@/modules/ai/lib/compactionPlan";
@@ -136,7 +139,8 @@ function usable(view: MemoryView): void {
     );
   if (
     view.revision &&
-    (view.revision.policyVersion !== COMPACTION_POLICY.version ||
+    (![COMPACTION_POLICY.version, AGENT_STEP_COMPACTION_VERSION].includes(view.revision.policyVersion) ||
+      (view.revision.coverage.unitMode === AGENT_STEP_UNIT_MODE) !== (view.revision.policyVersion === AGENT_STEP_COMPACTION_VERSION) ||
       view.revision.coverage.start !== 0)
   )
     throw new CompactionError(
@@ -145,19 +149,44 @@ function usable(view: MemoryView): void {
     );
 }
 
-export async function conversationCompactionUnits(originals: UIMessage[], materialized: UIMessage[], sessionId: string, keepReasoning = false): Promise<CompactionUnit[]> {
+export async function conversationCompactionUnits(originals: UIMessage[], materialized: UIMessage[], sessionId: string, keepReasoning = false, stepUnits = false): Promise<CompactionUnit[]> {
   const projected = await projectCompletedPeerHistory(originals, sessionId, usePeerTaskStore.getState().tasks);
   const units: CompactionUnit[] = [];
   for (const [index, original] of originals.entries()) {
     const message = projected[index]?.role !== original.role ? projected[index] : materialized[index];
     if (!message || message.id !== original.id)
       throw new CompactionError("source-identity", "Materialized context no longer matches the original conversation.");
-    units.push({
-      messageId: original.id,
-      role: message.role,
-      messages: pruneMessages({ messages: await convertToModelMessages([message]), reasoning: keepReasoning ? "none" : index < originals.length - 1 ? "all" : "before-last-message", emptyMessages: "remove" }),
-      hasContentReferences: original.parts.some(part => part.type === "file" || part.type.startsWith("data-")),
-    });
+    const pruning = keepReasoning ? "none" : index < originals.length - 1 ? "all" : "before-last-message";
+    const converted = pruneMessages({ messages: await convertToModelMessages([message]), reasoning: pruning, emptyMessages: "remove" });
+    const ordinary: CompactionUnit = { messageId: original.id, role: message.role, messages: converted,
+      hasContentReferences: original.parts.some(part => part.type === "file" || part.type.startsWith("data-")) };
+    if (!stepUnits || original.role !== "assistant" || message.role !== "assistant" ||
+        !original.id || new TextEncoder().encode(original.id).byteLength > 225 ||
+        /[\u0000-\u001f\u007f-\u009f]/u.test(original.id) ||
+        original.parts[0]?.type !== "step-start") {
+      units.push(ordinary);
+      continue;
+    }
+    // Match native source projection exactly. Convert every complete step using
+    // the existing SDK path; *never* alter provider-visible role/content/order.
+    const starts = original.parts.flatMap((part, partIndex) => part.type === "step-start" ? [partIndex] : []);
+    if (starts[0] !== 0) throw new CompactionError("segmentation", "Agent step sources cannot be aligned with original message parts.");
+    const split: CompactionUnit[] = [];
+    for (const [stepIndex, partStart] of starts.entries()) {
+      const partEnd = starts[stepIndex + 1] ?? original.parts.length;
+      const sliced: UIMessage = { id: `agent-step:${original.id}:${stepIndex}`, role: "assistant", parts: message.parts.slice(partStart, partEnd) };
+      // "before-last-message" applies to the *whole* original assistant
+      // transcript. Applying it to each sliced step would expose older
+      // reasoning that the unsplit SDK message correctly prunes.
+      const stepPruning = !keepReasoning && stepIndex < starts.length - 1 ? "all" : pruning;
+      const stepMessages = pruneMessages({ messages: await convertToModelMessages([sliced]), reasoning: stepPruning, emptyMessages: "remove" });
+      split.push({ messageId: sliced.id, role: "assistant", messages: stepMessages,
+        hasContentReferences: original.parts.slice(partStart, partEnd).some(part => part.type === "file" || part.type.startsWith("data-")),
+        source: { kind: "agentStep", messageId: original.id, stepIndex, partStart, partEnd } });
+    }
+    if (JSON.stringify(split.flatMap(unit => unit.messages)) !== JSON.stringify(converted))
+      throw new CompactionError("segmentation", "Agent step projection changed the original SDK context; no alternative context was sent.");
+    units.push(...split);
   }
   return units;
 }
@@ -205,7 +234,28 @@ export async function createConversationCompactor(options: {
       );
   };
   check();
-  const units = await conversationCompactionUnits(context.originals, options.materialized, context.owner.sessionId, options.keepReasoning);
+  const legacyUnits = await conversationCompactionUnits(context.originals, options.materialized, context.owner.sessionId, options.keepReasoning);
+  let candidateUnits: CompactionUnit[] | undefined;
+  let reconstructibleStepUnits: CompactionUnit[] | undefined;
+  try {
+    const candidate = await conversationCompactionUnits(context.originals, options.materialized, context.owner.sessionId, options.keepReasoning, true);
+    if (candidate.length > legacyUnits.length) reconstructibleStepUnits = candidate;
+    // Do not alter the established short, successful tool-history/verified-
+    // write path merely because an assistant happened to emit step markers.
+    // Enable the new coordinate system when a *protected* coarse assistant
+    // group actually hides independently eligible completed Agent steps.
+    const coarseProtectedAssistant = groupCompactionUnits(legacyUnits).some(group =>
+      group.protected && legacyUnits.slice(group.start, group.end).some(unit => unit.role === "assistant"));
+    if (reconstructibleStepUnits && coarseProtectedAssistant &&
+        groupCompactionUnits(candidate).some(group => !group.protected &&
+          candidate.slice(group.start, group.end).some(unit => unit.source)))
+      candidateUnits = candidate;
+  } catch (error) {
+    if (!(error instanceof CompactionError) || error.code !== "compaction-segmentation") throw error;
+    // Old whole-message policy remains valid for noncanonical Agent histories.
+  }
+  let units = legacyUnits;
+  let unitMode: "agent-steps-v1" | undefined;
   check();
   let view: MemoryView | undefined;
   let extractor: ReturnType<typeof createBoundedExtractor> | undefined;
@@ -306,6 +356,27 @@ export async function createConversationCompactor(options: {
       : next;
     return view;
   };
+  if (candidateUnits || context.originals.some(message => message.parts.some(part => part.type === "step-start"))) {
+    // The durable memory revision decides which coordinate system to use.
+    // Never reinterpret a previous message-index revision as step indices.
+    const revision = (await load()).revision;
+    const policy = targetSeed?.policyVersion ?? revision?.policyVersion;
+    if ((policy === AGENT_STEP_COMPACTION_VERSION && reconstructibleStepUnits) ||
+        (!policy && candidateUnits)) {
+      units = policy === AGENT_STEP_COMPACTION_VERSION ? reconstructibleStepUnits! : candidateUnits!;
+      unitMode = AGENT_STEP_UNIT_MODE;
+    } else if (policy === AGENT_STEP_COMPACTION_VERSION) {
+      throw new CompactionError("segmentation", "Durable Agent step coverage cannot be reconstructed from the current original source.");
+    } else if (policy && policy !== COMPACTION_POLICY.version) {
+      throw new CompactionError("policy", "Agent memory coverage requires an explicit policy migration.");
+    }
+  } else {
+    // A stored step-index cursor cannot be decoded with whole-message units.
+    // This intentionally fails closed rather than silently skipping evidence.
+    const revision = targetSeed;
+    if (revision?.coverage.unitMode === AGENT_STEP_UNIT_MODE)
+      throw new CompactionError("segmentation", "The original Agent step boundaries are no longer available.");
+  }
   const summarize = (route: {
     model: LanguageModel;
     limits: () => Promise<BudgetLimits>;
@@ -451,7 +522,13 @@ export async function createConversationCompactor(options: {
           view && retriever
             ? await retriever.prepare(
                 view,
-                current.groups,
+                unitMode
+                  // Retrieval indexes the original UI transcript, not the
+                  // virtual step coordinate system. Explicit requests can
+                  // still recover exact original messages, but no automatic
+                  // whole-assistant retrieval can be treated as optional.
+                  ? legacyUnits.map((_, index) => ({start:index,end:index+1,protected:true}))
+                  : current.groups,
                 current.messages,
                 limits,
                 tools,
@@ -507,9 +584,18 @@ export async function createConversationCompactor(options: {
           for (const group of current.groups.filter(
             (g) => g.start >= start && g.end <= current.tailStart,
           )) {
-            const proposed: MemorySourceLocator[] = units
-              .slice(start, group.end)
-              .map((unit) => ({ kind: "message", messageId: unit.messageId }));
+            // V2's durable coverage may advance over pinned/failed tool units,
+            // but those units remain in the prompt verbatim and are NEVER
+            // submitted to the lossy evidence extractor as completed work.
+            const sourceUnits = unitMode
+              ? current.groups.filter(g => !g.protected && g.start >= start && g.end <= group.end)
+                  .flatMap(g => units.slice(g.start, g.end))
+              : units.slice(start, group.end);
+            if (!sourceUnits.length) { end = group.end; continue; }
+            const proposed: MemorySourceLocator[] = sourceUnits
+              .map((unit) => unit.source
+                ? { kind: "agentStep", messageId: unit.source.messageId, stepIndex: unit.source.stepIndex }
+                : { kind: "message", messageId: unit.messageId });
             if (
               proposed.length + (captured.revision?.evidence.length ?? 0) >
               COMPACTION_POLICY.maxEvidence
@@ -528,13 +614,17 @@ export async function createConversationCompactor(options: {
             }
             check();
             const sources: ExtractionSource[] = [];
-            for (const [offset, expected] of context.originals
-              .slice(start, group.end)
-              .entries()) {
+            for (const unit of sourceUnits) {
+              const ancestor = context.originals.find(message => message.id === (unit.source?.messageId ?? unit.messageId));
+              if (!ancestor) throw new CompactionError("source-identity", "The original Agent history source was not found.");
+              const expected: UIMessage = unit.source
+                ? { id: unit.messageId, role: "assistant", parts: ancestor.parts.slice(unit.source.partStart, unit.source.partEnd) }
+                : ancestor;
               const item = original.find(
                 (s) =>
-                  s.evidence.locator.kind === "message" &&
-                  s.evidence.locator.messageId === expected.id,
+                  (unit.source
+                    ? s.evidence.locator.kind === "agentStep" && s.evidence.locator.messageId === unit.source.messageId && s.evidence.locator.stepIndex === unit.source.stepIndex
+                    : s.evidence.locator.kind === "message" && s.evidence.locator.messageId === unit.messageId),
               );
               if (!item || !equalJson(item.value, expected))
                 throw new CompactionError(
@@ -546,7 +636,7 @@ export async function createConversationCompactor(options: {
               if (text.length)
                 sources.push({
                   evidence: item.evidence,
-                  role: units[start + offset].role,
+                  role: unit.role,
                   passages: text,
                 });
             }
@@ -587,7 +677,8 @@ export async function createConversationCompactor(options: {
             : [];
           const candidate = {
             preparation: captured.preparation,
-            policyVersion: COMPACTION_POLICY.version,
+            policyVersion: unitMode ? AGENT_STEP_COMPACTION_VERSION : COMPACTION_POLICY.version,
+            ...(unitMode ? {unitMode} : {}),
             start: 0,
             end,
             sources: [...retained, ...locators],

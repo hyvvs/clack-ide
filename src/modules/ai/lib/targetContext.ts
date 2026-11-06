@@ -79,6 +79,7 @@ export function createTargetDraft(source: SwitchSource) {
     policyVersion: revision.policyVersion,
     start: revision.coverage.start,
     end: revision.coverage.end,
+    ...(revision.coverage.unitMode ? {unitMode: revision.coverage.unitMode} : {}),
     sources: revision.evidence.map((item) => item.locator),
     claims: revision.claims,
   });

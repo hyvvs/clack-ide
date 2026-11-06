@@ -3,6 +3,7 @@ import { createConversationCompactor } from "@/modules/ai/lib/conversationCompac
 import type {
   MemoryCandidate,
   MemoryEvidence,
+  MemorySourceLocator,
   MemoryView,
 } from "@/modules/ai/lib/conversationMemory";
 import type { LanguageModel, UIMessage } from "ai";
@@ -65,16 +66,46 @@ export function compactionFixture(originals = history(), owner = defaultOwner) {
     (originals.findIndex((m) => m.id === id) + 1)
       .toString(16)
       .padStart(64, "0");
+  const stepBounds = (message: UIMessage) => {
+    const starts = message.parts.flatMap((part, index) => part.type === "step-start" ? [index] : []);
+    return starts[0] === 0
+      ? starts.map((start, index) => [start, starts[index + 1] ?? message.parts.length] as const)
+      : [];
+  };
+  const sourceUnits = (mode?: "agent-steps-v1") =>
+    originals.flatMap(message => mode && message.role === "assistant" && stepBounds(message).length
+      ? stepBounds(message).map(([start, end], index) => ({
+          id: `agent-step:${message.id}:${index}`, role: "assistant", parts: message.parts.slice(start, end),
+        }))
+      : [message]);
+  const locatorId = (locator: MemorySourceLocator) => {
+    if (locator.kind === "agentStep")
+      return ((originals.findIndex(m => m.id === locator.messageId) + 1) * 1000 + locator.stepIndex + 1)
+        .toString(16).padStart(64, "0");
+    if (locator.kind === "message") return sourceId(locator.messageId);
+    throw new Error("fixture unsupported locator");
+  };
   const read = vi.fn(async (prep, sources) => {
     if (JSON.stringify(prep) !== JSON.stringify(view.preparation))
       throw new Error("memory_stale_preparation");
-    return sources.map((locator: { messageId: string }) => {
-      const value = originals.find((m) => m.id === locator.messageId);
+    return (sources as MemorySourceLocator[]).map(locator => {
+      if (locator.kind !== "message" && locator.kind !== "agentStep")
+        throw new Error("fixture unsupported locator");
+      const ancestor = originals.find(m => m.id === locator.messageId);
+      if (!ancestor) throw new Error("memory_missing_message");
+      const value = locator.kind === "agentStep"
+        ? (() => {
+            const bounds = stepBounds(ancestor)[locator.stepIndex];
+            if (!bounds) throw new Error("memory_missing_agent_step");
+            return { id: `agent-step:${ancestor.id}:${locator.stepIndex}`,
+              role: "assistant" as const, parts: ancestor.parts.slice(bounds[0], bounds[1]) };
+          })()
+        : ancestor;
       const evidence: MemoryEvidence = {
-        id: sourceId(locator.messageId),
+        id: locatorId(locator),
         digest: "d".repeat(64),
         sourceRevision: 1,
-        locator: { kind: "message", messageId: locator.messageId },
+        locator,
         contentIds: [],
         relatedSessions: [owner.sessionId],
       };
@@ -95,14 +126,19 @@ export function compactionFixture(originals = history(), owner = defaultOwner) {
         JSON.stringify(view.preparation)
       )
         throw new Error("memory_stale_preparation");
+      if (view.revision && view.revision.coverage.unitMode !== candidate.unitMode)
+        throw new Error("memory_coverage_mode_migration_required");
+      const coverage = sourceUnits(candidate.unitMode);
+      if (candidate.end > coverage.length)
+        throw new Error("memory_invalid_candidate");
       const revision = (view.revision?.revision ?? 0) + 1;
       const revisionId = revision.toString(16).padStart(64, "0");
       const evidence = candidate.sources
         .map((s) =>
           s.kind === "retained"
             ? records.get(s.evidenceId)
-            : s.kind === "message"
-              ? records.get(sourceId(s.messageId))
+            : s.kind === "message" || s.kind === "agentStep"
+              ? records.get(locatorId(s))
               : undefined,
         )
         .filter((e): e is MemoryEvidence => Boolean(e));
@@ -125,13 +161,14 @@ export function compactionFixture(originals = history(), owner = defaultOwner) {
             start: candidate.start,
             end: candidate.end,
             digest: "c".repeat(64),
-            latestMessageId: originals[candidate.end - 1].id,
-            sourceMessageCount: originals.length,
+            latestMessageId: coverage[candidate.end - 1].id,
+            sourceMessageCount: coverage.length,
+            ...(candidate.unitMode ? { unitMode: candidate.unitMode } : {}),
           },
           evidence,
           claims: candidate.claims,
         },
-        uncoveredMessages: originals.length - candidate.end,
+        uncoveredMessages: coverage.length - candidate.end,
       };
       return revisionId;
     }),

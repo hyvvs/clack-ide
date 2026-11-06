@@ -20,6 +20,8 @@ export type CompactionUnit = {
   role: "user" | "assistant" | "system";
   messages: ModelMessage[];
   hasContentReferences: boolean;
+  /** Native-authored proof of one intact step in a durable assistant message. */
+  source?: { kind: "agentStep"; messageId: string; stepIndex: number; partStart: number; partEnd: number };
 };
 export type CompactionGroup = {
   start: number;

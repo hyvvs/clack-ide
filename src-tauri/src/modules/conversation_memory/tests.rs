@@ -1,6 +1,193 @@
 use super::*;
 use std::sync::Barrier;
 
+fn step_fixture() -> Fixture {
+    let mut f = Fixture::new();
+    f.originals.messages[1] = json!({
+        "id":"a1", "role":"assistant", "parts":[
+            {"type":"step-start"},
+            {"type":"tool-write_file", "toolCallId":"write-1", "state":"output-available",
+             "input":{"path":"src/main.ts","content":"first"}, "output":{"ok":true,"clackWorkspaceWrite":true}},
+            {"type":"step-start"},
+            {"type":"tool-bash_run", "toolCallId":"failed-2", "state":"output-available",
+             "input":{"command":"npm test"}, "output":{"error":"exit 1"}},
+            {"type":"step-start"},
+            {"type":"tool-edit", "toolCallId":"repair-3", "state":"output-available",
+             "input":{"path":"src/main.ts"}, "output":{"ok":true,"clackWorkspaceWrite":true}},
+            {"type":"step-start"},
+            {"type":"text","text":"Current unfinished working step"}
+        ]
+    });
+    f
+}
+
+fn step_candidate(f: &Fixture, end: usize) -> Candidate {
+    let mut candidate = f.candidate();
+    candidate.policy_version = "c1b-extraction-agent-steps-v1".into();
+    candidate.unit_mode = Some(AGENT_STEP_UNITS.into());
+    candidate.end = end;
+    // A user requirement is retained as evidence; each independently cited
+    // Agent step resolves to its original durable message and part range.
+    candidate.sources.extend((0..end.saturating_sub(1)).map(|step_index| {
+        SourceLocator::AgentStep { message_id: "a1".into(), step_index }
+    }));
+    candidate
+}
+
+#[test]
+fn agent_step_coverage_commits_reloads_and_survives_immutable_step_append() {
+    let mut f = step_fixture();
+    let original = hash(&f.originals.messages).unwrap();
+    let units = coverage_units(&f.originals.messages, Some(AGENT_STEP_UNITS)).unwrap();
+    assert_eq!(units.len(), 5); // user and four Agent steps
+    assert_eq!(units[1]["id"], "agent-step:a1:0");
+    assert_eq!(units[2]["id"], "agent-step:a1:1");
+    assert_eq!(units[2]["parts"][1]["toolCallId"], "failed-2");
+    assert_eq!(units[3]["parts"][1]["toolCallId"], "repair-3");
+    let mut collision = step_fixture();
+    collision.originals.messages[0]["id"] = json!("agent-step:a1:0");
+    assert_eq!(coverage_units(&collision.originals.messages, Some(AGENT_STEP_UNITS)).unwrap_err(),
+        "memory_duplicate_message_identity");
+    let preparation = f.view().unwrap().preparation;
+    let locator = SourceLocator::AgentStep { message_id: "a1".into(), step_index: 1 };
+    let (evidence, _) = evidence_for(&f.root, &f.content, &f.originals, &f.owner, locator.clone()).unwrap();
+    let (again, _) = evidence_for(&f.root, &f.content, &f.originals, &f.owner, locator).unwrap();
+    assert_eq!(evidence.id, again.id);
+    assert_eq!(evidence.digest, again.digest);
+    let sources = extraction_sources(&f.root, &f.content, &f.originals, &preparation,
+        vec![SourceLocator::AgentStep { message_id: "a1".into(), step_index: 1 }]).unwrap();
+    assert_eq!(sources[0].value, units[2]);
+    assert_eq!(sources[0].evidence.digest, hash(&units[2]).unwrap());
+
+    let id = f.commit(step_candidate(&f, 3)).unwrap();
+    let view = f.view().unwrap();
+    assert_eq!(view.revision_id, Some(id));
+    assert!(!view.source_changed);
+    assert_eq!(view.uncovered_messages, 2);
+    let saved = view.revision.unwrap();
+    assert_eq!(saved.coverage.unit_mode.as_deref(), Some(AGENT_STEP_UNITS));
+    assert_eq!(saved.coverage.end, 3);
+    assert_eq!(saved.coverage.digest, hash(&units[..3]).unwrap());
+    assert_eq!(saved.coverage.latest_message_id, "agent-step:a1:1");
+    assert_eq!(hash(&f.originals.messages).unwrap(), original);
+    assert_eq!(saved.evidence.iter().filter(|e| matches!(e.locator, SourceLocator::AgentStep { .. })).count(), 2);
+
+    // A new continuation step does not change the covered virtual prefix.
+    f.originals.messages[1]["parts"].as_array_mut().unwrap().extend([
+        json!({"type":"step-start"}), json!({"type":"text","text":"New continuation step"})
+    ]);
+    let continued = f.view().unwrap();
+    assert!(!continued.source_changed);
+    assert_eq!(continued.revision.unwrap().coverage.end, 3);
+    assert_eq!(continued.uncovered_messages, 3);
+    // A covered historical step is immutable even when the parent message grows.
+    f.originals.messages[1]["parts"][3]["output"]["error"] = json!("changed failure");
+    assert!(f.view().is_err() || f.view().unwrap().source_changed);
+}
+
+#[test]
+fn agent_step_mode_rejects_cross_mode_migration_forged_sources_and_mutable_prefix() {
+    let mut f = step_fixture();
+    let prep = f.view().unwrap().preparation;
+    assert!(extraction_sources(&f.root, &f.content, &f.originals, &prep, vec![
+        SourceLocator::AgentStep { message_id: "a1".into(), step_index: 500 }
+    ]).is_err());
+    let mut foreign = step_candidate(&f, 3);
+    foreign.unit_mode = Some("foreign-v1".into());
+    assert!(f.commit(foreign).is_err());
+    let mut mismatch = step_candidate(&f, 3);
+    mismatch.policy_version = "c1b-extraction-v1".into();
+    assert_eq!(f.commit(mismatch).unwrap_err(), "memory_coverage_policy_mismatch");
+
+    let old = Fixture::new();
+    old.commit(old.candidate()).unwrap();
+    let mut switched = old.candidate();
+    switched.unit_mode = Some(AGENT_STEP_UNITS.into());
+    switched.policy_version = "c1b-extraction-agent-steps-v1".into();
+    assert_eq!(old.commit(switched).unwrap_err(), "memory_coverage_mode_migration_required");
+    assert!(old.view().unwrap().revision.is_some());
+
+    f.commit(step_candidate(&f, 3)).unwrap();
+    f.originals.messages[0]["parts"][0]["text"] = json!("A changed user requirement");
+    assert!(f.view().is_err() || f.view().unwrap().source_changed);
+}
+
+#[test]
+fn archived_58_step_forgeboard_native_commit_and_continuation_preserve_identity() {
+    // Read-only frozen evidence, optional on fresh development checkouts.
+    // This is a real native memory commit/reload against the preserved
+    // transcript bytes, NOT a model invocation or ForgeBoard execution.
+    let archive = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/real-qwen-product/forgeboardmuse-20261106-01/data/terax-ai-sessions.json");
+    if !archive.exists() {
+        return;
+    }
+    let persisted: Value = serde_json::from_slice(&fs::read(&archive).unwrap()).unwrap();
+    let originals = persisted["messages:real-mission-a"].as_array().unwrap();
+    assert_eq!(originals.len(), 2);
+    let full_assistant = originals[1].clone();
+    let all_parts = full_assistant["parts"].as_array().unwrap();
+    let starts = all_parts.iter().enumerate()
+        .filter_map(|(index, part)| (part["type"] == "step-start").then_some(index))
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), 58);
+    let mut f = Fixture::new();
+    f.originals.messages = originals.clone();
+    let frozen_digest = hash(&f.originals.messages).unwrap();
+    let assistant_id = full_assistant["id"].as_str().unwrap().to_owned();
+    f.originals.messages[1]["parts"] = Value::Array(all_parts[..starts[42]].to_vec());
+    let at_42 = coverage_units(&f.originals.messages, Some(AGENT_STEP_UNITS)).unwrap();
+    assert_eq!(at_42.len(), 43);
+    let prep = f.view().unwrap().preparation;
+    let mut sources = Vec::new();
+    let mut claims = Vec::new();
+    for index in 0..30 {
+        if index == 27 { continue; } // failed tool step 28 retained verbatim
+        let locator = SourceLocator::AgentStep { message_id: assistant_id.clone(), step_index: index };
+        let (evidence, _) = evidence_for(&f.root, &f.content, &f.originals, &f.owner, locator.clone()).unwrap();
+        sources.push(locator);
+        claims.push(Claim {
+            id: format!("step-{}", index+1), section: Section::AgentFindings,
+            status: ClaimStatus::Inference,
+            text: format!("Historical Agent step {} was observed, not independently reverified. Check cited original before relying on effects.", index+1),
+            sources: vec![evidence.id], observed_at: 1, contradicts: vec![],
+        });
+    }
+    assert_eq!(sources.len(), 29);
+    let candidate = Candidate {
+        preparation: prep,
+        policy_version: "c1b-extraction-agent-steps-v1".into(),
+        start: 0, end: 31, unit_mode: Some(AGENT_STEP_UNITS.into()),
+        sources, claims,
+    };
+    let revision_id = f.commit(candidate).unwrap();
+    let staged = f.view().unwrap();
+    assert_eq!(staged.revision_id.as_deref(), Some(revision_id.as_str()));
+    let revision = staged.revision.unwrap();
+    assert_eq!(revision.evidence.len(), 29);
+    assert_eq!(revision.claims.len(), 29);
+    assert_eq!(revision.coverage.end, 31);
+    assert_eq!(revision.coverage.latest_message_id, format!("agent-step:{assistant_id}:29"));
+    assert_eq!(staged.uncovered_messages, 12);
+    let evidence = revision.evidence[0].clone();
+
+    // Append the actual remaining 16 steps without touching committed
+    // source-unit bytes, then reload from durable native storage.
+    f.originals.messages[1] = full_assistant.clone();
+    assert_eq!(hash(&f.originals.messages).unwrap(), frozen_digest);
+    let continued = f.view().unwrap();
+    assert!(!continued.source_changed);
+    assert_eq!(continued.uncovered_messages, 28);
+    assert_eq!(continued.revision.unwrap().coverage.end, 31);
+    let source = SourceLocator::AgentStep { message_id: assistant_id.clone(), step_index: 0 };
+    let (persisted_evidence, _) = evidence_for(&f.root, &f.content, &f.originals, &f.owner, source).unwrap();
+    assert_eq!(persisted_evidence.id, evidence.id);
+    assert_eq!(persisted_evidence.digest, evidence.digest);
+    // No stale covered-prefix byte can silently keep a revision valid.
+    f.originals.messages[1]["parts"][1]["toolCallId"] = json!("rewritten-call");
+    assert!(f.view().is_err() || f.view().unwrap().source_changed);
+}
+
 #[test]
 fn extraction_reads_exact_originals_with_matching_evidence_without_publishing() {
     let fixture = Fixture::new();
@@ -313,6 +500,7 @@ impl Fixture {
             policy_version: "test-1".into(),
             start: 0,
             end: 2,
+            unit_mode: None,
             sources: vec![locator],
             claims: vec![Claim {
                 id: "requirement-port".into(),
@@ -1146,6 +1334,7 @@ fn wrong_attachment_sizes_and_inconsistent_original_hashes_fail_closed() {
         policy_version: "test".into(),
         start: 0,
         end: 2,
+        unit_mode: None,
         sources: vec![SourceLocator::Message {
             message_id: "u1".into(),
         }],
