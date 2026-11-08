@@ -10,6 +10,7 @@ import {
 } from "@/modules/ai/lib/compactionExtraction";
 import { sessionInference } from "@/modules/ai/lib/inferenceLifecycle";
 import { createOllamaModel } from "@/modules/ai/lib/ollamaModel";
+import { installPreparationObserver, type PreparationObservation } from "@/modules/ai/lib/preparationLifecycle";
 import { COMPACTION_EXTRACTION_REQUEST_MAX_OUTPUT, COMPACTION_EXTRACTION_SYSTEM } from "@/modules/ai/lib/compactionExtraction";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -153,6 +154,23 @@ async function setup() {
 }
 
 describe("bounded extraction through the installed provider adapter", () => {
+  it("correlates native terminal receipt with extraction settlement without treating metadata as progress", async () => {
+    const events: PreparationObservation[] = [];
+    const unsubscribe = installPreparationObserver(event => events.push(event));
+    try {
+      const run = await setup();
+      expect(await run.extract([source], [])).toHaveLength(1);
+      const names = events.map(event => event.phase);
+      for (const stage of ["extractor-created", "native-request-linked", "native-response-headers",
+        "native-http-settled", "extraction-model-returned", "extraction-validate-completed"])
+        expect(names).toContain(stage);
+      expect(names.indexOf("native-http-settled")).toBeLessThan(names.indexOf("extraction-model-returned"));
+      const id = events.find(event => event.phase === "native-request-linked")?.nativeRequestId;
+      expect(id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(events.filter(event => event.nativeRequestId).every(event => event.nativeRequestId === id)).toBe(true);
+      expect(events.every(event => !Object.keys(event).some(key => /prompt|body|content|claims|text/i.test(key)))).toBe(true);
+    } finally { unsubscribe(); }
+  });
   it("uses production generateText/doGenerate with the exact non-streaming extraction contract", async () => {
     let wire: Record<string, unknown> | undefined;
     const completion = JSON.stringify({ claims: [{

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import {
   contextDigest,
+  beginTargetContext,
   createTargetDraft,
   targetContextKey,
   type SwitchSource,
@@ -213,6 +214,23 @@ function revision(c: MemoryCandidate): MemoryRevision {
   };
 }
 describe("uncommitted target drafts", () => {
+  it("cancels pending target begin and revokes only its late native switch token", async () => {
+    const captured = source();
+    let deliver!: (value: SwitchSource) => void;
+    const native = new Promise<SwitchSource>(resolve => { deliver = resolve; });
+    vi.mocked(invoke).mockImplementation((command) => command === "target_context_begin"
+      ? native : Promise.resolve());
+    const controller = new AbortController();
+    const pending = beginTargetContext(captured.view.preparation.owner, controller.signal);
+    const failure = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    controller.abort(new DOMException("operator cancelled", "AbortError"));
+    await failure;
+    deliver(captured);
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledWith("target_context_cancel", {
+      sessionId: captured.view.preparation.owner.sessionId, token: captured.token,
+    });
+  });
   it("preserves Agent-step source coordinates and exact locators across staged target previews", async () => {
     const captured = source();
     const draft = createTargetDraft(captured);
@@ -293,6 +311,23 @@ describe("uncommitted target drafts", () => {
     ).rejects.toThrow();
     expect(draft.candidate()).toBeNull();
     expect(draft.view()).toEqual(captured.view);
+  });
+  it("cancels a stalled preview promptly and never activates its late native revision", async () => {
+    const captured = source();
+    const draft = createTargetDraft(captured);
+    let deliver!: (revision: MemoryRevision) => void;
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise<MemoryRevision>(resolve => { deliver = resolve; }));
+    const controller = new AbortController();
+    const before = structuredClone(draft.view());
+    const pending = draft.memory.commit(candidate(captured), controller.signal);
+    const cancelled = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    controller.abort(new DOMException("cancelled", "AbortError"));
+    await cancelled;
+    deliver(revision(candidate(captured)));
+    await Promise.resolve();
+    expect(draft.view()).toEqual(before);
+    expect(draft.candidate()).toBeNull();
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
   it("retains an earlier valid draft if a later batch fails", async () => {
     const captured = source();

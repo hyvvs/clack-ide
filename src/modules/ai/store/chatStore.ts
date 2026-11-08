@@ -1,5 +1,6 @@
 import type { Chat, UIMessage } from "@ai-sdk/react";
 import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
+import { emitPreparationPhase } from "@/modules/ai/lib/preparationLifecycle";
 import { create } from "zustand";
 import {
   cancelSessionInference,
@@ -1055,6 +1056,11 @@ export const useChatStore = create<StoreState>((set, get) => ({
         },
       },
     }));
+    emitPreparationPhase({ sessionId: id, runId: `${id}:${currentRun.startedAt}` },
+      state === "failed" ? "agent-run-failed"
+      : state === "completed" ? "agent-run-completed"
+      : state === "cancelled" ? "agent-run-cancelled"
+      : "agent-run-interrupted");
     void saveSessionsList(next);
     useTodosStore.getState().finalizeRun(id, state);
     runLoopTrackers.delete(id);

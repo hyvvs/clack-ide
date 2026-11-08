@@ -24,6 +24,7 @@ import type { ModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities"
 import { resolveModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
+import { emitPreparationPhase } from "@/modules/ai/lib/preparationLifecycle";
 import { buildRuntimeTools as buildTools } from "@/modules/ai/tools/customExecution";
 import {
   beginTargetContext,
@@ -64,7 +65,7 @@ export async function prepareTarget(options: {
   };
   await awaitSessionWrites(session.id);
   check();
-  const source = await beginTargetContext(owner);
+  const source = await beginTargetContext(owner, options.signal, options.scope);
   const cancel = () => {
     void cancelTargetContext(session.id, source.token).catch(() => undefined);
   };
@@ -152,12 +153,12 @@ export async function prepareTarget(options: {
     });
     check();
     if (session.targetContext && session.profile?.modelId === options.modelId) {
-      const cached = await loadTargetContext(owner, key);
+      const cached = await loadTargetContext(owner, key, options.signal, options.scope);
       check();
       if (cached)
         source.view = { ...source.view, revision: cached, revisionId: null };
     }
-    const draft = createTargetDraft(source);
+    const draft = createTargetDraft(source, options.scope);
     let calls = 0;
     let omittedClaims = 0;
     let conversationSources: string[] = [];
@@ -286,6 +287,7 @@ export async function prepareTarget(options: {
         cancel();
       },
       commit: async () => {
+        emitPreparationPhase(options.scope, "target-validate-start");
         await preparedCompactor.validateEvidence();
         check();
         const latestProbe = await readSelfHostedSnapshot(
@@ -317,6 +319,7 @@ export async function prepareTarget(options: {
         check();
         if (JSON.stringify(currentLimits) !== JSON.stringify(limits))
           throw new Error("Target context limits changed during preparation.");
+        emitPreparationPhase(options.scope, "target-validate-completed");
         // This IPC is the commit point. Native CAS publishes both fields or neither.
         return commitTargetContext({
           token: source.token,
@@ -326,7 +329,7 @@ export async function prepareTarget(options: {
           modelId: options.modelId,
           key,
           candidate: draft.candidate(),
-        });
+        }, options.scope);
       },
     };
   } catch (error) {

@@ -13,6 +13,11 @@ import type {
   MemoryEvidence,
 } from "@/modules/ai/lib/conversationMemory";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
+import { attachNativeDiagnosticSignal, detachNativeDiagnosticSignal } from "@/modules/ai/lib/inferenceDiagnosticCorrelation";
+import {
+  awaitAbortableRead, emitPreparationPhase, linkPreparationSignal,
+  observePreparationSignal, unlinkPreparationSignal,
+} from "@/modules/ai/lib/preparationLifecycle";
 
 export const COMPACTION_POLICY = Object.freeze({
   version: "c1b-extraction-v1",
@@ -312,6 +317,7 @@ export type ExtractionCall = (options: {
 
 const defaultCall: ExtractionCall = async (options) => {
   const result = await generateText({ ...options, maxRetries: 0 });
+  observePreparationSignal(options.abortSignal, "sdk-generate-settled");
   return {
     text: result.text,
     usage: {
@@ -356,17 +362,29 @@ export function createBoundedExtractor(options: {
   const now = options.now ?? Date.now;
   const started = now();
   const controller = new AbortController();
-  const cancel = () => controller.abort(options.signal?.reason);
+  linkPreparationSignal(controller.signal, options.scope);
+  emitPreparationPhase(options.scope, "extractor-created");
+  attachNativeDiagnosticSignal(controller.signal, (stage, id) => {
+    if (stage === "native-id-linked") emitPreparationPhase(options.scope, "native-request-linked", id);
+    if (stage === "native-response-headers") emitPreparationPhase(options.scope, "native-response-headers", id);
+    if (stage === "native-settled") emitPreparationPhase(options.scope, "native-http-settled", id);
+  });
+  const cancel = () => {
+    emitPreparationPhase(options.scope, "extractor-cancelled");
+    controller.abort(options.signal?.reason);
+  };
   options.signal?.addEventListener("abort", cancel, { once: true });
   if (options.signal?.aborted) cancel();
   const timeout = setTimeout(
-    () =>
+    () => {
+      emitPreparationPhase(options.scope, "extractor-deadline-fired");
       controller.abort(
         new CompactionError(
           "timeout",
           "Conversation preparation exceeded 120 seconds. Retry a bounded preparation batch.",
         ),
-      ),
+      );
+    },
     COMPACTION_POLICY.timeoutMs,
   );
   let calls = 0;
@@ -376,6 +394,7 @@ export function createBoundedExtractor(options: {
   let disposed = false;
   let busy = false;
   let failed = false;
+  let elapsedReported = false;
   const callLimit = Math.max(
     0,
     Math.min(5, Math.floor(options.remainingCalls)),
@@ -387,11 +406,16 @@ export function createBoundedExtractor(options: {
         "stale",
         "This conversation preparation is no longer current. Start a new request.",
       );
-    if (now() - started >= COMPACTION_POLICY.timeoutMs)
+    if (now() - started >= COMPACTION_POLICY.timeoutMs) {
+      if (!elapsedReported) {
+        elapsedReported = true;
+        emitPreparationPhase(options.scope, "extractor-deadline-fired");
+      }
       fail(
         "timeout",
         "Conversation preparation exceeded 120 seconds. Retry a bounded preparation batch.",
       );
+    }
   };
   return {
     signal: controller.signal,
@@ -441,7 +465,9 @@ export function createBoundedExtractor(options: {
               "batch-limit",
               "The preparation request/token limit was reached. Continue with another bounded preparation batch.",
             );
-          const limits = await options.limits();
+          emitPreparationPhase(options.scope, "extraction-limits-start");
+          const limits = await awaitAbortableRead(options.limits(), controller.signal);
+          emitPreparationPhase(options.scope, "extraction-limits-settled");
           check();
           const remaining = COMPACTION_POLICY.maxGeneratedTokens - tokens;
           const output = Math.min(
@@ -460,8 +486,11 @@ export function createBoundedExtractor(options: {
               "This original-source chunk does not fit the selected model. Use a smaller source chunk; no extraction request was sent.",
             );
           calls++;
+          emitPreparationPhase(options.scope, "extraction-charge-start");
           await options.onCall?.();
+          emitPreparationPhase(options.scope, "extraction-charge-settled");
           check();
+          emitPreparationPhase(options.scope, "extraction-model-start");
           const result = await untilAborted(
             (options.call ?? defaultCall)({
               model: options.model,
@@ -471,6 +500,7 @@ export function createBoundedExtractor(options: {
             }),
             controller.signal,
           );
+          emitPreparationPhase(options.scope, "extraction-model-returned");
           const usage = result.usage;
           if (
             ![
@@ -498,16 +528,20 @@ export function createBoundedExtractor(options: {
               "The extraction provider exceeded its output bound. No memory was published.",
             );
           try {
+            emitPreparationPhase(options.scope, "extraction-validate-start");
             const claims = await validateExtraction(
               result.text,
               sources,
               prior,
               now(),
             );
+            emitPreparationPhase(options.scope, "extraction-validate-completed");
             check();
             chunks++;
+            emitPreparationPhase(options.scope, "extraction-completed");
             return claims;
           } catch (error) {
+            emitPreparationPhase(options.scope, "extraction-validate-failed");
             if (
               !(error instanceof CompactionError) ||
               error.code !== "compaction-invalid-output" ||
@@ -528,6 +562,9 @@ export function createBoundedExtractor(options: {
       disposed = true;
       clearTimeout(timeout);
       options.signal?.removeEventListener("abort", cancel);
+      emitPreparationPhase(options.scope, "extractor-disposed");
+      unlinkPreparationSignal(controller.signal);
+      detachNativeDiagnosticSignal(controller.signal);
       controller.abort();
     },
   };

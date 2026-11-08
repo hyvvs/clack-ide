@@ -65,6 +65,7 @@ import {
   beginInference, abortInferencesForHostShutdown,
 } from "../lib/inferenceLifecycle";
 import { inferenceScopeForSession } from "./chatStore";
+import { installPreparationObserver } from "@/modules/ai/lib/preparationLifecycle";
 import { shouldShowHeaderStop } from "../components/AiMiniWindow";
 import { shouldShowTodoStrip } from "../components/TodoStrip";
 import { useWorkspaceEnvStore } from "@/modules/workspace/env";
@@ -289,6 +290,21 @@ describe("durable Agent cancellation initiator", () => {
     if (!scope) throw new Error("Expected running Agent inference scope");
     return scope;
   };
+  it("records actual terminal Agent state settlement with the captured run identity, never an error body", () => {
+    const scope = seed(321);
+    const records: unknown[] = [];
+    const unsubscribe = installPreparationObserver(event => records.push(event));
+    try {
+      useChatStore.getState().finishRun(SESSION_ID, "failed", { secret: "DO_NOT_RECORD" } as never);
+      expect(records).toEqual([{
+        at: expect.any(Number), sessionId: SESSION_ID,
+        runId: scope.runId, phase: "agent-run-failed",
+      }]);
+      expect(JSON.stringify(records)).not.toContain("DO_NOT_RECORD");
+      useChatStore.getState().finishRun(SESSION_ID, "completed");
+      expect(records).toHaveLength(1); // no duplicate terminal transitions
+    } finally { unsubscribe(); }
+  });
   it("does not invent cancellation on normal completion or a stopped retry that recovers", () => {
     const scope = seed();
     scope.onStop?.({ source: "provider-timeout", reason: "provider-retry-deadline", policy: "provider-recovery-120s" });

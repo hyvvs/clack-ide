@@ -34,4 +34,24 @@ describe("target preparation has no extractor-owned deadline", () => {
     expect(await settled).toBeNull();
     expect(phase).toBe("finished");
   });
+  it("5c: operator cancellation settles a hanging target read; late native return cannot activate target", async () => {
+    vi.useFakeTimers();
+    let release!: (value: null) => void;
+    const native = new Promise<null>(resolve => { release = resolve; });
+    vi.mocked(invoke).mockReturnValueOnce(native);
+    const controller = new AbortController();
+    const owner = { sessionId: "offline-forensics", workspaceId: "local:/workspace" };
+    const pending = loadTargetContext(owner, "offline-context-key", controller.signal);
+    const failed = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    controller.abort(new DOMException("Operator cancellation", "AbortError"));
+    await failed;
+    release(null);
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+  it("does not start native target load when cancellation already happened", async () => {
+    const owner = { sessionId: "offline-forensics", workspaceId: null };
+    await expect(loadTargetContext(owner, "key", AbortSignal.abort())).rejects.toThrow();
+    expect(invoke).not.toHaveBeenCalled();
+  });
 });

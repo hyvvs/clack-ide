@@ -6,6 +6,8 @@ import type { BudgetLimits } from "@/modules/ai/lib/contextBudget";
 import type { ModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
 import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
 import type { SessionMeta } from "@/modules/ai/lib/sessions";
+import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
+import { awaitAbortableRead, emitPreparationPhase } from "@/modules/ai/lib/preparationLifecycle";
 import {
   readCompactionSources,
   type MemoryCandidate,
@@ -63,15 +65,40 @@ export type SwitchSource = {
   settingsHash: string;
 };
 export class SwitchConsentRequired extends Error {}
-export const beginTargetContext = (owner: MemoryOwner): Promise<SwitchSource> =>
-  invoke("target_context_begin", { owner });
-export const loadTargetContext = (
+export async function beginTargetContext(
+  owner: MemoryOwner, signal?: AbortSignal, scope?: InferenceScope,
+): Promise<SwitchSource> {
+  signal?.throwIfAborted();
+  emitPreparationPhase(scope, "target-begin-start");
+  const native = invoke<SwitchSource>("target_context_begin", { owner });
+  if (signal) {
+    // Native may allocate its 180-second switch lease after the caller aborts.
+    // Release that *exact* token on late completion, never a later switch.
+    void native.then(source => {
+      if (signal.aborted) void cancelTargetContext(owner.sessionId, source.token).catch(() => undefined);
+    }).catch(() => undefined);
+  }
+  const source = await awaitAbortableRead(native, signal);
+  emitPreparationPhase(scope, "target-begin-settled");
+  return source;
+}
+export const loadTargetContext = async (
   owner: MemoryOwner,
   key: string,
-): Promise<MemoryRevision | null> =>
-  invoke("target_context_load", { owner, key });
+  signal?: AbortSignal,
+  scope?: InferenceScope,
+): Promise<MemoryRevision | null> => {
+  signal?.throwIfAborted();
+  emitPreparationPhase(scope, "target-load-start");
+  return awaitAbortableRead(
+    invoke<MemoryRevision | null>("target_context_load", { owner, key }), signal,
+  ).then(value => {
+    emitPreparationPhase(scope, "target-load-settled");
+    return value;
+  });
+};
 
-export function createTargetDraft(source: SwitchSource) {
+export function createTargetDraft(source: SwitchSource, scope?: InferenceScope) {
   let view = source.view;
   let candidate: MemoryCandidate | undefined;
   const toCandidate = (revision: MemoryRevision): MemoryCandidate => ({
@@ -106,11 +133,13 @@ export function createTargetDraft(source: SwitchSource) {
           preparation: source.view.preparation,
           sources: locators,
         };
-        const revision = await invoke<MemoryRevision>(
-          "target_context_preview",
-          { candidate: prepared, token: source.token },
+        emitPreparationPhase(scope, "target-preview-start");
+        const revision = await awaitAbortableRead(
+          invoke<MemoryRevision>("target_context_preview", { candidate: prepared, token: source.token }),
+          signal,
         );
         signal?.throwIfAborted();
+        emitPreparationPhase(scope, "target-preview-settled");
         const id = await contextDigest(revision);
         signal?.throwIfAborted();
         candidate = prepared;
@@ -130,7 +159,7 @@ export function createTargetDraft(source: SwitchSource) {
   };
 }
 
-export const commitTargetContext = (request: {
+export const commitTargetContext = async (request: {
   token: string;
   settingsHash: string;
   expectedSession: SessionMeta;
@@ -138,7 +167,13 @@ export const commitTargetContext = (request: {
   modelId: string;
   key: string;
   candidate: MemoryCandidate | null;
-}): Promise<SessionMeta> => invoke("target_context_commit", { request });
+}, scope?: InferenceScope): Promise<SessionMeta> => {
+  emitPreparationPhase(scope, "target-commit-start");
+  // Do not detach a native atomic session/model CAS from its actual result.
+  const result = await invoke<SessionMeta>("target_context_commit", { request });
+  emitPreparationPhase(scope, "target-commit-settled");
+  return result;
+};
 
 export const cancelTargetContext = (
   sessionId: string,

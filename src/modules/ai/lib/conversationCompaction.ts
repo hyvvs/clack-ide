@@ -60,6 +60,7 @@ import { usePeerTaskStore } from "@/modules/ai/store/peerTaskStore";
 import { contextDigest } from "@/modules/ai/lib/targetContext";
 import { verifiedWriteCandidates, type VerifiedWriteCandidate, type VerifiedWriteSource } from "@/modules/ai/lib/verifiedWriteHistory";
 import { projectCheckpointWrites, type WriteCheckpoint } from "@/modules/ai/lib/writeCheckpoint";
+import { awaitAbortableRead, emitPreparationPhase } from "@/modules/ai/lib/preparationLifecycle";
 
 export type CompactionNotice = {
   coveredMessages: number;
@@ -337,12 +338,17 @@ export async function createConversationCompactor(options: {
     : undefined;
   const load = async () => {
     check();
+    extractor?.assertCurrent();
     if (!initialReady) {
       await context.ready();
       initialReady = true;
       check();
     }
-    const next = await memoryOperation(() => memory.load(context.owner));
+    emitPreparationPhase(options.scope, "memory-load-start");
+    const next = await memoryOperation(() => awaitAbortableRead(
+      memory.load(context.owner), extractor?.signal ?? options.signal,
+    ));
+    emitPreparationPhase(options.scope, "memory-load-settled");
     check();
     usable(next);
     if (profileHash && profileHash !== next.preparation.source.profileHash)
@@ -559,7 +565,7 @@ export async function createConversationCompactor(options: {
               "Conversation memory is unavailable.",
             );
           const start = captured.revision?.coverage.end ?? 0;
-          const extractionLimits = await route.limits();
+          const extractionLimits = await awaitAbortableRead(route.limits(), batch.signal);
           check();
           const prior = [
             ...(captured.revision?.claims ?? []).filter(claim => claim.status === "user-requirement"),
@@ -603,7 +609,9 @@ export async function createConversationCompactor(options: {
               break;
             let original: Awaited<ReturnType<typeof memory.read>>;
             try {
-              original = await withPreparation(preparation => memory.read(preparation, proposed));
+              original = await withPreparation(preparation => awaitAbortableRead(
+                memory.read(preparation, proposed), batch.signal,
+              ));
             } catch (error) {
               if (
                 String(error).includes("memory_evidence_quota") &&
@@ -705,7 +713,17 @@ export async function createConversationCompactor(options: {
             memory: { end, claims },
             threshold: COMPACTION_POLICY.target,
           });
-          const revisionId = await withPreparation(preparation => memory.commit({ ...candidate, preparation }, batch.signal));
+          emitPreparationPhase(options.scope, "memory-commit-start");
+          let revisionId: string;
+          try {
+            // A CAS commit must settle authoritatively: racing this promise
+            // would risk reporting a cancelled but later-published revision.
+            revisionId = await withPreparation(preparation => memory.commit({ ...candidate, preparation }, batch.signal));
+            emitPreparationPhase(options.scope, "memory-commit-settled");
+          } catch (error) {
+            emitPreparationPhase(options.scope, "memory-commit-failed");
+            throw error;
+          }
           retiredCompletedClaims += retired;
           published++;
           check();
@@ -715,7 +733,7 @@ export async function createConversationCompactor(options: {
               "stale",
               "Another memory revision was committed during preparation. Retry with current state.",
             );
-          limits = await options.limits();
+          limits = await awaitAbortableRead(options.limits(), batch.signal);
           check();
           prepared = true;
           current = plan();

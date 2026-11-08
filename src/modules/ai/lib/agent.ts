@@ -31,6 +31,7 @@ import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
 import { emitSelfHostedInferencePhase, selfHostedInferencePhaseObserved } from "./inferenceDiagnosticCorrelation";
 import { cancelSessionInference, type InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
+import { emitPreparationPhase } from "@/modules/ai/lib/preparationLifecycle";
 import { createOutputWatchdog, describeWatchdog, readWatchdogError, watchdogInstruction, type OutputWatchdog } from "@/modules/ai/lib/outputWatchdog";
 import { gateInferenceTools } from "@/modules/ai/lib/inferenceToolGate";
 import {
@@ -1252,7 +1253,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     });
     opts.abortSignal?.throwIfAborted();
     targetSeed =
-      (await loadTargetContext(opts.compaction.owner, key)) ?? undefined;
+      (await loadTargetContext(opts.compaction.owner, key, opts.abortSignal, inferenceScope)) ?? undefined;
     opts.abortSignal?.throwIfAborted();
     if (!inferenceScope.isCurrent())
       throw new Error(
@@ -1332,9 +1333,11 @@ export async function runAgentStream(opts: RunAgentOptions) {
     : undefined;
   const preparedContext = compactor;
   inferenceScope.validateEvidence = async () => {
+    emitPreparationPhase(inferenceScope, "agent-trust-start");
     await opts.validateRouting?.();
     await preparedContext?.validateEvidence();
     await opts.toolContext.validatePeerReview?.();
+    emitPreparationPhase(inferenceScope, "agent-trust-completed");
   };
   return streamText({
     maxOutputTokens: preparationBudget.output,
@@ -1346,6 +1349,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     experimental_transform: openRouterErrorTransform,
     onError: compactor
       ? () => {
+          emitPreparationPhase(inferenceScope, "agent-stream-error");
           compactor?.dispose();
           opts.onStep?.(null);
         }
@@ -1408,13 +1412,21 @@ export async function runAgentStream(opts: RunAgentOptions) {
           "compaction-run-budget",
           "The logical run reached its request limit.",
         );
+      emitPreparationPhase(inferenceScope, "agent-prepare-start");
+      let preparedMessages: ModelMessage[];
+      try {
+        preparedMessages = await preparedContext.prepare(
+          stepMessages.slice(finalMessages.length), selection.schemas,
+        );
+        emitPreparationPhase(inferenceScope, "agent-prepare-completed");
+      } catch (error) {
+        emitPreparationPhase(inferenceScope, "agent-prepare-failed");
+        throw error;
+      }
       return {
         activeTools: selection.names,
         messages: applyCacheBreakpoints(
-          await preparedContext.prepare(
-            stepMessages.slice(finalMessages.length),
-            selection.schemas,
-          ),
+          preparedMessages,
           provider,
         ),
       };

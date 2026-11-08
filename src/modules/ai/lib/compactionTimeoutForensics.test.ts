@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LanguageModel } from "ai";
 import { createOllamaModel } from "@/modules/ai/lib/ollamaModel";
+import { installPreparationObserver, type PreparationObservation } from "@/modules/ai/lib/preparationLifecycle";
 import {
   COMPACTION_POLICY,
   createBoundedExtractor,
@@ -173,7 +174,7 @@ describe("sealed incident: 120-second extraction-batch deadline, no inference", 
     expect(JSON.stringify(f.originals)).toBe(original);
   });
 
-  it("5: post-commit memory reload is NOT directly bounded by the extractor timer", async () => {
+  it("5: post-commit read-only memory reload now rejects at extractor deadline, never optimizes late", async () => {
     vi.useFakeTimers();
     const f = compactionFixture();
     const baseLoad = f.memory.load.getMockImplementation();
@@ -187,15 +188,18 @@ describe("sealed incident: 120-second extraction-batch deadline, no inference", 
     });
     const compactor = await f.start();
     const pending = compactor.prepare();
-    const settled = pending.then(() => true, () => true);
+    const failed = expect(pending).rejects.toMatchObject({ code: "compaction-timeout" });
     await entered.promise;
     await vi.advanceTimersByTimeAsync(COMPACTION_POLICY.timeoutMs + 1);
-    // No extraction call is in flight; the memory reload ignores that timer's
-    // signal. The result remains pending until the simulated I/O resumes.
-    expect(await Promise.race([settled, Promise.resolve(false)])).toBe(false);
+    await failed;
+    // The CAS already finished and must not be falsely reported as rolled back;
+    // only subsequent prompt publication is blocked.
+    expect(f.view().revisionId).not.toBeNull();
+    expect(f.onOptimized).not.toHaveBeenCalled();
     release.resolve();
-    await settled;
+    await Promise.resolve();
     expect(f.memory.commit).toHaveBeenCalled();
+    expect(f.onOptimized).not.toHaveBeenCalled();
   });
 
   it("6: explicit cancellation immediately rejects a stalled inference", async () => {
@@ -219,24 +223,131 @@ describe("sealed incident: 120-second extraction-batch deadline, no inference", 
     expect(run.snapshot()).toMatchObject({ chunks: 0, retries: 0 });
   });
 
-  it("8: an unresolved model call is bounded, but a stalled limits promise is not", async () => {
+  it("8: stalled read-only extraction limits now reject immediately on deadline", async () => {
     vi.useFakeTimers();
     const gate = deferred<{ deployed: number }>();
+    const call = vi.fn<ExtractionCall>(() => hung());
     const run = createBoundedExtractor({
       model: {} as LanguageModel,
       scope: { sessionId: "offline-forensics", runId: "limits", isCurrent: () => true },
       limits: () => gate.promise,
       remainingCalls: 4,
-      call: () => hung(),
+      call,
+    });
+    disposals.push(run.dispose);
+    const pending = run.extract([source], []);
+    const failed = expect(pending).rejects.toMatchObject({ code: "compaction-timeout" });
+    await vi.advanceTimersByTimeAsync(COMPACTION_POLICY.timeoutMs + 1);
+    expect(run.signal.aborted).toBe(true);
+    await failed;
+    expect(call).not.toHaveBeenCalled();
+    gate.resolve({ deployed: 32768 });
+    await Promise.resolve();
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("11: timestamps native/SDK JSON/validation boundaries but never reports fabricated token progress", async () => {
+    vi.useFakeTimers();
+    const observations: PreparationObservation[] = [];
+    const unsubscribe = installPreparationObserver(event => observations.push(event));
+    try {
+      const model = createOllamaModel({ modelId: "offline", baseURL: "http://127.0.0.1:9",
+        fetch: async () => new Response(JSON.stringify({ model: "offline", done: true,
+          done_reason: "stop", message: { role: "assistant", content: reply().text },
+          prompt_eval_count: 100, eval_count: 50 }), { status: 200 }),
+      });
+      const scope = { sessionId: "offline", runId: "json", isCurrent: () => true };
+      const run = createBoundedExtractor({ model, scope, limits: async () => ({ deployed: 49152 }), remainingCalls: 4 });
+      disposals.push(run.dispose);
+      expect(await run.extract([source], [])).toHaveLength(1);
+      const names = observations.map(event => event.phase);
+      for (const stage of ["extractor-created", "extraction-model-start", "sdk-response-headers",
+        "sdk-json-settled", "sdk-frame-validated", "sdk-generate-settled",
+        "extraction-model-returned", "extraction-validate-start",
+        "extraction-validate-completed", "extraction-completed"])
+        expect(names).toContain(stage);
+      expect(names.indexOf("sdk-json-settled")).toBeLessThan(names.indexOf("extraction-validate-start"));
+      expect(observations.every(event => Object.keys(event).every(key =>
+        ["at", "sessionId", "runId", "phase", "nativeRequestId"].includes(key)))).toBe(true);
+      expect(names).not.toContain("extractor-deadline-fired");
+      expect(names).not.toContain("native-response-headers"); // fake fetch is not native transport
+    } finally { unsubscribe(); }
+  });
+
+  it("12: late success from a provider ignoring abort cannot publish claims or extend the elapsed clock", async () => {
+    vi.useFakeTimers();
+    const events: PreparationObservation[] = [];
+    const unsubscribe = installPreparationObserver(event => events.push(event));
+    try {
+      const call = vi.fn<ExtractionCall>(() => new Promise(resolve => {
+        setTimeout(() => resolve(reply()), COMPACTION_POLICY.timeoutMs + 5_000);
+      }));
+      const run = extractor(call);
+      const pending = run.extract([source], []);
+      const failed = expect(pending).rejects.toMatchObject({ code: "compaction-timeout" });
+      await vi.advanceTimersByTimeAsync(COMPACTION_POLICY.timeoutMs);
+      await failed;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(run.snapshot()).toMatchObject({ calls: 1, chunks: 0 });
+      expect(events.map(event => event.phase)).toContain("extractor-deadline-fired");
+      expect(events.map(event => event.phase)).not.toContain("extraction-validate-start");
+      expect(events.map(event => event.phase)).not.toContain("extraction-completed");
+    } finally { unsubscribe(); }
+  });
+
+  it("13: throwing diagnostic subscribers cannot change a successful extraction", async () => {
+    const unsubscribe = installPreparationObserver(() => { throw new Error("observer failed"); });
+    try {
+      const run = extractor(async () => reply());
+      expect(await run.extract([source], [])).toHaveLength(1);
+      expect(run.signal.aborted).toBe(false);
+    } finally { unsubscribe(); }
+  });
+
+  it("14: operator abort releases an initial native memory load without dispatching extraction", async () => {
+    const f = compactionFixture();
+    const controller = new AbortController();
+    const entered = deferred<void>(), release = deferred<void>();
+    const before = JSON.stringify(f.originals);
+    f.memory.load.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return f.view();
+    });
+    const compactor = await f.start({ signal: controller.signal });
+    const pending = compactor.prepare();
+    const failed = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await entered.promise;
+    controller.abort(new DOMException("cancelled", "AbortError"));
+    await failed;
+    release.resolve();
+    await Promise.resolve();
+    expect(f.call).not.toHaveBeenCalled();
+    expect(f.memory.commit).not.toHaveBeenCalled();
+    expect(JSON.stringify(f.originals)).toBe(before);
+  });
+
+  it("15: a non-idempotent budget charge remains attached until its authoritative settlement", async () => {
+    vi.useFakeTimers();
+    const charge = deferred<void>();
+    const call = vi.fn<ExtractionCall>(() => hung());
+    const run = createBoundedExtractor({
+      model: {} as LanguageModel,
+      scope: { sessionId: "offline", runId: "charge", isCurrent: () => true },
+      limits: async () => ({ deployed: 32768 }), remainingCalls: 4,
+      onCall: () => charge.promise, call,
     });
     disposals.push(run.dispose);
     const pending = run.extract([source], []);
     const settled = pending.then(() => true, () => true);
-    await vi.advanceTimersByTimeAsync(COMPACTION_POLICY.timeoutMs + 1);
+    await vi.advanceTimersByTimeAsync(COMPACTION_POLICY.timeoutMs);
     expect(run.signal.aborted).toBe(true);
+    // An irrevocable persistence/charge operation must not be detached and
+    // misreported as settled: this is a remaining authoritative-wait boundary.
     expect(await Promise.race([settled, Promise.resolve(false)])).toBe(false);
-    gate.resolve({ deployed: 32768 });
+    charge.resolve();
     await expect(pending).rejects.toMatchObject({ code: "compaction-timeout" });
+    expect(call).not.toHaveBeenCalled();
   });
 
   it("9: a timed-out extraction retains all original conversation and tool history", async () => {

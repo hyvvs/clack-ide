@@ -14,6 +14,7 @@ import {
 } from "@ai-sdk/provider";
 import { convertUint8ArrayToBase64 } from "@ai-sdk/provider-utils";
 import { z } from "zod";
+import { observePreparationSignal } from "@/modules/ai/lib/preparationLifecycle";
 
 export function ollamaChatURL(baseURL: string): string {
   const url = new URL(normalizeEndpointUrl(baseURL));
@@ -315,10 +316,14 @@ export function createOllamaModel(config: {
     supportedUrls: { "image/*": [/^data:image\//] },
     async doGenerate(params) {
       const { body, response } = await send(params, false);
-      const frame = frameSchema.parse(await response.json());
+      observePreparationSignal(params.abortSignal, "sdk-response-headers");
+      const json = await response.json();
+      observePreparationSignal(params.abortSignal, "sdk-json-settled");
+      const frame = frameSchema.parse(json);
       if (frame.error) throw new Error(frame.error);
       if (!frame.done || !frame.message)
         throw new Error("Incomplete Ollama response");
+      observePreparationSignal(params.abortSignal, "sdk-frame-validated");
       const calls = toolParts(frame, priorCallIds(params));
       await config.onFinish?.();
       return {
