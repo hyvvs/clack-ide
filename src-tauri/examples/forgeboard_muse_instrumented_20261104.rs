@@ -13,6 +13,7 @@ use terax_lib::modules::{
 struct AcceptanceWireContract {
     calibration: CalibrationWire,
     verification: VerificationWire,
+    extraction: ExtractionWire,
     agent: AgentWire,
 }
 #[derive(serde::Deserialize)]
@@ -27,6 +28,20 @@ struct VerificationWire {
     outputs: Vec<u64>,
     name: String,
     parameters: serde_json::Value,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExtractionWire {
+    #[serde(rename = "maxOutput")]
+    max_output: u64,
+    #[serde(rename = "maxSources")]
+    max_sources: usize,
+    #[serde(rename = "maxSourceBytes")]
+    max_source_bytes: usize,
+    #[serde(rename = "maxClaims")]
+    max_claims: usize,
+    #[serde(rename = "systemPrompt")]
+    system_prompt: String,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,6 +70,9 @@ fn schema_without_meta(value: &serde_json::Value) -> serde_json::Value {
 }
 fn acceptance_model_matches(body: &serde_json::Value, expected: &str) -> bool {
     body["model"] == expected
+}
+fn acceptance_destination_matches(actual: Option<&str>, expected: &str) -> bool {
+    actual == Some(expected)
 }
 fn acceptance_exact_output(body: &serde_json::Value, contract: &AcceptanceWireContract) -> Option<u64> {
     let context = body["options"]["num_ctx"].as_u64()?;
@@ -102,8 +120,10 @@ fn acceptance_wire_controls_match(
         "omitted" => body.get("think").is_none(),
         _ => false,
     };
-    if body["stream"] != true
-        || !body.as_object().is_some_and(|map| map.keys().all(|key|
+    let Some(stream) = body.get("stream").and_then(serde_json::Value::as_bool) else {
+        return false;
+    };
+    if !body.as_object().is_some_and(|map| map.keys().all(|key|
             matches!(key.as_str(), "model" | "messages" | "stream" | "options" | "tools" | "think")))
         || !body["options"].as_object().is_some_and(|map|
             map.len() == 2 && map.contains_key("num_ctx") && map.contains_key("num_predict"))
@@ -122,6 +142,13 @@ fn acceptance_wire_controls_match(
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or_default();
+    // Production compaction extraction uses AI SDK generateText -> Ollama
+    // doGenerate -> stream=false. Permit only that exact tool-free prompt shape;
+    // the host observes and forwards the caller's mode without rewriting it.
+    if !stream {
+        return think_matches
+            && acceptance_compaction_extraction_match(body, context, output, contract);
+    }
     if output == contract.calibration.output {
         return think_matches && tools.is_empty() && contract.calibration.candidates.contains(&context);
     }
@@ -186,6 +213,83 @@ fn acceptance_wire_controls_match(
         })
 }
 
+fn acceptance_compaction_extraction_match(
+    body: &serde_json::Value,
+    context: u64,
+    output: u64,
+    contract: &AcceptanceWireContract,
+) -> bool {
+    if output == 0
+        || output > contract.extraction.max_output
+        || context <= output
+        || !contract.calibration.candidates.contains(&context)
+        || body.get("tools").is_some_and(|tools| !tools.as_array().is_some_and(Vec::is_empty))
+    {
+        return false;
+    }
+    let Some(messages) = body["messages"].as_array() else { return false };
+    if messages.len() != 2
+        || !messages[0].as_object().is_some_and(|message| message.len() == 2
+            && message.get("role").and_then(serde_json::Value::as_str) == Some("system")
+            && message.get("content").and_then(serde_json::Value::as_str) == Some(contract.extraction.system_prompt.as_str()))
+        || !messages[1].as_object().is_some_and(|message| message.len() == 2
+            && message.get("role").and_then(serde_json::Value::as_str) == Some("user")
+            && message.get("content").is_some_and(serde_json::Value::is_string))
+    {
+        return false;
+    }
+    let Some(content) = messages[1]["content"].as_str() else { return false };
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(content) else { return false };
+    let Some(object) = payload.as_object() else { return false };
+    if object.len() != 2 || !object.contains_key("existingClaims") || !object.contains_key("sources") {
+        return false;
+    }
+    let Some(claims) = payload["existingClaims"].as_array() else { return false };
+    let Some(sources) = payload["sources"].as_array() else { return false };
+    let Ok(source_bytes) = serde_json::to_vec(&payload["sources"]) else { return false };
+    if claims.len() > contract.extraction.max_claims
+        || sources.is_empty()
+        || sources.len() > contract.extraction.max_sources
+        || source_bytes.len() > contract.extraction.max_source_bytes
+    { return false; }
+    let digest = |value: &serde_json::Value| value.as_str().is_some_and(|value|
+        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    let mut claim_ids = std::collections::HashSet::new();
+    if !claims.iter().all(|claim| {
+        let Some(claim) = claim.as_object() else { return false };
+        if claim.len() != 4 || !claim.contains_key("id") || !claim.contains_key("section")
+            || !claim.contains_key("status") || !claim.contains_key("text")
+        { return false; }
+        let section = claim["section"].as_str();
+        let status = claim["status"].as_str();
+        digest(&claim["id"])
+            && section.is_some_and(|value| matches!(value,
+                "objective" | "requirements" | "constraints" | "decisions" | "completed-work"
+                | "active-tasks" | "files-and-artifacts" | "unresolved-issues" | "errors"
+                | "agent-findings" | "project-state" | "uncertainty"))
+            && status.is_some_and(|value| matches!(value,
+                "user-requirement" | "verified-observation" | "inference" | "unresolved" | "superseded" | "stale"))
+            && claim["text"].as_str().is_some_and(|value| !value.trim().is_empty())
+            && claim_ids.insert(claim["id"].as_str().unwrap().to_string())
+    }) { return false; }
+    let mut source_ids = std::collections::HashSet::new();
+    sources.iter().all(|source| {
+        let Some(source) = source.as_object() else { return false };
+        if source.len() != 4
+            || !source.contains_key("id")
+            || !source.contains_key("digest")
+            || !source.contains_key("role")
+            || !source.contains_key("passages")
+        { return false; }
+        let passages = source["passages"].as_array();
+        digest(&source["id"]) && digest(&source["digest"])
+            && source_ids.insert(source["id"].as_str().unwrap().to_string())
+            && matches!(source["role"].as_str(), Some("assistant" | "tool"))
+            && passages.is_some_and(|passages| !passages.is_empty()
+                && passages.iter().all(|passage| passage.as_str().is_some_and(|text| !text.trim().is_empty())))
+    })
+}
+
 // Test-host compatibility with production's Automatic fallback: a genuinely
 // verified Boolean tool variant is carried into the Agent even though the
 // saved user preference remains Automatic. The host may only accept the same
@@ -240,7 +344,7 @@ fn acceptance_host_wire_match(
 
 #[cfg(test)]
 mod acceptance_wire_tests {
-    use super::{acceptance_confirmed_agent_variant_match, acceptance_host_wire_match, acceptance_model_matches, acceptance_wire_controls_match, AcceptanceWireContract};
+    use super::{acceptance_confirmed_agent_variant_match, acceptance_destination_matches, acceptance_host_wire_match, acceptance_model_matches, acceptance_wire_controls_match, AcceptanceWireContract};
     use serde_json::json;
 
     fn contract() -> AcceptanceWireContract {
@@ -248,6 +352,8 @@ mod acceptance_wire_tests {
             "calibration":{"candidates":[4096,8192,16384,32768,49152,65536,73728],"output":32},
             "verification":{"outputs":[512,1024,2048],"name":"get_probe_value",
               "parameters":{"type":"object","properties":{"key":{"type":"string"},"count":{"type":"number"}}}},
+            "extraction":{"maxOutput":1024,"maxSources":128,"maxSourceBytes":262144,"maxClaims":64,
+              "systemPrompt":"Extract conversation evidence as JSON only."},
             "agent":{"output":8192,"context":73728,"toolNames":["bash_run","read_file"],
               "continuationOutputs":[
                 {"context":4096,"output":2048},{"context":8192,"output":2048},
@@ -266,6 +372,16 @@ mod acceptance_wire_tests {
         json!({"stream":true,"messages":[{"role":"system","content":"Original instructions"}],"options":{"num_ctx":65536,"num_predict":8192},
             "tools":[{"type":"function","function":{"name":"bash_run","description":"Shell",
             "parameters":{"type":"object","properties":{"command":{"type":"string"}}}}}]})
+    }
+    fn extraction() -> serde_json::Value {
+        json!({"model":"muse-glimmer:30b","stream":false,
+            "messages":[
+                {"role":"system","content":"Extract conversation evidence as JSON only."},
+                {"role":"user","content":json!({"existingClaims":[],"sources":[{
+                    "id":"a".repeat(64),"digest":"b".repeat(64),"role":"assistant",
+                    "passages":["A completed historical Agent step."]
+                }] }).to_string()}
+            ],"options":{"num_ctx":49152,"num_predict":1024}})
     }
     #[test]
     fn automatic_verified_boolean_agent_variant_does_not_fail_host_guard() {
@@ -341,6 +457,102 @@ mod acceptance_wire_tests {
             "omitted",
             &contract()
         ));
+    }
+    #[test]
+    fn accepts_exact_non_streaming_compaction_extraction_and_preserves_the_wire_body() {
+        let body = extraction();
+        let original = body.clone();
+        let mut seen = std::collections::HashMap::new();
+        assert!(acceptance_model_matches(&body, "muse-glimmer:30b"));
+        assert!(acceptance_host_wire_match(&body, "omitted", &contract(), &mut seen));
+        assert!(seen.is_empty(), "extraction cannot mint native-tool verification evidence");
+        assert_eq!(body, original, "the acceptance host must observe, never rewrite, stream=false");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["options"]["num_ctx"], 49152);
+        assert_eq!(body["options"]["num_predict"], 1024);
+    }
+
+    #[test]
+    fn non_streaming_acceptance_is_narrow_and_malformed_or_untrusted_requests_still_fail() {
+        let valid = extraction();
+        let mut malformed = valid.clone();
+        malformed["stream"] = json!("false");
+        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        malformed = valid.clone();
+        malformed["messages"][0]["content"] = json!("unrecognized non-streaming prompt");
+        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        malformed = valid.clone();
+        malformed["messages"][1]["content"] = json!("{bad-json");
+        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        malformed = valid.clone();
+        malformed["options"]["num_predict"] = json!(2048);
+        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        malformed = valid.clone();
+        malformed["options"]["num_ctx"] = json!(12345);
+        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        malformed = valid.clone();
+        malformed["tools"] = json!([{"type":"function","function":{"name":"bash_run","description":"shell","parameters":{"type":"object","properties":{}}}}]);
+        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        // `maxChunks` is the number of extraction calls, not the number of
+        // source records in one request. Production permits up to maxEvidence.
+        let mut five_sources = valid.clone();
+        let mut payload: serde_json::Value = serde_json::from_str(five_sources["messages"][1]["content"].as_str().unwrap()).unwrap();
+        for index in 2..=5 {
+            payload["sources"].as_array_mut().unwrap().push(json!({
+                "id":format!("{:064x}", index), "digest":format!("{:064x}", index + 100),
+                "role":"assistant", "passages":[format!("Historical step {index}")]
+            }));
+        }
+        five_sources["messages"][1]["content"] = json!(payload.to_string());
+        assert!(acceptance_wire_controls_match(&five_sources, "omitted", &contract()));
+        let mut too_many_sources = five_sources.clone();
+        let mut payload: serde_json::Value = serde_json::from_str(too_many_sources["messages"][1]["content"].as_str().unwrap()).unwrap();
+        for index in 6..=129 {
+            payload["sources"].as_array_mut().unwrap().push(json!({
+                "id":format!("{:064x}", index), "digest":format!("{:064x}", index + 100),
+                "role":"assistant", "passages":[format!("Historical step {index}")]
+            }));
+        }
+        too_many_sources["messages"][1]["content"] = json!(payload.to_string());
+        assert!(!acceptance_wire_controls_match(&too_many_sources, "omitted", &contract()));
+        let mut oversized_sources = valid.clone();
+        let mut payload: serde_json::Value = serde_json::from_str(oversized_sources["messages"][1]["content"].as_str().unwrap()).unwrap();
+        payload["sources"][0]["passages"][0] = json!("x".repeat(262144));
+        oversized_sources["messages"][1]["content"] = json!(payload.to_string());
+        assert!(!acceptance_wire_controls_match(&oversized_sources, "omitted", &contract()));
+        let mut too_many_claims = valid.clone();
+        let mut payload: serde_json::Value = serde_json::from_str(too_many_claims["messages"][1]["content"].as_str().unwrap()).unwrap();
+        payload["existingClaims"] = json!(vec![json!({}); 65]);
+        too_many_claims["messages"][1]["content"] = json!(payload.to_string());
+        assert!(!acceptance_wire_controls_match(&too_many_claims, "omitted", &contract()));
+        let mut malformed_claim = valid.clone();
+        let mut payload: serde_json::Value = serde_json::from_str(malformed_claim["messages"][1]["content"].as_str().unwrap()).unwrap();
+        payload["existingClaims"] = json!([{"id":"c".repeat(64),"section":"requirements",
+            "status":"user-requirement","text":"Keep the original requirement."}]);
+        malformed_claim["messages"][1]["content"] = json!(payload.to_string());
+        assert!(acceptance_wire_controls_match(&malformed_claim, "omitted", &contract()));
+        let mut duplicate_claim = malformed_claim.clone();
+        let mut payload: serde_json::Value = serde_json::from_str(duplicate_claim["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let duplicate = payload["existingClaims"][0].clone();
+        payload["existingClaims"].as_array_mut().unwrap().push(duplicate);
+        duplicate_claim["messages"][1]["content"] = json!(payload.to_string());
+        assert!(!acceptance_wire_controls_match(&duplicate_claim, "omitted", &contract()));
+        let mut duplicate_source = valid.clone();
+        let mut payload: serde_json::Value = serde_json::from_str(duplicate_source["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let first_source = payload["sources"][0].clone();
+        payload["sources"].as_array_mut().unwrap().push(first_source);
+        duplicate_source["messages"][1]["content"] = json!(payload.to_string());
+        assert!(!acceptance_wire_controls_match(&duplicate_source, "omitted", &contract()));
+        let mut whitespace_source = valid.clone();
+        let mut payload: serde_json::Value = serde_json::from_str(whitespace_source["messages"][1]["content"].as_str().unwrap()).unwrap();
+        payload["sources"][0]["passages"][0] = json!("  \n  ");
+        whitespace_source["messages"][1]["content"] = json!(payload.to_string());
+        assert!(!acceptance_wire_controls_match(&whitespace_source, "omitted", &contract()));
+        malformed = valid.clone();
+        malformed["model"] = json!("other-model");
+        assert!(!acceptance_model_matches(&malformed, "muse-glimmer:30b"));
+        assert!(!acceptance_destination_matches(Some("https://hosted.example/api/chat"), "http://127.0.0.1:11435/api/chat"));
+        assert!(!acceptance_destination_matches(None, "http://127.0.0.1:11435/api/chat"));
     }
     #[test]
     fn automatic_probe_alternatives_must_not_be_rejected_as_agent_overrides() {
@@ -447,11 +659,7 @@ mod acceptance_wire_tests {
         ));
         changed = agent();
         changed["stream"] = json!(false);
-        assert!(!acceptance_wire_controls_match(
-            &changed,
-            "omitted",
-            &contract()
-        ));
+        assert!(!acceptance_wire_controls_match(&changed, "omitted", &contract()));
     }
     #[test]
     fn preserves_model_identity_and_explicit_reasoning_guards() {
@@ -873,9 +1081,8 @@ fn main() {
                         let tauri::ipc::InvokeBody::Json(value) = invoke.message.payload() else {
                             panic!("acceptance inference payload must be JSON");
                         };
-                        assert_eq!(
-                            value["url"].as_str(),
-                            Some(expected.as_str()),
+                        assert!(
+                            acceptance_destination_matches(value["url"].as_str(), &expected),
                             "unexpected inference destination"
                         );
                         eprintln!("CLACK_ACCEPTANCE_INFERENCE {}", value["url"]);

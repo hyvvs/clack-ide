@@ -46,6 +46,33 @@ export async function targetContextFixture(
       },
     };
   }
+  if (command === "conversation_memory_load") {
+    const session = useChatStore
+      .getState()
+      .sessions.find((item) => item.id === input.owner.sessionId);
+    const messages =
+      chats.get(input.owner.sessionId)?.messages ??
+      seedMessages.get(input.owner.sessionId) ??
+      [];
+    return {
+      preparation: {
+        runtimeId: "fixture-memory",
+        owner: input.owner,
+        source: {
+          transcriptHash: await contextDigest(messages),
+          profileHash: await contextDigest(session?.profile ?? null),
+          transcriptRevision: 1,
+          profileRevision: 1,
+        },
+        generation: 0,
+        previous: null,
+      },
+      revisionId: null,
+      revision: null,
+      uncoveredMessages: messages.length,
+      sourceChanged: false,
+    };
+  }
   if (command === "target_context_commit") {
     const { expectedSession: session, modelId, key } = input.request;
     return {

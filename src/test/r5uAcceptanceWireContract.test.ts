@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { streamText, tool, type ToolSet } from "ai";
+import { generateText } from "ai";
 import { z } from "zod";
 import { createOllamaModel } from "@/modules/ai/lib/ollamaModel";
 import { canonicalProbeTools } from "@/modules/ai/lib/toolVerificationRuntime";
@@ -8,6 +9,13 @@ import {
   TOOL_VERIFICATION, TOOL_PROBE_PROMPT,
 } from "@/modules/ai/lib/toolVerificationSchema";
 import { productionAcceptanceWireContract } from "./r5uAcceptanceWireContract";
+import {
+  COMPACTION_EXTRACTION_MAX_CLAIMS,
+  COMPACTION_EXTRACTION_MAX_SOURCES,
+  COMPACTION_EXTRACTION_MAX_SOURCE_BYTES,
+  COMPACTION_EXTRACTION_REQUEST_MAX_OUTPUT,
+  COMPACTION_EXTRACTION_SYSTEM,
+} from "@/modules/ai/lib/compactionExtraction";
 import frozenR5t from "./fixtures/r5t-wire-shapes.json";
 
 // No live HTTP or Tauri IPC: exercise the real SDK -> Ollama serializer against
@@ -92,6 +100,46 @@ describe("R5u native acceptance contract from production serialization", () => {
       expect(wire.options).not.toHaveProperty("temperature");
       expect(wire).not.toHaveProperty("tool_choice");
     }
+  });
+  it("derives the exact non-streaming extraction allowance and system prompt from production", () => {
+    expect(contract.extraction).toEqual({
+      maxOutput: COMPACTION_EXTRACTION_REQUEST_MAX_OUTPUT,
+      maxSources: COMPACTION_EXTRACTION_MAX_SOURCES,
+      maxSourceBytes: COMPACTION_EXTRACTION_MAX_SOURCE_BYTES,
+      maxClaims: COMPACTION_EXTRACTION_MAX_CLAIMS,
+      systemPrompt: COMPACTION_EXTRACTION_SYSTEM,
+    });
+    expect(contract.extraction.maxOutput).toBe(1024);
+  });
+  it("uses Ollama doGenerate for compaction extraction and preserves stream=false", async () => {
+    let wire: Record<string, unknown> | undefined;
+    const claimText = JSON.stringify({ claims: [{ source: "a".repeat(64), section: "unresolved-issues",
+      text: "An unresolved migration failure.", quote: "Migration remains blocked.", status: "inference", contradicts: [] }] });
+    const model = createOllamaModel({
+      modelId: "muse-glimmer:30b", baseURL: "http://127.0.0.1:9",
+      fetch: async (_url, init) => {
+        wire = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({ model: "muse-glimmer:30b",
+          message: { role: "assistant", content: claimText }, done: true, done_reason: "stop",
+          prompt_eval_count: 100, eval_count: 80 }),
+        { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const result = await generateText({
+      model, system: COMPACTION_EXTRACTION_SYSTEM,
+      prompt: JSON.stringify({ existingClaims: [], sources: [{ id: "a".repeat(64), digest: "b".repeat(64),
+        role: "assistant", passages: ["Migration remains blocked."] }] }),
+      maxOutputTokens: COMPACTION_EXTRACTION_REQUEST_MAX_OUTPUT,
+      providerOptions: { ollama: { numCtx: 49152 } }, maxRetries: 0,
+    });
+    expect(result.text).toBe(claimText);
+    expect(wire).toMatchObject({ model: "muse-glimmer:30b", stream: false,
+      options: { num_ctx: 49152, num_predict: 1024 } });
+    expect(wire?.tools).toBeUndefined();
+    expect(wire?.messages).toEqual([
+      { role: "system", content: COMPACTION_EXTRACTION_SYSTEM },
+      { role: "user", content: expect.any(String) },
+    ]);
   });
   it("preserves an explicit authorized boolean reasoning choice without changing prompt, schema or sampling on repeat confirmation", async () => {
     const baseline = await serialized({ output: 512, context: 65536, tools: canonicalProbeTools() });

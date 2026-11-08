@@ -1105,6 +1105,85 @@ async fn normal_done_drops_native_socket_without_waiting_for_peer_to_close() {
     assert!(events.iter().any(|e| matches!(e, Payload::Chunk { .. })));
 }
 #[tokio::test]
+async fn streaming_response_keeps_normal_headers_generation_chunk_and_completion_events() {
+    let (result, events) = run_fault(
+        vec![headers(), delta(), b"data: [DONE]\n\n".to_vec()],
+        false,
+        false,
+        limits(),
+        None,
+    ).await;
+    assert!(result.is_ok());
+    assert!(events.iter().any(|event| matches!(event, Payload::Headers { status: 200, .. })));
+    assert!(events.iter().any(|event| matches!(event, Payload::Phase { phase: Phase::Generating })));
+    assert!(events.iter().any(|event| matches!(event, Payload::Chunk { bytes } if String::from_utf8_lossy(bytes).contains("hello"))));
+    assert_eq!(terminal(&result), Phase::Completed);
+}
+
+#[tokio::test]
+async fn non_streaming_ollama_json_completion_is_forwarded_unchanged_and_settles() {
+    let body = br#"{"model":"muse-glimmer:30b","message":{"role":"assistant","content":"{\"claims\":[]}"},"done":true,"done_reason":"stop","prompt_eval_count":120,"eval_count":18}"#;
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let fixture = server(vec![header.into_bytes(), body.to_vec()], true, false);
+    let state = InferenceState::default();
+    let id = state.open("main").unwrap();
+    let lease = state.start("main", &id).unwrap();
+    let events = Mutex::new(Vec::new());
+    let result = execute_admitted(&state, &lease, request(fixture.url), limits(), None, &|event| {
+        events.lock().unwrap().push(event);
+        true
+    }).await;
+    assert!(result.is_ok(), "non-streaming JSON response must complete: {result:?}");
+    assert_eq!(terminal(&result), Phase::Completed);
+    let events = events.into_inner().unwrap();
+    assert!(events.iter().any(|event| matches!(event, Payload::Headers { status: 200, headers }
+        if headers.get("content-type").is_some_and(|value| value.contains("application/json")))));
+    let forwarded: Vec<u8> = events.iter().flat_map(|event| match event {
+        Payload::Chunk { bytes } => bytes.clone(),
+        _ => Vec::new(),
+    }).collect();
+    assert_eq!(forwarded, body, "native transport must preserve the JSON response bytes");
+    let decoded: serde_json::Value = serde_json::from_slice(&forwarded).unwrap();
+    assert_eq!(decoded["done"], true);
+    assert_eq!(decoded["message"]["content"], "{\"claims\":[]}");
+    drop(lease);
+    assert_eq!(state.len(), 0, "completed non-streaming request releases its lease");
+    tokio::time::timeout(Duration::from_secs(4), fixture.closed).await.unwrap().unwrap();
+    fixture.thread.join().unwrap();
+}
+
+#[tokio::test]
+async fn cancellation_during_non_streaming_json_delivery_still_wins_and_releases() {
+    let body = br#"{"model":"muse-glimmer:30b","message":{"role":"assistant","content":"bounded result"},"done":true}"#;
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let fixture = server(vec![header.into_bytes(), body.to_vec()], true, false);
+    let state = Arc::new(InferenceState::default());
+    let id = state.open("main").unwrap();
+    let lease = state.start("main", &id).unwrap();
+    let owner = state.clone();
+    let chunks = Mutex::new(0usize);
+    let result = execute_admitted(&state, &lease, request(fixture.url), limits(), None, &|event| {
+        if matches!(event, Payload::Chunk { .. }) {
+            *chunks.lock().unwrap() += 1;
+            owner.close_owner("main");
+        }
+        true
+    }).await;
+    assert_eq!(terminal(&result), Phase::Cancelled);
+    assert!(*chunks.lock().unwrap() > 0);
+    drop(lease);
+    assert_eq!(state.len(), 0, "cancelled non-streaming request releases its lease");
+    tokio::time::timeout(Duration::from_secs(4), fixture.closed).await.unwrap().unwrap();
+    fixture.thread.join().unwrap();
+}
+
+#[tokio::test]
 async fn cancellation_after_headers_and_during_stream_drops_socket() {
     for phase in ["body", "chunk"] {
         let (result, _) = run_fault(

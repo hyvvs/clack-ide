@@ -92,16 +92,18 @@ function configuration(modelId = "exact:latest") {
 function metadata(loaded?: number, requested?: number): ProbeSnapshot {
   const profile = state.profiles[0],
     endpoint = state.endpoints[0];
-  const evidence = (metric: string, value: number | boolean | string) =>
-    profileEvidence(
+  const evidence = (metric: string, value: number | boolean | string) => {
+    const requestMeasurement = metric === "probe.requestedContext";
+    return profileEvidence(
       state,
       profile.id,
       metric,
       value,
-      "backend-reported",
+      requestMeasurement ? "measured" : "backend-reported",
       Date.now(),
-      "reported",
+      requestMeasurement ? "observed" : "reported",
     );
+  };
   return {
     endpointId: endpoint.id,
     configurationRevision: endpoint.configurationRevision,

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { wrapLanguageModel } from "ai";
 import { invoke } from "@tauri-apps/api/core";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
@@ -8,6 +9,8 @@ import {
   type ExtractionSource,
 } from "@/modules/ai/lib/compactionExtraction";
 import { sessionInference } from "@/modules/ai/lib/inferenceLifecycle";
+import { createOllamaModel } from "@/modules/ai/lib/ollamaModel";
+import { COMPACTION_EXTRACTION_REQUEST_MAX_OUTPUT, COMPACTION_EXTRACTION_SYSTEM } from "@/modules/ai/lib/compactionExtraction";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -150,6 +153,51 @@ async function setup() {
 }
 
 describe("bounded extraction through the installed provider adapter", () => {
+  it("uses production generateText/doGenerate with the exact non-streaming extraction contract", async () => {
+    let wire: Record<string, unknown> | undefined;
+    const completion = JSON.stringify({ claims: [{
+      source: source.evidence.id, section: "unresolved-issues",
+      text: "The migration remains blocked.", quote: source.passages[0],
+      status: "inference", contradicts: [],
+    }] });
+    const base = createOllamaModel({
+      modelId: "muse-glimmer:30b", baseURL: "http://127.0.0.1:9",
+      fetch: async (_url, init) => {
+        wire = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({ model: "muse-glimmer:30b",
+          message: { role: "assistant", content: completion }, done: true,
+          done_reason: "stop", prompt_eval_count: 120, eval_count: 80 }),
+        { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const model = wrapLanguageModel({ model: base, middleware: {
+      specificationVersion: "v3",
+      async transformParams({ params }) {
+        return { ...params, providerOptions: { ...params.providerOptions,
+          ollama: { ...(params.providerOptions?.ollama ?? {}), numCtx: 49152 } } };
+      },
+    } });
+    const scope = { sessionId: "compaction-integration", runId: crypto.randomUUID(), isCurrent: () => true };
+    const run = createBoundedExtractor({ model, scope,
+      limits: async () => ({ deployed: 49152, outputReserve: 6144, maxOutput: 6144 }),
+      remainingCalls: 5 });
+    try {
+      const claims = await run.extract([source], []);
+      expect(claims).toHaveLength(1);
+      expect(claims[0].sources).toEqual([source.evidence.id]);
+      expect(wire).toMatchObject({ model: "muse-glimmer:30b", stream: false,
+        options: { num_ctx: 49152, num_predict: COMPACTION_EXTRACTION_REQUEST_MAX_OUTPUT } });
+      expect(wire?.messages).toEqual([
+        { role: "system", content: COMPACTION_EXTRACTION_SYSTEM },
+        { role: "user", content: expect.any(String) },
+      ]);
+      expect(wire?.tools).toBeUndefined();
+      expect(wire?.stream).toBe(false);
+      expect(invoke).not.toHaveBeenCalled();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally { run.dispose(); }
+  });
+
   it("uses real generateText, B1 wire preflight, D1 scope and E1 admission metadata", async () => {
     const run = await setup();
     const claims = await run.extract([source], []);

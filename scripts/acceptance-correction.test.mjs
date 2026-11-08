@@ -194,6 +194,20 @@ describe("current work boundary and durable exactly-once dispatch", () => {
     expect(JSON.parse(await readFile(checkpoint, "utf8"))).toMatchObject({ status: "sent", messageId: "correction-message" });
     await expect(observe({ ...request(), messageId: "other-message" })).rejects.toThrow("Duplicate");
   });
+  it("requires three confirmed writes plus current page-size-50 evidence and dispatches once regardless of inference stream mode", async () => {
+    const parts = [await native("stream-independent-1"), await native("stream-independent-2"), await native("stream-independent-3")];
+    const result = await observe({ ...request(parts), nativeRequest: { stream: false } });
+    expect(result.writes).toHaveLength(3);
+    expect(result.boundary).toMatchObject({ page: { kind: "current-accepted-plan" } });
+    expect(result.status).toBe("pending");
+    const dispatch = { sessionId: "real-mission-a", action: "dispatch", nativeRequest: { stream: false } };
+    const claims = await Promise.all([observe(dispatch), observe(dispatch)]);
+    expect(claims.map(value => value.claimed)).toEqual([true, false]);
+    observe = createCorrectionObserver(root, checkpoint);
+    expect((await observe(dispatch)).claimed).toBe(false);
+    await observe({ ...request(), messageId: "single-correction-message", nativeRequest: { stream: false } });
+    expect((await observe(request())).status).toBe("sent");
+  });
   it("isolates owners and refuses corrupt persistence rather than replaying", async () => {
     await observe(request());
     await expect(observe({ ...request(), sessionId: "other" })).rejects.toThrow("owner");

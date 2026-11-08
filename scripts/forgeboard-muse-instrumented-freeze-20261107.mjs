@@ -9,6 +9,13 @@ import { cp, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { evaluateFrontend } from "./forgeboard-muse-browser-probe-20261104.mjs";
+import { discoverForgeBoardRouteContract, taskFilterPath } from "./forgeboard-route-contract.mjs";
+import {
+  isRejectedInput,
+  matchesResponseEntity,
+  responseList,
+  unwrapResponse,
+} from "./forgeboard-response-contract.mjs";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
 const id = "forgeboardmuse-20261107-01";
@@ -76,6 +83,23 @@ state.structure = {
 };
 const readme = (await read(path.join(work, files.find(f => /^readme\.md$/i.test(f)) ?? "README.md")));
 const gitignore = await read(path.join(work, ".gitignore"));
+const sourceEntries = await Promise.all(files.filter(file => /\.[cm]?[jt]sx?$/.test(file)).map(async file => ({
+  path: file,
+  source: await readFile(path.join(work, file), "utf8"),
+})));
+state.api.routeContract = discoverForgeBoardRouteContract({
+  backendSources: sourceEntries,
+  frontendSources: sourceEntries.filter(entry => /(?:^|\/)(?:frontend|client|web)(?:\/|$)/i.test(entry.path)).map(entry => entry.source),
+  readme,
+});
+state.api.routeDiscovery = {
+  ok: state.api.routeContract.ok,
+  projects: state.api.routeContract.projects,
+  tasks: state.api.routeContract.tasks,
+  events: state.api.routeContract.events,
+  semantics: state.api.routeContract.semantics,
+  errors: state.api.routeContract.errors,
+};
 const scripts = rootPkg?.scripts ?? {};
 const npx = process.platform === "win32" ? "npx.cmd" : "npx";
 async function run(command, args, directory = work, timeoutMs = 300000) {
@@ -124,6 +148,12 @@ for (const entry of packages) {
 // The concrete startup/route discovery and frontend browser checks are below.
 // They are evaluated on evaluation-working, never on source or frozen.
 const base = "http://127.0.0.1:4317";
+const projectBase = state.api.routeContract.projects.basePath;
+const taskBase = state.api.routeContract.tasks.basePath;
+const missingProjectId = "00000000-0000-4000-8000-000000000000";
+const projectItem = id => `${projectBase}/${encodeURIComponent(id)}`;
+const taskItem = id => `${taskBase}/${encodeURIComponent(id)}`;
+const taskQuery = values => taskFilterPath(state.api.routeContract, values);
 async function request(endpoint, method = "GET", body, timeout = 7000) {
   try {
     const response = await fetch(base + endpoint, {
@@ -137,16 +167,16 @@ async function request(endpoint, method = "GET", body, timeout = 7000) {
     return { status: response.status, json, text: text.slice(0, 1000), contentType: response.headers.get("content-type") };
   } catch (error) { return { status: null, error: error?.name ?? "network-error" }; }
 }
-const unwrap = (result, key) => result?.json?.[key] ?? result?.json?.data?.[key] ?? result?.json?.data ?? result?.json;
+const unwrap = unwrapResponse;
 const uid = entity => entity?.id ?? entity?._id ?? null;
 const ok = r => [200, 201].includes(r?.status);
-const invalid = r => [400, 422].includes(r?.status) && r?.json && typeof r.json === "object";
-const taskList = result => {
-  const value = unwrap(result, "tasks");
-  return Array.isArray(value) ? value : value?.items ?? value?.tasks ?? value?.results ?? [];
-};
+const invalid = isRejectedInput;
+const projectList = result => responseList(result, "projects");
+const taskList = result => responseList(result, "tasks");
 async function connectSse() {
-  for (const endpoint of ["/api/events", "/events", "/api/stream", "/api/sse", "/api/tasks/events"]) {
+  const endpoint = state.api.routeContract.events?.path;
+  if (!endpoint) return null;
+  {
     const controller = new AbortController();
     let response;
     const timeout = setTimeout(() => controller.abort(), 3000);
@@ -154,7 +184,7 @@ async function connectSse() {
       response = await fetch(base + endpoint, { headers: { Accept: "text/event-stream" }, signal: controller.signal });
       clearTimeout(timeout);
       if (!response.ok || !response.headers.get("content-type")?.includes("text/event-stream") || !response.body) {
-        controller.abort(); continue;
+        controller.abort(); return null;
       }
       const reader = response.body.getReader();
       const events = [];
@@ -195,6 +225,10 @@ async function connectSse() {
 }
 let server, frontend;
 async function start() {
+  if (!state.api.routeContract.ok || !projectBase || !taskBase) {
+    state.errors.push(`API route contract discovery failed: ${state.api.routeContract.errors.join("; ")}`);
+    return false;
+  }
   const choices = [
     [".", "start:backend"], [".", "start:server"], [".", "start"],
     ["backend", "start"], ["server", "start"], ["api", "start"],
@@ -208,7 +242,7 @@ async function start() {
     env: { ...process.env, NODE_ENV: "production", PORT: "4317" }, windowsHide: true,
     shell: process.platform === "win32", stdio: "ignore" });
   for (let i = 0; i < 50; i++) {
-    const response = await request("/api/projects", "GET", undefined, 900);
+    const response = await request(projectBase, "GET", undefined, 900);
     if (response.status !== null) return true;
     if (server.exitCode !== null) return false;
     await pause(450);
@@ -253,19 +287,26 @@ try {
   await save();
   if (state.api.started) {
     const s = state.api;
-    s.initialProjects = await request("/api/projects");
-    s.projectCreate = await request("/api/projects", "POST", { name: "Evaluator Project", description: "Persist and filter me" });
+    s.initialProjects = await request(projectBase);
+    s.projectCreate = await request(projectBase, "POST", { name: "Evaluator Project", description: "Persist and filter me" });
     const project = unwrap(s.projectCreate, "project"), projectId = uid(project);
     s.projectId = projectId;
     if (projectId != null) {
-      const pid = encodeURIComponent(projectId);
-      s.projectGet = await request(`/api/projects/${pid}`);
-      s.projectList = await request("/api/projects");
-      s.projectUpdate = await request(`/api/projects/${pid}`, "PATCH", { name: "Evaluator Project Updated" });
-      s.badProjectTask = await request("/api/tasks", "POST", { projectId: "__missing-project__", title: "Invalid reference" });
+      s.projectGet = await request(projectItem(projectId));
+      s.projectList = await request(projectBase);
+      s.projectUpdate = await request(projectItem(projectId), "PATCH", { name: "Evaluator Project Updated" });
+      s.badProjectTask = await request(taskBase, "POST", { projectId: missingProjectId, title: "Invalid reference" });
+      s.otherProjectCreate = await request(projectBase, "POST", { name: "Evaluator Other Project" });
+      s.otherProjectId = uid(unwrap(s.otherProjectCreate, "project"));
+      if (s.otherProjectId != null) {
+        s.otherProjectTaskCreate = await request(taskBase, "POST", {
+          projectId: s.otherProjectId, title: "Other project task", status: "Todo", priority: "Low", tags: ["other-project"],
+        });
+        s.otherProjectTaskId = uid(unwrap(s.otherProjectTaskCreate, "task"));
+      }
       const events = await connectSse();
       s.sseConnect = { ok: !!events, endpoint: events?.endpoint ?? null };
-      s.taskCreate = await request("/api/tasks", "POST", { projectId, title: "Alpha release", description: "search needle", status: "Todo", priority: "High", tags: ["alpha", "release"] });
+      s.taskCreate = await request(taskBase, "POST", { projectId, title: "Alpha release", description: "search needle", status: "Todo", priority: "High", tags: ["alpha", "release"] });
       const task = unwrap(s.taskCreate, "task"), taskId = uid(task);
       s.taskId = taskId;
       if (events) {
@@ -273,57 +314,57 @@ try {
         s.sseUpdate = { ok: !!taskId && s.sseReceipt.structuredMutation };
       }
       if (taskId != null) {
-        const tid = encodeURIComponent(taskId);
-        s.taskGet = await request(`/api/tasks/${tid}`);
-        s.taskList = await request("/api/tasks");
-        s.taskUpdate = await request(`/api/tasks/${tid}`, "PATCH", { status: "In Progress", priority: "Urgent", tags: ["alpha", "work"] });
-        s.taskAfterUpdate = await request(`/api/tasks/${tid}`);
-        s.secondTaskCreate = await request("/api/tasks", "POST", { projectId, title: "Beta documentation", description: "other text", status: "Done", priority: "Low", tags: ["beta"] });
+        s.taskGet = await request(taskItem(taskId));
+        s.taskList = await request(taskQuery({}));
+        s.taskUpdate = await request(taskItem(taskId), "PATCH", { status: "In Progress", priority: "Urgent", tags: ["alpha", "work"] });
+        s.taskAfterUpdate = await request(taskItem(taskId));
+        s.secondTaskCreate = await request(taskBase, "POST", { projectId, title: "Beta documentation", description: "other text", status: "Done", priority: "Low", tags: ["beta"] });
         s.secondTaskId = uid(unwrap(s.secondTaskCreate, "task"));
-        s.search = await request("/api/tasks?search=needle");
-        s.projectFilter = await request(`/api/tasks?projectId=${pid}`);
-        s.statusFilter = await request("/api/tasks?status=In%20Progress");
-        s.priorityFilter = await request("/api/tasks?priority=Urgent");
-        s.tagFilter = await request("/api/tasks?tag=alpha");
-        s.combined = await request(`/api/tasks?projectId=${pid}&status=In%20Progress&priority=Urgent&tag=alpha&search=needle`);
-        s.pagination = await request("/api/tasks?page=1&limit=1");
-        s.paginationNext = await request("/api/tasks?page=2&limit=1");
-        s.searchNegative = await request("/api/tasks?search=nonexistent-evaluator-needle");
-        s.statusNegative = await request("/api/tasks?status=Done");
-        s.priorityNegative = await request("/api/tasks?priority=Low");
-        s.tagNegative = await request("/api/tasks?tag=beta");
-        s.invalidStatus = await request(`/api/tasks/${tid}`, "PATCH", { status: "Imaginary" });
-        s.invalidPriority = await request(`/api/tasks/${tid}`, "PATCH", { priority: "Imaginary" });
-        s.invalidTitle = await request(`/api/tasks/${tid}`, "PATCH", { title: "x".repeat(121) });
-        s.missingGet = await request("/api/tasks/__missing__");
-        s.missingPatch = await request("/api/tasks/__missing__", "PATCH", { title: "x" });
-        s.missingDelete = await request("/api/tasks/__missing__", "DELETE");
-        s.malformed = await request("/api/tasks", "POST", "{bad-json");
+        s.search = await request(taskQuery({ search: "needle" }));
+        s.projectFilter = await request(taskQuery({ projectId }));
+        s.statusFilter = await request(taskQuery({ status: "In Progress" }));
+        s.priorityFilter = await request(taskQuery({ priority: "Urgent" }));
+        s.tagFilter = await request(taskQuery({ tag: ["alpha", "work"] }));
+        s.combined = await request(taskQuery({ projectId, status: "In Progress", priority: "Urgent", tag: ["alpha", "work"], search: "needle" }));
+        s.pagination = await request(taskQuery({ page: 1, limit: 1 }));
+        s.paginationNext = await request(taskQuery({ page: 2, limit: 1 }));
+        s.searchNegative = await request(taskQuery({ search: "nonexistent-evaluator-needle" }));
+        s.statusNegative = await request(taskQuery({ status: "Done" }));
+        s.priorityNegative = await request(taskQuery({ priority: "Low" }));
+        s.tagNegative = await request(taskQuery({ tag: ["beta", "beta"] }));
+        s.invalidStatus = await request(taskItem(taskId), "PATCH", { status: "Imaginary" });
+        s.invalidPriority = await request(taskItem(taskId), "PATCH", { priority: "Imaginary" });
+        s.invalidTitle = await request(taskItem(taskId), "PATCH", { title: "x".repeat(121) });
+        s.missingGet = await request(taskItem("__missing__"));
+        s.missingPatch = await request(taskItem("__missing__"), "PATCH", { title: "x" });
+        s.missingDelete = await request(taskItem("__missing__"), "DELETE");
+        s.malformed = await request(taskBase, "POST", "{bad-json");
         await stop();
-        s.stoppedHealth = await request("/api/projects", "GET", undefined, 1000);
+        s.stoppedHealth = await request(projectBase, "GET", undefined, 1000);
         s.restarted = await start();
         if (s.restarted) {
-          s.persistedTask = await request(`/api/tasks/${tid}`);
-          s.persistedProject = await request(`/api/projects/${pid}`);
-          s.taskDelete = await request(`/api/tasks/${tid}`, "DELETE");
-          s.deletedTask = await request(`/api/tasks/${tid}`);
+          s.persistedTask = await request(taskItem(taskId));
+          s.persistedProject = await request(projectItem(projectId));
+          if (s.otherProjectTaskId != null) s.persistedOtherProjectTask = await request(taskItem(s.otherProjectTaskId));
+          s.taskDelete = await request(taskItem(taskId), "DELETE");
+          s.deletedTask = await request(taskItem(taskId));
           if (s.secondTaskId != null) {
-            s.persistedSecond = await request(`/api/tasks/${encodeURIComponent(s.secondTaskId)}`);
-            s.secondTaskDelete = await request(`/api/tasks/${encodeURIComponent(s.secondTaskId)}`, "DELETE");
+            s.persistedSecond = await request(taskItem(s.secondTaskId));
+            s.secondTaskDelete = await request(taskItem(s.secondTaskId), "DELETE");
           }
         }
       }
-      s.missingProjectGet = await request("/api/projects/__missing__");
-      s.missingProjectPatch = await request("/api/projects/__missing__", "PATCH", { name: "x" });
-      s.missingProjectDelete = await request("/api/projects/__missing__", "DELETE");
-      s.invalidProject = await request("/api/projects", "POST", { name: "" });
+      s.missingProjectGet = await request(projectItem(missingProjectId));
+      s.missingProjectPatch = await request(projectItem(missingProjectId), "PATCH", { name: "x" });
+      s.missingProjectDelete = await request(projectItem(missingProjectId), "DELETE");
+      s.invalidProject = await request(projectBase, "POST", { name: "" });
       // Browser drives real hydrated React controls while the evaluated local
       // backend is still live; no source edits, fake polling or mocked APIs.
       const frontendUrl = await startFrontend();
       state.frontend.startupUrl = frontendUrl;
       if (frontendUrl) {
         const probe = await evaluateFrontend({ url: frontendUrl, owned,
-          apiProjects: () => request("/api/projects"), apiTasks: () => request("/api/tasks") });
+          apiProjects: () => request(projectBase), apiTasks: () => request(taskQuery({})) });
         state.frontend = { ...state.frontend, ...probe };
         state.accessibility.baseline = probe.baseline;
         await save();
@@ -334,16 +375,16 @@ try {
         s.defaultPageSizeExpected = state.correction.sentOnce ? 25 : 50;
         s.bulkCreate = [];
         for (let n = 0; n < 52; n++) {
-          const r = await request("/api/tasks", "POST", { projectId, title: `Page seed ${n}`, status: "Todo", priority: "Low", tags: ["page-seed"] });
+          const r = await request(taskBase, "POST", { projectId, title: `Page seed ${n}`, status: "Todo", priority: "Low", tags: ["page-seed"] });
           s.bulkCreate.push({ status: r.status, id: uid(unwrap(r, "task")) });
           if (!ok(r)) break;
         }
-        s.defaultFirstPage = await request("/api/tasks");
-        s.defaultSecondPage = await request("/api/tasks?page=2");
+        s.defaultFirstPage = await request(taskQuery({}));
+        s.defaultSecondPage = await request(taskQuery({ page: 2 }));
         await save();
       }
-      s.projectDelete = await request(`/api/projects/${pid}`, "DELETE");
-      s.deletedProject = await request(`/api/projects/${pid}`);
+      s.projectDelete = await request(projectItem(projectId), "DELETE");
+      s.deletedProject = await request(projectItem(projectId));
     }
     await save();
   }
@@ -354,11 +395,14 @@ try {
 const statuses = ["Backlog", "Todo", "In Progress", "Blocked", "Done"];
 const priorities = ["Low", "Medium", "High", "Urgent"];
 const s = state.api;
+const taskOf = result => unwrap(result, "task");
+const containsProject = result => projectList(result).some(value => uid(value) === s.projectId);
 const containsTask = r => {
   const list = taskList(r);
   return Array.isArray(list) && list.some(v => uid(v) === s.taskId);
 };
 const excludesSecond = r => s.secondTaskId != null && !taskList(r).some(v => uid(v) === s.secondTaskId);
+const updatedTask = taskOf(s.taskAfterUpdate);
 const testOutput = Object.entries(state.commands).filter(([k]) => k.endsWith(":test"));
 const testNonzero = testOutput.some(([, v]) => v.exit === 0 && !/(?:No tests found|0 tests|0 passing|0 passed)/i.test(v.stdout + v.stderr) &&
   /(?:\b[1-9]\d*\s+(?:tests?|passing)|# tests\s+[1-9]|✓ |✔ |PASS\s+\S+)/i.test(v.stdout + v.stderr));
@@ -374,23 +418,31 @@ state.checks = {
   testsDiscovered: testNonzero,
   npmTestsPass: testOutput.length > 0 && testOutput.every(([, v]) => v.exit === 0) && testNonzero,
   backendStarts: s.started === true,
-  projectCreate: ok(s.projectCreate) && s.projectId != null,
-  projectList: ok(s.initialProjects) && ok(s.projectList),
-  projectRead: ok(s.projectGet),
-  projectUpdate: ok(s.projectUpdate),
+  apiRouteContract: s.routeContract?.ok === true,
+  projectCreate: s.projectId != null && matchesResponseEntity(s.projectCreate, "project",
+    { id: s.projectId, name: "Evaluator Project" }),
+  projectList: ok(s.initialProjects) && Array.isArray(projectList(s.initialProjects)) && ok(s.projectList) && containsProject(s.projectList),
+  projectRead: matchesResponseEntity(s.projectGet, "project", { id: s.projectId, name: "Evaluator Project" }),
+  projectUpdate: matchesResponseEntity(s.projectUpdate, "project", { id: s.projectId, name: "Evaluator Project Updated" }),
   projectDelete: [200, 204].includes(s.projectDelete?.status) && s.deletedProject?.status === 404,
-  taskCreate: ok(s.taskCreate) && s.taskId != null,
-  taskList: ok(s.taskList) && ok(s.secondTaskCreate) && s.secondTaskId != null,
-  taskRead: ok(s.taskGet),
-  taskUpdate: ok(s.taskUpdate),
+  taskCreate: s.taskId != null && matchesResponseEntity(s.taskCreate, "task",
+    { id: s.taskId, title: "Alpha release", projectId: s.projectId }),
+  taskList: ok(s.taskList) && containsTask(s.taskList) && ok(s.secondTaskCreate) && s.secondTaskId != null &&
+    taskOf(s.secondTaskCreate)?.title === "Beta documentation" && taskOf(s.secondTaskCreate)?.projectId === s.projectId,
+  taskRead: matchesResponseEntity(s.taskGet, "task", { id: s.taskId, title: "Alpha release", projectId: s.projectId }),
+  taskUpdate: ok(s.taskUpdate) && matchesResponseEntity(s.taskAfterUpdate, "task", { id: s.taskId,
+    status: "In Progress", priority: "Urgent", tags: ["alpha", "work"] }),
   taskDelete: [200, 204].includes(s.taskDelete?.status) && s.deletedTask?.status === 404,
   projectAssociation: uid(unwrap(s.taskGet, "task")) === s.taskId && unwrap(s.taskGet, "task")?.projectId === s.projectId,
-  statusPriority: statuses.includes(unwrap(s.taskAfterUpdate, "task")?.status) && priorities.includes(unwrap(s.taskAfterUpdate, "task")?.priority) && invalid(s.invalidStatus) && invalid(s.invalidPriority),
-  tags: Array.isArray(unwrap(s.taskAfterUpdate, "task")?.tags) && containsTask(s.tagFilter) && excludesSecond(s.tagFilter) && taskList(s.tagNegative).some(v => uid(v) === s.secondTaskId),
+  statusPriority: statuses.includes(updatedTask?.status) && priorities.includes(updatedTask?.priority) &&
+    updatedTask?.status === "In Progress" && updatedTask?.priority === "Urgent" && invalid(s.invalidStatus) && invalid(s.invalidPriority),
+  tags: JSON.stringify(updatedTask?.tags) === JSON.stringify(["alpha", "work"]) &&
+    containsTask(s.tagFilter) && excludesSecond(s.tagFilter) && taskList(s.tagNegative).some(v => uid(v) === s.secondTaskId),
   validation: invalid(s.invalidProject) && invalid(s.invalidTitle) && invalid(s.malformed) && invalid(s.badProjectTask),
   missingIds: [s.missingGet, s.missingPatch, s.missingDelete, s.missingProjectGet, s.missingProjectPatch, s.missingProjectDelete].every(v => v?.status === 404),
   search: containsTask(s.search) && excludesSecond(s.search) && !containsTask(s.searchNegative),
-  projectFilter: containsTask(s.projectFilter) && taskList(s.projectFilter).some(v => uid(v) === s.secondTaskId),
+  projectFilter: containsTask(s.projectFilter) && taskList(s.projectFilter).some(v => uid(v) === s.secondTaskId) &&
+    s.otherProjectTaskId != null && !taskList(s.projectFilter).some(v => uid(v) === s.otherProjectTaskId),
   statusFilter: containsTask(s.statusFilter) && excludesSecond(s.statusFilter) && taskList(s.statusNegative).some(v => uid(v) === s.secondTaskId),
   priorityFilter: containsTask(s.priorityFilter) && excludesSecond(s.priorityFilter) && taskList(s.priorityNegative).some(v => uid(v) === s.secondTaskId),
   combinedFilters: containsTask(s.combined) && excludesSecond(s.combined),
@@ -401,7 +453,13 @@ state.checks = {
     [uid(taskList(s.pagination)[0]), uid(taskList(s.paginationNext)[0])].includes(s.secondTaskId),
   defaultPageSize: s.bulkCreate?.length === 52 && s.bulkCreate.every(r => [200, 201].includes(r.status) && r.id != null) &&
     taskList(s.defaultFirstPage).length === s.defaultPageSizeExpected && taskList(s.defaultSecondPage).length > 0,
-  persistence: s.stoppedHealth?.status === null && s.restarted === true && ok(s.persistedTask) && ok(s.persistedProject) && ok(s.persistedSecond),
+  persistence: s.stoppedHealth?.status === null && s.restarted === true &&
+    matchesResponseEntity(s.persistedTask, "task", { id: s.taskId, status: "In Progress",
+      priority: "Urgent", tags: ["alpha", "work"] }) &&
+    matchesResponseEntity(s.persistedProject, "project", { id: s.projectId, name: "Evaluator Project Updated" }) &&
+    matchesResponseEntity(s.persistedSecond, "task", { id: s.secondTaskId, projectId: s.projectId }) &&
+    (s.otherProjectTaskId == null || matchesResponseEntity(s.persistedOtherProjectTask, "task",
+      { id: s.otherProjectTaskId, projectId: s.otherProjectId })),
   sseConnect: state.api.sseConnect?.ok === true,
   sseUpdate: state.api.sseUpdate?.ok === true,
   frontendUsable: state.frontend.browserWorkflows?.passed === true,

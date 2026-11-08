@@ -5,6 +5,13 @@
 import { z } from "zod";
 import { CONTEXT_CALIBRATION } from "@/modules/ai/lib/contextCalibrationSchema";
 import {
+  COMPACTION_EXTRACTION_MAX_CLAIMS,
+  COMPACTION_EXTRACTION_MAX_SOURCES,
+  COMPACTION_EXTRACTION_MAX_SOURCE_BYTES,
+  COMPACTION_EXTRACTION_REQUEST_MAX_OUTPUT,
+  COMPACTION_EXTRACTION_SYSTEM,
+} from "@/modules/ai/lib/compactionExtraction";
+import {
   TOOL_VERIFICATION,
   TOOL_PROBE_NAME,
   probeArguments,
@@ -28,6 +35,13 @@ export function productionAcceptanceWireContract(
       outputs: [...TOOL_VERIFICATION.outputs],
       name: TOOL_PROBE_NAME,
       parameters: z.toJSONSchema(probeArguments),
+    },
+    extraction: {
+      maxOutput: COMPACTION_EXTRACTION_REQUEST_MAX_OUTPUT,
+      maxSources: COMPACTION_EXTRACTION_MAX_SOURCES,
+      maxSourceBytes: COMPACTION_EXTRACTION_MAX_SOURCE_BYTES,
+      maxClaims: COMPACTION_EXTRACTION_MAX_CLAIMS,
+      systemPrompt: COMPACTION_EXTRACTION_SYSTEM,
     },
     agent: { output: agentOutput, context: agentContext, toolNames: [...agentToolNames].sort() },
   };
