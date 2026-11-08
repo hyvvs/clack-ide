@@ -79,6 +79,20 @@ describe("sealed incident: 120-second extraction-batch deadline, no inference", 
     expect(run.signal.aborted).toBe(false);
   });
 
+  it("1b: a healthy result at 119 seconds validates without losing the bounded batch", async () => {
+    vi.useFakeTimers();
+    const call = vi.fn<ExtractionCall>(() => new Promise(resolve => {
+      setTimeout(() => resolve(reply()), COMPACTION_POLICY.timeoutMs - 1_000);
+    }));
+    const run = extractor(call);
+    const result = run.extract([source], []);
+    await vi.advanceTimersByTimeAsync(COMPACTION_POLICY.timeoutMs - 1_000);
+    expect(await result).toHaveLength(1);
+    expect(run.snapshot()).toMatchObject({ calls: 1, chunks: 1 });
+    expect(run.signal.aborted).toBe(false);
+    expect(call).toHaveBeenCalledOnce();
+  });
+
   it("2: silent non-streaming inference is aborted at exactly the batch deadline", async () => {
     vi.useFakeTimers();
     const call = vi.fn<ExtractionCall>(() => hung());
