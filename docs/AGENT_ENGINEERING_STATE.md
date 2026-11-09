@@ -292,3 +292,32 @@ repair or push occurred. The previous findings remain
 Separately authorize any fresh local `muse-glimmer:30b` Agent mission, original
 ForgeBoard spec, legitimate correction observer, Agent-owned repair and one
 independently frozen evaluation; this authorization has not been given.
+
+## 2026-11-09 offline closeout: verified native/SDK phase correlation
+
+Entry HEAD `83c06b00e9110d583b46a855a133f430695d87dd`, following
+`75ec458`/`83c06b0`. The existing six-test durable journal checkpoint was
+already committed, but its SDK and native integration tests did not prove a
+shared request identity through a real production provider call. Two new
+tests reproduced: nonstreaming Ollama `sdk-json-settled` lacked a native ID,
+and multi-request traces could not report a correlated extraction.
+
+Mission-owned fix and deterministic tests committed at
+`0a69f54c48c62ba11fdffea12031158cbe9fec69`: extraction-signal-linked
+native ID through actual `buildLanguageModel("ollama")`/AI SDK/Clack native
+proxy, safe per-request `requestOrderings` in the disk journal interpreter,
+and late native terminal observation after failed extractor disposal. This is
+diagnostic correlation only; no model inference or policy/liveness change.
+The end-to-end offline provider-to-durable-receipt test uses mocked Tauri IPC,
+not live inference. **Nine affected files, 176/176 focused tests passing**;
+TypeScript and production build passed; Rust was untouched. Exact contract,
+residual uncertainty, privacy, and future new-run opt-in instructions:
+[offline phase collection report](CLACK_PREPARATION_PHASE_COLLECTION_OFFLINE_2026-11-09.md).
+
+Historical `COMPACTION TIMEOUT FAILURE UNRESOLVED`, HTTP ordering **Case C**,
+`ONE FURTHER FORGEBOARD RETRY JUSTIFIED: NO`, and no final `FORGEBOARD_PASS`
+remain unchanged. The consumed November 8 one-shot runner and sealed evidence
+are untouched. This checkpoint does not grant a fresh live mission or
+evaluator; new explicit authorization is required for a fresh local
+`muse-glimmer:30b` ForgeBoard run and one independently frozen evaluation
+after actual Agent-owned completion.

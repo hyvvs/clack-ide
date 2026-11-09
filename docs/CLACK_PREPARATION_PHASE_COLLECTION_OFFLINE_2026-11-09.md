@@ -130,3 +130,110 @@ the original spec, legitimate 50-to-25 correction-observer eligibility,
 Agent-owned build/test/repair and one independent frozen evaluation after
 genuine completion. A new permission does not by itself provide evidence for
 the old historical timeout or reverse the standing `NO` retry assessment.
+
+## 2026-11-09 follow-on: production native-to-SDK correlation verified offline
+
+Verified entry HEAD: `83c06b00e9110d583b46a855a133f430695d87dd`.
+The collector code, preceding six offline tests and original checkpoint were
+already committed and preserved. This follow-on did **not** rerun historical
+ForgeBoard/Muse inference, acceptance or broad unaffected lifecycle suites.
+
+### Two concrete diagnostic defects, reproduced before correction
+
+1. **The actual production Ollama nonstreaming SDK settlement omitted the
+   native request ID.** A new regression exercised Clack's real
+   `buildLanguageModel("ollama")` → `generateText()` → `doGenerate()` →
+   `createProxyFetch()` → native Tauri bridge **with mocked native IPC, no
+   HTTP/model inference**. Before correction, `native-request-linked` and
+   `native-http-settled` carried the request ID, but `sdk-json-settled` did
+   not. Thus a timestamp-only join could not meet the forensic proof standard.
+2. **Interpretation required exactly one native request in the entire phase
+   trace.** A focused regression with a prior native request and a later
+   nonstreaming extraction failed to identify even a distinct, positively
+   associated SDK JSON result. This would discard useful evidence in normal
+   multi-request logical Agent runs.
+
+A third lifecycle consequence was covered by regression: on cancellation,
+extractor disposal previously removed its native diagnostic join immediately,
+so a real *late* native terminal event could no longer be observed. The
+production mock-native test now controls that event after cancellation and
+disposal and verifies it is retained without restarting inference, publishing
+claims or changing the cancellation result.
+
+### Minimal correction and precise semantics
+
+Committed source/tests: `0a69f54c48c62ba11fdffea12031158cbe9fec69`
+(`fix(ai): correlate extraction SDK phases with native request receipts`).
+
+- `preparationLifecycle.ts` keeps a **WeakMap keyed by the existing extraction
+  AbortSignal** containing the captured session/run identity and at most the
+  native ID learned directly from `native-id-linked`. A new extraction model
+  attempt clears the previous ID before dispatch; SDK response headers, parsed
+  JSON, validated provider frame and `generateText` settlement acquire this
+  ID only through their real signal. Claim-validation and model-return phases
+  use that same association. An arbitrary user-provided timestamp, metadata
+  heartbeat or other session's request ID is not enough to establish a join.
+- `compactionExtraction.ts` retains its **diagnostic-only** signal/native
+  association after disposal while an already-dispatched model promise or
+  linked native request is awaiting actual settlement. The connection is
+  released when both settle. A native terminal event arriving after operator
+  abort/timeout can be recorded even though the extraction itself failed.
+  No native request is held open or triggered for observation, no local timer
+  is reset, and an absent terminal callback is **not** invented.
+- `preparation-phase-journal.mjs` adds `requestOrderings`, a per-request array
+  of `{ nativeRequestId, ordering }`. A non-`unknown` ordering requires a
+  sealed and fully acknowledged capture, a known run identity, **exactly one**
+  same-run link, terminal observation and SDK JSON event for that *same*
+  signal-derived native ID, plus their proper callback sequence. Uncorrelated
+  JSON, duplicate links/terminals, missing receipts and reused IDs across runs
+  remain `unknown`. The legacy top-level `nativeSdkOrdering` intentionally
+  remains `unknown` when multiple native requests are linked; consult the
+  per-request records instead. An independently observed native terminal
+  does **not** assert HTTP 200, successful generation, or SDK JSON acceptance.
+
+### Focused proof and no changes to policy
+
+Initially the two newly written production path/interpretation tests failed
+against the old implementation, demonstrating the gaps rather than inventing
+new historical evidence. After correction:
+
+| Validation | Actual result |
+| --- | --- |
+| Nine affected current-source files: extractor, real SDK/native mock integration, forensics, coordinator, Ollama adapter, native proxy, diagnostic joins and persisted phase capture | **176/176 passed** |
+| `npm.cmd run check-types` | **Passed** |
+| `npm.cmd run build` (`tsc && vite build`) | **Passed**; existing nonfatal Vite dynamic-import notices |
+| Native Rust tests | Not rerun: **no Rust change** |
+
+The integrated test uses **actual production** Clack model construction,
+nonstreaming Ollama SDK, native proxy and bounded extractor (with deterministic
+mocked Tauri events), then **actual** `startPreparationPhaseCapture()`,
+exclusive disk journal, checksum receipt and `interpretPreparationPhaseRows()`.
+It places an unrelated native event in the same run and proves only the
+properly correlated extraction receives an observed native-before-SDK-JSON
+ordering. Other tests check a second extraction request gets a different ID,
+SDK events without native IDs stay unknown, and a late cancelled terminal
+remains observable after extractor disposal. No conversation content enters
+the journal. The 120s extractor deadline, native connect/first-output/idle/
+overall policies, provider settings, cancellation semantics, memory CAS,
+history and target protection are unchanged.
+
+### Remaining external authorization gate
+
+**Still opt-in, not installed in the consumed November 8 runner.** A future
+fresh, separately authorized acceptance harness must install collection before
+model/Agent execution, use a new exclusive evidence root, require durable
+receipt acknowledgments and interpret each extraction by its actual native
+request ID. It must separately preserve raw native transport status/phase and
+the independent frozen evaluator verdict. A journal receipt reports only
+collection integrity; no callback proves model-token progress, and the JS
+callback order is not a monotonic native clock. Real WebView/Tauri/host
+installation and genuine local Muse behavior remain untested.
+
+Historical case remains **`COMPACTION TIMEOUT FAILURE UNRESOLVED`**, HTTP
+ordering **Case C**, **`ONE FURTHER FORGEBOARD RETRY JUSTIFIED: NO`**. The
+objective **`FORGEBOARD_PASS, LOCAL MUSE AGENT PROVEN`** is **NOT ACHIEVED**.
+Only a new, explicit authorization may permit another local
+`muse-glimmer:30b` Agent-owned ForgeBoard implementation with original spec,
+legitimate correction observer, and exactly one independent frozen evaluation
+after genuine completion. Do not reuse an old run ID, adjust Ollama/timeout
+policy, manually repair a frozen app or alter historical evidence.
