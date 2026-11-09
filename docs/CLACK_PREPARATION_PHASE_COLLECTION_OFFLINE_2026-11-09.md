@@ -39,13 +39,16 @@ Implemented and committed at
   allowlisted phase names, fixed seven-field maximum schema, sequential
   record numbers, length-restricted run/request IDs, size limits, durable
   `FileHandle.sync()` before each acknowledgment, and a separate exclusive
-  `*.receipt.json` containing collection-only count and SHA-256. A failed,
+  `*.receipt.json` containing collection-only count and SHA-256 (see the
+  later byte-integrity and staged-publication follow-on below). A failed,
   dropped, overflowing, unsealed or interrupted capture has **no successful
   collector receipt**; partial JSONL is left visible, not erased or silently
   normalized. A receipt is a local capture-integrity marker, not an
   independent authenticated signature or proof of inference completion.
 - `interpretPreparationPhaseRows()` validates the entire record sequence and
-  optional collector receipt. With a fully acknowledged trace, one known
+  optional collector receipt; **byte-exact verification also requires the
+  original raw journal bytes, not just decoded JSON rows** as established in
+  the later follow-on. With a fully acknowledged trace, one known
   observed run and exactly one observed linked native request, it may report
   the **observed JavaScript callback ordering** of native HTTP settlement and
   SDK JSON settlement. Otherwise ordering is **unknown**. In all cases
@@ -96,7 +99,11 @@ coverage:
    partial records and receipt absence. Do not equate a collector receipt with
    model progress, native transport correctness, task completion or acceptance.
    Associate native receipt IDs with the independent native HTTP events and
-   use the existing separate, unchanged correction observer.
+   use the existing separate, unchanged correction observer. For interpreting
+   a completed capture, read the **raw JSONL file as a `Buffer`** and its
+   separate receipt, parse the JSONL rows without rewriting the file, and call
+   `interpretPreparationPhaseRows(rows, receipt, rawJournalBuffer)`. Without
+   the original raw bytes, collection coverage is deliberately incomplete.
 4. Use the unchanged original ForgeBoard specification and same-logical-Agent
    continuation. Only after genuine complete Agent-owned implementation and
    repair, perform **exactly one** independently frozen ForgeBoard acceptance
@@ -237,3 +244,103 @@ Only a new, explicit authorization may permit another local
 legitimate correction observer, and exactly one independent frozen evaluation
 after genuine completion. Do not reuse an old run ID, adjust Ollama/timeout
 policy, manually repair a frozen app or alter historical evidence.
+
+## 2026-11-09 follow-on: raw-byte integrity and atomic receipt publication
+
+Starting HEAD was verified as
+`43a7f01c7b9735cb60df1d9697abf7c25514cbc0`; both previous diagnostic
+commits and this report were present. The previous **176/176 affected-source
+tests, TypeScript and completed production build** were reconciled, not rerun
+simply to refresh their totals.
+
+### Two demonstrated evidence-integrity issues
+
+1. **Incorrect byte-level receipt verification.** The journal hash is computed
+   over each actual JSONL line as written and synced. Previously the
+   interpreter parsed rows and reconstructed JSON before hashing. An offline
+   regression deliberately changed a recorded line's whitespace without
+   changing its JSON values; the **unchanged** receipt was falsely accepted
+   as `collector-flushed`. The new assertion failed against the prior code.
+   `interpretPreparationPhaseRows(rows, receipt, rawJournalBuffer)` now
+   requires exact raw bytes from disk, validates their canonical JSONL shape,
+   and hashes the original buffer; without raw bytes, or on any byte/hash/
+   manifest mismatch, coverage is **`partial-or-unsealed`** and all native/
+   SDK ordering claims remain **`unknown`**. A caller-supplied reconstructed
+   buffer is not independently authenticated evidence; future collection
+   must use `await readFile(exclusiveJournalPath)` on the preserved disk file.
+2. **Final receipt could be written before its sync succeeded.** The previous
+   finalizer opened `*.receipt.json` directly and wrote content before
+   `FileHandle.sync()`, so a failed write/sync could leave an apparently valid
+   final receipt. A preexisting receipt path also failed before its log file
+   handle's `finally` cleanup. The finalizer now synchronizes the primary
+   JSONL journal, writes a **new exclusive**
+   `*.receipt.json.pending`, syncs and closes that staging file, and uses an
+   **exclusive same-filesystem hard link** to publish the final
+   `*.receipt.json` name. It then best-effort removes its own staging link;
+   inability to remove that duplicate does not erase a successful receipt.
+   Errors close the original journal handle, and `abandon()` is idempotent.
+   Existing receipts and unfinished staging files are **never overwritten or
+   silently deleted**. An interrupted or unsupported hard-link publication
+   fails closed, preserving partial evidence and preventing a false completed
+   receipt. Filesystem directory-entry durability across an unexpected power
+   loss is **not independently proved**; neither this local receipt nor its
+   SHA-256 is an authenticated external attestation.
+
+### Validation and exact scope
+
+Code and focused regressions committed at
+`ffca72e23996eef1d11ac5bfc9ad66d697662431`
+(`fix(ai): verify raw phase evidence and atomically publish receipts`).
+Changes are restricted to the Node-only collector journal and declaration,
+the existing phase capture integration test and the existing production
+Ollama/native-bridge-to-journal integration test. No inference model, provider,
+extractor timer, native transport, native Rust, memory CAS, Agent history,
+target-context identity, continuation or correction-observer source changed.
+
+| Affected offline gate | Outcome |
+| --- | --- |
+| Existing production Ollama/SDK/native-IPC mock → phase collector → durable JSONL/receipt interpreter | **8/8 passed** |
+| Phase collector/journal raw-byte mutation, exclusive publication, existing final/staging collision, operator delivery failure and conservative ordering | **12/12 passed** |
+| Total current-source tests across those two affected files | **20/20 passed** |
+| TypeScript `npm.cmd run check-types` | **Passed** |
+| Production `npm.cmd run build` (`tsc && vite build`) | **Passed**; existing nonfatal dynamic-import notices |
+| Native Rust | **Not rerun**; no Rust source changed |
+
+The final test-only addition was validated with another focused 20/20 rerun
+and TypeScript; the production build had already passed after the journal
+implementation. One earlier ad hoc test command omitted the archived-target
+exclusion and also ran a three-test ignored baseline copy; those passed but
+are **not** counted as current-source evidence. The final focused command
+explicitly used `--exclude='**/src-tauri/target/**'`.
+
+### Operational contract for a separately authorized run
+
+In a **new** run-owned directory, install `startPreparationPhaseCapture()`
+before any real inference, create `createPreparationPhaseJournal()` using a
+fresh exclusive path, and acknowledge each phase only after its validated
+append and sync. After actual Agent terminal settlement and evidence-drain,
+call `await capture.stop()` and only then `journal.seal(receipt)`; on error
+call `journal.abandon()` and retain all incomplete JSONL/staging evidence.
+For verified interpretation, read the exact JSONL bytes (`Buffer`) and the
+authoritative **final** `*.receipt.json` file, parse the rows, then pass
+all three values to `interpretPreparationPhaseRows(rows, receipt, rawBytes)`.
+Do **not** treat a `*.pending` staging file as a final receipt, manually
+normalize/reformat archived JSONL, or reuse any historical acceptance path.
+
+Captured phase names remain separate for extractor creation/deadline,
+native terminal receipt, SDK JSON settlement, validated claims, memory load/
+commit, target preparation and Agent failure settlement. A missing phase is
+**not recorded**, not proof of stall or progress. Native HTTP settlement is
+not an HTTP-200 proof by itself; source native event logs remain necessary.
+The collector's observer is still opt-in, the consumed November 8 run is
+unchanged, and a real WebView/native bridge/Muse capture under an authorized
+fresh harness remains **unverified**.
+
+The historical classification stays **`COMPACTION TIMEOUT FAILURE
+UNRESOLVED`**, HTTP ordering **Case C**, and **`ONE FURTHER FORGEBOARD RETRY
+JUSTIFIED: NO`**. Final **`FORGEBOARD_PASS, LOCAL MUSE AGENT PROVEN`** is
+**NOT ACHIEVED**. New explicit authorization is required for one local
+`muse-glimmer:30b` mission with the original ForgeBoard specification, the
+verified historical digest, genuine correction-observer eligibility,
+Agent-owned implementation/repair, and exactly one independently frozen
+acceptance evaluation after genuine completion.

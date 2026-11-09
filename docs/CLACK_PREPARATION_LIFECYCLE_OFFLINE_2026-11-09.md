@@ -200,3 +200,20 @@ evaluator authorization. A future run may establish fresh behavior, not
 retroactively change the ambiguity in the historical Case C evidence.
 Until then, `FORGEBOARD_PASS` and a further retry recommendation of YES are
 **not** established.
+
+## Follow-on evidence-integrity closeout — 2026-11-09
+
+The production preparation/cancellation fixes and historical Case C findings
+above remain unchanged. A later, separately scoped offline review identified
+and corrected byte-level receipt-verification and finalization integrity
+gaps in the **opt-in evidence collector**. The new journal interpretation
+requires the original raw JSONL `Buffer` in addition to rows and receipt; a
+receipt is published exclusively from a synchronized staging file. These
+changes are outside model execution and do not alter the extraction deadline
+or native timeout policy. See the detailed
+[phase collection report](CLACK_PREPARATION_PHASE_COLLECTION_OFFLINE_2026-11-09.md)
+and shared [engineering ledger](AGENT_ENGINEERING_STATE.md) for the
+`ffca72e` source commit, focused 20/20 verification, TypeScript/build results,
+residual filesystem/real-host limits and future fresh-run operational contract.
+The final ForgeBoard acceptance is still unavailable without **new live
+authorization** and independent passing frozen evaluation.

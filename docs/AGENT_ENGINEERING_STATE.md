@@ -321,3 +321,41 @@ are untouched. This checkpoint does not grant a fresh live mission or
 evaluator; new explicit authorization is required for a fresh local
 `muse-glimmer:30b` ForgeBoard run and one independently frozen evaluation
 after actual Agent-owned completion.
+
+## 2026-11-09 checkpoint closeout: byte-exact receipt verification
+
+Starting HEAD checked as `43a7f01c7b9735cb60df1d9697abf7c25514cbc0`;
+`0a69f54` and `43a7f01` already contained the production signal-scoped
+native/SDK join, persistent collector tests and handoff. The previous 176/176
+affected source tests and production build were previously reported passed.
+No historical compaction/acceptance run was repeated.
+
+New **reproduced** gap: phase-journal interpretation rehashed parsed and
+reserialized JSON rather than the original disk bytes, so whitespace-altered
+JSONL could falsely receive `collector-flushed`. The regression failed
+before correction. The Node collector also wrote a final receipt before sync
+and could skip handle cleanup when receipt creation collided. Mission-owned
+commit `ffca72e23996eef1d11ac5bfc9ad66d697662431` now requires raw-byte
+verification for complete collection and publishes final receipts only via
+exclusive hard link from a synced staging file; failed/colliding evidence is
+retained and cleanup is idempotent. The original `*.receipt.json` is never
+overwritten. Missing raw bytes, failed sync, duplicate names or unsealed
+collections are **not** treated as complete. The collector does not affect
+inference, deadline ownership, cancellation, native lease or Agent trust.
+
+**This checkpoint's affected-source results:** 12/12 journal/phase capture,
+8/8 Clack production Ollama/SDK/native-IPC mocked integration (**20/20** in
+two files); TypeScript and production build both passed. No native Rust
+changes or Rust rerun. The prior historical 891/176 suites were **not**
+repeated as a new gate. Operational instructions, byte-level interpretation,
+staging receipt caveats and residual native/WebView evidence uncertainty:
+[phase collection report](CLACK_PREPARATION_PHASE_COLLECTION_OFFLINE_2026-11-09.md).
+
+The current opt-in collector is not automatically installed in the consumed
+November 8 launcher. Original six protected dirty files, stashes, operator
+settings, tracker, historical runs and evaluator snapshots remain protected.
+Still **`COMPACTION TIMEOUT FAILURE UNRESOLVED`**, HTTP **Case C**,
+**`ONE FURTHER FORGEBOARD RETRY JUSTIFIED: NO`**, and no final
+`FORGEBOARD_PASS, LOCAL MUSE AGENT PROVEN`. A new, explicit local Muse
+ForgeBoard run authorization and one separately authorized independent frozen
+evaluation after Agent-owned completion remain the external blocker.
