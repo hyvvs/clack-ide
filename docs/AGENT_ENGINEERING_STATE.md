@@ -223,3 +223,44 @@ These hashes detect accidental replacement of user work; they are not claims tha
 | P2–P19 Complete CoS-inspired Agent platform | **Required, deferred, not started** | Resume *all* 18 checkpoints only after local-AI acceptance or explicit new user order; seven-layer tests and truthful platform/production status mandatory. See unchanged complete roadmap. |
 
 The 2026-10-22 priority-alignment checkpoint was followed by **separate, explicit authorization for R3a only**. It does not authorize R3b, inference, model download, service change, P2 expansion, push or release.
+
+## 2026-11-09 shared ChatGPT / Codex checkpoint: offline preparation lifecycle
+
+**Local-AI/ForgeBoard gate remains incomplete.** The prior sealed mission and
+2026-11-08 forensics (`a93ee086ba762596e130e6fc14e2e770ebe005d9`)
+established `COMPACTION TIMEOUT FAILURE UNRESOLVED`, native HTTP/SDK ordering
+**Case C**, and `ONE FURTHER FORGEBOARD RETRY JUSTIFIED: NO`. This checkpoint
+does not retrospectively decide the former nonstreaming Muse request's model
+liveness, does not overwrite `MUSE ACCEPTED — LOCAL AGENT PROVEN` for the earlier
+narrower gate, and **does not** attain `FORGEBOARD_PASS, LOCAL MUSE AGENT PROVEN`.
+No ForgeBoard, Muse, hosted or alternate-model inference, evaluator, notes
+acceptance, Ollama service/config change, release or P2–P19 work was authorized
+or executed.
+
+**Current offline engineering evidence:** Implemented and focused-validated
+prompt cancellation of read-only extractor/compaction/target-context awaits;
+kept native memory and target CAS and non-idempotent run-budget charge
+authoritatively awaited; implemented late target-begin token cancellation and
+strict opt-in payload-free phase observations through native transport,
+Ollama JSON, validated claims, memory CAS, target context and Agent settlement.
+The extraction 120s and native connect/first-output/stream-idle/overall limits
+were **not changed**. Existing and new deterministic current-source regression
+gates: **30 files/673 passing**, **10 files/218 passing**, plus **17/17
+near-deadline forensic rerun** after one additional test; TypeScript and
+`tsc && vite build` passed. Rust was untouched, therefore no native Rust test
+rerun. These are offline mocks and source integrations, **not** real Muse or
+desktop/evaluator acceptance. Exact contracts, limitations and test paths:
+[2026-11-09 preparation-lifecycle report](CLACK_PREPARATION_LIFECYCLE_OFFLINE_2026-11-09.md).
+
+**Source ownership / handoff:** starting HEAD `a93ee086...`; task-owned
+implementation commit `790a608fabef046e3b97deb3b756dda2dc04e8bc`;
+additional near-deadline test commit
+`dee8371e6c1626f12224c4030175fad80e915b81`.
+Exactly six user-owned pre-existing dirty paths, their original SHA-256,
+two stashes, `autonomous_tracker/`, settings, archived telemetry and frozen
+workspaces must remain intact. Do not reset, clean, push, stage or rewrite
+them. The final documentation-only closeout records and preserves these
+invariants. Future evidence collection requires **separate explicit
+authorization** for a new local Muse ForgeBoard run and independent frozen
+evaluator; the previous live authorization was consumed. P2–P19 remain
+deferred per project order.
