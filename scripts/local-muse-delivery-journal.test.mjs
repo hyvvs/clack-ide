@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import net from 'node:net';
+import { request as httpRequest } from 'node:http';
 import { once } from 'node:events';
 import { createDeliveryJournal, validateDeliveryRecord,
   interpretDeliveryRecords, clockOffsetBounds, canOrderAcrossHosts } from './local-muse-delivery-journal.mjs';
@@ -281,6 +282,54 @@ test('malformed collector input fails closed with no successful receipt', async 
   const names = await import('node:fs/promises').then(fs => fs.readdir(dir));
   assert.equal(names.some(name => name.endsWith('.receipt.json')), false);
   assert.equal((await readFile(path.join(dir, names[0]), 'utf8')).includes('DONOTPERSIST'), false);
+});
+
+test('finish cannot seal while an authenticated observation body is still uploading', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'muse-inflight-'));
+  const server = await startDeliveryServer(dir, 'synthetic-inflight-test');
+  const payload = JSON.stringify({ schemaVersion: 1, host: 'clack-native',
+    requestId: 'inference-27', boundary: 'native-body-read',
+    sequence: 1, bytes: 149, atUnixMs: 1794196108268, monoUs: 100200 });
+  const headers = { 'content-type': 'application/json',
+    'x-clack-delivery-session': server.nonce };
+  const request = httpRequest(`${server.url}/v1/observe`, { method: 'POST',
+    headers: { ...headers, 'content-length': Buffer.byteLength(payload) } });
+  const observationResponse = new Promise((resolve, reject) => {
+    request.on('response', res => {
+      const status = res.statusCode;
+      res.resume();
+      res.once('end', () => resolve(status));
+      res.once('error', reject);
+    });
+    request.once('error', reject);
+  });
+  try {
+    // Force an accepted request to remain incomplete while the operator
+    // attempts to seal. The status route proves that headers were admitted.
+    request.write(payload.slice(0, 24));
+    let active = 0;
+    for (let i = 0; i < 40; i++) {
+      const response = await fetch(`${server.url}/v1/status`, { method: 'POST',
+        headers, body: '{}' });
+      assert.equal(response.status, 200);
+      active = (await response.json()).activeObservations;
+      if (active === 1) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(active, 1, 'A partial observation must be admitted before finish');
+    const prematureFinish = await fetch(`${server.url}/v1/finish`, { method: 'POST',
+      headers, body: JSON.stringify({ expected: 0, deliveryFailed: false }) });
+    assert.equal(prematureFinish.status, 422, 'Concurrent seal must fail closed');
+    request.end(payload.slice(24));
+    assert.equal(await observationResponse, 200, 'Raw admitted evidence remains preserved');
+    assert.equal(server.snapshot().count, 1);
+    await assert.rejects(() => stat(`${server.filename}.receipt.json`),
+      { code: 'ENOENT' });
+    assert.equal((await readFile(server.filename, 'utf8')).includes('native-body-read'), true);
+  } finally {
+    request.destroy();
+    await server.stop();
+  }
 });
 
 test('actual synthetic TCP loopback: queued writes precede delayed downstream reads', async () => {

@@ -61,6 +61,10 @@ export async function startDeliveryServer(root, runId, { maxRecords = 65536 } = 
   const nonce = randomBytes(24).toString('hex');
   let closing = false, closeReceipt = null;
   let inputFailed = false;
+  // Admission is counted when authenticated request headers arrive, not only
+  // when the request body has finished uploading. A sealed receipt must never
+  // overtake a partially uploaded observation or its append/fsync ACK.
+  let activeObservations = 0;
   const server = createServer(async (req, res) => {
     const origin = req.headers.origin;
     const allowed = !origin || /^(?:tauri:\/\/localhost|http:\/\/tauri\.localhost|http:\/\/127\.0\.0\.1:5173)$/.test(origin);
@@ -75,6 +79,8 @@ export async function startDeliveryServer(root, runId, { maxRecords = 65536 } = 
         req.headers['x-clack-delivery-session'] !== nonce || closing) {
       answer(403, { ok: false }); return;
     }
+    const observationAdmitted = req.url === '/v1/observe';
+    if (observationAdmitted) activeObservations++;
     const pieces = [];
     let size = 0;
     try {
@@ -87,13 +93,18 @@ export async function startDeliveryServer(root, runId, { maxRecords = 65536 } = 
       if (req.url === '/v1/status') {
         assert(payload && typeof payload === 'object' && !Array.isArray(payload) &&
           Object.keys(payload).length === 0, 'Status request must be empty');
-        answer(200, { ok: true, ...journal.snapshot() });
+        answer(200, { ok: true, ...journal.snapshot(), activeObservations });
       } else if (req.url === '/v1/observe') {
         const observation = sanitizeHttpRecord(payload, journal.snapshot().count + 1);
         const result = await journal.append(observation);
         answer(result.accepted ? 200 : 429, { ok: result.accepted,
           sequence: result.sequence ?? null });
       } else {
+        // Freeze new admissions immediately. Reject an overlapping, already
+        // admitted upload rather than sealing an apparently complete journal
+        // which may be missing that observation. Preserve raw evidence.
+        closing = true;
+        assert(activeObservations === 0, 'Delivery observations still in flight');
         assert(payload && typeof payload === 'object' &&
           Object.keys(payload).length === 2 && Number.isSafeInteger(payload.expected) &&
           typeof payload.deliveryFailed === 'boolean', 'Invalid finish request');
@@ -109,6 +120,8 @@ export async function startDeliveryServer(root, runId, { maxRecords = 65536 } = 
       inputFailed = true;
       // The input is never echoed or persisted; a failed capture is not model failure.
       answer(422, { ok: false });
+    } finally {
+      if (observationAdmitted) activeObservations--;
     }
   });
   try {
