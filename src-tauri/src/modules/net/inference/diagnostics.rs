@@ -106,7 +106,7 @@ mod enabled {
                     last_body: None,
                     last_forwarded: None,
                 },
-            })))
+            })), super::super::delivery::RequestCapture::default())
         }
     }
 
@@ -118,15 +118,18 @@ mod enabled {
     }
 
     #[derive(Default)]
-    pub(crate) struct Trace(Option<Box<Recording>>);
+    pub(crate) struct Trace(Option<Box<Recording>>, super::super::delivery::RequestCapture);
     impl Trace {
         pub fn from_app(app: &tauri::AppHandle, id: &str) -> Self {
             use tauri::Manager;
-            app.try_state::<AcceptanceDiagnostics>()
+            let mut trace = app.try_state::<AcceptanceDiagnostics>()
                 .map(|s| s.request(id))
-                .unwrap_or_default()
+                .unwrap_or_default();
+            trace.1 = super::super::delivery::RequestCapture::from_app(app, id);
+            trace
         }
         pub fn record(&mut self, kind: Kind, bytes: usize) {
+            self.1.record_kind(kind, bytes);
             let Some(recording) = &mut self.0 else { return };
             let snapshot = &mut recording.snapshot;
             if matches!(kind, Kind::NativeIpcReady | Kind::ResolveStart |
@@ -216,16 +219,18 @@ pub use enabled::*;
 
 #[cfg(not(debug_assertions))]
 #[derive(Default)]
-pub(crate) struct Trace;
+pub(crate) struct Trace(super::delivery::RequestCapture);
 #[cfg(not(debug_assertions))]
 impl Trace {
-    pub fn from_app(_: &tauri::AppHandle, _: &str) -> Self {
-        Self
+    pub fn from_app(app: &tauri::AppHandle, id: &str) -> Self {
+        Self(super::delivery::RequestCapture::from_app(app, id))
     }
-    pub fn record(&mut self, _: Kind, _: usize) {}
+    pub fn record(&mut self, kind: Kind, bytes: usize) { self.0.record_kind(kind, bytes); }
     pub fn http_status(&mut self, _: u16) {}
     pub fn destination(&mut self, _: Option<u16>, _: &'static str) {}
-    pub fn finish(&mut self, _: &Result<(), super::Failure>) {}
+    pub fn finish(&mut self, _: &Result<(), super::Failure>) {
+        self.0.record(super::delivery::Boundary::NativeTerminal, 0);
+    }
 }
 
 #[cfg(all(test, debug_assertions))]

@@ -1,0 +1,43 @@
+/* OPTIONAL future Linux kernel metadata probe; requires separately authorized
+ * diagnostic session, bpftrace, root/CAP_BPF+CAP_PERFMON and BTF symbols.
+ * No packet contents, HTTP bodies, strings, credentials or payload pointers.
+ * tcp_sendmsg RETURN counts bytes queued to the local TCP socket, NOT bytes
+ * acknowledged, forwarded by SSH, or consumed by Clack. A miss is not a zero.
+ * The ephemeral socket pointer MUST be HMAC-pseudonymized before persistence.
+ * This probe is not installed or executed by the offline checkpoint. */
+kprobe:tcp_sendmsg /comm == "ollama" || comm == "sshd" || comm == "sshd-session" || comm == "ssh"/ {
+  @send_sk[tid] = arg0;
+  @send_len[tid] = arg2;
+  /* Entry is an ATTEMPT only. If no return follows it may have blocked,
+   * been interrupted, or a trace event may have been dropped. */
+  $sk = (struct sock *)arg0;
+  if (comm == "ollama") {
+    printf("TCPMETA attempt %llu %d %d %llu %u %u %llu 0 %s\n",
+      nsecs, pid, tid, (uint64)arg0,
+      $sk->__sk_common.skc_num,
+      bswap($sk->__sk_common.skc_dport),
+      (uint64)arg2, comm);
+  }
+}
+kretprobe:tcp_sendmsg /@send_sk[tid]/ {
+  $sk = (struct sock *)@send_sk[tid];
+  printf("TCPMETA send %llu %d %d %llu %u %u %llu %lld %s\n",
+    nsecs, pid, tid, (uint64)@send_sk[tid],
+    $sk->__sk_common.skc_num,
+    bswap($sk->__sk_common.skc_dport),
+    (uint64)@send_len[tid], retval, comm);
+  delete(@send_sk[tid]); delete(@send_len[tid]);
+}
+kprobe:tcp_recvmsg /comm == "ollama" || comm == "sshd" || comm == "sshd-session" || comm == "ssh"/ {
+  @recv_sk[tid] = arg0;
+  @recv_len[tid] = arg2;
+}
+kretprobe:tcp_recvmsg /@recv_sk[tid]/ {
+  $sk = (struct sock *)@recv_sk[tid];
+  printf("TCPMETA recv %llu %d %d %llu %u %u %llu %lld %s\n",
+    nsecs, pid, tid, (uint64)@recv_sk[tid],
+    $sk->__sk_common.skc_num,
+    bswap($sk->__sk_common.skc_dport),
+    (uint64)@recv_len[tid], retval, comm);
+  delete(@recv_sk[tid]); delete(@recv_len[tid]);
+}

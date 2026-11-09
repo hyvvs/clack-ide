@@ -1,5 +1,6 @@
 mod admission;
 pub mod diagnostics;
+pub mod delivery;
 mod progress;
 mod registry;
 #[cfg(test)]

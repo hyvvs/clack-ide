@@ -140,6 +140,42 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .setup(|_app| {
+            // Trusted-process opt-in only. No IPC command to enable a recorder,
+            // no model, network, or timeout changes. The bounded nonblocking
+            // queue prevents slow diagnostic consumers from blocking reqwest.
+            if std::env::var("CLACK_LOCAL_DELIVERY_DIAGNOSTIC").as_deref() == Ok("1") {
+                let handle = _app.handle().clone();
+                let (sender, mut receiver) = tokio::sync::mpsc::channel(2048);
+                let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+                let loss_reader = dropped.clone();
+                tauri::async_runtime::spawn(async move {
+                    let started = std::time::Instant::now();
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                    loop {
+                        tokio::select! {
+                            Some(event) = receiver.recv() => {
+                                let _ = handle.emit("clack-local-delivery", event);
+                            }
+                            _ = tick.tick() => {
+                                use std::sync::atomic::Ordering;
+                                let lost = loss_reader.swap(0, Ordering::Relaxed);
+                                if lost > 0 {
+                                    let receipt = net::inference::delivery::loss_receipt(lost,
+                                        started.elapsed().as_micros().min(u64::MAX as u128) as u64);
+                                    let _ = handle.emit("clack-local-delivery", receipt);
+                                }
+                            }
+                            else => break,
+                        }
+                    }
+                });
+                _app.manage(net::inference::delivery::DeliveryCapture::new(move |row| {
+                    if sender.try_send(row).is_err() {
+                        use std::sync::atomic::Ordering;
+                        dropped.fetch_add(1, Ordering::Relaxed);
+                    }
+                }));
+            }
             // macOS skips parent() for the settings window, so tie its lifecycle
             // to the main window here instead. Other platforms keep parent().
             #[cfg(target_os = "macos")]

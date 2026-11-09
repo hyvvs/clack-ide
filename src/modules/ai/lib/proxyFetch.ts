@@ -12,6 +12,7 @@ import type {
 } from "@/modules/ai/lib/inferenceAdmission";
 import { ContextBudgetError } from "@/modules/ai/lib/contextBudget";
 import { associateNativeResponse } from "@/modules/ai/lib/ollamaParserFailureDiagnostics";
+import { observeWebviewDelivery } from "@/modules/ai/lib/localDeliveryObserver";
 import { nativeDiagnosticSignalObserved, observeNativeDiagnostic, safeInferenceControls,
   type InferenceDiagnosticControls } from "@/modules/ai/lib/inferenceDiagnosticCorrelation";
 import type { createRequestPreflight } from "@/modules/ai/lib/requestPreflight";
@@ -198,10 +199,12 @@ async function proxyFetchImpl(
       let preflightError: unknown;
       let validating = false;
       let firstChunkObserved = false;
+      let deliverySequence = 0;
       const channel = new Channel<AiStreamEvent>();
       channel.onmessage = (event) => {
         if (finished || terminal || event.requestId !== nativeId) return;
         if (event.kind === "settled") {
+          observeWebviewDelivery(nativeId, "webview-settled-received", deliverySequence, 0);
           observeNativeDiagnostic(signal, "native-settled", nativeId);
           terminal = event;
           if (nativeSettled) settle();
@@ -247,6 +250,7 @@ async function proxyFetchImpl(
             break;
           case "headers": {
             if (status) return;
+            observeWebviewDelivery(nativeId, "webview-headers-received", deliverySequence, 0);
             observeNativeDiagnostic(signal, "native-response-headers", nativeId);
             status = event.status;
             const stream = new ReadableStream<Uint8Array>({
@@ -274,12 +278,16 @@ async function proxyFetchImpl(
             break;
           }
           case "chunk":
+            deliverySequence++;
+            observeWebviewDelivery(nativeId, "webview-ipc-received", deliverySequence, event.bytes.length);
             if (!firstChunkObserved && event.bytes.length) {
               firstChunkObserved = true;
               observeNativeDiagnostic(signal, "native-first-chunk", nativeId);
             }
             if (status >= 200 && status < 300 && event.bytes.length) opts.scope?.onResponseBody?.();
             controller?.enqueue(Uint8Array.from(event.bytes));
+            if (controller)
+              observeWebviewDelivery(nativeId, "webview-stream-enqueued", deliverySequence, event.bytes.length);
             break;
         }
       };
