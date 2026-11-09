@@ -1,43 +1,74 @@
-/* OPTIONAL future Linux kernel metadata probe; requires separately authorized
- * diagnostic session, bpftrace, root/CAP_BPF+CAP_PERFMON and BTF symbols.
- * No packet contents, HTTP bodies, strings, credentials or payload pointers.
- * tcp_sendmsg RETURN counts bytes queued to the local TCP socket, NOT bytes
- * acknowledged, forwarded by SSH, or consumed by Clack. A miss is not a zero.
- * The ephemeral socket pointer MUST be HMAC-pseudonymized before persistence.
- * This probe is not installed or executed by the offline checkpoint. */
-kprobe:tcp_sendmsg /comm == "ollama" || comm == "sshd" || comm == "sshd-session" || comm == "ssh"/ {
-  @send_sk[tid] = arg0;
-  @send_len[tid] = arg2;
-  /* Entry is an ATTEMPT only. If no return follows it may have blocked,
-   * been interrupted, or a trace event may have been dropped. */
+/* OFFLINE-REVIEWED ONLY: root-supervised, separately authorized Ollama TCP
+ * metadata adapter. The supervisor validates the /proc PID start time,
+ * executable/UID and the owning 127.0.0.1:11434 LISTEN socket inode before
+ * launch and periodically while tracing. Mandatory numeric bpftrace argument
+ * $1 is that exact Ollama SERVER PID; $2 is the verified listener port (11434).
+ * Do NOT run this file directly: the supervisor enforces <=1800 seconds,
+ * bounded output, teardown and fail-closed kernel/source loss accounting.
+ * Neither payloads, msghdr data, strings, credentials nor tool args are read.
+ * tcp_sendmsg successful return = kernel queued bytes, NOT an HTTP handler
+ * completion, TCP ACK, SSH delivery, or downstream HTTP read. Missing return
+ * and missing event evidence are not proof that an Ollama write blocked.
+ * TCP socket pointers must be pseudonymized by the sidecar, NEVER persisted.
+ * BPF syntax and actual kernel symbol compatibility remain live-UNVERIFIED. */
+
+BEGIN {
+  printf("TCPREADY %d %d\n", $1, $2);
+}
+
+kprobe:tcp_sendmsg /pid == $1/ {
   $sk = (struct sock *)arg0;
-  if (comm == "ollama") {
-    printf("TCPMETA attempt %llu %d %d %llu %u %u %llu 0 %s\n",
-      nsecs, pid, tid, (uint64)arg0,
-      $sk->__sk_common.skc_num,
-      bswap($sk->__sk_common.skc_dport),
-      (uint64)arg2, comm);
+  /* AF_INET=2, TCP_ESTABLISHED=1, localhost 127.0.0.1 in Linux
+   * little-endian skc_{rcv_saddr,daddr} network-order representation.
+   * Reject sshd, runner processes, other Ollama ports and non-loopback TCP. */
+  if ($sk->__sk_common.skc_family == 2 &&
+      $sk->__sk_common.skc_state == 1 &&
+      $sk->__sk_common.skc_num == $2 &&
+      $sk->__sk_common.skc_rcv_saddr == 0x0100007f &&
+      $sk->__sk_common.skc_daddr == 0x0100007f &&
+      bswap($sk->__sk_common.skc_dport) > 0) {
+    if (@send_sk[tid]) {
+      /* An overlapping send for the same TID would invalidate entry/return
+       * attribution. Count it and fail closed; never overwrite the tuple. */
+      @collision_total = count();
+    } else {
+      @send_sk[tid] = (uint64)arg0;
+      @send_len[tid] = (uint64)arg2;
+      @attempt_total = count();
+      printf("TCPMETA attempt %llu %d %d %llu %u %u %llu 0 ollama\n",
+        nsecs(monotonic), pid, tid, (uint64)arg0,
+        $sk->__sk_common.skc_num, bswap($sk->__sk_common.skc_dport),
+        (uint64)arg2);
+    }
   }
 }
-kretprobe:tcp_sendmsg /@send_sk[tid]/ {
+
+kretprobe:tcp_sendmsg /pid == $1 && @send_sk[tid]/ {
   $sk = (struct sock *)@send_sk[tid];
-  printf("TCPMETA send %llu %d %d %llu %u %u %llu %lld %s\n",
-    nsecs, pid, tid, (uint64)@send_sk[tid],
-    $sk->__sk_common.skc_num,
-    bswap($sk->__sk_common.skc_dport),
-    (uint64)@send_len[tid], retval, comm);
-  delete(@send_sk[tid]); delete(@send_len[tid]);
+  @return_total = count();
+  printf("TCPMETA send %llu %d %d %llu %u %u %llu %lld ollama\n",
+    nsecs(monotonic), pid, tid, (uint64)@send_sk[tid],
+    $sk->__sk_common.skc_num, bswap($sk->__sk_common.skc_dport),
+    (uint64)@send_len[tid], (int64)retval);
+  delete(@send_sk[tid]);
+  delete(@send_len[tid]);
 }
-kprobe:tcp_recvmsg /comm == "ollama" || comm == "sshd" || comm == "sshd-session" || comm == "ssh"/ {
-  @recv_sk[tid] = arg0;
-  @recv_len[tid] = arg2;
+
+/* Independent in-probe deadline as a second safeguard if the supervising
+ * process disappears. Python additionally uses a monotonic 1800s watchdog,
+ * SIGINT drain and SIGKILL escalation; interval exit itself is asynchronous. */
+interval:s:1800 {
+  exit();
 }
-kretprobe:tcp_recvmsg /@recv_sk[tid]/ {
-  $sk = (struct sock *)@recv_sk[tid];
-  printf("TCPMETA recv %llu %d %d %llu %u %u %llu %lld %s\n",
-    nsecs, pid, tid, (uint64)@recv_sk[tid],
-    $sk->__sk_common.skc_num,
-    bswap($sk->__sk_common.skc_dport),
-    (uint64)@recv_len[tid], retval, comm);
-  delete(@recv_sk[tid]); delete(@recv_len[tid]);
+
+END {
+  /* Per-CPU count() totals detect missing printf/perf-buffer events. A lost
+   * footer, mismatched totals or any collision fails the supervisor closed. */
+  printf("TCPSUMMARY %llu %llu %llu\n",
+    (uint64)@attempt_total, (uint64)@return_total, (uint64)@collision_total);
+  clear(@attempt_total);
+  clear(@return_total);
+  clear(@collision_total);
+  clear(@send_sk);
+  clear(@send_len);
 }

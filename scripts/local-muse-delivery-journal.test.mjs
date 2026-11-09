@@ -7,9 +7,10 @@ import { randomBytes } from 'node:crypto';
 import net from 'node:net';
 import { request as httpRequest } from 'node:http';
 import { once } from 'node:events';
+import { spawn } from 'node:child_process';
 import { createDeliveryJournal, validateDeliveryRecord,
   interpretDeliveryRecords, clockOffsetBounds, canOrderAcrossHosts } from './local-muse-delivery-journal.mjs';
-import { opaqueSocket, parseKernelLine, parseRunnerLine, parseSsLine,
+import { opaqueSocket, parseKernelLine, parseKernelSession, parseRunnerLine, parseSsLine,
   anchoredHostClock, detectCapability,
   parseWindowsTcpLine, correlateCandidate, tcpCounterDelta } from './local-muse-delivery-sidecar.mjs';
 import { sanitizeHttpRecord, startDeliveryServer } from './local-muse-delivery-cli.mjs';
@@ -112,6 +113,7 @@ test('partial/failed kernel sends and buffered downstream reads are NOT equal', 
   const blocked = parseKernelLine('TCPMETA send 100300000 1139 1139 12345 11434 44000 1000 -11 ollama', params);
   assert.equal(blocked.result, 'would-block');
   assert.equal(blocked.returnedBytes, 0);
+  assert.equal(blocked.kernelReturn, -11, 'Persist signed kernel error, not only zero bytes');
   const remote = parseKernelLine('TCPMETA send 100400000 900 900 5432 23456 22 1850 1850 sshd', params);
   assert.equal(remote.layer, 'ssh-encrypted-transport');
   assert.equal(remote.host, 'remote-ssh');
@@ -120,6 +122,127 @@ test('partial/failed kernel sends and buffered downstream reads are NOT equal', 
     simultaneousConnections: 3 }), 'candidate');
   assert.throws(() => validateDeliveryRecord({ ...attempt, requestId: 'inference-27', confidence: 'direct' }, 1));
   assert.throws(() => validateDeliveryRecord({ ...native('native-semantic-progress', 1), bytes: 400 }, 1));
+});
+
+test('bounded kernel session requires exact terminal counts, no loss, no pending sends', () => {
+  const args = { attempts: 1, returns: 1, pending: 0, sequence: 1,
+    atUnixMs: 1_000_000, monoUs: 2_000_000 };
+  const ok = parseKernelSession('TCPSESSION complete 1 1 0 0 1800000', args);
+  assert.equal(ok.complete, true);
+  assert.equal(ok.shutdown.result, 'ok');
+  assert.equal(ok.shutdown.endpoint, 'ollama-loopback');
+  assert.throws(() => validateDeliveryRecord({ ...common, host: 'collector',
+    layer: 'collector', kind: 'shutdown', result: 'ok', endpoint: 'ollama-loopback' }, 1),
+  /needs bounded/);
+  for (const sample of [
+    'TCPSESSION complete 2 1 0 0 1800000', // missing emitted attempt
+    'TCPSESSION complete 1 1 0 3 1800000', // explicit trace loss
+    'TCPSESSION complete 1 1 1 0 1800000', // non-returning write
+    'TCPSESSION partial 1 1 0 0 1800000', // forced shutdown
+    'TCPSESSION complete 1 1 0 0 1800001', // beyond cap
+  ]) {
+    const row = parseKernelSession(sample, args);
+    assert.equal(row.complete, false, sample);
+    assert.equal(row.shutdown.result, 'failed');
+  }
+  assert.throws(() => parseKernelSession('TCPSESSION complete 1 1 0 0 0 PRIVATE_BODY', args));
+});
+
+test('required Ollama kernel terminal is fail-closed at durable journal seal', async () => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'muse-kernel-seal-'));
+  const absent = await createDeliveryJournal(path.join(folder, 'absent.jsonl'));
+  await assert.rejects(() => absent.seal({ expected: 0, requireKernelSession: true }), /Kernel session/);
+  await absent.abandon();
+  const failed = await createDeliveryJournal(path.join(folder, 'failed.jsonl'));
+  const bad = parseKernelSession('TCPSESSION partial 0 0 0 0 0',
+    { attempts: 0, returns: 0, pending: 0, sequence: 1, atUnixMs: 1, monoUs: 1 });
+  await failed.append(bad.shutdown);
+  await assert.rejects(() => failed.seal({ expected: 1 }), /Kernel session/);
+  await failed.abandon();
+  const good = await createDeliveryJournal(path.join(folder, 'complete.jsonl'));
+  const valid = parseKernelSession('TCPSESSION complete 0 0 0 0 1800000',
+    { attempts: 0, returns: 0, pending: 0, sequence: 1, atUnixMs: 1, monoUs: 1 });
+  await good.append(valid.shutdown);
+  const receipt = await good.seal({ expected: 1, requireKernelSession: true });
+  assert.equal(receipt.claim, 'collector-flush-only', 'not proof that any Ollama bytes were emitted');
+});
+
+test('missing BPF terminal leaves collector unsealable even if importer exits', async () => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'muse-kernel-import-'));
+  const server = await startDeliveryServer(folder, 'offline-bpf-incomplete',
+    { requireKernelSession: true });
+  const headers = { 'content-type': 'application/json',
+    'x-clack-delivery-session': server.nonce };
+  const child = spawn(process.execPath, ['scripts/local-muse-delivery-cli.mjs',
+    'import-kernel', server.url, server.nonce, 'ollama', 'ollama-loopback',
+    '5000', '1794196108268000', '100000'], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
+  try {
+    child.stdin.end('TCPMETA attempt 100200000 1139 1140 12345 11434 43000 149 0 ollama\n');
+    let stderr = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    const [code] = await once(child, 'close');
+    assert.equal(code, 1);
+    assert.match(stderr, /Missing kernel session/);
+    const status = await fetch(`${server.url}/v1/status`, { method: 'POST', headers,
+      body: '{}' }).then(r => r.json());
+    assert.equal(status.sourceFailed, true);
+    const finish = await fetch(`${server.url}/v1/finish`, { method: 'POST', headers,
+      body: JSON.stringify({ expected: status.count, deliveryFailed: false }) });
+    assert.equal(finish.status, 422);
+    await assert.rejects(() => stat(`${server.filename}.receipt.json`), { code: 'ENOENT' });
+  } finally {
+    child.kill();
+    await server.stop();
+  }
+});
+
+test('kernel terminal must be final EOF record, never a premature success marker', async () => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'muse-kernel-extra-'));
+  const server = await startDeliveryServer(folder, 'offline-bpf-extra',
+    { requireKernelSession: true });
+  const child = spawn(process.execPath, ['scripts/local-muse-delivery-cli.mjs',
+    'import-kernel', server.url, server.nonce, 'ollama', 'ollama-loopback',
+    '5000', '1794196108268000', '100000'], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
+  try {
+    child.stdin.end('TCPSESSION complete 0 0 0 0 1000\nTCPMETA attempt 100200000 1139 1140 12345 11434 43000 1 0 ollama\n');
+    const [code] = await once(child, 'close');
+    assert.equal(code, 1);
+    assert.equal(server.snapshot().kernelCompletions, 0);
+    assert.equal(server.snapshot().sourceFailed, true);
+    await assert.rejects(() => stat(`${server.filename}.receipt.json`), { code: 'ENOENT' });
+  } finally { child.kill(); await server.stop(); }
+});
+
+test('synthetic kernel source completion seals only collector coverage; loss never does', async () => {
+  const make = async (runId, terminal) => {
+    const folder = await mkdtemp(path.join(os.tmpdir(), 'muse-kernel-source-'));
+    const server = await startDeliveryServer(folder, runId, { requireKernelSession: true });
+    const post = (route, payload) => fetch(`${server.url}/v1/${route}`, {
+      method: 'POST', headers: { 'content-type': 'application/json',
+        'x-clack-delivery-session': server.nonce }, body: JSON.stringify(payload) });
+    const child = spawn(process.execPath, ['scripts/local-muse-delivery-cli.mjs',
+      'import-kernel', server.url, server.nonce, 'ollama', 'ollama-loopback',
+      '5000', '1794196108268000', '100000'], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
+    try {
+      child.stdin.end(terminal);
+      const [exitCode] = await once(child, 'close');
+      const status = await (await post('status', {})).json();
+      const done = await post('finish', { expected: status.count, deliveryFailed: false });
+      return { exitCode, status, doneStatus: done.status,
+        body: done.status === 200 ? await done.json() : null };
+    } finally { child.kill(); await server.stop(); }
+  };
+  const complete = await make('synthetic-zero-writes', 'TCPSESSION complete 0 0 0 0 250\n');
+  assert.equal(complete.exitCode, 0);
+  assert.equal(complete.status.kernelCompletions, 1);
+  assert.equal(complete.doneStatus, 200);
+  assert.equal(complete.body.interpretation.ollamaSocketWriteObserved, false);
+  assert.equal(complete.body.interpretation.requestSocketCorrelation, 'not-established');
+  const loss = await make('synthetic-kernel-loss', 'TCPSESSION partial 0 0 0 7 250\n');
+  assert.equal(loss.exitCode, 1);
+  assert.equal(loss.status.sourceFailed, true);
+  assert.equal(loss.status.sourceLoss, 7);
+  assert.equal(loss.doneStatus, 422);
 });
 
 test('runner counts establish no HTTP or TCP bytes; sensitive original line is discarded', () => {

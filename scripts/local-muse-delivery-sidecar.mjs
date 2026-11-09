@@ -79,6 +79,7 @@ export function parseKernelLine(line, { key, host, endpoint, atUnixMs,
     row = { ...base, kind: op === 'attempt' ? 'socket-write-attempt' : 'socket-write-return',
       requestedBytes: Number(attempted),
       ...(op === 'attempt' ? {} : { returnedBytes: Math.max(0, result),
+        kernelReturn: result,
         result: result === -11 ? 'would-block' : result < 0 ? 'failed'
           : result === Number(attempted) ? 'ok' : 'partial' }),
       confidence: 'unavailable' };
@@ -88,6 +89,29 @@ export function parseKernelLine(line, { key, host, endpoint, atUnixMs,
       ...(op === 'retransmit' ? { retransmittedBytes: Number(attempted) } : {}) };
   }
   return validateDeliveryRecord(row, sequence);
+}
+
+/** Mandatory terminal attestation from the bounded Linux BPF supervisor.
+ * A success claim is source-collector coverage, not Ollama HTTP delivery.
+ * The importer independently checks counts and unfinished thread/socket pairs. */
+export function parseKernelSession(line, { attempts, returns, pending, sequence,
+  atUnixMs, monoUs }) {
+  const match = /^TCPSESSION (complete|partial) (\d+) (\d+) (\d+) (\d+) (\d+)$/.exec(line);
+  assert(match, 'Missing or invalid bounded kernel session status');
+  const [, state, attemptText, returnText, pendingText, lostText, durationText] = match;
+  const counters = [attemptText, returnText, pendingText, lostText, durationText].map(Number);
+  assert(counters.every(finite), 'Invalid kernel session counters');
+  const [sourceAttempts, sourceReturns, sourcePending, lost, durationMs] = counters;
+  const complete = state === 'complete' && sourceAttempts === attempts &&
+    sourceReturns === returns && sourcePending === pending && pending === 0 &&
+    lost === 0 && durationMs <= 1_800_000;
+  const shutdown = validateDeliveryRecord({ schemaVersion: 1, host: 'collector',
+    layer: 'collector', kind: 'shutdown', sequence, atUnixMs, monoUs,
+    endpoint: 'ollama-loopback', result: complete ? 'ok' : 'failed',
+    kernelAttempts: sourceAttempts, kernelReturns: sourceReturns,
+    pendingWrites: sourcePending, durationMs, dropped: lost,
+    confidence: 'unavailable' }, sequence);
+  return Object.freeze({ shutdown, lost, complete });
 }
 
 /** Ollama journal generation counters prove runner progress, not HTTP output.

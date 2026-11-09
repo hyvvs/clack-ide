@@ -15,7 +15,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { createDeliveryJournal, validateDeliveryRecord,
   interpretDeliveryRecords } from './local-muse-delivery-journal.mjs';
-import { parseKernelLine, parseRunnerLine, parseSsLine,
+import { parseKernelLine, parseKernelSession, parseRunnerLine, parseSsLine,
   parseWindowsTcpLine, anchoredHostClock, detectCapability } from './local-muse-delivery-sidecar.mjs';
 
 const ID = /^[A-Za-z0-9_-]{1,80}$/;
@@ -52,7 +52,8 @@ export function sanitizeHttpRecord(payload, nextSequence) {
     ...(sequence === undefined ? {} : { requestSequence: sequence }) }, nextSequence);
 }
 
-export async function startDeliveryServer(root, runId, { maxRecords = 65536 } = {}) {
+export async function startDeliveryServer(root, runId, { maxRecords = 65536,
+  requireKernelSession = false } = {}) {
   const approved = parseRootId(root, runId);
   assert(await realpath(approved.folder) === approved.folder, 'Noncanonical run root');
   assert((await readdir(approved.folder)).length === 0, 'Journal requires an empty run-owned root');
@@ -109,7 +110,7 @@ export async function startDeliveryServer(root, runId, { maxRecords = 65536 } = 
           Object.keys(payload).length === 2 && Number.isSafeInteger(payload.expected) &&
           typeof payload.deliveryFailed === 'boolean', 'Invalid finish request');
         const receipt = await journal.seal({ ...payload,
-          deliveryFailed: inputFailed || payload.deliveryFailed });
+          deliveryFailed: inputFailed || payload.deliveryFailed, requireKernelSession });
         closing = true; closeReceipt = receipt;
         const raw = await readFile(filename);
         const rows = raw.toString('utf8').split('\n').filter(Boolean).map(JSON.parse);
@@ -169,8 +170,10 @@ async function main() {
     return;
   }
   if (mode === 'serve') {
-    assert(args.length === 2, 'Usage: serve <empty absolute owned root> <run id>');
-    const server = await startDeliveryServer(args[0], args[1]);
+    assert(args.length === 2 || args.length === 3 && args[2] === '--require-kernel',
+      'Usage: serve <empty absolute owned root> <run id> [--require-kernel]');
+    const server = await startDeliveryServer(args[0], args[1],
+      { requireKernelSession: args[2] === '--require-kernel' });
     stdout.write(JSON.stringify({ endpoint: server.url, ephemeralSessionNonce: server.nonce,
       capacity: 65536, claim: 'collector-only; no inference or model proof' }) + '\n');
     const stop = async () => { const state = await server.stop();
@@ -199,6 +202,10 @@ async function main() {
       'Invalid ephemeral socket pseudonym key');
     const key = keyText ? Buffer.from(keyText, 'hex') : randomBytes(32);
     let sequence = 0, total = 0;
+    let terminalSeen = false, terminalStored = false, terminalResult = null;
+    let attempts = 0, returns = 0;
+    let kernelPid = null;
+    const pending = new Map();
     let ssHeader = null;
     const sendNormalized = async row => {
       if (!row) return;
@@ -210,9 +217,53 @@ async function main() {
       total++;
     };
     const lines = createInterface({ input: stdin, crlfDelay: Infinity });
+    const failedKernelStatus = async () => {
+      if (terminalStored) return;
+      const seq = ++sequence;
+      await sendNormalized(validateDeliveryRecord({ schemaVersion: 1, sequence: seq,
+        host: 'collector', layer: 'collector', kind: 'shutdown',
+        endpoint: 'ollama-loopback', result: 'failed',
+        atUnixMs: Date.now(), monoUs: Number(process.hrtime.bigint() / 1000n),
+        confidence: 'unavailable' }, seq));
+      terminalStored = true;
+    };
+    try {
     for await (const rawLine of lines) {
       let line = rawLine;
       if (!line.trim()) continue;
+      if (mode === 'import-kernel') {
+        assert(!terminalSeen, 'Unexpected data after kernel session terminal record');
+        if (line.startsWith('TCPSESSION ')) {
+          terminalSeen = true;
+          const seq = ++sequence;
+          terminalResult = parseKernelSession(line, { attempts, returns,
+            pending: pending.size, sequence: seq, atUnixMs: Date.now(),
+            monoUs: Number(process.hrtime.bigint() / 1000n) });
+          // Do not publish successful shutdown until EOF is verified. Any
+          // trailing data must invalidate the session rather than leaving a
+          // previously accepted success marker in the durable journal.
+          continue;
+        }
+        assert(line.endsWith(' ollama') && line.startsWith('TCPMETA '),
+          'Kernel source must contain only Ollama TCP metadata');
+        const parts = line.split(' ');
+        assert(parts[6] === '11434' && Number(parts[7]) > 0,
+          'Ollama kernel source must be a server-side 11434 TCP socket');
+        if (kernelPid === null) kernelPid = parts[3];
+        else assert(kernelPid === parts[3], 'Kernel session changed its Ollama PID');
+        const op = parts[1], identity = `${parts[3]}:${parts[4]}:${parts[5]}`;
+        if (op === 'attempt') {
+          attempts++;
+          assert(![...pending.keys()].some(k => k.startsWith(`${parts[4]}:`)),
+            'Overlapping kernel thread sends');
+          pending.set(identity, `${parts[6]}:${parts[7]}:${parts[8]}`);
+        } else if (op === 'send') {
+          returns++;
+          assert(pending.get(identity) === `${parts[6]}:${parts[7]}:${parts[8]}`,
+            'Unpaired or mismatched kernel send return');
+          pending.delete(identity);
+        } else throw new Error('Unexpected kernel operation');
+      }
       let sourceSsClock;
       if (mode === 'import-ss') {
         const observed = /^SSMETA (\d+) (\d+) (.*)$/.exec(line);
@@ -271,6 +322,23 @@ async function main() {
       else if (mode === 'import-windows') row = parseWindowsTcpLine(line, props);
       else row = parseSsLine(line, props);
       await sendNormalized(row);
+    }
+    if (mode === 'import-kernel') {
+      assert(terminalSeen, 'Missing kernel session terminal record');
+      if (terminalResult.lost > 0) {
+        const lossSeq = ++sequence;
+        await sendNormalized(validateDeliveryRecord({ schemaVersion: 1,
+          sequence: lossSeq, host: 'collector', layer: 'collector', kind: 'event-loss',
+          atUnixMs: Date.now(), monoUs: Number(process.hrtime.bigint() / 1000n),
+          dropped: terminalResult.lost }, lossSeq));
+      }
+      await sendNormalized(terminalResult.shutdown);
+      terminalStored = true;
+      assert(terminalResult.complete, 'Kernel session incomplete; collector must not seal');
+    }
+    } catch (error) {
+      if (mode === 'import-kernel') await failedKernelStatus().catch(() => undefined);
+      throw error;
     }
     stderr.write(JSON.stringify({ imported: total, claim: 'collector-validated-only' }) + '\n');
     return;
