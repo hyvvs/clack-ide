@@ -200,7 +200,7 @@ describe("bounded extraction through the installed provider adapter", () => {
       expect(rows.filter(row => row.phase === "sdk-json-settled")).toEqual([
         expect.objectContaining({ nativeRequestId: observedNativeId }),
       ]);
-      expect(interpretPreparationPhaseRows(rows, receipt)).toMatchObject({
+      expect(interpretPreparationPhaseRows(rows, receipt, await readFile(filename))).toMatchObject({
         collectorCoverage: "collector-flushed", nativeRequestsLinked: 2,
         nativeSdkOrdering: "unknown",
         requestOrderings: [

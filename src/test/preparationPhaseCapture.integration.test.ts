@@ -2,7 +2,7 @@
  * native-host-style exclusive durable journal -> conservative interpretation.
  * Only mocked extraction calls; no model, Tauri host or acceptance launch. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -79,7 +79,7 @@ describe('opt-in, offline phase evidence durability', () => {
       const rows = (await readFile(filename, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
       expect(rows).toHaveLength(4);
       expect(JSON.stringify(rows)).not.toContain('PROTECTED_CONVERSATION');
-      expect(interpretPreparationPhaseRows(rows, manifest)).toMatchObject({
+      expect(interpretPreparationPhaseRows(rows, manifest, await readFile(filename))).toMatchObject({
         collectorCoverage: 'collector-flushed', extractorDeadlineObserved: true,
         nativeSdkOrdering: 'unknown', forgeBoardAcceptance: 'not-evaluated',
       });
@@ -114,7 +114,7 @@ describe('opt-in, offline phase evidence durability', () => {
     expect(JSON.stringify(rows)).not.toContain(source.passages[0]);
     expect(rows.every(r => Object.keys(r).every(k =>
       ['schemaVersion', 'sequence', 'at', 'sessionId', 'runId', 'phase', 'nativeRequestId'].includes(k)))).toBe(true);
-    expect(interpretPreparationPhaseRows(rows, manifest)).toMatchObject({
+    expect(interpretPreparationPhaseRows(rows, manifest, await readFile(filename))).toMatchObject({
       collectorCoverage: 'collector-flushed', nativeSdkOrdering: 'unknown',
       inferenceProgress: 'not-established', forgeBoardAcceptance: 'not-evaluated',
     });
@@ -133,7 +133,7 @@ describe('opt-in, offline phase evidence durability', () => {
     const receipt = await capture.stop();
     const manifest = await journal.seal(receipt);
     const rows = (await readFile(filename, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-    expect(interpretPreparationPhaseRows(rows, manifest)).toMatchObject({
+    expect(interpretPreparationPhaseRows(rows, manifest, await readFile(filename))).toMatchObject({
       nativeSdkOrdering: 'native-terminal-before-sdk-json',
       agentTerminalObserved: true, inferenceProgress: 'not-established',
       forgeBoardAcceptance: 'not-evaluated',
@@ -158,7 +158,7 @@ describe('opt-in, offline phase evidence durability', () => {
     emitPreparationPhase(scope, 'agent-run-failed');
     const receipt = await journal.seal(await capture.stop());
     const rows = (await readFile(filename, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-    expect(interpretPreparationPhaseRows(rows, receipt)).toMatchObject({
+    expect(interpretPreparationPhaseRows(rows, receipt, await readFile(filename))).toMatchObject({
       collectorCoverage: 'collector-flushed', nativeRequestsLinked: 2,
       requestOrderings: [{ nativeRequestId: 'inference-1', ordering: 'unknown' },
         { nativeRequestId: 'inference-39', ordering: 'native-terminal-before-sdk-json' }],
@@ -177,7 +177,7 @@ describe('opt-in, offline phase evidence durability', () => {
     emitPreparationPhase(other, 'sdk-json-settled', 'inference-1'); // ID reused across runs
     const receipt = await journal.seal(await capture.stop());
     const rows = (await readFile(filename, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-    expect(interpretPreparationPhaseRows(rows, receipt)).toMatchObject({
+    expect(interpretPreparationPhaseRows(rows, receipt, await readFile(filename))).toMatchObject({
       collectorCoverage: 'collector-flushed', nativeSdkOrdering: 'unknown',
       requestOrderings: [{ nativeRequestId: 'inference-1', ordering: 'unknown' }],
       inferenceProgress: 'not-established', forgeBoardAcceptance: 'not-evaluated',
@@ -236,11 +236,82 @@ describe('opt-in, offline phase evidence durability', () => {
     emitPreparationPhase(scope, 'agent-run-failed');
     const manifest = await journal.seal(await capture.stop());
     const rows = (await readFile(filename, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-    expect(interpretPreparationPhaseRows(rows, manifest)).toMatchObject({
+    expect(interpretPreparationPhaseRows(rows, manifest, await readFile(filename))).toMatchObject({
       collectorCoverage: 'collector-flushed', nativeRequestsLinked: 1,
       extractorDeadlineObserved: true, agentTerminalObserved: true,
       nativeSdkOrdering: 'unknown', inferenceProgress: 'not-established',
       forgeBoardAcceptance: 'not-evaluated',
     });
+  });
+  it('does not trust a decoded trace whose persisted JSONL bytes differ from the receipt hash', async () => {
+    const filename = await tempFile();
+    const journal = await createPreparationPhaseJournal(filename);
+    const capture = startPreparationPhaseCapture(async record => { await journal.append(record); });
+    emitPreparationPhase(scope, 'extractor-created');
+    emitPreparationPhase(scope, 'native-request-linked', 'inference-2');
+    emitPreparationPhase(scope, 'native-http-settled', 'inference-2');
+    emitPreparationPhase(scope, 'sdk-json-settled', 'inference-2');
+    const receipt = await journal.seal(await capture.stop());
+    const raw = await readFile(filename, 'utf8');
+    const rows = raw.trim().split('\n').map(line => JSON.parse(line));
+    expect(interpretPreparationPhaseRows(rows, receipt, Buffer.from(raw, 'utf8'))).toMatchObject({
+      collectorCoverage: 'collector-flushed',
+      nativeSdkOrdering: 'native-terminal-before-sdk-json',
+    });
+    // The semantic JSON is unchanged, but the actual archived bytes differ.
+    const altered = raw.replace('"sequence":1', '"sequence": 1');
+    expect(altered).not.toBe(raw);
+    const sameMeaning = altered.trim().split('\n').map(line => JSON.parse(line));
+    expect(interpretPreparationPhaseRows(sameMeaning, receipt, Buffer.from(altered, 'utf8'))).toMatchObject({
+      collectorCoverage: 'partial-or-unsealed', nativeSdkOrdering: 'unknown',
+    });
+    // Decoded rows alone do not establish that the original bytes were kept.
+    expect(interpretPreparationPhaseRows(rows, receipt)).toMatchObject({
+      collectorCoverage: 'partial-or-unsealed', nativeSdkOrdering: 'unknown',
+    });
+  });
+  it('publishes a durable receipt only from a synced staging file without a partial final receipt', async () => {
+    const filename = await tempFile();
+    const journal = await createPreparationPhaseJournal(filename);
+    const capture = startPreparationPhaseCapture(async row => { await journal.append(row); });
+    emitPreparationPhase(scope, 'extractor-created');
+    const summary = await journal.seal(await capture.stop());
+    expect(JSON.parse(await readFile(`${filename}.receipt.json`, 'utf8'))).toEqual(summary);
+    await expect(access(`${filename}.receipt.json.pending`)).rejects.toThrow();
+    await journal.abandon(); // idempotent cleanup following successful seal
+  });
+  it('never overwrites a colliding receipt or abandons the original journal on finalization error', async () => {
+    const filename = await tempFile();
+    const originalReceipt = 'PREEXISTING_ACCEPTANCE_RECEIPT';
+    await writeFile(`${filename}.receipt.json`, originalReceipt);
+    const journal = await createPreparationPhaseJournal(filename);
+    const capture = startPreparationPhaseCapture(async row => { await journal.append(row); });
+    emitPreparationPhase(scope, 'extractor-created');
+    const captured = await capture.stop();
+    await expect(journal.seal(captured)).rejects.toThrow();
+    await journal.abandon(); // must close even when seal already marked terminal
+    expect(await readFile(`${filename}.receipt.json`, 'utf8')).toBe(originalReceipt);
+    expect(await readFile(`${filename}.receipt.json.pending`, 'utf8')).toContain('collector-flush-only');
+    const raw = await readFile(filename);
+    const rows = raw.toString('utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(interpretPreparationPhaseRows(rows, null, raw)).toMatchObject({
+      collectorCoverage: 'partial-or-unsealed', forgeBoardAcceptance: 'not-evaluated',
+    });
+    // Neither an unknown old receipt nor a staged receipt grants a clean ACK.
+    await expect(journal.append({ schemaVersion: 1, sequence: 2, at: Date.now(),
+      sessionId: 'offline-session', runId: 'offline-session:123', phase: 'agent-run-completed' })).rejects.toThrow();
+  });
+  it('cannot publish a final receipt when an existing incomplete staging path blocks finalization', async () => {
+    const filename = await tempFile();
+    const oldPending = 'PREVIOUS_UNFINISHED_STAGE';
+    await writeFile(`${filename}.receipt.json.pending`, oldPending);
+    const journal = await createPreparationPhaseJournal(filename);
+    const capture = startPreparationPhaseCapture(async row => { await journal.append(row); });
+    emitPreparationPhase(scope, 'extractor-created');
+    await expect(journal.seal(await capture.stop())).rejects.toThrow();
+    await journal.abandon();
+    expect(await readFile(`${filename}.receipt.json.pending`, 'utf8')).toBe(oldPending);
+    await expect(access(`${filename}.receipt.json`)).rejects.toThrow();
+    expect((await readFile(filename, 'utf8')).split('\n')[0]).toContain('extractor-created');
   });
 });

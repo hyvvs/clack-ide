@@ -3,7 +3,7 @@
  * The future runner owns an exclusive-new path and a localhost receipt route.
  */
 import assert from 'node:assert/strict';
-import { open } from 'node:fs/promises';
+import { open, link, unlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 
 const PHASES = new Set(`extractor-created extractor-deadline-fired extractor-cancelled extractor-disposed
@@ -49,7 +49,13 @@ export async function createPreparationPhaseJournal(filename, maxRecords = 2048)
   let count = 0;
   let sealed = false;
   let writeFailed = false;
+  let closed = false;
   let queue = Promise.resolve();
+  const closeJournal = async () => {
+    if (closed) return;
+    closed = true;
+    await file.close();
+  };
   return {
     append(record) {
       const next = queue.then(async () => {
@@ -72,17 +78,35 @@ export async function createPreparationPhaseJournal(filename, maxRecords = 2048)
         receipt.overflow === 0 && receipt.deliveryFailed === false,
       'Phase capture was incomplete; cannot issue a complete collector receipt');
       sealed = true;
-      await file.sync();
-      const summary = Object.freeze({ schemaVersion: 1,
-        claim: 'collector-flush-only', count, sha256: digest.digest('hex') });
-      const manifest = await open(`${filename}.receipt.json`, 'wx');
-      try { await manifest.writeFile(JSON.stringify(summary) + '\n'); await manifest.sync(); }
-      finally { await manifest.close(); await file.close(); }
-      return summary;
+      const finalPath = `${filename}.receipt.json`;
+      const pendingPath = `${finalPath}.pending`;
+      let staged;
+      try {
+        await file.sync();
+        const summary = Object.freeze({ schemaVersion: 1,
+          claim: 'collector-flush-only', count, sha256: digest.digest('hex') });
+        // A crash or write/fsync failure cannot leave a syntactically valid
+        // *final* receipt. Only a fully synced staging file may be published.
+        // Both paths are exclusive: never replace historical evidence.
+        staged = await open(pendingPath, 'wx');
+        await staged.writeFile(JSON.stringify(summary) + '\n');
+        await staged.sync();
+        await staged.close();
+        staged = undefined;
+        await link(pendingPath, finalPath);
+        // The final hard link is the authoritative name; a failure to remove
+        // our synced staging link must not turn a valid receipt into failure.
+        await unlink(pendingPath).catch(() => undefined);
+        return summary;
+      } finally {
+        try { await staged?.close(); }
+        finally { await closeJournal(); }
+      }
     },
     async abandon() {
       await queue;
-      if (!sealed) { sealed = true; await file.close(); }
+      sealed = true;
+      await closeJournal();
       // Leave unsealed evidence intact; absence of a receipt means partial.
     },
   };
@@ -91,11 +115,19 @@ export async function createPreparationPhaseJournal(filename, maxRecords = 2048)
 /** Event ordering is local callback sequence, not an independently verified
  * clock, a successful HTTP status, or proof of native model generation.
  * Each SDK phase must carry the signal-linked native request ID; time proximity
- * and an otherwise matching logical run are NOT enough for a join. */
-export function interpretPreparationPhaseRows(rows, receipt = null) {
+ * and an otherwise matching logical run are NOT enough for a join.
+ * Verified collector coverage also requires the EXACT raw bytes read from the
+ * append-only journal: reserializing JSON erases evidence of byte mutation. */
+export function interpretPreparationPhaseRows(rows, receipt = null, rawJournal = undefined) {
   const validated = rows.map((row, i) => validatePreparationPhaseRow(row, i + 1));
-  const digest = createHash('sha256').update(validated.map(row => JSON.stringify(row) + '\n').join('')).digest('hex');
-  const completeCollection = receipt?.schemaVersion === 1 && receipt.claim === 'collector-flush-only' &&
+  const expected = Buffer.from(validated.map(row => JSON.stringify(row) + '\n').join(''), 'utf8');
+  // An omitted raw journal is not proof of an unchanged on-disk archive.
+  // Reject non-canonical JSONL and mismatched receipts, even when parsed JSON
+  // retains equivalent properties after a whitespace/key-order modification.
+  const byteExact = rawJournal instanceof Uint8Array &&
+    Buffer.from(rawJournal).equals(expected);
+  const digest = byteExact ? createHash('sha256').update(rawJournal).digest('hex') : undefined;
+  const completeCollection = byteExact && receipt?.schemaVersion === 1 && receipt.claim === 'collector-flush-only' &&
     receipt.count === validated.length && receipt.sha256 === digest;
   const link = validated.filter(row => row.phase === 'native-request-linked');
   const ids = new Set(validated.filter(row => row.phase === 'native-request-linked' && row.nativeRequestId)

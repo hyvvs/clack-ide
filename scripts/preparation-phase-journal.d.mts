@@ -26,7 +26,9 @@ export function createPreparationPhaseJournal(filename: string, maxRecords?: num
   seal(receipt: CaptureReceipt): Promise<JournalReceipt>;
   abandon(): Promise<void>;
 }>;
-export function interpretPreparationPhaseRows(rows: readonly PhaseRow[], receipt?: JournalReceipt | null): Readonly<{
+/** Pass byte-for-byte journal content read from disk; parsed rows alone do not
+ * establish persisted integrity and are always interpreted as incomplete. */
+export function interpretPreparationPhaseRows(rows: readonly PhaseRow[], receipt?: JournalReceipt | null, rawJournal?: Uint8Array): Readonly<{
   collectorCoverage: 'collector-flushed' | 'partial-or-unsealed';
   nativeSdkOrdering: 'unknown' | 'native-terminal-before-sdk-json' | 'sdk-json-before-native-terminal';
   requestOrderings: readonly Readonly<{
