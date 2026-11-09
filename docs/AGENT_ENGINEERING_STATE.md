@@ -264,3 +264,31 @@ invariants. Future evidence collection requires **separate explicit
 authorization** for a new local Muse ForgeBoard run and independent frozen
 evaluator; the previous live authorization was consumed. P2–P19 remain
 deferred per project order.
+
+## 2026-11-09 follow-on: opt-in preparation-phase evidence collection (offline)
+
+Verified entering HEAD `ea8a1878d754697c466409afccc64964e621b375`.
+The in-memory phase observer introduced in `790a608` had **no live acceptance
+collector or persisted phase records**: production grep and the dated November
+8 one-shot source establish this absent integration. The runner refuses reuse
+of the consumed mission ID. An independently authorized fresh runner must opt
+in rather than attempting to amend a sealed archive.
+
+New task-owned offline collector/journal code and tests committed at
+`75ec45839a3eb87907bd650ed68dc849a97aa7ca`.
+The bounded acceptance-only subscriber, strict exclusive append/fsync-before-
+ACK Node journal, content-free schema and deliberately conservative receipt/
+native-vs-SDK ordering interpreter passed **6/6 new offline integration tests**,
+including a real loopback HTTP capture, plus **TypeScript and production build**.
+No prior 891-test lifecycle gate was repeated and no Rust code changed.
+See [2026-11-09 offline phase collection checkpoint](CLACK_PREPARATION_PHASE_COLLECTION_OFFLINE_2026-11-09.md)
+for exact integration instructions, provenance limits and preservation results.
+
+**NOT active in old one-shot runner, NOT a new live acceptance.** No inference,
+ForgeBoard mission, evaluator, Ollama/server setting change, manual frozen-app
+repair or push occurred. The previous findings remain
+`COMPACTION TIMEOUT FAILURE UNRESOLVED`, **Case C**, and
+`ONE FURTHER FORGEBOARD RETRY JUSTIFIED: NO`. No `FORGEBOARD_PASS`.
+Separately authorize any fresh local `muse-glimmer:30b` Agent mission, original
+ForgeBoard spec, legitimate correction observer, Agent-owned repair and one
+independently frozen evaluation; this authorization has not been given.
