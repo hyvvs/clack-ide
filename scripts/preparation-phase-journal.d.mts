@@ -29,6 +29,10 @@ export function createPreparationPhaseJournal(filename: string, maxRecords?: num
 export function interpretPreparationPhaseRows(rows: readonly PhaseRow[], receipt?: JournalReceipt | null): Readonly<{
   collectorCoverage: 'collector-flushed' | 'partial-or-unsealed';
   nativeSdkOrdering: 'unknown' | 'native-terminal-before-sdk-json' | 'sdk-json-before-native-terminal';
+  requestOrderings: readonly Readonly<{
+    nativeRequestId: string;
+    ordering: 'unknown' | 'native-terminal-before-sdk-json' | 'sdk-json-before-native-terminal';
+  }>[];
   nativeRequestsLinked: number;
   extractorDeadlineObserved: boolean;
   agentTerminalObserved: boolean;

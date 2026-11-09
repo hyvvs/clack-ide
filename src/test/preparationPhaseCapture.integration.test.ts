@@ -127,7 +127,7 @@ describe('opt-in, offline phase evidence durability', () => {
     for (const [phase, id] of [
       ['extractor-created'], ['native-request-linked', 'inference-1'],
       ['native-response-headers', 'inference-1'],
-      ['native-http-settled', 'inference-1'], ['sdk-json-settled'],
+      ['native-http-settled', 'inference-1'], ['sdk-json-settled', 'inference-1'],
       ['extraction-validate-completed'], ['agent-run-failed'],
     ] as const) emitPreparationPhase(scope, phase, id);
     const receipt = await capture.stop();
@@ -142,6 +142,46 @@ describe('opt-in, offline phase evidence durability', () => {
     expect(interpretPreparationPhaseRows(rows, { ...manifest, count: 0 }).collectorCoverage).toBe('partial-or-unsealed');
     expect(interpretPreparationPhaseRows([...rows, { ...rows[0], sequence: rows.length + 1,
       phase: 'native-request-linked', nativeRequestId: 'inference-2' }], null).nativeSdkOrdering).toBe('unknown');
+  });
+
+  it('correlates a nonstreaming extraction among multiple native requests without guessing from another request', async () => {
+    const filename = await tempFile();
+    const journal = await createPreparationPhaseJournal(filename);
+    const capture = startPreparationPhaseCapture(async row => { await journal.append(row); });
+    emitPreparationPhase(scope, 'native-request-linked', 'inference-1');
+    emitPreparationPhase(scope, 'native-http-settled', 'inference-1');
+    emitPreparationPhase(scope, 'native-request-linked', 'inference-39');
+    emitPreparationPhase(scope, 'native-response-headers', 'inference-39');
+    emitPreparationPhase(scope, 'native-http-settled', 'inference-39');
+    emitPreparationPhase(scope, 'sdk-json-settled', 'inference-39');
+    emitPreparationPhase(scope, 'extraction-validate-completed', 'inference-39');
+    emitPreparationPhase(scope, 'agent-run-failed');
+    const receipt = await journal.seal(await capture.stop());
+    const rows = (await readFile(filename, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    expect(interpretPreparationPhaseRows(rows, receipt)).toMatchObject({
+      collectorCoverage: 'collector-flushed', nativeRequestsLinked: 2,
+      requestOrderings: [{ nativeRequestId: 'inference-1', ordering: 'unknown' },
+        { nativeRequestId: 'inference-39', ordering: 'native-terminal-before-sdk-json' }],
+      inferenceProgress: 'not-established', forgeBoardAcceptance: 'not-evaluated',
+    });
+  });
+
+  it('refuses SDK events missing a native ID and never joins reused IDs from another logical run', async () => {
+    const filename = await tempFile();
+    const journal = await createPreparationPhaseJournal(filename);
+    const capture = startPreparationPhaseCapture(async row => { await journal.append(row); });
+    const other = { sessionId: scope.sessionId, runId: 'other:789' };
+    emitPreparationPhase(scope, 'native-request-linked', 'inference-1');
+    emitPreparationPhase(scope, 'native-http-settled', 'inference-1');
+    emitPreparationPhase(scope, 'sdk-json-settled'); // no signal/native correlation
+    emitPreparationPhase(other, 'sdk-json-settled', 'inference-1'); // ID reused across runs
+    const receipt = await journal.seal(await capture.stop());
+    const rows = (await readFile(filename, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    expect(interpretPreparationPhaseRows(rows, receipt)).toMatchObject({
+      collectorCoverage: 'collector-flushed', nativeSdkOrdering: 'unknown',
+      requestOrderings: [{ nativeRequestId: 'inference-1', ordering: 'unknown' }],
+      inferenceProgress: 'not-established', forgeBoardAcceptance: 'not-evaluated',
+    });
   });
 
   it('rejects extra content fields and duplicate or invalid phases without writing them', async () => {

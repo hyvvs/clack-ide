@@ -16,7 +16,7 @@ import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import { attachNativeDiagnosticSignal, detachNativeDiagnosticSignal } from "@/modules/ai/lib/inferenceDiagnosticCorrelation";
 import {
   awaitAbortableRead, emitPreparationPhase, linkPreparationSignal,
-  observePreparationSignal, unlinkPreparationSignal,
+  observePreparationSignal, setPreparationNativeRequest, unlinkPreparationSignal,
 } from "@/modules/ai/lib/preparationLifecycle";
 
 export const COMPACTION_POLICY = Object.freeze({
@@ -362,12 +362,31 @@ export function createBoundedExtractor(options: {
   const now = options.now ?? Date.now;
   const started = now();
   const controller = new AbortController();
+  const pendingNative = new Set<string>();
+  let pendingModelCalls = 0;
+  let disposed = false;
+  // A native terminal response can arrive after the batch has timed out and
+  // disposed. Retain only the signal-scoped diagnostic join until its actual
+  // terminal event/model settlement, never the model, response or deadline.
+  const releaseDiagnosticWhenSettled = () => {
+    if (!disposed || pendingModelCalls !== 0 || pendingNative.size !== 0) return;
+    unlinkPreparationSignal(controller.signal);
+    detachNativeDiagnosticSignal(controller.signal);
+  };
   linkPreparationSignal(controller.signal, options.scope);
   emitPreparationPhase(options.scope, "extractor-created");
   attachNativeDiagnosticSignal(controller.signal, (stage, id) => {
-    if (stage === "native-id-linked") emitPreparationPhase(options.scope, "native-request-linked", id);
+    if (stage === "native-id-linked") {
+      pendingNative.add(id);
+      setPreparationNativeRequest(controller.signal, id);
+      emitPreparationPhase(options.scope, "native-request-linked", id);
+    }
     if (stage === "native-response-headers") emitPreparationPhase(options.scope, "native-response-headers", id);
-    if (stage === "native-settled") emitPreparationPhase(options.scope, "native-http-settled", id);
+    if (stage === "native-settled") {
+      emitPreparationPhase(options.scope, "native-http-settled", id);
+      pendingNative.delete(id);
+      releaseDiagnosticWhenSettled();
+    }
   });
   const cancel = () => {
     emitPreparationPhase(options.scope, "extractor-cancelled");
@@ -391,7 +410,6 @@ export function createBoundedExtractor(options: {
   let chunks = 0;
   let retries = 0;
   let tokens = 0;
-  let disposed = false;
   let busy = false;
   let failed = false;
   let elapsedReported = false;
@@ -490,17 +508,21 @@ export function createBoundedExtractor(options: {
           await options.onCall?.();
           emitPreparationPhase(options.scope, "extraction-charge-settled");
           check();
+          setPreparationNativeRequest(controller.signal);
           emitPreparationPhase(options.scope, "extraction-model-start");
-          const result = await untilAborted(
-            (options.call ?? defaultCall)({
-              model: options.model,
-              messages,
-              maxOutputTokens: output,
-              abortSignal: controller.signal,
-            }),
-            controller.signal,
+          const modelCall = (options.call ?? defaultCall)({
+            model: options.model,
+            messages,
+            maxOutputTokens: output,
+            abortSignal: controller.signal,
+          });
+          pendingModelCalls++;
+          void modelCall.then(
+            () => { pendingModelCalls--; releaseDiagnosticWhenSettled(); },
+            () => { pendingModelCalls--; releaseDiagnosticWhenSettled(); },
           );
-          emitPreparationPhase(options.scope, "extraction-model-returned");
+          const result = await untilAborted(modelCall, controller.signal);
+          observePreparationSignal(controller.signal, "extraction-model-returned");
           const usage = result.usage;
           if (
             ![
@@ -528,20 +550,20 @@ export function createBoundedExtractor(options: {
               "The extraction provider exceeded its output bound. No memory was published.",
             );
           try {
-            emitPreparationPhase(options.scope, "extraction-validate-start");
+            observePreparationSignal(controller.signal, "extraction-validate-start");
             const claims = await validateExtraction(
               result.text,
               sources,
               prior,
               now(),
             );
-            emitPreparationPhase(options.scope, "extraction-validate-completed");
+            observePreparationSignal(controller.signal, "extraction-validate-completed");
             check();
             chunks++;
-            emitPreparationPhase(options.scope, "extraction-completed");
+            observePreparationSignal(controller.signal, "extraction-completed");
             return claims;
           } catch (error) {
-            emitPreparationPhase(options.scope, "extraction-validate-failed");
+            observePreparationSignal(controller.signal, "extraction-validate-failed");
             if (
               !(error instanceof CompactionError) ||
               error.code !== "compaction-invalid-output" ||
@@ -559,13 +581,13 @@ export function createBoundedExtractor(options: {
       }
     },
     dispose() {
+      if (disposed) return;
       disposed = true;
       clearTimeout(timeout);
       options.signal?.removeEventListener("abort", cancel);
       emitPreparationPhase(options.scope, "extractor-disposed");
-      unlinkPreparationSignal(controller.signal);
-      detachNativeDiagnosticSignal(controller.signal);
       controller.abort();
+      releaseDiagnosticWhenSettled();
     },
   };
 }

@@ -33,7 +33,8 @@ export type PreparationObservation = Readonly<{
 
 type Observer = (observation: PreparationObservation) => void;
 const observers = new Set<Observer>();
-const linkedSignals = new WeakMap<AbortSignal, InferenceScope>();
+type LinkedPreparation = { scope: InferenceScope; nativeRequestId?: string };
+const linkedSignals = new WeakMap<AbortSignal, LinkedPreparation>();
 const safeRunIdentity = (value: string) =>
   /^[A-Za-z0-9:_-]{1,160}$/.test(value) ? value : "unavailable";
 
@@ -62,13 +63,22 @@ export function emitPreparationPhase(
 }
 
 export function linkPreparationSignal(signal: AbortSignal, scope: InferenceScope): void {
-  linkedSignals.set(signal, scope);
+  linkedSignals.set(signal, { scope });
 }
 export function unlinkPreparationSignal(signal: AbortSignal): void {
   linkedSignals.delete(signal);
 }
+/** New native request, or a fresh model attempt before native admission.
+ * Never apply the previous call's ID to an unrelated SDK result. */
+export function setPreparationNativeRequest(signal: AbortSignal, nativeRequestId?: string): void {
+  const link = linkedSignals.get(signal);
+  if (!link) return;
+  link.nativeRequestId = nativeRequestId && /^[A-Za-z0-9:_-]{1,80}$/.test(nativeRequestId)
+    ? nativeRequestId : undefined;
+}
 export function observePreparationSignal(signal: AbortSignal | undefined, phase: PreparationPhase): void {
-  if (signal) emitPreparationPhase(linkedSignals.get(signal), phase);
+  const linked = signal && linkedSignals.get(signal);
+  if (linked) emitPreparationPhase(linked.scope, phase, linked.nativeRequestId);
 }
 
 /** Only race read-only, side-effect-free operations against cancellation.

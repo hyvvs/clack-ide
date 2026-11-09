@@ -89,29 +89,38 @@ export async function createPreparationPhaseJournal(filename, maxRecords = 2048)
 }
 
 /** Event ordering is local callback sequence, not an independently verified
- * clock or a proof of native generation activity. Multiple native requests
- * in the same run make SDK/native association ambiguous. */
+ * clock, a successful HTTP status, or proof of native model generation.
+ * Each SDK phase must carry the signal-linked native request ID; time proximity
+ * and an otherwise matching logical run are NOT enough for a join. */
 export function interpretPreparationPhaseRows(rows, receipt = null) {
   const validated = rows.map((row, i) => validatePreparationPhaseRow(row, i + 1));
   const digest = createHash('sha256').update(validated.map(row => JSON.stringify(row) + '\n').join('')).digest('hex');
   const completeCollection = receipt?.schemaVersion === 1 && receipt.claim === 'collector-flush-only' &&
     receipt.count === validated.length && receipt.sha256 === digest;
-  const runKeys = new Set(validated.map(row => JSON.stringify([row.sessionId, row.runId])));
-  const identitiesKnown = validated.every(row => row.sessionId !== 'unavailable' && row.runId !== 'unavailable');
   const link = validated.filter(row => row.phase === 'native-request-linked');
   const ids = new Set(validated.filter(row => row.phase === 'native-request-linked' && row.nativeRequestId)
     .map(row => row.nativeRequestId));
-  const terminal = validated.filter(row => row.phase === 'native-http-settled');
-  const json = validated.filter(row => row.phase === 'sdk-json-settled');
-  let nativeSdkOrdering = 'unknown';
-  if (completeCollection && identitiesKnown && runKeys.size === 1 && ids.size === 1 &&
-    link.length === 1 && terminal.length === 1 && json.length === 1 &&
-    link[0].sequence < terminal[0].sequence && ids.has(terminal[0].nativeRequestId))
-    nativeSdkOrdering = terminal[0].sequence < json[0].sequence
-      ? 'native-terminal-before-sdk-json' : 'sdk-json-before-native-terminal';
+  const uniqueLinks = [...new Map(link.filter(row => row.nativeRequestId)
+    .map(row => [JSON.stringify([row.sessionId, row.runId, row.nativeRequestId]), row])).values()];
+  const requestOrderings = uniqueLinks.map(start => {
+    const relevant = row => row.sessionId === start.sessionId && row.runId === start.runId &&
+      row.nativeRequestId === start.nativeRequestId;
+    const opened = link.filter(relevant);
+    const terminal = validated.filter(row => row.phase === 'native-http-settled' && relevant(row));
+    const json = validated.filter(row => row.phase === 'sdk-json-settled' && relevant(row));
+    let ordering = 'unknown';
+    if (completeCollection && start.sessionId !== 'unavailable' && start.runId !== 'unavailable' &&
+      opened.length === 1 && terminal.length === 1 && json.length === 1 &&
+      start.sequence < terminal[0].sequence && start.sequence < json[0].sequence)
+      ordering = terminal[0].sequence < json[0].sequence
+        ? 'native-terminal-before-sdk-json' : 'sdk-json-before-native-terminal';
+    return Object.freeze({ nativeRequestId: start.nativeRequestId, ordering });
+  });
+  const nativeSdkOrdering = requestOrderings.length === 1 ? requestOrderings[0].ordering : 'unknown';
   return Object.freeze({
     collectorCoverage: completeCollection ? 'collector-flushed' : 'partial-or-unsealed',
     nativeSdkOrdering,
+    requestOrderings: Object.freeze(requestOrderings),
     nativeRequestsLinked: ids.size,
     extractorDeadlineObserved: validated.some(row => row.phase === 'extractor-deadline-fired'),
     agentTerminalObserved: validated.some(row =>
