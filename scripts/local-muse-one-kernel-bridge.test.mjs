@@ -328,21 +328,30 @@ test('uncertain first STOP causes bounded second STOP during cleanup', async () 
 test('operator scripts stage only reviewed files, guard FIFO open with timeout', async () => {
   const root=await readFile(path.join(HERE,'local-muse-one-root.sh'),'utf8');
   const ps=await readFile(path.join(HERE,'Run-OneMuseKernelOperator.ps1'),'utf8');
-  assert.match(root,/\/usr\/bin\/timeout --signal=TERM --kill-after=2s 1806s\s+\\\s+\/usr\/bin\/bash -c/);
+  assert.match(root,/seconds=\$\{3:-1800\}/);
+  assert.match(root,/seconds_plus_six=\$\(\(seconds \+ 6\)\)/);
+  assert.match(root,/\/usr\/bin\/timeout --signal=TERM --kill-after=2s "\$\{seconds_plus_six\}s"\s+\\\s+\/usr\/bin\/bash -c/);
+  assert.match(root,/--seconds "\$6"/);
+  assert.match(root,/seconds -gt 20/);
   assert.match(root,/0<>"\$3" 1>"\$4" 3>"\$5"/);
   assert.match(root,/chmod 0620 -- "\$control"/);
   assert.match(root,/chmod 0640 -- "\$ready" "\$metadata"/);
   assert.match(root,/OPERATOR_EBPF_CLEANUP/);
+  assert.match(root,/KERNEL_AUDIT_OPERATOR_CHILD_EXIT/);
+  assert.match(root,/KERNEL_AUDIT_\[A-Z0-9_\]/);
   assert.match(root,/\/usr\/bin\/rmdir -- "\$root" 2>\/dev\/null \|\| clean=FAIL/);
   const bridgeSource=await readFile(path.join(HERE,'local-muse-one-kernel-bridge.mjs'),'utf8');
   assert.match(bridgeSource,/test ! -e \/run\/local-muse-ebpf && test ! -L \/run\/local-muse-ebpf/);
   assert.match(ps,/test ! -L \/run\/local-muse-ebpf/);
   assert.match(ps,/test -d "\$stage" && test ! -L "\$stage"/);
   assert.match(ps,/USER_STAGE_CLEANUP=FAIL/);
+  assert.match(ps,/KERNEL_OPERATOR_SSH_EXIT=/);
+  assert.match(ps,/kernel-operator-audit\.numeric/);
+  assert.match(ps,/operator-audit\.numeric/);
   assert.match(ps,/\/usr\/bin\/timeout --signal=TERM --kill-after=2s 8s \/usr\/bin\/bash -s/);
   assert.match(ps,/trap release EXIT/);
   assert.doesNotMatch(ps,/trap - EXIT/);
-  assert.match(ps,/status=0\s+\/usr\/bin\/bash "\$dest\/local-muse-one-root\.sh" "\$run" "\$pid" \|\| status=\$\?/);
+  assert.match(ps,/status=0\s+\/usr\/bin\/bash "\$dest\/local-muse-one-root\.sh" "\$run" "\$pid" "\$seconds" "\$stage" \|\| status=\$\?/);
   assert.doesNotMatch(ps,/Remove-Item.*-Recurse/);
 });
 

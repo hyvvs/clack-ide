@@ -1,7 +1,9 @@
 """Synthetic-only arm, source-integrity and teardown tests; no BPF/SSH/Ollama."""
 
 import hashlib
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -103,6 +105,69 @@ class OneEbpOfflineTests(unittest.TestCase):
                 proof, _ = collector.source_arm_evidence(out, err, pid, 11434, before, after)
                 self.assertFalse(proof)
 
+    def test_prearm_refuses_duplicate_ready_and_malformed_or_wrong_pid_meta(self):
+        valid_meta = ATTEMPT
+        proof, _ = collector.source_arm_evidence(
+            PROBE_START + valid_meta, ATTACHED, PID, 11434, BASE, ARMED)
+        self.assertTrue(proof)
+        for extra in (PROBE_START,
+                      b"TCPREADY 1140 11434\n",
+                      b"TCPMETA not-a-valid-row\n",
+                      ATTEMPT.replace(b" 1139 ", b" 1140 "),
+                      ATTEMPT.replace(b" 11434 ", b" 11433 "),
+                      b"TCPSUMMARY 0 0 0\n"):
+            with self.subTest(extra=extra):
+                proof, _ = collector.source_arm_evidence(
+                    PROBE_START + extra, ATTACHED, PID, 11434, BASE, ARMED)
+                self.assertFalse(proof)
+
+    def test_live_warning_fragments_wait_for_complete_lines_and_final_eof_is_strict(self):
+        fragment = ATTACHED + b"WARNING: Return value disc"
+        # The old whole-buffer classifier treats a fragmented benign warning
+        # as an unknown warning while bpftrace is still writing to the pipe.
+        self.assertTrue(collector.classify_source_output(b"", fragment)[1])
+        cleaned, strict, notices, pending = collector.classify_live_output(
+            PROBE_START, fragment)
+        self.assertEqual(cleaned, PROBE_START)
+        self.assertEqual(strict, b"")
+        self.assertEqual(notices, 1)
+        self.assertTrue(pending)
+        self.assertFalse(collector.source_arm_evidence(
+            PROBE_START, fragment, PID, 11434, BASE, ARMED)[0])
+        completed = ATTACHED + b"WARNING: Return value discarded.\n"
+        self.assertTrue(collector.source_arm_evidence(
+            PROBE_START, completed, PID, 11434, BASE, ARMED)[0])
+
+        # END warning requires the adjacent exact helper line. Its completed
+        # first line alone must not cause an early abort during pipe assembly.
+        end_warning = (b"/run/local-muse-ebpf/one-run/local-muse-tcp.bt:68:3-14: "
+                       b"WARNING: Success\n")
+        _, strict, _, pending = collector.classify_live_output(
+            PROBE_START, ATTACHED + end_warning)
+        self.assertEqual(strict, b"")
+        self.assertTrue(pending)
+        self.assertTrue(collector.classify_source_output(
+            PROBE_START, ATTACHED + end_warning)[1])
+        _, strict, _, pending = collector.classify_live_output(
+            PROBE_START, ATTACHED + end_warning +
+            b"Additional Info - helper: map_lookup_percpu_elem, retcode: 0\n")
+        self.assertEqual(strict, b"")
+        self.assertFalse(pending)
+
+        # A completed unknown/error warning may never be ignored in live mode.
+        _, strict, _, pending = collector.classify_live_output(
+            PROBE_START, ATTACHED + b"ERROR: verifier rejected program\n")
+        self.assertTrue(strict)
+        self.assertFalse(pending)
+
+    def test_readiness_requires_terminated_stdout_line_and_no_pending_error(self):
+        for stdout, stderr in ((PROBE_START.rstrip(b"\n"), ATTACHED),
+                               (PROBE_START, ATTACHED + b"ERROR: verifier"),
+                               (PROBE_START + b"TCPMETA partial", ATTACHED)):
+            with self.subTest(stdout=stdout, stderr=stderr):
+                self.assertFalse(collector.source_arm_evidence(
+                    stdout, stderr, PID, 11434, BASE, ARMED)[0])
+
     def test_read_only_program_inventory_rejects_missing_ambiguous_or_malformed(self):
         with patch.object(collector.subprocess, "run", return_value=SimpleNamespace(
                 stdout=json.dumps([{"id": 1, "type": "kprobe", "name": "kprobe_tcp_send"},
@@ -164,6 +229,26 @@ class OneEbpOfflineTests(unittest.TestCase):
         self.assertEqual(line.split(), ["TCPARMED", "1139", "11434", "4", "2", "0"])
         with self.assertRaises(ValueError):
             collector.numeric_arm_line(PID, 11434, -2, 0)
+
+    def test_root_audit_keeps_exact_child_stream_hashes_but_no_socket_pointer(self):
+        result = io.StringIO()
+        with contextlib.redirect_stderr(result):
+            collector.emit_content_free_audit(
+                PROBE_TRACE, ATTACHED, PID, BASE, ARMED, -signal.SIGINT,
+                True, True, False, True, True, False, False, 'none')
+        lines = result.getvalue()
+        self.assertIn("KERNEL_AUDIT_NATIVE_ATTACHED_FOUR_COUNT=1\n", lines)
+        self.assertIn("KERNEL_AUDIT_MATCHING_BEGIN_COUNT=1\n", lines)
+        self.assertIn("KERNEL_AUDIT_NEW_TARGET_PROGRAM_COUNT=2\n", lines)
+        self.assertIn("KERNEL_AUDIT_READY_FIFO_WRITTEN=1\n", lines)
+        self.assertIn("KERNEL_AUDIT_CONTROL_STOP_RECEIVED=1\n", lines)
+        self.assertIn("KERNEL_AUDIT_TRACER_EXIT=-2\n", lines)
+        self.assertIn("KERNEL_AUDIT_BPF_STDOUT_SHA256=" +
+                      hashlib.sha256(PROBE_TRACE).hexdigest(), lines)
+        self.assertIn("KERNEL_AUDIT_BPF_STDERR_SHA256=" +
+                      hashlib.sha256(ATTACHED).hexdigest(), lines)
+        self.assertNotIn("12345", lines)  # private raw socket pointer
+        self.assertNotIn("TCPMETA ", lines)
 
     def test_raw_pointer_private_and_loss_missing_end_never_complete(self):
         sanitized, stderr, count = collector.classify_source_output(ATTACHED + PROBE_TRACE, b"")
@@ -227,7 +312,7 @@ class OneEbpOfflineTests(unittest.TestCase):
 
             def select(self, timeout):
                 picked = [stream for stream in self.registered if
-                          stream != control_reader or any(
+                          stream != control_reader or control_command is not None and any(
                               row.startswith("TCPARMED ") for row in ready_result)]
                 if not picked:
                     time.sleep(min(timeout, 0.01))
@@ -327,6 +412,14 @@ class OneEbpOfflineTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(ready.startswith("TCPARMED "))
         self.assertEqual(output.splitlines()[-1].split()[:2], ["TCPSESSION", "partial"])
+        self.assertEqual(fake.signals, [signal.SIGINT])
+
+    def test_scheduled_timeout_without_authenticated_stop_never_seals(self):
+        code, ready, output, fake = self.capture_fake(control_command=None)
+        self.assertEqual(code, 1)
+        self.assertTrue(ready.startswith("TCPARMED "))
+        self.assertEqual(output.splitlines()[-1].split()[:2],
+                         ["TCPSESSION", "partial"])
         self.assertEqual(fake.signals, [signal.SIGINT])
 
     def test_kernel_programs_still_loaded_after_tracer_exit_fail_cleanup(self):

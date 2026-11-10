@@ -5,7 +5,8 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$RunId,
-  [Parameter(Mandatory=$true)][ValidateRange(2,2147483647)][int]$ExpectedPid
+  [Parameter(Mandatory=$true)][ValidateRange(2,2147483647)][int]$ExpectedPid,
+  [Parameter(Mandatory=$false)][ValidateRange(1,1800)][int]$Seconds=1800
 )
 $ErrorActionPreference = 'Stop'
 if ($RunId -cnotmatch '^muse-one-[a-f0-9]{24}$') {
@@ -17,6 +18,28 @@ if (-not (Test-Path -LiteralPath $key -PathType Leaf)) {
   throw 'Pinned SSH identity unavailable'
 }
 $repo = Split-Path -Parent $PSScriptRoot
+$kernelOnlyEvidence = $null
+if ($Seconds -ne 1800) {
+  if ($Seconds -gt 20) { throw 'No-traffic validation kernel capture must be at most 20 seconds' }
+  $kernelOnlyEvidence = Join-Path (Join-Path $repo 'src-tauri\target\local-muse-one-evidence') $RunId
+  if (-not (Test-Path -LiteralPath $kernelOnlyEvidence -PathType Container)) {
+    throw 'Existing exclusive kernel-only evidence root required'
+  }
+  # Refuse an old displayed command after the one-shot SSH FIFO readers or
+  # importer have already exited. An evidence directory alone is not authority
+  # to begin a privileged probe later, even with the same RunId.
+  $life = Join-Path $kernelOnlyEvidence 'kernel-only-lifecycle.jsonl'
+  if (-not (Test-Path -LiteralPath $life -PathType Leaf) -or
+      (Select-String -LiteralPath $life -Pattern '"kind":"kernel_only_result"' -SimpleMatch -Quiet)) {
+    throw 'Kernel-only listener already closed or lacks live lifecycle evidence'
+  }
+  $readers = @(Get-CimInstance Win32_Process -Filter 'name = "ssh.exe"' -ErrorAction Stop |
+    Where-Object { $_.CommandLine -and $_.CommandLine.Contains($RunId) -and
+      $_.CommandLine.Contains('ready.fifo') })
+  if ($readers.Count -ne 1) {
+    throw 'Kernel-only readiness reader is not exclusively live; stale command refused'
+  }
+}
 $files = @(
   'scripts/local-muse-one-root.sh',
   'scripts/local-muse-one-ebpf.py',
@@ -47,6 +70,9 @@ $scpOptions = @('-q','-o','StrictHostKeyChecking=yes','-o','BatchMode=yes',
   '-o','ConnectTimeout=5','-o','ServerAliveInterval=5',
   '-o','ServerAliveCountMax=4','-i',$key)
 $stage = $null
+$operatorExit = 'unobserved'
+$auditCopied = $false
+$cleanupOk = $false
 try {
   $created = & ssh.exe @sshOptions '-T' $remote '/usr/bin/timeout --signal=TERM --kill-after=2s 8s /usr/bin/mktemp -d -p /home/hylab/.cache clack-muse-one-stage.XXXXXXXX'
   if ($LASTEXITCODE -ne 0) { throw 'Exclusive user staging failed' }
@@ -68,11 +94,12 @@ umask 077
 stage='__STAGE__'
 run='__RUN__'
 pid='__PID__'
+seconds='__SECONDS__'
 dest="/run/local-muse-ebpf/$run"
 created=0
 release() {
   if ((created)); then
-    /usr/bin/rm -f -- "$dest/local-muse-one-root.sh" "$dest/local-muse-one-ebpf.py" "$dest/local-muse-tcp-session.py" "$dest/local-muse-tcp.bt" || true
+    /usr/bin/rm -f -- "$dest/local-muse-one-root.sh" "$dest/local-muse-one-ebpf.py" "$dest/local-muse-tcp-session.py" "$dest/local-muse-tcp.bt" "$dest/kernel-audit.stderr" "$dest/kernel-audit.numeric" || true
     /usr/bin/rmdir -- "$dest" 2>/dev/null || true
     /usr/bin/rmdir -- /run/local-muse-ebpf 2>/dev/null || true
   fi
@@ -98,10 +125,11 @@ done
 # A child exit retains its exact status; the trap removes any remaining owned
 # bootstrap files if root.sh itself fails before declaring its own ownership.
 status=0
-/usr/bin/bash "$dest/local-muse-one-root.sh" "$run" "$pid" || status=$?
+/usr/bin/bash "$dest/local-muse-one-root.sh" "$run" "$pid" "$seconds" "$stage" || status=$?
 exit "$status"
 '@
   $bootstrap = $bootstrap.Replace('__STAGE__',$stage).Replace('__RUN__',$RunId).Replace('__PID__',[string]$ExpectedPid)
+  $bootstrap = $bootstrap.Replace('__SECONDS__',[string]$Seconds)
   $bootstrap = $bootstrap.Replace('__HROOT__',$stagedHashes['local-muse-one-root.sh'])
   $bootstrap = $bootstrap.Replace('__HEBPF__',$stagedHashes['local-muse-one-ebpf.py'])
   $bootstrap = $bootstrap.Replace('__HSUP__',$stagedHashes['local-muse-tcp-session.py'])
@@ -115,7 +143,15 @@ exit "$status"
   # interactive sudo password prompt remains on the remote -tt terminal.
   & ssh.exe @sshOptions '-tt' $remote $shell
   $status = $LASTEXITCODE
+  $operatorExit = [string]$status
   Write-Output ('KERNEL_OPERATOR_SSH_EXIT=' + $status)
+  if ($kernelOnlyEvidence) {
+    $localAudit = Join-Path $kernelOnlyEvidence 'kernel-operator-audit.numeric'
+    if (Test-Path -LiteralPath $localAudit) { throw 'Exclusive kernel operator audit already exists' }
+    & scp.exe @scpOptions '--' ("${remote}:${stage}/operator-audit.numeric") $localAudit
+    $auditCopied = ($LASTEXITCODE -eq 0)
+    Write-Output ('KERNEL_OPERATOR_AUDIT=' + $(if ($auditCopied) { 'PASS' } else { 'MISSING' }))
+  }
   if ($status -ne 0) { throw 'Kernel operator session incomplete or cleanup failed' }
 }
 finally {
@@ -135,6 +171,10 @@ for name in local-muse-one-root.sh local-muse-one-ebpf.py local-muse-tcp-session
     /usr/bin/rm -f -- "$file"
   fi
 done
+if [[ -e "$stage/operator-audit.numeric" || -L "$stage/operator-audit.numeric" ]]; then
+  test -f "$stage/operator-audit.numeric" && test ! -L "$stage/operator-audit.numeric"
+  /usr/bin/rm -f -- "$stage/operator-audit.numeric"
+fi
 /usr/bin/rmdir -- "$stage"
 '@
     $cleanupScript = $cleanupScript.Replace('__STAGE__',$stage)
@@ -147,5 +187,14 @@ done
     } catch { $cleanupOk = $false }
     if ($cleanupOk) { Write-Output 'USER_STAGE_CLEANUP=PASS' }
     else { Write-Output 'USER_STAGE_CLEANUP=FAIL' }
+  }
+  if ($kernelOnlyEvidence) {
+    $path = Join-Path $kernelOnlyEvidence 'kernel-operator-exit.numeric'
+    if (-not (Test-Path -LiteralPath $path)) {
+      $record = @('KERNEL_OPERATOR_SSH_EXIT=' + $operatorExit,
+        'KERNEL_OPERATOR_AUDIT=' + $(if ($auditCopied) { 'PASS' } else { 'MISSING' }),
+        'USER_STAGE_CLEANUP=' + $(if ($cleanupOk) { 'PASS' } else { 'FAIL' }))
+      [IO.File]::WriteAllLines($path,[string[]]$record,[Text.Encoding]::ASCII)
+    }
   }
 }

@@ -5,15 +5,31 @@
 set -Eeuo pipefail
 umask 077
 
-if (($# != 2)) || [[ $(id -u) != 0 ]]; then
+if (($# < 2 || $# > 4)) || [[ $(id -u) != 0 ]]; then
   printf 'OPERATOR_EBPF_EXIT=1\n' >&2
   exit 1
 fi
 run_id=$1
 expected_pid=$2
+seconds=${3:-1800}
+operator_stage=${4:-}
 if [[ ! $run_id =~ ^muse-one-[a-f0-9]{24}$ ]] || [[ ! $expected_pid =~ ^[1-9][0-9]{1,9}$ ]]; then
   printf 'OPERATOR_EBPF_EXIT=1\n' >&2
   exit 1
+fi
+if [[ ! $seconds =~ ^[1-9][0-9]{0,3}$ ]] || ((seconds > 1800)); then
+  printf 'OPERATOR_EBPF_EXIT=1\n' >&2
+  exit 1
+fi
+if ((seconds != 1800)); then
+  # Short kernel-only validation exports only closed-vocabulary numeric
+  # diagnostics to its own already-verified, hylab-owned ephemeral stage.
+  if [[ $seconds -gt 20 || ! $operator_stage =~ ^/home/hylab/\.cache/clack-muse-one-stage\.[A-Za-z0-9]{8}$ ||
+        ! -d $operator_stage || -L $operator_stage ||
+        $(stat -c '%u:%a' -- "$operator_stage") != "$(id -u hylab):700" ]]; then
+    printf 'OPERATOR_EBPF_EXIT=1\n' >&2
+    exit 1
+  fi
 fi
 root=/run/local-muse-ebpf
 dest=$root/$run_id
@@ -29,7 +45,7 @@ cleanup() {
   trap - EXIT INT TERM HUP
   if ((owned)); then
     if [[ -d $dest && ! -L $dest && $(stat -c '%u' -- "$dest") == 0 ]]; then
-      /usr/bin/rm -f -- "$control" "$ready" "$metadata" "$probe" "$support" "$session" "$dest/local-muse-one-root.sh" || clean=FAIL
+      /usr/bin/rm -f -- "$control" "$ready" "$metadata" "$probe" "$support" "$session" "$dest/local-muse-one-root.sh" "$dest/kernel-audit.stderr" "$dest/kernel-audit.numeric" || clean=FAIL
       /usr/bin/rmdir -- "$dest" || clean=FAIL
       # The bootstrap refused any pre-existing /run/local-muse-ebpf root, so
       # this parent is also task-owned. A leftover parent blocks the next run.
@@ -85,11 +101,35 @@ done
 # FIFO opens happen inside the timeout child. A missing SSH reader must not
 # leave the administrator's root shell blocked before its watchdog starts.
 set +e
-/usr/bin/timeout --signal=TERM --kill-after=2s 1806s \
+# Production still runs exactly 1800 seconds with the original 1806-second
+# outer limit. A separately authorized kernel-only check can use 20 seconds;
+# it is never a shortcut to a coordinator readiness ACK.
+seconds_plus_six=$((seconds + 6))
+/usr/bin/touch -- "$dest/kernel-audit.stderr"
+/usr/bin/chmod 0600 -- "$dest/kernel-audit.stderr"
+/usr/bin/timeout --signal=TERM --kill-after=2s "${seconds_plus_six}s" \
   /usr/bin/bash -c '
-    exec /usr/bin/python3 -B "$1" --pid "$2" --seconds 1800 \
+    exec /usr/bin/python3 -B "$1" --pid "$2" --seconds "$6" \
       --ready-fd 3 --control-fd 0 0<>"$3" 1>"$4" 3>"$5"
-  ' bash "$session" "$pid" "$control" "$metadata" "$ready"
+  ' bash "$session" "$pid" "$control" "$metadata" "$ready" "$seconds" \
+    2>"$dest/kernel-audit.stderr"
 status=$?
 set -e
+# The raw private stderr is never exported. A real kernel code path can emit
+# only content-free closed-vocabulary KERNEL_AUDIT_* rows in the operator log.
+# Capture source stdout/stderr by exact byte length and SHA256, never socket
+# pointers. The numeric importer remains entirely untouched.
+if (( $(stat -c '%s' -- "$dest/kernel-audit.stderr") <= 65536 )); then
+  /usr/bin/grep -E '^KERNEL_AUDIT_[A-Z0-9_]+=[A-Za-z0-9_-]{1,96}$' \
+    -- "$dest/kernel-audit.stderr" >"$dest/kernel-audit.numeric" || true
+  printf 'KERNEL_AUDIT_OPERATOR_CHILD_EXIT=%d\n' "$status" >> "$dest/kernel-audit.numeric"
+  /usr/bin/cat -- "$dest/kernel-audit.numeric" >&2
+  if ((seconds != 1800)); then
+    /usr/bin/install -o hylab -g hylab -m 0600 \
+      "$dest/kernel-audit.numeric" "$operator_stage/operator-audit.numeric"
+  fi
+else
+  printf 'KERNEL_AUDIT_STREAM_OVERFLOW=1\n' >&2
+  status=1
+fi
 exit "$status"

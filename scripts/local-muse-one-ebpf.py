@@ -45,6 +45,10 @@ MAX_PROGRAM_LIST = 4 * 1024 * 1024
 ATTACH_NOTICE = re.compile(rb"Attached 4 probes(?:\.\.\.)?")
 ATTACH_PENDING_NOTICE = re.compile(rb"Attaching 4 probes(?:\.\.\.)?")
 LOSS_NOTICE = re.compile(rb"(?:lost\s+\d+\s+events?|\d+\s+events?\s+lost)", re.I)
+PREARM_META = re.compile(
+    rb"TCPMETA (attempt|send) (\d{1,20}) (\d+) (\d+) (\d+) "
+    rb"(\d+) (\d+) (\d+) (-?\d+) ollama"
+)
 # These warnings were seen in the previously validated, isolated bpftrace 0.27
 # attachment. The path is restricted to the protected root-owned probe stage.
 # Unknown compiler/verifier diagnostics remain fatal to readiness and sealing.
@@ -173,16 +177,55 @@ def classify_source_output(raw_stdout, raw_stderr):
         b"\n".join(strict_stderr), completed
 
 
+def completed_live_rows(raw):
+    """Classify only terminated pipe rows, without trusting an unfinished tail.
+
+    A complete END warning needs the adjacent helper-info row to be benign;
+    defer that warning while its next line might still be in flight. Final
+    validation always uses the *entire* captured bytes, never this live view.
+    """
+    end = raw.rfind(b"\n")
+    if end < 0:
+        return b"", bool(raw)
+    complete = raw[:end + 1]
+    pending = end + 1 != len(raw)
+    final_row = complete[:-1].rsplit(b"\n", 1)[-1].rstrip(b"\r")
+    if SAFE_END_WARNING.fullmatch(final_row):
+        complete = complete[:complete.rfind(b"\n", 0, len(complete) - 1) + 1]
+        pending = True
+    return complete, pending
+
+
+def classify_live_output(raw_stdout, raw_stderr):
+    """Never condemn a fragmented warning or arm on unexamined partial data."""
+    stdout, stdout_pending = completed_live_rows(raw_stdout)
+    stderr, stderr_pending = completed_live_rows(raw_stderr)
+    cleaned, strict, notices = classify_source_output(stdout, stderr)
+    return cleaned, strict, notices, stdout_pending or stderr_pending
+
+
+def valid_prearm_meta(row, pid, port):
+    """A pre-arm event cannot bypass the pinned terminal parser's row rules."""
+    match = PREARM_META.fullmatch(row)
+    if not match:
+        return False
+    op, *numbers = match.groups()
+    ns, event_pid, tid, socket, local, remote, requested, result = map(int, numbers)
+    return ns > 0 and event_pid == pid and tid > 0 and socket > 0 and \
+        local == port and 0 < remote <= 65535 and requested >= 0 and \
+        result <= requested and (op != b"attempt" or result == 0)
+
+
 def source_arm_evidence(stdout_bytes, stderr_bytes, pid, port, before, after):
     """Positive pre-inference evidence: native notice + BEGIN + BPF delta."""
-    source_stdout, rest_stderr, notices = classify_source_output(stdout_bytes, stderr_bytes)
+    source_stdout, rest_stderr, notices, pending = classify_live_output(
+        stdout_bytes, stderr_bytes)
     expected_ready = f"TCPREADY {pid} {port}".encode("ascii")
     rows = source_stdout.splitlines()
     has_ready = bool(rows) and rows[0] == expected_ready and \
-        not any(row.startswith(b"TCPSUMMARY ") or not row.startswith((
-            b"TCPMETA ", b"TCPREADY ")) for row in rows[1:])
+        all(valid_prearm_meta(row, pid, port) for row in rows[1:])
     new_ids = new_kprobes(before, after)
-    return (has_ready and not rest_stderr.strip() and
+    return (has_ready and not pending and not rest_stderr.strip() and
             notices == 1 and len(new_ids) >= 2), len(new_ids)
 
 
@@ -218,6 +261,50 @@ def child_exit_status(code, signalled):
     return code
 
 
+def emit_content_free_audit(stdout, stderr, pid, programs_before, programs_after,
+                            child_status, armed, arm_attempted, fifo_write_error,
+                            identity_ok, stop_complete, invalid_source, forced,
+                            inventory_error):
+    """Exact byte fingerprints and closed-vocabulary reasons, never TCP pointers.
+
+    The operator's stderr is separate from the private numeric importer/FIFO
+    channels. Raw bpftrace stdout can contain a kernel socket pointer, so only
+    its size/hash and safe parsed counters may leave this root process.
+    """
+    clean, strict_stderr, notices = classify_source_output(stdout, stderr)
+    lines = clean.splitlines()
+    expected_ready = f"TCPREADY {pid} 11434".encode("ascii")
+    ready_count = sum(row == expected_ready for row in lines)
+    other_ready = sum(row.startswith(b"TCPREADY ") and row != expected_ready for row in lines)
+    summary_count = sum(row.startswith(b"TCPSUMMARY ") for row in lines)
+    other_stdout = sum(not row.startswith((b"TCPREADY ", b"TCPMETA ",
+                                            b"TCPSUMMARY ")) for row in lines)
+    entries = {
+        "BPF_STDOUT_BYTES": len(stdout),
+        "BPF_STDOUT_SHA256": hashlib.sha256(stdout).hexdigest(),
+        "BPF_STDERR_BYTES": len(stderr),
+        "BPF_STDERR_SHA256": hashlib.sha256(stderr).hexdigest(),
+        "BPF_UNRECOGNIZED_STDERR_BYTES": len(strict_stderr),
+        "NATIVE_ATTACHED_FOUR_COUNT": notices,
+        "MATCHING_BEGIN_COUNT": ready_count,
+        "WRONG_BEGIN_COUNT": other_ready,
+        "END_COUNT": summary_count,
+        "OTHER_STDOUT_ROWS": other_stdout,
+        "NEW_TARGET_PROGRAM_COUNT": len(new_kprobes(programs_before, programs_after)),
+        "TRACER_EXIT": child_status if child_status is not None else "unknown",
+        "READY_FIFO_WRITTEN": int(armed),
+        "READY_FIFO_WRITE_ATTEMPTED": int(arm_attempted),
+        "READY_FIFO_WRITE_ERROR": int(fifo_write_error),
+        "TARGET_IDENTITY_STABLE": int(identity_ok),
+        "CONTROL_STOP_RECEIVED": int(stop_complete),
+        "SOURCE_INVALID": int(invalid_source),
+        "TRACER_FORCE_STOP": int(forced),
+        "KERNEL_INVENTORY_ERROR": inventory_error,
+    }
+    for name, value in entries.items():
+        print(f"KERNEL_AUDIT_{name}={value}", file=sys.stderr, flush=True)
+
+
 def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpftool,
                 attach_timeout=60, stdout_fd=1):
     """Own one tracer only, while retaining every byte of untrusted BPF output."""
@@ -248,6 +335,8 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
     forced = False
     identity_ok = True
     invalid_source = False
+    inventory_error = "none"
+    fifo_write_error = False
     operator_stopped = False
     stop_complete = False
     control_data = bytearray()
@@ -296,8 +385,10 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
                         except (OSError, ValueError, TimeoutError):
                             invalid_source = True
                             arm_attempted = True
+                            fifo_write_error = True
                 except (OSError, ValueError, KeyError, subprocess.SubprocessError,
-                        json.JSONDecodeError):
+                        json.JSONDecodeError) as error:
+                    inventory_error = type(error).__name__
                     invalid_source = True  # no unknown BPF inventory is allowed
             if armed and not signalled and now - last_inventory >= 5 and now < graceful_at:
                 last_inventory = now
@@ -306,9 +397,10 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
                     if not armed_program_ids.issubset(new_kprobes(baseline_programs, live)):
                         invalid_source = True
                 except (OSError, ValueError, subprocess.SubprocessError,
-                        json.JSONDecodeError):
+                        json.JSONDecodeError) as error:
+                    inventory_error = type(error).__name__
                     invalid_source = True
-            if armed and classify_source_output(stdout, stderr)[1].strip():
+            if armed and classify_live_output(stdout, stderr)[1].strip():
                 invalid_source = True
             if not signalled and (stop_complete or operator_stopped or invalid_source or not identity_ok or
                     now >= graceful_at or not armed and now - started >= attach_timeout):
@@ -412,15 +504,23 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
         except (OSError, ValueError, subprocess.SubprocessError,
                 json.JSONDecodeError):
             kernel_clean = False
+    # An autonomous graceful timeout is bounded cleanup, not an authenticated
+    # STOP from the task-owned coordinator. It must never certify a complete
+    # operator-controlled kernel session or an importer-ready END receipt.
     complete_source = (armed and arm_attempted and completed_notices == 1 and
-                       identity_ok and not invalid_source and not operator_stopped and
-                       not forced and now <= deadline and kernel_clean)
+                       stop_complete and identity_ok and not invalid_source and
+                       not operator_stopped and not forced and now <= deadline and
+                       kernel_clean)
     rows, status, complete = helper.summarize_trace(
         source_stdout, source_stderr, pid, 11434, duration_ms, signalled,
         child_exit_status(child.returncode, signalled), complete_source,
         max_duration_ms=duration * 1000)
     if not complete:
         status = status.replace("TCPSESSION complete ", "TCPSESSION partial ", 1)
+    emit_content_free_audit(bytes(stdout), bytes(stderr), pid,
+                            baseline_programs, current_programs, child.returncode,
+                            armed, arm_attempted, fifo_write_error, identity_ok,
+                            stop_complete, invalid_source, forced, inventory_error)
     # Importer must get the *last* line only after END and actual tracer EOF.
     # A broken/stalled stdout yields no completion receipt; journal fails closed.
     try:
@@ -462,9 +562,11 @@ def main(argv=None):
         bpftool = helper.trusted_root_file(bpftool_name)
         return run_capture(args.pid, args.seconds, args.ready_fd, args.control_fd,
                            helper, probe, tracer, bpftool)
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         # Setup may have failed before a child was created. Never emit READY.
         # An absent/incomplete import terminal is an unsealable source.
+        print(f"KERNEL_AUDIT_SETUP_ERROR={type(error).__name__}",
+              file=sys.stderr, flush=True)
         try:
             nonblocking_write(args.ready_fd, "TCPABORT 1 1\n", time.monotonic() + 0.5)
         except (OSError, TimeoutError):
