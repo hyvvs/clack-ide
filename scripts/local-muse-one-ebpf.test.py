@@ -36,8 +36,14 @@ PROBE_TRACE = PROBE_START + ATTEMPT + RETURN + PROBE_END
 ATTACHED = b"Attached 4 probes\n"
 ATTACHING = b"Attaching 4 probes...\n"
 BASE = {91: ("kprobe", "other_trace"), 92: ("tracepoint", "other_point")}
-ARMED = {**BASE, 93: ("kprobe", "kprobe_tcp_send"),
-         94: ("kprobe", "kretprobe_tcp_s")}
+ARMED = {**BASE, 93: ("kprobe", "kprobe_tcp_send")}
+LINKS_BASE = {100: {"id": 100, "type": "cgroup", "prog_id": 91}}
+LINKS_ARMED = {**LINKS_BASE, 101: {
+    "id": 101, "type": "kprobe_multi", "prog_id": 93, "retprobe": False,
+    "func_cnt": 1, "missed": 0, "funcs": [{"func": "tcp_sendmsg"}],
+    "pids": [{"pid": 55123, "comm": "bpftrace"}],
+}}
+TRACER_PID = 55123
 
 
 class FakeTracer:
@@ -79,21 +85,23 @@ class OneEbpOfflineTests(unittest.TestCase):
         self.assertIn(b"kprobe:tcp_sendmsg /pid == $1/",
                       (HERE / "local-muse-tcp.bt").read_bytes())
 
-    def test_arm_requires_native_four_probe_notice_begin_and_two_new_kernel_kprobes(self):
+    def test_arm_requires_native_four_probe_notice_begin_and_new_owned_session_link(self):
         live_trace = PROBE_TRACE.replace(PROBE_END, b"")
         for evidence in ((live_trace, ATTACHED),
                          (ATTACHED + live_trace, b""),
                          (ATTACHING + live_trace, ATTACHED)):
-            proof, count = collector.source_arm_evidence(*evidence, PID, 11434, BASE, ARMED)
+            proof, count = collector.source_arm_evidence(
+                *evidence, PID, 11434, BASE, ARMED,
+                LINKS_BASE, LINKS_ARMED, TRACER_PID)
             self.assertTrue(proof)
-            self.assertEqual(count, 2)
+            self.assertEqual(count, 1)
         for out, err, before, after, pid in (
                 (live_trace, b"", BASE, ARMED, PID),
                 (live_trace, ATTACHING, BASE, ARMED, PID),
                 (live_trace, b"Attached 3 probes\n", BASE, ARMED, PID),
                 (live_trace, ATTACHED + ATTACHED, BASE, ARMED, PID),
                 (live_trace, ATTACHED + b"Lost 3 events\n", BASE, ARMED, PID),
-                (live_trace, ATTACHED, BASE, {**BASE, 93: ("kprobe", "kprobe_tcp_send")}, PID),
+                (live_trace, ATTACHED, BASE, BASE, PID),
                 (live_trace, ATTACHED, BASE, ARMED, PID + 1),
                 (live_trace, ATTACHED, BASE, {**BASE, 93: ("kprobe", "unrelated_send"),
                                               94: ("kprobe", "unrelated_send")}, PID),
@@ -102,13 +110,105 @@ class OneEbpOfflineTests(unittest.TestCase):
                 (b"PRIVATE_MODEL_RESPONSE\n" + PROBE_TRACE, ATTACHED, BASE, ARMED, PID),
         ):
             with self.subTest(error=err, pid=pid):
-                proof, _ = collector.source_arm_evidence(out, err, pid, 11434, before, after)
+                proof, _ = collector.source_arm_evidence(
+                    out, err, pid, 11434, before, after,
+                    LINKS_BASE, LINKS_ARMED, TRACER_PID)
                 self.assertFalse(proof)
+
+    def test_one_session_program_proves_entry_and_return_without_two_ids(self):
+        # bpftrace 0.27's kprobe_session compiles paired source clauses into
+        # ONE BPF_TRACE_KPROBE_SESSION program; the link is kprobe_multi.
+        # Program ID 93 and link ID 101 are both absent in the baseline.
+        proof, count = collector.source_arm_evidence(
+            PROBE_START, ATTACHED, PID, 11434, BASE, ARMED,
+            LINKS_BASE, LINKS_ARMED, TRACER_PID)
+        self.assertTrue(proof)
+        self.assertEqual(count, 1)
+        self.assertEqual(collector.new_kprobes(BASE, ARMED), {93})
+        self.assertEqual(collector.session_link_ids(
+            LINKS_BASE, LINKS_ARMED, {93}, TRACER_PID), {101})
+        self.assertEqual(collector.numeric_arm_line(PID, 11434, count),
+                         "TCPARMED 1139 11434 4 1 0\n")
+
+    def test_session_admission_rejects_unrelated_stale_or_unlinked_program(self):
+        variants = [
+            ("none", BASE, LINKS_ARMED, BASE),
+            ("unrelated", {**BASE, 93: ("kprobe", "unrelated")}, LINKS_ARMED, BASE),
+            ("prefix-lookalike", {**BASE, 93: ("kprobe", "kprobe_tcp_send_bad")},
+             LINKS_ARMED, BASE),
+            ("wrong-type", {**BASE, 93: ("tracepoint", "kprobe_tcp_send")},
+             LINKS_ARMED, BASE),
+            ("stale-id", ARMED, LINKS_ARMED, ARMED),
+            ("two-unrelated", {**BASE, 93: ("kprobe", "other_a"),
+                               94: ("kprobe", "other_b")}, LINKS_ARMED, BASE),
+            ("entry-and-return-without-session-link",
+             {**BASE, 93: ("kprobe", "kprobe_tcp_send"),
+              94: ("kprobe", "kretprobe_tcp_s")}, LINKS_BASE, BASE),
+            ("entry-and-return-programs-despite-session-link",
+             {**ARMED, 94: ("kprobe", "kretprobe_tcp_s")}, LINKS_ARMED, BASE),
+            ("missing-link", ARMED, LINKS_BASE, BASE),
+            ("stale-link", ARMED, LINKS_ARMED, BASE),
+        ]
+        for label, programs, links, programs_before in variants:
+            with self.subTest(label=label):
+                base_links = links if label == "stale-link" else LINKS_BASE
+                proof, _ = collector.source_arm_evidence(
+                    PROBE_START, ATTACHED, PID, 11434,
+                    programs_before, programs,
+                    base_links, links, TRACER_PID)
+                self.assertFalse(proof)
+
+    def test_session_link_must_identify_exact_hook_owner_and_session_shape(self):
+        good = LINKS_ARMED[101]
+        incorrect = [
+            {"prog_id": 91},
+            {"type": "perf_event"},
+            {"func_cnt": 2},
+            {"funcs": [{"func": "tcp_v4_sendmsg"}]},
+            {"funcs": []},
+            {"retprobe": True},
+            {"retprobe": None},
+            {"missed": 1},
+            {"pids": []},
+            {"pids": [{"pid": TRACER_PID + 1, "comm": "bpftrace"}]},
+            {"pids": [{"pid": TRACER_PID, "comm": "not-bpftrace"}]},
+            {"pids": None},
+        ]
+        for bad in incorrect:
+            with self.subTest(bad=bad):
+                link = {**good, **bad}
+                after = {**LINKS_BASE, 101: link}
+                self.assertEqual(collector.session_link_ids(
+                    LINKS_BASE, after, {93}, TRACER_PID), set())
+                self.assertFalse(collector.source_arm_evidence(
+                    PROBE_START, ATTACHED, PID, 11434, BASE, ARMED,
+                    LINKS_BASE, after, TRACER_PID)[0])
+        # Duplicate links for the same ID are not unique attachment proof.
+        duplicate = {**LINKS_ARMED, 102: {**good, "id": 102}}
+        self.assertFalse(collector.source_arm_evidence(
+            PROBE_START, ATTACHED, PID, 11434, BASE, ARMED,
+            LINKS_BASE, duplicate, TRACER_PID)[0])
+
+    def test_link_snapshot_parser_is_bounded_and_rejects_ambiguous_ids(self):
+        with patch.object(collector.subprocess, "run", return_value=SimpleNamespace(
+                stdout=json.dumps([LINKS_BASE[100], LINKS_ARMED[101]]).encode())) as run:
+            self.assertEqual(collector.link_inventory("bpftool", 1), LINKS_ARMED)
+            self.assertEqual(run.call_args.args[0], ["bpftool", "-j", "link", "show"])
+            self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        for body in (b"not-json", b"{}", b'[{"id":1,"type":"kprobe_multi"}]',
+                     b'[{"id":1,"type":"kprobe_multi","prog_id":2},'
+                     b'{"id":1,"type":"kprobe_multi","prog_id":3}]'):
+            with self.subTest(body=body), patch.object(
+                    collector.subprocess, "run",
+                    return_value=SimpleNamespace(stdout=body)):
+                with self.assertRaises((ValueError, json.JSONDecodeError)):
+                    collector.link_inventory("bpftool", 1)
 
     def test_prearm_refuses_duplicate_ready_and_malformed_or_wrong_pid_meta(self):
         valid_meta = ATTEMPT
         proof, _ = collector.source_arm_evidence(
-            PROBE_START + valid_meta, ATTACHED, PID, 11434, BASE, ARMED)
+            PROBE_START + valid_meta, ATTACHED, PID, 11434, BASE, ARMED,
+            LINKS_BASE, LINKS_ARMED, TRACER_PID)
         self.assertTrue(proof)
         for extra in (PROBE_START,
                       b"TCPREADY 1140 11434\n",
@@ -118,7 +218,8 @@ class OneEbpOfflineTests(unittest.TestCase):
                       b"TCPSUMMARY 0 0 0\n"):
             with self.subTest(extra=extra):
                 proof, _ = collector.source_arm_evidence(
-                    PROBE_START + extra, ATTACHED, PID, 11434, BASE, ARMED)
+                    PROBE_START + extra, ATTACHED, PID, 11434, BASE, ARMED,
+                    LINKS_BASE, LINKS_ARMED, TRACER_PID)
                 self.assertFalse(proof)
 
     def test_live_warning_fragments_wait_for_complete_lines_and_final_eof_is_strict(self):
@@ -133,10 +234,12 @@ class OneEbpOfflineTests(unittest.TestCase):
         self.assertEqual(notices, 1)
         self.assertTrue(pending)
         self.assertFalse(collector.source_arm_evidence(
-            PROBE_START, fragment, PID, 11434, BASE, ARMED)[0])
+            PROBE_START, fragment, PID, 11434, BASE, ARMED,
+            LINKS_BASE, LINKS_ARMED, TRACER_PID)[0])
         completed = ATTACHED + b"WARNING: Return value discarded.\n"
         self.assertTrue(collector.source_arm_evidence(
-            PROBE_START, completed, PID, 11434, BASE, ARMED)[0])
+            PROBE_START, completed, PID, 11434, BASE, ARMED,
+            LINKS_BASE, LINKS_ARMED, TRACER_PID)[0])
 
         # END warning requires the adjacent exact helper line. Its completed
         # first line alone must not cause an early abort during pipe assembly.
@@ -166,7 +269,8 @@ class OneEbpOfflineTests(unittest.TestCase):
                                (PROBE_START + b"TCPMETA partial", ATTACHED)):
             with self.subTest(stdout=stdout, stderr=stderr):
                 self.assertFalse(collector.source_arm_evidence(
-                    stdout, stderr, PID, 11434, BASE, ARMED)[0])
+                    stdout, stderr, PID, 11434, BASE, ARMED,
+                    LINKS_BASE, LINKS_ARMED, TRACER_PID)[0])
 
     def test_read_only_program_inventory_rejects_missing_ambiguous_or_malformed(self):
         with patch.object(collector.subprocess, "run", return_value=SimpleNamespace(
@@ -196,9 +300,10 @@ class OneEbpOfflineTests(unittest.TestCase):
                                     (warning + live, ATTACHED + warning2),
                                     (live, ATTACHED + warning2 + warning)):
             proved, count = collector.source_arm_evidence(
-                source, diagnostics, PID, 11434, BASE, ARMED)
+                source, diagnostics, PID, 11434, BASE, ARMED,
+                LINKS_BASE, LINKS_ARMED, TRACER_PID)
             self.assertTrue(proved)
-            self.assertEqual(count, 2)
+            self.assertEqual(count, 1)
         clean, strict_stderr, notices = collector.classify_source_output(
             warning + PROBE_TRACE + end, ATTACHED + warning2)
         self.assertEqual(clean, PROBE_TRACE)
@@ -219,14 +324,15 @@ class OneEbpOfflineTests(unittest.TestCase):
         ):
             with self.subTest(poisoned=poisoned):
                 ok, _ = collector.source_arm_evidence(
-                    live, ATTACHED + poisoned, PID, 11434, BASE, ARMED)
+                    live, ATTACHED + poisoned, PID, 11434, BASE, ARMED,
+                    LINKS_BASE, LINKS_ARMED, TRACER_PID)
                 self.assertFalse(ok)
 
     def test_numeric_readiness_never_exposes_kernel_pointer(self):
-        line = collector.numeric_arm_line(PID, 11434, 2, 0)
+        line = collector.numeric_arm_line(PID, 11434, 1, 0)
         self.assertRegex(line, r"^TCPARMED (?:\d+ ?)+\n$")
         self.assertNotIn("12345", line)
-        self.assertEqual(line.split(), ["TCPARMED", "1139", "11434", "4", "2", "0"])
+        self.assertEqual(line.split(), ["TCPARMED", "1139", "11434", "4", "1", "0"])
         with self.assertRaises(ValueError):
             collector.numeric_arm_line(PID, 11434, -2, 0)
 
@@ -239,7 +345,7 @@ class OneEbpOfflineTests(unittest.TestCase):
         lines = result.getvalue()
         self.assertIn("KERNEL_AUDIT_NATIVE_ATTACHED_FOUR_COUNT=1\n", lines)
         self.assertIn("KERNEL_AUDIT_MATCHING_BEGIN_COUNT=1\n", lines)
-        self.assertIn("KERNEL_AUDIT_NEW_TARGET_PROGRAM_COUNT=2\n", lines)
+        self.assertIn("KERNEL_AUDIT_NEW_TARGET_PROGRAM_COUNT=1\n", lines)
         self.assertIn("KERNEL_AUDIT_READY_FIFO_WRITTEN=1\n", lines)
         self.assertIn("KERNEL_AUDIT_CONTROL_STOP_RECEIVED=1\n", lines)
         self.assertIn("KERNEL_AUDIT_TRACER_EXIT=-2\n", lines)
@@ -280,7 +386,7 @@ class OneEbpOfflineTests(unittest.TestCase):
 
     def capture_fake(self, output=PROBE_TRACE, errors=ATTACHED,
                      inventories=None, identity_replaced=False, attach_timeout=2,
-                     control_command=b"STOP\n"):
+                     control_command=b"STOP\n", link_snapshots=None):
         fake = FakeTracer(output, errors)
         ready_reader, ready_writer = os.pipe()
         output_reader, output_writer = os.pipe()
@@ -328,11 +434,13 @@ class OneEbpOfflineTests(unittest.TestCase):
 
         arm_evidence = collector.source_arm_evidence
 
-        def simulated_live_arm(out, err, pid, port, before, after):
+        def simulated_live_arm(out, err, pid, port, before, after,
+                               before_links, after_links, tracer_pid):
             # The fake process preloads its END trailer. On real Linux END only
             # becomes readable *after* SIGINT/STOP, not while checking READY.
             return arm_evidence(out.replace(PROBE_END, b""), err,
-                                pid, port, before, after)
+                                pid, port, before, after, before_links,
+                                after_links, tracer_pid)
         inventory_reads = 0
 
         def fake_inventory(*_args):
@@ -344,6 +452,17 @@ class OneEbpOfflineTests(unittest.TestCase):
             if idx == 0:
                 return BASE
             return ARMED if fake.poll() is None else BASE
+        link_reads = 0
+
+        def fake_links(*_args):
+            nonlocal link_reads
+            idx = link_reads
+            link_reads += 1
+            if link_snapshots is not None:
+                return link_snapshots[min(idx, len(link_snapshots) - 1)]
+            if link_reads == 1:
+                return LINKS_BASE
+            return LINKS_ARMED if fake.poll() is None else LINKS_BASE
         stable = (18134, "84217", "/usr/local/bin/ollama", 991)
         state = {"identity_reads": 0}
 
@@ -364,6 +483,8 @@ class OneEbpOfflineTests(unittest.TestCase):
             with patch.object(collector.subprocess, "Popen", return_value=fake), \
                     patch.object(collector, "program_inventory",
                                  side_effect=fake_inventory), \
+                    patch.object(collector, "link_inventory",
+                                 side_effect=fake_links), \
                     patch.object(collector.os, "set_blocking", return_value=None, create=True), \
                     patch.object(collector.os, "read", side_effect=fake_read), \
                     patch.object(collector.selectors, "DefaultSelector", SyntheticSelector), \
@@ -389,7 +510,7 @@ class OneEbpOfflineTests(unittest.TestCase):
     def test_complete_fake_session_arms_before_final_legacy_import_stream(self):
         code, ready, result, fake = self.capture_fake()
         self.assertEqual(code, 0)
-        self.assertEqual(ready, "TCPARMED 1139 11434 4 2 0\n")
+        self.assertEqual(ready, "TCPARMED 1139 11434 4 1 0\n")
         self.assertNotIn("TCPREADY", result)
         self.assertNotIn("Attached", result)
         self.assertNotIn("12345", result)
@@ -398,7 +519,9 @@ class OneEbpOfflineTests(unittest.TestCase):
 
     def test_missing_attach_or_reused_pid_aborts_and_terminal_is_partial(self):
         for opts in ({"errors": b"", "attach_timeout": 0.15},
-                     {"identity_replaced": True}):
+                     {"identity_replaced": True},
+                     {"link_snapshots": [LINKS_BASE, LINKS_BASE],
+                      "attach_timeout": 0.15}):
             with self.subTest(opts=opts):
                 code, ready, result, fake = self.capture_fake(**opts)
                 self.assertEqual(code, 1)

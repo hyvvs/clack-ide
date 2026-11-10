@@ -56,7 +56,11 @@ export function parseKernelArm(text, expectedPid) {
   const lines = text.trim().split(/\r?\n/);
   assert(lines.length === 1,'kernel-arm-exactly-one-ready-required');
   const m = REPORTED.exec(lines[0]);
-  assert(m && Number(m[1]) === expectedPid && Number(m[2]) >= 2,
+  // Count is the exact number of independently corroborated new
+  // tcp_sendmsg SESSION programs, not one ID per entry/return clause.
+  // Trusted root collector independently verifies the new program's
+  // kprobe_multi link, target symbol and live tracer ownership.
+  assert(m && Number(m[1]) === expectedPid && Number(m[2]) === 1,
     'kernel-pid-probe-load-or-loss-unverified');
   return Object.freeze({pid:expectedPid,port:11434,
     probeCount:4,newKprobeCount:Number(m[2]),loss:0});

@@ -48,7 +48,7 @@ class Child extends EventEmitter {
   }
 }
 
-function scenario({ arm = `TCPARMED ${PID} 11434 4 2 0\n`,
+function scenario({ arm = `TCPARMED ${PID} 11434 4 1 0\n`,
   importerReply = '{"imported":1,"claim":"collector-validated-only"}\n',
   importerExit = 0, importerStdout = '', sourceExit = 0, prematureExit = false,
   abortBeforeArm = false, missingCleanup = false, onOperatorStep = null,
@@ -118,13 +118,13 @@ function scenario({ arm = `TCPARMED ${PID} 11434 4 2 0\n`,
 }
 
 test('exact arm and importer receipt parsers reject missing, extra or forged output', () => {
-  assert.deepEqual(parseKernelArm(`TCPARMED ${PID} 11434 4 2 0\n`,PID),
-    {pid:PID,port:11434,probeCount:4,newKprobeCount:2,loss:0});
+  assert.deepEqual(parseKernelArm(`TCPARMED ${PID} 11434 4 1 0\n`,PID),
+    {pid:PID,port:11434,probeCount:4,newKprobeCount:1,loss:0});
   for (const raw of [
-    'TCPARMED 1140 11434 4 2 0', 'TCPARMED 1139 11434 4 1 0',
-    'TCPARMED 1139 11434 4 2 1', 'TCPABORT 1 2',
-    `TCPARMED ${PID} 11434 4 2 0\nTCPARMED ${PID} 11434 4 2 0`,
-    `TCPARMED ${PID} 11434 4 2 0\nSECRET\n`,
+    'TCPARMED 1140 11434 4 1 0', 'TCPARMED 1139 11434 4 0 0',
+    'TCPARMED 1139 11434 4 2 0', 'TCPARMED 1139 11434 4 1 1', 'TCPABORT 1 2',
+    `TCPARMED ${PID} 11434 4 1 0\nTCPARMED ${PID} 11434 4 1 0`,
+    `TCPARMED ${PID} 11434 4 1 0\nSECRET\n`,
   ]) assert.throws(()=>parseKernelArm(raw,PID));
   assert.equal(parseKernelImportReceipt('{"imported":1,"claim":"collector-validated-only"}\n'),1);
   for (const raw of [
@@ -259,7 +259,7 @@ test('actual Node import-kernel receives synthetic FIFO EOF and writes durable k
       if(args.some(v=>typeof v==='string'&&v.includes('metadata.fifo'))) metadata=child;
       if(args.some(v=>typeof v==='string'&&v.includes('ready.fifo'))) {
         arm=child;
-        setTimeout(()=>{arm.stdout.end(`TCPARMED ${PID} 11434 4 2 0\n`);arm.finish(0);},15);
+        setTimeout(()=>{arm.stdout.end(`TCPARMED ${PID} 11434 4 1 0\n`);arm.finish(0);},15);
       }
       return child;
     };

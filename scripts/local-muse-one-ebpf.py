@@ -42,6 +42,11 @@ MAX_SECONDS = 1800
 MAX_STDOUT = 8 * 1024 * 1024
 MAX_STDERR = 64 * 1024
 MAX_PROGRAM_LIST = 4 * 1024 * 1024
+# Linux BPF_OBJ_NAME_LEN=16, including NUL. This is the observed/truncated
+# name of bpftrace's single tcp_sendmsg kprobe-session program. Do not use
+# a prefix: a similarly named unrelated program is not attachment evidence.
+SESSION_PROG_NAME = "kprobe_tcp_send"
+SEPARATE_RETURN_PROG_NAME = "kretprobe_tcp_s"
 ATTACH_NOTICE = re.compile(rb"Attached 4 probes(?:\.\.\.)?")
 ATTACH_PENDING_NOTICE = re.compile(rb"Attaching 4 probes(?:\.\.\.)?")
 LOSS_NOTICE = re.compile(rb"(?:lost\s+\d+\s+events?|\d+\s+events?\s+lost)", re.I)
@@ -108,10 +113,79 @@ def program_inventory(bpftool, timeout):
 
 
 def new_kprobes(before, after):
-    """Only new programs named for the actual tcp_sendmsg hooks are relevant."""
+    """A bpftrace kprobe session has one entry-named program for both hooks."""
     return {number for number, (kind, name) in after.items()
             if number not in before and kind == "kprobe" and
-            (name.startswith("kprobe_tcp_send") or name.startswith("kretprobe_tcp_s"))}
+            name == SESSION_PROG_NAME}
+
+
+def new_separate_return_programs(before, after):
+    """A separate return program is NOT evidence for a collapsed session."""
+    return {number for number, (kind, name) in after.items()
+            if number not in before and kind == "kprobe" and
+            name == SEPARATE_RETURN_PROG_NAME}
+
+
+def link_inventory(bpftool, timeout):
+    """Read-only BPF link snapshot. Never trust a program name alone as attach."""
+    process = subprocess.run([str(bpftool), "-j", "link", "show"],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, check=True,
+                             timeout=max(0.1, min(2.0, timeout)))
+    if len(process.stdout) > MAX_PROGRAM_LIST:
+        raise ValueError("Kernel link inventory overflow")
+    rows = json.loads(process.stdout)
+    if not isinstance(rows, list):
+        raise ValueError("Invalid kernel link inventory")
+    links = {}
+    for row in rows:
+        if not isinstance(row, dict) or type(row.get("id")) is not int or \
+                row["id"] < 1 or row["id"] in links or \
+                not isinstance(row.get("type"), str) or \
+                (row["type"] == "kprobe_multi" and
+                 (type(row.get("prog_id")) is not int or row["prog_id"] < 1)) or \
+                (row.get("prog_id") is not None and
+                 (type(row["prog_id"]) is not int or row["prog_id"] < 1)):
+            raise ValueError("Malformed kernel link inventory entry")
+        links[row["id"]] = row
+    return links
+
+
+def session_link_ids(before_links, live_links, new_programs, tracer_pid):
+    """Prove a NEW tcp_sendmsg session link owned by this tracer.
+
+    bpftrace 0.27 combines the pinned entry and return clauses into a single
+    BPF_TRACE_KPROBE_SESSION program/link on supported kernels. Its link is
+    represented in bpftool as kprobe_multi; a plain kprobe program name alone
+    cannot prove the target hook or attachment. Require an exact new program
+    ID -> new link ID -> tcp_sendmsg function -> live bpftrace PID join.
+    Absence of that metadata is UNVERIFIED, never a reason to arm anyway.
+    """
+    if type(tracer_pid) is not int or tracer_pid <= 1 or len(new_programs) != 1:
+        return set()
+    program_id = next(iter(new_programs))
+    links = set()
+    for number, row in live_links.items():
+        if number in before_links or row.get("prog_id") != program_id or \
+                row.get("type") != "kprobe_multi" or \
+                row.get("retprobe") is not False or \
+                type(row.get("func_cnt")) is not int or row["func_cnt"] != 1 or \
+                type(row.get("missed")) is not int or row["missed"] != 0:
+            continue
+        funcs = row.get("funcs")
+        owners = row.get("pids")
+        if not isinstance(funcs, list) or len(funcs) != 1 or \
+                not isinstance(funcs[0], dict) or \
+                funcs[0].get("func") != "tcp_sendmsg" or \
+                not isinstance(owners, list) or not owners or \
+                not any(isinstance(owner, dict) and
+                        owner.get("pid") == tracer_pid and
+                        owner.get("comm") == "bpftrace" for owner in owners):
+            continue
+        links.add(number)
+    # One session link for this one tcp_sendmsg program. Duplicates or
+    # ambiguous links cannot be used to claim positive readiness.
+    return links if len(links) == 1 else set()
 
 
 def classify_source_output(raw_stdout, raw_stderr):
@@ -216,8 +290,9 @@ def valid_prearm_meta(row, pid, port):
         result <= requested and (op != b"attempt" or result == 0)
 
 
-def source_arm_evidence(stdout_bytes, stderr_bytes, pid, port, before, after):
-    """Positive pre-inference evidence: native notice + BEGIN + BPF delta."""
+def source_arm_evidence(stdout_bytes, stderr_bytes, pid, port, before, after,
+                        before_links, after_links, tracer_pid):
+    """Positive pre-inference evidence: native notice + BEGIN + session link."""
     source_stdout, rest_stderr, notices, pending = classify_live_output(
         stdout_bytes, stderr_bytes)
     expected_ready = f"TCPREADY {pid} {port}".encode("ascii")
@@ -225,14 +300,16 @@ def source_arm_evidence(stdout_bytes, stderr_bytes, pid, port, before, after):
     has_ready = bool(rows) and rows[0] == expected_ready and \
         all(valid_prearm_meta(row, pid, port) for row in rows[1:])
     new_ids = new_kprobes(before, after)
+    session_links = session_link_ids(before_links, after_links, new_ids, tracer_pid)
     return (has_ready and not pending and not rest_stderr.strip() and
-            notices == 1 and len(new_ids) >= 2), len(new_ids)
+            notices == 1 and not new_separate_return_programs(before, after) and
+            len(session_links) == 1), len(new_ids)
 
 
 def numeric_arm_line(pid, port, programs, observed_loss=0):
     fields = [pid, port, 4, programs, observed_loss]
     if any(type(value) is not int or value < 0 for value in fields) or \
-            pid <= 1 or port != 11434 or programs < 2 or observed_loss != 0:
+            pid <= 1 or port != 11434 or programs != 1 or observed_loss != 0:
         raise ValueError("Invalid numeric arm identity")
     return "TCPARMED " + " ".join(map(str, fields)) + "\n"
 
@@ -264,7 +341,8 @@ def child_exit_status(code, signalled):
 def emit_content_free_audit(stdout, stderr, pid, programs_before, programs_after,
                             child_status, armed, arm_attempted, fifo_write_error,
                             identity_ok, stop_complete, invalid_source, forced,
-                            inventory_error):
+                            inventory_error, session_link_count=0,
+                            link_inventory_error="none"):
     """Exact byte fingerprints and closed-vocabulary reasons, never TCP pointers.
 
     The operator's stderr is separate from the private numeric importer/FIFO
@@ -291,6 +369,10 @@ def emit_content_free_audit(stdout, stderr, pid, programs_before, programs_after
         "END_COUNT": summary_count,
         "OTHER_STDOUT_ROWS": other_stdout,
         "NEW_TARGET_PROGRAM_COUNT": len(new_kprobes(programs_before, programs_after)),
+        "NEW_SEPARATE_RETURN_PROGRAM_COUNT":
+            len(new_separate_return_programs(programs_before, programs_after)),
+        "NEW_VALID_SESSION_LINK_COUNT": session_link_count,
+        "SESSION_LINK_INVENTORY_ERROR": link_inventory_error,
         "TRACER_EXIT": child_status if child_status is not None else "unknown",
         "READY_FIFO_WRITTEN": int(armed),
         "READY_FIFO_WRITE_ATTEMPTED": int(arm_attempted),
@@ -310,6 +392,7 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
     """Own one tracer only, while retaining every byte of untrusted BPF output."""
     identity = helper.read_identity(pid, 11434)
     baseline_programs = program_inventory(bpftool, 2.0)
+    baseline_links = link_inventory(bpftool, 2.0)
     started = time.monotonic()
     deadline = started + duration
     graceful_at = helper.graceful_shutdown_at(started, duration)
@@ -331,11 +414,14 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
     armed = False
     arm_attempted = False
     armed_program_ids = set()
+    armed_link_ids = set()
     signalled = False
     forced = False
     identity_ok = True
     invalid_source = False
     inventory_error = "none"
+    link_inventory_error = "none"
+    session_link_count = 0
     fifo_write_error = False
     operator_stopped = False
     stop_complete = False
@@ -345,6 +431,15 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
     last_identity = 0
     last_inventory = 0
     current_programs = baseline_programs
+    current_links = baseline_links
+    def checked_links(timeout):
+        nonlocal link_inventory_error
+        try:
+            return link_inventory(bpftool, timeout)
+        except (OSError, ValueError, subprocess.SubprocessError,
+                json.JSONDecodeError) as error:
+            link_inventory_error = type(error).__name__
+            raise
     # An operator signal ends the capture but is never a claim of full coverage.
     def operator_signal(_signum, _frame):
         nonlocal operator_stopped
@@ -365,8 +460,14 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
                 last_inventory = now
                 try:
                     current_programs = program_inventory(bpftool, deadline - now)
+                    current_links = checked_links(deadline - now)
+                    session_links = session_link_ids(
+                        baseline_links, current_links,
+                        new_kprobes(baseline_programs, current_programs), child.pid)
+                    session_link_count = len(session_links)
                     proof, count = source_arm_evidence(stdout, stderr, pid, 11434,
-                                                       baseline_programs, current_programs)
+                                                       baseline_programs, current_programs,
+                                                       baseline_links, current_links, child.pid)
                     if proof and identity_ok:
                         # The inventory call can consume two seconds; recheck
                         # service identity immediately before signaling READY.
@@ -381,6 +482,7 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
                             arm_attempted = True
                             armed_program_ids = new_kprobes(baseline_programs,
                                                            current_programs)
+                            armed_link_ids = session_links
                             os.close(ready_fd)
                         except (OSError, ValueError, TimeoutError):
                             invalid_source = True
@@ -394,7 +496,10 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
                 last_inventory = now
                 try:
                     live = program_inventory(bpftool, deadline - now)
-                    if not armed_program_ids.issubset(new_kprobes(baseline_programs, live)):
+                    live_links = checked_links(deadline - now)
+                    if not armed_program_ids.issubset(new_kprobes(baseline_programs, live)) or \
+                            not armed_link_ids.issubset(session_link_ids(
+                                baseline_links, live_links, armed_program_ids, child.pid)):
                         invalid_source = True
                 except (OSError, ValueError, subprocess.SubprocessError,
                         json.JSONDecodeError) as error:
@@ -500,7 +605,10 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
     if armed_program_ids:
         try:
             post_programs = program_inventory(bpftool, min(2.0, deadline - now))
-            kernel_clean = kernel_clean and not armed_program_ids.intersection(post_programs)
+            post_links = checked_links(min(2.0, deadline - now))
+            kernel_clean = (kernel_clean and
+                            not armed_program_ids.intersection(post_programs) and
+                            not armed_link_ids.intersection(post_links))
         except (OSError, ValueError, subprocess.SubprocessError,
                 json.JSONDecodeError):
             kernel_clean = False
@@ -520,7 +628,8 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
     emit_content_free_audit(bytes(stdout), bytes(stderr), pid,
                             baseline_programs, current_programs, child.returncode,
                             armed, arm_attempted, fifo_write_error, identity_ok,
-                            stop_complete, invalid_source, forced, inventory_error)
+                            stop_complete, invalid_source, forced, inventory_error,
+                            session_link_count, link_inventory_error)
     # Importer must get the *last* line only after END and actual tracer EOF.
     # A broken/stalled stdout yields no completion receipt; journal fails closed.
     try:
