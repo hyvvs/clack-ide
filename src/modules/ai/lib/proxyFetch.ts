@@ -88,6 +88,10 @@ export type ProxyOptions = {
   allowPrivateNetwork?: boolean;
   selfHosted?: boolean;
   scope?: InferenceScope;
+  /** Trusted, explicitly armed one-Muse diagnostic only; ordinary requests omit it. */
+  diagnosticRunId?: string;
+  /** One-use coordinator permit, sent only to the native diagnostic gate. */
+  diagnosticPermit?: string;
 };
 export function createProxyFetch(opts: ProxyOptions = {}): typeof fetch {
   return (input, init) => proxyFetchImpl(input, init, opts);
@@ -339,6 +343,8 @@ async function proxyFetchImpl(
         admission: opts.admission,
         requirePreflight: Boolean(revalidate),
         ...(opts.scope?.fallbackToken ? { fallbackToken: opts.scope.fallbackToken } : {}),
+        ...(opts.diagnosticRunId ? { diagnosticRunId: opts.diagnosticRunId } : {}),
+        ...(opts.diagnosticPermit ? { diagnosticPermit: opts.diagnosticPermit } : {}),
         onEvent: channel,
       }).then(
         () => {

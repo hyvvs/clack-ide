@@ -143,11 +143,22 @@ pub fn run() {
             // Trusted-process opt-in only. No IPC command to enable a recorder,
             // no model, network, or timeout changes. The bounded nonblocking
             // queue prevents slow diagnostic consumers from blocking reqwest.
-            if std::env::var("CLACK_LOCAL_DELIVERY_DIAGNOSTIC").as_deref() == Ok("1") {
+            let diagnostic_run = if std::env::var_os(net::inference::delivery::ONE_MUSE_RUN_ENV).is_some() {
+                let run_id = std::env::var(net::inference::delivery::ONE_MUSE_RUN_ENV)
+                    .map_err(|_| std::io::Error::other("Invalid diagnostic run ID"))?;
+                if !net::inference::delivery::valid_run_id(&run_id) {
+                    return Err(std::io::Error::other("Invalid diagnostic run ID").into());
+                }
+                Some(run_id)
+            } else {
+                None
+            };
+            if diagnostic_run.is_some() || std::env::var("CLACK_LOCAL_DELIVERY_DIAGNOSTIC").as_deref() == Ok("1") {
                 let handle = _app.handle().clone();
                 let (sender, mut receiver) = tokio::sync::mpsc::channel(2048);
                 let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
                 let loss_reader = dropped.clone();
+                let loss_run = diagnostic_run.clone();
                 tauri::async_runtime::spawn(async move {
                     let started = std::time::Instant::now();
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -161,7 +172,8 @@ pub fn run() {
                                 let lost = loss_reader.swap(0, Ordering::Relaxed);
                                 if lost > 0 {
                                     let receipt = net::inference::delivery::loss_receipt(lost,
-                                        started.elapsed().as_micros().min(u64::MAX as u128) as u64);
+                                        started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+                                        loss_run.as_deref());
                                     let _ = handle.emit("clack-local-delivery", receipt);
                                 }
                             }
@@ -169,12 +181,20 @@ pub fn run() {
                         }
                     }
                 });
-                _app.manage(net::inference::delivery::DeliveryCapture::new(move |row| {
+                let sink = move |row| {
                     if sender.try_send(row).is_err() {
                         use std::sync::atomic::Ordering;
                         dropped.fetch_add(1, Ordering::Relaxed);
                     }
-                }));
+                };
+                let capture = match diagnostic_run {
+                    Some(run_id) => net::inference::delivery::DeliveryCapture::for_run(run_id, sink)
+                        .ok_or_else(|| std::io::Error::other("Invalid diagnostic capture"))?,
+                    None => net::inference::delivery::DeliveryCapture::new(sink),
+                };
+                if !_app.manage(capture) {
+                    return Err(std::io::Error::other("Diagnostic capture already registered").into());
+                }
             }
             // macOS skips parent() for the settings window, so tie its lifecycle
             // to the main window here instead. Other platforms keep parent().
@@ -220,7 +240,9 @@ pub fn run() {
             registry
         })
         .manage(LaunchDir(Mutex::new(cli_dir)))
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler({
+            let handler: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> =
+                Box::new(tauri::generate_handler![
             pty::pty_open,
             pty::pty_write,
             pty::pty_resize,
@@ -376,11 +398,25 @@ pub fn run() {
             net::inference::ai_http_cancel,
             net::inference::ai_http_preflight,
             net::inference::ai_http_stream,
+            net::inference::ai_http_diagnostic_ready,
             history::history_suggest,
             history::history_commands,
             history::history_record,
             history::history_list,
-        ])
+        ]);
+            move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+                // The one-Muse run may issue only its one native streaming call.
+                // Legacy HTTP and metadata probes use independent transports.
+                if std::env::var_os(net::inference::delivery::ONE_MUSE_RUN_ENV).is_some()
+                    && matches!(invoke.message.command(),
+                        "ai_http_request" | "self_hosted_probe" | "self_hosted_discover")
+                {
+                    invoke.resolver.reject("diagnostic-other-route-denied");
+                    return true;
+                }
+                handler(invoke)
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {

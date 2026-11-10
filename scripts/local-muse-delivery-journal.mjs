@@ -16,14 +16,16 @@ export const LAYERS = Object.freeze({
   'clack-semantic': ['native-semantic-progress'],
   'clack-webview': ['webview-headers-received', 'webview-ipc-received', 'webview-stream-enqueued',
     'webview-settled-received'],
-  'collector': ['capability', 'clock-anchor', 'event-loss', 'shutdown'],
+  'collector': ['capability', 'clock-anchor', 'event-loss', 'shutdown',
+    'source-ready', 'source-terminal'],
 });
 const FIELDS = new Set(['schemaVersion', 'sequence', 'host', 'layer', 'kind', 'atUnixMs',
   'monoUs', 'requestId', 'requestSequence', 'socketId', 'connectionId', 'endpoint', 'bytes',
   'requestedBytes', 'returnedBytes', 'generatedTokens', 'ackedBytes', 'receivedBytes',
   'retransmittedBytes', 'dropped', 'result', 'capability', 'confidence',
   'clockUncertaintyUs', 'localPort', 'remotePort', 'kernelAttempts',
-  'kernelReturns', 'pendingWrites', 'durationMs', 'kernelReturn']);
+  'kernelReturns', 'pendingWrites', 'durationMs', 'kernelReturn',
+  'runId', 'source', 'sourceIdentity']);
 const HOSTS = new Set(['ollama', 'remote-ssh', 'local-ssh', 'clack-native', 'clack-webview', 'collector']);
 const ENDPOINTS = new Set(['ollama-loopback', 'remote-forward', 'encrypted-ssh',
   'local-forward', 'clack-http', 'unknown']);
@@ -32,6 +34,8 @@ const CAPABILITIES = new Set(['available', 'unavailable', 'unverified', 'permiss
 const RESULTS = new Set(['ok', 'partial', 'failed', 'would-block', 'unverified']);
 const CONFIDENCE = new Set(['direct', 'candidate', 'unavailable']);
 const ID = /^[A-Za-z0-9_-]{1,80}$/;
+const SOURCES = new Set(['identity', 'tunnel', 'mapping', 'clocks', 'kernel',
+  'native', 'semantic', 'webview', 'journal']);
 const bounded = n => Number.isSafeInteger(n) && n >= 0;
 const positive = n => Number.isSafeInteger(n) && n > 0;
 const optional = (v, check, field) => { if (v !== undefined) assert(check(v), `Invalid ${field}`); };
@@ -49,6 +53,10 @@ export function validateDeliveryRecord(value, expectedSequence) {
     'pendingWrites', 'durationMs']) optional(value[field], bounded, field);
   for (const field of ['requestId', 'socketId', 'connectionId']) optional(value[field], v =>
     typeof v === 'string' && ID.test(v), field);
+  optional(value.runId, v => typeof v === 'string' && ID.test(v), 'runId');
+  optional(value.sourceIdentity, v => typeof v === 'string' && /^[A-Za-z0-9_:-]{1,96}$/.test(v),
+    'sourceIdentity');
+  optional(value.source, v => SOURCES.has(v), 'source');
   optional(value.kernelReturn, Number.isSafeInteger, 'kernelReturn');
   if (value.kernelReturn !== undefined) assert(value.layer === 'ollama-http-write' &&
     value.kind === 'socket-write-return', 'Signed kernel return is valid only for Ollama writes');
@@ -103,6 +111,14 @@ export function validateDeliveryRecord(value, expectedSequence) {
     assert(CAPABILITIES.has(value.capability), 'Missing capability result');
   if (value.layer === 'collector' && value.kind === 'event-loss')
     assert(positive(value.dropped), 'Loss receipt requires nonzero count');
+  if (value.layer === 'collector' &&
+      (value.kind === 'source-ready' || value.kind === 'source-terminal')) {
+    assert(value.runId && SOURCES.has(value.source) && value.sourceIdentity &&
+      (value.result === 'ok' || value.result === 'failed'),
+    'Run-bound source handshake requires identity and result');
+    assert(value.requestId === undefined && value.socketId === undefined,
+      'Source handshakes cannot claim a request/socket');
+  }
   if (value.layer === 'collector' && value.kind === 'shutdown' &&
       value.endpoint === 'ollama-loopback' && value.result === 'ok') {
     assert(bounded(value.kernelAttempts) && bounded(value.kernelReturns) &&
@@ -232,6 +248,9 @@ export async function createDeliveryJournal(filename, maxRecords = 65536) {
   const hash = createHash('sha256');
   let count = 0, dropped = 0, failed = false, sourceLoss = 0, closed = false, sealed = false;
   let sourceFailed = false, kernelCompletions = 0;
+  const sourceReady = new Map(), sourceTerminal = new Map();
+  const requestIds = new Set();
+  let nativeDispatches = 0, nativeTerminals = 0, webviewSettled = 0;
   let serial = Promise.resolve();
   const close = async () => { if (closed) return; closed = true; await file.close(); };
   return {
@@ -249,17 +268,39 @@ export async function createDeliveryJournal(filename, maxRecords = 65536) {
           if (row.result !== 'ok') sourceFailed = true;
           else kernelCompletions++;
         }
+        if (row.layer === 'clack-reqwest' || row.layer === 'clack-semantic' ||
+            row.layer === 'clack-webview') requestIds.add(row.requestId);
+        if (row.kind === 'native-dispatch') nativeDispatches++;
+        if (row.kind === 'native-terminal') nativeTerminals++;
+        if (row.kind === 'webview-settled-received') webviewSettled++;
+        if (row.kind === 'source-ready' || row.kind === 'source-terminal') {
+          const target = row.kind === 'source-ready' ? sourceReady : sourceTerminal;
+          if (target.has(row.source) || row.result !== 'ok' ||
+            (row.kind === 'source-terminal' &&
+              sourceReady.get(row.source) !== row.sourceIdentity))
+            sourceFailed = true;
+          else target.set(row.source, row.sourceIdentity);
+        }
         return { accepted: true, sequence: count };
       });
       serial = operation.then(() => undefined, () => undefined);
       return operation;
     },
-    async seal({ expected, deliveryFailed = false, requireKernelSession = false } = {}) {
+    async seal({ expected, deliveryFailed = false, requireKernelSession = false,
+      requireOneSession = false, runId } = {}) {
       await serial;
       assert(!sealed && !failed && dropped === 0 && sourceLoss === 0 && deliveryFailed !== true &&
         expected === count, 'Incomplete delivery collection; do not seal');
       assert(!sourceFailed && (!requireKernelSession || kernelCompletions === 1),
         'Kernel session missing/incomplete; do not seal');
+      if (requireOneSession) {
+        assert(typeof runId === 'string' && ID.test(runId) &&
+          sourceReady.size === SOURCES.size && sourceTerminal.size === SOURCES.size &&
+          [...SOURCES].every(s => sourceReady.has(s) && sourceTerminal.has(s)) &&
+          nativeDispatches === 1 && nativeTerminals === 1 &&
+          webviewSettled === 1 && requestIds.size === 1,
+        'Mandatory one-request dispatch/termination or source receipt missing; do not seal');
+      }
       sealed = true;
       const pending = `${filename}.receipt.json.pending`, final = `${filename}.receipt.json`;
       let handle;
@@ -277,6 +318,10 @@ export async function createDeliveryJournal(filename, maxRecords = 65536) {
     },
     async abandon() { await serial; sealed = true; await close(); },
     snapshot() { return Object.freeze({ count, dropped, sourceLoss, failed,
-      sourceFailed, kernelCompletions, sealed }); },
+      sourceFailed, kernelCompletions, sealed,
+      sourceReady: Object.fromEntries(sourceReady),
+      sourceTerminal: Object.fromEntries(sourceTerminal),
+      nativeDispatches, nativeTerminals, webviewSettled,
+      opaqueRequestCount: requestIds.size }); },
   };
 }

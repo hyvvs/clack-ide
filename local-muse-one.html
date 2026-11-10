@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>One Muse diagnostic — explicit future authorization only</title>
+</head>
+<body>
+  <main>
+    <h1>One Muse diagnostic</h1>
+    <p id="diagnostic-status" role="status">Checking collector readiness. No inference has started.</p>
+    <button type="button" id="dispatch-one-muse" disabled>
+      Dispatch one instrumented Muse request
+    </button>
+    <p>This control is disabled until all nine collectors have a fresh, durable run-bound acknowledgement.
+      It cannot retry or continue a request after an attempt.</p>
+  </main>
+  <script type="module" src="/src/test/localMuseOneDiagnostic.tsx"></script>
+</body>
+</html>

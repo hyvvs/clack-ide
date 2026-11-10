@@ -5,9 +5,11 @@ const bridge = vi.hoisted(() => ({
   handler: null as null | ((event: { payload: unknown }) => void),
   unlisten: vi.fn(),
 }));
+const nativeReady = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: bridge.listen,
 }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: nativeReady.invoke }));
 
 import { installLocalDeliveryCapture, observeWebviewDelivery,
   validateDeliveryRow } from "./localDeliveryObserver";
@@ -25,6 +27,9 @@ beforeEach(() => {
     return bridge.unlisten;
   });
   bridge.unlisten.mockReset();
+  nativeReady.invoke.mockReset();
+  nativeReady.invoke.mockImplementation(async (_command: string, args: { runId: string }) =>
+    ({ runId: args.runId, nativeReady: true }));
 });
 afterEach(() => { vi.clearAllMocks(); });
 
@@ -32,6 +37,43 @@ describe("real production WebView delivery opt-in", () => {
   it("never subscribes or records without an explicit installer", () => {
     observeWebviewDelivery("inference-27", "webview-ipc-received", 1, 149);
     expect(bridge.listen).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges the installed run listener and emits only run-bound receipts", async () => {
+    const runId = "muse-one-0123456789abcdef";
+    const rows: unknown[] = [];
+    const capture = await installLocalDeliveryCapture(async row => { rows.push(row); }, 8, runId);
+    expect(bridge.listen).toHaveBeenCalledOnce();
+    expect(nativeReady.invoke).toHaveBeenCalledWith("ai_http_diagnostic_ready", { runId });
+    expect(capture.readiness).toEqual({ runId, nativeReady: true, webviewReady: true });
+    bridge.handler?.({ payload: { ...native("native-dispatch", 0, 0), runId } });
+    observeWebviewDelivery("inference-27", "webview-ipc-received", 1, 149);
+    const summary = await capture.stop();
+    expect(summary).toMatchObject({ emitted: 2, acknowledged: 2, deliveryFailed: false });
+    expect(rows).toMatchObject([
+      { host: "clack-native", runId, boundary: "native-dispatch" },
+      { host: "clack-webview", runId, boundary: "webview-ipc-received" },
+    ]);
+    observeWebviewDelivery("inference-27", "webview-ipc-received", 2, 50);
+    expect(rows).toHaveLength(2);
+  });
+
+  it("blocks mismatched run receipts, concurrent captures and failed native registration", async () => {
+    const runId = "muse-one-0123456789abcdef";
+    const captured: unknown[] = [];
+    const capture = await installLocalDeliveryCapture(async row => { captured.push(row); }, 8, runId);
+    await expect(installLocalDeliveryCapture(async () => {}, 8, runId))
+      .rejects.toThrow("Conflicting delivery capture");
+    bridge.handler?.({ payload: { ...native("native-dispatch", 0, 0), runId: "muse-one-aaaaaaaaaaaaaaaa" } });
+    bridge.handler?.({ payload: native("native-dispatch", 0, 0) });
+    expect((await capture.stop()).deliveryFailed).toBe(true);
+    expect(captured).toHaveLength(0);
+    nativeReady.invoke.mockResolvedValueOnce({ runId: "muse-one-stale", nativeReady: true });
+    await expect(installLocalDeliveryCapture(async () => {}, 8, runId))
+      .rejects.toThrow("Native diagnostic capture not registered");
+    expect(bridge.unlisten).toHaveBeenCalledTimes(2);
+    expect(() => validateDeliveryRow({ ...native("native-dispatch", 0, 0), runId: "bad:private" }))
+      .toThrow("Unapproved delivery metadata");
   });
 
   it("records only bounded numeric metadata from native and WebView", async () => {

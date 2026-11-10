@@ -14,6 +14,7 @@ pub use registry::InferenceState;
 use registry::{CancelOrigin, CancellationProvenance};
 pub(crate) use registry::Lease;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     future::Future,
@@ -36,6 +37,125 @@ impl Failure {
     fn new(code: &str) -> Self {
         Self { code: code.into() }
     }
+}
+
+const ONE_MUSE_ENDPOINT: &str = "http://127.0.0.1:11435/api/chat";
+const ONE_MUSE_MODEL: &str = "muse-glimmer:30b";
+pub const ONE_MUSE_PERMIT_ENV: &str = "CLACK_ONE_MUSE_DIAGNOSTIC_PERMIT_SHA256";
+
+fn valid_one_muse_permit(permit: Option<&str>, expected_hash: Option<&str>) -> bool {
+    let (Some(permit), Some(expected_hash)) = (permit, expected_hash) else {
+        return false;
+    };
+    if permit.len() != 64 || !permit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || expected_hash.len() != 64
+        || !expected_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return false;
+    }
+    let observed = format!("{:x}", Sha256::digest(permit.as_bytes()));
+    let mut difference = 0_u8;
+    for (a, b) in observed.bytes().zip(expected_hash.bytes()) {
+        difference |= a ^ b;
+    }
+    difference == 0
+}
+
+fn active_one_muse_run() -> Result<Option<String>, Failure> {
+    if std::env::var_os(delivery::ONE_MUSE_RUN_ENV).is_none() {
+        return Ok(None);
+    }
+    let run_id = std::env::var(delivery::ONE_MUSE_RUN_ENV)
+        .map_err(|_| Failure::new("diagnostic-run-invalid"))?;
+    if !delivery::valid_run_id(&run_id) {
+        return Err(Failure::new("diagnostic-run-invalid"));
+    }
+    Ok(Some(run_id))
+}
+
+#[derive(Clone, Copy)]
+struct OneMuseRequest<'a> {
+    run_id: Option<&'a str>,
+    url: &'a str,
+    method: &'a str,
+    headers: Option<&'a HashMap<String, String>>,
+    body: Option<&'a [u8]>,
+    allow_private: bool,
+    policy: Option<Policy>,
+    admission: Option<&'a admission::Admission>,
+    preflight: bool,
+    fallback: bool,
+}
+
+/// The one-Muse session is deliberately narrower than ordinary provider IPC.
+/// It accepts a single streaming, tool-free diagnostic prompt, without rewriting
+/// its bytes or introducing a second parser/transport implementation.
+fn valid_one_muse_request(expected_run_id: &str, request: &OneMuseRequest<'_>) -> bool {
+    if request.run_id != Some(expected_run_id)
+        || request.url != ONE_MUSE_ENDPOINT
+        || request.method != "POST"
+        || !request.headers.is_some_and(|headers| headers.len() == 1
+            && headers.iter().all(|(name, value)|
+                name.eq_ignore_ascii_case("content-type") && value == "application/json"))
+        || !request.allow_private
+        || !matches!(request.policy, Some(Policy::SelfHosted))
+        || request.admission.is_none_or(|entry| entry.capacity != 1)
+        || request.preflight
+        || request.fallback
+    {
+        return false;
+    }
+    let Some(body) = request.body else { return false };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    let Some(data) = value.as_object() else { return false };
+    if data.keys().any(|key| !matches!(key.as_str(), "model" | "messages" | "stream" | "options"))
+        || data.get("model").and_then(|v| v.as_str()) != Some(ONE_MUSE_MODEL)
+        || data.get("stream").and_then(|v| v.as_bool()) != Some(true)
+    {
+        return false;
+    }
+    let Some(options) = data.get("options").and_then(|v| v.as_object()) else {
+        return false;
+    };
+    if options.keys().any(|key| !matches!(key.as_str(), "num_ctx" | "num_predict"))
+        || options.get("num_ctx").and_then(|v| v.as_u64()) != Some(32768)
+        || options.get("num_predict").and_then(|v| v.as_u64()) != Some(8192)
+    {
+        return false;
+    }
+    let Some(messages) = data.get("messages").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    let [message] = messages.as_slice() else { return false };
+    let Some(message) = message.as_object() else { return false };
+    message.keys().all(|key| matches!(key.as_str(), "role" | "content"))
+        && message.get("role").and_then(|v| v.as_str()) == Some("user")
+        && message.get("content").and_then(|v| v.as_str()).is_some_and(|text| !text.trim().is_empty())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OneMuseDiagnosticReady {
+    run_id: String,
+    native_ready: bool,
+}
+
+/// A positive registration ACK, usable only after the trusted host has installed
+/// a bound native delivery collector. It never activates tracing or inference.
+#[tauri::command]
+pub fn ai_http_diagnostic_ready(
+    app: tauri::AppHandle,
+    run_id: String,
+) -> Result<OneMuseDiagnosticReady, Failure> {
+    if active_one_muse_run()?.as_deref() != Some(run_id.as_str())
+        || !app.try_state::<delivery::DeliveryCapture>()
+            .is_some_and(|capture| capture.acknowledge_ready(&run_id))
+    {
+        return Err(Failure::new("diagnostic-not-ready"));
+    }
+    Ok(OneMuseDiagnosticReady { run_id, native_ready: true })
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -534,8 +654,38 @@ pub async fn ai_http_stream(
     admission: Option<admission::Admission>,
     require_preflight: Option<bool>,
     fallback_token: Option<String>,
+    diagnostic_run_id: Option<String>,
+    diagnostic_permit: Option<String>,
     on_event: Channel<Event>,
 ) -> Result<(), Failure> {
+    if let Some(expected_run) = active_one_muse_run()? {
+        let expected_hash = std::env::var(ONE_MUSE_PERMIT_ENV).ok();
+        if !valid_one_muse_permit(diagnostic_permit.as_deref(), expected_hash.as_deref()) {
+            return Err(Failure::new("diagnostic-permit-denied"));
+        }
+        let capture = app.try_state::<delivery::DeliveryCapture>()
+            .ok_or_else(|| Failure::new("diagnostic-not-ready"))?;
+        // The atomic allowance is consumed before validation or any network action.
+        // A malformed first attempt cannot unlock a second request.
+        capture.claim_once(&expected_run).map_err(Failure::new)?;
+        let candidate = OneMuseRequest {
+            run_id: diagnostic_run_id.as_deref(),
+            url: &url,
+            method: &method,
+            headers: headers.as_ref(),
+            body: body.as_deref(),
+            allow_private: allow_private_network == Some(true),
+            policy: timeout_policy,
+            admission: admission.as_ref(),
+            preflight: require_preflight.unwrap_or(false),
+            fallback: fallback_token.is_some(),
+        };
+        if window.label() != "main" || !valid_one_muse_request(&expected_run, &candidate) {
+            return Err(Failure::new("diagnostic-request-denied"));
+        }
+    } else if diagnostic_run_id.is_some() || diagnostic_permit.is_some() {
+        return Err(Failure::new("diagnostic-run-unavailable"));
+    }
     let mut lease = state.start(window.label(), &request_id)?;
     let _connection = crate::modules::remote_ssh::lifecycle::pin_active_url(&app, &url)
         .map_err(|_| Failure::new("remote-connection-unavailable"))?;

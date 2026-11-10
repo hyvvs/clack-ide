@@ -5,6 +5,101 @@ use std::{
     sync::Mutex,
 };
 
+#[test]
+fn one_muse_permit_is_sha256_bound_and_never_permits_missing_or_foreign_tokens() {
+    let permit = "d".repeat(64);
+    let expected = format!("{:x}", Sha256::digest(permit.as_bytes()));
+    assert!(valid_one_muse_permit(Some(&permit), Some(&expected)));
+    assert!(!valid_one_muse_permit(Some(&permit), None));
+    assert!(!valid_one_muse_permit(None, Some(&expected)));
+    assert!(!valid_one_muse_permit(Some(&"a".repeat(64)), Some(&expected)));
+    assert!(!valid_one_muse_permit(Some("short"), Some(&expected)));
+    assert!(!valid_one_muse_permit(Some(&permit), Some(&"0".repeat(64))));
+    assert!(!valid_one_muse_permit(Some(&permit), Some(&expected.to_uppercase())));
+}
+
+#[test]
+fn one_muse_wire_admission_rejects_calibration_tools_fallback_and_continuation() {
+    let run_id = "muse-one-0123456789abcdef";
+    let admission = admission::Admission {
+        endpoint_id: "real-qwen".into(), profile_id: "muse".into(), capacity: 1,
+    };
+    let body = serde_json::json!({
+        "model": "muse-glimmer:30b",
+        "stream": true,
+        "options": {"num_ctx": 32768, "num_predict": 8192},
+        "messages": [{"role": "user", "content": "Explain a generic streaming boundary."}],
+    });
+    let raw = serde_json::to_vec(&body).unwrap();
+    let headers = HashMap::from([("content-type".into(), "application/json".into())]);
+    let candidate = OneMuseRequest {
+        run_id: Some(run_id), url: ONE_MUSE_ENDPOINT, method: "POST",
+        headers: Some(&headers),
+        body: Some(&raw), allow_private: true, policy: Some(Policy::SelfHosted),
+        admission: Some(&admission), preflight: false, fallback: false,
+    };
+    assert!(valid_one_muse_request(run_id, &candidate));
+    assert!(!valid_one_muse_request("muse-one-stale", &candidate));
+    for invalid in [
+        OneMuseRequest { method: "GET", ..candidate },
+        OneMuseRequest { headers: None, ..candidate },
+        OneMuseRequest { url: "http://127.0.0.1:11436/api/chat", ..candidate },
+        OneMuseRequest { run_id: None, ..candidate },
+        OneMuseRequest { allow_private: false, ..candidate },
+        OneMuseRequest { preflight: true, ..candidate },
+        OneMuseRequest { fallback: true, ..candidate },
+        OneMuseRequest { policy: Some(Policy::Legacy), ..candidate },
+    ] {
+        assert!(!valid_one_muse_request(run_id, &invalid));
+    }
+    let with_authorization = HashMap::from([
+        ("content-type".into(), "application/json".into()),
+        ("authorization".into(), "Bearer PRIVATE".into()),
+    ]);
+    assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
+        headers: Some(&with_authorization), ..candidate
+    }));
+    let multiple = admission::Admission {
+        endpoint_id: "real-qwen".into(), profile_id: "muse".into(), capacity: 2,
+    };
+    assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
+        admission: Some(&multiple), ..candidate
+    }));
+    for mutation in [
+        ("model", serde_json::json!("other:latest")),
+        ("tools", serde_json::json!([{"type":"function"}])),
+        ("tool_choice", serde_json::json!("none")),
+        ("think", serde_json::json!(false)),
+        ("stream", serde_json::json!(false)),
+    ] {
+        let mut changed = body.clone();
+        changed[mutation.0] = mutation.1;
+        let raw = serde_json::to_vec(&changed).unwrap();
+        assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
+            body: Some(&raw), ..candidate
+        }));
+    }
+    for changed in [
+        serde_json::json!({"num_ctx": 4096, "num_predict": 32}),
+        serde_json::json!({"num_ctx": 32768, "num_predict": 8192, "temperature": 0.8}),
+    ] {
+        let mut altered = body.clone();
+        altered["options"] = changed;
+        let raw = serde_json::to_vec(&altered).unwrap();
+        assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
+            body: Some(&raw), ..candidate
+        }));
+    }
+    let mut continued = body.clone();
+    continued["messages"].as_array_mut().unwrap().push(serde_json::json!({
+        "role": "assistant", "content": "Prior answer",
+    }));
+    let raw = serde_json::to_vec(&continued).unwrap();
+    assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
+        body: Some(&raw), ..candidate
+    }));
+}
+
 fn limits() -> Timeouts {
     Timeouts {
         connect: Duration::from_secs(2),

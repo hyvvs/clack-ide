@@ -25,13 +25,15 @@ function parseRootId(folder, runId) {
   return { folder: path.resolve(folder), runId };
 }
 
-export function sanitizeHttpRecord(payload, nextSequence) {
+export function sanitizeHttpRecord(payload, nextSequence, expectedRunId = null) {
   assert(payload && typeof payload === 'object' && !Array.isArray(payload), 'Invalid observation');
+  if (expectedRunId !== null) assert(payload.runId === expectedRunId,
+    'Observation belongs to a different diagnostic session');
   if (payload.boundary !== undefined) {
     // Actual Rust and WebView production hooks use the same strict receipt
     // shape. Translate to the cross-host envelope; never retain raw extras.
     const allowed = ['schemaVersion', 'host', 'requestId', 'boundary',
-      'atUnixMs', 'monoUs', 'sequence', 'bytes', 'dropped'];
+      'atUnixMs', 'monoUs', 'sequence', 'bytes', 'dropped', 'runId'];
     assert(Object.keys(payload).every(k => allowed.includes(k)), 'Unapproved native/WebView field');
     const loss = payload.boundary === 'native-collector-loss';
     const layer = loss ? 'collector' : payload.boundary === 'native-semantic-progress'
@@ -40,6 +42,7 @@ export function sanitizeHttpRecord(payload, nextSequence) {
     return validateDeliveryRecord({ schemaVersion: 1, sequence: nextSequence,
       host: loss ? 'collector' : payload.host,
       layer, kind: loss ? 'event-loss' : payload.boundary,
+      ...(payload.runId === undefined ? {} : { runId:payload.runId }),
       atUnixMs: payload.atUnixMs, monoUs: payload.monoUs,
       ...(loss ? { dropped: payload.dropped } : {
         requestId: payload.requestId, requestSequence: payload.sequence,
@@ -53,7 +56,7 @@ export function sanitizeHttpRecord(payload, nextSequence) {
 }
 
 export async function startDeliveryServer(root, runId, { maxRecords = 65536,
-  requireKernelSession = false } = {}) {
+  requireKernelSession = false, requireOneSession = false } = {}) {
   const approved = parseRootId(root, runId);
   assert(await realpath(approved.folder) === approved.folder, 'Noncanonical run root');
   assert((await readdir(approved.folder)).length === 0, 'Journal requires an empty run-owned root');
@@ -94,9 +97,10 @@ export async function startDeliveryServer(root, runId, { maxRecords = 65536,
       if (req.url === '/v1/status') {
         assert(payload && typeof payload === 'object' && !Array.isArray(payload) &&
           Object.keys(payload).length === 0, 'Status request must be empty');
-        answer(200, { ok: true, ...journal.snapshot(), activeObservations });
+        answer(200, { ok: true, runId, ...journal.snapshot(), activeObservations });
       } else if (req.url === '/v1/observe') {
-        const observation = sanitizeHttpRecord(payload, journal.snapshot().count + 1);
+        const observation = sanitizeHttpRecord(payload, journal.snapshot().count + 1,
+          requireOneSession ? runId : null);
         const result = await journal.append(observation);
         answer(result.accepted ? 200 : 429, { ok: result.accepted,
           sequence: result.sequence ?? null });
@@ -110,7 +114,8 @@ export async function startDeliveryServer(root, runId, { maxRecords = 65536,
           Object.keys(payload).length === 2 && Number.isSafeInteger(payload.expected) &&
           typeof payload.deliveryFailed === 'boolean', 'Invalid finish request');
         const receipt = await journal.seal({ ...payload,
-          deliveryFailed: inputFailed || payload.deliveryFailed, requireKernelSession });
+          deliveryFailed: inputFailed || payload.deliveryFailed, requireKernelSession,
+          requireOneSession, runId });
         closing = true; closeReceipt = receipt;
         const raw = await readFile(filename);
         const rows = raw.toString('utf8').split('\n').filter(Boolean).map(JSON.parse);
@@ -170,10 +175,13 @@ async function main() {
     return;
   }
   if (mode === 'serve') {
-    assert(args.length === 2 || args.length === 3 && args[2] === '--require-kernel',
-      'Usage: serve <empty absolute owned root> <run id> [--require-kernel]');
+    assert(args.length === 2 || args.length === 3 &&
+      ['--require-kernel', '--require-one-session'].includes(args[2]),
+      'Usage: serve <empty absolute owned root> <run id> [--require-kernel|--require-one-session]');
     const server = await startDeliveryServer(args[0], args[1],
-      { requireKernelSession: args[2] === '--require-kernel' });
+      { requireKernelSession: args[2] === '--require-kernel' ||
+          args[2] === '--require-one-session',
+        requireOneSession: args[2] === '--require-one-session' });
     stdout.write(JSON.stringify({ endpoint: server.url, ephemeralSessionNonce: server.nonce,
       capacity: 65536, claim: 'collector-only; no inference or model proof' }) + '\n');
     const stop = async () => { const state = await server.stop();
@@ -210,6 +218,11 @@ async function main() {
     const sendNormalized = async row => {
       if (!row) return;
       const { sequence: _sourceSeq, ...wire } = row;
+      const runId = process.env.CLACK_ONE_MUSE_DIAGNOSTIC_RUN_ID;
+      if (runId !== undefined) {
+        assert(ID.test(runId), 'Invalid diagnostic run identity');
+        wire.runId = runId;
+      }
       const response = await fetch(`${url}/v1/observe`, { method: 'POST',
         headers: { 'content-type': 'application/json', 'x-clack-delivery-session': nonce },
         body: JSON.stringify(wire), signal: AbortSignal.timeout(10_000) });

@@ -1,0 +1,341 @@
+"""Synthetic-only arm, source-integrity and teardown tests; no BPF/SSH/Ollama."""
+
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import time
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+
+HERE = Path(__file__).parent
+
+
+def load(name, file):
+    spec = importlib.util.spec_from_file_location(name, HERE / file)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+collector = load("local_muse_one_ebpf", "local-muse-one-ebpf.py")
+supervisor = load("local_muse_pinned_helper_for_test", "local-muse-tcp-session.py")
+PID = 1139
+ATTEMPT = b"TCPMETA attempt 100150000 1139 1140 12345 11434 43000 149 0 ollama\n"
+RETURN = b"TCPMETA send 100180000 1139 1140 12345 11434 43000 149 149 ollama\n"
+PROBE_START = b"TCPREADY 1139 11434\n"
+PROBE_END = b"TCPSUMMARY 1 1 0\n"
+PROBE_TRACE = PROBE_START + ATTEMPT + RETURN + PROBE_END
+ATTACHED = b"Attached 4 probes\n"
+ATTACHING = b"Attaching 4 probes...\n"
+BASE = {91: ("kprobe", "other_trace"), 92: ("tracepoint", "other_point")}
+ARMED = {**BASE, 93: ("kprobe", "kprobe_tcp_send"),
+         94: ("kprobe", "kretprobe_tcp_s")}
+
+
+class FakeTracer:
+    """Pre-recorded anonymous pipes and an owned, interruptible fake process."""
+
+    pid = 55123
+
+    def __init__(self, output=PROBE_TRACE, errors=ATTACHED):
+        stdout_read, stdout_write = os.pipe()
+        stderr_read, stderr_write = os.pipe()
+        os.write(stdout_write, output)
+        os.write(stderr_write, errors)
+        os.close(stdout_write)
+        os.close(stderr_write)
+        self.stdout = os.fdopen(stdout_read, "rb", buffering=0)
+        self.stderr = os.fdopen(stderr_read, "rb", buffering=0)
+        self.returncode = None
+        self.signals = []
+
+    def poll(self):
+        return self.returncode
+
+    def interrupt(self, how=signal.SIGINT):
+        self.signals.append(how)
+        self.returncode = -how
+
+    def wait(self, timeout=None):
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired("fake-tracer", timeout)
+        return self.returncode
+
+
+class OneEbpOfflineTests(unittest.TestCase):
+    def test_existing_sources_are_exact_pinned_unchanged_versions(self):
+        for filename, expected in (("local-muse-tcp.bt", collector.PROBE_SHA256),
+                                   ("local-muse-tcp-session.py", collector.HELPER_SHA256)):
+            self.assertEqual(hashlib.sha256((HERE / filename).read_bytes()).hexdigest(),
+                             expected)
+        self.assertIn(b"kprobe:tcp_sendmsg /pid == $1/",
+                      (HERE / "local-muse-tcp.bt").read_bytes())
+
+    def test_arm_requires_native_four_probe_notice_begin_and_two_new_kernel_kprobes(self):
+        live_trace = PROBE_TRACE.replace(PROBE_END, b"")
+        for evidence in ((live_trace, ATTACHED),
+                         (ATTACHED + live_trace, b""),
+                         (ATTACHING + live_trace, ATTACHED)):
+            proof, count = collector.source_arm_evidence(*evidence, PID, 11434, BASE, ARMED)
+            self.assertTrue(proof)
+            self.assertEqual(count, 2)
+        for out, err, before, after, pid in (
+                (live_trace, b"", BASE, ARMED, PID),
+                (live_trace, ATTACHING, BASE, ARMED, PID),
+                (live_trace, b"Attached 3 probes\n", BASE, ARMED, PID),
+                (live_trace, ATTACHED + ATTACHED, BASE, ARMED, PID),
+                (live_trace, ATTACHED + b"Lost 3 events\n", BASE, ARMED, PID),
+                (live_trace, ATTACHED, BASE, {**BASE, 93: ("kprobe", "kprobe_tcp_send")}, PID),
+                (live_trace, ATTACHED, BASE, ARMED, PID + 1),
+                (live_trace, ATTACHED, BASE, {**BASE, 93: ("kprobe", "unrelated_send"),
+                                              94: ("kprobe", "unrelated_send")}, PID),
+                (PROBE_TRACE, ATTACHED, BASE, ARMED, PID),
+                (b"TCPREADY 1139 22\n" + ATTEMPT, ATTACHED, BASE, ARMED, PID),
+                (b"PRIVATE_MODEL_RESPONSE\n" + PROBE_TRACE, ATTACHED, BASE, ARMED, PID),
+        ):
+            with self.subTest(error=err, pid=pid):
+                proof, _ = collector.source_arm_evidence(out, err, pid, 11434, before, after)
+                self.assertFalse(proof)
+
+    def test_read_only_program_inventory_rejects_missing_ambiguous_or_malformed(self):
+        with patch.object(collector.subprocess, "run", return_value=SimpleNamespace(
+                stdout=json.dumps([{"id": 1, "type": "kprobe", "name": "kprobe_tcp_send"},
+                                   {"id": 2, "type": "tracepoint", "name": "other"}]).encode())) as run:
+            self.assertEqual(collector.program_inventory("bpftool", 1),
+                             {1: ("kprobe", "kprobe_tcp_send"), 2: ("tracepoint", "other")})
+            self.assertEqual(run.call_args.args[0], ["bpftool", "-j", "prog", "show"])
+            self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        for body in (b"not-json", b"{}", b'[{"id":1,"type":"kprobe","name":"n"},{"id":1,"type":"kprobe","name":"n"}]',
+                     b'[{"id":1,"type":"not-kprobe"},42]'):
+            with patch.object(collector.subprocess, "run", return_value=SimpleNamespace(stdout=body)):
+                with self.assertRaises((ValueError, json.JSONDecodeError)):
+                    collector.program_inventory("bpftool", 1)
+
+    def test_exact_validated_compiler_and_end_warnings_are_benign_only_in_context(self):
+        live = PROBE_TRACE.replace(PROBE_END, b"")
+        warning = (b"/run/local-muse-ebpf/one-run/local-muse-tcp.bt:35:7-27: "
+                   b"WARNING: Unnecessary cast: expression is already of type uint64\n"
+                   b"    (uint64)arg0\n"
+                   b"        ^^^^^\n")
+        warning2 = b"WARNING: Return value discarded.\n"
+        end = (b"/run/local-muse-ebpf/one-run/local-muse-tcp.bt:68:3-14: "
+               b"WARNING: Success\n"
+               b"Additional Info - helper: map_lookup_percpu_elem, retcode: 0\n")
+        for source, diagnostics in ((live, warning + ATTACHED),
+                                    (warning + live, ATTACHED + warning2),
+                                    (live, ATTACHED + warning2 + warning)):
+            proved, count = collector.source_arm_evidence(
+                source, diagnostics, PID, 11434, BASE, ARMED)
+            self.assertTrue(proved)
+            self.assertEqual(count, 2)
+        clean, strict_stderr, notices = collector.classify_source_output(
+            warning + PROBE_TRACE + end, ATTACHED + warning2)
+        self.assertEqual(clean, PROBE_TRACE)
+        self.assertEqual(strict_stderr, b"")
+        self.assertEqual(notices, 1)
+        rows, terminal, complete = supervisor.summarize_trace(
+            clean, strict_stderr, PID, 11434, 1000, True, 0, True)
+        self.assertTrue(complete)
+        self.assertTrue(terminal.startswith("TCPSESSION complete "))
+        for poisoned in (
+            b"WARNING: Unknown compile behavior\n",
+            b"/tmp/attacker/local-muse-tcp.bt:68:1-3: WARNING: Success\n",
+            b"/run/local-muse-ebpf/one-run/local-muse-tcp.bt:68:1-3: WARNING: Success\n",
+            b"Additional Info - helper: map_lookup_percpu_elem, retcode: 0\n",
+            b"Lost 1 events\n",
+            warning + b"    ERROR: verifier rejected program\n",
+            warning + b"    WARNING: malicious unknown warning\n",
+        ):
+            with self.subTest(poisoned=poisoned):
+                ok, _ = collector.source_arm_evidence(
+                    live, ATTACHED + poisoned, PID, 11434, BASE, ARMED)
+                self.assertFalse(ok)
+
+    def test_numeric_readiness_never_exposes_kernel_pointer(self):
+        line = collector.numeric_arm_line(PID, 11434, 2, 0)
+        self.assertRegex(line, r"^TCPARMED (?:\d+ ?)+\n$")
+        self.assertNotIn("12345", line)
+        self.assertEqual(line.split(), ["TCPARMED", "1139", "11434", "4", "2", "0"])
+        with self.assertRaises(ValueError):
+            collector.numeric_arm_line(PID, 11434, -2, 0)
+
+    def test_raw_pointer_private_and_loss_missing_end_never_complete(self):
+        sanitized, stderr, count = collector.classify_source_output(ATTACHED + PROBE_TRACE, b"")
+        self.assertEqual(count, 1)
+        self.assertEqual(sanitized, PROBE_TRACE)
+        self.assertEqual(stderr, b"")
+        cases = ((b"", True), (b"Lost 3 events\n", False),
+                 (b"unexpected warning\n", False))
+        for stderr, expected in cases:
+            lines, status, completed = supervisor.summarize_trace(
+                PROBE_TRACE, stderr, PID, 11434, 900, True, 0, True,
+                socket_key=b"fixture-key")
+            self.assertEqual(completed, expected)
+            self.assertEqual(len(lines), 2)
+            self.assertNotIn("12345", "\n".join(lines))
+            self.assertTrue(status.startswith("TCPSESSION complete " if expected
+                                              else "TCPSESSION partial "))
+        _, _, completed = supervisor.summarize_trace(
+            PROBE_TRACE.replace(PROBE_END, b""), b"", PID, 11434, 900, True, 0, True)
+        self.assertFalse(completed)
+
+    def test_a_nonreading_fifo_has_deadline_and_cannot_block_root_shutdown(self):
+        with patch.object(collector.os, "set_blocking", return_value=None, create=True), \
+                patch.object(collector.os, "write", side_effect=BlockingIOError), \
+                patch.object(collector.select, "select", return_value=([], [], [])), \
+                patch.object(collector.time, "monotonic", side_effect=[0, 0.05, 0.11]):
+            with self.assertRaises(TimeoutError):
+                collector.nonblocking_write(11, b"X" * (2 * 1024 * 1024), 0.1)
+
+    def capture_fake(self, output=PROBE_TRACE, errors=ATTACHED,
+                     inventories=None, identity_replaced=False, attach_timeout=2,
+                     control_command=b"STOP\n"):
+        fake = FakeTracer(output, errors)
+        ready_reader, ready_writer = os.pipe()
+        output_reader, output_writer = os.pipe()
+        control_reader, control_writer = os.pipe()
+        ready_result = []
+        stdout_result = []
+        actual_read = os.read
+
+        def capture_output(fd, value, _deadline):
+            if fd == ready_writer:
+                ready_result.append(value)
+            elif fd == output_writer:
+                stdout_result.append(value)
+            else:
+                raise AssertionError("Unexpected output FD")
+
+        class SyntheticSelector:
+            def __init__(self):
+                self.registered = {}
+
+            def register(self, stream, _events):
+                self.registered[stream] = True
+
+            def unregister(self, stream):
+                del self.registered[stream]
+
+            def get_map(self):
+                return self.registered
+
+            def select(self, timeout):
+                picked = [stream for stream in self.registered if
+                          stream != control_reader or any(
+                              row.startswith("TCPARMED ") for row in ready_result)]
+                if not picked:
+                    time.sleep(min(timeout, 0.01))
+                return [(SimpleNamespace(fileobj=stream), 0) for stream in picked]
+
+            def close(self):
+                self.registered.clear()
+
+        def fake_read(fd, count):
+            if fd == control_reader:
+                return control_command
+            return actual_read(fd, count)
+
+        arm_evidence = collector.source_arm_evidence
+
+        def simulated_live_arm(out, err, pid, port, before, after):
+            # The fake process preloads its END trailer. On real Linux END only
+            # becomes readable *after* SIGINT/STOP, not while checking READY.
+            return arm_evidence(out.replace(PROBE_END, b""), err,
+                                pid, port, before, after)
+        inventory_reads = 0
+
+        def fake_inventory(*_args):
+            nonlocal inventory_reads
+            idx = inventory_reads
+            inventory_reads += 1
+            if inventories:
+                return inventories[min(idx, len(inventories) - 1)]
+            if idx == 0:
+                return BASE
+            return ARMED if fake.poll() is None else BASE
+        stable = (18134, "84217", "/usr/local/bin/ollama", 991)
+        state = {"identity_reads": 0}
+
+        def read_identity(_pid, _port):
+            state["identity_reads"] += 1
+            if identity_replaced and state["identity_reads"] > 1:
+                return (18135, *stable[1:])
+            return stable
+
+        helper = SimpleNamespace(
+            read_identity=read_identity,
+            graceful_shutdown_at=lambda start, seconds: start + 1.35,
+            request_stop=lambda _child, how=signal.SIGINT: fake.interrupt(how),
+            child_pdeathsig=lambda _parent: None,
+            summarize_trace=supervisor.summarize_trace,
+        )
+        try:
+            with patch.object(collector.subprocess, "Popen", return_value=fake), \
+                    patch.object(collector, "program_inventory",
+                                 side_effect=fake_inventory), \
+                    patch.object(collector.os, "set_blocking", return_value=None, create=True), \
+                    patch.object(collector.os, "read", side_effect=fake_read), \
+                    patch.object(collector.selectors, "DefaultSelector", SyntheticSelector), \
+                    patch.object(collector, "source_arm_evidence", side_effect=simulated_live_arm), \
+                    patch.object(collector, "nonblocking_write", side_effect=capture_output):
+                code = collector.run_capture(PID, 3, ready_writer, control_reader, helper, "probe",
+                                             "tracer", "bpftool", attach_timeout,
+                                             stdout_fd=output_writer)
+        finally:
+            os.close(output_writer)
+            os.close(control_reader)
+            os.close(control_writer)
+            try:
+                os.close(ready_writer)
+            except OSError:
+                pass
+            os.close(ready_reader)
+            os.close(output_reader)
+        ready = ready_result[0]
+        result = stdout_result[0]
+        return code, ready, result, fake
+
+    def test_complete_fake_session_arms_before_final_legacy_import_stream(self):
+        code, ready, result, fake = self.capture_fake()
+        self.assertEqual(code, 0)
+        self.assertEqual(ready, "TCPARMED 1139 11434 4 2 0\n")
+        self.assertNotIn("TCPREADY", result)
+        self.assertNotIn("Attached", result)
+        self.assertNotIn("12345", result)
+        self.assertEqual(result.splitlines()[-1].split()[:2], ["TCPSESSION", "complete"])
+        self.assertEqual(fake.signals, [signal.SIGINT])
+
+    def test_missing_attach_or_reused_pid_aborts_and_terminal_is_partial(self):
+        for opts in ({"errors": b"", "attach_timeout": 0.15},
+                     {"identity_replaced": True}):
+            with self.subTest(opts=opts):
+                code, ready, result, fake = self.capture_fake(**opts)
+                self.assertEqual(code, 1)
+                self.assertEqual(ready, "TCPABORT 1 2\n")
+                self.assertEqual(result.splitlines()[-1].split()[:2],
+                                 ["TCPSESSION", "partial"])
+                self.assertIn(signal.SIGINT, fake.signals)
+
+    def test_invalid_stop_control_never_seals_an_armed_session(self):
+        code, ready, output, fake = self.capture_fake(control_command=b"RUN-AGAIN\n")
+        self.assertEqual(code, 1)
+        self.assertTrue(ready.startswith("TCPARMED "))
+        self.assertEqual(output.splitlines()[-1].split()[:2], ["TCPSESSION", "partial"])
+        self.assertEqual(fake.signals, [signal.SIGINT])
+
+    def test_kernel_programs_still_loaded_after_tracer_exit_fail_cleanup(self):
+        code, ready, output, fake = self.capture_fake(inventories=[BASE, ARMED, ARMED])
+        self.assertEqual(code, 1)
+        self.assertTrue(ready.startswith("TCPARMED "))
+        self.assertEqual(output.splitlines()[-1].split()[:2],
+                         ["TCPSESSION", "partial"])
+
+
+if __name__ == "__main__":
+    unittest.main()

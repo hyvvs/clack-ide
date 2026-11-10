@@ -126,6 +126,32 @@ afterEach(async () => {
 });
 
 describe("native inference attempt transport", () => {
+  it("only forwards an explicit diagnostic run ID and preserves raw request bytes", async () => {
+    const runId = "muse-one-0123456789abcdef";
+    const permit = "a".repeat(64);
+    const body = '{"model":"muse-glimmer:30b","messages":[{"role":"user","content":"offline"}]}';
+    const pending = createProxyFetch({ diagnosticRunId: runId, selfHosted: true,
+      diagnosticPermit: permit, allowPrivateNetwork: true })('http://127.0.0.1:11435/api/chat', {
+        method: "POST", body,
+      });
+    const attempt = await untilAttempt();
+    expect(attempt.args).toMatchObject({ diagnosticRunId: runId, diagnosticPermit: permit,
+      body: [...new TextEncoder().encode(body)] });
+    headers(attempt);
+    chunk(attempt, "offline");
+    terminal(attempt);
+    attempt.done.resolve();
+    expect(await (await pending).text()).toBe("offline");
+    const other = fetchFor()('http://localhost');
+    const normal = await untilAttempt(1);
+    expect(Object.prototype.hasOwnProperty.call(normal.args, "diagnosticRunId")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(normal.args, "diagnosticPermit")).toBe(false);
+    headers(normal);
+    chunk(normal, "normal");
+    terminal(normal);
+    normal.done.resolve();
+    expect(await (await other).text()).toBe("normal");
+  });
   it("joins Agent recovery generation, native IPC, response and done without changing the payload", async () => {
     const observations: ProviderRecoveryObservation[] = [];
     const model = withProviderRetryTracking(createOllamaModel({

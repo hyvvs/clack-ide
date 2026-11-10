@@ -1,6 +1,7 @@
 /** Explicitly opted-in, content-free delivery observations. This is never
  * installed by normal Agent startup and never influences HTTP, SDK, or clocks. */
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 
 export const LOCAL_DELIVERY_EVENT = "clack-local-delivery";
 export const DELIVERY_BOUNDARIES = [
@@ -22,13 +23,16 @@ export type DeliveryRow = Readonly<{
   sequence: number;
   bytes: number;
   dropped?: number;
+  runId?: string;
 }>;
 type Sink = (row: DeliveryRow) => void;
-const consumers = new Set<Sink>();
+type Consumer = { sink: Sink; runId?: string };
+const consumers = new Set<Consumer>();
 const ID = /^[A-Za-z0-9_-]{1,80}$/;
+const RUN_ID = /^[a-z0-9][a-z0-9-]{7,79}$/;
 const boundaries = new Set<string>(DELIVERY_BOUNDARIES);
 const allowed = new Set(["schemaVersion", "host", "requestId", "boundary",
-  "atUnixMs", "monoUs", "sequence", "bytes", "dropped"]);
+  "atUnixMs", "monoUs", "sequence", "bytes", "dropped", "runId"]);
 const count = (n: unknown): n is number => typeof n === "number" &&
   Number.isSafeInteger(n) && n >= 0;
 
@@ -41,6 +45,7 @@ export function validateDeliveryRow(value: unknown): DeliveryRow {
       !["clack-native", "clack-webview"].includes(String(v.host)) ||
       typeof v.requestId !== "string" || !ID.test(v.requestId) ||
       typeof v.boundary !== "string" || !boundaries.has(v.boundary) ||
+      (v.runId !== undefined && (typeof v.runId !== "string" || !RUN_ID.test(v.runId))) ||
       ![v.atUnixMs, v.monoUs, v.sequence, v.bytes].every(count) ||
       (v.boundary === "native-semantic-progress" && v.bytes !== 0) ||
       (v.dropped !== undefined && (!count(v.dropped) || v.dropped === 0 ||
@@ -52,13 +57,15 @@ export function validateDeliveryRow(value: unknown): DeliveryRow {
     requestId: v.requestId, boundary: v.boundary as DeliveryBoundary,
     atUnixMs: v.atUnixMs as number, monoUs: v.monoUs as number,
     sequence: v.sequence as number, bytes: v.bytes as number,
-    ...(v.dropped === undefined ? {} : { dropped: v.dropped as number }) });
+    ...(v.dropped === undefined ? {} : { dropped: v.dropped as number }),
+    ...(v.runId === undefined ? {} : { runId: v.runId as string }) });
 }
 
 // Producers do not know/receive diagnostic callbacks or Promise results.
 function emit(row: DeliveryRow): void {
   for (const consumer of consumers) {
-    try { consumer(row); } catch { /* never affect inference */ }
+    try { consumer.sink(consumer.runId ? { ...row, runId: consumer.runId } : row); }
+    catch { /* never affect inference */ }
   }
 }
 
@@ -79,9 +86,15 @@ export function observeWebviewDelivery(
  * receipt, never a successful collection claim. Caller owns durable storage. */
 export async function installLocalDeliveryCapture(
   persist: (row: DeliveryRow) => Promise<void>, maxRecords = 8192,
+  runId?: string,
 ) {
   if (!Number.isSafeInteger(maxRecords) || maxRecords < 1 || maxRecords > 65536)
     throw new Error("Invalid delivery journal bound");
+  if (runId !== undefined && !RUN_ID.test(runId))
+    throw new Error("Invalid diagnostic run ID");
+  if ((runId !== undefined && consumers.size > 0) ||
+      (runId === undefined && [...consumers].some(consumer => consumer.runId)))
+    throw new Error("Conflicting delivery capture already registered");
   let emitted = 0, acknowledged = 0, overflow = 0, deliveryFailed = false, stopped = false;
   let sinkFailed = false;
   let pending: Promise<void> = Promise.resolve();
@@ -90,6 +103,7 @@ export async function installLocalDeliveryCapture(
     let row: DeliveryRow;
     try { row = validateDeliveryRow(value); }
     catch { deliveryFailed = true; return; }
+    if (row.runId !== runId) { deliveryFailed = true; return; }
     if (row.boundary === "native-collector-loss") {
       overflow += row.dropped ?? 1;
       deliveryFailed = true;
@@ -102,13 +116,21 @@ export async function installLocalDeliveryCapture(
       catch { deliveryFailed = true; sinkFailed = true; }
     });
   };
-  const onWebview: Sink = row => queue(row);
-  consumers.add(onWebview);
+  const consumer: Consumer = { sink: row => queue(row), runId };
+  consumers.add(consumer);
   let unlisten: (() => void) | undefined;
   try {
     unlisten = await listen<unknown>(LOCAL_DELIVERY_EVENT, event => queue(event.payload));
+    if (runId) {
+      const ready = await invoke<{ runId: string; nativeReady: boolean }>(
+        "ai_http_diagnostic_ready", { runId },
+      );
+      if (ready?.runId !== runId || ready.nativeReady !== true)
+        throw new Error("Native diagnostic capture not registered");
+    }
   } catch (error) {
-    consumers.delete(onWebview);
+    consumers.delete(consumer);
+    unlisten?.();
     throw error;
   }
   // A bounded object only reports ACK and loss, not provider success.
@@ -117,8 +139,10 @@ export async function installLocalDeliveryCapture(
       ? "collector-flushed" as const : "partial-or-unsealed" as const });
   return {
     snapshot,
+    ...(runId ? { readiness: Object.freeze({ runId, nativeReady: true as const,
+      webviewReady: true as const }) } : {}),
     async flush() { await pending; return snapshot(); },
-    async stop() { stopped = true; consumers.delete(onWebview);
+    async stop() { stopped = true; consumers.delete(consumer);
       unlisten?.(); await pending; return snapshot(); },
   };
 }
