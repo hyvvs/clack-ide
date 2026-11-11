@@ -26,7 +26,7 @@ HASH = collector.FIXED_DIAGNOSTIC_BPFT_SHA256
 
 def manifest(**override):
     row = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "binaryPath": str(FIXED_BINARY),
         "binarySha256": HASH,
         "version": "7.8.1",
@@ -34,6 +34,10 @@ def manifest(**override):
         "sourceCommit": collector.FIXED_DIAGNOSTIC_SOURCE_COMMIT,
         "libbpfCommit": collector.FIXED_DIAGNOSTIC_LIBBPF_COMMIT,
         "linkBlob": collector.FIXED_DIAGNOSTIC_LINK_BLOB,
+        "patchSha256": collector.FIXED_DIAGNOSTIC_PATCH_SHA256,
+        "patchedLinkBlob": collector.FIXED_DIAGNOSTIC_PATCHED_LINK_BLOB,
+        "patchedLinkSha256": collector.FIXED_DIAGNOSTIC_PATCHED_LINK_SHA256,
+        "binaryBuildId": collector.FIXED_DIAGNOSTIC_BPFT_BUILD_ID,
         "sourceArchiveSha256": collector.FIXED_DIAGNOSTIC_SOURCE_ARCHIVE_SHA256,
         "libbpfArchiveSha256": collector.FIXED_DIAGNOSTIC_LIBBPF_ARCHIVE_SHA256,
     }
@@ -93,6 +97,8 @@ class PinnedBpftoolTests(unittest.TestCase):
         self.assertEqual(evidence["libbpfVersion"], "1.9")
         self.assertEqual(evidence["sourceCommit"],
                          collector.FIXED_DIAGNOSTIC_SOURCE_COMMIT)
+        self.assertEqual(evidence["patchSha256"],
+                         collector.FIXED_DIAGNOSTIC_PATCH_SHA256)
         self.assertEqual(verified.call_count, 3)
         self.assertEqual(run.call_args.args[0],
                          [str(FIXED_BINARY), "-j", "version"])
@@ -166,6 +172,11 @@ class PinnedBpftoolTests(unittest.TestCase):
             {"sourceCommit": "0" * 40},
             {"libbpfCommit": "0" * 40},
             {"linkBlob": "0" * 40},
+            {"patchSha256": "0" * 64},
+            {"patchedLinkBlob": "0" * 40},
+            {"patchedLinkSha256": "0" * 64},
+            {"binaryBuildId": "0" * 40},
+            {"schemaVersion": 1},
             {"sourceArchiveSha256": "0" * 64},
             {"libbpfArchiveSha256": "0" * 64},
             {"binaryPath": "/usr/bin/bpftool"},

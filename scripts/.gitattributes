@@ -2,3 +2,6 @@
 clack-bpftool-json-balance.patch text eol=lf whitespace=-blank-at-eol,-space-before-tab
 clack-build-json-balance-offline.sh text eol=lf
 clack-bpftool-json-balance.test.py text eol=lf
+clack-replace-json-bpftool-root.sh text eol=lf
+clack-json-idle-qualify.py text eol=lf
+clack-json-bpftool-replace.test.py text eol=lf

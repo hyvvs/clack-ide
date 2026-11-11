@@ -45,7 +45,8 @@ MAX_PROGRAM_LIST = 4 * 1024 * 1024
 MAX_INVENTORY_AUDIT = 2 * 1024 * 1024
 FIXED_DIAGNOSTIC_BPFT_PATH = Path("/opt/clack/diagnostic-tools/bpftool-678d538")
 FIXED_DIAGNOSTIC_BPFT_PIN = Path("/opt/clack/diagnostic-tools/bpftool-678d538.pin.json")
-FIXED_DIAGNOSTIC_BPFT_SHA256 = "ff08d9fe9a545f488f4ecc7145f491027704a2139987f08432c1f9265be70e3d"
+FIXED_DIAGNOSTIC_BPFT_SHA256 = "0e0059127c7c926fe1ee82a7804479415a19b73515b7aebc8bb59ce06de36fa0"
+FIXED_DIAGNOSTIC_BPFT_BUILD_ID = "7f530859f49ede16767f9f4eb8551a6ac85aa25d"
 FIXED_DIAGNOSTIC_CRASH_WRAPPER_PATH = Path(
     "/opt/clack/diagnostic-tools/clack-bpftool-abort-capture.py")
 FIXED_DIAGNOSTIC_CRASH_WRAPPER_SHA256 = (
@@ -53,6 +54,9 @@ FIXED_DIAGNOSTIC_CRASH_WRAPPER_SHA256 = (
 FIXED_DIAGNOSTIC_SOURCE_COMMIT = "678d538a85e6960f84e443695eebb13f66f89981"
 FIXED_DIAGNOSTIC_LIBBPF_COMMIT = "872299d94e27d2fa9f119667c7e52268698dc760"
 FIXED_DIAGNOSTIC_LINK_BLOB = "5cffa2d283b47327b8611b4d85b1d70821f40964"
+FIXED_DIAGNOSTIC_PATCH_SHA256 = "3404f298ae9e2eaef4ef0533971667bf1a1c71b3fe4e8bc4a489cf0749384d2d"
+FIXED_DIAGNOSTIC_PATCHED_LINK_BLOB = "4a8747204f8e98e24ca7aa29690582b4f3eece52"
+FIXED_DIAGNOSTIC_PATCHED_LINK_SHA256 = "b94fcf719e96993501d9dd1ef4be812ed250b34d92949137139944f6ec64c271"
 FIXED_DIAGNOSTIC_SOURCE_ARCHIVE_SHA256 = "63ac89f708672bc0071f7f84bc389c51f20820e5d1bf1d45e077153edcbe6362"
 FIXED_DIAGNOSTIC_LIBBPF_ARCHIVE_SHA256 = "66da46956d987ba2f15522f46810a4ce23132b01dea27452f21907a670ad2e74"
 # Only enumerated, static bpftool errors can cross the root audit boundary
@@ -177,15 +181,20 @@ def qualified_diagnostic_bpftool(pin_path=FIXED_DIAGNOSTIC_BPFT_PIN,
     expected_keys = {
         "schemaVersion", "binaryPath", "binarySha256", "version",
         "libbpfVersion", "sourceCommit", "libbpfCommit", "linkBlob",
-        "sourceArchiveSha256", "libbpfArchiveSha256",
+        "sourceArchiveSha256", "libbpfArchiveSha256", "patchSha256",
+        "patchedLinkBlob", "patchedLinkSha256", "binaryBuildId",
     }
     if not isinstance(config, dict) or set(config) != expected_keys or \
             type(config["schemaVersion"]) is not int or \
-            config["schemaVersion"] != 1 or \
+            config["schemaVersion"] != 2 or \
             config["binaryPath"] != str(binary_path) or \
             config["sourceCommit"] != FIXED_DIAGNOSTIC_SOURCE_COMMIT or \
             config["libbpfCommit"] != FIXED_DIAGNOSTIC_LIBBPF_COMMIT or \
             config["linkBlob"] != FIXED_DIAGNOSTIC_LINK_BLOB or \
+            config["patchSha256"] != FIXED_DIAGNOSTIC_PATCH_SHA256 or \
+            config["patchedLinkBlob"] != FIXED_DIAGNOSTIC_PATCHED_LINK_BLOB or \
+            config["patchedLinkSha256"] != FIXED_DIAGNOSTIC_PATCHED_LINK_SHA256 or \
+            config["binaryBuildId"] != FIXED_DIAGNOSTIC_BPFT_BUILD_ID or \
             config["sourceArchiveSha256"] != FIXED_DIAGNOSTIC_SOURCE_ARCHIVE_SHA256 or \
             config["libbpfArchiveSha256"] != FIXED_DIAGNOSTIC_LIBBPF_ARCHIVE_SHA256 or \
             config["binarySha256"] != FIXED_DIAGNOSTIC_BPFT_SHA256 or \
@@ -218,6 +227,8 @@ def qualified_diagnostic_bpftool(pin_path=FIXED_DIAGNOSTIC_BPFT_PIN,
         "libbpfVersion": config["libbpfVersion"],
         "sourceCommit": config["sourceCommit"],
         "linkBlob": config["linkBlob"],
+        "patchSha256": config["patchSha256"],
+        "patchedLinkBlob": config["patchedLinkBlob"],
     }
 
 
