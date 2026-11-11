@@ -112,9 +112,11 @@ retained under the ignored attempt folder. This SHA-256 is now
 **independently hard-pinned** in the Clack diagnostic collector,
 PowerShell root handoff, and root installer. A caller cannot substitute
 a different digest by changing the manifest or build receipt.
-The compiled executable is not yet root-installed or idle-qualified.
+The compiled executable was subsequently installed under the dedicated
+root-owned diagnostic path and passed the **idle-only** qualification
+described below. It does not replace the system package.
 
-## Diagnostic-only Clack selector (disabled until root qualification)
+## Diagnostic-only Clack selector (idle-qualified; live unverified)
 
 The reviewed collector `scripts/local-muse-one-ebpf.py` now supports
 `--fixed-diagnostic-bpftool` exclusively for **short (<=20-second)**
@@ -144,7 +146,7 @@ This does not change `session_link_ids`, attach ownership
 requirements, readiness FIFO semantics, STOP or terminal accounting.
 No inference is possible from this code or its offline tests.
 
-## Root install and idle root validation — NOT YET COMPLETE
+## Root install and idle root validation — PASS 2026-11-11
 
 `scripts/Install-ClackFixedBpftool.ps1 -AttemptId <eight-hex-attempt>`
 is a **separate, interactive-sudo** handoff, unavailable until the
@@ -182,29 +184,36 @@ audit is copied to the attempt's ignored local evidence directory as
 `root-idle-summary.numeric`. It never installs a system package,
 changes `/usr/bin/bpftool` or alters `PATH`.
 
-This installer has passed offline Bash/PowerShell syntax checks and
-source-boundary review, **not** a root execution. A successful
-`root-idle-summary.numeric` and a matching local binary digest are
-still required before claiming a host-validated fixed bpftool.
+The operator completed the separately reviewed, interactive-sudo
+`Install-ClackFixedBpftool.ps1 -AttemptId a47c6d91` command on
+2026-11-11. Root qualification returned `PASS` and created the private
+diagnostic binary and corresponding root-controlled provenance pin.
+The copied, **612-byte**, content-free
+`attempt-a47c6d91/root-idle-summary.numeric` was independently read
+and validated against the local executable digest. Its SHA-256 is
+`a718c51c25782f260848bf4d0a27bce3361836695802fc59d17cccddcb0186f1`.
 
-Do not create the root pin or invoke a kernel-only listener until:
+| Idle root qualification | Confirmed result |
+| --- | --- |
+| Installed diagnostic binary SHA-256 | `ff08d9fe9a545f488f4ecc7145f491027704a2139987f08432c1f9265be70e3d` |
+| Fixed tool version / libbpf | `7.8.1` / `1.9` |
+| Root `-j prog show` | **PASS**, 49 programs |
+| Program ID/type/name semantics vs. packaged tool | **PASS**; SHA-256 `b85774d9637a3d3f71d791faab2c217bba3565b1d783fcf361a026861b435860` |
+| Root `-j link show` | **PASS**, 3 links |
+| Link ID/type/program-reference semantics vs. packaged tool | **PASS**; SHA-256 `e03b50c39962bb93866199e607a1045c297e3fb35d54affd73520bc9e59ec39c` |
+| System package replaced or modified | **No** |
 
-1. The private build has emitted a verified binary SHA-256 and its
-   full compiler/toolchain and version receipts.
-2. The binary has been separately reviewed and copied by a human
-   administrator **only** to the root-owned diagnostic path, never
-   `/usr/bin/bpftool`, without installing/upgrading packages.
-3. Its actual root-run `-j version` agrees with the trusted pin,
-   and its idle root `-j prog show` and `-j link show` both
-   exit 0 and parse as JSON arrays. Record bounded size/hash,
-   schema/counts and compare ID/type/program-reference semantics
-   against the packaged tool; never export raw private BPF JSON.
-4. Its `link show` capability exposes the required `pids[]`
-   owner field in a separately authorized *future* live session;
-   idle metadata alone cannot establish that.
+This proves only successful **idle root** program/link enumeration,
+JSON parsing and metadata comparison. It does **not** prove that
+`kprobe_multi` active-link metadata, `pids[]` attachment owner, or
+fresh session entry/return links will satisfy Clack's strict ownership
+and terminal accounting. The native tracer's previous live
+`Attached 4 probes` and `TCPREADY` signals cannot replace that proof.
 
-No root install/idle validation has been performed. The private binary
-SHA-256 **is established and hard-pinned**, but the host's actual root
-`prog show` and `link show` response remains unverified. **No new live
-kernel-only validation is justified** until a separately human-operated
-idle qualification produces its verified receipt.
+The fixed source, hard-pinned private binary, PID-owner skeleton support,
+and successful idle root metadata checks now **justify considering one
+separately authorized, bounded kernel-only A/B validation** using
+the actual importer path. Do **not** launch it from this documentation
+update, re-use an expired run ID, change readiness conditions, or run
+inference, Muse, ForgeBoard or the coordinator. A live authorization is
+still required.
