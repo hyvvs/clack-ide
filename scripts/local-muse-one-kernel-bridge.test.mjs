@@ -333,6 +333,8 @@ test('operator scripts stage only reviewed files, guard FIFO open with timeout',
   assert.match(root,/\/usr\/bin\/timeout --signal=TERM --kill-after=2s "\$\{seconds_plus_six\}s"\s+\\\s+\/usr\/bin\/bash -c/);
   assert.match(root,/--seconds "\$6"/);
   assert.match(root,/--inventory-audit-fd 4/);
+  assert.match(root,/fixed_bpftool_mode=fixed/);
+  assert.match(root,/--fixed-diagnostic-bpftool/);
   assert.match(root,/seconds -gt 20/);
   assert.match(root,/0<>"\$3" 1>"\$4" 3>"\$5" 4>"\$7"/);
   assert.match(root,/inventory_audit=\$dest\/kernel-inventory-audit\.jsonl/);

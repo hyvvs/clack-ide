@@ -43,6 +43,13 @@ MAX_STDOUT = 8 * 1024 * 1024
 MAX_STDERR = 64 * 1024
 MAX_PROGRAM_LIST = 4 * 1024 * 1024
 MAX_INVENTORY_AUDIT = 2 * 1024 * 1024
+FIXED_DIAGNOSTIC_BPFT_PATH = Path("/opt/clack/diagnostic-tools/bpftool-678d538")
+FIXED_DIAGNOSTIC_BPFT_PIN = Path("/opt/clack/diagnostic-tools/bpftool-678d538.pin.json")
+FIXED_DIAGNOSTIC_SOURCE_COMMIT = "678d538a85e6960f84e443695eebb13f66f89981"
+FIXED_DIAGNOSTIC_LIBBPF_COMMIT = "872299d94e27d2fa9f119667c7e52268698dc760"
+FIXED_DIAGNOSTIC_LINK_BLOB = "5cffa2d283b47327b8611b4d85b1d70821f40964"
+FIXED_DIAGNOSTIC_SOURCE_ARCHIVE_SHA256 = "63ac89f708672bc0071f7f84bc389c51f20820e5d1bf1d45e077153edcbe6362"
+FIXED_DIAGNOSTIC_LIBBPF_ARCHIVE_SHA256 = "66da46956d987ba2f15522f46810a4ce23132b01dea27452f21907a670ad2e74"
 # Only enumerated, static bpftool errors can cross the root audit boundary
 # verbatim. A generic "Error: <printable text>" rule can disclose private
 # data even after banning paths/keywords (e.g. IPs and decimal pointers).
@@ -118,6 +125,96 @@ def verified_file(path, digest=None):
     return resolved
 
 
+def pinned_diagnostic_file(path, digest=None):
+    """Require root-owned immutable path components, executable and exact bytes.
+
+    Refuse symlinked parent directories as well as symlinked leaves; the
+    existing generic verified_file only refuses a symlink on the leaf.
+    No fallback to PATH, the system bpftool, or user-owned build stages.
+    """
+    path = Path(path)
+    for node in (path, *path.parents):
+        info = node.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or \
+                info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise ValueError("Diagnostic bpftool path is not root-controlled")
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("Diagnostic bpftool must be a regular file")
+    if digest is not None:
+        if type(digest) is not str or \
+                not re.fullmatch(r"[a-f0-9]{64}", digest):
+            raise ValueError("Invalid diagnostic binary pin")
+        if info.st_size <= 0 or info.st_size > 32 * 1024 * 1024:
+            raise ValueError("Diagnostic bpftool binary size outside bound")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError("Diagnostic bpftool digest mismatch")
+    return path
+
+
+def qualified_diagnostic_bpftool(pin_path=FIXED_DIAGNOSTIC_BPFT_PIN,
+                                binary_path=FIXED_DIAGNOSTIC_BPFT_PATH):
+    """Select the one reviewed, locally installed diagnostic binary.
+
+    The SHA-256 is independently pinned in a root-owned manifest installed
+    after its build validation, not supplied by a live command argument.
+    An unconfigured/incorrect pin is fatal before tracer startup.
+    """
+    if Path(pin_path) != FIXED_DIAGNOSTIC_BPFT_PIN or \
+            Path(binary_path) != FIXED_DIAGNOSTIC_BPFT_PATH or \
+            Path(binary_path) == Path("/usr/bin/bpftool"):
+        raise ValueError("Only the fixed Clack diagnostic bpftool is supported")
+    pin = pinned_diagnostic_file(pin_path)
+    raw = pin.read_bytes()
+    if not raw or len(raw) > 2048:
+        raise ValueError("Diagnostic bpftool manifest invalid")
+    config = json.loads(raw)
+    expected_keys = {
+        "schemaVersion", "binaryPath", "binarySha256", "version",
+        "libbpfVersion", "sourceCommit", "libbpfCommit", "linkBlob",
+        "sourceArchiveSha256", "libbpfArchiveSha256",
+    }
+    if not isinstance(config, dict) or set(config) != expected_keys or \
+            type(config["schemaVersion"]) is not int or \
+            config["schemaVersion"] != 1 or \
+            config["binaryPath"] != str(binary_path) or \
+            config["sourceCommit"] != FIXED_DIAGNOSTIC_SOURCE_COMMIT or \
+            config["libbpfCommit"] != FIXED_DIAGNOSTIC_LIBBPF_COMMIT or \
+            config["linkBlob"] != FIXED_DIAGNOSTIC_LINK_BLOB or \
+            config["sourceArchiveSha256"] != FIXED_DIAGNOSTIC_SOURCE_ARCHIVE_SHA256 or \
+            config["libbpfArchiveSha256"] != FIXED_DIAGNOSTIC_LIBBPF_ARCHIVE_SHA256 or \
+            config["version"] != "7.8.1" or \
+            config["libbpfVersion"] != "1.9":
+        raise ValueError("Diagnostic source/version provenance mismatch")
+    bpftool = pinned_diagnostic_file(binary_path, config["binarySha256"])
+    if not bpftool.stat().st_mode & stat.S_IXUSR:
+        raise ValueError("Diagnostic bpftool is not executable")
+    process = subprocess.run(
+        [str(bpftool), "-j", "version"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, check=False, timeout=2.0)
+    if process.returncode != 0 or process.stderr or \
+            not 0 < len(process.stdout) <= 2048:
+        raise ValueError("Diagnostic bpftool version command failed")
+    details = json.loads(process.stdout)
+    if not isinstance(details, dict) or \
+            details.get("version") != config["version"] or \
+            details.get("libbpf_version") != config["libbpfVersion"] or \
+            not isinstance(details.get("features"), dict) or \
+            details["features"].get("skeletons") is not True:
+        raise ValueError("Diagnostic bpftool binary version/provenance mismatch")
+    # Check again after executing, never trust version text as a binary pin.
+    pinned_diagnostic_file(binary_path, config["binarySha256"])
+    return bpftool, {
+        "binaryPath": str(bpftool),
+        "binarySha256": config["binarySha256"],
+        "binaryVersion": config["version"],
+        "libbpfVersion": config["libbpfVersion"],
+        "sourceCommit": config["sourceCommit"],
+        "linkBlob": config["linkBlob"],
+    }
+
+
 def load_hardened_support(folder):
     source = verified_file(folder / "local-muse-tcp-session.py", HELPER_SHA256)
     spec = importlib.util.spec_from_file_location("local_muse_pinned_supervisor", source)
@@ -156,14 +253,16 @@ def safe_bpft_diagnostic(raw):
 class InventoryAudit:
     """Bounded, root-owned JSONL for EACH bpftool inventory invocation."""
 
-    def __init__(self, fd):
+    def __init__(self, fd, binary_identity=None):
         self.fd = fd
         self.bytes_written = 0
         self.invocations = 0
+        self.binary_identity = binary_identity or {}
 
     def record(self, row):
         self.invocations += 1
-        row = {"schemaVersion": 1, "invocation": self.invocations, **row}
+        row = {"schemaVersion": 1, "invocation": self.invocations,
+               **self.binary_identity, **row}
         payload = (json.dumps(row, sort_keys=True, separators=(",", ":")) +
                    "\n").encode("ascii")
         if self.bytes_written + len(payload) > MAX_INVENTORY_AUDIT:
@@ -578,9 +677,10 @@ def emit_content_free_audit(stdout, stderr, pid, programs_before, programs_after
 
 
 def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpftool,
-                attach_timeout=60, stdout_fd=1, inventory_audit_fd=None):
+                attach_timeout=60, stdout_fd=1, inventory_audit_fd=None,
+                bpftool_identity=None):
     """Own one tracer only, while retaining every byte of untrusted BPF output."""
-    inventory_audit = (InventoryAudit(inventory_audit_fd)
+    inventory_audit = (InventoryAudit(inventory_audit_fd, bpftool_identity)
                        if inventory_audit_fd is not None else None)
     identity = helper.read_identity(pid, 11434)
     baseline_programs = program_inventory(bpftool, 2.0,
@@ -850,6 +950,7 @@ def main(argv=None):
     parser.add_argument("--ready-fd", required=True, type=int)
     parser.add_argument("--control-fd", default=0, type=int)
     parser.add_argument("--inventory-audit-fd", required=True, type=int)
+    parser.add_argument("--fixed-diagnostic-bpftool", action="store_true")
     args = parser.parse_args(argv)
     if platform.system() != "Linux" or sys.byteorder != "little" or os.geteuid() != 0:
         parser.error("Linux little-endian root operator required")
@@ -865,6 +966,8 @@ def main(argv=None):
         parser.error("Inventory audit FD must be a separate root-owned regular file")
     if not 1 <= args.seconds <= MAX_SECONDS:
         parser.error("Maximum session is 1800 seconds")
+    if args.fixed_diagnostic_bpftool and args.seconds > 20:
+        parser.error("Pinned bpftool selection is short diagnostic-only")
     if not stat.S_ISFIFO(os.fstat(args.ready_fd).st_mode) or \
             not stat.S_ISFIFO(os.fstat(1).st_mode) or \
             not stat.S_ISFIFO(os.fstat(args.control_fd).st_mode):
@@ -875,14 +978,26 @@ def main(argv=None):
         helper.validate_scope(args.pid, 11434, args.seconds)
         probe = verified_file(folder / "local-muse-tcp.bt", PROBE_SHA256)
         tracer_name = shutil.which("bpftrace")
-        bpftool_name = shutil.which("bpftool")
-        if not tracer_name or not bpftool_name:
-            raise ValueError("Approved BPF tools unavailable")
+        bpftool_name = shutil.which("bpftool") if not args.fixed_diagnostic_bpftool else None
+        if not tracer_name:
+            raise ValueError("Approved BPF tracer unavailable")
         tracer = helper.trusted_root_file(tracer_name)
-        bpftool = helper.trusted_root_file(bpftool_name)
+        if args.seconds != MAX_SECONDS and not args.fixed_diagnostic_bpftool:
+            raise ValueError("Short affected-host diagnostic requires pinned fixed bpftool")
+        if args.fixed_diagnostic_bpftool:
+            bpftool, bpftool_identity = qualified_diagnostic_bpftool()
+            print("KERNEL_AUDIT_BPFT_DIAGNOSTIC_SELECTED=1", file=sys.stderr, flush=True)
+            print("KERNEL_AUDIT_BPFT_BINARY_SHA256=" +
+                  bpftool_identity["binarySha256"], file=sys.stderr, flush=True)
+        else:
+            if not bpftool_name:
+                raise ValueError("Approved BPF tools unavailable")
+            bpftool = helper.trusted_root_file(bpftool_name)
+            bpftool_identity = None
         return run_capture(args.pid, args.seconds, args.ready_fd, args.control_fd,
                            helper, probe, tracer, bpftool,
-                           inventory_audit_fd=args.inventory_audit_fd)
+                           inventory_audit_fd=args.inventory_audit_fd,
+                           bpftool_identity=bpftool_identity)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         # Setup may have failed before a child was created. Never emit READY.
         # An absent/incomplete import terminal is an unsealable source.

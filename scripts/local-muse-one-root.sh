@@ -110,12 +110,19 @@ seconds_plus_six=$((seconds + 6))
 /usr/bin/chmod 0600 -- "$dest/kernel-audit.stderr"
 /usr/bin/touch -- "$inventory_audit"
 /usr/bin/chmod 0600 -- "$inventory_audit"
+fixed_bpftool_mode=normal
+if ((seconds != 1800)); then
+  # Short no-traffic diagnostic sessions on this affected host MUST use
+  # the privately SHA-pinned and root-owned fixed tool. No PATH fallback.
+  fixed_bpftool_mode=fixed
+fi
 /usr/bin/timeout --signal=TERM --kill-after=2s "${seconds_plus_six}s" \
   /usr/bin/bash -c '
-    exec /usr/bin/python3 -B "$1" --pid "$2" --seconds "$6" \
-      --ready-fd 3 --control-fd 0 --inventory-audit-fd 4 \
+    args=(--pid "$2" --seconds "$6" --ready-fd 3 --control-fd 0 --inventory-audit-fd 4)
+    if [[ "$8" == fixed ]]; then args+=(--fixed-diagnostic-bpftool); fi
+    exec /usr/bin/python3 -B "$1" "${args[@]}" \
       0<>"$3" 1>"$4" 3>"$5" 4>"$7"
-  ' bash "$session" "$pid" "$control" "$metadata" "$ready" "$seconds" "$inventory_audit" \
+  ' bash "$session" "$pid" "$control" "$metadata" "$ready" "$seconds" "$inventory_audit" "$fixed_bpftool_mode" \
     2>"$dest/kernel-audit.stderr"
 status=$?
 set -e
