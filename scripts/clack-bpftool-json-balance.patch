@@ -1,0 +1,30 @@
+diff --git a/src/link.c b/src/link.c
+--- a/src/link.c
++++ b/src/link.c
+@@ -338,14 +338,14 @@ show_kprobe_multi_json(struct bpf_link_info *info, json_writer_t *wtr)
+ 	data = get_addr_cookie_array(u64_to_ptr(info->kprobe_multi.addrs),
+ 				     u64_to_ptr(info->kprobe_multi.cookies),
+ 				     info->kprobe_multi.count);
+ 	if (!data)
+-		return;
++		goto out;
+ 
+ 	/* Load it once for all. */
+ 	if (!dd.sym_count)
+ 		kernel_syms_load(&dd);
+ 	if (!dd.sym_count)
+-		goto error;
++		goto out;
+ 
+ 	is_ibt_enabled = is_x86_ibt_enabled();
+ 	for (i = 0; i < dd.sym_count; i++) {
+@@ -367,7 +367,7 @@ show_kprobe_multi_json(struct bpf_link_info *info, json_writer_t *wtr)
+ 		if (++j == info->kprobe_multi.count)
+ 			break;
+ 	}
+-	jsonw_end_array(json_wtr);
+-error:
++out:
++	jsonw_end_array(json_wtr);
+ 	free(data);
+ }
