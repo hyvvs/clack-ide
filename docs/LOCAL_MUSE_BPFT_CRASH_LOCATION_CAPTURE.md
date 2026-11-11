@@ -1,6 +1,6 @@
 # Private fixed bpftool: bounded SIGABRT location capture
 
-**2026-11-11 status: prepared and offline-tested; not installed on the root host, and not used with a live BPF link.** No new attachment, Muse, Ollama request, inference, ForgeBoard, coordinator, package change or readiness gate modification is authorized by this document.
+**2026-11-11 status: offline-validated and installed on the root host, but not used with a live BPF link.** The human operator's installer returned PASS with the exact reviewed SHA and EXECUTED=0; independent unprivileged SSH stat confirmed a regular root:root mode-0600 installed wrapper. The root-run installer checked the installed hash. No attachment, Muse, Ollama request, inference, ForgeBoard, coordinator, package change or readiness gate modification is authorized by this document.
 
 ## Evidence and available symbols
 
@@ -50,10 +50,18 @@ The standalone fixture suite tests normal exit, actual Python SIGABRT, synthetic
 
 An unprivileged fresh-stage host run of the same suite on **GDB 18.1** also passed, including a real compiled -g -O0 C abort fixture whose recovered frame name was **captured_marker**. The private temporary fixture directory was removed. That test did not execute bpftool, attach BPF, use sudo, or access inference. Separate synthetic collector tests assert that diagnostic PASS can never arm readiness, that malformed/secret metadata fails closed, and that wrapper permission/hash checks precede attachment.
 
+## Request-free investigative listener
+
+The original kernel-only listener uses the normal host-source mapping preflight, which sends GET /api/tags to Ollama. That metadata request is NOT permitted by the current no-Ollama-request investigative task. Do not start that original listener for this task, even though the endpoint does not perform inference.
+
+A separate standalone scripts/local-muse-crash-only-check.mjs entrypoint requires --operator-authorized-no-http-crash-only. It uses the unchanged kernel bridge, strict FIFO, real import-kernel delivery path and original root collector. Its narrowly scoped scripts/local-muse-crash-only-host-sources.mjs variant deliberately rejects all Ollama HTTP, verifies historical manifest identity without claiming a live model inventory, and queries the fresh service PID, /proc comm and bound loopback socket using read-only SSH commands. The existing root collector still independently checks exact executable identity, PID, start time, service account and owned listener inode. The separate command printed for the human operator requires -CrashCapture and -Seconds 20. No connection is made through the SSH forward.
+
+This entrypoint never prints a readiness PASS, never calls the normal successful bridge drain path, and always records TCPARMED=FAIL and the coordinated kernel gate as false. An unsuccessful journal/arm exit is EXPECTED: it is investigative, not readiness evidence. The default production and original kernel-only readiness listeners remain untouched. Synthetic offline tests verify the fail-closed HTTP and source identity boundaries.
+
 ## Future deployment and authorization boundary
 
-The independent installation script scripts/Install-ClackBpftoolCrashCapture.ps1 is prepared **but not run**. When separately authorized, it first snapshots the unprivileged upload into a task-exclusive root-owned /run directory, rehashes those immutable-to-user bytes, then copies the SHA-reviewed Python observer into the root-owned diagnostic tools directory (mode 0600) after checking GDB 18.1, the fixed bpftool SHA-256 and destination ownership. It refuses overwrites and cleans up that root snapshot. It does **not** run the observer or attach any probe.
+The human operator has now run scripts/Install-ClackBpftoolCrashCapture.ps1 once. Its root stage first copied the unprivileged upload into a task-exclusive root-owned /run snapshot, rehashed the root-owned bytes, installed only the SHA-reviewed Python observer into the root diagnostic tools directory (mode 0600), checked GDB 18.1 and the fixed bpftool SHA, and refused overwrite. The observed receipt reported CLACK_CRASH_OBSERVER_INSTALL=PASS, the exact expected wrapper hash and CLACK_CRASH_OBSERVER_EXECUTED=0. Remote stat independently confirmed the installed root:root regular file with mode 0600. It did not invoke the observer or attach BPF.
 
-Only after this root-only deployment and a fresh explicit authorization could an operator start **one** new kernel-only no-traffic listener and invoke the existing short operator with its new -CrashCapture switch, at most 20 seconds, using a fresh run ID. Do not reuse a previous listener or run ID. This documentation creates no authorization, starts no process, and does not change READINESS or TCPARMED.
+Only the user's current separate instruction authorizes **one** future no-traffic, investigative-only kernel session after qualification. That requires the request-free listener above and the human-operated short root operator with -CrashCapture, at most 20 seconds and a fresh run ID. Do not reuse a previous listener or run ID. This documentation creates no new authorization, starts no process, and does not change READINESS or TCPARMED.
 
 **Remaining validation:** the wrapper has not been exercised as root during a real active link inspection. That one future capture would be investigative and deliberately fail closed, even if it records a complete symbolic stack. The causal classification stays **G** until that evidence is obtained.
