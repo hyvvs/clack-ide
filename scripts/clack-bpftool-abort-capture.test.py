@@ -51,6 +51,7 @@ signal_name = "SIGABRT" if child.returncode == -6 else None
 record = {"observedSignal":signal_name, "inferiorExitCode":
           child.returncode if child.returncode >= 0 else None,
           "inferiorExited":True, "frames":[frame] if signal_name else [],
+          "assertionSite":None,
           "modules":[{"module":"/tmp/private/fixture",
                       "buildId":"deadbeefcafe1234"}]}
 print("CLACK_GDB_CAPTURE_V1=" + json.dumps(record,separators=(",", ":")))
@@ -61,7 +62,7 @@ class PureNormalizerTests(unittest.TestCase):
     def test_drops_private_source_paths_pointer_values_and_args(self):
         valid = {
             "observedSignal": "SIGABRT", "inferiorExitCode": None,
-            "inferiorExited": True,
+            "inferiorExited": True, "assertionSite": None,
             "frames": [{"function": "abort_fixture_symbol",
                         "module": "/home/hylab/secrets/fixture",
                         "file": "/secret/private/fixture.c", "line": 37},
@@ -89,7 +90,7 @@ class PureNormalizerTests(unittest.TestCase):
                  "inferiorExitCode": None, "inferiorExited": True,
                  "frames": [{}], "modules": []},
                  {"observedSignal": None, "inferiorExitCode": 0,
-                  "inferiorExited": True, "frames": [],
+                  "inferiorExited": True, "frames": [], "assertionSite": None,
                   "modules": [None]})
         for value in cases:
             with self.subTest(value=value):
@@ -106,6 +107,79 @@ class PureNormalizerTests(unittest.TestCase):
             b"Error: API bearer SECRET_0xdeadbeef\n"))
         self.assertIsNone(capture.safe_stderr_class(b"X" * 65537))
         self.assertIsNone(capture.safe_stderr_class(b"\xff\xfe\n"))
+
+    def test_normalized_assertion_location_expression_is_never_exported(self):
+        stderr = (b"bpftool-678d538: src/link.c:753: do_show_link: "
+                  b"Assertion 'secret 0xdeadbeef /home/hylab/.ssh/private' failed.\n")
+        label, location = capture.safe_assertion_metadata(stderr)
+        self.assertEqual(label, "bpftool: C assertion failure (details redacted)")
+        self.assertEqual(location, {"module": "bpftool-678d538",
+                                    "sourceFile": "link.c", "sourceLine": 753,
+                                    "function": "do_show_link"})
+        blob = json.dumps([label, location])
+        for secret in ("secret", "/home", "0xdeadbeef", "Assertion '"):
+            self.assertNotIn(secret, blob)
+
+    def test_malformed_and_oversize_assertion_is_rejected(self):
+        examples = (b"bpftool: /home/hylab/secret:1: fn: fail\n",
+                    b"bpftool: link.c:0: fn: Assertion 1 failed.\n",
+                    b"bpftool: link.c:42: fn: Assertion value failed.\nLEAK",
+                    b"bpftool: link.c:42: fn: Assertion \xff failed.\n",
+                    b"bpftool: link.c:42: fn: Assertion private\x00 failed.\n",
+                    b"bpftool: link.c:42: fn: Assertion " + b"x" * 400 + b" failed.\n",
+                    b"X" * (capture.MAX_PTY + 1))
+        for example in examples:
+            with self.subTest(example=example[:60]):
+                self.assertEqual(capture.safe_assertion_metadata(example),
+                                 (None, None))
+
+    def test_module_relative_pc_inline_chain_and_unresolved_name(self):
+        raw = {"observedSignal": "SIGABRT", "inferiorExitCode": None,
+               "inferiorExited": True, "frames": [],
+               "modules": [{"module": "/private/fixture",
+                            "buildId": "deadbeefcafe1234"}],
+               "assertionSite": {
+                   "module": "/private/fixture", "moduleOffset": 1337,
+                   "symbol": "assertion_site", "functionOffset": 23,
+                   "file": "/home/private/link.c", "line": 81,
+                   "inlineChain": [
+                       {"function": "inlined_inner",
+                        "file": "/private/src/inline.h", "line": 10},
+                       {"function": "inlined_outer",
+                        "file": "/private/src/inline.h", "line": 20}]}}
+        normalized = capture.normalize_gdb(raw)
+        site = normalized["assertionSite"]
+        self.assertEqual(site["moduleOffset"], 1337)
+        self.assertEqual(site["functionOffset"], 23)
+        self.assertEqual(site["symbol"], "assertion_site")
+        self.assertEqual(site["moduleBuildId"], "deadbeefcafe1234")
+        self.assertEqual(site["sourceFile"], "link.c")
+        self.assertEqual(site["sourceLine"], 81)
+        self.assertEqual([row["function"] for row in site["inlineChain"]],
+                         ["inlined_inner", "inlined_outer"])
+        self.assertNotIn("/private", json.dumps(normalized))
+        raw["assertionSite"]["symbol"] = "private /home/key"
+        raw["assertionSite"]["functionOffset"] = None
+        unresolved = capture.normalize_gdb(raw)["assertionSite"]
+        self.assertEqual(unresolved["symbol"], "unknown")
+        self.assertNotIn("functionOffset", unresolved)
+        raw["assertionSite"]["moduleOffset"] = 0x7fff00000000
+        self.assertIsNone(capture.normalize_gdb(raw))
+        raw["assertionSite"]["moduleOffset"] = 18
+        raw["assertionSite"]["inlineChain"] *= 3
+        self.assertIsNone(capture.normalize_gdb(raw))
+
+    def test_no_absolute_address_register_memory_or_environment_escape(self):
+        source = capture.GDB_SCRIPT
+        for secret_command in ("info registers", "gcore", "dump memory",
+                               "show environment", "print *", "x/32",
+                               "thread apply all bt", "gdb.parse_and_eval"):
+            self.assertNotIn(secret_command, source)
+        self.assertIn('gdb.execute("info symbol 0x%x" % pc', source)
+        self.assertIn('open("/proc/%d/maps" % pid', source)
+        self.assertIn("MAX_MODULE_OFFSET", MODULE.read_text(encoding="utf-8"))
+        self.assertIn("resource.setrlimit(resource.RLIMIT_CORE, (0, 0))",
+                      MODULE.read_text(encoding="utf-8"))
 
     def test_production_cli_rejects_user_supplied_commands(self):
         with patch.object(capture, "production_preflight") as preflight:
@@ -250,6 +324,35 @@ class RealGdbFixture(unittest.TestCase):
                 frame["function"] == "captured_marker"
                 for frame in result["frames"]), result)
             self.assertEqual(result["cleanup"], "PASS")
+            self.assertFalse(list(p.glob("core*")))
+
+    def test_assertion_source_line_function_and_relative_pc_in_real_gdb(self):
+        # Never invokes the fixed tool: this is a synthetic assertion-only C program.
+        with tempfile.TemporaryDirectory(prefix="clack-real-assert-fixture-") as folder:
+            p = Path(folder)
+            c = p / "fixture.c"
+            c.write_text("#include <assert.h>\n"
+                         "__attribute__((noinline)) void captured_marker(void) {\n"
+                         "  assert(0 && \"secret_0xdeadbeef\");\n"
+                         "}\n"
+                         "int main(void) { captured_marker(); return 0; }\n",
+                         encoding="ascii")
+            binary = p / "fixture"
+            subprocess.run(["/usr/bin/cc", "-g", "-O0", "-fno-omit-frame-pointer",
+                            "-o", str(binary), str(c)], check=True, timeout=8)
+            result = capture.capture(str(binary), "/usr/bin/gdb", timeout=4)
+            self.assertEqual(result["capture"], "PASS", result)
+            self.assertEqual(result["observedSignal"], "SIGABRT")
+            site = result["assertionSite"]
+            self.assertIsNotNone(site, result)
+            self.assertEqual(site["module"], "fixture")
+            self.assertIsInstance(site["moduleOffset"], int, result)
+            self.assertEqual(site["sourceFile"], "fixture.c")
+            self.assertEqual(site["sourceLine"], 3)
+            self.assertEqual(site["symbol"], "captured_marker")
+            self.assertIsInstance(site.get("functionOffset"), int, result)
+            self.assertEqual(result["cleanup"], "PASS")
+            self.assertNotIn("secret_0xdeadbeef", json.dumps(result))
             self.assertFalse(list(p.glob("core*")))
 
 

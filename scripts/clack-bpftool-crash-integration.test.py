@@ -96,6 +96,55 @@ class CrashCaptureIntegration(unittest.TestCase):
         self.assertEqual(row["tracerStateAtEnd"], "running")
         self.assertFalse(row["jsonAttempted"])
 
+    def test_sanitized_assertion_site_and_location_survive_collector(self):
+        value = record(
+            assertionLocation={
+                "module": "bpftool-678d538", "sourceFile": "link.c",
+                "sourceLine": 753, "function": "do_show_link"},
+            assertionSite={
+                "module": "bpftool-678d538",
+                "moduleBuildId": "8faee6f37ed17666af07f7d8f671bf40a9fd38e5",
+                "moduleOffset": 0x21093, "symbol": "do_show_link",
+                "functionOffset": 3, "sourceFile": "link.c", "sourceLine": 753,
+                "inlineChain": [{"function": "inline_marker",
+                                 "sourceFile": "libbpf.c", "sourceLine": 12}]})
+        row, _ = self.run_observer(stdout=json.dumps(value).encode("ascii"))
+        site = row["crashCapture"]["assertionSite"]
+        self.assertEqual(site["moduleOffset"], 0x21093)
+        self.assertEqual(site["functionOffset"], 3)
+        self.assertEqual(site["moduleBuildId"], value["buildId"])
+        self.assertEqual(site["inlineChain"][0]["function"], "inline_marker")
+        self.assertEqual(row["crashCapture"]["assertionLocation"]["function"],
+                         "do_show_link")
+        self.assertEqual(row["result"], "diagnostic_only_unverified")
+        self.assertIsNone(row["exitCode"])
+        self.assertEqual(row["nativeExitStatus"], "not_directly_observed")
+
+    def test_malformed_offsets_inlines_and_assertion_metadata_are_dropped(self):
+        bad_sites = (
+            {"module": "bpftool-678d538", "symbol": "unknown",
+             "moduleOffset": "0xdeadbeef", "inlineChain": []},
+            {"module": "bpftool-678d538", "symbol": "func",
+             "moduleOffset": 0x7fffdeadbeef, "inlineChain": []},
+            {"module": "bpftool-678d538", "symbol": "func",
+             "inlineChain": [{"function": "leak", "sourceFile": "/home/key",
+                              "sourceLine": 1}]},
+            {"module": "bpftool-678d538", "symbol": "func",
+             "inlineChain": [{"function": "inline"}] * 10},
+        )
+        for site in bad_sites:
+            candidate = record(assertionSite={
+                "moduleBuildId": record()["buildId"], **site},
+                assertionLocation={"module": "bpftool-678d538",
+                                   "sourceFile": "../secret.c",
+                                   "sourceLine": 5, "function": "secret"})
+            row, _ = self.run_observer(
+                stdout=json.dumps(candidate).encode("ascii"))
+            self.assertNotIn("assertionSite", row["crashCapture"])
+            self.assertNotIn("assertionLocation", row["crashCapture"])
+            self.assertNotIn("0xdeadbeef", json.dumps(row))
+            self.assertEqual(row["result"], "diagnostic_only_unverified")
+
     def test_normal_debugger_exit_cannot_arm(self):
         response = record(observedSignal=None, inferiorSignal=None,
                           signalEvidence="none", inferiorExitCode=0,
@@ -169,14 +218,18 @@ class CrashCaptureIntegration(unittest.TestCase):
             with self.assertRaises(ValueError):
                 collector.qualified_diagnostic_crash_wrapper()
 
-    def test_wrapper_pin_matches_actual_reviewed_source_and_installer(self):
+    def test_wrapper_pin_matches_source_and_old_installer_refuses_overwrite(self):
         import hashlib
         path = HERE / "clack-bpftool-abort-capture.py"
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         self.assertEqual(actual, collector.FIXED_DIAGNOSTIC_CRASH_WRAPPER_SHA256)
         installer = (HERE / "Install-ClackBpftoolCrashCapture.ps1").read_text(
             encoding="utf-8")
-        self.assertIn(actual, installer)
+        # The old installed root wrapper is intentionally untouched. Its
+        # original exclusive-create installer is NOT an upgrade authorization.
+        self.assertIn("c5002328d5563c6af32559c4809940d9f89bfc78f330fe9e2022805bca4ac126",
+                      installer)
+        self.assertNotIn(actual, installer)
         self.assertIn("test ! -e", installer)
         self.assertIn("test ! -L", installer)
         self.assertIn("clack-crash-install-snapshot.", installer)

@@ -26,6 +26,8 @@ GDB = Path("/usr/bin/gdb")
 GDB_VERSION = "GNU gdb (GDB) 18.1"
 MAX_SECONDS = 4.0
 MAX_FRAMES = 12
+MAX_INLINES = 4
+MAX_MODULE_OFFSET = 32 * 1024 * 1024
 MAX_STREAM = 32768
 MAX_PTY = 65536
 MAX_RECORD = 6144
@@ -39,9 +41,109 @@ GDB_SCRIPT = r'''
 python
 import gdb
 import json
+import os
+import re
 
 _state = {"observedSignal": None, "inferiorExitCode": None,
-          "inferiorExited": False, "frames": [], "modules": []}
+          "inferiorExited": False, "frames": [], "modules": [],
+          "assertionSite": None}
+_name = re.compile(r"[A-Za-z_~][A-Za-z0-9_~.$:+<>-]{0,95}\Z")
+_symbol = re.compile(
+    r"([A-Za-z_~][A-Za-z0-9_~.$:+<>-]{0,95})"
+    r"(?: \+ ([0-9]{1,8}))? in section [A-Za-z0-9_.+-]+ of ")
+
+def _source(pc, frame):
+    # For an older frame, pc-1 resolves the CALL site, not the return
+    # instruction. GDB APIs, not source/memory printing, supply DWARF.
+    sal = gdb.find_pc_line(pc)
+    if sal and sal.symtab and sal.line > 0:
+        return sal.symtab.filename, sal.line
+    sal = frame.find_sal()
+    return (sal.symtab.filename if sal and sal.symtab else None,
+            sal.line if sal else None)
+
+def _main_module(pc):
+    try:
+        # GDB can return no section owner for the return-address-adjusted
+        # caller even when its DWARF frame and line are resolved. Require
+        # both non-solib attribution AND a /proc mapping owned by the exact
+        # active inferior executable; never classify libc by absence alone.
+        return gdb.solib_name(pc) is None and _relative_pc(pc) is not None
+    except Exception:
+        return False
+
+def _relative_pc(pc):
+    # Read only the debugger inferior's kernel mapping metadata. NEVER export
+    # a /proc/maps row, absolute PC, address, allocation or pathname.
+    pid = gdb.selected_inferior().pid
+    path = os.path.realpath(gdb.current_progspace().filename)
+    if not isinstance(pid, int) or pid <= 1:
+        return None
+    with open("/proc/%d/maps" % pid, "r", encoding="ascii",
+              errors="replace") as handle:
+        data = handle.read(65537)
+    if len(data) > 65536:
+        return None
+    base = None
+    executable = False
+    for row in data.splitlines():
+        fields = row.split(None, 5)
+        if len(fields) != 6 or fields[5] != path:
+            continue
+        addresses = fields[0].split("-")
+        if len(addresses) != 2:
+            continue
+        start, end = int(addresses[0], 16), int(addresses[1], 16)
+        if int(fields[2], 16) == 0:
+            base = start if base is None else min(base, start)
+        if start <= pc < end and "x" in fields[1]:
+            executable = True
+    if base is None or not executable:
+        return None
+    offset = pc - base
+    return offset if 0 <= offset < 33554432 else None
+
+def _symbol_name(pc, frame):
+    name = frame.name()
+    # An optimized/unwound frame may have no Frame.name even if .symtab has a
+    # usable nearest symbol. This command's raw text stays INSIDE GDB.
+    try:
+        result = gdb.execute("info symbol 0x%x" % pc, to_string=True).strip()
+        match = _symbol.match(result)
+        if match:
+            offset = int(match.group(2) or 0)
+            if offset < 33554432:
+                return match.group(1), offset
+    except gdb.error:
+        pass
+    return (name if isinstance(name, str) and _name.fullmatch(name)
+            else "unknown"), None
+
+def _assertion_site(frame, index):
+    pc = int(frame.pc())
+    # A caller's saved PC is the instruction *after* the call to
+    # __assert_fail; subtract one for exact call-site lookup.
+    pc = pc - 1 if index > 0 and pc > 0 else pc
+    if not _main_module(pc):
+        return None
+    name, displacement = _symbol_name(pc, frame)
+    file, line = _source(pc, frame)
+    site = {"module": os.path.basename(gdb.current_progspace().filename),
+            "moduleOffset": _relative_pc(pc),
+            "symbol": name, "functionOffset": displacement,
+            "file": file, "line": line, "inlineChain": []}
+    cursor = frame
+    for _ in range(4):
+        if cursor is None or cursor.type() != gdb.INLINE_FRAME:
+            break
+        if not _main_module(int(cursor.pc()) - 1):
+            break
+        inner_file, inner_line = _source(int(cursor.pc()) - 1, cursor)
+        site["inlineChain"].append({
+            "function": cursor.name(), "file": inner_file, "line": inner_line})
+        cursor = cursor.older()
+    return site
+
 def _stopped(event):
     if isinstance(event, gdb.SignalEvent):
         _state["observedSignal"] = event.stop_signal
@@ -61,15 +163,22 @@ try:
     gdb.execute("run", to_string=True)
     if _state["observedSignal"] == "SIGABRT":
         frame = gdb.selected_frame()
-        for _ in range(12):
+        previous = None
+        for index in range(12):
             if frame is None:
                 break
             sal = frame.find_sal()
+            if previous == "__assert_fail" and _state["assertionSite"] is None:
+                try:
+                    _state["assertionSite"] = _assertion_site(frame, index)
+                except (OSError, ValueError, gdb.error):
+                    pass  # missing symbols/maps are unresolved, never guessed
             _state["frames"].append({
                 "function": frame.name(),
                 "module": gdb.solib_name(frame.pc()),
                 "file": sal.symtab.filename if sal and sal.symtab else None,
                 "line": sal.line if sal else None})
+            previous = frame.name()
             frame = frame.older()
         for obj in gdb.objfiles():
             _state["modules"].append({
@@ -93,26 +202,38 @@ SAFE_ABORT = frozenset((
     "munmap_chunk(): invalid pointer",
 ))
 SAFE_ASSERT = re.compile(
-    r"(?:bpftool(?:-678d538)?|/opt/clack/diagnostic-tools/bpftool-678d538): "
-    r"(?:[A-Za-z0-9_.-]+/){0,6}[A-Za-z0-9_.-]+\.c:[0-9]{1,6}: "
-    r"[A-Za-z_][A-Za-z0-9_]{0,63}: Assertion .{1,110} failed\.\Z")
+    rb"(?:bpftool(?:-678d538)?|/opt/clack/diagnostic-tools/bpftool-678d538): "
+    rb"((?:[A-Za-z0-9_.-]+/){0,6}([A-Za-z_][A-Za-z0-9_.+-]{0,87}\.[ch])):"
+    rb"([1-9][0-9]{0,5}): ([A-Za-z_][A-Za-z0-9_]{0,63}): "
+    rb"Assertion [^\x00\r\n]{1,110} failed\.\Z")
+
+
+def safe_assertion_metadata(data):
+    """Return only a fixed category and four location fields; never expression."""
+    if not data or len(data) > MAX_PTY:
+        return None, None
+    lines = data.splitlines()
+    if len(lines) != 1 or len(lines[0]) > 240:
+        return None, None
+    line = lines[0]
+    try:
+        decoded = line.decode("ascii")
+    except UnicodeDecodeError:
+        return None, None
+    if decoded in SAFE_ABORT:
+        return decoded, None
+    match = SAFE_ASSERT.fullmatch(line)
+    if not match:
+        return None, None
+    return "bpftool: C assertion failure (details redacted)", {
+        "module": "bpftool-678d538",
+        "sourceFile": match.group(2).decode("ascii"),
+        "sourceLine": int(match.group(3)),
+        "function": match.group(4).decode("ascii")}
 
 
 def safe_stderr_class(data):
-    if not data or len(data) > MAX_PTY:
-        return None
-    for line in data.splitlines():
-        if len(line) > 240:
-            continue
-        try:
-            value = line.decode("ascii")
-        except UnicodeDecodeError:
-            continue
-        if value in SAFE_ABORT:
-            return value
-        if SAFE_ASSERT.fullmatch(value):
-            return "bpftool: C assertion failure (details redacted)"
-    return None
+    return safe_assertion_metadata(data)[0]
 
 
 def safe_basename(value):
@@ -122,11 +243,57 @@ def safe_basename(value):
     return name if SAFE_BASENAME.fullmatch(name) and name not in (".", "..") else None
 
 
+def safe_source(value, line):
+    name = safe_basename(value)
+    if name and type(line) is int and 1 <= line <= 1_000_000:
+        return {"sourceFile": name, "sourceLine": line}
+    return {}
+
+
+def normalize_assertion_site(raw, ids):
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {
+            "module", "moduleOffset", "symbol", "functionOffset",
+            "file", "line", "inlineChain"}:
+        raise ValueError("unrecognized_assertion_site")
+    module = safe_basename(raw["module"])
+    if not module or module not in ids:
+        raise ValueError("unverified_assertion_module")
+    result = {"module": module, "moduleBuildId": ids[module]}
+    if type(raw["moduleOffset"]) is int and 0 <= raw["moduleOffset"] < MAX_MODULE_OFFSET:
+        result["moduleOffset"] = raw["moduleOffset"]
+    elif raw["moduleOffset"] is not None:
+        raise ValueError("unbounded_module_offset")
+    name = raw["symbol"]
+    result["symbol"] = name if isinstance(name, str) and SAFE_FUNCTION.fullmatch(name) \
+        else "unknown"
+    displacement = raw["functionOffset"]
+    if type(displacement) is int and 0 <= displacement < MAX_MODULE_OFFSET and \
+            result["symbol"] != "unknown":
+        result["functionOffset"] = displacement
+    elif displacement is not None:
+        raise ValueError("unbounded_function_offset")
+    result.update(safe_source(raw["file"], raw["line"]))
+    if not isinstance(raw["inlineChain"], list) or len(raw["inlineChain"]) > MAX_INLINES:
+        raise ValueError("unbounded_inline_chain")
+    chain = []
+    for item in raw["inlineChain"]:
+        if not isinstance(item, dict) or set(item) != {"function", "file", "line"}:
+            raise ValueError("invalid_inline_frame")
+        name = item["function"]
+        if not isinstance(name, str) or not SAFE_FUNCTION.fullmatch(name):
+            raise ValueError("invalid_inline_name")
+        chain.append({"function": name, **safe_source(item["file"], item["line"])})
+    result["inlineChain"] = chain
+    return result
+
+
 def normalize_gdb(raw):
     """Drop paths, addresses, all argument values and unrecognized metadata."""
     if not isinstance(raw, dict) or set(raw) != {
             "observedSignal", "inferiorExitCode", "inferiorExited", "frames",
-            "modules"} or raw["observedSignal"] not in (None, "SIGABRT"):
+            "modules", "assertionSite"} or raw["observedSignal"] not in (None, "SIGABRT"):
         return None
     if type(raw["inferiorExited"]) is not bool:
         return None
@@ -163,9 +330,13 @@ def normalize_gdb(raw):
             frame["sourceFile"] = file
             frame["sourceLine"] = line
         safe_frames.append(frame)
+    try:
+        site = normalize_assertion_site(raw["assertionSite"], ids)
+    except ValueError:
+        return None
     return {"observedSignal": raw["observedSignal"],
             "inferiorExitCode": code, "inferiorExited": raw["inferiorExited"],
-            "frames": safe_frames}
+            "frames": safe_frames, "assertionSite": site}
 
 
 def root_executable(path):
@@ -247,6 +418,7 @@ def capture(target, debugger, *, timeout=MAX_SECONDS, debugger_version=GDB_VERSI
         "observedSignal": None, "inferiorExitCode": None,
         "inferiorSignal": None, "signalEvidence": "none",
         "inferiorExited": False, "frames": [], "assertionClass": None,
+        "assertionLocation": None, "assertionSite": None,
         "inferiorOutputBytes": 0, "inferiorOutputSha256": EMPTY_SHA,
         "debuggerOutputBytes": 0, "debuggerOutputSha256": EMPTY_SHA,
         "timedOut": False, "cleanup": "FAIL",
@@ -336,7 +508,8 @@ def capture(target, debugger, *, timeout=MAX_SECONDS, debugger_version=GDB_VERSI
                 record[field + "OutputBytes"] = len(outputs[name])
                 record[field + "OutputSha256"] = hashlib.sha256(
                     outputs[name]).hexdigest()
-            record["assertionClass"] = safe_stderr_class(bytes(outputs["inferior"]))
+            record["assertionClass"], record["assertionLocation"] = (
+                safe_assertion_metadata(bytes(outputs["inferior"])))
             if not (overflow or record["timedOut"] or outputs["gdbError"]):
                 markers = [x[len(MARKER):] for x in outputs["gdb"].splitlines()
                            if x.startswith(MARKER)]

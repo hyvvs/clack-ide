@@ -49,7 +49,7 @@ FIXED_DIAGNOSTIC_BPFT_SHA256 = "ff08d9fe9a545f488f4ecc7145f491027704a2139987f084
 FIXED_DIAGNOSTIC_CRASH_WRAPPER_PATH = Path(
     "/opt/clack/diagnostic-tools/clack-bpftool-abort-capture.py")
 FIXED_DIAGNOSTIC_CRASH_WRAPPER_SHA256 = (
-    "c5002328d5563c6af32559c4809940d9f89bfc78f330fe9e2022805bca4ac126")
+    "143c040fe9db82e23f722f77704841f1ac5bc12fbb21c8d0646169f2c01a15fe")
 FIXED_DIAGNOSTIC_SOURCE_COMMIT = "678d538a85e6960f84e443695eebb13f66f89981"
 FIXED_DIAGNOSTIC_LIBBPF_COMMIT = "872299d94e27d2fa9f119667c7e52268698dc760"
 FIXED_DIAGNOSTIC_LINK_BLOB = "5cffa2d283b47327b8611b4d85b1d70821f40964"
@@ -343,6 +343,59 @@ def bounded_crash_capture_record(value):
             assertion in SAFE_LIBC_ABORT_MESSAGES or
             assertion == "bpftool: C assertion failure (details redacted)"):
         record["assertionClass"] = assertion
+    location = value.get("assertionLocation")
+    if record.get("assertionClass") == "bpftool: C assertion failure (details redacted)" and \
+            isinstance(location, dict) and set(location) == {
+                "module", "sourceFile", "sourceLine", "function"} and \
+            location.get("module") == "bpftool-678d538" and \
+            type(location.get("sourceFile")) is str and \
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.+-]{0,87}\.[ch]",
+                         location["sourceFile"]) and \
+            type(location.get("sourceLine")) is int and \
+            1 <= location["sourceLine"] <= 1_000_000 and \
+            type(location.get("function")) is str and \
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}",
+                         location["function"]):
+        record["assertionLocation"] = location
+    site = value.get("assertionSite")
+    if isinstance(site, dict) and site.get("module") == "bpftool-678d538" and \
+            site.get("moduleBuildId") == "8faee6f37ed17666af07f7d8f671bf40a9fd38e5" and \
+            set(site).issubset({"module", "moduleBuildId", "moduleOffset",
+                                "symbol", "functionOffset", "sourceFile",
+                                "sourceLine", "inlineChain"}) and \
+            type(site.get("symbol")) is str and \
+            re.fullmatch(r"[A-Za-z_~][A-Za-z0-9_~.$:+<>-]{0,95}",
+                         site["symbol"]) and \
+            type(site.get("inlineChain")) is list and \
+            len(site["inlineChain"]) <= 4:
+        acceptable = True
+        for key in ("moduleOffset", "functionOffset"):
+            n = site.get(key)
+            if n is not None and (type(n) is not int or not 0 <= n < 33554432):
+                acceptable = False
+        if ("sourceFile" in site or "sourceLine" in site) and not (
+                type(site.get("sourceFile")) is str and
+                re.fullmatch(r"[A-Za-z0-9_.+-]{1,88}", site["sourceFile"]) and
+                type(site.get("sourceLine")) is int and
+                1 <= site["sourceLine"] <= 1_000_000):
+            acceptable = False
+        for inline in site["inlineChain"]:
+            if not isinstance(inline, dict) or \
+                    not set(inline).issubset({"function", "sourceFile", "sourceLine"}) or \
+                    type(inline.get("function")) is not str or \
+                    not re.fullmatch(r"[A-Za-z_~][A-Za-z0-9_~.$:+<>-]{0,95}",
+                                     inline["function"]):
+                acceptable = False
+                break
+            if ("sourceFile" in inline or "sourceLine" in inline) and not (
+                    type(inline.get("sourceFile")) is str and
+                    re.fullmatch(r"[A-Za-z0-9_.+-]{1,88}", inline["sourceFile"]) and
+                    type(inline.get("sourceLine")) is int and
+                    1 <= inline["sourceLine"] <= 1_000_000):
+                acceptable = False
+                break
+        if acceptable:
+            record["assertionSite"] = site
     frames = value.get("frames")
     if isinstance(frames, list) and len(frames) <= 12:
         safe_frames = []
