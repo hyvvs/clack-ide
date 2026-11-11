@@ -47,6 +47,11 @@ MAX_STDOUT = 8 * 1024 * 1024
 MAX_STDERR = 64 * 1024
 MAX_PROGRAM_LIST = 4 * 1024 * 1024
 MAX_INVENTORY_AUDIT = 2 * 1024 * 1024
+# Only short, pinned-bpftool diagnostics retain normalized matcher evidence.
+# No raw bpftool row, process comm, kernel symbol, address or pointer escapes.
+MAX_PREDICATE_SAMPLES = 20
+MAX_PREDICATE_CANDIDATES = 16
+MAX_PREDICATE_RECORD = 32768
 FIXED_DIAGNOSTIC_BPFT_PATH = Path("/opt/clack/diagnostic-tools/bpftool-678d538")
 FIXED_DIAGNOSTIC_BPFT_PIN = Path("/opt/clack/diagnostic-tools/bpftool-678d538.pin.json")
 FIXED_DIAGNOSTIC_BPFT_SHA256 = "0e0059127c7c926fe1ee82a7804479415a19b73515b7aebc8bb59ce06de36fa0"
@@ -104,6 +109,10 @@ SAFE_BPFT_ASSERTION_ENVELOPE = re.compile(
 # a prefix: a similarly named unrelated program is not attachment evidence.
 SESSION_PROG_NAME = "kprobe_tcp_send"
 SEPARATE_RETURN_PROG_NAME = "kretprobe_tcp_s"
+# Diagnostic classification ONLY: pinned bpftool may resolve a 15-byte
+# kernel name into the full BTF function name (src/common.c). Never admit it
+# without independent proof that this is the actual session representation.
+SESSION_PROG_BTF_NAME = "kprobe_tcp_sendmsg"
 ATTACH_NOTICE = re.compile(rb"Attached 4 probes(?:\.\.\.)?")
 ATTACH_PENDING_NOTICE = re.compile(rb"Attaching 4 probes(?:\.\.\.)?")
 LOSS_NOTICE = re.compile(rb"(?:lost\s+\d+\s+events?|\d+\s+events?\s+lost)", re.I)
@@ -282,20 +291,24 @@ def safe_bpft_diagnostic(raw):
 
 
 class InventoryAudit:
-    """Bounded, root-owned JSONL for EACH bpftool inventory invocation."""
+    """Bounded root-owned JSONL of invocations and sanitized matcher samples."""
 
     def __init__(self, fd, binary_identity=None):
         self.fd = fd
         self.bytes_written = 0
         self.invocations = 0
+        self.matcher_samples = 0
         self.binary_identity = binary_identity or {}
 
-    def record(self, row):
-        self.invocations += 1
+    def record(self, row, inventory=True):
+        if inventory:
+            self.invocations += 1
         row = {"schemaVersion": 1, "invocation": self.invocations,
                **self.binary_identity, **row}
         payload = (json.dumps(row, sort_keys=True, separators=(",", ":")) +
                    "\n").encode("ascii")
+        if not inventory and len(payload) > MAX_PREDICATE_RECORD:
+            raise ValueError("Normalized matcher record exceeds bound")
         if self.bytes_written + len(payload) > MAX_INVENTORY_AUDIT:
             raise ValueError("Bounded inventory audit capacity exceeded")
         while payload:
@@ -304,6 +317,14 @@ class InventoryAudit:
                 raise OSError("Inventory audit output unavailable")
             self.bytes_written += count
             payload = payload[count:]
+
+    def record_matcher(self, row):
+        """Append at most 20 post-inventory normalized reports, not tool calls."""
+        if self.matcher_samples >= MAX_PREDICATE_SAMPLES:
+            return
+        self.matcher_samples += 1
+        self.record({"phase": "live", "kind": "matcher", "result": "normalized",
+                     "sample": self.matcher_samples, **row}, inventory=False)
 
 
 def bounded_crash_capture_record(value):
@@ -753,6 +774,166 @@ def session_link_ids(before_links, live_links, new_programs, tracer_pid):
     return links if len(links) == 1 else set()
 
 
+def matcher_inventory_diagnostic(before, live, before_links, live_links, tracer_pid):
+    """Explain strict predicates using ONLY bounded, content-free metadata.
+
+    This is observational: the admission matcher above stays authoritative.
+    Program names, kernel symbols, owner comms and unknown JSON fields are
+    compared in memory, then reduced to fixed categories before persistence.
+    """
+    def verdict(test):
+        return "PASS" if test else "FAIL"
+
+    def safe_id(value):
+        return value if type(value) is int and 1 <= value <= 0xffffffff else None
+
+    def category(value, names):
+        return value if type(value) is str and value in names else (
+            "MISSING" if value is None else "OTHER")
+
+    new_program_ids = set(live).difference(before)
+    new_link_ids = set(live_links).difference(before_links)
+    target_ids = new_kprobes(before, live)
+    separate_ids = new_separate_return_programs(before, live)
+    tracer_ok = type(tracer_pid) is int and tracer_pid > 1
+    target_id = next(iter(target_ids)) if len(target_ids) == 1 else None
+    qualifying_links = session_link_ids(
+        before_links, live_links, target_ids, tracer_pid)
+
+    # Prefer candidates near the required session shape, but preserve counts
+    # and truncation flags for all new objects, even unrelated ones.
+    program_candidates = [
+        number for number, (kind, name) in live.items()
+        if number in new_program_ids or
+        (kind == "kprobe" and name in
+         (SESSION_PROG_NAME, SESSION_PROG_BTF_NAME,
+          SEPARATE_RETURN_PROG_NAME))
+    ]
+    program_candidates.sort(key=lambda n: (
+        live[n][1] not in (SESSION_PROG_NAME, SESSION_PROG_BTF_NAME),
+        live[n][0] != "kprobe",
+        n not in new_program_ids, n))
+    program_rows = []
+    for number in program_candidates[:MAX_PREDICATE_CANDIDATES]:
+        kind, name = live[number]
+        checks = {
+            "id_valid": verdict(type(number) is int and number >= 1),
+            "fresh": verdict(number not in before),
+            "type_kprobe": verdict(kind == "kprobe"),
+            "name_exact": verdict(name == SESSION_PROG_NAME),
+        }
+        program_rows.append({
+            "id": safe_id(number),
+            "typeClass": category(kind, (
+                "kprobe", "tracepoint", "tracing", "raw_tracepoint",
+                "perf_event", "xdp", "socket_filter")),
+            "nameClass": (
+                "SESSION" if name == SESSION_PROG_NAME else
+                "SESSION_FULL_BTF" if name == SESSION_PROG_BTF_NAME else
+                "SEPARATE_RETURN" if name == SEPARATE_RETURN_PROG_NAME else
+                "MISSING" if not name else "OTHER"),
+            "predicates": checks,
+        })
+
+    session_shaped_program_ids = {
+        number for number, (kind, name) in live.items()
+        if kind == "kprobe" and name == SESSION_PROG_NAME}
+    link_candidates = [
+        number for number, row in live_links.items()
+        if number in new_link_ids or (
+            row.get("type") == "kprobe_multi" and
+            row.get("prog_id") in session_shaped_program_ids)
+    ]
+    link_candidates.sort(key=lambda n: (
+        live_links[n].get("prog_id") not in target_ids,
+        live_links[n].get("type") != "kprobe_multi",
+        n not in new_link_ids, n))
+
+    # Independently count links satisfying all candidate predicates before
+    # enforcing uniqueness. The strict matcher still determines readiness.
+    complete_candidates = 0
+    link_rows = []
+    for number in link_candidates:
+        row = live_links[number]
+        funcs = row.get("funcs")
+        owners = row.get("pids")
+        owners_list = isinstance(owners, list)
+        owner_pid = owners_list and any(
+            isinstance(owner, dict) and owner.get("pid") == tracer_pid
+            for owner in owners)
+        owner_join = owners_list and any(
+            isinstance(owner, dict) and owner.get("pid") == tracer_pid
+            and owner.get("comm") == "bpftrace" for owner in owners)
+        checks = {
+            "tracer_pid_valid": verdict(tracer_ok),
+            "one_target_program": verdict(len(target_ids) == 1),
+            "id_valid": verdict(type(number) is int and number >= 1),
+            "fresh": verdict(number not in before_links),
+            "linked_program_id_valid": verdict(
+                type(row.get("prog_id")) is int and row["prog_id"] > 0),
+            "linked_program_matches": verdict(
+                target_id is not None and row.get("prog_id") == target_id),
+            "type_kprobe_multi": verdict(row.get("type") == "kprobe_multi"),
+            "retprobe_false": verdict(row.get("retprobe") is False),
+            "func_cnt_one": verdict(
+                type(row.get("func_cnt")) is int and row["func_cnt"] == 1),
+            "missed_zero": verdict(
+                type(row.get("missed")) is int and row["missed"] == 0),
+            "funcs_list": verdict(isinstance(funcs, list)),
+            "funcs_one": verdict(isinstance(funcs, list) and len(funcs) == 1),
+            "func_entry_object": verdict(
+                isinstance(funcs, list) and len(funcs) == 1 and
+                isinstance(funcs[0], dict)),
+            "target_tcp_sendmsg": verdict(
+                isinstance(funcs, list) and len(funcs) == 1 and
+                isinstance(funcs[0], dict) and
+                funcs[0].get("func") == "tcp_sendmsg"),
+            "pids_list": verdict(owners_list),
+            "pids_nonempty": verdict(owners_list and bool(owners)),
+            "owner_pid_present": verdict(owner_pid),
+            "owner_pid_and_comm": verdict(owner_join),
+        }
+        if all(value == "PASS" for value in checks.values()):
+            complete_candidates += 1
+        if len(link_rows) >= MAX_PREDICATE_CANDIDATES:
+            continue
+        target = (funcs[0].get("func") if isinstance(funcs, list) and
+                  len(funcs) == 1 and isinstance(funcs[0], dict) else None)
+        link_rows.append({
+            "id": safe_id(number),
+            "linkedProgramId": safe_id(row.get("prog_id")),
+            "typeClass": category(row.get("type"), (
+                "kprobe_multi", "perf_event", "tracing", "tracing_multi",
+                "raw_tracepoint", "uprobe_multi", "cgroup", "xdp")),
+            "targetClass": ("TCP_SENDMSG" if target == "tcp_sendmsg" else
+                            "MISSING" if target is None else "OTHER"),
+            "funcsShape": ("LIST" if isinstance(funcs, list) else
+                           "MISSING" if funcs is None else "OTHER"),
+            "ownersShape": ("LIST" if owners_list else
+                            "MISSING" if owners is None else "OTHER"),
+            "predicates": checks,
+        })
+    return {
+        "tracerPid": safe_id(tracer_pid),
+        "baselineProgramCount": len(before),
+        "liveProgramCount": len(live),
+        "freshProgramCount": len(new_program_ids),
+        "baselineLinkCount": len(before_links),
+        "liveLinkCount": len(live_links),
+        "freshLinkCount": len(new_link_ids),
+        "targetProgramMatchCount": len(target_ids),
+        "separateReturnMatchCount": len(separate_ids),
+        "completeLinkCandidateCount": complete_candidates,
+        "validSessionLinkMatchCount": len(qualifying_links),
+        "uniqueTargetProgram": verdict(len(target_ids) == 1),
+        "uniqueSessionLink": verdict(complete_candidates == 1),
+        "programCandidatesTruncated": len(program_candidates) > len(program_rows),
+        "linkCandidatesTruncated": len(link_candidates) > len(link_rows),
+        "programCandidates": program_rows,
+        "linkCandidates": link_rows,
+    }
+
+
 def classify_source_output(raw_stdout, raw_stderr):
     """Discard only confirmed benign bpftrace diagnostics, preserving errors.
 
@@ -1042,6 +1223,12 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
                         bpftool, deadline - now, "live", inventory_audit,
                         tracer_state)
                     current_links = checked_links(deadline - now, "live")
+                    # Short pinned diagnostic only; no impact on the trusted
+                    # READY predicate or the inventory-invocation count.
+                    if inventory_audit is not None and bpftool_identity is not None:
+                        inventory_audit.record_matcher(matcher_inventory_diagnostic(
+                            baseline_programs, current_programs,
+                            baseline_links, current_links, child.pid))
                     session_links = session_link_ids(
                         baseline_links, current_links,
                         new_kprobes(baseline_programs, current_programs), child.pid)

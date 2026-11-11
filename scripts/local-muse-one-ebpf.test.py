@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import tempfile
 import time
 from types import SimpleNamespace
 import unittest
@@ -386,7 +387,8 @@ class OneEbpOfflineTests(unittest.TestCase):
 
     def capture_fake(self, output=PROBE_TRACE, errors=ATTACHED,
                      inventories=None, identity_replaced=False, attach_timeout=2,
-                     control_command=b"STOP\n", link_snapshots=None):
+                     control_command=b"STOP\n", link_snapshots=None,
+                     inventory_audit_fd=None, bpftool_identity=None):
         fake = FakeTracer(output, errors)
         ready_reader, ready_writer = os.pipe()
         output_reader, output_writer = os.pipe()
@@ -492,7 +494,9 @@ class OneEbpOfflineTests(unittest.TestCase):
                     patch.object(collector, "nonblocking_write", side_effect=capture_output):
                 code = collector.run_capture(PID, 3, ready_writer, control_reader, helper, "probe",
                                              "tracer", "bpftool", attach_timeout,
-                                             stdout_fd=output_writer)
+                                             stdout_fd=output_writer,
+                                             inventory_audit_fd=inventory_audit_fd,
+                                             bpftool_identity=bpftool_identity)
         finally:
             os.close(output_writer)
             os.close(control_reader)
@@ -516,6 +520,35 @@ class OneEbpOfflineTests(unittest.TestCase):
         self.assertNotIn("12345", result)
         self.assertEqual(result.splitlines()[-1].split()[:2], ["TCPSESSION", "complete"])
         self.assertEqual(fake.signals, [signal.SIGINT])
+
+    def test_short_pinned_mode_logs_matcher_without_changing_readiness(self):
+        # End-to-end synthetic capture path with program/link inventories
+        # mocked in memory. No actual BPF program, root action or tool spawn.
+        with tempfile.TemporaryFile(mode="w+b") as output:
+            code, ready, result, _ = self.capture_fake(
+                inventory_audit_fd=output.fileno(),
+                bpftool_identity={"binarySha256":
+                                  collector.FIXED_DIAGNOSTIC_BPFT_SHA256})
+            output.seek(0)
+            records = [json.loads(line) for line in output]
+        self.assertEqual(code, 0)
+        self.assertEqual(ready, "TCPARMED 1139 11434 4 1 0\n")
+        self.assertIn("TCPSESSION complete ", result)
+        self.assertTrue(records)
+        self.assertTrue(all(row["kind"] == "matcher" for row in records))
+        self.assertEqual(records[0]["targetProgramMatchCount"], 1)
+        self.assertEqual(records[0]["validSessionLinkMatchCount"], 1)
+        self.assertEqual(records[0]["programCandidates"][0]["nameClass"], "SESSION")
+        self.assertEqual(records[0]["linkCandidates"][0]["targetClass"], "TCP_SENDMSG")
+
+        # The non-pinned collection path never gains persistent object detail.
+        with tempfile.TemporaryFile(mode="w+b") as output:
+            code, ready, _, _ = self.capture_fake(
+                inventory_audit_fd=output.fileno(), bpftool_identity=None)
+            output.seek(0)
+            self.assertEqual(output.read(), b"")
+        self.assertEqual(code, 0)
+        self.assertEqual(ready, "TCPARMED 1139 11434 4 1 0\n")
 
     def test_missing_attach_or_reused_pid_aborts_and_terminal_is_partial(self):
         for opts in ({"errors": b"", "attach_timeout": 0.15},
