@@ -239,6 +239,88 @@ class BpftoolAuditTests(unittest.TestCase):
             with self.subTest(private=private):
                 self.assertIsNone(collector.safe_bpft_diagnostic(private))
 
+    def test_static_libc_abort_diagnostics_are_safe_without_arbitrary_text(self):
+        for diagnostic in (
+                b"free(): invalid pointer\n",
+                b"malloc(): corrupted top size\n",
+                b"malloc(): invalid size (unsorted)\n",
+                b"double free or corruption (out)\n",
+                b"*** buffer overflow detected ***: terminated\n"):
+            with self.subTest(diagnostic=diagnostic):
+                safe = collector.safe_bpft_diagnostic(diagnostic)
+                self.assertEqual(safe, diagnostic[:-1].decode("ascii"))
+                _, error, row, _ = self.capture(response=SimpleNamespace(
+                    stdout=b"", stderr=diagnostic, returncode=-6))
+                self.assertIsInstance(error, subprocess.CalledProcessError)
+                self.assertEqual(row["stderrText"], safe)
+                self.assertEqual(row["stderrTextStatus"], "allowlisted")
+                self.assertEqual(row["exitCode"], -6)
+                self.assertEqual(row["jsonResult"], "not_attempted")
+
+    def test_assertion_expressions_paths_and_secrets_are_redacted_to_category(self):
+        examples = (
+            b"bpftool: link.c:363: show_kprobe_multi_json: Assertion `j < count' failed.\n",
+            b"bpftool: tools/bpf/bpftool/link.c:867: show_kprobe_multi_plain: Assertion 'private_token_123' failed.\n",
+            b"bpftool: link.c:363: show_kprobe_multi_json: Assertion '0xfeedcafe' failed.\n",
+        )
+        for raw in examples:
+            with self.subTest(raw=raw):
+                self.assertEqual(collector.safe_bpft_diagnostic(raw),
+                                 "bpftool: C assertion failure (details redacted)")
+                _, error, row, _ = self.capture(response=SimpleNamespace(
+                    stdout=b"", stderr=raw, returncode=-6))
+                self.assertIsInstance(error, subprocess.CalledProcessError)
+                rendered = json.dumps(row)
+                self.assertEqual(row["stderrTextStatus"], "allowlisted")
+                self.assertEqual(row["stderrText"],
+                                 "bpftool: C assertion failure (details redacted)")
+                for secret in ("private_token_123", "0xfeedcafe", "link.c:363",
+                               "tools/bpf/bpftool", "j < count"):
+                    self.assertNotIn(secret, rendered)
+                self.assertEqual(row["stderrSha256"], hashlib.sha256(raw).hexdigest())
+
+    def test_generic_error_text_is_not_safe_merely_because_it_is_ascii(self):
+        for raw in (
+                b"Error: 192.168.1.44",
+                b"libbpf: data leak 100000000",
+                b"Failed to retrieve tokenABC123",
+                b"cannot retrieve decimal pointer 1234567890987654321",
+                b"can't get next link: Invalid argument extra_content",
+                b"Error: 2001:db8::1",
+                b"Usage: bpftool link show private_path",
+                b"Error: private model text",
+                b"Error: " + b"Q" * 72,
+                b"Error: " + b"Q" * 73,
+                b"Error: " + b"Q" * 173,
+                b"Error: " + b"Q" * 174,
+                b"Error: Invalid argument\nextra line",
+                b"Error: Invalid argument\r\n",
+                b"\nError: timed out\n",
+                b"Error: timed out\n\n",
+                b"Error: timed out  ",
+                b"Error: timed out\x00",
+                b"Error: timed out\xc2\xa9",
+                b"\t",
+        ):
+            with self.subTest(raw=raw):
+                self.assertIsNone(collector.safe_bpft_diagnostic(raw))
+
+    def test_stderr_whitespace_is_not_mislabeled_empty_and_assertion_80_byte_audit(self):
+        response = SimpleNamespace(stdout=b"", stderr=b" \n", returncode=-6)
+        _, error, row, _ = self.capture(response=response)
+        self.assertIsInstance(error, subprocess.CalledProcessError)
+        self.assertEqual(row["stderrTextStatus"], "redacted")
+        self.assertEqual(row["stderrBytes"], 2)
+        self.assertEqual(row["stderrSha256"], hashlib.sha256(b" \n").hexdigest())
+        raw = b"bpftool: link.c:321: show_kprobe_multi_json: Assertion 'j > count' failed.\n"
+        self.assertEqual(len(raw), 75)
+        # A crash diagnostic exactly at the historical 80-byte boundary must
+        # still redact its source expression; length never changes this rule.
+        raw80 = raw.replace(b"j > count", b"j > count12345")
+        self.assertEqual(len(raw80), 80)
+        self.assertEqual(collector.safe_bpft_diagnostic(raw80),
+                         "bpftool: C assertion failure (details redacted)")
+
     def test_audit_capacity_fails_closed_without_truncating_a_record(self):
         with tempfile.TemporaryFile(mode="w+b") as output, \
                 patch.object(collector, "MAX_INVENTORY_AUDIT", 15):

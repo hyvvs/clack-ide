@@ -43,17 +43,42 @@ MAX_STDOUT = 8 * 1024 * 1024
 MAX_STDERR = 64 * 1024
 MAX_PROGRAM_LIST = 4 * 1024 * 1024
 MAX_INVENTORY_AUDIT = 2 * 1024 * 1024
-# Only known, short bpftool/libbpf diagnostic lines can leave the private
-# root stage as literal text. All other content is represented by lengths
-# and hashes, never a lossy "sanitized" rendition of unknown kernel data.
+# Only enumerated, static bpftool errors can cross the root audit boundary
+# verbatim. A generic "Error: <printable text>" rule can disclose private
+# data even after banning paths/keywords (e.g. IPs and decimal pointers).
 SAFE_BPFT_DIAGNOSTIC = re.compile(
-    r"(?:Error: |libbpf: |can't get next (?:link|program): |"
-    r"Failed to |failed to |Cannot |cannot |Usage: )"
-    r"[A-Za-z0-9 _.,:;()'!+?=-]{0,175}\Z")
-SENSITIVE_BPFT_DIAGNOSTIC = re.compile(
-    r"\b(?:password|passphrase|token|secret|private|credential|"
-    r"authorization|bearer|socket|inode|ollama|ssh|api.?key)\b|"
-    r"0x[0-9a-fA-F]{4,}", re.I)
+    r"(?:(?:Error: )?can't get next (?:link|program): "
+    r"(?:Invalid argument|No such file or directory|Operation not permitted|"
+    r"Operation not supported|Permission denied|Bad file descriptor|"
+    r"Cannot allocate memory|Resource temporarily unavailable|"
+    r"Interrupted system call)|"
+    r"Usage: bpftool (?:link|prog) show|Error: timed out)\Z")
+# glibc allocator's short, *static* messages contain no caller-controlled
+# paths, pointers, file contents or assertions. Nothing else is copied.
+SAFE_LIBC_ABORT_MESSAGES = frozenset((
+    "free(): invalid pointer",
+    "free(): invalid next size (fast)",
+    "free(): invalid next size (normal)",
+    "free(): double free detected in tcache 2",
+    "malloc(): corrupted top size",
+    "malloc(): invalid size (unsorted)",
+    "malloc(): unaligned fastbin chunk detected",
+    "malloc_consolidate(): invalid chunk size",
+    "munmap_chunk(): invalid pointer",
+    "double free or corruption (fasttop)",
+    "double free or corruption (out)",
+    "corrupted size vs. prev_size",
+    "*** stack smashing detected ***: terminated",
+    "*** buffer overflow detected ***: terminated",
+))
+# Assertion expressions and source paths are never exported verbatim. We can
+# preserve a closed-vocabulary classification only for a bounded bpftool C
+# assertion envelope. Unknown error text still gets length+SHA256 only.
+SAFE_BPFT_ASSERTION_ENVELOPE = re.compile(
+    r"(?:bpftool|/usr/bin/bpftool): "
+    r"(?:[A-Za-z0-9_.-]+/){0,5}(?:link|prog|main|common)\.c:"
+    r"[1-9][0-9]{0,5}: [A-Za-z_][A-Za-z0-9_]{0,63}: "
+    r"Assertion .{1,90} failed\.\Z")
 # Linux BPF_OBJ_NAME_LEN=16, including NUL. This is the observed/truncated
 # name of bpftrace's single tcp_sendmsg kprobe-session program. Do not use
 # a prefix: a similarly named unrelated program is not attachment evidence.
@@ -104,17 +129,28 @@ def load_hardened_support(folder):
 
 
 def safe_bpft_diagnostic(raw):
-    """Return only exact, bounded tool error text without paths or BPF data."""
+    """Return static tool errors or redacted crash CATEGORY, never raw asserts."""
     if not isinstance(raw, bytes) or len(raw) > 180:
         return None
+    if b"\r" in raw or b"\x00" in raw or b"\t" in raw:
+        return None
+    if raw == b"":
+        return ""
+    if raw.endswith(b"\n"):
+        raw = raw[:-1]
+    if b"\n" in raw or not raw:
+        return None
     try:
-        value = raw.decode("ascii").strip()
+        value = raw.decode("ascii")
     except UnicodeDecodeError:
         return None
-    if not value:
-        return ""
-    return value if SAFE_BPFT_DIAGNOSTIC.fullmatch(value) and \
-        not SENSITIVE_BPFT_DIAGNOSTIC.search(value) else None
+    if SAFE_BPFT_DIAGNOSTIC.fullmatch(value):
+        return value
+    if value in SAFE_LIBC_ABORT_MESSAGES:
+        return value
+    if SAFE_BPFT_ASSERTION_ENVELOPE.fullmatch(value):
+        return "bpftool: C assertion failure (details redacted)"
+    return None
 
 
 class InventoryAudit:
@@ -237,7 +273,7 @@ def inventory_snapshot(bpftool, kind, timeout, parse_rows, phase="baseline",
                 "stderrText": stderr_text,
                 "stderrTextStatus": (
                     "allowlisted" if stderr_text else
-                    "empty" if stderr_text == "" else "redacted"),
+                    "empty" if not stderr else "redacted"),
                 "stdoutToolError": stdout_diagnostic,
                 "jsonAttempted": json_attempted,
                 "jsonResult": json_result,
