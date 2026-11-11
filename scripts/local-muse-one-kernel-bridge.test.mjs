@@ -332,8 +332,12 @@ test('operator scripts stage only reviewed files, guard FIFO open with timeout',
   assert.match(root,/seconds_plus_six=\$\(\(seconds \+ 6\)\)/);
   assert.match(root,/\/usr\/bin\/timeout --signal=TERM --kill-after=2s "\$\{seconds_plus_six\}s"\s+\\\s+\/usr\/bin\/bash -c/);
   assert.match(root,/--seconds "\$6"/);
+  assert.match(root,/--inventory-audit-fd 4/);
   assert.match(root,/seconds -gt 20/);
-  assert.match(root,/0<>"\$3" 1>"\$4" 3>"\$5"/);
+  assert.match(root,/0<>"\$3" 1>"\$4" 3>"\$5" 4>"\$7"/);
+  assert.match(root,/inventory_audit=\$dest\/kernel-inventory-audit\.jsonl/);
+  assert.match(root,/2097152/);
+  assert.match(root,/operator-inventory-audit\.jsonl/);
   assert.match(root,/chmod 0620 -- "\$control"/);
   assert.match(root,/chmod 0640 -- "\$ready" "\$metadata"/);
   assert.match(root,/OPERATOR_EBPF_CLEANUP/);
@@ -347,7 +351,10 @@ test('operator scripts stage only reviewed files, guard FIFO open with timeout',
   assert.match(ps,/USER_STAGE_CLEANUP=FAIL/);
   assert.match(ps,/KERNEL_OPERATOR_SSH_EXIT=/);
   assert.match(ps,/kernel-operator-audit\.numeric/);
+  assert.match(ps,/kernel-operator-inventory\.jsonl/);
+  assert.match(ps,/kernel-inventory-audit\.jsonl/);
   assert.match(ps,/operator-audit\.numeric/);
+  assert.match(ps,/operator-inventory-audit\.jsonl/);
   assert.match(ps,/\/usr\/bin\/timeout --signal=TERM --kill-after=2s 8s \/usr\/bin\/bash -s/);
   assert.match(ps,/trap release EXIT/);
   assert.doesNotMatch(ps,/trap - EXIT/);

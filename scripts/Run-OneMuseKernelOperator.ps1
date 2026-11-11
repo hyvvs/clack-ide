@@ -72,6 +72,7 @@ $scpOptions = @('-q','-o','StrictHostKeyChecking=yes','-o','BatchMode=yes',
 $stage = $null
 $operatorExit = 'unobserved'
 $auditCopied = $false
+$inventoryCopied = $false
 $cleanupOk = $false
 try {
   $created = & ssh.exe @sshOptions '-T' $remote '/usr/bin/timeout --signal=TERM --kill-after=2s 8s /usr/bin/mktemp -d -p /home/hylab/.cache clack-muse-one-stage.XXXXXXXX'
@@ -99,7 +100,7 @@ dest="/run/local-muse-ebpf/$run"
 created=0
 release() {
   if ((created)); then
-    /usr/bin/rm -f -- "$dest/local-muse-one-root.sh" "$dest/local-muse-one-ebpf.py" "$dest/local-muse-tcp-session.py" "$dest/local-muse-tcp.bt" "$dest/kernel-audit.stderr" "$dest/kernel-audit.numeric" || true
+    /usr/bin/rm -f -- "$dest/local-muse-one-root.sh" "$dest/local-muse-one-ebpf.py" "$dest/local-muse-tcp-session.py" "$dest/local-muse-tcp.bt" "$dest/kernel-audit.stderr" "$dest/kernel-audit.numeric" "$dest/kernel-inventory-audit.jsonl" || true
     /usr/bin/rmdir -- "$dest" 2>/dev/null || true
     /usr/bin/rmdir -- /run/local-muse-ebpf 2>/dev/null || true
   fi
@@ -151,6 +152,14 @@ exit "$status"
     & scp.exe @scpOptions '--' ("${remote}:${stage}/operator-audit.numeric") $localAudit
     $auditCopied = ($LASTEXITCODE -eq 0)
     Write-Output ('KERNEL_OPERATOR_AUDIT=' + $(if ($auditCopied) { 'PASS' } else { 'MISSING' }))
+    $localInventory = Join-Path $kernelOnlyEvidence 'kernel-operator-inventory.jsonl'
+    if (Test-Path -LiteralPath $localInventory) {
+      throw 'Exclusive kernel inventory evidence already exists'
+    }
+    & scp.exe @scpOptions '--' ("${remote}:${stage}/operator-inventory-audit.jsonl") $localInventory
+    $inventoryCopied = ($LASTEXITCODE -eq 0)
+    Write-Output ('KERNEL_OPERATOR_INVENTORY_AUDIT=' + $(if ($inventoryCopied) { 'PASS' } else { 'MISSING' }))
+    if (-not $inventoryCopied) { throw 'Inventory diagnostic evidence unavailable' }
   }
   if ($status -ne 0) { throw 'Kernel operator session incomplete or cleanup failed' }
 }
@@ -175,6 +184,10 @@ if [[ -e "$stage/operator-audit.numeric" || -L "$stage/operator-audit.numeric" ]
   test -f "$stage/operator-audit.numeric" && test ! -L "$stage/operator-audit.numeric"
   /usr/bin/rm -f -- "$stage/operator-audit.numeric"
 fi
+if [[ -e "$stage/operator-inventory-audit.jsonl" || -L "$stage/operator-inventory-audit.jsonl" ]]; then
+  test -f "$stage/operator-inventory-audit.jsonl" && test ! -L "$stage/operator-inventory-audit.jsonl"
+  /usr/bin/rm -f -- "$stage/operator-inventory-audit.jsonl"
+fi
 /usr/bin/rmdir -- "$stage"
 '@
     $cleanupScript = $cleanupScript.Replace('__STAGE__',$stage)
@@ -193,6 +206,7 @@ fi
     if (-not (Test-Path -LiteralPath $path)) {
       $record = @('KERNEL_OPERATOR_SSH_EXIT=' + $operatorExit,
         'KERNEL_OPERATOR_AUDIT=' + $(if ($auditCopied) { 'PASS' } else { 'MISSING' }),
+        'KERNEL_OPERATOR_INVENTORY_AUDIT=' + $(if ($inventoryCopied) { 'PASS' } else { 'MISSING' }),
         'USER_STAGE_CLEANUP=' + $(if ($cleanupOk) { 'PASS' } else { 'FAIL' }))
       [IO.File]::WriteAllLines($path,[string[]]$record,[Text.Encoding]::ASCII)
     }

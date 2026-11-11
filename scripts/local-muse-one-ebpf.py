@@ -42,6 +42,18 @@ MAX_SECONDS = 1800
 MAX_STDOUT = 8 * 1024 * 1024
 MAX_STDERR = 64 * 1024
 MAX_PROGRAM_LIST = 4 * 1024 * 1024
+MAX_INVENTORY_AUDIT = 2 * 1024 * 1024
+# Only known, short bpftool/libbpf diagnostic lines can leave the private
+# root stage as literal text. All other content is represented by lengths
+# and hashes, never a lossy "sanitized" rendition of unknown kernel data.
+SAFE_BPFT_DIAGNOSTIC = re.compile(
+    r"(?:Error: |libbpf: |can't get next (?:link|program): |"
+    r"Failed to |failed to |Cannot |cannot |Usage: )"
+    r"[A-Za-z0-9 _.,:;()'!+?=-]{0,175}\Z")
+SENSITIVE_BPFT_DIAGNOSTIC = re.compile(
+    r"\b(?:password|passphrase|token|secret|private|credential|"
+    r"authorization|bearer|socket|inode|ollama|ssh|api.?key)\b|"
+    r"0x[0-9a-fA-F]{4,}", re.I)
 # Linux BPF_OBJ_NAME_LEN=16, including NUL. This is the observed/truncated
 # name of bpftrace's single tcp_sendmsg kprobe-session program. Do not use
 # a prefix: a similarly named unrelated program is not attachment evidence.
@@ -91,15 +103,150 @@ def load_hardened_support(folder):
     return module
 
 
-def program_inventory(bpftool, timeout):
-    """Read-only program IDs; availability alone does not prove BPF attachment."""
-    process = subprocess.run([str(bpftool), "-j", "prog", "show"],
-                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, check=True,
-                             timeout=max(0.1, min(2.0, timeout)))
-    if len(process.stdout) > MAX_PROGRAM_LIST:
-        raise ValueError("Kernel program inventory overflow")
-    entries = json.loads(process.stdout)
+def safe_bpft_diagnostic(raw):
+    """Return only exact, bounded tool error text without paths or BPF data."""
+    if not isinstance(raw, bytes) or len(raw) > 180:
+        return None
+    try:
+        value = raw.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+    if not value:
+        return ""
+    return value if SAFE_BPFT_DIAGNOSTIC.fullmatch(value) and \
+        not SENSITIVE_BPFT_DIAGNOSTIC.search(value) else None
+
+
+class InventoryAudit:
+    """Bounded, root-owned JSONL for EACH bpftool inventory invocation."""
+
+    def __init__(self, fd):
+        self.fd = fd
+        self.bytes_written = 0
+        self.invocations = 0
+
+    def record(self, row):
+        self.invocations += 1
+        row = {"schemaVersion": 1, "invocation": self.invocations, **row}
+        payload = (json.dumps(row, sort_keys=True, separators=(",", ":")) +
+                   "\n").encode("ascii")
+        if self.bytes_written + len(payload) > MAX_INVENTORY_AUDIT:
+            raise ValueError("Bounded inventory audit capacity exceeded")
+        while payload:
+            count = os.write(self.fd, payload)
+            if count <= 0:
+                raise OSError("Inventory audit output unavailable")
+            self.bytes_written += count
+            payload = payload[count:]
+
+
+def inventory_snapshot(bpftool, kind, timeout, parse_rows, phase="baseline",
+                       audit=None, tracer_state="not_started"):
+    """Run exactly the reviewed argv, preserving closed-vocabulary failures.
+
+    JSON error output on a nonzero bpftool exit is still *examined* for a
+    strictly allowlisted diagnostic, but never accepted as inventory. A
+    root-owned per-invocation record holds timestamps, exact argv, raw
+    stream lengths/digests and only safe tool diagnostic text.
+    """
+    if kind not in ("prog", "link") or phase not in ("baseline", "live", "terminal"):
+        raise ValueError("Unknown inventory command or phase")
+    args = [str(bpftool), "-j", kind, "show"]
+    state = tracer_state if callable(tracer_state) else lambda: tracer_state
+    started_state = state()
+    if started_state not in ("not_started", "running", "exited"):
+        raise ValueError("Unknown tracer inventory state")
+    start_ns = time.monotonic_ns()
+    stdout, stderr = b"", b""
+    exit_code = None
+    json_attempted = False
+    json_result = "not_attempted"
+    result = "spawn_error"
+    failure_class = "none"
+    stdout_diagnostic = None
+    parsed_rows = None
+    try:
+        try:
+            process = subprocess.run(
+                args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, check=False,
+                timeout=max(0.1, min(2.0, timeout)))
+            exit_code = getattr(process, "returncode", 0)
+            stdout = process.stdout or b""
+            stderr = getattr(process, "stderr", b"") or b""
+        except subprocess.TimeoutExpired as error:
+            stdout = error.stdout or b""
+            stderr = error.stderr or b""
+            result = "timeout"
+            failure_class = "TimeoutExpired"
+            raise
+        if len(stdout) > MAX_PROGRAM_LIST or len(stderr) > MAX_STDERR:
+            result = "output_overflow"
+            failure_class = "ValueError"
+            raise ValueError("Bounded bpftool inventory output exceeded")
+        json_attempted = bool(stdout)
+        if json_attempted:
+            try:
+                parsed_rows = json.loads(stdout)
+                json_result = "parsed"
+            except (ValueError, UnicodeDecodeError):
+                json_result = "decode_error"
+        if isinstance(parsed_rows, list) and len(parsed_rows) == 1 and \
+                isinstance(parsed_rows[0], dict) and \
+                type(parsed_rows[0].get("error")) is str:
+            stdout_diagnostic = safe_bpft_diagnostic(
+                parsed_rows[0]["error"].encode("utf-8"))
+        if exit_code != 0:
+            result = "exit_nonzero"
+            failure_class = "CalledProcessError"
+            raise subprocess.CalledProcessError(exit_code, args)
+        if json_result != "parsed":
+            result = "json_failure"
+            failure_class = "JSONDecodeError"
+            raise ValueError("No valid bpftool JSON inventory")
+        try:
+            inventory = parse_rows(parsed_rows)
+        except (ValueError, TypeError, KeyError):
+            result = "schema_failure"
+            failure_class = "ValueError"
+            json_result = "schema_failure"
+            raise
+        result = "pass"
+        return inventory
+    except OSError as error:
+        if result == "spawn_error":
+            failure_class = type(error).__name__
+        raise
+    finally:
+        end_ns = time.monotonic_ns()
+        completed_state = state()
+        if completed_state not in ("not_started", "running", "exited"):
+            completed_state = "unknown"
+        stderr_text = safe_bpft_diagnostic(stderr)
+        if audit is not None:
+            audit.record({
+                "phase": phase, "kind": kind, "argv": args,
+                "monotonicStartNs": start_ns, "monotonicEndNs": end_ns,
+                "exitCode": exit_code,
+                "timedOut": result == "timeout", "result": result,
+                "failureClass": failure_class,
+                "stdoutBytes": len(stdout),
+                "stdoutSha256": hashlib.sha256(stdout).hexdigest(),
+                "stderrBytes": len(stderr),
+                "stderrSha256": hashlib.sha256(stderr).hexdigest(),
+                "stderrText": stderr_text,
+                "stderrTextStatus": (
+                    "allowlisted" if stderr_text else
+                    "empty" if stderr_text == "" else "redacted"),
+                "stdoutToolError": stdout_diagnostic,
+                "jsonAttempted": json_attempted,
+                "jsonResult": json_result,
+                "tracerStateAtStart": started_state,
+                "tracerStateAtEnd": completed_state,
+            })
+
+
+def parse_program_inventory(entries):
     if not isinstance(entries, list):
         raise ValueError("Invalid kernel program inventory")
     by_id = {}
@@ -110,6 +257,13 @@ def program_inventory(bpftool, timeout):
             raise ValueError("Malformed kernel program inventory entry")
         by_id[row["id"]] = (row["type"], row.get("name", ""))
     return by_id
+
+
+def program_inventory(bpftool, timeout, phase="baseline", audit=None,
+                      tracer_state="not_started"):
+    """Read-only program registry with one auditable invocation."""
+    return inventory_snapshot(bpftool, "prog", timeout,
+                              parse_program_inventory, phase, audit, tracer_state)
 
 
 def new_kprobes(before, after):
@@ -126,15 +280,7 @@ def new_separate_return_programs(before, after):
             name == SEPARATE_RETURN_PROG_NAME}
 
 
-def link_inventory(bpftool, timeout):
-    """Read-only BPF link snapshot. Never trust a program name alone as attach."""
-    process = subprocess.run([str(bpftool), "-j", "link", "show"],
-                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, check=True,
-                             timeout=max(0.1, min(2.0, timeout)))
-    if len(process.stdout) > MAX_PROGRAM_LIST:
-        raise ValueError("Kernel link inventory overflow")
-    rows = json.loads(process.stdout)
+def parse_link_inventory(rows):
     if not isinstance(rows, list):
         raise ValueError("Invalid kernel link inventory")
     links = {}
@@ -149,6 +295,13 @@ def link_inventory(bpftool, timeout):
             raise ValueError("Malformed kernel link inventory entry")
         links[row["id"]] = row
     return links
+
+
+def link_inventory(bpftool, timeout, phase="baseline", audit=None,
+                   tracer_state="not_started"):
+    """Read-only link registry, not optional when proving session readiness."""
+    return inventory_snapshot(bpftool, "link", timeout,
+                              parse_link_inventory, phase, audit, tracer_state)
 
 
 def session_link_ids(before_links, live_links, new_programs, tracer_pid):
@@ -342,7 +495,7 @@ def emit_content_free_audit(stdout, stderr, pid, programs_before, programs_after
                             child_status, armed, arm_attempted, fifo_write_error,
                             identity_ok, stop_complete, invalid_source, forced,
                             inventory_error, session_link_count=0,
-                            link_inventory_error="none"):
+                            link_inventory_error="none", inventory_records=0):
     """Exact byte fingerprints and closed-vocabulary reasons, never TCP pointers.
 
     The operator's stderr is separate from the private numeric importer/FIFO
@@ -373,6 +526,7 @@ def emit_content_free_audit(stdout, stderr, pid, programs_before, programs_after
             len(new_separate_return_programs(programs_before, programs_after)),
         "NEW_VALID_SESSION_LINK_COUNT": session_link_count,
         "SESSION_LINK_INVENTORY_ERROR": link_inventory_error,
+        "INVENTORY_RECORD_COUNT": inventory_records,
         "TRACER_EXIT": child_status if child_status is not None else "unknown",
         "READY_FIFO_WRITTEN": int(armed),
         "READY_FIFO_WRITE_ATTEMPTED": int(arm_attempted),
@@ -388,11 +542,14 @@ def emit_content_free_audit(stdout, stderr, pid, programs_before, programs_after
 
 
 def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpftool,
-                attach_timeout=60, stdout_fd=1):
+                attach_timeout=60, stdout_fd=1, inventory_audit_fd=None):
     """Own one tracer only, while retaining every byte of untrusted BPF output."""
+    inventory_audit = (InventoryAudit(inventory_audit_fd)
+                       if inventory_audit_fd is not None else None)
     identity = helper.read_identity(pid, 11434)
-    baseline_programs = program_inventory(bpftool, 2.0)
-    baseline_links = link_inventory(bpftool, 2.0)
+    baseline_programs = program_inventory(bpftool, 2.0,
+                                          "baseline", inventory_audit)
+    baseline_links = link_inventory(bpftool, 2.0, "baseline", inventory_audit)
     started = time.monotonic()
     deadline = started + duration
     graceful_at = helper.graceful_shutdown_at(started, duration)
@@ -432,10 +589,14 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
     last_inventory = 0
     current_programs = baseline_programs
     current_links = baseline_links
-    def checked_links(timeout):
+    def tracer_state():
+        return "running" if child.poll() is None else "exited"
+
+    def checked_links(timeout, phase):
         nonlocal link_inventory_error
         try:
-            return link_inventory(bpftool, timeout)
+            return link_inventory(bpftool, timeout, phase, inventory_audit,
+                                  tracer_state)
         except (OSError, ValueError, subprocess.SubprocessError,
                 json.JSONDecodeError) as error:
             link_inventory_error = type(error).__name__
@@ -459,8 +620,10 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
                     now < graceful_at and now - started < attach_timeout:
                 last_inventory = now
                 try:
-                    current_programs = program_inventory(bpftool, deadline - now)
-                    current_links = checked_links(deadline - now)
+                    current_programs = program_inventory(
+                        bpftool, deadline - now, "live", inventory_audit,
+                        tracer_state)
+                    current_links = checked_links(deadline - now, "live")
                     session_links = session_link_ids(
                         baseline_links, current_links,
                         new_kprobes(baseline_programs, current_programs), child.pid)
@@ -495,8 +658,10 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
             if armed and not signalled and now - last_inventory >= 5 and now < graceful_at:
                 last_inventory = now
                 try:
-                    live = program_inventory(bpftool, deadline - now)
-                    live_links = checked_links(deadline - now)
+                    live = program_inventory(
+                        bpftool, deadline - now, "live", inventory_audit,
+                        tracer_state)
+                    live_links = checked_links(deadline - now, "live")
                     if not armed_program_ids.issubset(new_kprobes(baseline_programs, live)) or \
                             not armed_link_ids.issubset(session_link_ids(
                                 baseline_links, live_links, armed_program_ids, child.pid)):
@@ -604,8 +769,10 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
     kernel_clean = child.poll() is not None
     if armed_program_ids:
         try:
-            post_programs = program_inventory(bpftool, min(2.0, deadline - now))
-            post_links = checked_links(min(2.0, deadline - now))
+            post_programs = program_inventory(
+                bpftool, min(2.0, deadline - now), "terminal", inventory_audit,
+                tracer_state)
+            post_links = checked_links(min(2.0, deadline - now), "terminal")
             kernel_clean = (kernel_clean and
                             not armed_program_ids.intersection(post_programs) and
                             not armed_link_ids.intersection(post_links))
@@ -629,7 +796,8 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
                             baseline_programs, current_programs, child.returncode,
                             armed, arm_attempted, fifo_write_error, identity_ok,
                             stop_complete, invalid_source, forced, inventory_error,
-                            session_link_count, link_inventory_error)
+                            session_link_count, link_inventory_error,
+                            inventory_audit.invocations if inventory_audit else 0)
     # Importer must get the *last* line only after END and actual tracer EOF.
     # A broken/stalled stdout yields no completion receipt; journal fails closed.
     try:
@@ -645,6 +813,7 @@ def main(argv=None):
     parser.add_argument("--seconds", default=MAX_SECONDS, type=int)
     parser.add_argument("--ready-fd", required=True, type=int)
     parser.add_argument("--control-fd", default=0, type=int)
+    parser.add_argument("--inventory-audit-fd", required=True, type=int)
     args = parser.parse_args(argv)
     if platform.system() != "Linux" or sys.byteorder != "little" or os.geteuid() != 0:
         parser.error("Linux little-endian root operator required")
@@ -652,6 +821,12 @@ def main(argv=None):
         parser.error("Bounded private ready FD must be >= 3")
     if args.control_fd < 0 or args.control_fd > 255 or args.control_fd in (1, 2, args.ready_fd):
         parser.error("Control FD must be a separate private pipe")
+    if args.inventory_audit_fd < 3 or args.inventory_audit_fd > 255 or \
+            args.inventory_audit_fd in (args.control_fd, args.ready_fd) or \
+            not stat.S_ISREG(os.fstat(args.inventory_audit_fd).st_mode) or \
+            os.fstat(args.inventory_audit_fd).st_uid != 0 or \
+            stat.S_IMODE(os.fstat(args.inventory_audit_fd).st_mode) != 0o600:
+        parser.error("Inventory audit FD must be a separate root-owned regular file")
     if not 1 <= args.seconds <= MAX_SECONDS:
         parser.error("Maximum session is 1800 seconds")
     if not stat.S_ISFIFO(os.fstat(args.ready_fd).st_mode) or \
@@ -670,7 +845,8 @@ def main(argv=None):
         tracer = helper.trusted_root_file(tracer_name)
         bpftool = helper.trusted_root_file(bpftool_name)
         return run_capture(args.pid, args.seconds, args.ready_fd, args.control_fd,
-                           helper, probe, tracer, bpftool)
+                           helper, probe, tracer, bpftool,
+                           inventory_audit_fd=args.inventory_audit_fd)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         # Setup may have failed before a child was created. Never emit READY.
         # An absent/incomplete import terminal is an unsealable source.

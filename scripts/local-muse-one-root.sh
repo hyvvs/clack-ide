@@ -39,13 +39,14 @@ session=$dest/local-muse-one-ebpf.py
 control=$dest/control.fifo
 ready=$dest/ready.fifo
 metadata=$dest/metadata.fifo
+inventory_audit=$dest/kernel-inventory-audit.jsonl
 owned=0
 cleanup() {
   local code=$? clean=PASS
   trap - EXIT INT TERM HUP
   if ((owned)); then
     if [[ -d $dest && ! -L $dest && $(stat -c '%u' -- "$dest") == 0 ]]; then
-      /usr/bin/rm -f -- "$control" "$ready" "$metadata" "$probe" "$support" "$session" "$dest/local-muse-one-root.sh" "$dest/kernel-audit.stderr" "$dest/kernel-audit.numeric" || clean=FAIL
+      /usr/bin/rm -f -- "$control" "$ready" "$metadata" "$probe" "$support" "$session" "$dest/local-muse-one-root.sh" "$dest/kernel-audit.stderr" "$dest/kernel-audit.numeric" "$inventory_audit" || clean=FAIL
       /usr/bin/rmdir -- "$dest" || clean=FAIL
       # The bootstrap refused any pre-existing /run/local-muse-ebpf root, so
       # this parent is also task-owned. A leftover parent blocks the next run.
@@ -107,11 +108,14 @@ set +e
 seconds_plus_six=$((seconds + 6))
 /usr/bin/touch -- "$dest/kernel-audit.stderr"
 /usr/bin/chmod 0600 -- "$dest/kernel-audit.stderr"
+/usr/bin/touch -- "$inventory_audit"
+/usr/bin/chmod 0600 -- "$inventory_audit"
 /usr/bin/timeout --signal=TERM --kill-after=2s "${seconds_plus_six}s" \
   /usr/bin/bash -c '
     exec /usr/bin/python3 -B "$1" --pid "$2" --seconds "$6" \
-      --ready-fd 3 --control-fd 0 0<>"$3" 1>"$4" 3>"$5"
-  ' bash "$session" "$pid" "$control" "$metadata" "$ready" "$seconds" \
+      --ready-fd 3 --control-fd 0 --inventory-audit-fd 4 \
+      0<>"$3" 1>"$4" 3>"$5" 4>"$7"
+  ' bash "$session" "$pid" "$control" "$metadata" "$ready" "$seconds" "$inventory_audit" \
     2>"$dest/kernel-audit.stderr"
 status=$?
 set -e
@@ -123,6 +127,19 @@ if (( $(stat -c '%s' -- "$dest/kernel-audit.stderr") <= 65536 )); then
   /usr/bin/grep -E '^KERNEL_AUDIT_[A-Z0-9_]+=[A-Za-z0-9_-]{1,96}$' \
     -- "$dest/kernel-audit.stderr" >"$dest/kernel-audit.numeric" || true
   printf 'KERNEL_AUDIT_OPERATOR_CHILD_EXIT=%d\n' "$status" >> "$dest/kernel-audit.numeric"
+  # One JSONL line per invocation. Only bounded counts, hashes and strictly
+  # allowlisted bpftool diagnostics are present; never export raw BPF JSON.
+  if (( $(/usr/bin/stat -c '%s' -- "$inventory_audit") > 2097152 )); then
+    printf 'KERNEL_AUDIT_INVENTORY_EXPORT=overflow\n' >> "$dest/kernel-audit.numeric"
+    status=1
+  else
+    printf 'KERNEL_AUDIT_INVENTORY_FILE_BYTES=%s\n' "$(/usr/bin/stat -c '%s' -- "$inventory_audit")" >> "$dest/kernel-audit.numeric"
+    printf 'KERNEL_AUDIT_INVENTORY_FILE_SHA256=%s\n' "$(/usr/bin/sha256sum -- "$inventory_audit" | /usr/bin/cut -d' ' -f1)" >> "$dest/kernel-audit.numeric"
+    if ((seconds != 1800)); then
+      /usr/bin/install -o hylab -g hylab -m 0600 \
+        "$inventory_audit" "$operator_stage/operator-inventory-audit.jsonl"
+    fi
+  fi
   /usr/bin/cat -- "$dest/kernel-audit.numeric" >&2
   if ((seconds != 1800)); then
     /usr/bin/install -o hylab -g hylab -m 0600 \
