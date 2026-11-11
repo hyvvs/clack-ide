@@ -172,14 +172,50 @@ https://archlinux.org/packages/extra/x86_64/bpf/
 
 https://archlinux.org/packages/extra-testing/x86_64/bpf/
 
-The installed host binary self-reports `bpftool v7.8.0` and
-`libbpf v1.8`, **not** the actual pacman owner/build ID. The host's
-`pacman -Qo /usr/bin/bpftool`, `pacman -Qii bpf` and
-`pacman -Si bpf` records are **not yet collected**. The exact installed
-package owner, revision, packager/build metadata, potential patch set,
-configured repository candidate, and fixed-binary status remain
-unverified. Do not install or recommend a testing-branch package solely
-because its version is newer. No fixed **configured** package is proven.
+The operator completed the following **read-only host queries** on
+2026-11-11: `pacman -Qo /usr/bin/bpftool`, `pacman -Qii bpf`,
+`pacman -Qi libbpf`, `pacman -Si bpf`, and
+`/usr/bin/bpftool version --json`. They establish:
+
+- **Installed binary owner:** signed Arch `extra/bpf 7.3.1-1` on x86_64,
+  a `linux-tools` split package, installed as a dependency of
+  `scx-scheds`. Packager: Christian Heusel; build
+  **2026-10-31 12:57:04 CET**; install
+  **2026-11-04 22:20:16 CET**; packaged size **5.84 MiB**.
+- **Configured repository candidate:** the **same**
+  `extra/bpf 7.3.1-1`, with the same build date and packager.
+  Therefore the host's configured `pacman -Si bpf` lookup
+  resolves **no newer `bpf` candidate**. In particular, a routine
+  `pacman -Syu` would not upgrade this bpftool by package version.
+- **Self-report from the exact binary:** JSON
+  `{"version":"7.8.0","libbpf_version":"1.8"}` (and feature flags).
+  These are embedded tool/library version reports, **not** the
+  `bpf` pacman package version.
+- **Separately installed libbpf package:** CachyOS
+  `libbpf 1.7.0-1.1`, architecture `x86_64_v4`, installed
+  **2026-06-21**, built **2026-04-30**. The differing `1.8`
+  self-report does **not** by itself prove a broken installation,
+  ABI problem or the cause of the observed `SIGABRT`.
+
+The corresponding Arch packaging change `af093d728d5acfcfb87c2f7e36305a41a85bbbc5`
+published on October 31 changes `PKGBUILD` and `.SRCINFO`
+to source **`linux-7.3.1.tar.xz`** with its updated SHA-256, rather
+than building from the standalone bpftool release.
+The published packaging commit lists only those two changed files,
+and the source tag `v7.3.1` has the independently verified
+**pre-fix** `link.c` blob. This firmly connects the installed package
+to an upstream source revision with the bug. However, because the
+complete downstream build recipe/patch application and installed
+binary disassembly were not independently verified, the exact installed
+binary's patch status must still be described as **high-confidence
+affected, not binary-proven**.
+
+https://www.mail-archive.com/arch-commits@lists.archlinux.org/msg1239435.html
+
+Do not install or recommend a testing-branch package merely because
+its version is newer. Neither `extra` nor the named
+`extra-testing/bpf 7.3.3-1` is a **verified fixed build**; both
+upstream source tags contain the defect.
 
 ### Diagnostic privacy hardening
 
