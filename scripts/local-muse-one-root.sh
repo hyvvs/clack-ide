@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 umask 077
 
-if (($# < 2 || $# > 4)) || [[ $(id -u) != 0 ]]; then
+if (($# < 2 || $# > 5)) || [[ $(id -u) != 0 ]]; then
   printf 'OPERATOR_EBPF_EXIT=1\n' >&2
   exit 1
 fi
@@ -13,11 +13,17 @@ run_id=$1
 expected_pid=$2
 seconds=${3:-1800}
 operator_stage=${4:-}
+crash_capture_mode=${5:-off}
 if [[ ! $run_id =~ ^muse-one-[a-f0-9]{24}$ ]] || [[ ! $expected_pid =~ ^[1-9][0-9]{1,9}$ ]]; then
   printf 'OPERATOR_EBPF_EXIT=1\n' >&2
   exit 1
 fi
 if [[ ! $seconds =~ ^[1-9][0-9]{0,3}$ ]] || ((seconds > 1800)); then
+  printf 'OPERATOR_EBPF_EXIT=1\n' >&2
+  exit 1
+fi
+if [[ $crash_capture_mode != off && $crash_capture_mode != capture ]] || \
+      [[ $crash_capture_mode == capture && $seconds -gt 20 ]]; then
   printf 'OPERATOR_EBPF_EXIT=1\n' >&2
   exit 1
 fi
@@ -120,9 +126,10 @@ fi
   /usr/bin/bash -c '
     args=(--pid "$2" --seconds "$6" --ready-fd 3 --control-fd 0 --inventory-audit-fd 4)
     if [[ "$8" == fixed ]]; then args+=(--fixed-diagnostic-bpftool); fi
+    if [[ "$9" == capture ]]; then args+=(--capture-live-link-abort); fi
     exec /usr/bin/python3 -B "$1" "${args[@]}" \
       0<>"$3" 1>"$4" 3>"$5" 4>"$7"
-  ' bash "$session" "$pid" "$control" "$metadata" "$ready" "$seconds" "$inventory_audit" "$fixed_bpftool_mode" \
+  ' bash "$session" "$pid" "$control" "$metadata" "$ready" "$seconds" "$inventory_audit" "$fixed_bpftool_mode" "$crash_capture_mode" \
     2>"$dest/kernel-audit.stderr"
 status=$?
 set -e

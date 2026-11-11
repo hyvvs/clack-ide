@@ -335,6 +335,9 @@ test('operator scripts stage only reviewed files, guard FIFO open with timeout',
   assert.match(root,/--inventory-audit-fd 4/);
   assert.match(root,/fixed_bpftool_mode=fixed/);
   assert.match(root,/--fixed-diagnostic-bpftool/);
+  assert.match(root,/--capture-live-link-abort/);
+  assert.match(root,/crash_capture_mode=\$\{5:-off\}/);
+  assert.match(root,/crash_capture_mode == capture && \$seconds -gt 20/);
   assert.match(root,/seconds -gt 20/);
   assert.match(root,/0<>"\$3" 1>"\$4" 3>"\$5" 4>"\$7"/);
   assert.match(root,/inventory_audit=\$dest\/kernel-inventory-audit\.jsonl/);
@@ -359,8 +362,11 @@ test('operator scripts stage only reviewed files, guard FIFO open with timeout',
   assert.match(ps,/operator-inventory-audit\.jsonl/);
   assert.match(ps,/\/usr\/bin\/timeout --signal=TERM --kill-after=2s 8s \/usr\/bin\/bash -s/);
   assert.match(ps,/trap release EXIT/);
+  assert.match(ps,/\[switch\]\$CrashCapture/);
+  assert.match(ps,/\$crashMode = if \(\$CrashCapture\) \{ 'capture' \} else \{ 'off' \}/);
+  assert.match(ps,/\$bootstrap = \$bootstrap\.Replace\('__CRASH__',\$crashMode\)/);
   assert.doesNotMatch(ps,/trap - EXIT/);
-  assert.match(ps,/status=0\s+\/usr\/bin\/bash "\$dest\/local-muse-one-root\.sh" "\$run" "\$pid" "\$seconds" "\$stage" \|\| status=\$\?/);
+  assert.match(ps,/status=0\s+\/usr\/bin\/bash "\$dest\/local-muse-one-root\.sh" "\$run" "\$pid" "\$seconds" "\$stage" "\$crash" \|\| status=\$\?/);
   assert.doesNotMatch(ps,/Remove-Item.*-Recurse/);
 });
 

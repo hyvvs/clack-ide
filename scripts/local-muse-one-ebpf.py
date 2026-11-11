@@ -46,6 +46,10 @@ MAX_INVENTORY_AUDIT = 2 * 1024 * 1024
 FIXED_DIAGNOSTIC_BPFT_PATH = Path("/opt/clack/diagnostic-tools/bpftool-678d538")
 FIXED_DIAGNOSTIC_BPFT_PIN = Path("/opt/clack/diagnostic-tools/bpftool-678d538.pin.json")
 FIXED_DIAGNOSTIC_BPFT_SHA256 = "ff08d9fe9a545f488f4ecc7145f491027704a2139987f08432c1f9265be70e3d"
+FIXED_DIAGNOSTIC_CRASH_WRAPPER_PATH = Path(
+    "/opt/clack/diagnostic-tools/clack-bpftool-abort-capture.py")
+FIXED_DIAGNOSTIC_CRASH_WRAPPER_SHA256 = (
+    "c5002328d5563c6af32559c4809940d9f89bfc78f330fe9e2022805bca4ac126")
 FIXED_DIAGNOSTIC_SOURCE_COMMIT = "678d538a85e6960f84e443695eebb13f66f89981"
 FIXED_DIAGNOSTIC_LIBBPF_COMMIT = "872299d94e27d2fa9f119667c7e52268698dc760"
 FIXED_DIAGNOSTIC_LINK_BLOB = "5cffa2d283b47327b8611b4d85b1d70821f40964"
@@ -217,6 +221,16 @@ def qualified_diagnostic_bpftool(pin_path=FIXED_DIAGNOSTIC_BPFT_PIN,
     }
 
 
+def qualified_diagnostic_crash_wrapper():
+    """Additional optional pre-attachment pin, never a bpftool fallback."""
+    path = pinned_diagnostic_file(
+        FIXED_DIAGNOSTIC_CRASH_WRAPPER_PATH,
+        FIXED_DIAGNOSTIC_CRASH_WRAPPER_SHA256)
+    if not (path.stat().st_mode & stat.S_IRUSR):
+        raise ValueError("Root diagnostic capture wrapper cannot be read")
+    return path
+
+
 def load_hardened_support(folder):
     source = verified_file(folder / "local-muse-tcp-session.py", HELPER_SHA256)
     spec = importlib.util.spec_from_file_location("local_muse_pinned_supervisor", source)
@@ -275,6 +289,163 @@ class InventoryAudit:
                 raise OSError("Inventory audit output unavailable")
             self.bytes_written += count
             payload = payload[count:]
+
+
+def bounded_crash_capture_record(value):
+    """Revalidate even root-owned observer output before exporting a row."""
+    if not isinstance(value, dict) or type(value.get("schemaVersion")) is not int or \
+            value["schemaVersion"] != 1 or \
+            value.get("commandClass") != "private_fixed_link_show" or \
+            value.get("capture") not in ("PASS", "FAIL", "TIMEOUT"):
+        return {"capture": "FAIL", "failureClass": "observer_schema_invalid"}
+    record = {"capture": value["capture"]}
+    for key, matcher in (
+            ("executableSha256", r"[a-f0-9]{64}"),
+            ("buildId", r"[a-f0-9]{40}"),
+            ("debuggerVersion", r"GNU gdb \(GDB\) 18\.1")):
+        field = value.get(key)
+        if type(field) is str and re.fullmatch(matcher, field):
+            record[key] = field
+    if "executableSha256" in record and \
+            record["executableSha256"] != FIXED_DIAGNOSTIC_BPFT_SHA256:
+        return {"capture": "FAIL", "failureClass": "observer_binary_mismatch"}
+    if record["capture"] == "PASS" and (
+            record.get("executableSha256") != FIXED_DIAGNOSTIC_BPFT_SHA256 or
+            record.get("buildId") !=
+            "8faee6f37ed17666af07f7d8f671bf40a9fd38e5" or
+            record.get("debuggerVersion") != "GNU gdb (GDB) 18.1"):
+        return {"capture": "FAIL", "failureClass": "observer_provenance_invalid"}
+    for key in ("inferiorExitCode", "inferiorSignal", "debuggerExitCode",
+                "inferiorOutputBytes", "debuggerOutputBytes"):
+        item = value.get(key)
+        if type(item) is int and -255 <= item <= 65536:
+            record[key] = item
+    for key in ("inferiorOutputSha256", "debuggerOutputSha256"):
+        item = value.get(key)
+        if isinstance(item, str) and re.fullmatch(r"[a-f0-9]{64}", item):
+            record[key] = item
+    if value.get("observedSignal") == "SIGABRT":
+        record["observedSignal"] = "SIGABRT"
+    if value.get("signalEvidence") == "gdb_sigabrt_forwarded_inferior_exited" and \
+            value.get("inferiorSignal") == 6 and \
+            value.get("inferiorExited") is True:
+        record["signalEvidence"] = "gdb_sigabrt_forwarded_inferior_exited"
+    if value.get("inferiorExited") is True:
+        record["inferiorExited"] = True
+    if value.get("timedOut") is True:
+        record["timedOut"] = True
+    if value.get("cleanup") == "PASS":
+        record["cleanup"] = "PASS"
+    if record.get("cleanup") != "PASS":
+        record["capture"] = "FAIL"
+    assertion = value.get("assertionClass")
+    if isinstance(assertion, str) and (
+            assertion in SAFE_LIBC_ABORT_MESSAGES or
+            assertion == "bpftool: C assertion failure (details redacted)"):
+        record["assertionClass"] = assertion
+    frames = value.get("frames")
+    if isinstance(frames, list) and len(frames) <= 12:
+        safe_frames = []
+        for frame in frames:
+            if not isinstance(frame, dict):
+                break
+            fun = frame.get("function")
+            module = frame.get("module")
+            if not isinstance(fun, str) or not re.fullmatch(
+                    r"[A-Za-z_~][A-Za-z0-9_~.$:+<>-]{0,95}", fun):
+                break
+            if not isinstance(module, str) or not re.fullmatch(
+                    r"[A-Za-z0-9_.+-]{1,88}", module):
+                break
+            clean = {"index": len(safe_frames), "function": fun, "module": module}
+            for key, pattern in (
+                    ("moduleBuildId", r"[a-f0-9]{16,64}"),
+                    ("sourceFile", r"[A-Za-z0-9_.+-]{1,88}")):
+                field = frame.get(key)
+                if isinstance(field, str) and re.fullmatch(pattern, field):
+                    clean[key] = field
+            number = frame.get("sourceLine")
+            if "sourceFile" in clean and type(number) is int and 1 <= number <= 1_000_000:
+                clean["sourceLine"] = number
+            safe_frames.append(clean)
+        record["frames"] = safe_frames
+    else:
+        record["frames"] = []
+    if record["capture"] == "PASS":
+        normal = (record.get("observedSignal") is None and
+                  record.get("inferiorExited") is True and
+                  type(record.get("inferiorExitCode")) is int)
+        aborted = (record.get("observedSignal") == "SIGABRT" and
+                   record.get("inferiorSignal") == 6 and
+                   record.get("signalEvidence") ==
+                   "gdb_sigabrt_forwarded_inferior_exited" and
+                   record.get("inferiorExited") is True and
+                   record.get("inferiorExitCode") is None and
+                   bool(record["frames"]))
+        if record.get("debuggerExitCode") != 0 or not (normal or aborted):
+            return {"capture": "FAIL",
+                    "failureClass": "observer_child_state_invalid"}
+    return record
+
+
+def diagnostic_live_link_capture(bpftool, crash_wrapper, audit, tracer_state):
+    """Non-authoritative observer replaces only ONE *live* link inspection.
+
+    GDB exits and native child status are distinct. This always raises
+    ValueError, even after a PASS capture: never interpret GDB output
+    as JSON link metadata or arm the readiness FIFO from it.
+    """
+    before = tracer_state()
+    start_ns = time.monotonic_ns()
+    output = b""
+    diagnostic = {"capture": "FAIL", "failureClass": "observer_unavailable"}
+    observer_exit = None
+    try:
+        result = subprocess.run(
+            [sys.executable, "-B", str(crash_wrapper)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=False, timeout=8.0)
+        observer_exit = result.returncode
+        output = result.stdout or b""
+        if not result.stderr and 0 < len(output) <= 6144:
+            try:
+                diagnostic = bounded_crash_capture_record(json.loads(output))
+            except (ValueError, UnicodeError):
+                diagnostic = {"capture": "FAIL",
+                              "failureClass": "observer_schema_invalid"}
+        if observer_exit != {
+                "PASS": 0, "FAIL": 2, "TIMEOUT": 124}.get(
+                    diagnostic["capture"]):
+            diagnostic = {"capture": "FAIL",
+                          "failureClass": "observer_exit_mismatch"}
+    except subprocess.TimeoutExpired:
+        diagnostic = {"capture": "TIMEOUT", "failureClass": "observer_watchdog"}
+    except (OSError, subprocess.SubprocessError):
+        diagnostic = {"capture": "FAIL", "failureClass": "observer_spawn_failure"}
+    finally:
+        if audit is not None:
+            audit.record({
+                "phase": "live", "kind": "link",
+                "argv": [str(bpftool), "-j", "link", "show"],
+                "captureWrapperSha256": FIXED_DIAGNOSTIC_CRASH_WRAPPER_SHA256,
+                "monotonicStartNs": start_ns,
+                "monotonicEndNs": time.monotonic_ns(),
+                "exitCode": None, "timedOut": diagnostic["capture"] == "TIMEOUT",
+                "result": "diagnostic_only_unverified",
+                "failureClass": "CrashCaptureNeverQualifiesLinks",
+                "stdoutBytes": 0, "stdoutSha256": hashlib.sha256(b"").hexdigest(),
+                "stderrBytes": 0, "stderrSha256": hashlib.sha256(b"").hexdigest(),
+                "stderrText": None, "stderrTextStatus": "not_exported",
+                "stdoutToolError": None,
+                "jsonAttempted": False, "jsonResult": "not_attempted",
+                "tracerStateAtStart": before, "tracerStateAtEnd": tracer_state(),
+                "crashCapture": diagnostic,
+                "observerExitCode": observer_exit,
+                "nativeExitStatus": "not_directly_observed",
+            })
+        print("KERNEL_AUDIT_CRASH_CAPTURE=" + diagnostic["capture"],
+              file=sys.stderr, flush=True)
+    raise ValueError("Diagnostic-only GDB capture cannot qualify a session link")
 
 
 def inventory_snapshot(bpftool, kind, timeout, parse_rows, phase="baseline",
@@ -680,7 +851,7 @@ def emit_content_free_audit(stdout, stderr, pid, programs_before, programs_after
 
 def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpftool,
                 attach_timeout=60, stdout_fd=1, inventory_audit_fd=None,
-                bpftool_identity=None):
+                bpftool_identity=None, crash_capture_wrapper=None):
     """Own one tracer only, while retaining every byte of untrusted BPF output."""
     inventory_audit = (InventoryAudit(inventory_audit_fd, bpftool_identity)
                        if inventory_audit_fd is not None else None)
@@ -733,6 +904,10 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
     def checked_links(timeout, phase):
         nonlocal link_inventory_error
         try:
+            if crash_capture_wrapper is not None and phase == "live":
+                diagnostic_live_link_capture(
+                    bpftool, crash_capture_wrapper, inventory_audit,
+                    tracer_state)
             return link_inventory(bpftool, timeout, phase, inventory_audit,
                                   tracer_state)
         except (OSError, ValueError, subprocess.SubprocessError,
@@ -953,7 +1128,11 @@ def main(argv=None):
     parser.add_argument("--control-fd", default=0, type=int)
     parser.add_argument("--inventory-audit-fd", required=True, type=int)
     parser.add_argument("--fixed-diagnostic-bpftool", action="store_true")
+    parser.add_argument("--capture-live-link-abort", action="store_true")
     args = parser.parse_args(argv)
+    if args.capture_live_link_abort and (
+            not args.fixed_diagnostic_bpftool or args.seconds > 20):
+        parser.error("Crash capture requires fixed short kernel-only diagnostic")
     if platform.system() != "Linux" or sys.byteorder != "little" or os.geteuid() != 0:
         parser.error("Linux little-endian root operator required")
     if args.ready_fd < 3 or args.ready_fd > 255:
@@ -996,10 +1175,14 @@ def main(argv=None):
                 raise ValueError("Approved BPF tools unavailable")
             bpftool = helper.trusted_root_file(bpftool_name)
             bpftool_identity = None
+        crash_capture_wrapper = (
+            qualified_diagnostic_crash_wrapper()
+            if args.capture_live_link_abort else None)
         return run_capture(args.pid, args.seconds, args.ready_fd, args.control_fd,
                            helper, probe, tracer, bpftool,
                            inventory_audit_fd=args.inventory_audit_fd,
-                           bpftool_identity=bpftool_identity)
+                           bpftool_identity=bpftool_identity,
+                           crash_capture_wrapper=crash_capture_wrapper)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         # Setup may have failed before a child was created. Never emit READY.
         # An absent/incomplete import terminal is an unsealable source.

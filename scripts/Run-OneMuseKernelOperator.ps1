@@ -6,12 +6,17 @@
 param(
   [Parameter(Mandatory=$true)][string]$RunId,
   [Parameter(Mandatory=$true)][ValidateRange(2,2147483647)][int]$ExpectedPid,
-  [Parameter(Mandatory=$false)][ValidateRange(1,1800)][int]$Seconds=1800
+  [Parameter(Mandatory=$false)][ValidateRange(1,1800)][int]$Seconds=1800,
+  [Parameter(Mandatory=$false)][switch]$CrashCapture
 )
 $ErrorActionPreference = 'Stop'
 if ($RunId -cnotmatch '^muse-one-[a-f0-9]{24}$') {
   throw 'Fresh exclusive diagnostic run ID is required'
 }
+if ($CrashCapture -and $Seconds -gt 20) {
+  throw 'Debugger capture is short kernel-only and never production'
+}
+$crashMode = if ($CrashCapture) { 'capture' } else { 'off' }
 $remote = 'hylab@192.168.1.44'
 $key = Join-Path $env:USERPROFILE '.ssh\clack_hylab_ed25519'
 if (-not (Test-Path -LiteralPath $key -PathType Leaf)) {
@@ -96,6 +101,7 @@ stage='__STAGE__'
 run='__RUN__'
 pid='__PID__'
 seconds='__SECONDS__'
+crash='__CRASH__'
 dest="/run/local-muse-ebpf/$run"
 created=0
 release() {
@@ -126,11 +132,12 @@ done
 # A child exit retains its exact status; the trap removes any remaining owned
 # bootstrap files if root.sh itself fails before declaring its own ownership.
 status=0
-/usr/bin/bash "$dest/local-muse-one-root.sh" "$run" "$pid" "$seconds" "$stage" || status=$?
+/usr/bin/bash "$dest/local-muse-one-root.sh" "$run" "$pid" "$seconds" "$stage" "$crash" || status=$?
 exit "$status"
 '@
   $bootstrap = $bootstrap.Replace('__STAGE__',$stage).Replace('__RUN__',$RunId).Replace('__PID__',[string]$ExpectedPid)
   $bootstrap = $bootstrap.Replace('__SECONDS__',[string]$Seconds)
+  $bootstrap = $bootstrap.Replace('__CRASH__',$crashMode)
   $bootstrap = $bootstrap.Replace('__HROOT__',$stagedHashes['local-muse-one-root.sh'])
   $bootstrap = $bootstrap.Replace('__HEBPF__',$stagedHashes['local-muse-one-ebpf.py'])
   $bootstrap = $bootstrap.Replace('__HSUP__',$stagedHashes['local-muse-tcp-session.py'])
