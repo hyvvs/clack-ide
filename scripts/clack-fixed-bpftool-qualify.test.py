@@ -21,7 +21,7 @@ spec.loader.exec_module(collector)
 
 FIXED_BINARY = collector.FIXED_DIAGNOSTIC_BPFT_PATH
 PIN = collector.FIXED_DIAGNOSTIC_BPFT_PIN
-HASH = hashlib.sha256(b"verified-private-bpftool-fixture").hexdigest()
+HASH = collector.FIXED_DIAGNOSTIC_BPFT_SHA256
 
 
 def manifest(**override):
@@ -106,6 +106,15 @@ class PinnedBpftoolTests(unittest.TestCase):
         self.assertIsInstance(error, ValueError)
         run.assert_not_called()
         self.assertEqual(verified.call_count, 2)
+
+        result, error, run, verified = self.qualify(
+            raw_manifest=manifest(
+                binarySha256=hashlib.sha256(b"unapproved-private-binary").hexdigest()))
+        self.assertIsNone(result)
+        self.assertIsInstance(error, ValueError)
+        run.assert_not_called()
+        # An unapproved digest is refused before accessing the binary.
+        self.assertEqual(verified.call_count, 1)
 
     def test_vulnerable_system_binary_and_unreviewed_path_rejected(self):
         for path in (Path("/usr/bin/bpftool"), Path("/tmp/unsafe-bpftool")):

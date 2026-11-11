@@ -45,6 +45,7 @@ MAX_PROGRAM_LIST = 4 * 1024 * 1024
 MAX_INVENTORY_AUDIT = 2 * 1024 * 1024
 FIXED_DIAGNOSTIC_BPFT_PATH = Path("/opt/clack/diagnostic-tools/bpftool-678d538")
 FIXED_DIAGNOSTIC_BPFT_PIN = Path("/opt/clack/diagnostic-tools/bpftool-678d538.pin.json")
+FIXED_DIAGNOSTIC_BPFT_SHA256 = "ff08d9fe9a545f488f4ecc7145f491027704a2139987f08432c1f9265be70e3d"
 FIXED_DIAGNOSTIC_SOURCE_COMMIT = "678d538a85e6960f84e443695eebb13f66f89981"
 FIXED_DIAGNOSTIC_LIBBPF_COMMIT = "872299d94e27d2fa9f119667c7e52268698dc760"
 FIXED_DIAGNOSTIC_LINK_BLOB = "5cffa2d283b47327b8611b4d85b1d70821f40964"
@@ -183,6 +184,7 @@ def qualified_diagnostic_bpftool(pin_path=FIXED_DIAGNOSTIC_BPFT_PIN,
             config["linkBlob"] != FIXED_DIAGNOSTIC_LINK_BLOB or \
             config["sourceArchiveSha256"] != FIXED_DIAGNOSTIC_SOURCE_ARCHIVE_SHA256 or \
             config["libbpfArchiveSha256"] != FIXED_DIAGNOSTIC_LIBBPF_ARCHIVE_SHA256 or \
+            config["binarySha256"] != FIXED_DIAGNOSTIC_BPFT_SHA256 or \
             config["version"] != "7.8.1" or \
             config["libbpfVersion"] != "1.9":
         raise ValueError("Diagnostic source/version provenance mismatch")

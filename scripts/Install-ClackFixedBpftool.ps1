@@ -36,6 +36,7 @@ foreach ($line in (Get-Content -LiteralPath $summary)) {
 }
 $expectedSha = $fields['CLACK_BPFT_BINARY_SHA256']
 if ($expectedSha -cnotmatch '^[a-f0-9]{64}$' -or
+    $expectedSha -cne 'ff08d9fe9a545f488f4ecc7145f491027704a2139987f08432c1f9265be70e3d' -or
     $fields['CLACK_BPFT_BUILD'] -cne 'PASS' -or
     $fields['CLACK_BPFT_SOURCE_COMMIT'] -cne '678d538a85e6960f84e443695eebb13f66f89981' -or
     $fields['CLACK_BPFT_LIBBPF_COMMIT'] -cne '872299d94e27d2fa9f119667c7e52268698dc760' -or

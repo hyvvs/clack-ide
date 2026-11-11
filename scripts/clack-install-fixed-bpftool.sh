@@ -12,14 +12,28 @@ if [[ $# != 2 || $(/usr/bin/id -u) != 0 ||
 fi
 stage=$1
 expected_sha=$2
-binary=$stage/out/bpftool
+if [[ $expected_sha != ff08d9fe9a545f488f4ecc7145f491027704a2139987f08432c1f9265be70e3d ]]; then
+  printf 'CLACK_BPFT_ROOT_QUALIFICATION=UNREVIEWED_BINARY_HASH\n' >&2
+  exit 1
+fi
 target=/opt/clack/diagnostic-tools/bpftool-678d538
 pin=$target.pin.json
 packaged=/usr/bin/bpftool
 created_binary=0
 created_pin=0
+snapshot=
 cleanup_on_failure() {
   local code=$?
+  trap - EXIT
+  # Never execute the unprivileged operator's mutable build output as root.
+  # Only the reviewed names under our *exclusive* private snapshot are ours.
+  if [[ -n $snapshot && -d $snapshot && ! -L $snapshot &&
+        $(/usr/bin/stat -c '%U:%a' -- "$snapshot") == root:700 ]]; then
+    /usr/bin/rm -f -- "$snapshot/bpftool" "$snapshot/bpftool-source.tar" \
+      "$snapshot/libbpf-source.tar" "$snapshot/link.c" \
+      "$snapshot/pids.o" "$snapshot/pid_iter.skel.h" || code=1
+    /usr/bin/rmdir -- "$snapshot" || code=1
+  fi
   if ((code != 0)); then
     if ((created_pin)); then /usr/bin/rm -f -- "$pin"; fi
     if ((created_binary)); then /usr/bin/rm -f -- "$target"; fi
@@ -34,21 +48,47 @@ if [[ ! -d $stage || -L $stage ||
       ! -f $stage/.build-complete ||
       -e $stage/root-idle-summary.numeric ||
       -L $stage/root-idle-summary.numeric ||
-      ! -f $binary || -L $binary ||
+      ! -f $stage/out/bpftool || -L $stage/out/bpftool ||
       ! -f $stage/out/pids.o ||
       ! -f $stage/out/pid_iter.skel.h ||
       ! -f $stage/source/src/link.c ]]; then
   printf 'CLACK_BPFT_ROOT_QUALIFICATION=INVALID_STAGE\n' >&2
   exit 1
 fi
+# Snapshot all inputs to a fresh root-owned, 0700 /run directory. The
+# hylab-owned stage is allowed to disappear or mutate after this point.
+# A digest checked on a user-owned file before execution is NOT a pin.
+snapshot=$(/usr/bin/mktemp -d -p /run clack-bpftool-idle.XXXXXXXX)
+if [[ ! -d $snapshot || -L $snapshot ||
+      $(/usr/bin/stat -c '%U:%a' -- "$snapshot") != root:700 ]]; then
+  printf 'CLACK_BPFT_ROOT_QUALIFICATION=SNAPSHOT_UNTRUSTED\n' >&2
+  exit 1
+fi
 for pair in \
-  "63ac89f708672bc0071f7f84bc389c51f20820e5d1bf1d45e077153edcbe6362 $stage/bpftool-678d538a-source.tar" \
-  "66da46956d987ba2f15522f46810a4ce23132b01dea27452f21907a670ad2e74 $stage/libbpf-872299d9-source.tar" \
+  "$stage/out/bpftool bpftool" \
+  "$stage/bpftool-678d538a-source.tar bpftool-source.tar" \
+  "$stage/libbpf-872299d9-source.tar libbpf-source.tar" \
+  "$stage/source/src/link.c link.c" \
+  "$stage/out/pids.o pids.o" \
+  "$stage/out/pid_iter.skel.h pid_iter.skel.h"; do
+  source=${pair%% *}
+  dest=$snapshot/${pair#* }
+  if [[ ! -f $source || -L $source ]]; then
+    printf 'CLACK_BPFT_ROOT_QUALIFICATION=SOURCE_SWAP_OR_SYMLINK\n' >&2
+    exit 1
+  fi
+  /usr/bin/install -o root -g root -m 0600 -- "$source" "$dest"
+done
+binary=$snapshot/bpftool
+for pair in \
+  "63ac89f708672bc0071f7f84bc389c51f20820e5d1bf1d45e077153edcbe6362 $snapshot/bpftool-source.tar" \
+  "66da46956d987ba2f15522f46810a4ce23132b01dea27452f21907a670ad2e74 $snapshot/libbpf-source.tar" \
   "$expected_sha $binary"; do
   printf '%s\n' "$pair" | /usr/bin/sha256sum --check --status
 done
-if [[ $(/usr/bin/grep -Fc 'if (++j == info->kprobe_multi.count)' -- "$stage/source/src/link.c") != 2 ||
-      $(/usr/bin/grep -Fc 'if (j++ == info->kprobe_multi.count)' -- "$stage/source/src/link.c") != 0 ]]; then
+if [[ $(/usr/bin/grep -Fc 'if (++j == info->kprobe_multi.count)' -- "$snapshot/link.c") != 2 ||
+      $(/usr/bin/grep -Fc 'if (j++ == info->kprobe_multi.count)' -- "$snapshot/link.c") != 0 ||
+      ! -s $snapshot/pids.o || ! -s $snapshot/pid_iter.skel.h ]]; then
   printf 'CLACK_BPFT_ROOT_QUALIFICATION=RENDERER_NOT_FIXED\n' >&2
   exit 1
 fi
@@ -59,6 +99,7 @@ fi
 
 # The two programs are compared ONLY while idle; no probes/commands that
 # attach a BPF program are invoked. No raw BPF rows or stderr are exported.
+/usr/bin/chmod 0700 -- "$binary"
 idle_summary=$(/usr/bin/python3 - "$binary" "$packaged" <<'PY'
 import hashlib
 import json
@@ -166,10 +207,6 @@ if [[ ! -s $pin || -L $pin || $(/usr/bin/stat -c '%U:%a' -- "$pin") != root:644 
   printf 'CLACK_BPFT_ROOT_QUALIFICATION=PIN_OR_MODE_FAILURE\n' >&2
   exit 1
 fi
-printf 'CLACK_BPFT_ROOT_QUALIFICATION=PASS\n'
-printf 'CLACK_BPFT_PRIVATE_BINARY_SHA256=%s\n' "$expected_sha"
-printf 'CLACK_BPFT_PATH_CLASS=opt_clack_diagnostic_678d538\n'
-printf 'CLACK_BPFT_SYSTEM_PACKAGE_UNCHANGED=1\n'
 {
   printf '%s\n' "$idle_summary"
   printf 'CLACK_BPFT_ROOT_QUALIFICATION=PASS\n'
@@ -179,4 +216,8 @@ printf 'CLACK_BPFT_SYSTEM_PACKAGE_UNCHANGED=1\n'
 } > "$stage/root-idle-summary.numeric"
 /usr/bin/chown hylab:hylab -- "$stage/root-idle-summary.numeric"
 /usr/bin/chmod 0600 -- "$stage/root-idle-summary.numeric"
+printf 'CLACK_BPFT_ROOT_QUALIFICATION=PASS\n'
+printf 'CLACK_BPFT_PRIVATE_BINARY_SHA256=%s\n' "$expected_sha"
+printf 'CLACK_BPFT_PATH_CLASS=opt_clack_diagnostic_678d538\n'
+printf 'CLACK_BPFT_SYSTEM_PACKAGE_UNCHANGED=1\n'
 printf '%s\n' "$idle_summary"

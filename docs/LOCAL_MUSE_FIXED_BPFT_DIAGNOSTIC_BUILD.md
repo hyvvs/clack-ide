@@ -91,11 +91,28 @@ been supplied, so we cannot assert that this was its sole failure.
 The operator handoff accepts an explicit eight-hex-character
 `-AttemptId` to create a **new** exclusive local evidence subfolder
 and remote private stage. It refuses to overwrite or reuse any prior
-attempt. A separately authorized corrected build attempt has been
-handed off as `-AttemptId a47c6d91`. No resulting compiled SHA-256
-or installed binary is certified until that attempt returns a complete
-validated receipt. No toolchain version or host compiler success is
-asserted before that receipt.
+attempt. The corrected `-AttemptId a47c6d91` build **passed**
+on 2026-11-11. Its independently rehashed local binary and full
+operator build receipt match:
+
+| Evidence | Verified value |
+| --- | --- |
+| Binary SHA-256 | `ff08d9fe9a545f488f4ecc7145f491027704a2139987f08432c1f9265be70e3d` |
+| Binary bytes | `2479568` |
+| `bpftool -j version` | `7.8.1`, `libbpf_version=1.9`, `features.skeletons=true` |
+| GCC | `16.2.1` |
+| Clang | `23.1.4` |
+| GNU Make | `4.4.1` |
+| Architecture | `x86_64` |
+| PID-owner skeleton files | `pids.o` and `pid_iter.skel.h` present |
+| Remote private build stage | `/home/hylab/.cache/clack-bpftool-fixed.PN7A4bYE` |
+
+The actual `bpftool-version.json` and `build-summary.numeric` are
+retained under the ignored attempt folder. This SHA-256 is now
+**independently hard-pinned** in the Clack diagnostic collector,
+PowerShell root handoff, and root installer. A caller cannot substitute
+a different digest by changing the manifest or build receipt.
+The compiled executable is not yet root-installed or idle-qualified.
 
 ## Diagnostic-only Clack selector (disabled until root qualification)
 
@@ -111,7 +128,8 @@ root-owned executable with no symlinked, unowned or group/world-writable
 path components. A separate root-owned, read-only
 `/opt/clack/diagnostic-tools/bpftool-678d538.pin.json` must include
 the exact reviewed source commit, libbpf commit, link blob, both
-source-tar SHA-256s, an **actual validated binary SHA-256**,
+source-tar SHA-256s, the **compiled and hard-pinned binary SHA-256**
+`ff08d9fe9a545f488f4ecc7145f491027704a2139987f08432c1f9265be70e3d`,
 `version=7.8.1` and `libbpfVersion=1.9`.
 
 The collector rejects absent pins, a different absolute path,
@@ -148,6 +166,13 @@ Only counts and SHA-256 of bounded canonical metadata leave root;
 raw program/link details and stderr are not exported. A mismatch
 stops qualification, not a reason to weaken readiness.
 
+The root installer first copies the user-owned build binary and
+supporting evidence into a fresh root-owned, 0700 `/run` directory,
+then **reverifies the hard-pinned binary and source hashes on this
+exclusive snapshot before root executes the binary**. This avoids
+executing a mutable hylab-owned file under root after an earlier
+user-stage hash check.
+
 Only after passing those checks can it create the root-owned
 `/opt/clack/diagnostic-tools/bpftool-678d538` executable and
 its immutable-to-nonroot `.pin.json` provenance/digest manifest.
@@ -178,7 +203,8 @@ Do not create the root pin or invoke a kernel-only listener until:
    owner field in a separately authorized *future* live session;
    idle metadata alone cannot establish that.
 
-No such root install/idle validation has been performed. There is no
-approved private executable hash yet, and **no new live kernel-only
-validation is justified**. Complete the build and root idle checks
-first, with separately controlled sudo if necessary.
+No root install/idle validation has been performed. The private binary
+SHA-256 **is established and hard-pinned**, but the host's actual root
+`prog show` and `link show` response remains unverified. **No new live
+kernel-only validation is justified** until a separately human-operated
+idle qualification produces its verified receipt.
