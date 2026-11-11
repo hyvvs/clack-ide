@@ -32,6 +32,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+try:
+    import resource  # POSIX only; production is Linux root.
+except ImportError:
+    resource = None
 
 
 # Bind this independently reviewed wrapper to the *unchanged* hardened source.
@@ -50,7 +54,7 @@ FIXED_DIAGNOSTIC_BPFT_BUILD_ID = "7f530859f49ede16767f9f4eb8551a6ac85aa25d"
 FIXED_DIAGNOSTIC_CRASH_WRAPPER_PATH = Path(
     "/opt/clack/diagnostic-tools/clack-bpftool-abort-capture.py")
 FIXED_DIAGNOSTIC_CRASH_WRAPPER_SHA256 = (
-    "143c040fe9db82e23f722f77704841f1ac5bc12fbb21c8d0646169f2c01a15fe")
+    "2eee8f2fff323e9c3c8edb615d7927a8c63222430f9fb964e783f23dacd1ae49")
 FIXED_DIAGNOSTIC_SOURCE_COMMIT = "678d538a85e6960f84e443695eebb13f66f89981"
 FIXED_DIAGNOSTIC_LIBBPF_COMMIT = "872299d94e27d2fa9f119667c7e52268698dc760"
 FIXED_DIAGNOSTIC_LINK_BLOB = "5cffa2d283b47327b8611b4d85b1d70821f40964"
@@ -323,7 +327,7 @@ def bounded_crash_capture_record(value):
     if record["capture"] == "PASS" and (
             record.get("executableSha256") != FIXED_DIAGNOSTIC_BPFT_SHA256 or
             record.get("buildId") !=
-            "8faee6f37ed17666af07f7d8f671bf40a9fd38e5" or
+            FIXED_DIAGNOSTIC_BPFT_BUILD_ID or
             record.get("debuggerVersion") != "GNU gdb (GDB) 18.1"):
         return {"capture": "FAIL", "failureClass": "observer_provenance_invalid"}
     for key in ("inferiorExitCode", "inferiorSignal", "debuggerExitCode",
@@ -370,7 +374,7 @@ def bounded_crash_capture_record(value):
         record["assertionLocation"] = location
     site = value.get("assertionSite")
     if isinstance(site, dict) and site.get("module") == "bpftool-678d538" and \
-            site.get("moduleBuildId") == "8faee6f37ed17666af07f7d8f671bf40a9fd38e5" and \
+            site.get("moduleBuildId") == FIXED_DIAGNOSTIC_BPFT_BUILD_ID and \
             set(site).issubset({"module", "moduleBuildId", "moduleOffset",
                                 "symbol", "functionOffset", "sourceFile",
                                 "sourceLine", "inlineChain"}) and \
@@ -452,7 +456,8 @@ def bounded_crash_capture_record(value):
     return record
 
 
-def diagnostic_live_link_capture(bpftool, crash_wrapper, audit, tracer_state):
+def diagnostic_live_link_capture(bpftool, crash_wrapper, audit, tracer_state,
+                                 watchdog_seconds=8.0):
     """Non-authoritative observer replaces only ONE *live* link inspection.
 
     GDB exits and native child status are distinct. This always raises
@@ -468,7 +473,7 @@ def diagnostic_live_link_capture(bpftool, crash_wrapper, audit, tracer_state):
         result = subprocess.run(
             [sys.executable, "-B", str(crash_wrapper)],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, check=False, timeout=8.0)
+            stderr=subprocess.PIPE, check=False, timeout=watchdog_seconds)
         observer_exit = result.returncode
         output = result.stdout or b""
         if not result.stderr and 0 < len(output) <= 6144:
@@ -674,6 +679,41 @@ def link_inventory(bpftool, timeout, phase="baseline", audit=None,
     """Read-only link registry, not optional when proving session readiness."""
     return inventory_snapshot(bpftool, "link", timeout,
                               parse_link_inventory, phase, audit, tracer_state)
+
+
+def inspected_link_inventory(bpftool, timeout, phase, audit, tracer_state,
+                             crash_wrapper, preempt_crash_capture, fallback):
+    """Ordinary JSON inspection first; observe only a proven live SIGABRT once.
+
+    A GDB observation is NEVER a substitute for valid JSON link inventory.
+    The preemptive investigative mode remains separately fail-closed. Normal
+    kernel-only mode enters the observer only after an actual native -SIGABRT
+    from the *live* private bpftool, while its tracer is still running.
+    """
+    if phase == "live" and preempt_crash_capture:
+        if crash_wrapper is None:
+            raise ValueError("Diagnostic crash observer is not qualified")
+        diagnostic_live_link_capture(bpftool, crash_wrapper, audit, tracer_state)
+    started = time.monotonic()
+    try:
+        return link_inventory(bpftool, timeout, phase, audit, tracer_state)
+    except subprocess.CalledProcessError as error:
+        if (phase == "live" and not preempt_crash_capture and
+                error.returncode == -signal.SIGABRT and
+                crash_wrapper is not None and
+                isinstance(fallback, dict) and
+                fallback.get("used") is False and
+                tracer_state() == "running"):
+            fallback["used"] = True  # Consumed BEFORE starting GDB; no retry.
+            # The original timeout is the remaining kernel capture budget
+            # at inspection start. Never grant the GDB fallback a fresh
+            # eight seconds after consuming the existing budget.
+            remaining = timeout - (time.monotonic() - started)
+            if remaining >= 0.5:
+                diagnostic_live_link_capture(
+                    bpftool, crash_wrapper, audit, tracer_state,
+                    watchdog_seconds=min(8.0, remaining))
+        raise
 
 
 def session_link_ids(before_links, live_links, new_programs, tracer_pid):
@@ -915,7 +955,8 @@ def emit_content_free_audit(stdout, stderr, pid, programs_before, programs_after
 
 def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpftool,
                 attach_timeout=60, stdout_fd=1, inventory_audit_fd=None,
-                bpftool_identity=None, crash_capture_wrapper=None):
+                bpftool_identity=None, crash_capture_wrapper=None,
+                auto_capture_on_sigabrt=False):
     """Own one tracer only, while retaining every byte of untrusted BPF output."""
     inventory_audit = (InventoryAudit(inventory_audit_fd, bpftool_identity)
                        if inventory_audit_fd is not None else None)
@@ -962,18 +1003,18 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
     last_inventory = 0
     current_programs = baseline_programs
     current_links = baseline_links
+    crash_fallback = {"used": False}
     def tracer_state():
         return "running" if child.poll() is None else "exited"
 
     def checked_links(timeout, phase):
         nonlocal link_inventory_error
         try:
-            if crash_capture_wrapper is not None and phase == "live":
-                diagnostic_live_link_capture(
-                    bpftool, crash_capture_wrapper, inventory_audit,
-                    tracer_state)
-            return link_inventory(bpftool, timeout, phase, inventory_audit,
-                                  tracer_state)
+            return inspected_link_inventory(
+                bpftool, timeout, phase, inventory_audit, tracer_state,
+                crash_capture_wrapper,
+                crash_capture_wrapper is not None and not auto_capture_on_sigabrt,
+                crash_fallback)
         except (OSError, ValueError, subprocess.SubprocessError,
                 json.JSONDecodeError) as error:
             link_inventory_error = type(error).__name__
@@ -1239,14 +1280,23 @@ def main(argv=None):
                 raise ValueError("Approved BPF tools unavailable")
             bpftool = helper.trusted_root_file(bpftool_name)
             bpftool_identity = None
-        crash_capture_wrapper = (
-            qualified_diagnostic_crash_wrapper()
-            if args.capture_live_link_abort else None)
+        # Mandatory for short private-binary runs, BEFORE BPF attachment:
+        # an ordinary live -j link show may still SIGABRT. The exact pinned
+        # observer is then used once in that SAME BPF session, never for
+        # successful ordinary link inspection. Its result cannot arm READY.
+        crash_capture_wrapper = (qualified_diagnostic_crash_wrapper()
+                                 if args.fixed_diagnostic_bpftool else None)
+        if resource is None:
+            raise ValueError("Root collector requires Linux core controls")
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         return run_capture(args.pid, args.seconds, args.ready_fd, args.control_fd,
                            helper, probe, tracer, bpftool,
                            inventory_audit_fd=args.inventory_audit_fd,
                            bpftool_identity=bpftool_identity,
-                           crash_capture_wrapper=crash_capture_wrapper)
+                           crash_capture_wrapper=crash_capture_wrapper,
+                           auto_capture_on_sigabrt=(
+                               args.fixed_diagnostic_bpftool and
+                               not args.capture_live_link_abort))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         # Setup may have failed before a child was created. Never emit READY.
         # An absent/incomplete import terminal is an unsealable source.

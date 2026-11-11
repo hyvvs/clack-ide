@@ -20,8 +20,8 @@ import time
 
 VERSION = 1
 TARGET = Path("/opt/clack/diagnostic-tools/bpftool-678d538")
-TARGET_SHA = "ff08d9fe9a545f488f4ecc7145f491027704a2139987f08432c1f9265be70e3d"
-TARGET_BUILD_ID = "8faee6f37ed17666af07f7d8f671bf40a9fd38e5"
+TARGET_SHA = "0e0059127c7c926fe1ee82a7804479415a19b73515b7aebc8bb59ce06de36fa0"
+TARGET_BUILD_ID = "7f530859f49ede16767f9f4eb8551a6ac85aa25d"
 GDB = Path("/usr/bin/gdb")
 GDB_VERSION = "GNU gdb (GDB) 18.1"
 MAX_SECONDS = 4.0

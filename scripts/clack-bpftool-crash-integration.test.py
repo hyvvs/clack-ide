@@ -29,7 +29,7 @@ def record(**changes):
         "schemaVersion": 1, "capture": "PASS",
         "commandClass": "private_fixed_link_show",
         "executableSha256": HASH,
-        "buildId": "8faee6f37ed17666af07f7d8f671bf40a9fd38e5",
+        "buildId": collector.FIXED_DIAGNOSTIC_BPFT_BUILD_ID,
         "debuggerVersion": "GNU gdb (GDB) 18.1",
         "debuggerExitCode": 0, "observedSignal": "SIGABRT",
         "inferiorExitCode": None, "inferiorSignal": 6,
@@ -42,7 +42,7 @@ def record(**changes):
         "debuggerOutputSha256": hashlib.sha256(b"gdb").hexdigest(),
         "frames": [{
             "index": 0, "function": "do_show_link", "module": "bpftool-678d538",
-            "moduleBuildId": "8faee6f37ed17666af07f7d8f671bf40a9fd38e5",
+            "moduleBuildId": collector.FIXED_DIAGNOSTIC_BPFT_BUILD_ID,
             "sourceFile": "link.c", "sourceLine": 320,
         }],
     }
@@ -103,7 +103,7 @@ class CrashCaptureIntegration(unittest.TestCase):
                 "sourceLine": 753, "function": "do_show_link"},
             assertionSite={
                 "module": "bpftool-678d538",
-                "moduleBuildId": "8faee6f37ed17666af07f7d8f671bf40a9fd38e5",
+                "moduleBuildId": collector.FIXED_DIAGNOSTIC_BPFT_BUILD_ID,
                 "moduleOffset": 0x21093, "symbol": "do_show_link",
                 "functionOffset": 3, "sourceFile": "link.c", "sourceLine": 753,
                 "inlineChain": [{"function": "inline_marker",
@@ -261,9 +261,12 @@ class CrashCaptureIntegration(unittest.TestCase):
 
     def test_non_capture_baseline_program_terminal_untouched(self):
         src = (HERE / "local-muse-one-ebpf.py").read_text(encoding="utf-8")
-        self.assertIn('crash_capture_wrapper is not None and phase == "live"', src)
+        self.assertIn('phase == "live" and preempt_crash_capture', src)
+        self.assertIn('error.returncode == -signal.SIGABRT', src)
+        self.assertIn('fallback["used"] = True', src)
         self.assertIn('if args.capture_live_link_abort', src)
-        self.assertIn('if args.capture_live_link_abort else None', src)
+        self.assertIn('if args.fixed_diagnostic_bpftool else None', src)
+        self.assertIn('auto_capture_on_sigabrt=(', src)
         self.assertIn('raise ValueError("Diagnostic-only GDB capture', src)
         shell = (HERE / "local-muse-one-root.sh").read_text(encoding="utf-8")
         self.assertIn('if [[ "$9" == capture ]]; then', shell)
