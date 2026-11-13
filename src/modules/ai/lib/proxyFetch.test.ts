@@ -522,7 +522,15 @@ describe("native inference attempt transport", () => {
     await vi.waitFor(() => expect(cancels()).toHaveLength(1));
     expect(sessionInference("a")).not.toBeNull();
     a.cancel.resolve();
-    expect(await outcome).toMatchObject({ code: "native-transport" });
+    expect(await outcome).toMatchObject({
+      code: "native-transport",
+      requestId: a.args.requestId,
+      nativeRejection: {
+        nativeCode: "native-transport",
+        phase: "invoke-rejected",
+        safeMessage: INFERENCE_ERRORS["native-transport"].message,
+      },
+    });
     expect(sessionInference("a")).toBeNull();
   });
   it("classifies a pre-handler acceptance rejection as transient without claiming HTTP dispatch", async () => {
@@ -534,9 +542,72 @@ describe("native inference attempt transport", () => {
     await vi.waitFor(() => expect(cancels()).toHaveLength(1));
     a.cancel.resolve();
     const error = await outcome;
-    expect(error).toMatchObject({ code: "native-transport" });
+    expect(error).toMatchObject({
+      code: "native-transport",
+      requestId: a.args.requestId,
+      nativeRejection: {
+        phase: "acceptance-host-intercept",
+        nativeCode: "acceptance-wire-contract-rejected",
+        safeMessage: "Acceptance stopped: serialized reasoning/output controls changed",
+      },
+    });
     expect(classifyContextFailure(error)).toBe("transient");
     expect(sessionInference("a")).toBeNull();
+    // A channel message after the invoke failure cannot revive the request.
+    headers(a);
+    terminal(a);
+    expect(sessionInference("a")).toBeNull();
+  });
+  it("retains a safe serialized Rust failure code without leaking native errors", async () => {
+    const pending = fetchFor()("http://localhost").catch((error) => error);
+    const a = await untilAttempt();
+    a.done.reject({ code: "connection-failed", message: "PRIVATE_HEADER_BEARER" });
+    await vi.waitFor(() => expect(cancels()).toHaveLength(1));
+    a.cancel.resolve();
+    const error = await pending;
+    expect(error).toMatchObject({
+      code: "native-transport",
+      requestId: a.args.requestId,
+      nativeRejection: {
+        phase: "tauri-command-rejected",
+        nativeCode: "connection-failed",
+        safeMessage: INFERENCE_ERRORS["connection-failed"].message,
+      },
+    });
+    expect(JSON.stringify({ code: error.code, nativeRejection: error.nativeRejection }))
+      .not.toContain("PRIVATE_HEADER_BEARER");
+  });
+  it("does not surface unrecognized invoke rejection strings or object causes", async () => {
+    const pending = fetchFor()("http://localhost").catch(error => error);
+    const a = await untilAttempt();
+    a.done.reject({ code: "PRIVATE_ENDPOINT_TOKEN", cause: { secret: "PRIVATE_BODY_TEXT" } });
+    await vi.waitFor(() => expect(cancels()).toHaveLength(1));
+    a.cancel.resolve();
+    const error = await pending;
+    expect(error).toMatchObject({
+      code: "native-transport",
+      nativeRejection: { phase: "invoke-rejected", nativeCode: "native-transport" },
+    });
+    expect(JSON.stringify({ nativeRejection: error.nativeRejection, message: error.message }))
+      .not.toMatch(/PRIVATE_ENDPOINT_TOKEN|PRIVATE_BODY_TEXT/);
+  });
+  it("retains a static pre-handler Rust connection error without exposing a raw cause", async () => {
+    const pending = fetchFor()("http://localhost").catch(error => error);
+    const a = await untilAttempt();
+    a.done.reject({ code: "remote-connection-unavailable", detail: "PRIVATE_SSH_TOKEN" });
+    await vi.waitFor(() => expect(cancels()).toHaveLength(1));
+    a.cancel.resolve();
+    const error = await pending;
+    expect(error).toMatchObject({
+      code: "native-transport",
+      requestId: a.args.requestId,
+      nativeRejection: {
+        phase: "tauri-command-rejected",
+        nativeCode: "remote-connection-unavailable",
+        safeMessage: "The native remote connection is unavailable.",
+      },
+    });
+    expect(JSON.stringify(error.nativeRejection)).not.toContain("PRIVATE_SSH_TOKEN");
   });
   it("stream consumer cancellation also sends native cancellation", async () => {
     const pending = fetchFor()("http://localhost");

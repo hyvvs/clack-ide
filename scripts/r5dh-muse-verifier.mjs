@@ -318,8 +318,16 @@ try {
     assert.equal(reasoningChoice, "automatic", "Provider-default guard requires Automatic");
     env.CLACK_ACCEPTANCE_EXPECTED_THINK = "omitted";
   }
-  if (env.CLACK_ACCEPTANCE_EXPECTED_THINK)
-    env.CLACK_ACCEPTANCE_WIRE_CONTRACT = JSON.stringify(wireContract);
+  if (env.CLACK_ACCEPTANCE_EXPECTED_THINK) {
+    // The strict Rust acceptance host consumes exactly these three sections.
+    // The shared production contract also contains "extraction" for other
+    // hosts; passing it here fails #[serde(deny_unknown_fields)] before the
+    // valid native calibration request can reach ai_http_stream.
+    const { calibration, verification, agent } = wireContract;
+    const nativeWireContract = { calibration, verification, agent };
+    assert.deepEqual(Object.keys(nativeWireContract), ["calibration", "verification", "agent"]);
+    env.CLACK_ACCEPTANCE_WIRE_CONTRACT = JSON.stringify(nativeWireContract);
+  }
   if (streamDiagnostic || (traceStreams && phase === "qualification")) env.CLACK_ACCEPTANCE_RECEIVE_TRACE = "1";
   child = spawn(path.join(repository, "src-tauri/target/codex-test/debug/examples", `r5dh_verifier${process.platform === "win32" ? ".exe" : ""}`), [], { cwd: root, env, windowsHide: true });
   child.once("exit", (code, signal) => { childExit = { pid: child.pid, code, signal, at: Date.now() }; });

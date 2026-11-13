@@ -133,11 +133,67 @@ export const INFERENCE_ERRORS: Record<
     message: "The native inference transport did not settle successfully.",
   },
 };
+/** Bounded, body-free diagnosis of a rejected Tauri command invocation.
+ * This is distinct from a native Settled event: rejection does not prove
+ * that Rust reached reqwest, TCP, or even the command handler.
+ */
+export type NativeInvokeRejection = {
+  phase: "acceptance-host-intercept" | "tauri-command-rejected" | "invoke-rejected";
+  nativeCode: string;
+  safeMessage: string;
+};
+const ACCEPTANCE_WIRE_REJECTION =
+  "Acceptance stopped: serialized reasoning/output controls changed";
+// Other safe, *static* Rust Failure codes that are returned directly by
+// ai_http_stream before a Settled channel event. Keep this allowlist explicit.
+const PRE_DISPATCH_NATIVE_ERRORS: Record<string, string> = {
+  "remote-connection-unavailable": "The native remote connection is unavailable.",
+  "fallback-consent-rejected": "The native fallback consent was rejected.",
+  "diagnostic-run-invalid": "The native diagnostic run identifier was rejected.",
+  "diagnostic-not-ready": "The native diagnostic capture is unavailable.",
+  "diagnostic-permit-denied": "The native diagnostic permit was denied.",
+  "diagnostic-request-denied": "The native diagnostic request was denied.",
+  "diagnostic-run-unavailable": "The native diagnostic run is unavailable.",
+};
+export function inspectNativeInvokeRejection(error: unknown): NativeInvokeRejection {
+  if (error === ACCEPTANCE_WIRE_REJECTION) {
+    return {
+      phase: "acceptance-host-intercept",
+      nativeCode: "acceptance-wire-contract-rejected",
+      safeMessage: ACCEPTANCE_WIRE_REJECTION,
+    };
+  }
+  // The production Rust Failure serializer returns { code } only. Never
+  // forward an arbitrary invoke string, exception message or nested object,
+  // since these could contain endpoint credentials, headers or request text.
+  const raw = error && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code : undefined;
+  if (typeof raw === "string" && Object.prototype.hasOwnProperty.call(INFERENCE_ERRORS, raw)) {
+    return {
+      phase: "tauri-command-rejected",
+      nativeCode: raw,
+      safeMessage: INFERENCE_ERRORS[raw].message,
+    };
+  }
+  if (typeof raw === "string" && Object.prototype.hasOwnProperty.call(PRE_DISPATCH_NATIVE_ERRORS, raw)) {
+    return {
+      phase: "tauri-command-rejected",
+      nativeCode: raw,
+      safeMessage: PRE_DISPATCH_NATIVE_ERRORS[raw],
+    };
+  }
+  return {
+    phase: "invoke-rejected",
+    nativeCode: "native-transport",
+    safeMessage: INFERENCE_ERRORS["native-transport"].message,
+  };
+}
 export class InferenceTransportError extends APICallError {
   readonly inferenceTransport = true;
   readonly code: string;
   readonly requestId?: string;
-  constructor(code: string, requestId?: string) {
+  readonly nativeRejection?: NativeInvokeRejection;
+  constructor(code: string, requestId?: string, nativeRejection?: NativeInvokeRejection) {
     const detail =
       INFERENCE_ERRORS[code] ?? INFERENCE_ERRORS["native-transport"];
     super({
@@ -148,5 +204,6 @@ export class InferenceTransportError extends APICallError {
     });
     this.code = code in INFERENCE_ERRORS ? code : "native-transport";
     this.requestId = requestId;
+    this.nativeRejection = nativeRejection;
   }
 }

@@ -198,6 +198,39 @@ mod acceptance_wire_tests {
             "agent":{"output":2048,"context":65536,"toolNames":["bash_run","read_file"]}
         })).unwrap()
     }
+    #[test]
+    fn strict_host_contract_excludes_unconsumed_production_extraction_section() {
+        // Reproduces the original acceptance-host failure before ai_http_stream:
+        // the JS factory returns four sections; this host consumes only three.
+        let full = json!({
+            "calibration": {"candidates":[4096,8192,16384,32768,49152,65536,73728],"output":32},
+            "verification": {"outputs":[512,1024,2048],"name":"get_probe_value",
+                "parameters":{"type":"object","properties":{"key":{"type":"string"},"count":{"type":"number"}}}},
+            "extraction": {"maxOutput":128,"maxSources":4,"maxSourceBytes":4096,
+                "maxClaims":4,"systemPrompt":"Offline-only fixture"},
+            "agent": {"output":4096,"context":32768,"toolNames":["bash_run"]}
+        });
+        let error = serde_json::from_value::<AcceptanceWireContract>(full.clone())
+            .err().expect("unconsumed extraction section must be denied");
+        assert!(error.to_string().contains("unknown field `extraction`"));
+        let mut projected = full;
+        projected.as_object_mut().unwrap().remove("extraction");
+        let contract: AcceptanceWireContract = serde_json::from_value(projected).unwrap();
+        let mut seen = std::collections::HashMap::new();
+        let request = json!({
+            "model":"muse-glimmer:30b",
+            "stream":true,
+            "options":{"num_ctx":4096,"num_predict":32},
+            "messages":[{"role":"user","content":"Synthetic offline calibration"}]
+        });
+        assert!(acceptance_host_wire_match(&request, "omitted", &contract, &mut seen));
+        let mut invalid = request.clone();
+        invalid["think"] = json!(false);
+        assert!(!acceptance_host_wire_match(&invalid, "omitted", &contract, &mut seen));
+        invalid = request.clone();
+        invalid["options"]["num_predict"] = json!(2048);
+        assert!(!acceptance_host_wire_match(&invalid, "omitted", &contract, &mut seen));
+    }
     fn probe(output: u64) -> serde_json::Value {
         json!({"stream":true,"options":{"num_ctx":65536,"num_predict":output},
             "tools":[{"type":"function","function":{"name":"get_probe_value","description":"Probe",

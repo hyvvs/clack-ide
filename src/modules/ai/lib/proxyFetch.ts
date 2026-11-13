@@ -5,7 +5,7 @@ import {
   type InferencePhase,
   type InferenceScope,
 } from "@/modules/ai/lib/inferenceLifecycle";
-import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
+import { InferenceTransportError, inspectNativeInvokeRejection, type NativeInvokeRejection } from "@/modules/ai/lib/inferenceErrors";
 import type {
   InferenceAdmission,
   AdmissionObservation,
@@ -203,6 +203,7 @@ async function proxyFetchImpl(
       let preflightError: unknown;
       let validating = false;
       let firstChunkObserved = false;
+      let nativeRejection: NativeInvokeRejection | undefined;
       let deliverySequence = 0;
       const channel = new Channel<AiStreamEvent>();
       channel.onmessage = (event) => {
@@ -309,7 +310,7 @@ async function proxyFetchImpl(
         const error =
           preflightError ??
           (code && !(code === "provider-error" && status >= 400)
-            ? new InferenceTransportError(code, nativeId)
+            ? new InferenceTransportError(code, nativeId, nativeRejection)
             : undefined);
         attempt?.update(terminal?.phase ?? (aborted ? "cancelled" : "failed"));
         attempt?.settle();
@@ -359,6 +360,9 @@ async function proxyFetchImpl(
         },
         async (error) => {
           // Invocation failure is not proof of a drained native request.
+          // Preserve the *safe, finite* Rust/host cause before asynchronous
+          // cancellation drains it; never persist or expose raw invoke errors.
+          nativeRejection = inspectNativeInvokeRejection(error);
           if (!cancelPromise)
               cancelPromise = invoke("ai_http_cancel", {
                 requestId: nativeId, cancellationOrigin: "native-command-failure",
