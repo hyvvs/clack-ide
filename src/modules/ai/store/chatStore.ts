@@ -56,6 +56,7 @@ import {
   type ModelTransportIdentity,
 } from "../lib/savedProviderModels";
 import {
+  agentPermissionAuthoritySnapshot,
   clearChatPermissions,
   normalizeAgentPermissionProfile,
 } from "../lib/permissions";
@@ -243,6 +244,7 @@ type StoreState = {
     },
   ) => { ok: true } | { ok: false; reason: string };
   startRunBatch: (id: string) => { isLogicalContinuation: boolean };
+  recordRunStepCompletion: (id: string) => void;
   recordRunStep: (id: string, observation: RunStepObservation) => void;
   recordPeerTaskStart: (id: string) => void;
   recordRunBatch: (id: string, result: RunBatchResult) => void;
@@ -385,6 +387,7 @@ export function touchChat(id: string, c: Chat<UIMessage>) {
 // when the matching Chat is constructed.
 export const seedMessages = new Map<string, UIMessage[]>();
 const runLoopTrackers = new Map<string, RunLoopTracker>();
+const chargedBatchSteps = new Map<string, { startedAt: number; steps: number }>();
 
 function permissionModeForAgent(agentId: string) {
   const profile =
@@ -812,6 +815,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
                 ? { peerTaskId: options.peerTaskId }
                 : {}),
               startedAt: now,
+              agentPermissionAuthority: agentPermissionAuthoritySnapshot(id, agentId),
               budget: createRunBudget(permissionModeForAgent(agentId)),
             },
             updatedAt: now,
@@ -848,9 +852,14 @@ export const useChatStore = create<StoreState>((set, get) => ({
     }
     const mode = permissionModeForAgent(run.agentId ?? "builtin:coder");
     const started = startBudgetBatch(normalizeRunBudget(run.budget, mode));
+    chargedBatchSteps.set(id, { startedAt: run.startedAt, steps: 0 });
     const next = get().sessions.map((item) =>
       item.id === id && item.run
-        ? { ...item, run: { ...item.run, budget: started.budget } }
+        ? { ...item, run: { ...item.run, budget: started.budget,
+            ...(run.agentRequestRecovery?.attempts
+              ? {}
+              : { agentPermissionAuthority: agentPermissionAuthoritySnapshot(id, run.agentId ?? "builtin:coder") }),
+          } }
         : item,
     );
     set((state) => ({
@@ -876,6 +885,21 @@ export const useChatStore = create<StoreState>((set, get) => ({
     if (run?.state !== "running") return;
     const current = runLoopTrackers.get(id) ?? createRunLoopTracker();
     runLoopTrackers.set(id, observeRunStep(current, observation));
+  },
+
+  recordRunStepCompletion: (id) => {
+    const run = get().sessions.find((item) => item.id === id)?.run;
+    const batch = chargedBatchSteps.get(id);
+    if (run?.state !== "running" || !run.budget || !batch || batch.startedAt !== run.startedAt) return;
+    const budget = run.budget;
+    batch.steps++;
+    const next = get().sessions.map(item => item.id === id && item.run?.startedAt === run.startedAt
+      ? { ...item, run: { ...item.run, budget: { ...budget, totalSteps: budget.totalSteps + 1 } } }
+      : item);
+    set({ sessions: next });
+    // A completed step is charged even when the *next* provider request fails
+    // and SDK onFinish never runs. The existing serialized session store owns it.
+    void saveSessionsList(next);
   },
 
   recordPeerTaskStart: (id) => {
@@ -905,9 +929,20 @@ export const useChatStore = create<StoreState>((set, get) => ({
     if (run?.state !== "running") return;
     const mode = permissionModeForAgent(run.agentId ?? "builtin:coder");
     const tracker = runLoopTrackers.get(id) ?? createRunLoopTracker();
-    const budget = recordBudgetBatch(
+    const charged = chargedBatchSteps.get(id);
+    const alreadyCharged = charged?.startedAt === run.startedAt ? charged.steps : 0;
+    chargedBatchSteps.delete(id);
+    const chargedBudget = normalizeRunBudget(run.budget, mode);
+    const budget = result.finishReason === "error"
+      ? { ...chargedBudget,
+          // An errored provider request cannot complete the logical mission.
+          // Completed steps have already been charged by onStepFinish.
+          totalSteps: chargedBudget.totalSteps + Math.max(0, result.steps - alreadyCharged),
+          lastFinishReason: "error", phase: "running" as const,
+        }
+      : recordBudgetBatch(
       normalizeRunBudget(run.budget, mode),
-      { ...result, repeatedFailureDetected: tracker.detected },
+      { ...result, steps: Math.max(0, result.steps - alreadyCharged), repeatedFailureDetected: tracker.detected },
       mode,
     );
     const next = get().sessions.map((item) =>
@@ -1064,6 +1099,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     void saveSessionsList(next);
     useTodosStore.getState().finalizeRun(id, state);
     runLoopTrackers.delete(id);
+    chargedBatchSteps.delete(id);
     releaseWorkspaceWriteLeasesForSession(id);
   },
   recordRunStop: (id, cause, expectedStartedAt) => {

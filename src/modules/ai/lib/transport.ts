@@ -137,6 +137,9 @@ type Deps = {
   onCompact?: (info: { droppedCount: number }) => void;
   onBatchStart?: () => { isLogicalContinuation: boolean };
   onRunStep?: (observation: RunStepObservation) => void;
+  onStepFinished?: () => void;
+  getAgentRequestRecoveryCount?: () => number;
+  canDispatchAgentRequestRecovery?: () => boolean;
   onFinishMeta?: (info: {
     hitStepCap: boolean;
     finishReason: string;
@@ -156,6 +159,7 @@ type SendOptions = {
 };
 
 export function createContextAwareTransport(deps: Deps) {
+  let claimedAgentRequestRecoveryRunId: string | undefined;
   let fallbackCapture: { runId: string; attempt: FallbackAttempt } | undefined;
   let watchdogOwner: { runId: string; detector: OutputWatchdog } | undefined;
   let captured:
@@ -200,10 +204,21 @@ export function createContextAwareTransport(deps: Deps) {
     options: SendOptions,
     activity?: ActivityStreamContext,
   ) => {
-    const recovery =
-      (options.body as { clackRecovery?: boolean } | undefined)
-        ?.clackRecovery === true;
+    const requestBody = options.body as { clackRecovery?: boolean; clackAgentRequestRecovery?: boolean } | undefined;
+    const agentRequestFailureRecovery = requestBody?.clackAgentRequestRecovery === true;
+    if (agentRequestFailureRecovery && requestBody?.clackRecovery === true)
+      throw new Error("Conflicting recovery modes.");
+    if (agentRequestFailureRecovery && !deps.canDispatchAgentRequestRecovery?.())
+      throw new Error("Agent provider recovery has no committed same-run checkpoint and allowance.");
+    const recovery = requestBody?.clackRecovery === true || agentRequestFailureRecovery;
     const scope = deps.getInferenceScope?.();
+    if (agentRequestFailureRecovery) {
+      if (!scope?.runId || claimedAgentRequestRecoveryRunId === scope.runId)
+        throw new Error("The one Agent provider recovery segment has already been claimed or has no owner.");
+      // This Chat transport owns one admission, never an application-level
+      // replay loop. The durable allowance was consumed before this call.
+      claimedAgentRequestRecoveryRunId = scope.runId;
+    }
     if (fallbackCapture?.runId !== scope?.runId) fallbackCapture = undefined;
     if (!scope || watchdogOwner?.runId !== scope.runId)
       watchdogOwner = {
@@ -219,7 +234,7 @@ export function createContextAwareTransport(deps: Deps) {
       ? captured?.configuration.reasoning
       : deps.getReasoning?.();
     const batch = deps.onBatchStart?.() ?? { isLogicalContinuation: false };
-    if (!batch.isLogicalContinuation || preparedHosted?.runId !== scope?.runId)
+    if ((!batch.isLogicalContinuation && !agentRequestFailureRecovery) || preparedHosted?.runId !== scope?.runId)
       preparedHosted = undefined;
     const compaction = await deps.prepareCompactionContext?.(options.messages);
     const live = deps.getLive();
@@ -383,6 +398,9 @@ export function createContextAwareTransport(deps: Deps) {
           onRunStep: (value) => {
             if (scope?.isCurrent() !== false) deps.onRunStep?.(value);
           },
+          onStepFinished: () => {
+            if (scope?.isCurrent() !== false) deps.onStepFinished?.();
+          },
           onProviderRetry: (event) => {
             if (scope?.isCurrent() === false) return;
             deps.onProviderRetry?.(event);
@@ -398,9 +416,9 @@ export function createContextAwareTransport(deps: Deps) {
           },
           projectMemory,
           logicalContinuation: batch.isLogicalContinuation,
-          retainedAutomaticRecordId: batch.isLogicalContinuation && preparedHosted?.runId === scope?.runId &&
+          retainedAutomaticRecordId: (batch.isLogicalContinuation || agentRequestFailureRecovery) && preparedHosted?.runId === scope?.runId &&
             preparedHosted?.modelId === configuration.modelId ? preparedHosted?.recordId : undefined,
-          retainedAutomaticVariant: batch.isLogicalContinuation && preparedHosted?.runId === scope?.runId &&
+          retainedAutomaticVariant: (batch.isLogicalContinuation || agentRequestFailureRecovery) && preparedHosted?.runId === scope?.runId &&
             preparedHosted?.modelId === configuration.modelId ? preparedHosted?.variant : undefined,
           onSelfHostedPrepared: (state, recordId, variant) => {
             if (!recovery && scope?.isCurrent() !== false && scope?.runId &&
@@ -419,6 +437,8 @@ export function createContextAwareTransport(deps: Deps) {
             ? injectEnvIntoLastUser(attemptMessages, envBlock)
             : attemptMessages,
           recovery,
+          agentRequestFailureRecovery,
+          preventCompletedToolReplay: (deps.getAgentRequestRecoveryCount?.() ?? 0) > 0,
         });
         return result.toUIMessageStream({
           originalMessages: options.messages,

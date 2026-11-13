@@ -509,6 +509,116 @@ partial output, bounded recovery, Stop, and Retry. Restart reconciliation must
 not blindly replay generation or writes. Endpoint fallback is absent until
 the explicit privacy checkpoint below is implemented.
 
+### Track R: scoped Agent provider-segment recovery after stream idle (offline implementation)
+
+This is a narrowly scoped **same-mission** recovery path for an Agent provider segment
+that ends with the authoritative native `stream-idle-timeout` code. It is not
+general-purpose replay, a new user request, a new Agent mission, or a claim of
+backend resumable generation. The D1/D3 implementation records below remain
+historical evidence of the previously verified behavior. Offline source and
+deterministic integration tests exercise this path; **production and live Agent
+qualification remain separate and are not authorized by this checkpoint**.
+
+- **Eligibility and single-use scope:** Only a verified native
+  `stream-idle-timeout` on an owned provider attempt can propose one new provider
+  segment. Count the recovery **at most once across the entire same Agent mission**,
+  not once per request, SDK retry, step, tool batch, answer, or resumed segment.
+  Persist and atomically claim that mission-scoped allowance before dispatch to
+  prevent racing callbacks from issuing two continuations. A second idle,
+  exhausted allowance, missing proof of the timeout cause, or an uncertain
+  in-flight native lease ends this path. Drain/cancel the old transport through
+  D1 ownership before admitting a new attempt; client-side cancellation alone
+  does not prove the backend stopped GPU work.
+- **State and budgets:** Carry forward the captured objective, full approved
+  context, original partial answer, Agent Todos with their current statuses,
+  existing tools/receipts, and the same logical run's step, continuation,
+  output-token, time, context and authorization budgets. A recovery segment must
+  pass normal fresh preflight, admission, F1/schema/permission/approval and
+  remaining-budget checks. It cannot reset consumed steps, mint new Todo
+  completion evidence, silently switch model/endpoint or workspace, or bypass
+  Stop, watchdogs, deadlines or the D3 retry ceiling. The native self-hosted
+  10-second connect, 120-second first-output, 180-second meaningful-stream-idle
+  and 600-second overall limits remain **unchanged**; no extension, heartbeat
+  redefinition or hidden timeout weakening is authorized by this design.
+- **Tool effects are append-only:** Preserve verified completed tool-call IDs,
+  arguments, results, approvals and durable native execution receipts as
+  immutable history. Resume reasoning from the last confirmed segment boundary
+  with explicit continuation provenance and no effect replay. Reject repeated
+  execution of completed effects, including across SDK step compaction. Partial
+  tool JSON is quarantined and cannot execute; an unresolved or potentially
+  executed native/custom/MCP/WASI tool, missing receipt, conflicting result, or
+  unknown external effect **fails closed for reconciliation**. A fresh model
+  response is not proof an old effect is safe to run again. Existing approval,
+  authorization and ledger guards remain authoritative for any *new* tool.
+- **Terminal outcomes:** A confirmed normal finish follows ordinary Agent
+  completion and independent objective/Todo verification. A safely continued
+  idle segment remains one linked, visibly incomplete answer until actual
+  completion is observed. Eligible idle with exhausted recovery/budget, a
+  subsequent idle, or a failed continuation ends as **recovery exhausted** with
+  preserved partial text and an actionable error. Unknown effect or ownership
+  ends **blocked pending reconciliation**. Stop/cancellation, explicit refusal,
+  watchdog, context/permission/approval failure, auth/quota/missing model,
+  malformed tool output, DNS/TLS/disconnect, first-output/overall timeout and
+  other native/provider terminal codes retain their distinct terminal handling;
+  none is relabeled as stream idle or Agent success.
+- **Restart and stale identity:** Match conversation, mission/run, captured
+  agent, workspace, model, endpoint/profile revision, permission snapshot and
+  request ownership before every transition and publication. Changing or
+  deleting any required owner, a superseding user instruction, Stop, revocation,
+  stale async response or session reopening invalidates automatic continuation.
+  Persist the already-consumed recovery allowance and confirmed partial/effect
+  history; after app/process restart, mark unfinished work interrupted and
+  require existing explicit reconciliation/new instruction. Never recreate an
+  approval, dispatch a recovered provider segment or replay a tool on startup.
+- **Truthful limits:** This is a new generation using preserved evidence, not
+  byte-identical backend resume, exact deterministic answer stitching, guaranteed
+  backend cancellation, or proof that the user objective was met. Surface original
+  and recovered segment provenance, timeout cause, remaining/consumed allowance,
+  incomplete Todos and unresolved effects without fabricating tool results or
+  PASS status. Production-native, restart, tool-effect and live self-hosted Agent
+  acceptance remain open until separately demonstrated; offline design or mocks
+  alone cannot close those gates.
+
+**Offline implementation record (2026-11-13, Track R only):** The existing
+`Chat` / context-aware transport / `runAgentStream` stack now distinguishes a
+provider segment's `stream-idle-timeout` from termination of its logical Agent
+mission. Its single-use transition is `running → preparing → checkpointed →
+dispatched → finished` (or a truthful terminal failed/cancelled/interrupted
+run). The native request still settles `timed-out` under the unchanged 180-second
+meaningful-progress idle policy. `SessionRun.agentRequestRecovery` stores the
+one consumed allowance, first failure, checkpoint boundary and any second
+failure; regular session/message persistence stores immutable completed tool
+parts and partial reasoning. The initial failed provider batch's successfully
+settled steps remain charged even when the SDK finishes with `error`.
+
+The checkpoint validates the pinned session/run/Agent/model/provider identity,
+model revision, workspace and checkout, original provider-batch permission
+authority, unchanged approval/todo/plan/budget state, persisted transcript and
+unique completed tool IDs/inputs/results. A separate native, bounded complete
+working-tree fingerprint and verification of known file/directory effects must
+match before dispatch; unavailable or stale proofs refuse recovery. The custom
+tool registry must be captured and available, and any native custom execution
+with matching or unknown run provenance blocks automatic recovery. Initially
+only completed `write_file`, `create_directory`, `todo_write` and conservative
+read/inspection tools receive positive effect reconciliation. Other effectful
+tools, in-progress or failed calls, queued plan edits and unknown outcomes
+require reconciliation; absence of a native write-checkpoint entry alone is
+never treated as evidence of nonexecution. The provider-segment recovery flag
+requires a committed same-run checkpoint and is claimed once by the existing
+transport. Previously completed tool call IDs and identical effectful inputs
+cannot execute again; new tool work uses the ordinary permission gate.
+
+The deterministic offline suite in
+`src/modules/ai/store/agentRequestFailureRecovery.integration.test.ts`
+injects the timeout after successful tool mutations, verifies durable receipts,
+one new provider segment, new work and completed Todo/answer; it also exercises
+unresolved effects, repeated timeout, cancellation, terminal provider classes,
+stale owner/revision, restart-without-auto-dispatch, permission changes and
+duplicate-effect prevention. The canonical ForgeBoard stream-report receiver
+separately accepts the truthful `timed-out` settlement; historical frozen
+ForgeBoard evidence is unchanged. **This record makes no claim of a live Muse
+or ForgeBoard Agent success or a production-native end-to-end acceptance.**
+
 ## Endpoint Capacity and Calibration
 
 Inference admission is distinct from a logical agent being active. Reuse

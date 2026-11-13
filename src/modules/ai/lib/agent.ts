@@ -34,6 +34,7 @@ import { cancelSessionInference, type InferenceScope } from "@/modules/ai/lib/in
 import { emitPreparationPhase } from "@/modules/ai/lib/preparationLifecycle";
 import { createOutputWatchdog, describeWatchdog, readWatchdogError, watchdogInstruction, type OutputWatchdog } from "@/modules/ai/lib/outputWatchdog";
 import { gateInferenceTools } from "@/modules/ai/lib/inferenceToolGate";
+import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import {
   verifiedProviderFetch,
   withAnswerContinuation,
@@ -783,6 +784,7 @@ export type RunAgentOptions = {
   onUsage?: (delta: AgentUsageDelta) => void;
   onCompact?: (info: { droppedCount: number }) => void;
   onRunStep?: (observation: RunStepObservation) => void;
+  onStepFinished?: () => void;
   onProviderRetry?: (event: ProviderRetryEvent) => void;
   onProviderRecovered?: () => void;
   onProviderRecoveryPhase?: (event: import("@/modules/ai/lib/providerRetry").ProviderRecoveryObservation) => void;
@@ -812,6 +814,8 @@ export type RunAgentOptions = {
   retainedAutomaticRecordId?: string;
   retainedAutomaticVariant?: string;
   recovery?: boolean;
+  agentRequestFailureRecovery?: boolean;
+  preventCompletedToolReplay?: boolean;
   onSelfHostedPrepared?: (state: SelfHostedState, recordId?: string, variant?: string) => void;
   uiMessages: UIMessage[];
   toolSelectionMessages?: UIMessage[];
@@ -1146,7 +1150,9 @@ export async function runAgentStream(opts: RunAgentOptions) {
           return imitatedNativeTool(text, permitted);
         }
       : undefined,
-    recovery: opts.recovery,
+    // Automatic Agent recovery is a new, separately proven provider segment;
+    // D3 pure-text recovery stitching does not apply to partial reasoning/tools.
+    recovery: opts.recovery && !opts.agentRequestFailureRecovery,
     previous: lastMessage?.role === "assistant"
       ? readAnswer(lastMessage) ?? undefined
       : undefined,
@@ -1178,11 +1184,18 @@ export async function runAgentStream(opts: RunAgentOptions) {
       : undefined,
     validate: validateRecovery,
   });
-  const tools = gateInferenceTools(
-    permittedTools,
-    inferenceScope,
-    opts.abortSignal,
-  );
+  const previousTools = opts.uiMessages.flatMap(m => m.parts.flatMap(p =>
+    (p.type === "dynamic-tool" || p.type.startsWith("tool-")) && "toolCallId" in p &&
+      typeof p.toolCallId === "string"
+      ? [{ id: p.toolCallId, name: p.type === "dynamic-tool" ? p.toolName : p.type.slice(5),
+          input: "input" in p ? p.input : undefined, state: "state" in p ? p.state : undefined }]
+      : []));
+  const tools = gateInferenceTools(permittedTools, inferenceScope, opts.abortSignal,
+    opts.preventCompletedToolReplay ? {
+      ids: new Set(previousTools.map(t => t.id)),
+      operations: new Set(previousTools.filter(t => t.state === "output-available" && typeof t.name === "string")
+        .map(t => `${t.name}:${canonicalJson(t.input)}`)),
+    } : undefined);
   const preparationBudget = resolveContextBudget(
     await agentLimits(),
     measureRequest({
@@ -1202,7 +1215,9 @@ export async function runAgentStream(opts: RunAgentOptions) {
     opts.onCompact?.({ droppedCount: compact.droppedCount });
   }
 
-  const continuationInstruction = opts.recovery
+  const continuationInstruction = opts.agentRequestFailureRecovery
+    ? "\n\nClack Agent provider-request recovery: the previous provider segment timed out while waiting for stream progress. This is ONE fresh provider generation within the SAME logical mission, not a retry of the original request and not exact internal-reasoning continuation. The earlier incomplete text/reasoning is partial evidence, NOT a completed answer. Inspect the durable transcript, immutable completed tool IDs/results, workspace state, todos and remaining budgets. Continue only unfinished work. NEVER repeat any completed operation or uncertain external effect. Do not reinterpret the previous timeout as user cancellation or claim a finished task until verification genuinely completes. Permissions and budgets are unchanged."
+    : opts.recovery
     ? "\n\nThe user explicitly requested recovery of an interrupted answer. The durable assistant text is already visible. Continue from its exact ending without repeating any prefix, recap, reasoning summary, or previous tool call. This is a new generation, not an exact transport resume. Never repeat a completed or uncertain external effect."
     : opts.logicalContinuation
       ? "\n\nThis generation continues the same logical run after an internal step batch. Continue from the existing plan and tool results without recapping or restarting the task."
@@ -1450,6 +1465,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     abortSignal: opts.abortSignal,
     onStepFinish: (step) => {
       stepsSeen++;
+      opts.onStepFinished?.();
       if (opts.onStep) {
         const last = step.toolCalls?.[step.toolCalls.length - 1];
         if (last) {

@@ -133,6 +133,9 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
   const runState = useChatStore(
     (s) => s.sessions.find((item) => item.id === sessionId)?.run?.state,
   );
+  const agentRequestRecoveryPhase = useChatStore(
+    (s) => s.sessions.find((item) => item.id === sessionId)?.run?.agentRequestRecovery?.phase,
+  );
   const providerRetry = useChatStore(
     (s) => s.runtimeBySession[sessionId]?.providerRetry ?? null,
   );
@@ -178,7 +181,10 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
     const terminalState = runState;
     const stoppedRun =
       terminalState === "cancelled" || terminalState === "interrupted";
-    if (status === "error" && terminalState === "running") {
+    const preparingAgentRequestRecovery =
+      agentRequestRecoveryPhase === "preparing" || agentRequestRecoveryPhase === "checkpointed" ||
+      agentRequestRecoveryPhase === "dispatched";
+    if (status === "error" && terminalState === "running" && !preparingAgentRequestRecovery) {
       finishRun(sessionId, "failed");
       return;
     }
@@ -197,7 +203,7 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
     )
       runStatus = "error";
     else if (stoppedRun) runStatus = "idle";
-    else if (providerRetry && terminalState === "running")
+    else if ((providerRetry || preparingAgentRequestRecovery) && terminalState === "running")
       runStatus = "retrying";
     else if (approvalsPending > 0) runStatus = "awaiting-approval";
     else if (status === "submitted") runStatus = "thinking";
@@ -241,6 +247,7 @@ function Bridge({ sessionId, openAiDiffTab, closeAiDiffTab }: BridgeProps) {
     budgetPhase,
     runState,
     providerRetry,
+    agentRequestRecoveryPhase,
   ]);
 
   useEffect(() => {

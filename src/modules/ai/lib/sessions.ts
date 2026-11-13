@@ -80,6 +80,10 @@ export type SessionRun = {
   stop?: RunStopProvenance;
   error?: NormalizedAiError;
   recoveryAttempts?: number;
+  /** Non-secret authority captured at the original provider batch boundary. */
+  agentPermissionAuthority?: string;
+  /** One bounded new provider segment within this same logical Agent run. */
+  agentRequestRecovery?: import("./agentRequestRecovery").AgentRequestFailureRecovery;
 };
 
 const KEY_SESSIONS = "sessions";

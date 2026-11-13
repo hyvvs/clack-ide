@@ -1,0 +1,864 @@
+import type { RunAgentOptions } from "@/modules/ai/lib/agent";
+import {
+  readAnswer,
+  withAnswerContinuation,
+} from "@/modules/ai/lib/answerContinuation";
+import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
+import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
+import { gateInferenceTools } from "@/modules/ai/lib/inferenceToolGate";
+import { createRunBudget } from "@/modules/ai/lib/runBudget";
+import type {
+  LanguageModelV3,
+  LanguageModelV3StreamPart,
+} from "@ai-sdk/provider";
+import {
+  convertToModelMessages,
+  pruneMessages,
+  stepCountIs,
+  streamText,
+  tool,
+} from "ai";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+
+const { disk, invoke, history, runAgentStream, files, directories, mutations } =
+  vi.hoisted(() => ({
+    disk: new Map<string, unknown>(),
+    invoke: vi.fn(),
+    history: vi.fn(),
+    runAgentStream: vi.fn(),
+    files: new Map<string, string>(),
+    directories: new Set<string>(),
+    mutations: [] as string[],
+  }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("@/modules/ai/lib/agent", () => ({ runAgentStream }));
+vi.mock("@/modules/ai/lib/customToolExecution", () => ({
+  executionHistory: history,
+}));
+vi.mock("@/modules/ai/lib/writeCheckpoint", () => ({
+  prepareWriteCheckpoint: vi.fn(async () => null),
+  validateWriteCheckpoint: vi.fn(async () => {}),
+}));
+vi.mock("@/modules/settings/store", async (original) => ({
+  ...(await original<typeof import("@/modules/settings/store")>()),
+  setLastUsedAiSelection: vi.fn(),
+  setRecentModelIds: vi.fn(),
+}));
+vi.mock("@/modules/ai/lib/todos", async (original) => ({
+  ...(await original<typeof import("@/modules/ai/lib/todos")>()),
+  loadTodos: vi.fn(async () => []),
+  saveTodos: vi.fn(async () => {}),
+  deleteTodos: vi.fn(async () => {}),
+}));
+
+import { agentPermissionAuthoritySnapshot } from "@/modules/ai/lib/permissions";
+import {
+  awaitSessionWrites,
+  loadMessages,
+  recoverInterruptedSessions,
+} from "@/modules/ai/lib/sessions";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { getOrCreateChat, shouldAutomaticallySendSession } from "./chatRuntime";
+import { chats, seedMessages, useChatStore } from "./chatStore";
+import { usePlanStore } from "./planStore";
+import { useTodosStore } from "./todoStore";
+
+type FixtureRequest =
+  | { kind: "write"; id: string; path: string; content: string }
+  | { kind: "mkdir"; id: string; path: string }
+  | { kind: "todo"; id: string }
+  | { kind: "partial-tool"; id: string }
+  | { kind: "finish" }
+  | { kind: "fail"; code: string };
+const sessionId = "agent-failure-checkpoint";
+const root = "/workspace";
+let requests: FixtureRequest[] = [];
+let requestCount = 0;
+let nativeSettlements: Array<{ phase: string; errorCode?: string }> = [];
+let unavailableRegistry = false;
+let unavailableFingerprint = false;
+let changePermissionsAtTimeout = false;
+
+const finish = (reason: "tool-calls" | "stop"): LanguageModelV3StreamPart => ({
+  type: "finish",
+  finishReason: { unified: reason, raw: reason },
+  usage: {
+    inputTokens: { total: 12, noCache: 12, cacheRead: 0, cacheWrite: 0 },
+    outputTokens: { total: 8, text: 8, reasoning: 0 },
+  },
+});
+function streamParts(request: FixtureRequest): LanguageModelV3StreamPart[] {
+  if (request.kind === "write" || request.kind === "mkdir") {
+    const input =
+      request.kind === "write"
+        ? { path: request.path, content: request.content }
+        : { path: request.path };
+    return [
+      {
+        type: "tool-call",
+        toolCallId: request.id,
+        toolName: request.kind === "write" ? "write_file" : "create_directory",
+        input: JSON.stringify(input),
+      },
+      finish("tool-calls"),
+    ];
+  }
+  if (request.kind === "todo")
+    return [
+      {
+        type: "tool-call",
+        toolCallId: request.id,
+        toolName: "todo_write",
+        input: JSON.stringify({ done: true }),
+      },
+      finish("tool-calls"),
+    ];
+  if (request.kind === "partial-tool") {
+    nativeSettlements.push({
+      phase: "timed-out",
+      errorCode: "stream-idle-timeout",
+    });
+    return [
+      { type: "tool-input-start", id: request.id, toolName: "write_file" },
+      {
+        type: "tool-input-delta",
+        id: request.id,
+        delta: '{"path":"/workspace/half.ts","content":',
+      },
+      {
+        type: "error",
+        error: new InferenceTransportError("stream-idle-timeout"),
+      },
+    ];
+  }
+  if (request.kind === "fail") {
+    if (changePermissionsAtTimeout && request.code === "stream-idle-timeout") {
+      const prefs = usePreferencesStore.getState();
+      usePreferencesStore.setState({
+        agentPermissionProfiles: {
+          ...prefs.agentPermissionProfiles,
+          "builtin:coder": { mode: "full-access", categories: {} },
+        },
+      });
+    }
+    nativeSettlements.push({
+      phase: request.code === "stream-idle-timeout" ? "timed-out" : "failed",
+      errorCode: request.code,
+    });
+    return [
+      { type: "reasoning-start", id: "incomplete" },
+      {
+        type: "reasoning-delta",
+        id: "incomplete",
+        delta: "partial, not a final answer",
+      },
+      {
+        type: "error",
+        error: new InferenceTransportError(
+          request.code as "stream-idle-timeout",
+        ),
+      },
+    ];
+  }
+  return [
+    { type: "text-start", id: "answer" },
+    {
+      type: "text-delta",
+      id: "answer",
+      delta: "All unfinished work implemented and verified.",
+    },
+    { type: "text-end", id: "answer" },
+    finish("stop"),
+  ];
+}
+
+function run() {
+  const result = useChatStore
+    .getState()
+    .sessions.find((s) => s.id === sessionId)?.run;
+  if (!result) throw new Error("Expected logical Agent run");
+  return result;
+}
+async function settle(predicate: () => boolean) {
+  for (let i = 0; i < 180; i++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `Deterministic recovery did not settle: requests=${requestCount}, state=${run().state}, phase=${run().agentRequestRecovery?.phase}`,
+  );
+}
+function seed() {
+  useChatStore.setState({
+    activeSessionId: sessionId,
+    runtimeBySession: {},
+    pendingApprovalsBySession: {},
+    sessions: [
+      {
+        id: sessionId,
+        title: "Mission",
+        createdAt: 1,
+        updatedAt: 1,
+        modelRevision: 5,
+        profile: {
+          agentId: "builtin:coder",
+          modelId: "gpt-5.4-mini",
+          workspaceId: "local:/workspace",
+          workspaceRoot: root,
+        },
+        run: {
+          state: "running",
+          startedAt: 1,
+          agentId: "builtin:coder",
+          modelId: "gpt-5.4-mini",
+          providerId: "openai",
+          transportModelId: "gpt-5.4-mini",
+          workspaceId: "local:/workspace",
+          workspaceRoot: root,
+          agentPermissionAuthority: agentPermissionAuthoritySnapshot(
+            sessionId,
+            "builtin:coder",
+          ),
+          budget: createRunBudget("ask"),
+        },
+      },
+    ],
+  });
+}
+beforeEach(() => {
+  disk.clear();
+  files.clear();
+  directories.clear();
+  mutations.length = 0;
+  chats.clear();
+  seedMessages.clear();
+  requestCount = 0;
+  nativeSettlements = [];
+  requests = [];
+  unavailableRegistry = false;
+  unavailableFingerprint = false;
+  changePermissionsAtTimeout = false;
+  history.mockReset().mockResolvedValue([]);
+  invoke.mockReset().mockImplementation(async (command, args) => {
+    if (command === "shell_identity")
+      return { name: "/bin/sh", syntax: "POSIX sh" };
+    if (command === "agent_workspace_fingerprint" && unavailableFingerprint)
+      return {
+        revision: null,
+        qualification: "unavailable",
+        reason: "source tree exceeds bound",
+      };
+    if (command === "agent_workspace_fingerprint")
+      return {
+        revision: JSON.stringify([
+          [...files.entries()].sort(),
+          [...directories].sort(),
+        ]),
+        qualification: "bounded-local-source-tree-excluding-git-metadata",
+        reason: null,
+      };
+    if (command === "custom_tools_load" && unavailableRegistry)
+      throw new Error("Registry unavailable");
+    if (command === "custom_tools_load")
+      return { schemaVersion: 1, revision: 0, entries: [] };
+    if (command === "conversation_source_set") {
+      disk.set(args.key, structuredClone(args.value));
+      return;
+    }
+    if (command === "conversation_session_get")
+      return structuredClone(disk.get(args.key) ?? null);
+    if (command === "fs_read_file") {
+      const content = files.get(args.path);
+      if (content === undefined) throw new Error("No such file or directory");
+      return { kind: "text", content, size: content.length };
+    }
+    if (command === "fs_stat")
+      return {
+        kind: directories.has(args.path) ? "dir" : "file",
+        size: 0,
+        mtime: 1,
+      };
+    throw new Error(`Unexpected IPC ${command}`);
+  });
+  runAgentStream
+    .mockReset()
+    .mockImplementation(async (opts: RunAgentOptions) => {
+      if (!opts.inferenceScope || !opts.modelId)
+        throw new Error("Captured Agent identity missing");
+      const model: LanguageModelV3 = {
+        specificationVersion: "v3",
+        provider: "fixture",
+        modelId: "recovery",
+        supportedUrls: {},
+        doGenerate: vi.fn(),
+        doStream: async () => {
+          requestCount++;
+          const current = requests.shift() ?? { kind: "finish" };
+          return {
+            stream: new ReadableStream<LanguageModelV3StreamPart>({
+              start(controller) {
+                for (const part of streamParts(current))
+                  controller.enqueue(part);
+                controller.close();
+              },
+            }),
+          };
+        },
+      };
+      const definitions = {
+        write_file: tool({
+          inputSchema: z.object({ path: z.string(), content: z.string() }),
+          execute: async ({ path, content }) => {
+            mutations.push(`write:${path}`);
+            files.set(path, content);
+            return {
+              ok: true,
+              path,
+              bytesWritten: content.length,
+              clackWorkspaceWrite: true,
+            };
+          },
+        }),
+        create_directory: tool({
+          inputSchema: z.object({ path: z.string() }),
+          execute: async ({ path }) => {
+            mutations.push(`mkdir:${path}`);
+            directories.add(path);
+            return { ok: true, path, clackWorkspaceWrite: true };
+          },
+        }),
+        todo_write: tool({
+          inputSchema: z.object({ done: z.boolean() }),
+          execute: async ({ done }) => {
+            if (done)
+              useTodosStore.getState().setTodos(sessionId, [
+                {
+                  id: "todo-1",
+                  title: "Build and verify",
+                  status: "completed",
+                },
+              ] as never);
+            return { ok: done };
+          },
+        }),
+      };
+      const previous = opts.uiMessages.flatMap((m) =>
+        m.parts.flatMap((p) =>
+          p.type.startsWith("tool-") &&
+          "toolCallId" in p &&
+          typeof p.toolCallId === "string"
+            ? [
+                {
+                  id: p.toolCallId,
+                  name: p.type.slice(5),
+                  input: "input" in p ? p.input : undefined,
+                  state: "state" in p ? p.state : undefined,
+                },
+              ]
+            : [],
+        ),
+      );
+      const guarded = gateInferenceTools(
+        definitions,
+        opts.inferenceScope,
+        opts.abortSignal,
+        opts.preventCompletedToolReplay
+          ? {
+              ids: new Set(previous.map((p) => p.id)),
+              operations: new Set(
+                previous
+                  .filter((p) => p.state === "output-available")
+                  .map((p) => `${p.name}:${canonicalJson(p.input)}`),
+              ),
+            }
+          : undefined,
+      );
+      let finishedSteps = 0;
+      // Exercise the SDK's real tool-result and incomplete-reasoning conversion,
+      // rather than silently substituting an unrelated prompt on recovery.
+      const history = pruneMessages({
+        messages: await convertToModelMessages(opts.uiMessages),
+        reasoning: "before-last-message",
+        emptyMessages: "remove",
+      });
+      return streamText({
+        model: withAnswerContinuation(model, {
+          provider: "fixture",
+          modelId: opts.modelId,
+          runId: opts.inferenceScope.runId,
+          isCurrent: opts.inferenceScope.isCurrent,
+          signal: opts.abortSignal,
+          limits: async () => ({ asserted: 32768 }),
+          previous:
+            readAnswer(opts.uiMessages[opts.uiMessages.length - 1]) ??
+            undefined,
+          recovery: opts.recovery && !opts.agentRequestFailureRecovery,
+          onState: opts.onAnswerState,
+        }),
+        messages: [
+          {
+            role: "system",
+            content:
+              "Continue the original mission with verified existing tool results.",
+          },
+          ...history,
+        ],
+        maxRetries: 0,
+        tools: guarded,
+        stopWhen: stepCountIs(10),
+        onStepFinish: () => {
+          finishedSteps++;
+          opts.onStepFinished?.();
+        },
+        onFinish: (r) =>
+          opts.onFinishMeta?.({
+            steps: finishedSteps,
+            hitStepCap: false,
+            finishReason: r.finishReason,
+          }),
+      });
+    });
+  usePlanStore.setState({ active: false, queue: [] });
+  useTodosStore.setState({ bySession: {}, hydrated: new Set() });
+  seed();
+  useTodosStore
+    .getState()
+    .setTodos(sessionId, [
+      { id: "todo-1", title: "Build and verify", status: "in_progress" },
+    ] as never);
+});
+afterEach(async () => {
+  await awaitSessionWrites(sessionId);
+  chats.clear();
+  seedMessages.clear();
+  useChatStore.setState({
+    sessions: [],
+    activeSessionId: null,
+    runtimeBySession: {},
+  });
+});
+
+describe("Track R same-logical-Agent request-failure recovery (real Chat and transport)", () => {
+  it("times out after completed file effects, commits transcript checkpoint, executes ONE new segment and genuinely completes", async () => {
+    requests = [
+      {
+        kind: "write",
+        id: "write-a",
+        path: `${root}/a.ts`,
+        content: "export const a = 1;",
+      },
+      {
+        kind: "write",
+        id: "write-b",
+        path: `${root}/b.ts`,
+        content: "export const b = 2;",
+      },
+      { kind: "mkdir", id: "mkdir-c", path: `${root}/next` },
+      { kind: "fail", code: "stream-idle-timeout" },
+      {
+        kind: "write",
+        id: "write-d",
+        path: `${root}/done.ts`,
+        content: "export const verified = true;",
+      },
+      { kind: "todo", id: "todo-final" },
+      { kind: "finish" },
+    ];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Implement and verify the mission" });
+    await settle(() => requestCount === 7 && chat.status === "ready");
+    const checkpoint = run().agentRequestRecovery?.checkpoint;
+    expect(checkpoint).toBeDefined();
+    expect(checkpoint?.toolReceipts.map((r) => r.id)).toEqual([
+      "write-a",
+      "write-b",
+      "mkdir-c",
+    ]);
+    expect(checkpoint?.workspaceRevision).toBeTruthy();
+    expect(checkpoint?.transcriptDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(run().startedAt).toBe(1);
+    expect(run().agentRequestRecovery?.attempts).toBe(1);
+    expect(run().agentRequestRecovery?.failures).toMatchObject([
+      { kind: "timeout", errorCode: "stream-idle-timeout" },
+    ]);
+    expect(nativeSettlements).toEqual([
+      { phase: "timed-out", errorCode: "stream-idle-timeout" },
+    ]);
+    expect(mutations).toEqual([
+      `write:${root}/a.ts`,
+      `write:${root}/b.ts`,
+      `mkdir:${root}/next`,
+      `write:${root}/done.ts`,
+    ]);
+    expect(run().budget?.totalSteps).toBeGreaterThanOrEqual(4);
+    expect(run().budget?.continuationCount).toBe(0);
+    expect(run().budget?.hardStepLimit).toBe(240);
+    expect(useTodosStore.getState().bySession[sessionId][0].status).toBe(
+      "completed",
+    );
+    const resumed = runAgentStream.mock.calls[1][0] as RunAgentOptions;
+    expect(resumed.agentRequestFailureRecovery).toBe(true);
+    expect(resumed.preventCompletedToolReplay).toBe(true);
+    expect(
+      resumed.uiMessages
+        .flatMap((m) => m.parts)
+        .filter(
+          (p) =>
+            p.type.startsWith("tool-") &&
+            "state" in p &&
+            p.state === "output-available",
+        ),
+    ).toHaveLength(3);
+    expect(
+      chat.messages
+        .flatMap((m) => m.parts)
+        .some(
+          (p) =>
+            p.type === "reasoning" &&
+            p.text.includes("partial, not a final answer"),
+        ),
+    ).toBe(true);
+    expect(
+      chat.messages
+        .flatMap((m) => m.parts)
+        .some(
+          (p) => p.type === "text" && p.text.includes("All unfinished work"),
+        ),
+    ).toBe(true);
+    await awaitSessionWrites(sessionId);
+    const durable = await loadMessages(sessionId);
+    expect(durable).toEqual(chat.messages);
+    expect(run().budget?.phase).toBe("complete");
+    // The production AgentRunBridge owns this transition on Chat.ready. Here
+    // it is applied after the real SDK's final answer and budget completion.
+    useChatStore.getState().finishRun(sessionId, "completed");
+    expect(run().state).toBe("completed");
+    expect(shouldAutomaticallySendSession(sessionId, chat.messages)).toBe(
+      false,
+    );
+  });
+
+  it("recovers a timeout before any tool side effect without manufacturing one", async () => {
+    requests = [
+      { kind: "fail", code: "stream-idle-timeout" },
+      { kind: "finish" },
+    ];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Finish a read-only task" });
+    await settle(() => chat.status === "ready" && requestCount === 2);
+    expect(run().agentRequestRecovery?.checkpoint?.toolReceipts).toEqual([]);
+    expect(run().agentRequestRecovery?.attempts).toBe(1);
+    expect(mutations).toEqual([]);
+  });
+
+  it.each([
+    { id: "write-original", label: "identical completed call ID" },
+    {
+      id: "write-again",
+      label: "new call ID with identical completed write input",
+    },
+  ])("refuses provider replay of $label while preserving the original receipt", async ({
+    id,
+  }) => {
+    requests = [
+      {
+        kind: "write",
+        id: "write-original",
+        path: `${root}/original.ts`,
+        content: "original immutable content",
+      },
+      { kind: "fail", code: "stream-idle-timeout" },
+      {
+        kind: "write",
+        id,
+        path: `${root}/original.ts`,
+        content: "original immutable content",
+      },
+    ];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Write once then finish" });
+    await settle(
+      () =>
+        run().state === "failed" ||
+        (requestCount >= 3 && chat.status === "ready"),
+    );
+    expect(requestCount).toBeGreaterThanOrEqual(3);
+    expect(run().agentRequestRecovery?.attempts).toBe(1);
+    expect(mutations).toEqual([`write:${root}/original.ts`]);
+    expect(files.get(`${root}/original.ts`)).toBe("original immutable content");
+    const originals = chat.messages
+      .flatMap((m) => m.parts)
+      .filter(
+        (p) =>
+          p.type === "tool-write_file" &&
+          "toolCallId" in p &&
+          p.toolCallId === "write-original",
+      );
+    expect(originals).toHaveLength(1);
+    expect(originals[0]).toMatchObject({
+      state: "output-available",
+      output: {
+        ok: true,
+        path: `${root}/original.ts`,
+        bytesWritten: 26,
+      },
+    });
+  });
+
+  it("second stream-idle timeout terminates, retaining both failures without another provider request", async () => {
+    requests = [
+      { kind: "fail", code: "stream-idle-timeout" },
+      { kind: "fail", code: "stream-idle-timeout" },
+    ];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => run().state === "failed");
+    expect(requestCount).toBe(2);
+    expect(nativeSettlements.map((s) => s.phase)).toEqual([
+      "timed-out",
+      "timed-out",
+    ]);
+    expect(run().agentRequestRecovery?.attempts).toBe(1);
+    expect(run().agentRequestRecovery?.failures).toHaveLength(2);
+  });
+
+  it("unknown native tool effects deny a new provider segment", async () => {
+    history.mockResolvedValue([
+      { runId: 1, state: "interrupted", effect: "unknown", toolName: "custom" },
+    ]);
+    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => run().state === "failed");
+    expect(requestCount).toBe(1);
+    expect(run().error?.message).toContain("reconciliation");
+  });
+
+  it("unavailable custom-tool registry fails closed before a new request", async () => {
+    unavailableRegistry = true;
+    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => run().state === "failed");
+    expect(requestCount).toBe(1);
+    expect(run().agentRequestRecovery).toBeUndefined();
+  });
+
+  it("unknown incomplete tool JSON at timeout never executes and never recovers", async () => {
+    requests = [{ kind: "partial-tool", id: "unknown-half-write" }];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => run().state === "failed");
+    expect(requestCount).toBe(1);
+    expect(mutations).toEqual([]);
+    expect(run().agentRequestRecovery?.attempts).toBe(1);
+  });
+
+  it.each([
+    "unsafe-endpoint",
+    "invalid-request",
+    "malformed-stream",
+    "context-preflight-rejected",
+    "cancelled",
+  ])("non-recoverable provider or policy error %s is terminal", async (code) => {
+    requests = [{ kind: "fail", code }];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => run().state !== "running");
+    expect(requestCount).toBe(1);
+    expect(run().agentRequestRecovery).toBeUndefined();
+  });
+
+  it("stale workspace content after completed write blocks recovery", async () => {
+    requests = [
+      { kind: "write", id: "w", path: `${root}/a.ts`, content: "good" },
+      { kind: "fail", code: "stream-idle-timeout" },
+    ];
+    history.mockImplementation(async () => {
+      files.set(`${root}/a.ts`, "externally changed");
+      return [];
+    });
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => run().state === "failed");
+    expect(requestCount).toBe(2);
+    expect(mutations).toEqual([`write:${root}/a.ts`]);
+    expect(run().error?.message).toContain("Workspace revision");
+  });
+
+  it("unrelated workspace mutation changes the whole-tree witness and denies dispatch", async () => {
+    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+    history.mockImplementation(async () => {
+      files.set(`${root}/unrelated.ts`, "external edit");
+      return [];
+    });
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => run().state === "failed");
+    expect(requestCount).toBe(1);
+    expect(run().error?.message).toContain("Workspace tree revision");
+  });
+
+  it("unavailable native complete workspace witness refuses automatic recovery", async () => {
+    unavailableFingerprint = true;
+    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => run().state === "failed");
+    expect(requestCount).toBe(1);
+    expect(run().error?.message).toContain("workspace revision witness");
+  });
+
+  it.each([
+    "agent",
+    "run",
+    "workspace",
+    "model-revision",
+  ])("changed %s owner during reconciliation blocks the new segment", async (change) => {
+    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+    history.mockImplementation(async () => {
+      useChatStore.setState((s) => ({
+        sessions: s.sessions.map((item) => {
+          if (!item.profile || !item.run) return item;
+          if (change === "agent")
+            return {
+              ...item,
+              profile: { ...item.profile, agentId: "builtin:reviewer" },
+            };
+          if (change === "run")
+            return { ...item, run: { ...item.run, startedAt: 999 } };
+          if (change === "workspace")
+            return {
+              ...item,
+              profile: { ...item.profile, workspaceId: "local:/other" },
+            };
+          return { ...item, modelRevision: 6 };
+        }),
+      }));
+      return [];
+    });
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => run().state === "failed" || run().startedAt !== 1);
+    expect(requestCount).toBe(1);
+  });
+
+  it("a cancelled mission cannot restart from a pending recovery ledger", async () => {
+    let release: (records: never[]) => void = () => {};
+    history.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => run().agentRequestRecovery?.phase === "preparing");
+    useChatStore.getState().finishRun(sessionId, "cancelled");
+    release([]);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(run().state).toBe("cancelled");
+    expect(requestCount).toBe(1);
+  });
+
+  it("restart persists a recoverable checkpoint but never auto-resumes without captured authority", async () => {
+    requests = [
+      { kind: "fail", code: "stream-idle-timeout" },
+      { kind: "finish" },
+    ];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => requestCount === 2 && chat.status === "ready");
+    await awaitSessionWrites(sessionId);
+    const saved = structuredClone(useChatStore.getState().sessions);
+    const messages = await loadMessages(sessionId);
+    expect(saved[0].run?.agentRequestRecovery?.checkpoint).toBeDefined();
+    const interrupted = recoverInterruptedSessions(saved).sessions;
+    expect(interrupted[0].run?.state).toBe("interrupted");
+    chats.clear();
+    seedMessages.set(sessionId, messages ?? []);
+    useChatStore.setState({ sessions: interrupted });
+    expect(shouldAutomaticallySendSession(sessionId, messages ?? [])).toBe(
+      false,
+    );
+    expect(requestCount).toBe(2);
+  });
+
+  it("permission changes and pending approvals fail closed", async () => {
+    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+    const original = usePreferencesStore.getState().agentPermissionProfiles;
+    history.mockImplementation(async () => {
+      usePreferencesStore.setState({
+        agentPermissionProfiles: {
+          ...original,
+          "builtin:coder": { mode: "chat-only", categories: {} },
+        },
+      });
+      return [];
+    });
+    try {
+      const chat = getOrCreateChat(sessionId);
+      await chat.sendMessage({ text: "Task" });
+      await settle(() => run().state === "failed");
+      expect(requestCount).toBe(1);
+    } finally {
+      usePreferencesStore.setState({ agentPermissionProfiles: original });
+    }
+  });
+
+  it("a pending approval appearing during recovery prevents dispatch without resetting the permission mode", async () => {
+    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+    history.mockImplementation(async () => {
+      useChatStore.setState((s) => ({
+        pendingApprovalsBySession: {
+          ...s.pendingApprovalsBySession,
+          [sessionId]: [
+            {
+              id: "approval-in-flight",
+              sessionId,
+              toolName: "bash_run",
+              input: { command: "echo no" },
+            },
+          ],
+        },
+      }));
+      return [];
+    });
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => run().state === "failed");
+    expect(requestCount).toBe(1);
+    expect(run().error?.message).toContain("approval");
+  });
+
+  it("does not gain newly broadened permission authority while the failing provider request is in flight", async () => {
+    const before = usePreferencesStore.getState().agentPermissionProfiles;
+    changePermissionsAtTimeout = true;
+    try {
+      requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+      const chat = getOrCreateChat(sessionId);
+      await chat.sendMessage({ text: "Task" });
+      await settle(() => run().state === "failed");
+      expect(requestCount).toBe(1);
+      expect(run().agentRequestRecovery).toBeUndefined();
+    } finally {
+      usePreferencesStore.setState({ agentPermissionProfiles: before });
+    }
+  });
+
+  it("cannot forge the Agent recovery transport flag without a claimed durable checkpoint", async () => {
+    requests = [{ kind: "finish" }];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Task" });
+    expect(chat.status).toBe("ready");
+    await chat.sendMessage(undefined, {
+      body: { clackAgentRequestRecovery: true },
+    });
+    expect(requestCount).toBe(1);
+    expect(run().agentRequestRecovery).toBeUndefined();
+    expect(run().state).toBe("failed");
+    expect(run().error?.message).toContain("no committed same-run checkpoint");
+  });
+});

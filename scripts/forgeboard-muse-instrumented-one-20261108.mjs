@@ -180,7 +180,7 @@ const server = createServer(async (request, response) => {
       if (value.kind === "r5di-client-stream") {
         const d = value.details;
         assert(typeof d?.requestId === "string" && /^inference-[1-9]\d{0,6}$/.test(d.requestId), "Unexpected stream ID");
-        assert(["completed","failed","cancelled"].includes(d.phase), "Unexpected native settlement");
+        assert(["completed","failed","cancelled","timed-out"].includes(d.phase), "Unexpected native settlement");
         assert([d.firstAt,d.lastAt,d.chunks,d.maxGapMs].every(x => Number.isSafeInteger(x) && x>=0), "Invalid stream metric");
         assert(d.lastAt>=d.firstAt && d.maxGapMs<=d.lastAt-d.firstAt && d.chunks<=200000, "Stream metric inconsistent");
         assert(d.firstChunkAt===null || (Number.isSafeInteger(d.firstChunkAt) && d.firstChunkAt>=d.firstAt && d.firstChunkAt<=d.lastAt), "Invalid first chunk");

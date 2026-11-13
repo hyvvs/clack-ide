@@ -1,4 +1,5 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import {
   setAgentWorkspacePermissions,
   type AgentWorkspacePermission,
@@ -101,6 +102,23 @@ const TOOL_CATEGORIES: Readonly<Record<string, PermissionCategory>> = {
 };
 
 const chatGrants = new Map<string, Set<PermissionCategory>>();
+
+/** Read-only snapshot for same-run recovery authority comparison. */
+export function chatPermissionGrantSnapshot(sessionId: string, agentId: string): PermissionCategory[] {
+  return [...(chatGrants.get(chatGrantKey(sessionId, agentId)) ?? [])].sort();
+}
+
+/** Serializes the permission authority in effect at provider-batch admission.
+ * This is *not* a stored grant; later broadenings cannot authorize recovery.
+ */
+export function agentPermissionAuthoritySnapshot(sessionId: string, agentId: string): string {
+  const prefs = usePreferencesStore.getState();
+  return canonicalJson([
+    prefs.agentPermissionProfiles,
+    prefs.agentWorkspacePermissions,
+    chatPermissionGrantSnapshot(sessionId, agentId),
+  ]);
+}
 
 export function isAgentPermissionMode(
   value: unknown,

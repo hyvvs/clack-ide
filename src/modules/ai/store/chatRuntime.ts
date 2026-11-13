@@ -9,6 +9,13 @@ import {
   unresolvedExecution,
 } from "@/modules/ai/lib/streamRecovery";
 import { executionHistory } from "@/modules/ai/lib/customToolExecution";
+import {
+  captureAgentRequestCheckpoint,
+  eligibleAgentRequestFailure,
+  sameAgentRequestOwner,
+} from "@/modules/ai/lib/agentRequestRecovery";
+import { contextDigest } from "@/modules/ai/lib/targetContext";
+import { agentPermissionAuthoritySnapshot } from "@/modules/ai/lib/permissions";
 import { saveSessionsList } from "@/modules/ai/lib/sessions";
 import { waitForRecovery } from "@/modules/ai/lib/providerRetry";
 import { beginInference } from "@/modules/ai/lib/inferenceLifecycle";
@@ -30,7 +37,7 @@ import { BUILTIN_AGENTS } from "../lib/agents";
 import { TERAX_CMD_RE } from "../lib/slashCommands";
 import { useAgentsStore } from "./agentsStore";
 import { usePlanStore } from "./planStore";
-import { getTodos } from "@/modules/ai/store/todoStore";
+import { flushTodoPersistence, getTodos } from "@/modules/ai/store/todoStore";
 import { createContextAwareTransport } from "../lib/transport";
 import {
   describeAiErrorShape,
@@ -442,6 +449,15 @@ function makeChat(sessionId: string): Chat<UIMessage> {
     onRunStep: (observation) => {
       useChatStore.getState().recordRunStep(sessionId, observation);
     },
+    onStepFinished: () => useChatStore.getState().recordRunStepCompletion(sessionId),
+    getAgentRequestRecoveryCount: () => owner()?.run?.agentRequestRecovery?.attempts ?? 0,
+    canDispatchAgentRequestRecovery: () => {
+      const run = owner()?.run;
+      return run?.state === "running" &&
+        run.agentRequestRecovery?.attempts === 1 &&
+        run.agentRequestRecovery.phase === "dispatched" &&
+        run.agentRequestRecovery.checkpoint?.runId === `${sessionId}:${run.startedAt}`;
+    },
     onCompact: (info) => {
       useChatStore.getState().patchAgentMeta(sessionId, {
         compactionNotice: { droppedCount: info.droppedCount, at: Date.now() },
@@ -496,8 +512,10 @@ function makeChat(sessionId: string): Chat<UIMessage> {
     sendAutomaticallyWhen: ({ messages }) =>
       shouldAutomaticallySendSession(sessionId, messages),
     onError: (e) => {
-      recordTerminalAiFailure(sessionId, pendingTerminalStreamError ?? e);
+      const original = pendingTerminalStreamError ?? e;
       pendingTerminalStreamError = undefined;
+      if (!beginAgentRequestFailureRecovery(sessionId, chat, original))
+        recordTerminalAiFailure(sessionId, original);
     },
   });
   recoveryOwners.set(chat, transport.canRecover);
@@ -514,6 +532,206 @@ export async function prepareSessionChat(sessionId: string): Promise<void> {
   getOrCreateChat(sessionId);
 }
 
+/** The first stream timeout settles its native request, not the Agent mission. */
+function beginAgentRequestFailureRecovery(
+  sessionId: string,
+  chat: Chat<UIMessage>,
+  error: unknown,
+): boolean {
+  const state = useChatStore.getState();
+  const session = state.sessions.find(item => item.id === sessionId);
+  const run = session?.run;
+  const normalized = normalizeAiError(error, { ...currentAiErrorContext(sessionId), disposition: "terminal" });
+  if (!eligibleAgentRequestFailure(run, normalized) || !session?.profile ||
+      session.profile.agentId !== run?.agentId || session.profile.modelId !== run.modelId ||
+      (session.profile.workspaceId ?? undefined) !== run.workspaceId ||
+      !run.agentPermissionAuthority ||
+      run.agentPermissionAuthority !== agentPermissionAuthoritySnapshot(sessionId, run.agentId ?? "") ||
+      !recoveryOwners.get(chat)?.(`${sessionId}:${run.startedAt}`) ||
+      state.pendingApprovalsBySession[sessionId]?.length) return false;
+  const startedAt = run.startedAt;
+  const next = state.sessions.map(item => item.id === sessionId && item.run
+    ? { ...item, run: {
+        ...item.run,
+        // Archive the first timeout in the recovery record. Stop remains free to
+        // record a *new* explicit user cancellation during preparation.
+        stop: undefined,
+        agentRequestRecovery: { attempts: 1, phase: "preparing" as const, failures: [normalized] },
+      } }
+    : item);
+  useChatStore.setState({ sessions: next });
+  void saveSessionsList(next);
+  state.patchAgentMeta(sessionId, {
+    status: "retrying",
+    step: "Checking the existing Agent mission before one fresh provider segment...",
+    providerRetry: null,
+  });
+  // The SDK invokes onError before it transitions the Chat to error. A new
+  // send is only admissible after the old request has settled and its partial
+  // assistant message has been committed.
+  setTimeout(() => {
+    void resumeAgentAfterProviderFailure(sessionId, startedAt, chat).catch((cause) => {
+      const latest = useChatStore.getState().sessions.find(s => s.id === sessionId)?.run;
+      if (latest?.state === "running" && latest.startedAt === startedAt &&
+          latest.agentRequestRecovery?.phase !== "dispatched")
+        recordTerminalAiFailure(sessionId, cause);
+    });
+  }, 0);
+  return true;
+}
+
+async function resumeAgentAfterProviderFailure(
+  sessionId: string,
+  startedAt: number,
+  chat: Chat<UIMessage>,
+): Promise<void> {
+  const original = JSON.stringify(chat.messages);
+  const current = () => useChatStore.getState().sessions.find(s => s.id === sessionId);
+  const check = (phase: "preparing" | "checkpointed") => {
+    const session = current(), run = session?.run;
+    if (!session || run?.state !== "running" || run.startedAt !== startedAt ||
+        run.agentRequestRecovery?.attempts !== 1 ||
+        run.agentRequestRecovery.phase !== phase ||
+        run.stop || session?.profile?.agentId !== run.agentId ||
+        session.profile?.modelId !== run.modelId ||
+        (session.profile?.workspaceId ?? undefined) !== run.workspaceId ||
+        useChatStore.getState().pendingApprovalsBySession[sessionId]?.length ||
+        !recoveryOwners.get(chat)?.(`${sessionId}:${startedAt}`) ||
+        JSON.stringify(chat.messages) !== original)
+      throw new Error("Agent recovery owner, approval state or durable transcript changed; no effect was replayed.");
+    return session;
+  };
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(new InferenceTransportError("preflight-timeout")), 10_000);
+  const wait = <T>(promise: PromiseLike<T>): Promise<T> => waitForRecovery(promise, controller.signal);
+  const environment = () => {
+    const prefs = usePreferencesStore.getState();
+    const plan = usePlanStore.getState();
+    if (plan.queue.length) throw new Error("Unapplied plan edits require reconciliation before recovery.");
+    return {
+      permissions: [prefs.agentPermissionProfiles, prefs.agentWorkspacePermissions,
+        agentPermissionAuthoritySnapshot(sessionId, current()?.run?.agentId ?? "")],
+      todos: getTodos(sessionId),
+      plan: { active: plan.active, queue: plan.queue },
+    };
+  };
+  try {
+    if (chat.status !== "error") throw new Error("The previous provider request did not settle before recovery.");
+    const session = check("preparing"), run = session.run;
+    if (!run) throw new Error("The captured logical Agent run disappeared.");
+    const preflight = environment();
+    const sourceRoot = run.checkoutRoot ?? run.workspaceRoot;
+    if (!sourceRoot) throw new Error("Agent workspace root unavailable for recovery revision proof.");
+    const workspaceWitness = await wait(native.agentWorkspaceFingerprint(sourceRoot, run.workspaceEnvironment));
+    if (!workspaceWitness.revision || workspaceWitness.qualification === "unavailable")
+      throw new Error("A complete workspace revision witness is unavailable; recovery blocked.");
+    await wait(flushTodoPersistence());
+    await wait(persistCompactionSource(sessionId, chat.messages));
+    await wait(awaitSessionWrites(sessionId));
+    check("preparing");
+    const records = await wait(executionHistory(sessionId));
+    check("preparing");
+    const hasWrites = chat.messages.some(message => message.parts.some(part =>
+      part.type === "tool-write_file" || part.type === "tool-create_directory"));
+    // Existing native checkpoint is a *supplemental* revision guarantee for
+    // superseded writes. A null snapshot does NOT prove absence of an effect.
+    const nativeCheckpoint = hasWrites
+      ? await wait(prepareWriteCheckpoint({ sessionId, workspaceId: run.workspaceId ?? null }))
+      : null;
+    const evidence = {
+      ...preflight,
+      records,
+      writeCheckpoint: nativeCheckpoint,
+      workspaceRevision: workspaceWitness.revision,
+      readFile: async (path: string) => {
+        const result = await native.readFile(path, run.workspaceEnvironment);
+        if (result.kind !== "text") throw new Error("Completed write no longer has readable text content.");
+        return result.content;
+      },
+      isDirectory: async (path: string) =>
+        (await native.stat(path, run.workspaceEnvironment)).kind === "dir",
+    };
+    const checkpoint = await wait(captureAgentRequestCheckpoint(session, chat.messages, evidence));
+    check("preparing");
+    const stored = await wait(loadMessages(sessionId));
+    if (!stored || await wait(contextDigest(stored)) !== checkpoint.transcriptDigest)
+      throw new Error("Persisted mission transcript or immutable tool receipts changed.");
+    const updated = useChatStore.getState().sessions.map(item => item.id === sessionId && item.run?.agentRequestRecovery?.phase === "preparing"
+      ? { ...item, run: { ...item.run, agentRequestRecovery: {
+          ...item.run.agentRequestRecovery, phase: "checkpointed" as const,
+          checkpoint,
+        } } }
+      : item);
+    useChatStore.setState({ sessions: updated });
+    await wait(saveSessionsList(updated));
+    check("checkpointed");
+    // Revalidate both durable owners and workspace effects immediately before
+    // dispatch. Never mistake a stale file or a changed permission for consent.
+    const fresh = environment();
+    if (await wait(contextDigest(fresh.permissions)) !== checkpoint.permissionsDigest ||
+        await wait(contextDigest(fresh.todos)) !== checkpoint.todoDigest ||
+        await wait(contextDigest(fresh.plan)) !== checkpoint.planDigest ||
+        await wait(contextDigest(current()?.run?.budget)) !== checkpoint.budgetDigest ||
+        !sameAgentRequestOwner(checkpoint, current()) ||
+        await wait(contextDigest(chat.messages)) !== checkpoint.transcriptDigest)
+      throw new Error("Agent recovery revision, budget, permissions, todos or transcript became stale.");
+    for (const receipt of checkpoint.workspaceReceipts) {
+      if (receipt.kind === "dir") {
+        if (!await wait(evidence.isDirectory(receipt.path))) throw new Error("Workspace directory revision became stale.");
+      } else if (await wait(contextDigest(await wait(evidence.readFile(receipt.path)))) !== receipt.digest)
+        throw new Error("Workspace file revision became stale.");
+    }
+    if (nativeCheckpoint) await wait(validateWriteCheckpoint(nativeCheckpoint));
+    const freshWorkspaceWitness = await wait(native.agentWorkspaceFingerprint(sourceRoot, run.workspaceEnvironment));
+    if (!freshWorkspaceWitness.revision || freshWorkspaceWitness.revision !== checkpoint.workspaceRevision)
+      throw new Error("Workspace tree revision changed before recovery dispatch.");
+    check("checkpointed");
+    const dispatched = useChatStore.getState().sessions.map(item => item.id === sessionId && item.run?.agentRequestRecovery?.phase === "checkpointed"
+      ? { ...item, run: { ...item.run, agentRequestRecovery: {
+          ...item.run.agentRequestRecovery, phase: "dispatched" as const,
+        } } }
+      : item);
+    useChatStore.setState({ sessions: dispatched });
+    await wait(saveSessionsList(dispatched));
+    const finalEnvironment = environment();
+    if (await wait(contextDigest(finalEnvironment.permissions)) !== checkpoint.permissionsDigest ||
+        await wait(contextDigest(finalEnvironment.todos)) !== checkpoint.todoDigest ||
+        await wait(contextDigest(finalEnvironment.plan)) !== checkpoint.planDigest ||
+        await wait(contextDigest(current()?.run?.budget)) !== checkpoint.budgetDigest ||
+        useChatStore.getState().pendingApprovalsBySession[sessionId]?.length ||
+        current()?.run?.state !== "running" ||
+        !sameAgentRequestOwner(checkpoint, current()) || chat.status !== "error")
+      throw new Error("Recovery authorization was superseded before dispatch.");
+    chat.clearError();
+    clearTimeout(deadline);
+    // A new provider segment, *not* an SDK regenerate() of old tool calls.
+    // The Chat's existing assistant parts remain durable and distinct.
+    await chat.sendMessage(undefined, { body: { clackAgentRequestRecovery: true } });
+    // The React bridge may be unmounted while a background session is active.
+    // Persist the recovered segment and its immutable new tool results here too.
+    await persistCompactionSource(sessionId, chat.messages);
+    await awaitSessionWrites(sessionId);
+    const afterSegment = current()?.run;
+    const recovered = afterSegment?.agentRequestRecovery;
+    if (String(chat.status) === "ready" && afterSegment?.state === "running" &&
+        afterSegment.startedAt === startedAt && recovered?.phase === "dispatched") {
+      const settled = useChatStore.getState().sessions.map(item => item.id === sessionId && item.run
+        ? { ...item, run: { ...item.run, agentRequestRecovery: {
+            ...recovered, phase: "finished" as const,
+          } } }
+        : item);
+      useChatStore.setState({ sessions: settled });
+      await saveSessionsList(settled);
+    }
+  } catch (error) {
+    const latest = current()?.run;
+    if (latest?.state === "running" && latest.startedAt === startedAt)
+      recordTerminalAiFailure(sessionId, error);
+  } finally {
+    clearTimeout(deadline);
+  }
+}
+
 function recordTerminalAiFailure(
   sessionId: string,
   error: unknown,
@@ -526,6 +744,17 @@ function recordTerminalAiFailure(
     disposition: "terminal",
   });
   const state = useChatStore.getState();
+  const failureRun = state.sessions.find((session) => session.id === sessionId)?.run;
+  const failureRecovery = failureRun?.agentRequestRecovery;
+  if (failureRun?.state === "running" && failureRecovery?.phase === "dispatched") {
+    const next = state.sessions.map((session) => session.id === sessionId && session.run
+      ? { ...session, run: { ...session.run, agentRequestRecovery: {
+          ...failureRecovery, failures: [...failureRecovery.failures, normalized],
+        } } }
+      : session);
+    useChatStore.setState({ sessions: next });
+    void saveSessionsList(next);
+  }
   const runState = state.sessions.find((session) => session.id === sessionId)
     ?.run?.state;
   const canTerminalize = runState === "running";
