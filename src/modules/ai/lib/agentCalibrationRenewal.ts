@@ -1,6 +1,7 @@
 import { budgetIdentity } from "@/modules/ai/lib/contextBudgetProfile";
 import { sameAgentRenewalIdentity } from "@/modules/ai/lib/agentRenewalIdentity";
 import { contextRuntime } from "@/modules/ai/lib/contextCalibrationTrust";
+import { CONTEXT_CALIBRATION } from "@/modules/ai/lib/contextCalibrationSchema";
 import { endpointBackend } from "@/modules/ai/lib/selfHostedProfiles";
 import { inspectContextRuntime } from "@/modules/ai/lib/contextRuntimeClient";
 import { calibrateModelContext } from "@/modules/ai/lib/contextCalibrationRuntime";
@@ -17,8 +18,12 @@ import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 /** Only request a new calibration at a safe provider-step boundary, never
  * interrupt an admitted generation or silently extend an old evidence lease. */
 export const AGENT_CALIBRATION_RENEWAL_LEAD_MS = 30_000;
-export function agentCalibrationRenewalDue(expiresAt: number | undefined, now = Date.now()) {
-  return expiresAt !== undefined && expiresAt <= now + AGENT_CALIBRATION_RENEWAL_LEAD_MS;
+export function agentCalibrationRenewalDue(
+  expiresAt: number | undefined,
+  now = Date.now(),
+  minimumRemainingMs = AGENT_CALIBRATION_RENEWAL_LEAD_MS,
+) {
+  return expiresAt !== undefined && expiresAt <= now + minimumRemainingMs;
 }
 
 type Renewal = { state: SelfHostedState; proof: ToolVerification };
@@ -50,6 +55,7 @@ export async function renewAgentCalibrationAtBoundary(
   signal: AbortSignal,
   isCurrent: () => boolean = () => !signal.aborted,
   deps: Dependencies = production,
+  minimumRemainingMs = AGENT_CALIBRATION_RENEWAL_LEAD_MS,
 ): Promise<Renewal> {
   const stop = () => {
     signal.throwIfAborted();
@@ -58,6 +64,9 @@ export async function renewAgentCalibrationAtBoundary(
   const fail = (reason: string): never => {
     throw new Error(`Agent calibration renewal unavailable: ${reason}. No Agent inference was sent.`);
   };
+  if (!Number.isSafeInteger(minimumRemainingMs) || minimumRemainingMs < 0 ||
+      minimumRemainingMs > CONTEXT_CALIBRATION.evidenceMs)
+    return fail("requested evidence horizon is invalid");
   stop();
   const original = state.profiles.find(p => p.id === profileId);
   const originalEndpoint = state.endpoints.find(e => e.id === original?.endpointId && e.deletedAt == null);
@@ -106,7 +115,7 @@ export async function renewAgentCalibrationAtBoundary(
   let current = await deps.read();
   let profile = validate(current, true);
   const expiry = profile.contextCalibration?.expiresAt;
-  if (!agentCalibrationRenewalDue(expiry)) {
+  if (!agentCalibrationRenewalDue(expiry, Date.now(), minimumRemainingMs)) {
     const snapshot = profileSnapshot(current, profile);
     if (freshVerifiedContextTiers(current, profile, snapshot).includes(retained.context)) {
       const proof = automaticAgentRecommendation(current, profile, retained.context);
@@ -168,6 +177,12 @@ export async function renewAgentCalibrationAtBoundary(
   stop();
   if (!freshVerifiedContextTiers(current, profile, snapshot).includes(retained.context))
     return fail("fresh loaded allocation or calibrated context is missing");
+  // Requalification is not complete merely because a lease was valid midway
+  // through the native checks. A slow verification must still leave the
+  // requested bounded preparation horizon at the actual safe boundary.
+  if (!profile.contextCalibration ||
+      profile.contextCalibration.expiresAt <= Date.now() + minimumRemainingMs)
+    return fail("renewed exact-tier lease cannot cover bounded preparation");
   const renewedProof = automaticAgentRecommendation(current, profile, retained.context);
   if (!renewedProof || !sameToolConfiguration(renewedProof.configuration, configuration) ||
       JSON.stringify(renewedProof.record.scope) !== originalScope)

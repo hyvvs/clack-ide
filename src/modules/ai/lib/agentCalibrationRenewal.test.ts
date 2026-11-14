@@ -11,7 +11,16 @@ import { runContextCalibration } from "@/modules/ai/lib/contextCalibration";
 import { automaticAgentRecommendation } from "@/modules/ai/lib/agentConfiguration";
 import { selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
 import { agentCalibrationRenewalDue, renewAgentCalibrationAtBoundary } from "@/modules/ai/lib/agentCalibrationRenewal";
-import { createRequestPreflight } from "@/modules/ai/lib/requestPreflight";
+import { createRequestPreflight, preflightFetch } from "@/modules/ai/lib/requestPreflight";
+import { compactionFixture, disposeCompactionFixtures, textMessage } from "@/modules/ai/lib/conversationCompaction.fixture";
+import { COMPACTION_POLICY } from "@/modules/ai/lib/compactionExtraction";
+import { installPreparationObserver, type PreparationObservation } from "@/modules/ai/lib/preparationLifecycle";
+import { eligibleAgentRequestFailure } from "@/modules/ai/lib/agentRequestRecovery";
+import { normalizeAiError } from "@/modules/ai/lib/errors";
+import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
+import { captureAgentRequestCheckpoint, sameAgentRequestOwner } from "@/modules/ai/lib/agentRequestRecovery";
+import type { SessionMeta, SessionRun } from "@/modules/ai/lib/sessions";
+import type { UIMessage, LanguageModel } from "ai";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -19,7 +28,7 @@ const NOW = 1_800_000_000_000;
 const TIER = 49152;
 const TIERS = [4096, 8192, 16384, 32768, 49152, 65536, 73728];
 
-function fixture() {
+function fixture(selectedTier = TIER) {
   const f = ollamaEffortFixture([false, true], "renewal-generic-model");
   let state = f.state;
   const endpoint = f.endpoint;
@@ -58,11 +67,11 @@ function fixture() {
   };
   rememberContextRuntime(endpointId, { epoch, version: "0.40.11",
     configurationRevision: endpoint.configurationRevision, at: Date.now() });
-  refreshEvidence(TIER, "old-49k-allocation");
+  refreshEvidence(selectedTier, "original-loaded-allocation");
   const scope = toolScope(p, endpoint)!;
   const proof: ToolVerification = {
     version: 1, id: "retained-exact-tier", scope, status: "verified",
-    outcome: "native-call", context: TIER, output: 512,
+    outcome: "native-call", context: selectedTier, output: 512,
     attempts: [{ output: 512, outcome: "native-call", finish: "tool-calls",
       startedAt: NOW - 6000, completedAt: NOW - 5900 }],
     startedAt: NOW - 6100, completedAt: NOW - 5900,
@@ -145,10 +154,12 @@ function fixture() {
     })) as unknown as NonNullable<Parameters<typeof renewAgentCalibrationAtBoundary>[5]>["snapshot"],
   };
   const run = (retained = proof, signal = new AbortController().signal,
-    owner: () => boolean = () => true) =>
-    renewAgentCalibrationAtBoundary(state, p.id, retained, signal, owner, deps);
+    owner: () => boolean = () => true, minimumRemainingMs?: number) =>
+    renewAgentCalibrationAtBoundary(state, p.id, retained, signal, owner, deps,
+      minimumRemainingMs);
   return {
     run, proof, deps, currentProfile, snapshot, state: () => state,
+    refreshEvidence,
     get requests() { return requests; }, get verifications() { return verifications; },
     epoch: (next: string) => { realEpoch = next; },
     failed: (value: boolean) => { failCalibration = value; },
@@ -166,9 +177,288 @@ beforeEach(() => {
   vi.mocked(invoke).mockReset();
 });
 afterEach(() => {
+  disposeCompactionFixtures();
   forgetContextRuntime("server");
   vi.mocked(invoke).mockReset();
   vi.useRealTimers();
+});
+
+describe("combined long-horizon continuation authority: offline campaign-06 reproduction", () => {
+  it.each([
+    { renewBeforeCompaction: false, label: "original fail-closed expiry" },
+    { renewBeforeCompaction: true, label: "same-epoch safe-boundary renewal" },
+  ])("$label: 19 reconciled tools, one provider recovery and a 120s extraction timeout", async ({ renewBeforeCompaction }) => {
+    vi.useRealTimers();
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const tier = 32768;
+    const f = fixture(tier);
+    const initial = await f.run();
+    expect(initial.state.profiles.find(p => p.id === f.currentProfile().id)?.contextCalibration?.highest).toBe(tier);
+    expect(initial.proof.context).toBe(tier);
+    const expiry = f.currentProfile().contextCalibration!.expiresAt;
+    const endpoint = f.state().endpoints.find(e => e.id === f.currentProfile().endpointId)!;
+    const body = () => ({
+      model: f.currentProfile().transportModelId, stream: false,
+      options: { num_ctx: tier, num_predict: 1024 },
+      messages: [{ role: "system", content: "Extract only bounded evidence" },
+        { role: "user", content: "Synthetic, content-free test evidence" }],
+    });
+    vi.mocked(invoke).mockImplementation(async command => {
+      if (command === "self_hosted_profiles_snapshot")
+        return [["selfHostedInference", f.state()]];
+      if (command === "self_hosted_probe_cache" || command === "self_hosted_probe") {
+        // A real metadata re-observation may refresh allocation timestamps,
+        // but can NEVER extend an expired native calibration lease.
+        f.refreshEvidence(tier, f.currentProfile().contextCalibration!.allocation!);
+        return f.snapshot();
+      }
+      if (command === "self_hosted_context_runtime") return {
+        epoch: "same-native-runtime", version: "0.40.11",
+        configurationRevision: endpoint.configurationRevision, at: Date.now(),
+      };
+      throw new Error("No live inference or native tool dispatch: " + command);
+    });
+    const earlier: SessionRun = {
+      state: "running", agentId: "builtin:coder", modelId: "pinned-native-model",
+      providerId: "ollama", transportModelId: f.currentProfile().transportModelId,
+      startedAt: NOW, customTools: { revision: 1, versions: [], unavailable: false },
+      budget: { phase: "running", totalSteps: 20, hardStepLimit: 240,
+        continuationCount: 0, maxAutoContinuations: 9 } as SessionRun["budget"],
+    };
+    const failure = normalizeAiError(new InferenceTransportError("stream-idle-timeout"));
+    const idleStartedAt = f.currentProfile().contextCalibration!.expiresAt - 241_500;
+    vi.setSystemTime(idleStartedAt);
+    expect(eligibleAgentRequestFailure(earlier, failure)).toBe(true);
+    // The previous coding request yielded first progress, then crossed exactly
+    // the native 180-second stream inactivity threshold.
+    vi.setSystemTime(idleStartedAt + 180_000);
+    earlier.agentRequestRecovery = {
+      attempts: 1, phase: "preparing", consumedBy: "stream-idle-timeout", failures: [failure],
+    };
+    expect(eligibleAgentRequestFailure(earlier, failure)).toBe(false);
+    const toolNames = [
+      "list_directory", ...Array(3).fill("todo_write"),
+      ...Array(4).fill("create_directory"), ...Array(11).fill("write_file"),
+    ] as string[];
+    const workingRoot = "C:/offline-reliability";
+    earlier.workspaceRoot = workingRoot;
+    earlier.workspaceId = "local:/offline-reliability";
+    const materialized = new Map<string, string>();
+    const directories = new Set<string>();
+    const receipts = toolNames.map((name, index) => {
+      const path = `${workingRoot}/file-${index}.ts`;
+      const content = `export const completed = ${index};`;
+      if (name === "write_file") materialized.set(path, content);
+      if (name === "create_directory") directories.add(path);
+      return {
+        type: `tool-${name}` as `tool-${string}`,
+        toolCallId: `completed-${index}`, state: "output-available" as const,
+        input: name === "write_file" ? { path, content } :
+          name === "create_directory" ? { path } : { entries: [] },
+        output: name === "write_file"
+          ? { path, ok: true, clackWorkspaceWrite: true, bytesWritten: content.length }
+          : name === "create_directory" ? { path, ok: true, clackWorkspaceWrite: true }
+            : { ok: true },
+      };
+    });
+    // One logical run, many successful tool turns, then a genuine 180-second
+    // stream-idle boundary and the accepted same-run provider recovery.
+    const history: UIMessage[] = [
+      textMessage("objective", "user", "Implement a local application without repeating completed work"),
+      { id: "completed-steps", role: "assistant",
+        parts: Array.from({ length: 19 }, (_, index) => [
+          { type: "step-start" as const },
+          { type: "text" as const, text: `Completed step ${index}. ${"Historical verification evidence. ".repeat(95)}` },
+          receipts[index],
+        ]).flat(),
+      },
+      textMessage("latest", "user", "Continue only unfinished work from the existing durable checkpoint"),
+      { id: "pending", role: "assistant", parts: [] },
+    ];
+    const session: SessionMeta = {
+      id: "same-run", title: "Offline long-horizon reliability",
+      createdAt: NOW, updatedAt: NOW, run: earlier,
+    };
+    const checkpoint = await captureAgentRequestCheckpoint(session,
+      history.slice(0, 2), {
+        permissions: { mode: "same-original-authority" },
+        todos: [], plan: {}, records: [], writeCheckpoint: null,
+        workspaceRevision: "f".repeat(64),
+        readFile: async path => {
+          if (!materialized.has(path)) throw new Error("Missing completed native write");
+          return materialized.get(path)!;
+        },
+        isDirectory: async path => directories.has(path),
+      });
+    expect(checkpoint.toolReceipts).toHaveLength(19);
+    expect(checkpoint.workspaceReceipts).toHaveLength(15);
+    expect(sameAgentRequestOwner(checkpoint, session)).toBe(true);
+    earlier.agentRequestRecovery = {
+      ...earlier.agentRequestRecovery, checkpoint, phase: "dispatched",
+    };
+    const originalBudget = structuredClone(earlier.budget);
+    const fCompaction = compactionFixture(history);
+    const phases: PreparationObservation[] = [];
+    const unsubscribe = installPreparationObserver(event => phases.push(event));
+    let freshProviderSegments = 0;
+    const preflight = createRequestPreflight({
+      state: f.state(), local: true, providerId: "ollama",
+      modelId: f.currentProfile().transportModelId,
+      requiredRuntimeContext: tier, requiredContinuationProof: initial.proof,
+      admission: { endpointId: endpoint.id, profileId: f.currentProfile().id, capacity: 1 },
+    });
+    expect(Date.now()).toBe(expiry - 61_500);
+    expect(agentCalibrationRenewalDue(expiry)).toBe(false); // 30-second ordinary lead
+    f.refreshEvidence(tier, f.currentProfile().contextCalibration!.allocation!);
+    rememberContextRuntime(endpoint.id, { epoch: "same-native-runtime", version: "0.40.11",
+      configurationRevision: endpoint.configurationRevision, at: Date.now() });
+    expect(freshVerifiedContextTiers(f.state(), f.currentProfile(), f.snapshot())).toContain(tier);
+    const remainingLease = expiry - Date.now();
+    const compactionHorizonMs = COMPACTION_POLICY.timeoutMs *
+      COMPACTION_POLICY.maxModelAttemptsPerPreparation + 30_000;
+    expect(remainingLease).toBe(61_500);
+    expect(agentCalibrationRenewalDue(expiry, Date.now(), compactionHorizonMs)).toBe(true);
+    if (renewBeforeCompaction) {
+      const renewed = await f.run(initial.proof, new AbortController().signal,
+        () => true, compactionHorizonMs);
+      expect(renewed.proof.id).toBe(initial.proof.id);
+      expect(renewed.proof.scope).toEqual(initial.proof.scope);
+      expect(renewed.state.profiles.find(p => p.id === f.currentProfile().id)
+        ?.contextCalibration?.expiresAt).toBeGreaterThan(expiry);
+      preflight.updateAgentTrust(renewed.state, renewed.proof);
+    }
+    await expect((await preflight.prepare(body()))()).resolves.toBeUndefined();
+    fCompaction.call.mockImplementation(async options => {
+      if (fCompaction.call.mock.calls.length === 1)
+        return new Promise((_, reject) => options.abortSignal.addEventListener("abort",
+          () => reject(options.abortSignal.reason), { once: true }));
+      await (await preflight.prepare(body()))();
+      freshProviderSegments++;
+      const sources = (JSON.parse(options.messages[1].content as string) as {
+        sources: { id: string; passages: string[] }[];
+      }).sources;
+      // Short valid synthetic claims cite exact fragments of the unchanged
+      // original step evidence, within the real extractor output allowance.
+      return { text: JSON.stringify({ claims: sources.map(source => ({
+        source: source.id, section: "decisions",
+        text: "The completed step remains in the durable checkpoint",
+        quote: source.passages[0].slice(0, 30), status: "unresolved",
+        contradicts: [],
+      })) }), usage: { inputTokens: 100, outputTokens: 50, cachedInputTokens: 0 } };
+    });
+    try {
+      const c = await fCompaction.start({
+        scope: { sessionId: "same-run", runId: "same-run:campaign-06", isCurrent: () => true },
+        limits: async () => ({ deployed: 32768, workingTarget: 9000, maxOutput: 4096 }),
+        extractionRoute: async () => ({ model: {} as LanguageModel,
+          limits: async () => ({ deployed: 32768, maxOutput: 1024, outputReserve: 1024 }) }),
+      });
+      const pending = c.prepare();
+      const terminal = renewBeforeCompaction
+        ? expect(pending).resolves.toBeDefined()
+        : expect(pending).rejects.toMatchObject({ code: "ollama-continuation-allocation-stale" });
+      for (let n = 0; n < 150 && fCompaction.call.mock.calls.length < 1; n++)
+        await vi.advanceTimersByTimeAsync(0);
+      expect(fCompaction.call).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(COMPACTION_POLICY.timeoutMs);
+      await terminal;
+      if (renewBeforeCompaction) {
+        expect(fCompaction.call.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(fCompaction.call.mock.calls.length).toBeLessThanOrEqual(
+          COMPACTION_POLICY.maxModelAttemptsPerPreparation);
+      } else expect(fCompaction.call).toHaveBeenCalledTimes(2);
+      expect(freshProviderSegments).toBe(renewBeforeCompaction
+        ? fCompaction.call.mock.calls.length - 1 : 0);
+      if (renewBeforeCompaction) expect(fCompaction.memory.commit).toHaveBeenCalled();
+      else expect(fCompaction.memory.commit).not.toHaveBeenCalled();
+      expect(phases.filter(x => x.phase === "extraction-timeout-retry")).toHaveLength(1);
+      expect(phases.filter(x => x.phase === "extraction-attempt-start")
+        .map(x => x.attempt?.deadlineMs)).toEqual(
+          fCompaction.call.mock.calls.map(() => 120_000));
+      if (renewBeforeCompaction) {
+        // Only after compaction commits is one fresh provider coding segment
+        // authorized; this is the SAME run and consumes no second recovery.
+        const codingBody = { ...body(), stream: true,
+          options: { num_ctx: tier, num_predict: 4096 },
+          tools: [{ type: "function", function: { name: "read_file", description: "read",
+            parameters: { type: "object", properties: {} } } }] };
+        await expect((await preflight.prepare(codingBody))()).resolves.toBeUndefined();
+        let codingDispatches = 0;
+        const offlineWire = preflightFetch(async (_url, request) => {
+          codingDispatches++;
+          const parsed = JSON.parse(String(request?.body)) as typeof codingBody;
+          expect(parsed.options.num_ctx).toBe(32768);
+          expect(parsed.options.num_predict).toBe(4096);
+          expect(parsed.tools).toHaveLength(1);
+          return new Response(null, { status: 204 });
+        }, preflight);
+        await offlineWire("http://offline-unreachable.invalid/api/chat", {
+          method: "POST", body: JSON.stringify(codingBody),
+        });
+        expect(codingDispatches).toBe(1);
+        expect(earlier.agentRequestRecovery?.attempts).toBe(1);
+        expect(sameAgentRequestOwner(checkpoint, session)).toBe(true);
+      }
+      if (!renewBeforeCompaction)
+        expect(f.currentProfile().contextCalibration?.expiresAt).toBe(expiry);
+      expect(f.proof.proof?.expiresAt).toBeGreaterThan(Date.now());
+      expect(earlier.budget).toEqual(originalBudget);
+      expect(materialized.size).toBe(11);
+      expect(directories.size).toBe(4);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it.each(["runtime-epoch", "digest", "cancelled", "proof-substitution",
+    "missing-allocation", "renewal-horizon-invalid"] as const)(
+    "fails closed when %s changes during a recovery-compaction safe-boundary requalification",
+    async (change) => {
+      const f = fixture(32768);
+      const retained = structuredClone(f.proof);
+      const horizon = COMPACTION_POLICY.timeoutMs *
+        COMPACTION_POLICY.maxModelAttemptsPerPreparation + 30_000;
+      const controller = new AbortController();
+      if (change === "runtime-epoch") f.epoch("different-native-process");
+      if (change === "digest") f.digestChange(true);
+      if (change === "cancelled")
+        controller.abort(new DOMException("Operator cancelled", "AbortError"));
+      if (change === "proof-substitution")
+        f.currentProfile().agentToolTierProofs![0].id = "replaced-native-proof";
+      if (change === "missing-allocation") f.unload();
+      const required = change === "renewal-horizon-invalid" ? 901_000 : horizon;
+      await expect(f.run(retained, controller.signal, () => true, required))
+        .rejects.toThrow();
+      expect(f.verifications).toBe(0);
+      expect(f.requests).toBeLessThanOrEqual(1);
+      if (change !== "digest" && change !== "missing-allocation")
+        expect(f.requests).toBe(0);
+    },
+  );
+
+  it("does not accept a genuinely renewed lease if subsequent native checks exhaust the requested preparation horizon", async () => {
+    const f = fixture(32768);
+    const original = vi.mocked(f.deps.inspect).getMockImplementation()!;
+    let inspections = 0;
+    vi.mocked(f.deps.inspect).mockImplementation(async (...args) => {
+      await original(...args);
+      inspections++;
+      if (inspections === 2) {
+        // Calibration itself succeeded. Other work was slow, so a lease
+        // checked only at the middle of renewal is no longer long enough.
+        vi.setSystemTime(Date.now() + 270_001);
+        f.refreshEvidence(32768, f.currentProfile().contextCalibration!.allocation!);
+        const endpoint = f.state().endpoints[0];
+        rememberContextRuntime(endpoint.id, { epoch: "same-native-runtime", version: "0.40.11",
+          configurationRevision: endpoint.configurationRevision, at: Date.now() });
+      }
+    });
+    await expect(f.run(f.proof, new AbortController().signal, () => true, 630_000))
+      .rejects.toThrow(/renewed exact-tier lease cannot cover bounded preparation/);
+    expect(f.requests).toBe(1);
+    expect(f.verifications).toBe(0);
+  });
 });
 
 describe("long-running Agent: safe-boundary exact-tier qualification, offline", () => {

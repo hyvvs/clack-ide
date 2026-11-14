@@ -95,6 +95,7 @@ import {
   type ConversationCompactionContext,
   type CompactionNotice,
 } from "@/modules/ai/lib/conversationCompaction";
+import { COMPACTION_POLICY } from "@/modules/ai/lib/compactionExtraction";
 import {
   retrieveConversationEvidence,
   type RetrievalNotice,
@@ -1440,19 +1441,38 @@ export async function runAgentStream(opts: RunAgentOptions) {
     prepareStep: async ({ messages: stepMessages, stepNumber }) => {
       if (watchdog.error) throw watchdog.error;
       if (activeAutomaticProof && opts.selfHostedInference &&
-          !opts.recovery && inferenceScope.isCurrent() &&
+          (!opts.recovery || opts.agentRequestFailureRecovery) && inferenceScope.isCurrent() &&
           !opts.toolContext.isPeerReplyOnly?.()) {
         const current = opts.selfHostedInference.profiles.find(p =>
           p.endpointId === activeAutomaticProof?.scope.endpointId &&
           p.transportModelId === activeAutomaticProof.scope.model &&
           p.modelRevision === activeAutomaticProof.scope.digest);
-        const { agentCalibrationRenewalDue, renewAgentCalibrationAtBoundary } =
+        const {
+          AGENT_CALIBRATION_RENEWAL_LEAD_MS,
+          agentCalibrationRenewalDue,
+          renewAgentCalibrationAtBoundary,
+        } =
           await import("@/modules/ai/lib/agentCalibrationRenewal");
+        // The recovery checkpoint has reconciled prior tools before this
+        // safe provider-step boundary. A bounded compaction can consume up to
+        // five *separate* 120s model attempts; the normal 30s lead is too
+        // short and in campaign 06 the first attempt crossed the 15m lease.
+        // Only genuine exact-tier native renewal can extend that lease.
+        const preparationLeadMs = opts.agentRequestFailureRecovery && opts.compaction
+          ? COMPACTION_POLICY.timeoutMs * COMPACTION_POLICY.maxModelAttemptsPerPreparation +
+              AGENT_CALIBRATION_RENEWAL_LEAD_MS
+          : AGENT_CALIBRATION_RENEWAL_LEAD_MS;
         if (current && !current.overrides.workingContext &&
-            agentCalibrationRenewalDue(current.contextCalibration?.expiresAt)) {
+            agentCalibrationRenewalDue(current.contextCalibration?.expiresAt,
+              Date.now(), preparationLeadMs)) {
           const refreshed = await renewAgentCalibrationAtBoundary(opts.selfHostedInference,
             current.id, activeAutomaticProof, opts.abortSignal ?? new AbortController().signal,
-            inferenceScope.isCurrent);
+            inferenceScope.isCurrent, undefined, preparationLeadMs);
+          // Provider recovery may renew its calibration, never silently
+          // substitute a different native-tool proof inside the same run.
+          if (opts.agentRequestFailureRecovery && refreshed.proof.id !== activeAutomaticProof.id)
+            throw new ContextBudgetError("agent-tool-proof-stale",
+              "Agent provider recovery cannot change its captured native-tool proof.");
           updateModelAgentTrust(baseModel, refreshed.state, refreshed.proof);
           opts.selfHostedInference = refreshed.state;
           activeAutomaticProof = structuredClone(refreshed.proof);
