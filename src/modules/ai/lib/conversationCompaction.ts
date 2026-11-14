@@ -36,6 +36,7 @@ import {
   type MemorySourceLocator,
   type MemoryView,
   type MemoryRevision,
+  type MemoryClaim,
 } from "@/modules/ai/lib/conversationMemory";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import {
@@ -553,7 +554,12 @@ export async function createConversationCompactor(options: {
         ? await options.extractionRoute()
         : { model: options.model, limits: options.limits };
       check();
-      const batch = summarize(route);
+      let batch = summarize(route);
+      // A timed-out *first* extraction has produced no durable memory or
+      // measured output. Permit one smaller, dependency-closed source prefix
+      // after its provider request has settled. Never reset an active batch's
+      // completed chunk/token allowance or restart a partially committed CAS.
+      let timeoutRetryUsed = false;
       options.onStep?.("Preparing conversation context...");
       try {
         for (;;) {
@@ -585,6 +591,12 @@ export async function createConversationCompactor(options: {
           let end = start;
           let selected: ExtractionSource[] = [];
           let locators: MemorySourceLocator[] = [];
+          const prefixes: Array<{
+            end: number;
+            sources: ExtractionSource[];
+            locators: MemorySourceLocator[];
+            modelSources: number;
+          }> = [];
           const outputAllowance = Math.min(1024, resolveContextBudget(extractionLimits).output);
           const sourceAllowance = Math.max(1, Math.floor(outputAllowance / COMPACTION_POLICY.claimAllowanceTokens));
           for (const group of current.groups.filter(
@@ -665,15 +677,58 @@ export async function createConversationCompactor(options: {
             end = group.end;
             selected = sources;
             locators = proposed;
+            prefixes.push({
+              end, sources, locators: proposed,
+              modelSources: sources.filter(source => source.role !== "user" && source.role !== "system").length,
+            });
           }
           if (end === start)
             throw new CompactionError(
               "source-budget",
               "The next intact original-message/tool group or retained memory exceeds the extraction bound. Choose a larger verified context or a new conversation; no source was truncated.",
             );
-          const claims = selected.length
-            ? await batch.extract(selected, prior)
-            : prior;
+          let claims: MemoryClaim[];
+          try {
+            claims = selected.length ? await batch.extract(selected, prior) : prior;
+          } catch (error) {
+            const modelSources = selected.filter(source => source.role !== "user" && source.role !== "system").length;
+            const smaller = prefixes.filter(prefix => prefix.end < end &&
+              prefix.modelSources > 0 && prefix.modelSources < modelSources);
+            const half = Math.floor(modelSources / 2);
+            const withinHalf = smaller.filter(item => item.modelSources <= half);
+            const prefix = withinHalf[withinHalf.length - 1] ?? smaller[0];
+            if (!(error instanceof CompactionError) || error.code !== "compaction-timeout" ||
+              timeoutRetryUsed || published !== 0 || batch.snapshot().chunks !== 0 ||
+              batch.snapshot().generatedTokens !== 0 || !prefix ||
+              context.remainingCalls() <= 1) throw error;
+            timeoutRetryUsed = true;
+            batch.dispose();
+            // The previous native request and SDK call must both settle before
+            // any new provider dispatch; unknown native effects fail closed.
+            if (!await batch.awaitSettlement()) throw error;
+            check();
+            const latest = await memoryOperation(() => awaitAbortableRead(memory.load(context.owner), options.signal));
+            check();
+            usable(latest);
+            if (latest.revisionId !== captured.revisionId ||
+              !equalJson(latest.preparation, captured.preparation))
+              throw new CompactionError("stale", "The conversation checkpoint changed before bounded preparation retry.");
+            if (activeCheckpoint) {
+              if (!context.validateCheckpoint) throw new CompactionError("stale", "Checkpoint validation is unavailable.");
+              await context.validateCheckpoint(activeCheckpoint);
+              check();
+            }
+            // Reuse validated original evidence, not a fabricated summary or
+            // partial response. Only an intact, strictly smaller prefix may be
+            // committed, with the same protected/recent groups still verbatim.
+            end = prefix.end;
+            selected = prefix.sources;
+            locators = prefix.locators;
+            extractor = undefined;
+            batch = summarize(route);
+            emitPreparationPhase(options.scope, "extraction-timeout-retry");
+            claims = await batch.extract(selected, prior);
+          }
           check();
           batch.assertCurrent();
           const retained: MemorySourceLocator[] = captured.revisionId

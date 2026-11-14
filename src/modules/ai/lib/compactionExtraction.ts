@@ -365,11 +365,14 @@ export function createBoundedExtractor(options: {
   const pendingNative = new Set<string>();
   let pendingModelCalls = 0;
   let disposed = false;
+  const settlementWaiters = new Set<() => void>();
   // A native terminal response can arrive after the batch has timed out and
   // disposed. Retain only the signal-scoped diagnostic join until its actual
   // terminal event/model settlement, never the model, response or deadline.
   const releaseDiagnosticWhenSettled = () => {
-    if (!disposed || pendingModelCalls !== 0 || pendingNative.size !== 0) return;
+    if (pendingModelCalls !== 0 || pendingNative.size !== 0) return;
+    for (const waiter of settlementWaiters) waiter();
+    if (!disposed) return;
     unlinkPreparationSignal(controller.signal);
     detachNativeDiagnosticSignal(controller.signal);
   };
@@ -439,6 +442,24 @@ export function createBoundedExtractor(options: {
     signal: controller.signal,
     assertCurrent: check,
     snapshot: () => ({ calls, chunks, retries, generatedTokens: tokens }),
+    /** Do not dispatch another extraction while the aborted provider/native
+     * request might still be active. An uncooperative transport fails closed. */
+    awaitSettlement: (): Promise<boolean> => {
+      if (pendingModelCalls === 0 && pendingNative.size === 0) return Promise.resolve(true);
+      return new Promise(resolve => {
+        const settled = () => {
+          clearTimeout(timer);
+          settlementWaiters.delete(settled);
+          resolve(true);
+        };
+        const timer = setTimeout(() => {
+          settlementWaiters.delete(settled);
+          resolve(false);
+        }, 5_000);
+        settlementWaiters.add(settled);
+        releaseDiagnosticWhenSettled();
+      });
+    },
     async extract(
       sources: readonly ExtractionSource[],
       prior: readonly MemoryClaim[],

@@ -4,7 +4,8 @@ import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
  * paths, provider bodies, error messages, tool inputs or profile secrets. */
 export type PreparationPhase =
   | "extractor-created" | "extractor-deadline-fired" | "extractor-cancelled"
-  | "extractor-disposed" | "extraction-limits-start" | "extraction-limits-settled"
+  | "extractor-disposed" | "extraction-timeout-retry"
+  | "extraction-limits-start" | "extraction-limits-settled"
   | "extraction-charge-start" | "extraction-charge-settled"
   | "extraction-model-start" | "extraction-model-returned"
   | "extraction-validate-start" | "extraction-validate-completed"

@@ -364,7 +364,7 @@ describe("sealed incident: 120-second extraction-batch deadline, no inference", 
     expect(call).not.toHaveBeenCalled();
   });
 
-  it("9: a timed-out extraction retains all original conversation and tool history", async () => {
+  it("9: an uncooperative timed-out extraction fails closed after the bounded settlement join", async () => {
     vi.useFakeTimers();
     const f = compactionFixture();
     const originals = JSON.stringify(f.originals);
@@ -372,11 +372,12 @@ describe("sealed incident: 120-second extraction-batch deadline, no inference", 
     const compactor = await f.start();
     const pending = compactor.prepare();
     const timedOut = expect(pending).rejects.toMatchObject({ code: "compaction-timeout" });
-    await vi.advanceTimersByTimeAsync(COMPACTION_POLICY.timeoutMs);
+    await vi.advanceTimersByTimeAsync(COMPACTION_POLICY.timeoutMs + 5_000);
     await timedOut;
     expect(JSON.stringify(f.originals)).toBe(originals);
     expect(f.memory.commit).not.toHaveBeenCalled();
     expect(f.view().revision).toBeNull();
+    expect(f.call).toHaveBeenCalledTimes(1);
   });
 
   it("10: a timed-out failed commit never publishes a partial revision", async () => {
