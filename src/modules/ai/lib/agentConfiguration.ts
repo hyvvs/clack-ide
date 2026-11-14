@@ -34,13 +34,26 @@ export async function refreshStaleAutomaticContinuationRuntime(
   retainedRecordId: string | undefined,
   retainedVariant: string | undefined,
   signal?: AbortSignal,
+  providerRecovery = false,
 ): Promise<ProbeSnapshot | null> {
   const now = Date.now();
   const endpoint = state.endpoints.find(e => e.id === profile.endpointId && e.deletedAt == null);
   const runtime = endpoint && contextRuntime(endpoint.id);
   if (!endpoint || !runtime || runtime.at > now ||
-      runtime.configurationRevision !== endpoint.configurationRevision ||
-      now - runtime.at < CONTEXT_CALIBRATION.runtimeMs) return cachedProvider;
+      runtime.configurationRevision !== endpoint.configurationRevision) return cachedProvider;
+  const cachedModel = cachedProvider?.models.find(m => m.id === profile.transportModelId);
+  const metadataFresh = !!cachedProvider && !cachedProvider.stale &&
+    cachedProvider.connected && cachedProvider.observedAt <= now &&
+    now - cachedProvider.observedAt < CONTEXT_CALIBRATION.runtimeMs &&
+    !!cachedModel && ["thinking", "thinkingControls", "thinkingDefault"].every(metric =>
+      contextMetadata({ ...profile, evidence: cachedModel.evidence }, endpoint,
+        metric, now, 300_000) !== undefined);
+  // Native runtime and provider metadata are independently cached. A different
+  // observer may have refreshed only the runtime while a long inference left
+  // the provider metadata old. Neither cache can stand in for the other.
+  if (now - runtime.at < CONTEXT_CALIBRATION.runtimeMs &&
+      (!providerRecovery || metadataFresh))
+    return cachedProvider;
 
   const fail = (): never => { throw new Error("Automatic Agent runtime identity could not be reverified. No inference was sent."); };
   signal?.throwIfAborted();
@@ -53,8 +66,16 @@ export async function refreshStaleAutomaticContinuationRuntime(
     ? records.find(r => r?.id === retainedRecordId)
     : records.length === 1 ? records[0] : undefined;
   if (!record) throw new Error("Automatic Agent runtime identity could not be reverified. No inference was sent.");
+  const cacheFresh = !!cachedProvider && !cachedProvider.stale &&
+    cachedProvider.observedAt <= now &&
+    now - cachedProvider.observedAt < CONTEXT_CALIBRATION.runtimeMs;
   const snapshotModel = cachedProvider?.models.find(m => m.id === profile.transportModelId);
-  const recentReasoning = snapshotModel &&
+  // An actual 180-second provider stream-idle timeout necessarily outlives the
+  // 30-second native metadata observation. Do not mistake its OLD cache for
+  // current authority, or require it to be fresh before a new observation.
+  // The bounded native inspection and fresh provider probe below must prove
+  // the exact original epoch, digest, context and reasoning before admission.
+  const recentReasoning = cacheFresh && snapshotModel &&
     contextReasoningIdentity({ ...profile, evidence: snapshotModel.evidence }, endpoint, now);
   if (!record.proof || record.proof.at > now || record.proof.expiresAt <= now ||
       (retainedVariant && JSON.stringify(record.configuration ?? null) !== retainedVariant) ||
@@ -74,7 +95,7 @@ export async function refreshStaleAutomaticContinuationRuntime(
       record.scope.backend !== "ollama" ||
       record.scope.runtimeEpoch !== runtime.epoch ||
       record.scope.providerVersion !== runtime.version ||
-      record.scope.reasoning !== recentReasoning ||
+      (cacheFresh && record.scope.reasoning !== recentReasoning) ||
       record.scope.protocol !== TOOL_VERIFICATION.protocol ||
       calibration.scope.endpointId !== endpoint.id ||
       calibration.scope.configurationRevision !== endpoint.configurationRevision ||
@@ -84,15 +105,14 @@ export async function refreshStaleAutomaticContinuationRuntime(
       calibration.scope.backend !== "ollama" ||
       calibration.scope.runtimeEpoch !== runtime.epoch ||
       calibration.scope.providerVersion !== runtime.version ||
-      calibration.scope.reasoning !== recentReasoning ||
-      !cachedProvider || !cachedProvider.connected || cachedProvider.stale ||
-      cachedProvider.backend !== "ollama" ||
-      cachedProvider.endpointId !== endpoint.id ||
-      cachedProvider.configurationRevision !== endpoint.configurationRevision ||
-      cachedProvider.selectedModelId !== profile.transportModelId ||
-      cachedProvider.observedAt > now || now - cachedProvider.observedAt >= CONTEXT_CALIBRATION.runtimeMs ||
-      snapshotModel?.digest !== profile.modelRevision || snapshotModel.chat === "unsupported" ||
-      contextMetadata({ ...profile, evidence: snapshotModel.evidence }, endpoint, "loadedContext", now) !== record.context) fail();
+      (cacheFresh && calibration.scope.reasoning !== recentReasoning) ||
+      (cacheFresh && (!cachedProvider!.connected ||
+        cachedProvider!.backend !== "ollama" ||
+        cachedProvider!.endpointId !== endpoint.id ||
+        cachedProvider!.configurationRevision !== endpoint.configurationRevision ||
+        cachedProvider!.selectedModelId !== profile.transportModelId ||
+        snapshotModel?.digest !== profile.modelRevision || snapshotModel.chat === "unsupported" ||
+        contextMetadata({ ...profile, evidence: snapshotModel.evidence }, endpoint, "loadedContext", now) !== record.context))) fail();
 
   // Native inspection and a genuinely new provider probe are both bounded.
   // No retries, native-tool verifier or context calibrator are invoked.
@@ -131,6 +151,8 @@ export async function refreshStaleAutomaticContinuationRuntime(
         refreshed.selectedModelId !== profile.transportModelId ||
         refreshed.observedAt < now || refreshed.observedAt > Date.now() ||
         selected?.digest !== profile.modelRevision || selected?.chat === "unsupported" ||
+        contextReasoningIdentity({ ...profile, evidence: selected?.evidence ?? [] }, endpoint) !== record.scope.reasoning ||
+        contextReasoningIdentity({ ...profile, evidence: selected?.evidence ?? [] }, endpoint) !== calibration?.scope.reasoning ||
         (selected && contextMetadata({ ...profile, evidence: selected.evidence }, endpoint, "loadedContext") !== record.context) ||
         snapshotContext(state, profile, refreshed) === undefined) fail();
     const eligibility = agentContinuationReasoningMetadata(state, profile, refreshed);
@@ -189,7 +211,8 @@ export function agentContinuationReasoningMetadata(
   // verified under the standard native-tool validators (including scope,
   // epoch, negative observations, context, proof TTL and confirmation).
   const capturedProofStillEligible = freshProfile &&
-    [freshProfile.toolVerification, ...(freshProfile.agentToolConfigurations ?? [])]
+    [freshProfile.toolVerification, ...(freshProfile.agentToolTierProofs ?? []),
+      ...(freshProfile.agentToolConfigurations ?? [])]
       .some(record => record?.status === "verified" &&
         capturedReasoningConsistent(record) &&
         (!record.configuration || (!!record.confirmation && record.confirmation.at <= now && record.confirmation.expiresAt > now)) &&

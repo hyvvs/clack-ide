@@ -7,6 +7,14 @@ import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import { InferenceTransportError } from "@/modules/ai/lib/inferenceErrors";
 import { gateInferenceTools } from "@/modules/ai/lib/inferenceToolGate";
 import { createRunBudget } from "@/modules/ai/lib/runBudget";
+import { ollamaEffortFixture } from "@/modules/ai/lib/reasoningEffort.fixture";
+import { runContextCalibration } from "@/modules/ai/lib/contextCalibration";
+import { rememberContextRuntime, forgetContextRuntime } from "@/modules/ai/lib/contextCalibrationTrust";
+import { profileEvidence, readSelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import { automaticAgentRecommendation, applyAgentRecommendation } from "@/modules/ai/lib/agentConfiguration";
+import { runToolVerification } from "@/modules/ai/lib/toolVerification";
+import { selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
+import { profileSnapshot } from "@/modules/ai/lib/modelOnboarding";
 import type {
   LanguageModelV3,
   LanguageModelV3StreamPart,
@@ -33,6 +41,12 @@ const { disk, invoke, history, runAgentStream, files, directories, mutations } =
   }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@/modules/ai/lib/agent", () => ({ runAgentStream }));
+// The fixture has already passed real, deterministic context calibration;
+// transport must not trigger native qualification traffic during this test.
+vi.mock("@/modules/ai/lib/contextCalibrationRuntime", async (original) => ({
+  ...(await original<typeof import("@/modules/ai/lib/contextCalibrationRuntime")>()),
+  ensureSelectedContext: vi.fn(async (state) => state),
+}));
 vi.mock("@/modules/ai/lib/customToolExecution", () => ({
   executionHistory: history,
 }));
@@ -450,9 +464,131 @@ afterEach(async () => {
     activeSessionId: null,
     runtimeBySession: {},
   });
+  forgetContextRuntime("server");
 });
 
 describe("Track R same-logical-Agent request-failure recovery (real Chat and transport)", () => {
+  it("campaign04: real verified Automatic proof survives 12 effects, timeout, checkpoint and one resumed provider segment", async () => {
+    const f = ollamaEffortFixture([false, "low", "medium", "high", "max"]);
+    const digest = "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1";
+    let state = f.state;
+    state.profiles[0].modelRevision = digest;
+    const controller = new AbortController();
+    let loaded = 0;
+    let requested = 0;
+    const inspect = async () => rememberContextRuntime(f.endpoint.id, {
+      epoch: "campaign04-native-process", version: "0.40.11",
+      configurationRevision: f.endpoint.configurationRevision, at: Date.now(),
+    });
+    const refresh = async () => {
+      const profile = state.profiles[0];
+      profile.evidence = Object.entries({
+        thinking: true, thinkingControls: '[false,"low","medium","high","max"]',
+        thinkingDefault: "high", trainedForTools: true,
+        runtimeContext: "per-request", advertisedContext: 262144,
+        loaded: loaded > 0, ...(requested ? { requestedContext: requested } : {}),
+        ...(loaded ? { loadedContext: loaded, runtimeAllocation: JSON.stringify([digest, loaded]) } : {}),
+      }).map(([metric, value]) => profileEvidence(state, profile.id, `probe.${metric}`,
+        value, metric === "requestedContext" ? "measured" : "backend-reported",
+        Date.now(), metric === "requestedContext" ? "observed" : "reported"));
+      state.inventories = [{ endpointId: f.endpoint.id,
+        configurationRevision: f.endpoint.configurationRevision, observedAt: Date.now(),
+        connected: true, backend: "ollama", models: [{ id: profile.transportModelId,
+          chat: "supported", name: null, digest }] }];
+      const snapshot = profileSnapshot(state, profile);
+      if (!snapshot) throw new Error("Expected calibrated native fixture snapshot");
+      return { state, snapshot };
+    };
+    const commit = async (change: (value: typeof state) => typeof state) => {
+      state = readSelfHostedState(structuredClone(change(state)));
+      return state;
+    };
+    await runContextCalibration({ state, profileId: f.profile.id, signal: controller.signal, ceiling: 32768 }, {
+      refresh, inspectRuntime: inspect, clock: Date.now, commit,
+      request: async (context) => {
+        requested = loaded = context;
+        return { finish: "stop" };
+      },
+    });
+    expect(state.profiles[0].contextCalibration?.highest).toBe(32768);
+    expect(state.profiles[0].toolVerification).toBeUndefined();
+    const initialCaptured = structuredClone(state);
+    const id = selfHostedSelectionId(state.profiles[0]);
+    usePreferencesStore.setState({ selfHostedInference: initialCaptured });
+    useChatStore.setState(current => ({
+      sessions: current.sessions.map(session => session.id !== sessionId ? session : {
+        ...session, profile: { ...session.profile!, modelId: id },
+        run: { ...session.run!, modelId: id, providerId: "ollama",
+          transportModelId: f.profile.transportModelId, endpointBaseURL: f.endpoint.baseURL,
+          selfHosted: f.identity.selfHosted, reasoning: { choice: "automatic" } as NonNullable<typeof session.run>["reasoning"] },
+      }),
+    }));
+    const previous = runAgentStream.getMockImplementation();
+    if (!previous) throw new Error("Native test Agent mock unavailable");
+    let admissibleCount = 0;
+    runAgentStream.mockImplementation(async (options: RunAgentOptions) => {
+      if (!options.agentRequestFailureRecovery) {
+        expect(options.selfHostedInference?.profiles[0].toolVerification).toBeUndefined();
+        await runToolVerification({ profileId: f.profile.id, signal: controller.signal }, {
+          refresh: async () => state, inspect, commit, context: () => 32768,
+          request: async () => ({
+            calls: [{ name: "get_probe_value", input: { key: "clack-probe-v1", count: 1 } }],
+            text: "", finish: "tool-calls", firstBodyAt: Date.now(), callAt: Date.now(),
+          }),
+        });
+      }
+      // Initial production verifier publishes newly verified native state at
+      // the Agent guard. The recovery must receive that exact same proof, not
+      // the pre-verification captured transport configuration.
+      const source = options.agentRequestFailureRecovery ? options.selfHostedInference! : state;
+      const selected = automaticAgentRecommendation(source, source.profiles[0], 32768);
+      expect(selected?.record.status).toBe("verified");
+      expect(applyAgentRecommendation(source, source.profiles[0], 32768).choice).toBe("automatic");
+      if (options.agentRequestFailureRecovery) {
+        expect(options.logicalContinuation).toBe(true);
+        expect(options.retainedAutomaticRecordId).toBe(selected?.record.id);
+        expect(options.requiredAgentToolSetDigest).toBe("campaign04-schema-revision");
+        expect(options.preventCompletedToolReplay).toBe(true);
+      }
+      admissibleCount++;
+      options.onSelfHostedPrepared?.(state, selected?.record.id,
+        JSON.stringify(selected?.configuration ?? null));
+      if (!options.agentRequestFailureRecovery)
+        options.onAgentToolSetPrepared?.("campaign04-schema-revision");
+      return previous(options);
+    });
+    requests = [
+      { kind: "list", id: "list-c04" },
+      { kind: "todo", id: "todo-c04-a" },
+      ...Array.from({ length: 4 }, (_, i) => ({
+        kind: "mkdir" as const, id: `mkdir-c04-${i}`, path: `${root}/c04-${i}`,
+      })),
+      ...Array.from({ length: 5 }, (_, i) => ({
+        kind: "write" as const, id: `write-c04-${i}`,
+        path: `${root}/c04-0/source-${i}.ts`, content: `export const v = ${i};`,
+      })),
+      { kind: "todo", id: "todo-c04-b" },
+      { kind: "fail", code: "stream-idle-timeout" },
+      { kind: "write", id: "write-post-c04", path: `${root}/c04-0/post.ts`, content: "export const repaired = true;" },
+      { kind: "finish" },
+    ];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Complete one ForgeBoard-shaped Agent mission" });
+    await settle(() => chat.status === "ready" && requestCount === 15);
+    expect(admissibleCount).toBe(2);
+    expect(run().agentRequestRecovery?.attempts).toBe(1);
+    expect(run().agentRequestRecovery?.phase).toBe("finished");
+    expect(run().agentRequestRecovery?.checkpoint?.toolReceipts).toHaveLength(12);
+    expect(run().budget?.continuationCount).toBe(0);
+    expect(run().budget?.totalSteps).toBeGreaterThanOrEqual(12);
+    expect(mutations).toHaveLength(10);
+    expect(new Set(mutations).size).toBe(mutations.length);
+    expect(state.profiles[0].toolVerification?.id).toBeTruthy();
+    expect(initialCaptured.profiles[0].toolVerification).toBeUndefined();
+    useChatStore.getState().finishRun(sessionId, "completed");
+    expect(run().state).toBe("completed");
+  });
+
   it("reproduces the production 12th-request timeout after 11 native tools, then safely resumes the same mission", async () => {
     const previous: Array<Extract<FixtureRequest, { id: string }>> = [
       { kind: "list", id: "list-1" },

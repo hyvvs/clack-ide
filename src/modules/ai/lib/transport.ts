@@ -199,7 +199,7 @@ export function createContextAwareTransport(deps: Deps) {
     | undefined;
   // Ephemeral, run-scoped evidence accepted by the production Agent guard.
   // Never replace captured settings/credentials or persist this across restart.
-  let preparedHosted: { runId: string; modelId: string; state: SelfHostedState; recordId?: string; variant?: string } | undefined;
+  let preparedHosted: { runId: string; modelId: string; state: SelfHostedState; recordId?: string; variant?: string; toolDigest?: string } | undefined;
   const run = async (
     options: SendOptions,
     activity?: ActivityStreamContext,
@@ -247,6 +247,55 @@ export function createContextAwareTransport(deps: Deps) {
     let hostedState = recovery
       ? captured?.configuration.selfHostedInference
       : deps.getSelfHostedInference?.();
+    const managedOllamaRecovery = agentRequestFailureRecovery &&
+      captured?.configuration.capturedModelIdentity?.providerId === "ollama" &&
+      !!captured.configuration.capturedModelIdentity.selfHosted &&
+      (!captured.configuration.reasoning ||
+        captured.configuration.reasoning.choice === "automatic");
+    const capturedModelId = captured?.configuration.modelId;
+    const initialHostedSelection = managedOllamaRecovery && hostedState && capturedModelId
+      ? resolveSelfHostedSelection(hostedState, capturedModelId) : undefined;
+    const selfHostedRecovery = agentRequestFailureRecovery &&
+      !!managedOllamaRecovery;
+    if (selfHostedRecovery &&
+        (initialHostedSelection?.status !== "available" ||
+          endpointBackend(initialHostedSelection.endpoint) !== "ollama" ||
+          deps.getModelId() !== capturedModelId))
+      throw new Error("The selected Automatic Agent Ollama route changed before provider recovery.");
+    if (selfHostedRecovery && hostedState) {
+      // The first provider segment can verify native tools AFTER its immutable
+      // request configuration was captured. Recover from the same-run proof
+      // accepted by the production Agent guard, not that pre-verification copy.
+      // Never transfer a proof to another route, model or changed override.
+      const original = resolveSelfHostedSelection(hostedState, deps.getModelId());
+      const prepared = preparedHosted;
+      const retained = prepared && prepared.runId === scope?.runId &&
+        prepared.modelId === captured?.configuration.modelId &&
+        prepared.recordId
+        ? resolveSelfHostedSelection(prepared.state, prepared.modelId)
+        : undefined;
+      if (original.status !== "available" || !retained || retained.status !== "available" ||
+          original.profile.id !== retained.profile.id ||
+          original.profile.transportModelId !== retained.profile.transportModelId ||
+          original.profile.modelRevision !== retained.profile.modelRevision ||
+          original.profile.deploymentId !== retained.profile.deploymentId ||
+          JSON.stringify(original.profile.overrides) !== JSON.stringify(retained.profile.overrides) ||
+          original.endpoint.id !== retained.endpoint.id ||
+          original.endpoint.configurationRevision !== retained.endpoint.configurationRevision ||
+          original.endpoint.baseURL !== retained.endpoint.baseURL ||
+          original.endpoint.allowPrivateNetwork !== retained.endpoint.allowPrivateNetwork ||
+          JSON.stringify(original.endpoint.credentialRef) !== JSON.stringify(retained.endpoint.credentialRef) ||
+          JSON.stringify(original.endpoint.ssh ?? null) !== JSON.stringify(retained.endpoint.ssh ?? null) ||
+          original.endpoint.transportSecurity !== retained.endpoint.transportSecurity ||
+          original.endpoint.backendHint !== retained.endpoint.backendHint ||
+          original.endpoint.detectedBackend !== retained.endpoint.detectedBackend ||
+          endpointBackend(original.endpoint) !== endpointBackend(retained.endpoint) ||
+          !prepared)
+        throw new Error("The verified Automatic Agent configuration changed before provider recovery.");
+      hostedState = prepared.state;
+      if (!prepared.toolDigest)
+        throw new Error("The accepted Automatic Agent tool schema is unavailable for provider recovery.");
+    }
     if (!recovery && !batch.isLogicalContinuation && hostedState) {
       const target = resolveSelfHostedSelection(hostedState, deps.getModelId());
       if (target.status === "available" && !target.profile.overrides.workingContext && endpointBackend(target.endpoint) === "ollama") {
@@ -285,7 +334,9 @@ export function createContextAwareTransport(deps: Deps) {
       : deps.getCapturedModelIdentity?.();
     const configuration =
       recovery && captured
-        ? captured.configuration
+        ? selfHostedRecovery && hostedState
+          ? { ...captured.configuration, selfHostedInference: hostedState }
+          : captured.configuration
         : structuredClone({
             keys: deps.getKeys(),
             modelId: deps.getModelId(),
@@ -415,7 +466,10 @@ export function createContextAwareTransport(deps: Deps) {
             if (scope?.isCurrent() !== false) deps.onFinishMeta?.(value);
           },
           projectMemory,
-          logicalContinuation: batch.isLogicalContinuation,
+          // A provider timeout resumes the SAME logical Agent run even when
+          // no ordinary continuation prompt or budget increment was scheduled.
+          // Its original native proof must undergo normal continuation checks.
+          logicalContinuation: batch.isLogicalContinuation || selfHostedRecovery,
           retainedAutomaticRecordId: (batch.isLogicalContinuation || agentRequestFailureRecovery) && preparedHosted?.runId === scope?.runId &&
             preparedHosted?.modelId === configuration.modelId ? preparedHosted?.recordId : undefined,
           retainedAutomaticVariant: (batch.isLogicalContinuation || agentRequestFailureRecovery) && preparedHosted?.runId === scope?.runId &&
@@ -423,7 +477,19 @@ export function createContextAwareTransport(deps: Deps) {
           onSelfHostedPrepared: (state, recordId, variant) => {
             if (!recovery && scope?.isCurrent() !== false && scope?.runId &&
                 configuration.modelId)
-              preparedHosted = { runId: scope.runId, modelId: configuration.modelId, state, recordId, variant };
+              preparedHosted = { runId: scope.runId, modelId: configuration.modelId, state, recordId, variant,
+                ...(preparedHosted?.runId === scope.runId &&
+                  preparedHosted.modelId === configuration.modelId && preparedHosted.toolDigest
+                    ? { toolDigest: preparedHosted.toolDigest } : {}) };
+          },
+          requiredAgentToolSetDigest: selfHostedRecovery ? preparedHosted?.toolDigest : undefined,
+          onAgentToolSetPrepared: digest => {
+            if (recovery || scope?.isCurrent() === false || !scope?.runId ||
+                preparedHosted?.runId !== scope.runId ||
+                preparedHosted.modelId !== configuration.modelId) return;
+            if (preparedHosted.toolDigest && preparedHosted.toolDigest !== digest)
+              throw new Error("Automatic Agent callable tool schema changed during the logical run.");
+            preparedHosted = { ...preparedHosted, toolDigest: digest };
           },
           abortSignal: options.abortSignal,
           ...configuration,

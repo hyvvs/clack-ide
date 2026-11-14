@@ -14,6 +14,9 @@ import { selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
 import { profileEvidence, readSelfHostedState, setProfileOverride } from "@/modules/ai/lib/selfHostedProfiles";
 import { forgetContextRuntime, rememberContextRuntime } from "@/modules/ai/lib/contextCalibrationTrust";
 import type { ToolContext } from "@/modules/ai/tools/context";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+
+const { schemaRevision } = vi.hoisted(() => ({ schemaRevision: { value: "original-native-read-tool" } }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -22,8 +25,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@/modules/ai/tools/customExecution", async () => {
   const { tool } = await import("ai");
   const { z } = await import("zod");
-  const read = tool({ description: "Read fixture", inputSchema: z.object({ path: z.string() }) });
-  return { buildRuntimeTools: async () => ({ read_file: read }) };
+  return { buildRuntimeTools: async () => ({
+    read_file: tool({ description: schemaRevision.value, inputSchema: z.object({ path: z.string() }) }),
+  }) };
 });
 
 describe("R5da native runtime observation refresh at the Automatic continuation boundary", () => {
@@ -58,6 +62,139 @@ describe("R5da native runtime observation refresh at the Automatic continuation 
     expect(JSON.stringify(original(f))).toBe(proof);
     expect(JSON.stringify(f.captured.profiles[0].contextCalibration)).toBe(calibration);
   });
+  it("campaign04: a real 180-second idle ages only the provider cache; matching fresh native reinspection keeps the same proof", async () => {
+    const f = await fixture(128, false, 0);
+    const proof = JSON.stringify(original(f));
+    const calibration = JSON.stringify(f.captured.profiles[0].contextCalibration);
+    // A different consumer can refresh native runtime while the old provider
+    // cache remains older than the failed 180-second inference. There is no
+    // new model generation or fabricated proof in this deterministic test.
+    await f.staleRuntime(180_000);
+    let refreshed = false;
+    f.transformSnapshot((snapshot, command) => {
+      if (command === "self_hosted_probe_cache" && !refreshed)
+        return { ...snapshot, stale: true, observedAt: Date.now() - 180_000 };
+      if (command === "self_hosted_probe") refreshed = true;
+      return snapshot;
+    });
+    const result = await continueOriginal(f);
+    expect(result.some(chunk => chunk.type === "error")).toBe(false);
+    expect(f.inspectionCount()).toBe(1);
+    expect(f.decisions).toEqual([true]);
+    expect(f.bodies).toHaveLength(1);
+    expect(JSON.stringify(original(f))).toBe(proof);
+    expect(JSON.stringify(f.captured.profiles[0].contextCalibration)).toBe(calibration);
+  });
+  it("campaign04: provider recovery refreshes stale metadata even if another observer refreshed native runtime", async () => {
+    const f = await fixture(128, false, 0);
+    const record = original(f);
+    const proof = JSON.stringify(record);
+    let toolDigest: string | undefined;
+    const originalSegment = await f.run({ onAgentToolSetPrepared: value => { toolDigest = value; } });
+    expect(originalSegment.some(part => part.type === "error")).toBe(false);
+    expect(toolDigest).toMatch(/^[a-f0-9]{64}$/);
+    await f.staleRuntime(180_000);
+    // Native runtime is now fresh, but provider cache is the old 180s sample.
+    await f.advance(0);
+    let refreshed = false;
+    f.transformSnapshot((snapshot, command) => {
+      if (command === "self_hosted_probe_cache" && !refreshed)
+        return { ...snapshot, stale: true, observedAt: Date.now() - 180_000 };
+      if (command === "self_hosted_probe") refreshed = true;
+      return snapshot;
+    });
+    const resumed = await f.run({ agentRequestFailureRecovery: true,
+      requiredAgentToolSetDigest: toolDigest,
+      retainedAutomaticRecordId: record.id,
+      retainedAutomaticVariant: JSON.stringify(record.configuration ?? null),
+    });
+    expect(resumed.some(part => part.type === "error")).toBe(false);
+    expect(refreshed).toBe(true);
+    expect(f.inspectionCount()).toBe(1);
+    expect(f.decisions).toEqual([true, true]);
+    expect(f.bodies).toHaveLength(2);
+    expect(JSON.stringify(original(f))).toBe(proof);
+  });
+  it("campaign04: changed callable tool schema is rejected before recovery native request", async () => {
+    const f = await fixture(128, false, 0);
+    const native = f.captured.profiles[0].toolVerification;
+    if (!native) throw new Error("Expected exact-tier native proof");
+    let originalDigest: string | undefined;
+    const initial = await f.run({ onAgentToolSetPrepared: digest => { originalDigest = digest; } });
+    expect(initial.some(chunk => chunk.type === "error")).toBe(false);
+    expect(originalDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(f.bodies).toHaveLength(1);
+    schemaRevision.value = "changed-native-tool-schema";
+    await expect(f.run({ agentRequestFailureRecovery: true,
+      retainedAutomaticRecordId: native.id,
+      retainedAutomaticVariant: JSON.stringify(native.configuration ?? null),
+      requiredAgentToolSetDigest: originalDigest,
+    })).rejects.toThrow(/callable tool schema changed/);
+    expect(f.bodies).toHaveLength(1);
+  });
+  it("campaign04: changed permission authority after schema selection is denied at native ACK", async () => {
+    const f = await fixture(128, false, 0);
+    const native = f.captured.profiles[0].toolVerification;
+    if (!native) throw new Error("Expected exact-tier native proof");
+    let digest: string | undefined;
+    await f.run({ onAgentToolSetPrepared: value => { digest = value; } });
+    expect(digest).toMatch(/^[a-f0-9]{64}$/);
+    const original = usePreferencesStore.getState().agentPermissionProfiles;
+    f.beforeAck(() => {
+      usePreferencesStore.setState({
+        agentPermissionProfiles: {
+          ...original,
+          "builtin:coder": { mode: "chat-only", categories: {} },
+        },
+      });
+    });
+    try {
+      const chunks = await f.run({ agentRequestFailureRecovery: true,
+        retainedAutomaticRecordId: native.id,
+        retainedAutomaticVariant: JSON.stringify(native.configuration ?? null),
+        requiredAgentToolSetDigest: digest,
+      });
+      expect(chunks.some(chunk => chunk.type === "error")).toBe(true);
+      expect(f.decisions[f.decisions.length - 1]).toBe(false);
+      expect(f.bodies).toHaveLength(1);
+    } finally {
+      usePreferencesStore.setState({ agentPermissionProfiles: original });
+    }
+  });
+  it.each(["digest", "epoch", "reasoning", "revoked-proof", "lost-proof"] as const)(
+    "campaign04: stale provider cache cannot authorize changed %s", async field => {
+      const f = await fixture(128, false, 0);
+      await f.staleRuntime(180_000);
+      let refreshed = false;
+      f.transformSnapshot((snapshot, command) => {
+        if (command === "self_hosted_probe_cache" && !refreshed)
+          return { ...snapshot, stale: true, observedAt: Date.now() - 180_000 };
+        if (command === "self_hosted_probe") refreshed = true;
+        if (field === "digest" && command === "self_hosted_probe")
+          return { ...snapshot, models: snapshot.models.map(model => ({
+            ...model, digest: "other-native-digest",
+          })) };
+        if (field === "reasoning" && command === "self_hosted_probe")
+          return { ...snapshot, models: snapshot.models.map(model => ({
+            ...model, evidence: model.evidence.map(entry =>
+              entry.metric === "probe.thinkingDefault" ? { ...entry, value: false } : entry),
+          })) };
+        return snapshot;
+      });
+      if (field === "epoch") f.nativeEpoch("different-process");
+      if (field === "revoked-proof") {
+        const record = f.profile().toolVerification;
+        if (!record) throw new Error("Missing native proof");
+        record.failure = { at: Date.now(), expiresAt: Date.now() + 60_000, outcome: "text-only" };
+      }
+      if (field === "lost-proof") f.profile().toolVerification = undefined;
+      if (field === "revoked-proof" || field === "lost-proof") {
+        const chunks = await continueOriginal(f);
+        expect(chunks.some(chunk => chunk.type === "error")).toBe(true);
+      } else await expect(continueOriginal(f)).rejects.toThrow();
+      expect(f.bodies).toHaveLength(0);
+    },
+  );
   it("3. changed full native model digest blocks before HTTP", async () => {
     const f = await fixture(128, false, 0);
     await f.staleRuntime();
@@ -335,6 +472,7 @@ async function fixture(outputAllowance = 2048, alternative = false, ageMs = 1940
 }
 
 beforeEach(() => {
+  schemaRevision.value = "original-native-read-tool";
   vi.stubGlobal("fetch", vi.fn(() => { throw new Error("Network forbidden in R5y review"); }));
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });

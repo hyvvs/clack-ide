@@ -5,6 +5,7 @@ import {
   streamText,
   type LanguageModel,
   type ModelMessage,
+  type ToolSet,
   type UIMessage,
 } from "ai";
 import {
@@ -57,6 +58,7 @@ import { runRetrievalAllowance } from "@/modules/ai/lib/retrievalAllowance";
 import {
   loadTargetContext,
   targetContextKey,
+  contextDigest,
 } from "@/modules/ai/lib/targetContext";
 import type { ModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -80,6 +82,7 @@ import {
   modelBudgetLimits,
   setModelSchemaDiagnostics,
   updateModelAgentTrust,
+  serializedToolSchemas,
   type OllamaRouteDecision,
 } from "@/modules/ai/lib/requestPreflight";
 import {
@@ -761,6 +764,17 @@ const EMPTY_USAGE: AgentUsage = {
   cachedInputTokens: 0,
 };
 
+/** Exact callable native schema and implementation-revision identity. This is
+ * a short in-memory SHA only, never tool contents or a new permission grant. */
+async function agentRecoveryToolDigest(tools: ToolSet): Promise<string> {
+  const schemas = (await serializedToolSchemas(tools)).sort((a, b) =>
+    a.function.name.localeCompare(b.function.name));
+  return contextDigest({ policy: "agent-recovery-tools-v1", tools: schemas.map(schema => [
+    schema,
+    toolRevisionIdentity(tools[schema.function.name]) ?? { builtin: schema.function.name },
+  ]) });
+}
+
 export type RunAgentOptions = {
   validateRouting?: () => Promise<void>;
   mandatoryTools?: string[];
@@ -817,6 +831,9 @@ export type RunAgentOptions = {
   agentRequestFailureRecovery?: boolean;
   preventCompletedToolReplay?: boolean;
   onSelfHostedPrepared?: (state: SelfHostedState, recordId?: string, variant?: string) => void;
+  /** Only the already verified same-run Agent native-tool schema signature. */
+  requiredAgentToolSetDigest?: string;
+  onAgentToolSetPrepared?: (digest: string) => void;
   uiMessages: UIMessage[];
   toolSelectionMessages?: UIMessage[];
   abortSignal?: AbortSignal;
@@ -860,7 +877,8 @@ export async function runAgentStream(opts: RunAgentOptions) {
           allowPrivateNetwork: endpointAllowsPrivate(target.endpoint),
         }).catch(() => null);
         current = await refreshStaleAutomaticContinuationRuntime(eligibility, target.profile, current,
-          opts.retainedAutomaticRecordId, opts.retainedAutomaticVariant, opts.abortSignal);
+          opts.retainedAutomaticRecordId, opts.retainedAutomaticVariant, opts.abortSignal,
+          opts.agentRequestFailureRecovery === true);
         eligibility = agentContinuationReasoningMetadata(eligibility, target.profile, current);
       }
       const eligibleProfile = eligibility.profiles.find(p => p.id === target.profile.id) ?? target.profile;
@@ -1011,6 +1029,14 @@ export async function runAgentStream(opts: RunAgentOptions) {
   const permittedTools = opts.mandatoryTools
     ? Object.fromEntries(Object.entries(availableTools).filter(([name]) => opts.mandatoryTools?.includes(name)))
     : availableTools;
+  if (activeAutomaticProof) {
+    const toolDigest = await agentRecoveryToolDigest(permittedTools);
+    if (opts.agentRequestFailureRecovery &&
+        (!opts.requiredAgentToolSetDigest || toolDigest !== opts.requiredAgentToolSetDigest))
+      throw new Error("Automatic Agent callable tool schema changed before provider recovery.");
+    if (!opts.agentRequestFailureRecovery)
+      opts.onAgentToolSetPrepared?.(toolDigest);
+  }
   const exposureTarget = {
     modelId,
     provider,
@@ -1196,6 +1222,13 @@ export async function runAgentStream(opts: RunAgentOptions) {
       operations: new Set(previousTools.filter(t => t.state === "output-available" && typeof t.name === "string")
         .map(t => `${t.name}:${canonicalJson(t.input)}`)),
     } : undefined);
+  const recoveryPermissionIdentity = opts.agentRequestFailureRecovery && activeAutomaticProof
+    ? JSON.stringify([usePreferencesStore.getState().agentPermissionProfiles,
+        usePreferencesStore.getState().agentWorkspacePermissions,
+        requestToolContext.getSessionId(), requestToolContext.getAgentId(),
+        requestToolContext.getWorkspaceRoot(), requestToolContext.getWorkspaceId?.(),
+        requestToolContext.getRunId?.(), requestToolContext.getMutationMode?.()])
+    : undefined;
   const preparationBudget = resolveContextBudget(
     await agentLimits(),
     measureRequest({
@@ -1350,6 +1383,22 @@ export async function runAgentStream(opts: RunAgentOptions) {
   inferenceScope.validateEvidence = async () => {
     emitPreparationPhase(inferenceScope, "agent-trust-start");
     await opts.validateRouting?.();
+    if (opts.agentRequestFailureRecovery && activeAutomaticProof) {
+      const currentPermissions = JSON.stringify([usePreferencesStore.getState().agentPermissionProfiles,
+        usePreferencesStore.getState().agentWorkspacePermissions,
+        requestToolContext.getSessionId(), requestToolContext.getAgentId(),
+        requestToolContext.getWorkspaceRoot(), requestToolContext.getWorkspaceId?.(),
+        requestToolContext.getRunId?.(), requestToolContext.getMutationMode?.()]);
+      if (!recoveryPermissionIdentity || currentPermissions !== recoveryPermissionIdentity)
+        throw new Error("Automatic Agent permission or workspace authority changed before recovery dispatch.");
+      const freshTools = await buildTools(requestToolContext);
+      const available = opts.mandatoryTools
+        ? Object.fromEntries(Object.entries(freshTools).filter(([name]) => opts.mandatoryTools?.includes(name)))
+        : freshTools;
+      if (!opts.requiredAgentToolSetDigest ||
+          await agentRecoveryToolDigest(available) !== opts.requiredAgentToolSetDigest)
+        throw new Error("Automatic Agent callable tool schema changed before recovery dispatch.");
+    }
     await preparedContext?.validateEvidence();
     await opts.toolContext.validatePeerReview?.();
     emitPreparationPhase(inferenceScope, "agent-trust-completed");
