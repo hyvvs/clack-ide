@@ -940,6 +940,9 @@ fn main() {
                     shell::shell_identity,
                     shell::shell_session_open,
                     shell::shell_session_run,
+                    // Production Agent provider-failure recovery needs the same
+                    // bounded workspace revision witness as the main Tauri host.
+                    shell::verification::agent_workspace_fingerprint,
                     shell::shell_session_close,
                     shell::shell_run_command,
                     shell::shell_bg_spawn,
@@ -961,6 +964,11 @@ fn main() {
                     memory::conversation_memory_extract_sources,
                     memory::conversation_memory_evidence,
                     memory::conversation_memory_load,
+                    // A completed write is only replay-safe when the original
+                    // native checkpoint handlers are available end to end.
+                    memory::checkpoint::conversation_checkpoint_observe,
+                    memory::checkpoint::conversation_checkpoint_prepare,
+                    memory::checkpoint::conversation_checkpoint_validate,
                     memory::conversation_memory_rebase,
                     memory::conversation_memory_commit,
                     memory::conversation_memory_cancel,

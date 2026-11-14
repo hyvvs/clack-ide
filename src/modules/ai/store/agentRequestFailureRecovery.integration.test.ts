@@ -67,6 +67,7 @@ import { useTodosStore } from "./todoStore";
 type FixtureRequest =
   | { kind: "write"; id: string; path: string; content: string }
   | { kind: "mkdir"; id: string; path: string }
+  | { kind: "list"; id: string }
   | { kind: "todo"; id: string }
   | { kind: "partial-tool"; id: string }
   | { kind: "finish" }
@@ -78,6 +79,7 @@ let requestCount = 0;
 let nativeSettlements: Array<{ phase: string; errorCode?: string }> = [];
 let unavailableRegistry = false;
 let unavailableFingerprint = false;
+let unregisteredFingerprint = false;
 let changePermissionsAtTimeout = false;
 
 const finish = (reason: "tool-calls" | "stop"): LanguageModelV3StreamPart => ({
@@ -89,6 +91,10 @@ const finish = (reason: "tool-calls" | "stop"): LanguageModelV3StreamPart => ({
   },
 });
 function streamParts(request: FixtureRequest): LanguageModelV3StreamPart[] {
+  if (request.kind === "list") return [
+    { type: "tool-call", toolCallId: request.id, toolName: "list_directory", input: JSON.stringify({ path: root }) },
+    finish("tool-calls"),
+  ];
   if (request.kind === "write" || request.kind === "mkdir") {
     const input =
       request.kind === "write"
@@ -238,11 +244,14 @@ beforeEach(() => {
   requests = [];
   unavailableRegistry = false;
   unavailableFingerprint = false;
+  unregisteredFingerprint = false;
   changePermissionsAtTimeout = false;
   history.mockReset().mockResolvedValue([]);
   invoke.mockReset().mockImplementation(async (command, args) => {
     if (command === "shell_identity")
       return { name: "/bin/sh", syntax: "POSIX sh" };
+    if (command === "agent_workspace_fingerprint" && unregisteredFingerprint)
+      throw new Error("Command agent_workspace_fingerprint not found");
     if (command === "agent_workspace_fingerprint" && unavailableFingerprint)
       return {
         revision: null,
@@ -307,6 +316,10 @@ beforeEach(() => {
         },
       };
       const definitions = {
+        list_directory: tool({
+          inputSchema: z.object({ path: z.string() }),
+          execute: async () => ({ entries: [] }),
+        }),
         write_file: tool({
           inputSchema: z.object({ path: z.string(), content: z.string() }),
           execute: async ({ path, content }) => {
@@ -406,7 +419,7 @@ beforeEach(() => {
         ],
         maxRetries: 0,
         tools: guarded,
-        stopWhen: stepCountIs(10),
+        stopWhen: stepCountIs(24),
         onStepFinish: () => {
           finishedSteps++;
           opts.onStepFinished?.();
@@ -440,6 +453,101 @@ afterEach(async () => {
 });
 
 describe("Track R same-logical-Agent request-failure recovery (real Chat and transport)", () => {
+  it("reproduces the production 12th-request timeout after 11 native tools, then safely resumes the same mission", async () => {
+    const previous: Array<Extract<FixtureRequest, { id: string }>> = [
+      { kind: "list", id: "list-1" },
+      { kind: "todo", id: "todo-1" },
+      ...Array.from({ length: 4 }, (_, i) => ({
+        kind: "mkdir" as const, id: `mkdir-${i + 1}`, path: `${root}/dir-${i + 1}`,
+      })),
+      ...Array.from({ length: 5 }, (_, i) => ({
+        kind: "write" as const, id: `write-${i + 1}`,
+        path: `${root}/dir-1/file-${i + 1}.ts`, content: `export const n = ${i + 1};`,
+      })),
+    ];
+    expect(previous).toHaveLength(11);
+    requests = [
+      ...previous,
+      { kind: "fail", code: "stream-idle-timeout" },
+      { kind: "write", id: "write-after-timeout", path: `${root}/dir-1/done.ts`, content: "verified" },
+      { kind: "todo", id: "todo-after-timeout" },
+      { kind: "finish" },
+    ];
+    let releaseHistory: (records: never[]) => void = () => {};
+    history.mockImplementationOnce(() => new Promise((resolve) => { releaseHistory = resolve; }));
+    const authority = agentPermissionAuthoritySnapshot(sessionId, "builtin:coder");
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Implement and test within one persistent Agent mission" });
+    await settle(() => run().agentRequestRecovery?.phase === "preparing" && history.mock.calls.length === 1);
+    expect(requestCount).toBe(12);
+    expect(run().state).toBe("running");
+    expect(run().startedAt).toBe(1);
+    expect(run().agentRequestRecovery?.attempts).toBe(1);
+    expect(run().agentRequestRecovery?.failures).toMatchObject([
+      { kind: "timeout", errorCode: "stream-idle-timeout" },
+    ]);
+    expect(run().agentRequestRecovery?.checkpoint).toBeUndefined();
+    expect(run().budget?.totalSteps).toBeGreaterThanOrEqual(11);
+    expect(run().budget?.continuationCount).toBe(0);
+    expect(run().agentPermissionAuthority).toBe(authority);
+    releaseHistory([]);
+    await settle(() => requestCount === 15 && chat.status === "ready");
+    expect(run().agentRequestRecovery?.attempts).toBe(1);
+    expect(run().agentRequestRecovery?.phase).toBe("finished");
+    expect(nativeSettlements).toEqual([{ phase: "timed-out", errorCode: "stream-idle-timeout" }]);
+    expect(runAgentStream).toHaveBeenCalledTimes(2);
+    const checkpoint = run().agentRequestRecovery?.checkpoint;
+    expect(checkpoint?.runId).toBe(`${sessionId}:1`);
+    expect(checkpoint?.toolReceipts.map(receipt => receipt.id)).toEqual(previous.map(tool => tool.id));
+    expect(checkpoint?.workspaceReceipts).toHaveLength(9);
+    expect(checkpoint?.workspaceRevision).toBeTruthy();
+    const resumed = runAgentStream.mock.calls[1][0] as RunAgentOptions;
+    expect(resumed.agentRequestFailureRecovery).toBe(true);
+    expect(resumed.preventCompletedToolReplay).toBe(true);
+    expect(resumed.uiMessages.flatMap(message => message.parts).filter(part =>
+      part.type.startsWith("tool-") && "state" in part && part.state === "output-available",
+    )).toHaveLength(11);
+    expect(mutations).toEqual([
+      ...Array.from({ length: 4 }, (_, i) => `mkdir:${root}/dir-${i + 1}`),
+      ...Array.from({ length: 5 }, (_, i) => `write:${root}/dir-1/file-${i + 1}.ts`),
+      `write:${root}/dir-1/done.ts`,
+    ]);
+    expect(new Set(mutations).size).toBe(mutations.length);
+    expect(run().budget?.totalSteps).toBeGreaterThanOrEqual(12);
+    expect(run().budget?.hardStepLimit).toBe(240);
+    expect(run().budget?.continuationCount).toBe(0);
+    expect(run().agentPermissionAuthority).toBe(authority);
+    expect(useTodosStore.getState().bySession[sessionId][0].status).toBe("completed");
+    expect(chat.messages.flatMap(message => message.parts).some(part =>
+      part.type === "reasoning" && part.text.includes("partial, not a final answer"),
+    )).toBe(true);
+    await awaitSessionWrites(sessionId);
+    expect(await loadMessages(sessionId)).toEqual(chat.messages);
+    expect(run().budget?.phase).toBe("complete");
+    useChatStore.getState().finishRun(sessionId, "completed");
+    expect(run().state).toBe("completed");
+  });
+
+  it("reproduces the sealed acceptance-host missing command and fails closed after a real timeout admission", async () => {
+    unregisteredFingerprint = true;
+    requests = [
+      { kind: "write", id: "written-before-timeout", path: `${root}/written.ts`, content: "on disk" },
+      { kind: "fail", code: "stream-idle-timeout" },
+    ];
+    const chat = getOrCreateChat(sessionId);
+    await chat.sendMessage({ text: "Create file and continue" });
+    await settle(() => run().state === "failed");
+    expect(requestCount).toBe(2);
+    expect(run().agentRequestRecovery?.attempts).toBe(1);
+    expect(run().agentRequestRecovery?.phase).toBe("preparing");
+    expect(run().agentRequestRecovery?.checkpoint).toBeUndefined();
+    expect(run().agentRequestRecovery?.failures[0]).toMatchObject({
+      errorCode: "stream-idle-timeout", kind: "timeout",
+    });
+    expect(run().error?.message).toContain("Command agent_workspace_fingerprint not found");
+    expect(mutations).toEqual([`write:${root}/written.ts`]);
+  });
+
   it("times out after completed file effects, commits transcript checkpoint, executes ONE new segment and genuinely completes", async () => {
     requests = [
       {
