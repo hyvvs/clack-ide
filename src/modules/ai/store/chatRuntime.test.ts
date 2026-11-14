@@ -377,6 +377,25 @@ describe("durable Agent cancellation initiator", () => {
       source: "provider-timeout", policy: "provider-recovery-120s",
     });
   });
+  it("persists bounded Agent first-output deadline provenance without private data", () => {
+    const scope = seed();
+    scope.onStop?.({
+      source: "provider-timeout", reason: "first-output-timeout",
+      policy: "provider-recovery-120s", operationClass: "automatic-agent-coding",
+      deadlineMs: 120_000, elapsedMs: 120_001, meaningfulOutputObserved: false,
+      abortOrigin: "provider-retry-guard",
+      prompt: "DO_NOT_STORE_THIS_PROMPT",
+    } as never);
+    useChatStore.getState().finishRun(SESSION_ID, "failed");
+    const stop = useChatStore.getState().sessions[0].run?.stop;
+    expect(stop).toMatchObject({
+      source: "provider-timeout", reason: "first-output-timeout",
+      policy: "provider-recovery-120s", operationClass: "automatic-agent-coding",
+      deadlineMs: 120_000, elapsedMs: 120_001, meaningfulOutputObserved: false,
+      abortOrigin: "provider-retry-guard",
+    });
+    expect(JSON.stringify(stop)).not.toContain("DO_NOT_STORE_THIS_PROMPT");
+  });
 });
 
 describe("per-session runtime isolation", () => {

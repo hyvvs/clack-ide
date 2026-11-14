@@ -28,11 +28,21 @@ type ProviderRetryCallbacks = {
 
 type RecoveryOptions = {
   isCurrent?: () => boolean;
-  onDeadline?: () => void;
+  onDeadline?: (boundary: ProviderDeadlineBoundary) => void;
   onDiagnostic?: (event: ProviderRecoveryObservation) => void;
   beforeRetry?: () => Promise<void>;
   delayMs?: number;
   totalMs?: number;
+  /** Only the verified native Agent route may identify this pre-output guard
+   * as a first-output timeout; other provider routes retain their contract. */
+  deadlineErrorCode?: "overall-deadline" | "first-output-timeout";
+  operationClass?: "automatic-agent-coding" | "agent-provider-stream" | "conversation-stream";
+};
+
+export type ProviderDeadlineBoundary = {
+  deadlineMs: number;
+  elapsedMs: number;
+  meaningfulOutputObserved: boolean;
 };
 
 // Optional, content-free lifecycle observation. This is the provider wrapper's
@@ -47,6 +57,13 @@ export type ProviderRecoveryObservation = {
   nativeRequestId?: string;
   /** Last genuinely observed bridge phase; not a TCP/socket assertion. */
   transportStage?: NativeDiagnosticStage;
+  /** Fixed, content-free provenance; progress means parsed model output, not
+   * proof of socket activity or remote generation. */
+  operationClass?: RecoveryOptions["operationClass"];
+  deadlineMs?: number;
+  elapsedMs?: number;
+  meaningfulOutputObserved?: boolean;
+  abortOrigin?: "provider-retry-guard" | "parent-signal";
 } & InferenceDiagnosticControls;
 
 export function retryDelay(
@@ -160,6 +177,11 @@ export function withProviderRetryTracking(
           Math.min(maxRetries, AGENT_PROVIDER_MAX_RETRIES),
         );
         const controller = new AbortController();
+        const started = Date.now();
+        const totalMs = Math.min(
+          options.totalMs ?? PROVIDER_RECOVERY_LIMITS.totalMs,
+          PROVIDER_RECOVERY_LIMITS.totalMs,
+        );
         const generationId = options.onDiagnostic ? crypto.randomUUID() : "";
         let attempts = 0, meaningful = false;
         let nativeRequestId: string | undefined;
@@ -169,7 +191,13 @@ export function withProviderRetryTracking(
           if (!options.onDiagnostic) return;
           try { options.onDiagnostic({ stage, at: Date.now(), attempt: attempts,
             generationId, ...(nativeRequestId ? { nativeRequestId } : {}),
-            ...(transportStage ? { transportStage } : {}), ...wireControls }); }
+            ...(transportStage ? { transportStage } : {}), ...wireControls,
+            ...(options.operationClass ? { operationClass: options.operationClass } : {}),
+            deadlineMs: totalMs, elapsedMs: Math.max(0, Date.now() - started),
+            meaningfulOutputObserved: meaningful,
+            ...(stage === "deadline-fire" ? { abortOrigin: "provider-retry-guard" as const } :
+              stage === "parent-abort-propagated" ? { abortOrigin: "parent-signal" as const } : {}),
+          }); }
           catch { /* diagnostics cannot affect a provider attempt */ }
         };
         const stop = () => {
@@ -183,7 +211,6 @@ export function withProviderRetryTracking(
         params.abortSignal?.addEventListener("abort", stop, { once: true });
         const signal = controller.signal;
         const validation = beginStreamValidation(signal);
-        const started = Date.now();
         let settledObserved = false;
         if (options.onDiagnostic) attachNativeDiagnosticSignal(signal, (stage, id, controls) => {
           nativeRequestId = id;
@@ -196,18 +223,20 @@ export function withProviderRetryTracking(
           if (stage === "native-settled" && settledObserved)
             detachNativeDiagnosticSignal(signal);
         });
-        const totalMs = Math.min(
-          options.totalMs ?? PROVIDER_RECOVERY_LIMITS.totalMs,
-          PROVIDER_RECOVERY_LIMITS.totalMs,
-        );
         let deadlineFired = false;
         const timer = setTimeout(() => {
           if (!signal.aborted) {
             deadlineFired = true;
             observe("deadline-fire");
-            try { options.onDeadline?.(); } catch { /* observer cannot defeat deadline */ }
+            try { options.onDeadline?.({
+              deadlineMs: totalMs,
+              elapsedMs: Math.max(0, Date.now() - started),
+              meaningfulOutputObserved: meaningful,
+            }); } catch { /* observer cannot defeat deadline */ }
           }
-          controller.abort(new InferenceTransportError("overall-deadline"));
+          controller.abort(new InferenceTransportError(
+            options.deadlineErrorCode ?? "overall-deadline",
+          ));
         }, totalMs);
         observe("deadline-start");
         const current = () => {

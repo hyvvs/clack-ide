@@ -84,6 +84,7 @@ type FixtureRequest =
   | { kind: "list"; id: string }
   | { kind: "todo"; id: string }
   | { kind: "partial-tool"; id: string }
+  | { kind: "wait-first-output-120s" }
   | { kind: "finish" }
   | { kind: "fail"; code: string };
 const sessionId = "agent-failure-checkpoint";
@@ -153,7 +154,8 @@ function streamParts(request: FixtureRequest): LanguageModelV3StreamPart[] {
     ];
   }
   if (request.kind === "fail") {
-    if (changePermissionsAtTimeout && request.code === "stream-idle-timeout") {
+    if (changePermissionsAtTimeout &&
+        (request.code === "stream-idle-timeout" || request.code === "first-output-timeout")) {
       const prefs = usePreferencesStore.getState();
       usePreferencesStore.setState({
         agentPermissionProfiles: {
@@ -163,9 +165,14 @@ function streamParts(request: FixtureRequest): LanguageModelV3StreamPart[] {
       });
     }
     nativeSettlements.push({
-      phase: request.code === "stream-idle-timeout" ? "timed-out" : "failed",
+      phase: ["stream-idle-timeout", "first-output-timeout"].includes(request.code)
+        ? "timed-out" : "failed",
       errorCode: request.code,
     });
+    // The native first-output boundary has no accepted headers, model text,
+    // reasoning or tool-call parts from this provider request.
+    if (request.code === "first-output-timeout")
+      return [{ type: "error", error: new InferenceTransportError(request.code) }];
     return [
       { type: "reasoning-start", id: "incomplete" },
       {
@@ -318,6 +325,26 @@ beforeEach(() => {
         doStream: async () => {
           requestCount++;
           const current = requests.shift() ?? { kind: "finish" };
+          if (current.kind === "wait-first-output-120s") {
+            return {
+              // Deterministic no-header/no-model-output native boundary:
+              // this provider segment cannot emit executable tool calls.
+              stream: new ReadableStream<LanguageModelV3StreamPart>({
+                start(controller) {
+                  setTimeout(() => {
+                    nativeSettlements.push({
+                      phase: "timed-out", errorCode: "first-output-timeout",
+                    });
+                    controller.enqueue({
+                      type: "error",
+                      error: new InferenceTransportError("first-output-timeout"),
+                    });
+                    controller.close();
+                  }, 120_000);
+                },
+              }),
+            };
+          }
           return {
             stream: new ReadableStream<LanguageModelV3StreamPart>({
               start(controller) {
@@ -468,7 +495,14 @@ afterEach(async () => {
 });
 
 describe("Track R same-logical-Agent request-failure recovery (real Chat and transport)", () => {
-  it("campaign04: real verified Automatic proof survives 12 effects, timeout, checkpoint and one resumed provider segment", async () => {
+  it.each([
+    { label: "campaign04 stream-idle", code: "stream-idle-timeout", prefix: "c04",
+      mkdirCount: 4, writeCount: 5 },
+    { label: "campaign05 first-output", code: "first-output-timeout", prefix: "c05",
+      mkdirCount: 3, writeCount: 11 },
+  ])("$label: verified Automatic proof, prior effects and one resumed provider segment", async ({
+    code, prefix, mkdirCount, writeCount,
+  }) => {
     const f = ollamaEffortFixture([false, "low", "medium", "high", "max"]);
     const digest = "de878ce33ad81d060001db1469a02eebe4d86f0ad58cfe52dc062fdcbe4464c1";
     let state = f.state;
@@ -557,34 +591,79 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
         options.onAgentToolSetPrepared?.("campaign04-schema-revision");
       return previous(options);
     });
+    const completedTools = 3 + mkdirCount + writeCount;
     requests = [
-      { kind: "list", id: "list-c04" },
-      { kind: "todo", id: "todo-c04-a" },
-      ...Array.from({ length: 4 }, (_, i) => ({
-        kind: "mkdir" as const, id: `mkdir-c04-${i}`, path: `${root}/c04-${i}`,
+      { kind: "list", id: `list-${prefix}` },
+      { kind: "todo", id: `todo-${prefix}-a` },
+      ...Array.from({ length: mkdirCount }, (_, i) => ({
+        kind: "mkdir" as const, id: `mkdir-${prefix}-${i}`, path: `${root}/${prefix}-${i}`,
       })),
-      ...Array.from({ length: 5 }, (_, i) => ({
-        kind: "write" as const, id: `write-c04-${i}`,
-        path: `${root}/c04-0/source-${i}.ts`, content: `export const v = ${i};`,
+      ...Array.from({ length: writeCount }, (_, i) => ({
+        kind: "write" as const, id: `write-${prefix}-${i}`,
+        path: `${root}/${prefix}-0/source-${i}.ts`, content: `export const v = ${i};`,
       })),
-      { kind: "todo", id: "todo-c04-b" },
-      { kind: "fail", code: "stream-idle-timeout" },
-      { kind: "write", id: "write-post-c04", path: `${root}/c04-0/post.ts`, content: "export const repaired = true;" },
+      { kind: "todo", id: `todo-${prefix}-b` },
+      code === "first-output-timeout"
+        ? { kind: "wait-first-output-120s" as const }
+        : { kind: "fail" as const, code },
+      { kind: "write", id: `write-post-${prefix}`, path: `${root}/${prefix}-0/post.ts`, content: "export const repaired = true;" },
       { kind: "finish" },
     ];
     const chat = getOrCreateChat(sessionId);
-    await chat.sendMessage({ text: "Complete one ForgeBoard-shaped Agent mission" });
-    await settle(() => chat.status === "ready" && requestCount === 15);
+    if (code === "first-output-timeout") {
+      // Fake timer scheduling, not a live model or native command. Keep the
+      // recorded native proof's Date.now-based freshness independently intact.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const initial = chat.sendMessage({
+          text: "Complete one ForgeBoard-shaped Agent mission",
+        });
+        for (let n = 0; requestCount < completedTools + 1 && n < 500; n++)
+          await vi.advanceTimersByTimeAsync(0);
+        expect(requestCount).toBe(18);
+        expect(nativeSettlements).toEqual([]);
+        await vi.advanceTimersByTimeAsync(119_999);
+        expect(requestCount).toBe(18);
+        expect(nativeSettlements).toEqual([]);
+        expect(run().agentRequestRecovery).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(1);
+        await initial;
+        for (let n = 0; n < 500 &&
+            !(chat.status === "ready" && requestCount === completedTools + 3); n++)
+          await vi.advanceTimersByTimeAsync(10);
+        expect(chat.status).toBe("ready");
+        expect(requestCount).toBe(completedTools + 3);
+      } finally {
+        vi.useRealTimers();
+      }
+    } else {
+      await chat.sendMessage({ text: "Complete one ForgeBoard-shaped Agent mission" });
+      await settle(() => chat.status === "ready" && requestCount === completedTools + 3);
+    }
     expect(admissibleCount).toBe(2);
     expect(run().agentRequestRecovery?.attempts).toBe(1);
     expect(run().agentRequestRecovery?.phase).toBe("finished");
-    expect(run().agentRequestRecovery?.checkpoint?.toolReceipts).toHaveLength(12);
+    expect(run().agentRequestRecovery?.consumedBy).toBe(code);
+    expect(run().agentRequestRecovery?.failures).toMatchObject([
+      { kind: "timeout", errorCode: code },
+    ]);
+    expect(run().agentRequestRecovery?.checkpoint?.toolReceipts).toHaveLength(completedTools);
+    expect(nativeSettlements).toEqual([{ phase: "timed-out", errorCode: code }]);
     expect(run().budget?.continuationCount).toBe(0);
-    expect(run().budget?.totalSteps).toBeGreaterThanOrEqual(12);
-    expect(mutations).toHaveLength(10);
+    expect(run().budget?.totalSteps).toBeGreaterThanOrEqual(completedTools);
+    expect(mutations).toHaveLength(mkdirCount + writeCount + 1);
     expect(new Set(mutations).size).toBe(mutations.length);
     expect(state.profiles[0].toolVerification?.id).toBeTruthy();
     expect(initialCaptured.profiles[0].toolVerification).toBeUndefined();
+    if (code === "first-output-timeout") {
+      // No output from inference-18 was accepted, and its cancelled provider
+      // segment executed no extra tool effect before the recovery proof.
+      expect(chat.messages.flatMap(m => m.parts).some(part =>
+        part.type === "reasoning" && part.text.includes("partial, not a final answer"),
+      )).toBe(false);
+      expect(completedTools).toBe(17);
+      expect(requestCount).toBe(20);
+    }
     useChatStore.getState().finishRun(sessionId, "completed");
     expect(run().state).toBe("completed");
   });
@@ -850,10 +929,15 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
     });
   });
 
-  it("second stream-idle timeout terminates, retaining both failures without another provider request", async () => {
+  it.each([
+    { first: "first-output-timeout", second: "stream-idle-timeout" },
+    { first: "stream-idle-timeout", second: "first-output-timeout" },
+    { first: "first-output-timeout", second: "first-output-timeout" },
+    { first: "stream-idle-timeout", second: "stream-idle-timeout" },
+  ])("$first consumes the one allowance; subsequent $second is terminal", async ({ first, second }) => {
     requests = [
-      { kind: "fail", code: "stream-idle-timeout" },
-      { kind: "fail", code: "stream-idle-timeout" },
+      { kind: "fail", code: first },
+      { kind: "fail", code: second },
     ];
     const chat = getOrCreateChat(sessionId);
     await chat.sendMessage({ text: "Task" });
@@ -864,14 +948,20 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
       "timed-out",
     ]);
     expect(run().agentRequestRecovery?.attempts).toBe(1);
-    expect(run().agentRequestRecovery?.failures).toHaveLength(2);
+    expect(run().agentRequestRecovery?.consumedBy).toBe(first);
+    expect(run().agentRequestRecovery?.failures).toMatchObject([
+      { kind: "timeout", errorCode: first },
+      { kind: "timeout", errorCode: second },
+    ]);
+    expect(mutations).toEqual([]);
   });
 
-  it("unknown native tool effects deny a new provider segment", async () => {
+  it.each(["first-output-timeout", "stream-idle-timeout"])(
+    "unknown native tool effects deny a new segment after %s", async code => {
     history.mockResolvedValue([
       { runId: 1, state: "interrupted", effect: "unknown", toolName: "custom" },
     ]);
-    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+    requests = [{ kind: "fail", code }];
     const chat = getOrCreateChat(sessionId);
     await chat.sendMessage({ text: "Task" });
     await settle(() => run().state === "failed");
@@ -879,9 +969,10 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
     expect(run().error?.message).toContain("reconciliation");
   });
 
-  it("unavailable custom-tool registry fails closed before a new request", async () => {
+  it.each(["first-output-timeout", "stream-idle-timeout"])(
+    "unavailable custom-tool registry fails closed for %s", async code => {
     unavailableRegistry = true;
-    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+    requests = [{ kind: "fail", code }];
     const chat = getOrCreateChat(sessionId);
     await chat.sendMessage({ text: "Task" });
     await settle(() => run().state === "failed");
@@ -902,7 +993,10 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
   it.each([
     "unsafe-endpoint",
     "invalid-request",
+    "provider-error",
     "malformed-stream",
+    "overall-deadline",
+    "connect-timeout",
     "context-preflight-rejected",
     "cancelled",
   ])("non-recoverable provider or policy error %s is terminal", async (code) => {
@@ -914,10 +1008,11 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
     expect(run().agentRequestRecovery).toBeUndefined();
   });
 
-  it("stale workspace content after completed write blocks recovery", async () => {
+  it.each(["stream-idle-timeout", "first-output-timeout"])(
+    "stale completed write blocks recovery after %s", async code => {
     requests = [
       { kind: "write", id: "w", path: `${root}/a.ts`, content: "good" },
-      { kind: "fail", code: "stream-idle-timeout" },
+      { kind: "fail", code },
     ];
     history.mockImplementation(async () => {
       files.set(`${root}/a.ts`, "externally changed");
@@ -959,8 +1054,10 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
     "run",
     "workspace",
     "model-revision",
-  ])("changed %s owner during reconciliation blocks the new segment", async (change) => {
-    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+  ].flatMap(change => ["stream-idle-timeout", "first-output-timeout"].map(code => ({
+    change, code,
+  }))))("changed $change owner after $code blocks the new segment", async ({ change, code }) => {
+    requests = [{ kind: "fail", code }];
     history.mockImplementation(async () => {
       useChatStore.setState((s) => ({
         sessions: s.sessions.map((item) => {
@@ -1007,9 +1104,10 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
     expect(requestCount).toBe(1);
   });
 
-  it("restart persists a recoverable checkpoint but never auto-resumes without captured authority", async () => {
+  it.each(["stream-idle-timeout", "first-output-timeout"])(
+    "restart preserves the %s recovery allowance owner but cannot auto-resume", async code => {
     requests = [
-      { kind: "fail", code: "stream-idle-timeout" },
+      { kind: "fail", code },
       { kind: "finish" },
     ];
     const chat = getOrCreateChat(sessionId);
@@ -1017,10 +1115,14 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
     await settle(() => requestCount === 2 && chat.status === "ready");
     await awaitSessionWrites(sessionId);
     const saved = structuredClone(useChatStore.getState().sessions);
+    const persisted = disk.get("sessions") as typeof saved | undefined;
+    expect(persisted?.[0].run?.agentRequestRecovery?.consumedBy).toBe(code);
+    expect(persisted?.[0].run?.agentRequestRecovery?.attempts).toBe(1);
     const messages = await loadMessages(sessionId);
     expect(saved[0].run?.agentRequestRecovery?.checkpoint).toBeDefined();
     const interrupted = recoverInterruptedSessions(saved).sessions;
     expect(interrupted[0].run?.state).toBe("interrupted");
+    expect(interrupted[0].run?.agentRequestRecovery?.consumedBy).toBe(code);
     chats.clear();
     seedMessages.set(sessionId, messages ?? []);
     useChatStore.setState({ sessions: interrupted });
@@ -1030,8 +1132,9 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
     expect(requestCount).toBe(2);
   });
 
-  it("permission changes and pending approvals fail closed", async () => {
-    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+  it.each(["stream-idle-timeout", "first-output-timeout"])(
+    "permission changes after %s fail closed", async code => {
+    requests = [{ kind: "fail", code }];
     const original = usePreferencesStore.getState().agentPermissionProfiles;
     history.mockImplementation(async () => {
       usePreferencesStore.setState({
@@ -1052,8 +1155,9 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
     }
   });
 
-  it("a pending approval appearing during recovery prevents dispatch without resetting the permission mode", async () => {
-    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+  it.each(["stream-idle-timeout", "first-output-timeout"])(
+    "a pending approval after %s prevents dispatch", async code => {
+    requests = [{ kind: "fail", code }];
     history.mockImplementation(async () => {
       useChatStore.setState((s) => ({
         pendingApprovalsBySession: {
@@ -1077,11 +1181,12 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
     expect(run().error?.message).toContain("approval");
   });
 
-  it("does not gain newly broadened permission authority while the failing provider request is in flight", async () => {
+  it.each(["stream-idle-timeout", "first-output-timeout"])(
+    "does not gain broadened permissions while a %s request is in flight", async code => {
     const before = usePreferencesStore.getState().agentPermissionProfiles;
     changePermissionsAtTimeout = true;
     try {
-      requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+      requests = [{ kind: "fail", code }];
       const chat = getOrCreateChat(sessionId);
       await chat.sendMessage({ text: "Task" });
       await settle(() => run().state === "failed");

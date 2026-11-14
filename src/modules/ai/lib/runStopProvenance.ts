@@ -22,6 +22,11 @@ export type RunStopCause = {
   source: RunStopSource;
   reason: RunStopReason;
   policy?: RunStopPolicy;
+  operationClass?: "automatic-agent-coding" | "agent-provider-stream" | "conversation-stream";
+  deadlineMs?: number;
+  elapsedMs?: number;
+  meaningfulOutputObserved?: boolean;
+  abortOrigin?: "provider-retry-guard";
 };
 export type RunStopProvenance = RunStopCause & { at: number };
 export function safeRunStopCause(value: unknown): RunStopCause | null {
@@ -35,6 +40,19 @@ export function safeRunStopCause(value: unknown): RunStopCause | null {
     source: candidate.source as RunStopSource,
     reason: candidate.reason as RunStopReason,
     ...(candidate.policy ? { policy: candidate.policy as RunStopPolicy } : {}),
+    ...(["automatic-agent-coding", "agent-provider-stream", "conversation-stream"]
+      .includes(candidate.operationClass as string)
+      ? { operationClass: candidate.operationClass as RunStopCause["operationClass"] } : {}),
+    ...(typeof candidate.deadlineMs === "number" && Number.isSafeInteger(candidate.deadlineMs) &&
+      candidate.deadlineMs > 0 && candidate.deadlineMs <= 3_600_000
+      ? { deadlineMs: candidate.deadlineMs } : {}),
+    ...(typeof candidate.elapsedMs === "number" && Number.isSafeInteger(candidate.elapsedMs) &&
+      candidate.elapsedMs >= 0 && candidate.elapsedMs <= 3_600_000
+      ? { elapsedMs: candidate.elapsedMs } : {}),
+    ...(typeof candidate.meaningfulOutputObserved === "boolean"
+      ? { meaningfulOutputObserved: candidate.meaningfulOutputObserved } : {}),
+    ...(candidate.abortOrigin === "provider-retry-guard"
+      ? { abortOrigin: "provider-retry-guard" as const } : {}),
   };
 }
 export function unknownRunStop(at: number): RunStopProvenance {

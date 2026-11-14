@@ -556,7 +556,11 @@ function beginAgentRequestFailureRecovery(
         // Archive the first timeout in the recovery record. Stop remains free to
         // record a *new* explicit user cancellation during preparation.
         stop: undefined,
-        agentRequestRecovery: { attempts: 1, phase: "preparing" as const, failures: [normalized] },
+        agentRequestRecovery: {
+          attempts: 1, phase: "preparing" as const,
+          consumedBy: normalized.errorCode as "first-output-timeout" | "stream-idle-timeout",
+          failures: [normalized],
+        },
       } }
     : item);
   useChatStore.setState({ sessions: next });

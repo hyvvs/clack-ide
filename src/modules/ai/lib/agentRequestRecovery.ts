@@ -44,6 +44,9 @@ export type AgentRequestCheckpoint = {
 export type AgentRequestFailureRecovery = {
   attempts: number;
   phase: "preparing" | "checkpointed" | "dispatched" | "finished";
+  /** The sole provider-failure recovery allowance is shared by both timeout
+   * classes. This safe code remains fixed even if the fresh segment fails. */
+  consumedBy?: "first-output-timeout" | "stream-idle-timeout";
   failures: NormalizedAiError[];
   checkpoint?: AgentRequestCheckpoint;
 };
@@ -56,7 +59,11 @@ export function eligibleAgentRequestFailure(
     !!run &&
     run.state === "running" &&
     error.kind === "timeout" &&
-    error.errorCode === "stream-idle-timeout" &&
+    // A pre-first-output failure cannot have delivered an executable tool call.
+    // A post-output idle failure may have partial content, so both MUST pass
+    // the identical durable transcript/effect checkpoint before one new segment.
+    (error.errorCode === "stream-idle-timeout" ||
+      error.errorCode === "first-output-timeout") &&
     (run.agentRequestRecovery?.attempts ?? 0) === 0 &&
     !run.peerTaskId &&
     run.customTools?.unavailable === false &&

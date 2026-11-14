@@ -1144,6 +1144,8 @@ export async function runAgentStream(opts: RunAgentOptions) {
       );
     await runCalls.chargeCall();
   };
+  const automaticNativeCoding = !!activeAutomaticProof &&
+    provider === "ollama" && opts.toolContext.getAgentId() === "builtin:coder";
   const trackedModel = withProviderRetryTracking(
     baseModel,
     {
@@ -1154,10 +1156,24 @@ export async function runAgentStream(opts: RunAgentOptions) {
     {
       isCurrent: inferenceScope.isCurrent,
       ...(phaseDiagnostic ? { onDiagnostic: phaseDiagnostic } : {}),
-      onDeadline: () => inferenceScope.onStop?.({
+      operationClass: automaticNativeCoding ? "automatic-agent-coding" :
+        opts.toolContext.getAgentId() === "builtin:coder" ? "agent-provider-stream" :
+          "conversation-stream",
+      // Native self-hosted HTTP has an explicit 120s first-output guard and
+      // separate 600s overall guard. Do not call our pre-output retry guard
+      // an overall request deadline for this verified Automatic Agent path.
+      ...(automaticNativeCoding ? { deadlineErrorCode: "first-output-timeout" as const } : {}),
+      onDeadline: (boundary) => inferenceScope.onStop?.({
         source: "provider-timeout",
-        reason: "provider-retry-deadline",
+        reason: automaticNativeCoding ? "first-output-timeout" : "provider-retry-deadline",
         policy: "provider-recovery-120s",
+        operationClass: automaticNativeCoding ? "automatic-agent-coding" :
+          opts.toolContext.getAgentId() === "builtin:coder" ? "agent-provider-stream" :
+            "conversation-stream",
+        deadlineMs: boundary.deadlineMs,
+        elapsedMs: boundary.elapsedMs,
+        meaningfulOutputObserved: boundary.meaningfulOutputObserved,
+        abortOrigin: "provider-retry-guard",
       }),
       beforeRetry: async () => {
         await validateRecovery();
