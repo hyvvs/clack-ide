@@ -5,6 +5,7 @@ import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 export type PreparationPhase =
   | "extractor-created" | "extractor-deadline-fired" | "extractor-cancelled"
   | "extractor-disposed" | "extraction-timeout-retry"
+  | "extraction-attempt-start" | "extraction-attempt-end" | "extraction-attempt-settled" | "extraction-attempt-committed"
   | "extraction-limits-start" | "extraction-limits-settled"
   | "extraction-charge-start" | "extraction-charge-settled"
   | "extraction-model-start" | "extraction-model-returned"
@@ -23,6 +24,31 @@ export type PreparationPhase =
   | "agent-stream-error" | "agent-run-failed" | "agent-run-completed"
   | "agent-run-cancelled" | "agent-run-interrupted";
 
+/** Only scalar, bounded extraction metadata. Never include prompt text, tool
+ * inputs/results, model output, source IDs or generated memory claims. Capture
+ * remains opt-in; these observations do not imply durable evidence by default. */
+export type ExtractionAttemptReason =
+  | "initial" | "validation-retry" | "smaller-prefix-timeout-retry";
+export type ExtractionValidationReason =
+  | "response-size" | "schema" | "source-quote" | "protected-source"
+  | "contradiction" | "claim-size" | "coverage";
+export type ExtractionAttemptObservation = Readonly<{
+  preparationId: string;
+  attempt: number;
+  reason: ExtractionAttemptReason;
+  sourceCount: number;
+  protectedCount: number;
+  estimatedInputTokens: number;
+  deadlineMs: number;
+  startedAt: number;
+  finishedAt?: number;
+  settlement?: "pending" | "settled" | "unsettled";
+  validation?: "not-run" | "valid" | "invalid";
+  outcome?: "validated" | "invalid-output" | "timeout" | "cancelled" | "provider-failure" | "unsettled";
+  validationReason?: ExtractionValidationReason;
+  committed?: boolean;
+}>;
+
 export type PreparationObservation = Readonly<{
   at: number;
   sessionId: string;
@@ -30,6 +56,7 @@ export type PreparationObservation = Readonly<{
   phase: PreparationPhase;
   /** Request identity from the native bridge, never evidence of progress. */
   nativeRequestId?: string;
+  attempt?: ExtractionAttemptObservation;
 }>;
 
 type Observer = (observation: PreparationObservation) => void;
@@ -50,6 +77,7 @@ export function emitPreparationPhase(
   scope: Pick<InferenceScope, "sessionId" | "runId"> | undefined,
   phase: PreparationPhase,
   nativeRequestId?: string,
+  attempt?: ExtractionAttemptObservation,
 ): void {
   if (!scope || observers.size === 0) return;
   const entry: PreparationObservation = Object.freeze({
@@ -57,6 +85,7 @@ export function emitPreparationPhase(
     runId: safeRunIdentity(scope.runId), phase,
     ...(nativeRequestId && /^[A-Za-z0-9:_-]{1,80}$/.test(nativeRequestId)
       ? { nativeRequestId } : {}),
+    ...(attempt ? { attempt: Object.freeze({ ...attempt }) } : {}),
   });
   for (const observer of observers) {
     try { observer(entry); } catch { /* Telemetry must not change work. */ }

@@ -7,6 +7,8 @@ import { open, link, unlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 
 const PHASES = new Set(`extractor-created extractor-deadline-fired extractor-cancelled extractor-disposed
+  extraction-attempt-start extraction-attempt-end extraction-attempt-settled extraction-attempt-committed
+  extraction-timeout-retry
   extraction-limits-start extraction-limits-settled extraction-charge-start extraction-charge-settled
   extraction-model-start extraction-model-returned extraction-validate-start extraction-validate-completed
   extraction-validate-failed extraction-completed native-request-linked native-response-headers
@@ -19,11 +21,38 @@ const PHASES = new Set(`extractor-created extractor-deadline-fired extractor-can
   agent-run-completed agent-run-cancelled agent-run-interrupted`.trim().split(/\s+/));
 const ID = /^[A-Za-z0-9:_-]{1,160}$/;
 const NATIVE_ID = /^[A-Za-z0-9:_-]{1,80}$/;
+const REASONS = new Set(['initial', 'validation-retry', 'smaller-prefix-timeout-retry']);
+const SETTLEMENT = new Set(['pending', 'settled', 'unsettled']);
+const VALIDATION = new Set(['not-run', 'valid', 'invalid']);
+const OUTCOMES = new Set(['validated', 'invalid-output', 'timeout', 'cancelled', 'provider-failure', 'unsettled']);
+const VALIDATION_REASONS = new Set(['response-size', 'schema', 'source-quote', 'protected-source', 'contradiction', 'claim-size', 'coverage']);
+const integer = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
 const own = (value, field) => Object.prototype.hasOwnProperty.call(value, field);
+
+function validateAttempt(attempt) {
+  assert(attempt && typeof attempt === 'object' && !Array.isArray(attempt), 'Invalid extraction attempt');
+  const fields = ['preparationId', 'attempt', 'reason', 'sourceCount', 'protectedCount',
+    'estimatedInputTokens', 'deadlineMs', 'startedAt', 'finishedAt', 'settlement',
+    'validation', 'outcome', 'validationReason', 'committed'];
+  assert(Object.keys(attempt).every(key => fields.includes(key)), 'Unexpected extraction attempt field');
+  assert(typeof attempt.preparationId === 'string' && NATIVE_ID.test(attempt.preparationId), 'Invalid preparation identity');
+  assert(integer(attempt.attempt, 1, 5), 'Invalid attempt number');
+  assert(REASONS.has(attempt.reason), 'Invalid retry reason');
+  assert(integer(attempt.sourceCount, 1, 128) && integer(attempt.protectedCount, 0, 100000), 'Invalid source count');
+  assert(integer(attempt.estimatedInputTokens, 0, 10000000) && attempt.deadlineMs === 120000, 'Invalid extraction bound');
+  assert(integer(attempt.startedAt, 0, Number.MAX_SAFE_INTEGER), 'Invalid attempt start');
+  if (own(attempt, 'finishedAt')) assert(integer(attempt.finishedAt, attempt.startedAt, Number.MAX_SAFE_INTEGER), 'Invalid attempt end');
+  if (own(attempt, 'settlement')) assert(SETTLEMENT.has(attempt.settlement), 'Invalid settlement');
+  if (own(attempt, 'validation')) assert(VALIDATION.has(attempt.validation), 'Invalid validation result');
+  if (own(attempt, 'outcome')) assert(OUTCOMES.has(attempt.outcome), 'Invalid attempt outcome');
+  if (own(attempt, 'validationReason')) assert(VALIDATION_REASONS.has(attempt.validationReason), 'Invalid validation reason');
+  if (own(attempt, 'committed')) assert(attempt.committed === true, 'Only a confirmed memory commit may be recorded');
+  return Object.freeze(Object.fromEntries(fields.filter(field => own(attempt, field)).map(field => [field, attempt[field]])));
+}
 
 export function validatePreparationPhaseRow(record, expectedSequence) {
   assert(record && typeof record === 'object' && !Array.isArray(record), 'Invalid phase row');
-  const allowed = ['schemaVersion', 'sequence', 'at', 'sessionId', 'runId', 'phase', 'nativeRequestId'];
+  const allowed = ['schemaVersion', 'sequence', 'at', 'sessionId', 'runId', 'phase', 'nativeRequestId', 'attempt'];
   assert(Object.keys(record).every(k => allowed.includes(k)), 'Unexpected phase evidence field');
   assert(record.schemaVersion === 1 && record.sequence === expectedSequence, 'Phase sequence/version mismatch');
   assert(Number.isSafeInteger(record.at) && record.at >= 0, 'Invalid phase timestamp');
@@ -32,10 +61,12 @@ export function validatePreparationPhaseRow(record, expectedSequence) {
   assert(PHASES.has(record.phase), 'Unrecognized phase');
   assert(!own(record, 'nativeRequestId') ||
     (typeof record.nativeRequestId === 'string' && NATIVE_ID.test(record.nativeRequestId)), 'Invalid native request ID');
+  const attempt = own(record, 'attempt') ? validateAttempt(record.attempt) : undefined;
   const clean = { schemaVersion: 1, sequence: record.sequence, at: record.at,
     sessionId: record.sessionId, runId: record.runId, phase: record.phase,
-    ...(own(record, 'nativeRequestId') ? { nativeRequestId: record.nativeRequestId } : {}) };
-  assert(Buffer.byteLength(JSON.stringify(clean), 'utf8') <= 512, 'Oversized phase evidence');
+    ...(own(record, 'nativeRequestId') ? { nativeRequestId: record.nativeRequestId } : {}),
+    ...(attempt ? { attempt } : {}) };
+  assert(Buffer.byteLength(JSON.stringify(clean), 'utf8') <= 1024, 'Oversized phase evidence');
   return Object.freeze(clean);
 }
 

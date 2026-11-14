@@ -35,6 +35,53 @@ afterEach(async () => {
 });
 
 describe('opt-in, offline phase evidence durability', () => {
+  it('journals bounded per-attempt deadlines, validation reason and settlement without source text or unknown keys', async () => {
+    const filename = await tempFile();
+    const journal = await createPreparationPhaseJournal(filename);
+    const capture = startPreparationPhaseCapture(row => journal.append(row).then(() => undefined));
+    let calls = 0;
+    const run = createBoundedExtractor({
+      model: {} as LanguageModel, scope, preparationId: 'offline-preparation-1',
+      protectedCount: () => 3, limits: async () => ({ deployed: 32768 }),
+      remainingCalls: 3,
+      call: async () => {
+        calls++;
+        return { text: calls === 1 ? '{"claims":[]}' : JSON.stringify({ claims: [{
+          source: source.evidence.id, section: 'unresolved-issues',
+          text: 'A reported issue is unresolved.', quote: source.passages[0],
+          status: 'unresolved', contradicts: [],
+        }] }), usage: { inputTokens: 100, outputTokens: 30, cachedInputTokens: 0 } };
+      },
+    });
+    try { expect(await run.extract([source], [])).toHaveLength(1); }
+    finally { run.dispose(); }
+    const receipt = await journal.seal(await capture.stop());
+    const raw = await readFile(filename);
+    const rows = raw.toString('utf8').trim().split('\n').map(line => JSON.parse(line));
+    const starts = rows.filter(row => row.phase === 'extraction-attempt-start');
+    const ends = rows.filter(row => row.phase === 'extraction-attempt-end');
+    expect(starts).toHaveLength(2);
+    expect(starts.map(row => row.attempt.reason)).toEqual(['initial', 'validation-retry']);
+    expect(starts.map(row => row.attempt.deadlineMs)).toEqual([120000, 120000]);
+    expect(starts.map(row => row.attempt.preparationId)).toEqual(['offline-preparation-1', 'offline-preparation-1']);
+    expect(starts.map(row => row.attempt.protectedCount)).toEqual([3, 3]);
+    expect(starts.map(row => row.attempt.sourceCount)).toEqual([1, 1]);
+    expect(ends.map(row => row.attempt.validation)).toEqual(['invalid', 'valid']);
+    expect(ends.map(row => row.attempt.settlement)).toEqual(['settled', 'settled']);
+    expect(ends[0].attempt.validationReason).toBe('coverage');
+    expect(ends[1].attempt.validationReason).toBeUndefined();
+    expect(JSON.stringify(rows)).not.toContain(source.passages[0]);
+    expect(JSON.stringify(rows)).not.toContain(source.evidence.id);
+    expect(interpretPreparationPhaseRows(rows, receipt, raw)).toMatchObject({
+      collectorCoverage: 'collector-flushed', forgeBoardAcceptance: 'not-evaluated',
+    });
+    expect(() => validatePreparationPhaseRow({ ...starts[0], attempt: {
+      ...starts[0].attempt, prompt: 'PRIVATE TOOL RESULT',
+    } }, starts[0].sequence)).toThrow(/Unexpected extraction attempt field/);
+    expect(() => validatePreparationPhaseRow({ ...starts[0], attempt: {
+      ...starts[0].attempt, deadlineMs: 240000,
+    } }, starts[0].sequence)).toThrow(/Invalid extraction bound/);
+  });
   it('uses real loopback HTTP receipts and fsync before acknowledging each phase; rejects untrusted bodies', async () => {
     const filename = await tempFile();
     const journal = await createPreparationPhaseJournal(filename);
@@ -113,7 +160,7 @@ describe('opt-in, offline phase evidence durability', () => {
     expect(rows.map(r => r.phase)).not.toContain('sdk-json-settled'); // custom mock is not SDK
     expect(JSON.stringify(rows)).not.toContain(source.passages[0]);
     expect(rows.every(r => Object.keys(r).every(k =>
-      ['schemaVersion', 'sequence', 'at', 'sessionId', 'runId', 'phase', 'nativeRequestId'].includes(k)))).toBe(true);
+      ['schemaVersion', 'sequence', 'at', 'sessionId', 'runId', 'phase', 'nativeRequestId', 'attempt'].includes(k)))).toBe(true);
     expect(interpretPreparationPhaseRows(rows, manifest, await readFile(filename))).toMatchObject({
       collectorCoverage: 'collector-flushed', nativeSdkOrdering: 'unknown',
       inferenceProgress: 'not-established', forgeBoardAcceptance: 'not-evaluated',

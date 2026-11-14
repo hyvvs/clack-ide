@@ -261,6 +261,7 @@ export async function createConversationCompactor(options: {
   check();
   let view: MemoryView | undefined;
   let extractor: ReturnType<typeof createBoundedExtractor> | undefined;
+  let preparationProtectedCount = 0;
   let profileHash: string | undefined;
   let prepared = false;
   let published = 0;
@@ -384,16 +385,50 @@ export async function createConversationCompactor(options: {
     if (revision?.coverage.unitMode === AGENT_STEP_UNIT_MODE)
       throw new CompactionError("segmentation", "The original Agent step boundaries are no longer available.");
   }
+  type AttemptBudget = {
+    id: string;
+    attempts: number;
+    retries: number;
+    reserveAttempt(): number;
+    canRetry(): boolean;
+    claimRetry(): boolean;
+  };
+  const revalidateRetryIdentity = async (captured: MemoryView, signal?: AbortSignal) => {
+    check();
+    const latest = await memoryOperation(() => awaitAbortableRead(memory.load(context.owner), signal ?? options.signal));
+    check();
+    usable(latest);
+    if (latest.revisionId !== captured.revisionId ||
+      !equalJson(latest.preparation, captured.preparation))
+      throw new CompactionError("stale", "The conversation checkpoint changed before bounded preparation retry.");
+    if (activeCheckpoint) {
+      if (!context.validateCheckpoint)
+        throw new CompactionError("stale", "Checkpoint validation is unavailable.");
+      await context.validateCheckpoint(activeCheckpoint);
+      check();
+    }
+  };
   const summarize = (route: {
     model: LanguageModel;
     limits: () => Promise<BudgetLimits>;
-  }) => {
+  }, attempts: AttemptBudget) => {
     extractor ??= createBoundedExtractor({
       model: route.model,
       scope: options.scope,
       limits: route.limits,
       signal: options.signal,
       remainingCalls: context.remainingCalls(),
+      preparationId: attempts.id,
+      protectedCount: () => preparationProtectedCount,
+      onAttempt: () => attempts.reserveAttempt(),
+      onValidationRetry: async () => {
+        if (!attempts.canRetry()) return false;
+        const captured = view;
+        if (!captured) throw new CompactionError("missing-memory", "Conversation memory is unavailable.");
+        await revalidateRetryIdentity(captured, extractor?.signal);
+        extractor?.assertCurrent();
+        return attempts.claimRetry();
+      },
       onCall: context.chargeCall,
       onUsage: options.onUsage,
       call: options.call,
@@ -439,6 +474,28 @@ export async function createConversationCompactor(options: {
       tools: unknown = options.tools,
     ): Promise<ModelMessage[]> {
       check();
+      // This budget belongs to ONE logical preparation, regardless of the
+      // number of original-source chunks or extractor instances it creates.
+      // The existing 4-chunk/5-request bound is retained, while only ONE extra
+      // attempt is allowed: validation OR smaller-prefix timeout recovery.
+      const attempts: AttemptBudget = {
+        id: crypto.randomUUID(), attempts: 0, retries: 0,
+        reserveAttempt() {
+          if (this.attempts >= COMPACTION_POLICY.maxModelAttemptsPerPreparation)
+            throw new CompactionError("batch-limit", "The bounded preparation model-attempt allowance is exhausted.");
+          return ++this.attempts;
+        },
+        canRetry() {
+          return this.retries < COMPACTION_POLICY.maxExtraAttemptsPerPreparation &&
+            this.attempts < COMPACTION_POLICY.maxModelAttemptsPerPreparation &&
+            context.remainingCalls() > 1;
+        },
+        claimRetry() {
+          if (!this.canRetry()) return false;
+          this.retries++;
+          return true;
+        },
+      };
       allowance.epoch++;
       if (pendingOriginal) {
         const anchor = pendingOriginal;
@@ -554,7 +611,7 @@ export async function createConversationCompactor(options: {
         ? await options.extractionRoute()
         : { model: options.model, limits: options.limits };
       check();
-      let batch = summarize(route);
+      let batch = summarize(route, attempts);
       // A timed-out *first* extraction has produced no durable memory or
       // measured output. Permit one smaller, dependency-closed source prefix
       // after its provider request has settled. Never reset an active batch's
@@ -589,6 +646,9 @@ export async function createConversationCompactor(options: {
               current.budget,
             );
           let end = start;
+          preparationProtectedCount = current.groups
+            .filter(group => group.protected)
+            .reduce((count, group) => count + group.end - group.start, 0);
           let selected: ExtractionSource[] = [];
           let locators: MemorySourceLocator[] = [];
           const prefixes: Array<{
@@ -700,24 +760,15 @@ export async function createConversationCompactor(options: {
             if (!(error instanceof CompactionError) || error.code !== "compaction-timeout" ||
               timeoutRetryUsed || published !== 0 || batch.snapshot().chunks !== 0 ||
               batch.snapshot().generatedTokens !== 0 || !prefix ||
-              context.remainingCalls() <= 1) throw error;
+              !attempts.canRetry()) throw error;
             timeoutRetryUsed = true;
             batch.dispose();
             // The previous native request and SDK call must both settle before
             // any new provider dispatch; unknown native effects fail closed.
             if (!await batch.awaitSettlement()) throw error;
             check();
-            const latest = await memoryOperation(() => awaitAbortableRead(memory.load(context.owner), options.signal));
-            check();
-            usable(latest);
-            if (latest.revisionId !== captured.revisionId ||
-              !equalJson(latest.preparation, captured.preparation))
-              throw new CompactionError("stale", "The conversation checkpoint changed before bounded preparation retry.");
-            if (activeCheckpoint) {
-              if (!context.validateCheckpoint) throw new CompactionError("stale", "Checkpoint validation is unavailable.");
-              await context.validateCheckpoint(activeCheckpoint);
-              check();
-            }
+            await revalidateRetryIdentity(captured, options.signal);
+            if (!attempts.claimRetry()) throw error;
             // Reuse validated original evidence, not a fabricated summary or
             // partial response. Only an intact, strictly smaller prefix may be
             // committed, with the same protected/recent groups still verbatim.
@@ -725,9 +776,9 @@ export async function createConversationCompactor(options: {
             selected = prefix.sources;
             locators = prefix.locators;
             extractor = undefined;
-            batch = summarize(route);
+            batch = summarize(route, attempts);
             emitPreparationPhase(options.scope, "extraction-timeout-retry");
-            claims = await batch.extract(selected, prior);
+            claims = await batch.extract(selected, prior, "smaller-prefix-timeout-retry");
           }
           check();
           batch.assertCurrent();
@@ -775,6 +826,7 @@ export async function createConversationCompactor(options: {
             // would risk reporting a cancelled but later-published revision.
             revisionId = await withPreparation(preparation => memory.commit({ ...candidate, preparation }, batch.signal));
             emitPreparationPhase(options.scope, "memory-commit-settled");
+            batch.recordCommit();
           } catch (error) {
             emitPreparationPhase(options.scope, "memory-commit-failed");
             throw error;
@@ -817,6 +869,10 @@ export async function createConversationCompactor(options: {
         return await finish();
       } finally {
         options.onStep?.(null);
+        // Each Agent preparation step starts with fresh bounded state. Never
+        // carry a previous step's extractor clock into the next step.
+        extractor?.dispose();
+        extractor = undefined;
       }
     },
   };

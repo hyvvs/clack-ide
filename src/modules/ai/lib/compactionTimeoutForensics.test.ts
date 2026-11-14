@@ -282,7 +282,8 @@ describe("sealed incident: 120-second extraction-batch deadline, no inference", 
         expect(names).toContain(stage);
       expect(names.indexOf("sdk-json-settled")).toBeLessThan(names.indexOf("extraction-validate-start"));
       expect(observations.every(event => Object.keys(event).every(key =>
-        ["at", "sessionId", "runId", "phase", "nativeRequestId"].includes(key)))).toBe(true);
+        ["at", "sessionId", "runId", "phase", "nativeRequestId", "attempt"].includes(key)))).toBe(true);
+      expect(JSON.stringify(observations)).not.toContain(source.passages[0]);
       expect(names).not.toContain("extractor-deadline-fired");
       expect(names).not.toContain("native-response-headers"); // fake fetch is not native transport
     } finally { unsubscribe(); }

@@ -41,6 +41,22 @@ export function startPreparationPhaseCapture(
       at: observation.at, sessionId: observation.sessionId,
       runId: observation.runId, phase: observation.phase,
       ...(observation.nativeRequestId ? { nativeRequestId: observation.nativeRequestId } : {}),
+      ...(observation.attempt ? { attempt: {
+        preparationId: observation.attempt.preparationId,
+        attempt: observation.attempt.attempt,
+        reason: observation.attempt.reason,
+        sourceCount: observation.attempt.sourceCount,
+        protectedCount: observation.attempt.protectedCount,
+        estimatedInputTokens: observation.attempt.estimatedInputTokens,
+        deadlineMs: observation.attempt.deadlineMs,
+        startedAt: observation.attempt.startedAt,
+        ...(observation.attempt.finishedAt !== undefined ? { finishedAt: observation.attempt.finishedAt } : {}),
+        ...(observation.attempt.settlement ? { settlement: observation.attempt.settlement } : {}),
+        ...(observation.attempt.validation ? { validation: observation.attempt.validation } : {}),
+        ...(observation.attempt.outcome ? { outcome: observation.attempt.outcome } : {}),
+        ...(observation.attempt.validationReason ? { validationReason: observation.attempt.validationReason } : {}),
+        ...(observation.attempt.committed !== undefined ? { committed: observation.attempt.committed } : {}),
+      } } : {}),
     });
     pending = pending.then(async () => {
       if (deliveryFailed) return;
