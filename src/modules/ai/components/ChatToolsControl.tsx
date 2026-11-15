@@ -113,6 +113,12 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                 Built-in capabilities. Access depends on this Agent's
                 permissions, workspace and model.
               </p>
+              <p className="text-muted-foreground">
+                Research retrieves public HTTPS pages only, with source
+                receipts. Search providers and MCP integrations require
+                separate configuration. Web access never grants private-network
+                or account access.
+              </p>
               {capabilityGroups(summary.builtin, support, summary.readOnly).map(
                 (group) => (
                   <section
@@ -212,7 +218,8 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                         ? "Denied"
                         : item.decision === "prompt"
                           ? "Approval required"
-                          : "Permission allows"}
+                          : "Permission allows"}{" "}
+                      ({item.semanticCapability}; {item.permissionClass}; effect {item.effectClass})
                     </li>
                   ))}
                 </ul>

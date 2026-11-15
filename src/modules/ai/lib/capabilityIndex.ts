@@ -15,6 +15,24 @@ export type CapabilitySource =
 export type CapabilityRoute =
   | { kind: "builtin"; name: string }
   | { kind: "native-custom"; reference: CapturedToolVersion };
+/** One normalized view over the EXISTING builtin/T1/T2/MCP owners.
+ * The registry is descriptive, not an authorization or alternate executor. */
+export type ToolPermissionClass =
+  | "read-only" | "workspace-effect" | "external-effect" | "sensitive";
+export type ToolEffectClass =
+  | "none" | "workspace" | "external" | "unknown";
+export type ToolQualification =
+  | "available" | "needs-approval" | "unavailable" | "unknown";
+export type ToolFabricMetadata = {
+  semanticCapability: string;
+  permissionClass: ToolPermissionClass;
+  effectClass: ToolEffectClass;
+  latencyClass: "short" | "medium" | "long" | "unknown";
+  costClass: "none" | "provider-billed" | "unknown";
+  authentication: "none" | "runtime-owned" | "unknown";
+  qualification: ToolQualification;
+  availability: "available" | "unavailable";
+};
 export type CapabilityContract = {
   id: string;
   qualifiedName: string;
@@ -39,6 +57,7 @@ export type CapabilityContract = {
   inputSchema: unknown;
   result: { outputSchema: unknown; description: string; supportedFormats: readonly string[] };
   discovery: { summary: string; terms: readonly string[] };
+  fabric: ToolFabricMetadata;
 };
 export type CapabilitySearch = {
   query?: string;
@@ -49,10 +68,67 @@ export type CapabilitySearch = {
   limit?: number;
   offset?: number;
 };
-export type CapabilitySeed = Omit<CapabilityContract, "id" | "qualifiedName" | "discovery">;
+export type CapabilitySeed = Omit<CapabilityContract, "id" | "qualifiedName" | "discovery" | "fabric"> & { fabric?: ToolFabricMetadata };
 export type CompactCapability = Pick<CapabilityContract,
   "id" | "callableName" | "nativeName" | "displayName" | "source" |
-  "sourceOwner" | "origin" | "available" | "enabled" | "revision"> & { summary: string };
+  "sourceOwner" | "origin" | "available" | "enabled" | "revision"> & {
+    summary: string;
+  };
+
+const semanticNames: Readonly<Record<string, string>> = {
+  read_file: "read_file", list_directory: "list_directory",
+  grep: "search_repository", glob: "search_repository",
+  write_file: "write_file", edit: "edit_file", multi_edit: "edit_file",
+  create_directory: "create_directory",
+  bash_run: "execute_command", bash_background: "execute_command",
+  bash_list: "inspect_command", bash_logs: "inspect_command", bash_kill: "terminate_command",
+  fetch_web_page: "fetch_web_page", discover_capabilities: "discover_capabilities",
+  compare_web_sources: "compare_web_sources",
+  request_conversation_evidence: "retrieve_conversation_evidence",
+};
+const readOperations = new Set([
+  "read_file", "list_directory", "grep", "glob", "bash_list", "bash_logs",
+  "request_conversation_evidence", "discover_capabilities", "fetch_web_page",
+  "compare_web_sources",
+]);
+const workspaceOperations = new Set([
+  "write_file", "edit", "multi_edit", "create_directory",
+  "bash_run", "bash_background", "bash_kill",
+]);
+function normalizedFabric(c: CapabilitySeed): ToolFabricMetadata {
+  if (c.fabric) return c.fabric;
+  const name = c.nativeOperation ?? c.nativeName;
+  const knownRead = c.source === "builtin" && readOperations.has(name);
+  const knownWorkspace = c.source === "builtin" && workspaceOperations.has(name);
+  const network = c.hints.openWorld ||
+    name === "fetch_web_page" || name === "compare_web_sources";
+  const external = c.source === "remote-mcp" || c.source === "integration" ||
+    c.source === "local-mcp";
+  // An MCP description/permission string is untrusted metadata. Even an
+  // apparent GET/read tool cannot downgrade an unknown remote side effect.
+  const permissionClass: ToolPermissionClass =
+    knownRead ? "read-only" : knownWorkspace ? "workspace-effect" :
+    external || network ? "external-effect" : "sensitive";
+  // An HTTP GET does not intentionally mutate Clack state, but the remote
+  // service may log, bill or trigger actions. Its external effect is unknown.
+  const effectClass: ToolEffectClass = knownRead && !network ? "none" :
+    knownWorkspace ? "workspace" : "unknown";
+  return {
+    semanticCapability: semanticNames[name] ?? (external ? "external_capability" : name),
+    permissionClass, effectClass,
+    latencyClass: network ? "long" : external ? "unknown" :
+      name.startsWith("bash_") ? "medium" : "short",
+    // A remote integration may bill the caller even if its declaration does
+    // not mention a network permission. Never label its cost as free.
+    costClass: network || external ? "unknown" : "none",
+    authentication: c.source === "builtin" ? "none" :
+      external || network ? "runtime-owned" : "unknown",
+    qualification: !c.enabled || !c.available ? "unavailable"
+      : c.source === "builtin" && knownRead && !network
+        ? "available" : "needs-approval",
+    availability: c.enabled && c.available ? "available" : "unavailable",
+  };
+}
 
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const terms = (value: string) => [...new Set((value.toLowerCase().match(/[a-z0-9]+/g) ?? []).slice(0, 128))];
@@ -72,6 +148,7 @@ export class CapabilityIndex {
       const summary = seed.description.slice(0, 240);
       const contract: CapabilityContract = {
         ...seed, id, qualifiedName: id,
+        fabric: normalizedFabric(seed),
         discovery: { summary, terms: terms(`${seed.displayName} ${seed.nativeName} ${summary}`) },
       };
       this.byId.set(id, contract);
@@ -186,8 +263,8 @@ export function capabilityIndexFromRegistry(
   const builtinSeeds: CapabilitySeed[] = Object.keys(builtins).map(name => {
     const c = indexedBuiltins.callable(name);
     if (!c) throw Error("capability-index-builtin-unavailable");
-    const { id: _id, qualifiedName: _qualifiedName, discovery: _discovery, ...seed } = c;
-    void _id; void _qualifiedName; void _discovery;
+    const { id: _id, qualifiedName: _qualifiedName, discovery: _discovery, fabric: _fabric, ...seed } = c;
+    void _id; void _qualifiedName; void _discovery; void _fabric;
     return seed;
   });
   const seeds: CapabilitySeed[] = view.entries.map(entry => {

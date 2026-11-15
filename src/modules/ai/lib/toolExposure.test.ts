@@ -107,13 +107,14 @@ async function select(
   });
 }
 describe("relevance and bounded fallback", () => {
-  it("ambiguous ties at the optional cap safely broaden to the full set", async () => {
+  it("ambiguous ties at the optional cap remain bounded rather than dumping all schemas", async () => {
     const candidates: ToolSet = {};
     for (let i = 0; i < 20; i++)
       candidates[`custom_weather_${i}`] = tools().custom_mcp;
     const result = await select("weather", {}, candidates);
     expect(result.metrics.fallback).toBe(true);
-    expect(result.names).toHaveLength(20);
+    expect(result.names).toHaveLength(EXPOSURE_LIMITS.optional);
+    expect(result.names).toEqual([...result.names].sort());
   });
   it("does not broaden a clear file-read intent because incidental metadata ties at the cutoff", async () => {
     const candidates = tools();

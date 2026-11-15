@@ -6,6 +6,7 @@ import { mcpClient } from "@/modules/ai/lib/mcpConnections";
 import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { awaitSessionWrites } from "@/modules/ai/lib/sessions";
+import { capabilityIndexFromTools } from "@/modules/ai/lib/capabilityIndex";
 
 export async function loadChatToolSummary(sessionId: string) {
   const session = useChatStore
@@ -21,9 +22,14 @@ export async function loadChatToolSummary(sessionId: string) {
   const { toolContext } = sessionToolContext(sessionId);
   const agentId = toolContext.getAgentId();
   const workspaceId = toolContext.getWorkspaceId?.() ?? "";
-  const builtin = Object.keys(buildTools(toolContext)).map((name) => ({
+  const currentTools = buildTools(toolContext);
+  const indexed = capabilityIndexFromTools(currentTools);
+  const builtin = Object.keys(currentTools).map((name) => ({
     name,
     decision: resolveCurrentAgentPermission(name, {}, toolContext).outcome,
+    semanticCapability: indexed.callable(name)?.fabric.semanticCapability ?? name,
+    effectClass: indexed.callable(name)?.fabric.effectClass ?? "unknown",
+    permissionClass: indexed.callable(name)?.fabric.permissionClass ?? "sensitive",
   }));
   const [registry, connections] = await Promise.allSettled([
     customToolsClient(sessionId).loadEligible(),

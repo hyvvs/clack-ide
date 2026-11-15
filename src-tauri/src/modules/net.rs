@@ -3,6 +3,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 pub mod inference;
+pub mod research;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Method;
 use serde::Serialize;

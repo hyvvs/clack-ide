@@ -87,9 +87,9 @@ it("loads only conversation-scoped native metadata and intersects approval polic
   expect(summary.custom).toMatchObject([
     { name: "Assigned", available: true, approval: true },
   ]);
-  expect(summary.builtin).toEqual([
-    { name: "read_file", decision: "allow" },
-    { name: "write_file", decision: "prompt" },
+  expect(summary.builtin).toMatchObject([
+    { name: "read_file", decision: "allow", effectClass: "none", permissionClass: "read-only" },
+    { name: "write_file", decision: "prompt", effectClass: "workspace", permissionClass: "workspace-effect" },
   ]);
   expect(invoke).toHaveBeenCalledWith("custom_tools_load", {
     sessionId: "a",

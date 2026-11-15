@@ -23,7 +23,8 @@ export type PermissionCategory =
   | "write-files"
   | "create-files"
   | "run-commands"
-  | "delegate-runs";
+  | "delegate-runs"
+  | "research-network";
 
 export type PermissionScope = "once" | "chat" | "workspace";
 
@@ -82,6 +83,7 @@ export const PERMISSION_CATEGORY_LABELS: Record<PermissionCategory, string> = {
   "create-files": "Create directories",
   "run-commands": "Run terminal commands",
   "delegate-runs": "Start another agent run",
+  "research-network": "Fetch public web pages",
 };
 
 export const PERMISSION_CATEGORIES = Object.keys(
@@ -89,6 +91,8 @@ export const PERMISSION_CATEGORIES = Object.keys(
 ) as PermissionCategory[];
 
 const TOOL_CATEGORIES: Readonly<Record<string, PermissionCategory>> = {
+  fetch_web_page: "research-network",
+  compare_web_sources: "research-network",
   write_file: "write-files",
   edit: "write-files",
   multi_edit: "write-files",
@@ -219,6 +223,9 @@ export function canPersistPermission(
 ): boolean {
   if (isStrictPermissionRequest(toolName, input)) return false;
   const category = permissionCategoryForTool(toolName);
+  // Network destinations are chosen per invocation. Neither chat nor a
+  // workspace-wide grant can authorize every future model-generated URL.
+  if (category === "research-network") return false;
   const workspaceRoot = ctx.getWorkspaceRoot();
   if (!category || !workspaceRoot) return false;
   if (category === "delegate-runs") return true;

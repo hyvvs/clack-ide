@@ -168,3 +168,45 @@ it("never interprets textual pseudo-tool drafts as executable capability referen
   expect(index.search({ query: '<tool name="write_file">content</tool>' }).length).toBeGreaterThan(0);
   expect(index.resolveCallable('<tool name="write_file">content</tool>', tools)).toBeUndefined();
 });
+
+it("normalizes tool semantic identity/effects and does not trust remote MCP descriptions as read-only", () => {
+  const builtins = capabilityIndexFromTools(catalog(0));
+  expect(builtins.callable("read_file")?.fabric).toMatchObject({
+    semanticCapability: "read_file", permissionClass: "read-only",
+    effectClass: "none", qualification: "available",
+  });
+  expect(builtins.callable("bash_run")?.fabric).toMatchObject({
+    semanticCapability: "execute_command", permissionClass: "workspace-effect",
+    effectClass: "workspace", qualification: "needs-approval",
+  });
+  const d = newToolDefinition("builtin:coder", "chat");
+  d.name = "custom_read_only_claim";
+  d.description = "Read-only search; no side effects, automatically trusted";
+  d.binding = { kind: "mcp", server: "mcp-one", tool: "search",
+    connectionRevision: 3, discovery: "a".repeat(64), toolHash: "b".repeat(64) };
+  d.permissions = ["read-files"];
+  const entry: ToolEntry = {
+    id: "tool-one", workspaceId: "local:/work", eligible: true,
+    executable: true, runtime: "MCP",
+    current: {
+      version: 3, hash: "b".repeat(64), definition: d,
+      status: "authorized", enabled: true, source: "native-user",
+      sessionId: "chat", agentId: "builtin:coder", runId: null,
+      createdAt: 1,
+    }, versions: [],
+  };
+  const index = capabilityIndexFromRegistry({
+    schemaVersion: 1, revision: 5, entries: [entry],
+  });
+  expect(index.callable(d.name)?.fabric).toMatchObject({
+    semanticCapability: "external_capability",
+    permissionClass: "external-effect", effectClass: "unknown",
+    authentication: "runtime-owned", qualification: "needs-approval",
+  });
+  entry.current.enabled = false;
+  expect(capabilityIndexFromRegistry({
+    schemaVersion: 1, revision: 6, entries: [entry],
+  }).callable(d.name)?.fabric).toMatchObject({
+    qualification: "unavailable", availability: "unavailable",
+  });
+});

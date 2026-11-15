@@ -14,6 +14,7 @@ import { trustedContext } from "@/modules/ai/lib/contextCalibrationTrust";
 import { toolVerificationState } from "@/modules/ai/lib/toolVerification";
 import {automaticAgentRecommendation} from "@/modules/ai/lib/agentConfiguration";
 import { resolveModelDeployment, capabilityStatus } from "@/modules/ai/lib/localComputeFabric";
+import { deploymentToolEncoding } from "@/modules/ai/lib/deploymentToolEncoding";
 import {
   PROBE_INVENTORY_TTL_MS,
   PROBE_INSTANCE_TTL_MS,
@@ -254,6 +255,7 @@ export function modelOnboarding(
       profile.modelRevision,
     ],
     status,
+    toolEncoding: deploymentToolEncoding(state, profile, now),
     problem,
     tools,
     providerDefaultTools,

@@ -8,6 +8,57 @@ import { executeCustomTool } from "@/modules/ai/lib/customToolExecution";
 import type { ToolContext } from "@/modules/ai/tools/context";
 import { buildTools } from "@/modules/ai/tools/tools";
 import { identifyTool } from "@/modules/ai/lib/toolExposure";
+import { capabilityIndexFromTools } from "@/modules/ai/lib/capabilityIndex";
+import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
+import { z } from "zod";
+
+/**
+ * A catalog search can reveal only the *captured executable* toolset. It
+ * cannot connect an MCP server, update permissions, install a plugin, expand
+ * a running model's immutable schema set or dispatch a discovered capability.
+ */
+export function withCapabilityDiscovery(ctx: ToolContext, available: ToolSet): ToolSet {
+  const capturedSession = ctx.getSessionId();
+  const capturedRun = ctx.getRunId?.();
+  const candidate = Object.fromEntries(Object.entries(available).filter(([name]) =>
+    resolveCurrentAgentPermission(name, {}, ctx).outcome !== "deny"));
+  return {
+    ...candidate,
+    discover_capabilities: tool({
+      description:
+        "Find a relevant capability that Clack has already authorized for this agent and workspace. " +
+        "Returns concise identities, sources, permission/effect classes and availability; never executes tools, " +
+        "connects accounts or grants access. Search the catalog when a needed tool is not exposed in this turn.",
+      inputSchema: z.object({
+        query: z.string().trim().min(2).max(256),
+        limit: z.number().int().min(1).max(12).default(6),
+      }),
+      execute: async ({ query, limit }) => {
+        if (!capturedSession || ctx.getSessionId() !== capturedSession ||
+            ctx.getRunId?.() !== capturedRun)
+          return { status: "unavailable", code: "run-changed", capabilities: [] };
+        const allowed = Object.fromEntries(Object.entries(candidate).filter(([name]) =>
+          resolveCurrentAgentPermission(name, {}, ctx).outcome !== "deny"));
+        const results = capabilityIndexFromTools(allowed).search({
+          query, enabledOnly: true, limit,
+        });
+        return {
+          status: results.length ? "found" : "not-configured",
+          capabilities: results.map(c => ({
+            id: c.id, tool: c.callableName,
+            source: c.source, summary: c.discovery.summary,
+            semanticCapability: c.fabric.semanticCapability,
+            permissionClass: c.fabric.permissionClass,
+            effectClass: c.fabric.effectClass,
+            qualification: c.fabric.qualification,
+            revision: c.revision,
+          })),
+          note: "Discovery is not authorization or execution. Tools not exposed in this inference must be selected in a later authorized tool set.",
+        };
+      },
+    }),
+  };
+}
 
 export async function buildRuntimeTools(ctx: ToolContext): Promise<ToolSet> {
   const builtins = buildTools(ctx);
@@ -17,14 +68,14 @@ export async function buildRuntimeTools(ctx: ToolContext): Promise<ToolSet> {
   try {
     view = await customToolsClient(ctx.getSessionId() as string).loadEligible();
   } catch {
-    return builtins;
+    return withCapabilityDiscovery(ctx, builtins);
   }
   if (
     view?.schemaVersion !== 1 ||
     !Array.isArray(view.entries) ||
     view.entries.length > 128
   )
-    return builtins;
+    return withCapabilityDiscovery(ctx, builtins);
   const custom: ToolSet = {};
   const runId = ctx.getRunId?.();
   const captured = ctx.getCapturedToolVersions?.();
@@ -92,5 +143,5 @@ export async function buildRuntimeTools(ctx: ToolContext): Promise<ToolSet> {
     });
     identifyTool(custom[definition.name], { reference, definition, workspaceId: entry.workspaceId, origin: current.source });
   }
-  return { ...builtins, ...custom };
+  return withCapabilityDiscovery(ctx, { ...builtins, ...custom });
 }

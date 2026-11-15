@@ -75,6 +75,47 @@ it("B1 receives actual executable custom schemas alongside unchanged builtins", 
   expect(JSON.stringify(schema)).toContain(entry.current.definition.name);
   expect(JSON.stringify(schema)).toContain('"path"');
 });
+
+it("catalog discovery sees only current authorized tool identities and cannot execute or reveal schema/credentials", async () => {
+  const { ctx, entry } = fixture();
+  entry.current.definition.binding = { kind: "mcp", server: "mcp-server-one",
+    tool: "find_issue", connectionRevision: 4,
+    discovery: "a".repeat(64), toolHash: "b".repeat(64) };
+  entry.current.definition.description = "Find issue tracker records";
+  entry.current.definition.permissions = ["network"];
+  entry.current.definition.credentialRef = "keyring:mcp:never-expose";
+  const available = await buildRuntimeTools(ctx);
+  expect(available.discover_capabilities).toBeDefined();
+  const result = await available.discover_capabilities.execute?.({
+    query: "issue tracker", limit: 8,
+  }, { toolCallId: "discover", messages: [] });
+  expect(result).toMatchObject({ status: "found",
+    capabilities: [expect.objectContaining({
+      tool: entry.current.definition.name, source: "remote-mcp",
+      effectClass: "unknown", permissionClass: "external-effect",
+    })],
+  });
+  expect(JSON.stringify(result)).not.toContain("keyring:");
+  expect(JSON.stringify(result)).not.toContain("inputSchema");
+  expect(JSON.stringify(result)).not.toContain("endpoint");
+  expect(executeCustomTool).not.toHaveBeenCalled();
+  entry.current.status = "revoked";
+  const revoked = await buildRuntimeTools(ctx);
+  const missing = await revoked.discover_capabilities.execute?.({
+    query: "issue tracker", limit: 8,
+  }, { toolCallId: "discover-revoked", messages: [] });
+  expect(missing).toMatchObject({ status: "not-configured", capabilities: [] });
+});
+
+it("a stale captured discovery tool cannot reveal capabilities in a new run", async () => {
+  const { ctx } = fixture();
+  const available = await buildRuntimeTools(ctx);
+  ctx.getRunId = () => 2;
+  const result = await available.discover_capabilities.execute?.({
+    query: "read_file", limit: 3,
+  }, { toolCallId: "old-run", messages: [] });
+  expect(result).toMatchObject({ status: "unavailable", code: "run-changed" });
+});
 it.each([
   "unassigned",
   "foreign-workspace",

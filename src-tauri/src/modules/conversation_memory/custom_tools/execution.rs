@@ -891,6 +891,14 @@ async fn monitor(
     operation: impl std::future::Future<Output = Result<Value>>,
     mut check: impl FnMut() -> Result<()>,
 ) -> Result<Value> {
+    // Check cancellation and revocation before racing the timer against the
+    // interval's first tick. Under a busy executor a very short deadline can
+    // otherwise fire first, reporting a timeout for a revoked tool. Neither
+    // condition may authorize dispatch or an effect replay.
+    if lease.cancelled() {
+        return Err("cancelled".into());
+    }
+    check()?;
     tokio::pin!(operation);
     let timer = tokio::time::sleep(Duration::from_millis(timeout_ms));
     tokio::pin!(timer);

@@ -20,7 +20,7 @@ import { operationCapabilities, resolveToolObjective, type ToolCapability, type 
 import { getTodos } from "@/modules/ai/store/todoStore";
 import { providerCapabilityCandidates } from "@/modules/ai/lib/capabilityIndex";
 
-export const EXPOSURE_POLICY = "f1-exposure-v5";
+export const EXPOSURE_POLICY = "tf-exposure-v6";
 export const EXPOSURE_LIMITS = {
   candidates: 192,
   optional: 16,
@@ -272,11 +272,13 @@ export function selectToolSchemas(input: {
         );
       selected.add(name);
     }
-  // Ambiguous matches retain the permitted alternatives; no-match requests keep only a safe read core.
+  // Ambiguity is NOT permission to dump hundreds of schemas. Bound every
+  // optional branch to the same small-model budget; preserve mandatory tools
+  // and only the explicitly applicable dependency set.
   for (const { schema, score } of conversational
     ? []
     : fallback
-      ? ranked
+      ? ranked.slice(0, EXPOSURE_LIMITS.optional)
       : ranked.filter((r) => r.score >= Math.min(4, ranked[0]?.score || 1)).slice(0, EXPOSURE_LIMITS.optional)) {
     if (fallback || score > 0) {
       if (["delegated", "read-only"].includes(input.objective?.kind ?? "") && (requiresWorkspaceWriteLease(schema.function.name) || capabilities(schema.function.name).some(c => ["create", "modify", "command"].includes(c))) && !mandatory.includes(schema.function.name)) continue;

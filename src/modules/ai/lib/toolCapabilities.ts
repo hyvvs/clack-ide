@@ -5,6 +5,9 @@ export type CapabilityState =
   | "Unsupported by this model"
   | "Model support unverified";
 const descriptions: Record<string, [string, string]> = {
+  fetch_web_page: ["Research", "Retrieve a public HTTPS page with source evidence"],
+  compare_web_sources: ["Research", "Retrieve and compare sourced web pages"],
+  discover_capabilities: ["Research", "Find available, authorized capabilities"],
   read_file: ["Files", "Read project files"],
   list_directory: ["Files", "Browse project folders"],
   grep: ["Files", "Search project file contents"],
