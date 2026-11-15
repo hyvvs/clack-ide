@@ -178,8 +178,8 @@ export function compactionFixture(originals = history(), owner = defaultOwner) {
     return {
       text: JSON.stringify({
         claims: request.sources.map(
-          (source: { id: string; passages: string[] }) => ({
-            source: source.id,
+          (source: { sourceIndex: number; passages: string[] }) => ({
+            sourceIndex: source.sourceIndex,
             section: "decisions",
             text: source.passages[0].split("\n")[0],
             quote: source.passages[0].split("\n")[0],

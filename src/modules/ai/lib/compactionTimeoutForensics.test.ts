@@ -32,7 +32,7 @@ const source: ExtractionSource = {
 };
 const reply = () => ({
   text: JSON.stringify({ claims: [{
-    source: source.evidence.id,
+    sourceIndex: 0,
     section: "unresolved-issues",
     text: "The assistant reported an unresolved build.",
     quote: passage,

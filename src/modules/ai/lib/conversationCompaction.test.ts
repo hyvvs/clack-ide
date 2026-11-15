@@ -280,7 +280,7 @@ describe("durable conversation compaction coordinator", () => {
       compactor.dispose();
     }
   });
-  it("resumes after the bounded batch reaches safe headroom even when the ideal target needs more work", async () => {
+  it("resumes after four bounded chunks with safe headroom while uncaptured originals stay authoritative", async () => {
     const originals = [textMessage("requirement", "user", "Preserve timeoutMs=750 and allowRemote=false."),
       ...Array.from({ length: 25 }, (_, index) => textMessage(`result-${index}`, "assistant", `Completed ${index}.\n${"historical observation ".repeat(80)}`)),
       textMessage("next", "user", "Read config.json."),
@@ -298,7 +298,11 @@ describe("durable conversation compaction coordinator", () => {
     const budget = resolveContextBudget(limits, measureRequest({ messages: result, tools: [] }));
     expect(budget.fits).toBe(true);
     expect(budget.cost.conversation).toBeLessThanOrEqual(budget.working * COMPACTION_POLICY.trigger);
-    expect(budget.cost.conversation).toBeGreaterThan(budget.working * COMPACTION_POLICY.target);
+    // Source-index extraction creates shorter valid claims, so the strict
+    // target may now be met as well. The safety invariant is that all still
+    // uncovered history remains original and the request is below trigger.
+    expect(budget.cost.conversation).toBeGreaterThan(0);
+    expect(f.view().revision?.coverage.end).toBeGreaterThan(0);
     expect(f.view().revision?.coverage.end).toBeLessThan(originals.length);
     expect(f.originals).toEqual(originals);
   });

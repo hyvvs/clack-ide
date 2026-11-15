@@ -49,7 +49,7 @@ const response = () => ({
         content: JSON.stringify({
           claims: [
             {
-              source: source.evidence.id,
+              sourceIndex: 0,
               section: "unresolved-issues",
               text: "An assistant reports a failing migration.",
               quote: source.passages[0],
@@ -120,7 +120,7 @@ beforeEach(() => {
       bytes: [...new TextEncoder().encode(JSON.stringify(wire.model === "muse-glimmer:30b" ? {
         model: "muse-glimmer:30b", done: true, done_reason: "stop",
         message: { role: "assistant", content: JSON.stringify({ claims: [{
-          source: source.evidence.id, section: "unresolved-issues",
+          sourceIndex: 0, section: "unresolved-issues",
           text: "Deployment remains blocked by a failing migration.",
           quote: source.passages[0], status: "inference", contradicts: [],
         }] }) }, prompt_eval_count: 100, eval_count: 70,
@@ -263,7 +263,7 @@ describe("bounded extraction through the installed provider adapter", () => {
   it("uses production generateText/doGenerate with the exact non-streaming extraction contract", async () => {
     let wire: Record<string, unknown> | undefined;
     const completion = JSON.stringify({ claims: [{
-      source: source.evidence.id, section: "unresolved-issues",
+      sourceIndex: 0, section: "unresolved-issues",
       text: "The migration remains blocked.", quote: source.passages[0],
       status: "inference", contradicts: [],
     }] });

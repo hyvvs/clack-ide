@@ -30,7 +30,9 @@ export type PreparationPhase =
 export type ExtractionAttemptReason =
   | "initial" | "validation-retry" | "smaller-prefix-timeout-retry";
 export type ExtractionValidationReason =
-  | "response-size" | "schema" | "source-quote" | "protected-source"
+  | "response-size" | "json-syntax" | "schema-shape" | "schema-missing-field"
+  | "schema-unknown-field" | "schema-type" | "schema-enum" | "schema-limit"
+  | "source-index" | "source-quote" | "protected-source"
   | "contradiction" | "claim-size" | "coverage";
 export type ExtractionAttemptObservation = Readonly<{
   preparationId: string;

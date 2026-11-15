@@ -4,6 +4,7 @@ import {
   COMPACTION_POLICY,
   createBoundedExtractor,
   exactUserClaims,
+  extractionMessages,
   validateExtraction,
   type ExtractionCall,
   type ExtractionSource,
@@ -32,7 +33,7 @@ function output(s = source(), overrides: Record<string, unknown> = {}) {
   return JSON.stringify({
     claims: [
       {
-        source: s.evidence.id,
+        sourceIndex: 0,
         section: "unresolved-issues",
         text: "The assistant reports a passing build and blocked deployment.",
         quote: s.passages[0],
@@ -120,7 +121,7 @@ describe("source-linked extraction validation", () => {
   it.each([
     ["invalid JSON", "not json"],
     ["fenced JSON", `\`\`\`json\n${output()}\n\`\`\``],
-    ["invented evidence", output(source(), { source: "e".repeat(64) })],
+    ["invented source index", output(source(), { sourceIndex: 99 })],
     ["invented quote", output(source(), { quote: "Deployment passed" })],
     [
       "edited negation",
@@ -139,11 +140,37 @@ describe("source-linked extraction validation", () => {
       validateExtraction(text, [source()], [prior], 42),
     ).rejects.toMatchObject({ code: "compaction-invalid-output" });
   });
-  it("does not let a model rewrite user instructions", async () => {
+  it("does not let a model reference protected user instructions", async () => {
     const user = source("a", "user");
     await expect(
       validateExtraction(output(user), [user], [], 1),
-    ).rejects.toThrow("protected instruction");
+    ).rejects.toMatchObject({ validationReason: "source-index" });
+  });
+  it("keeps original source IDs, digests and user instructions outside model-authored source records", () => {
+    const assistant = source("a");
+    const user = source("b", "user", "Do not change port 1420");
+    const messages = extractionMessages([user, assistant], [prior]);
+    const payload = JSON.parse(messages[1].content as string) as { sources: unknown[]; existingClaims: unknown[] };
+    expect(payload.sources).toEqual([{ sourceIndex: 0, role: "assistant", passages: assistant.passages }]);
+    expect(JSON.stringify(payload.sources)).not.toContain(assistant.evidence.id);
+    expect(JSON.stringify(payload.sources)).not.toContain(assistant.evidence.digest);
+    expect(JSON.stringify(payload.sources)).not.toContain(user.passages[0]);
+    expect(payload.existingClaims).toHaveLength(1);
+  });
+  it.each([
+    ["json-syntax", "{not-json"],
+    ["schema-unknown-field", output(source(), { ownerRevision: "model-forged" })],
+    ["schema-missing-field", JSON.stringify({ claims: [{ sourceIndex: 0, section: "decisions", text: "claim" }] })],
+    ["schema-type", output(source(), { sourceIndex: "0" })],
+    ["schema-enum", output(source(), { status: "verified-observation" })],
+    ["schema-limit", output(source(), { sourceIndex: 129 })],
+    ["source-index", output(source(), { sourceIndex: 1 })],
+    ["source-quote", output(source(), { quote: "invented quote" })],
+    ["coverage", '{"claims":[]}'],
+    ["contradiction", output(source(), { contradicts: ["missing-claim"] })],
+  ])("records a bounded exact validation category %s without raw output", async (category, content) => {
+    await expect(validateExtraction(content, [source()], [prior], 42))
+      .rejects.toMatchObject({ code: "compaction-invalid-output", validationReason: category });
   });
   it("checks exact Unicode quotes without normalization or truncation", async () => {
     const s = source(
@@ -228,6 +255,20 @@ describe("bounded extraction batch", () => {
       code: "compaction-stale",
     });
     expect(run.call).toHaveBeenCalledTimes(3);
+  });
+  it("supplies categorical, non-content feedback on the single retry without changing sources", async () => {
+    const run = extractor();
+    run.call.mockResolvedValueOnce({ text: "```json\n{}\n```",
+      usage: { inputTokens: 10, outputTokens: 10, cachedInputTokens: 0 } });
+    const original = output();
+    await run.extract([source()], []);
+    expect(run.call).toHaveBeenCalledTimes(2);
+    const [first, retry] = run.call.mock.calls.map(call => call[0].messages);
+    expect(retry[1]).toEqual(first[1]);
+    expect(retry[0].content).toContain("Validation repair: Return one syntactically valid JSON object");
+    expect(retry[0].content).not.toContain("```json");
+    expect(original).not.toContain("Validation repair");
+    expect(run.snapshot().retries).toBe(1);
   });
   it("does not retry provider errors", async () => {
     const run = extractor();

@@ -498,13 +498,13 @@ beforeEach(() => {
       extracts.push(body);
       expect(body.tools).toBeUndefined();
       const source = JSON.parse(body.messages[1].content) as {
-        sources: Array<{ id: string; passages: string[] }>;
+        sources: Array<{ sourceIndex: number; passages: string[] }>;
       };
       payload = JSON.stringify(
         complete(
           JSON.stringify({
             claims: source.sources.map((s) => ({
-              source: s.id,
+              sourceIndex: s.sourceIndex,
               section: "decisions",
               text: s.passages[0].split("\n")[0],
               quote: s.passages[0].split("\n")[0],
@@ -671,14 +671,14 @@ describe("automatic compaction in the real agent request path", () => {
       expect(body.stream).toBeFalsy();
       extracts.push(body);
       const source = JSON.parse(body.messages[1].content) as {
-        sources: Array<{ id: string; passages: string[] }>;
+        sources: Array<{ sourceIndex: number; passages: string[] }>;
       };
       return new Response(
         JSON.stringify(
           complete(
             JSON.stringify({
               claims: source.sources.map((s) => ({
-                source: s.id,
+                sourceIndex: s.sourceIndex,
                 section: "decisions",
                 text: s.passages[0].split("\n")[0],
                 quote: s.passages[0].split("\n")[0],

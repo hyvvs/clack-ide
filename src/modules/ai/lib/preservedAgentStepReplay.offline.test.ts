@@ -74,7 +74,7 @@ describe.skipIf(!fs.existsSync(archive))("archived 58-step Agent native-like rep
       // The summary carries provenance and outcomes as *inferences*. A
       // historical tool report never becomes a reverified workspace write.
       const body = JSON.parse(request.messages[1].content as string) as {
-        sources: Array<{ id: string; passages: string[] }>;
+        sources: Array<{ sourceIndex: number; passages: string[] }>;
       };
       return {
         text: JSON.stringify({ claims: body.sources.map(item => {
@@ -88,7 +88,7 @@ describe.skipIf(!fs.existsSync(archive))("archived 58-step Agent native-like rep
           const quote = (source ?? "").slice(0, 40);
           const failed = tool?.output && JSON.stringify(tool.output).match(/"error"|"exit_code":(?:[1-9]|-)/);
           return {
-            source: item.id,
+            sourceIndex: item.sourceIndex,
             section: failed ? "errors" : "project-state",
             text: tool
               ? `${tool.type} ${tool.toolCallId}: ${failed ? "failed" : "result recorded"}; effect unverified`

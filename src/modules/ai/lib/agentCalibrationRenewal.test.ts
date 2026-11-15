@@ -358,12 +358,12 @@ describe("combined long-horizon continuation authority: offline campaign-06 repr
       await (await preflight.prepare(body()))();
       freshProviderSegments++;
       const sources = (JSON.parse(options.messages[1].content as string) as {
-        sources: { id: string; passages: string[] }[];
+        sources: { sourceIndex: number; passages: string[] }[];
       }).sources;
       // Short valid synthetic claims cite exact fragments of the unchanged
       // original step evidence, within the real extractor output allowance.
       return { text: JSON.stringify({ claims: sources.map(source => ({
-        source: source.id, section: "decisions",
+        sourceIndex: source.sourceIndex, section: "decisions",
         text: "The completed step remains in the durable checkpoint",
         quote: source.passages[0].slice(0, 30), status: "unresolved",
         contradicts: [],

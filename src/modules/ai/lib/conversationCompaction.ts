@@ -12,6 +12,8 @@ import {
   CompactionError,
   createBoundedExtractor,
   extractionMessages,
+  extractionRequestCost,
+  extractionUsesNativeSchema,
   type ExtractionCall,
   type ExtractionSource,
   type ExtractionUsage,
@@ -733,7 +735,7 @@ export async function createConversationCompactor(options: {
               size > COMPACTION_POLICY.maxSourceBytes ||
               !resolveContextBudget(
                 extractionLimits,
-                measureRequest({ messages: request }),
+                extractionRequestCost(request, extractionUsesNativeSchema(route.model)),
                 Math.min(1024, resolveContextBudget(extractionLimits).output),
               ).fits
             )

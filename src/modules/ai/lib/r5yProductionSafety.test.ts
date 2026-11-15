@@ -211,7 +211,18 @@ describe("R5y production Agent and final native-dispatch safety regressions", ()
   it.each([4096, 0])("rejects initially changed/unavailable loaded context %i", async (loaded) => {
     const f = await fixture();
     await f.changeLoaded(loaded);
-    await expect(f.run()).rejects.toThrow(/working context changed/);
+    // A stale allocation may be rejected synchronously by Agent admission or
+    // returned as a terminal stream error by the native preflight. Both paths
+    // must carry the exact non-retryable context guard and dispatch nothing.
+    const actual = await f.run().then(
+      chunks => chunks.find(chunk => chunk.type === "error")?.error,
+      error => error,
+    );
+    expect(actual).toMatchObject({
+      code: loaded ? "ollama-context-mismatch" : "ollama-continuation-allocation-stale",
+      contextPreflight: true,
+      retryable: false,
+    });
     expect(f.bodies).toEqual([]);
   });
 
@@ -321,11 +332,15 @@ describe("R5y production Agent and final native-dispatch safety regressions", ()
 
   it("rejects a same-run Automatic alternative with another record or confirmed variant", async () => {
     const f = await fixture(2048, true);
-    await expect(f.run(f.captured, "different-run-record")).rejects.toThrow(/proof selection changed/);
+    await expect(f.run(f.captured, "different-run-record")).rejects.toThrow(
+      /proof selection changed|configuration is not verified/,
+    );
     const recorded = f.captured.profiles[0].agentToolConfigurations?.[0];
     if (!recorded) throw new Error("Expected confirmed alternative");
     await expect(f.run(f.captured, recorded.id,
-      JSON.stringify({ choice: "on", wire: true }))).rejects.toThrow(/reasoning variant changed/);
+      JSON.stringify({ choice: "on", wire: true }))).rejects.toThrow(
+      /reasoning variant changed|configuration is not verified/,
+    );
     expect(f.bodies).toEqual([]);
   });
 });

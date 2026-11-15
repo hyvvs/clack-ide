@@ -270,10 +270,10 @@ describe("Automatic Agent long-horizon native runtime integration (offline)", ()
     const before = JSON.stringify(fixture.originals);
     const validExtract = async (options: Parameters<typeof fixture.call>[0]) => {
       const payload = JSON.parse(options.messages[1].content as string) as {
-        sources: { id: string; passages: string[] }[];
+        sources: { sourceIndex: number; passages: string[] }[];
       };
       return { text: JSON.stringify({ claims: payload.sources.map(source => ({
-        source: source.id, section: "decisions", text: "Completed effect is retained",
+        sourceIndex: source.sourceIndex, section: "decisions", text: "Completed effect is retained",
         quote: source.passages[0].slice(0, 30), status: "unresolved",
         contradicts: [],
       })) }), usage: { inputTokens: 100, outputTokens: 50, cachedInputTokens: 0 } };
