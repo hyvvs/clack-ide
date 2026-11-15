@@ -5,6 +5,11 @@ import type {
   SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
 import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
+import {
+  acceptsLegacyDeploymentQualification,
+  capabilityStatus,
+  resolveModelDeployment,
+} from "@/modules/ai/lib/localComputeFabric";
 
 type Runtime = {
   epoch: string;
@@ -104,6 +109,7 @@ export function trustedContext(
   );
   const record = profile.contextCalibration,
     runtime = endpoint && contextRuntime(endpoint.id);
+  const deployment = resolveModelDeployment(state, profile);
   const inventory = state.inventories?.find(
     (i) =>
       i.endpointId === endpoint?.id &&
@@ -111,6 +117,9 @@ export function trustedContext(
   );
   if (
     !endpoint ||
+    !acceptsLegacyDeploymentQualification(state, profile, deployment) ||
+    !deployment ||
+    capabilityStatus(deployment.runtime, "context-configuration") === "unsupported" ||
     !record?.highest ||
     !runtime ||
     record.status === "verifying" ||

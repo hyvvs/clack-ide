@@ -13,6 +13,13 @@ import {
   SELF_HOSTED_SETTINGS_KEY,
   type SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
+import { ensureDefaultOllamaHost } from "@/modules/ai/lib/selfHostedMigration";
+import {
+  reconcileLocalComputeFabric,
+  resolveModelDeployment,
+  withLocalComputeFabric,
+} from "@/modules/ai/lib/localComputeFabric";
+import { selfHostedSelectionId, selfHostedTransportIdentity } from "@/modules/ai/lib/selfHostedModels";
 
 const mocks = vi.hoisted(() => ({
   data: new Map<string, unknown>(),
@@ -89,6 +96,109 @@ beforeEach(() => {
 });
 
 describe("persistent self-hosted settings", () => {
+  it("migrates the live-accepted Secondary PC snapshot without changing the saved selection or duplicating This PC", async () => {
+    const id = "sh-906dc712-b5bb-445a-9a88-ca71865f4d9e";
+    const digest = "24277f07f62db8f9cb68e9dfc679ea1818a7fbac47a50eff0a701d3f645b63c8";
+    const local = ensureDefaultOllamaHost(emptySelfHostedState(), new Map(), 1);
+    const remote = {
+      ...createSelfHostedEndpoint({
+        alias: "Secondary PC", baseURL: "http://192.168.1.44:11434/",
+        backendHint: "ollama", allowPrivateNetwork: true,
+      }, id, 2),
+      configurationRevision: 2,
+    };
+    let raw = addSelfHostedEndpoint(local, remote);
+    const modelNames = ["devstral-small-2:24b", ...Array.from({ length: 14 }, (_, i) => `model-${i}:latest`)];
+    for (const model of modelNames) raw = ensureSelfHostedProfile(raw, id, model).state;
+    raw = {
+      ...raw, revision: 948,
+      profiles: raw.profiles.map(p => p.transportModelId !== modelNames[0] ? p : {
+        ...p, modelRevision: digest, backend: "ollama" as const,
+      }),
+      inventories: [{
+        endpointId: id, configurationRevision: 2,
+        observedAt: 100, connected: true, backend: "ollama", version: "0.40.11",
+        models: modelNames.map((model, index) => ({
+          id: model, name: model, chat: "supported" as const,
+          ...(index === 0 ? { digest } : {}),
+        })),
+      }],
+    };
+    const selected = selfHostedSelectionId(raw.profiles[0]);
+    const route = selfHostedTransportIdentity(selected, raw);
+    mocks.data.set(SELF_HOSTED_SETTINGS_KEY, structuredClone(raw));
+    mocks.data.set("lastUsedModelId", selected);
+    const repository = createSelfHostedPersistence(nativeSelfHostedStorage());
+    const first = await repository.load();
+    expect(first.fabric?.version).toBe(1);
+    expect(first.fabric?.hosts).toHaveLength(2);
+    expect(first.fabric?.runtimes).toHaveLength(2);
+    expect(first.fabric?.deployments).toHaveLength(0);
+    expect(reconcileLocalComputeFabric(first).deployments).toHaveLength(15);
+    expect(first.endpoints.filter(e => e.alias === "Secondary PC")).toHaveLength(1);
+    expect(first.endpoints.filter(e => e.alias === "This PC")).toHaveLength(1);
+    expect(first.profiles).toEqual(raw.profiles);
+    expect(first.inventories).toEqual(raw.inventories);
+    expect(mocks.data.get("lastUsedModelId")).toBe(selected);
+    const deployed = resolveModelDeployment(first, first.profiles[0])!;
+    expect(deployed.runtime.type).toBe("ollama");
+    expect(deployed.artifact.digest).toBe(digest);
+    expect(selfHostedTransportIdentity(selected, first)).toMatchObject({
+      providerId: "ollama", endpointBaseURL: "http://192.168.1.44:11434/v1",
+      selfHosted: { endpointId: id, profileId: raw.profiles[0].id },
+    });
+    expect(route?.selfHosted?.endpointId).toBe(id);
+    const second = await repository.load();
+    expect(second).toEqual(first);
+    expect(mocks.invokes.filter(c => c.endsWith("compare_and_swap"))).toHaveLength(1);
+    const disabled = await repository.update(state => editSelfHostedEndpoint(state, id, { enabled: false }, 500));
+    expect(disabled.fabric?.runtimes.find(r => r.legacyEndpointId === id)?.enabled).toBe(false);
+    const restored = await repository.update(state => editSelfHostedEndpoint(state, id, { enabled: true }, 501));
+    expect(restored.endpoints.find(e => e.id === id)?.configurationRevision).toBe(3);
+    expect(restored.fabric?.hosts.find(h => h.id === id)?.enabled).toBe(true);
+    expect(reconcileLocalComputeFabric(restored).deployments).toHaveLength(15);
+    expect(resolveModelDeployment(restored, restored.profiles[0])?.identity)
+      .not.toBe(deployed.identity);
+    expect(restored.profiles).toEqual(raw.profiles);
+    expect(mocks.data.get("lastUsedModelId")).toBe(selected);
+  });
+
+  it("preserves future-schema source bytes and an unavailable conceptual runtime without triggering a rewrite", async () => {
+    const host = createSelfHostedEndpoint({
+      alias: "This PC", baseURL: "http://127.0.0.1:11434/",
+      backendHint: "ollama",
+    }, "local", 1);
+    const base = withLocalComputeFabric(addSelfHostedEndpoint(emptySelfHostedState(), host));
+    const fabric = reconcileLocalComputeFabric(base);
+    const conceptual = {
+      ...base, fabric: {
+        ...fabric,
+        runtimes: [...fabric.runtimes, {
+          id: "future", hostId: "local", type: "clack-llama-cpp",
+          displayName: "Managed Runtime", configurationRevision: 1,
+          enabled: false, health: "unknown" as const,
+          capabilities: { "future-capability": { status: "coming-soon", source: "unknown" } },
+        }],
+      },
+    };
+    mocks.data.set(SELF_HOSTED_SETTINGS_KEY, conceptual);
+    const repo = createSelfHostedPersistence(nativeSelfHostedStorage());
+    const loaded = await repo.load();
+    expect(loaded.fabric?.runtimes.find(r => r.id === "future")).toMatchObject({
+      enabled: false, type: "clack-llama-cpp",
+    });
+    expect(loaded.fabric?.runtimes.find(r => r.id === "future")?.capabilities["future-capability"].status)
+      .toBe("coming-soon");
+    const future = { ...loaded, fabric: { ...loaded.fabric!, version: 2 } };
+    mocks.data.set(SELF_HOSTED_SETTINGS_KEY, structuredClone(future));
+    mocks.invokes.length = 0;
+    await repo.load(); // Read-only fallback, not a silent future-schema rewrite.
+    expect(mocks.invokes.filter(c => c.endsWith("compare_and_swap"))).toHaveLength(0);
+    expect(mocks.data.get(SELF_HOSTED_SETTINGS_KEY)).toEqual(future);
+    await expect(repo.update(s => s)).rejects.toThrow(/unsupported schema/);
+    expect(mocks.data.get(SELF_HOSTED_SETTINGS_KEY)).toEqual(future);
+  });
+
   it("persists migration once and reloads the same identities", async () => {
     mocks.data.set("ollamaModelId", "qwen");
     const repository = createSelfHostedPersistence(nativeSelfHostedStorage());

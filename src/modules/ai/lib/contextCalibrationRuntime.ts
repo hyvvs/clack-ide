@@ -18,7 +18,6 @@ import {
   selfHostedCredential,
   selfHostedTransportIdentity,
   selfHostedSelectionId,
-  compatibleServerBaseURL,
 } from "@/modules/ai/lib/selfHostedModels";
 import { endpointInferenceAdmission } from "@/modules/ai/lib/inferenceAdmission";
 import {
@@ -192,8 +191,8 @@ export async function calibrateModelContext(
                 state,
               ),
               allowPrivateNetwork: endpointAllowsPrivate(endpoint),
-              ollamaBaseURL: endpoint.baseURL,
-              openaiCompatibleBaseURL: compatibleServerBaseURL(endpoint),
+              ollamaBaseURL: identity.endpointBaseURL,
+              openaiCompatibleBaseURL: identity.endpointBaseURL,
               calibration: {
                 requestClass: "optimization",
                 record: () => {},

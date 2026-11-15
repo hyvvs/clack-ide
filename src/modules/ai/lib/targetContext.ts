@@ -37,6 +37,7 @@ export function targetContextKey(input: {
   credentials: unknown;
 }) {
   const { configuration: config, ...rest } = input;
+  const identity = resolveModelTransportIdentity(input.modelId, config);
   return contextDigest({
     policy: "c2-target-v1",
     extraction: "c1b-extraction-v1",
@@ -45,15 +46,15 @@ export function targetContextKey(input: {
         ? config.reasoning
         : "provider-default",
     ...rest,
-    identity: resolveModelTransportIdentity(input.modelId, config),
+    identity,
     profiles: config.selfHostedInference,
     endpoints: config.customEndpoints,
     savedModels: config.savedProviderModels,
     urls: [
-      config.lmstudioBaseURL,
-      config.mlxBaseURL,
-      config.ollamaBaseURL,
-      config.openaiCompatibleBaseURL,
+      identity.selfHosted && identity.providerId === "lmstudio" ? undefined : config.lmstudioBaseURL,
+      identity.selfHosted && identity.providerId === "mlx" ? undefined : config.mlxBaseURL,
+      identity.selfHosted && identity.providerId === "ollama" ? undefined : config.ollamaBaseURL,
+      identity.selfHosted && identity.providerId === "openai-compatible" ? undefined : config.openaiCompatibleBaseURL,
     ],
   });
 }

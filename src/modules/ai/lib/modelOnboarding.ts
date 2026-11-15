@@ -13,6 +13,7 @@ import { resolveContextBudget, UNKNOWN_CONTEXT_POLICY } from "@/modules/ai/lib/c
 import { trustedContext } from "@/modules/ai/lib/contextCalibrationTrust";
 import { toolVerificationState } from "@/modules/ai/lib/toolVerification";
 import {automaticAgentRecommendation} from "@/modules/ai/lib/agentConfiguration";
+import { resolveModelDeployment, capabilityStatus } from "@/modules/ai/lib/localComputeFabric";
 import {
   PROBE_INVENTORY_TTL_MS,
   PROBE_INSTANCE_TTL_MS,
@@ -72,6 +73,10 @@ export function modelOnboarding(
     (e) => e.id === profile.endpointId && e.deletedAt == null,
   );
   if (!endpoint) return null;
+  const deployment = resolveModelDeployment(state, profile);
+  const runtimeNoTools = deployment
+    ? capabilityStatus(deployment.runtime, "native-tools") === "unsupported"
+    : false;
   const inventory = state.inventories?.find(
     (i) =>
       i.endpointId === endpoint.id &&
@@ -200,8 +205,11 @@ export function modelOnboarding(
       : undefined;
   let status: ModelReadiness = "Unverified";
   const testedContext = typeof profile.overrides.workingContext?.evidence.value === "number" ? profile.overrides.workingContext.evidence.value : context;
-  const providerDefaultTools = profile.toolVerification ? toolVerificationState(state, profile, now, testedContext) : statusFor(value("trainedForTools"), verified("tools"));
-  const agentRecommendation = automaticAgentRecommendation(state, profile, testedContext, now);
+  const providerDefaultTools = runtimeNoTools ? "Unsupported" :
+    profile.toolVerification ? toolVerificationState(state, profile, now, testedContext) :
+      statusFor(value("trainedForTools"), verified("tools"));
+  const agentRecommendation = runtimeNoTools ? undefined :
+    automaticAgentRecommendation(state, profile, testedContext, now);
   const tools = agentRecommendation ? "Verified" : providerDefaultTools;
   const safeConservativeContext = !profile.overrides.workingContext && context !== undefined && context <= UNKNOWN_CONTEXT_POLICY &&
     agentRecommendation?.record.context === context;
@@ -221,7 +229,8 @@ export function modelOnboarding(
     verified("reasoning") === false
   )
     status = "Incompatible";
-  else if (profile.toolVerification && ["Incompatible", "Unsupported"].includes(tools)) status = "Chat only";
+  else if (runtimeNoTools ||
+    (profile.toolVerification && ["Incompatible", "Unsupported"].includes(tools))) status = "Chat only";
   else if (tools === "Needs attention") status = "Needs attention";
   else if (problem) status = "Needs attention";
   else if (

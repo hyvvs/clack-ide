@@ -4,6 +4,7 @@ import { calibrationSchema, CALIBRATED_FIELDS } from "@/modules/ai/lib/calibrati
 import { contextCalibrationSchema } from "@/modules/ai/lib/contextCalibrationSchema";
 import { trustedContext } from "@/modules/ai/lib/contextCalibrationTrust";
 import { toolVerificationSchema } from "@/modules/ai/lib/toolVerificationSchema";
+import { localComputeFabricSchema, type LocalComputeFabric } from "@/modules/ai/lib/localComputeFabric";
 
 export const SELF_HOSTED_SCHEMA_VERSION = 1;
 export const SELF_HOSTED_SETTINGS_KEY = "selfHostedInference";
@@ -207,6 +208,8 @@ export type SelfHostedState = {
   endpoints: SelfHostedEndpoint[];
   profiles: SelfHostedProfile[];
   inventories?: SelfHostedInventory[];
+  /** LM2B additive versioned fabric, inside the existing native-owned registry. */
+  fabric?: LocalComputeFabric;
 };
 
 export function emptySelfHostedState(): SelfHostedState {
@@ -234,6 +237,7 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
       endpoints: z.array(z.unknown()).max(256),
       profiles: z.array(z.unknown()).max(2048),
       inventories: z.array(z.unknown()).max(256).optional(),
+      fabric: z.unknown().optional(),
     })
     .safeParse(raw);
   if (!envelope.success) return emptySelfHostedState();
@@ -312,8 +316,10 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
     return parsed.success && endpoints.some(e => e.id === parsed.data.endpointId &&
       e.configurationRevision === parsed.data.configurationRevision) ? [parsed.data] : [];
   }).filter((item, index, all) => all.findIndex(i => i.endpointId === item.endpointId) === index);
+  const fabric = localComputeFabricSchema.safeParse(envelope.data.fabric);
   return { version: 1, revision: envelope.data.revision, endpoints, profiles,
-    ...(inventories ? { inventories } : {}) };
+    ...(inventories ? { inventories } : {}),
+    ...(fabric.success ? { fabric: fabric.data } : {}) };
 }
 
 export function assertWritableSelfHostedState(raw: unknown): void {
@@ -325,6 +331,7 @@ export function assertWritableSelfHostedState(raw: unknown): void {
       endpoints: z.array(endpointSchema).max(256),
       profiles: z.array(profileSchema).max(2048),
       inventories: z.array(selfHostedInventorySchema).max(256).optional(),
+      fabric: localComputeFabricSchema.optional(),
     })
     .safeParse(raw);
   if (!parsed.success) {
@@ -336,7 +343,8 @@ export function assertWritableSelfHostedState(raw: unknown): void {
   if (
     normalized.endpoints.length !== parsed.data.endpoints.length ||
     JSON.stringify(normalized.profiles) !== JSON.stringify(parsed.data.profiles) ||
-    JSON.stringify(normalized.inventories) !== JSON.stringify(parsed.data.inventories)
+    JSON.stringify(normalized.inventories) !== JSON.stringify(parsed.data.inventories) ||
+    JSON.stringify(normalized.fabric) !== JSON.stringify(parsed.data.fabric)
   )
     throw new Error(
       "Self-hosted settings contain invalid profile references or values; original data was preserved",

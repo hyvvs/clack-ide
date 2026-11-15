@@ -7,6 +7,7 @@ import {
   type SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
 import { ensureDefaultOllamaHost, migrateSelfHostedProfiles } from "@/modules/ai/lib/selfHostedMigration";
+import { withLocalComputeFabric } from "@/modules/ai/lib/localComputeFabric";
 
 export type SelfHostedStorage = {
   entries: () => Promise<[string, unknown][]>;
@@ -26,7 +27,7 @@ export function createSelfHostedPersistence(storage: SelfHostedStorage) {
       const raw = entries.get(SELF_HOSTED_SETTINGS_KEY) ?? null;
       assertWritableSelfHostedState(raw);
       const migrated = ensureDefaultOllamaHost(migrateSelfHostedProfiles(raw, entries), entries);
-      const changed = change(migrated);
+      const changed = withLocalComputeFabric(change(migrated));
       assertWritableSelfHostedState(changed);
       const next = readSelfHostedState(changed);
       if (JSON.stringify(next) === JSON.stringify(raw)) return next;

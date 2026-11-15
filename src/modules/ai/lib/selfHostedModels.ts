@@ -13,6 +13,8 @@ import type {
   ProviderKeys,
   CustomEndpointKeys,
 } from "@/modules/ai/lib/keyring";
+import { resolveModelDeployment } from "@/modules/ai/lib/localComputeFabric";
+import { compatibleRuntimeEndpoint, resolveRuntimeProviderTransport } from "@/modules/ai/lib/localRuntimeAdapters";
 
 export const SELF_HOSTED_BACKENDS = {
   ollama: "Ollama",
@@ -124,6 +126,11 @@ export function selfHostedPickerStatus(selectionId: string, state: SelfHostedSta
   const target = resolveSelfHostedSelection(state, selectionId);
   if (target.status === "not-managed") return undefined;
   if (target.status === "missing") return { label: "Unavailable", disabled: true };
+  // A compute host can be disabled independently of the installed runtime.
+  // Never advertise it as reconnectable merely because its old HTTP
+  // endpoint/model inventory is still saved.
+  if (!resolveModelDeployment(state, target.profile))
+    return { label: "Unavailable", disabled: true };
   const inventory = state.inventories?.find(i => i.endpointId === target.endpoint.id &&
     i.configurationRevision === target.endpoint.configurationRevision);
   if (!inventory) return { label: target.endpoint.ssh ? "Disconnected" : "Unverified", disabled: !!target.endpoint.ssh };
@@ -144,17 +151,7 @@ export function selfHostedPickerStatus(selectionId: string, state: SelfHostedSta
 }
 
 export function compatibleServerBaseURL(endpoint: SelfHostedEndpoint): string {
-  const url = new URL(endpoint.baseURL);
-  let path = url.pathname.replace(/\/+$/, "");
-  if (
-    !path ||
-    ((endpointBackend(endpoint) === "ollama" ||
-      endpointBackend(endpoint) === "lmstudio") &&
-      !path.endsWith("/v1"))
-  )
-    path += "/v1";
-  url.pathname = path;
-  return url.href.replace(/\/$/, "");
+  return compatibleRuntimeEndpoint(endpoint);
 }
 
 export function selfHostedTransportIdentity(
@@ -173,13 +170,16 @@ export function selfHostedTransportIdentity(
       "Model unavailable. Restore the server or choose another model.",
     );
   const { endpoint, profile } = target;
+  const deployment = resolveModelDeployment(state, profile);
+  if (!deployment) throw new Error("Model unavailable: compute deployment changed or disabled");
+  const transport = resolveRuntimeProviderTransport(deployment);
   const status = selfHostedPickerStatus(selectionId, state);
   if (status?.disabled && !managedReconnectAvailable(selectionId,state))
     throw new Error(`Model unavailable (${status.label}). Refresh this server or explicitly choose another model.`);
   return {
-    providerId: endpointProvider(endpoint),
-    transportModelId: profile.transportModelId,
-    endpointBaseURL: compatibleServerBaseURL(endpoint),
+    providerId: transport.providerId,
+    transportModelId: transport.modelName,
+    endpointBaseURL: transport.baseURL,
     selfHosted: {
       endpointId: endpoint.id,
       profileId: profile.id,
@@ -188,6 +188,7 @@ export function selfHostedTransportIdentity(
       credentialRef: endpoint.credentialRef,
       // Migrated compatible configurations historically permit keyless access.
       credentialRequired: !!endpoint.credentialRef && !endpoint.legacy,
+      deploymentIdentity: deployment.identity,
     },
   };
 }
@@ -227,6 +228,7 @@ export function assertCurrentOllamaHostIdentity(
       captured.selfHosted.endpointId !== current.selfHosted.endpointId ||
       captured.selfHosted.profileId !== current.selfHosted.profileId ||
       captured.selfHosted.configurationRevision !== current.selfHosted.configurationRevision ||
+      captured.selfHosted.deploymentIdentity !== current.selfHosted.deploymentIdentity ||
       captured.selfHosted.allowPrivateNetwork !== current.selfHosted.allowPrivateNetwork ||
       captured.selfHosted.credentialRequired !== current.selfHosted.credentialRequired ||
       JSON.stringify(captured.selfHosted.credentialRef) !==

@@ -56,6 +56,8 @@ export type ModelTransportIdentity = {
     allowPrivateNetwork: boolean;
     credentialRef: EndpointCredentialReference | null;
     credentialRequired: boolean;
+    /** LM2B captured execution identity; old saved selection IDs stay intact. */
+    deploymentIdentity?: string;
   };
 };
 

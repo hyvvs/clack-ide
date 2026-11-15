@@ -29,6 +29,7 @@ import {
 } from "./modelCapabilities";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { resolveSelfHostedSelection, endpointBackend } from "@/modules/ai/lib/selfHostedProfiles";
+import { resolveModelDeployment } from "@/modules/ai/lib/localComputeFabric";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import {
@@ -275,6 +276,9 @@ export function createContextAwareTransport(deps: Deps) {
         ? resolveSelfHostedSelection(prepared.state, prepared.modelId)
         : undefined;
       if (original.status !== "available" || !retained || retained.status !== "available" ||
+          !resolveModelDeployment(hostedState, original.profile) ||
+          resolveModelDeployment(hostedState, original.profile)?.identity !==
+            resolveModelDeployment(prepared!.state, retained.profile)?.identity ||
           original.profile.id !== retained.profile.id ||
           original.profile.transportModelId !== retained.profile.transportModelId ||
           original.profile.modelRevision !== retained.profile.modelRevision ||

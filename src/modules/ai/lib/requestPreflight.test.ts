@@ -16,7 +16,7 @@ import {
 import { createProxyFetch } from "@/modules/ai/lib/proxyFetch";
 import { hostedEffortFixture } from "@/modules/ai/lib/reasoningEffort.fixture";
 import { captureEffort } from "@/modules/ai/lib/reasoningEffort";
-import { selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
+import { selfHostedSelectionId, selfHostedTransportIdentity } from "@/modules/ai/lib/selfHostedModels";
 import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -136,6 +136,7 @@ describe("real installed adapters serialize shared output/preflight", () => {
     const fixture = hostedEffortFixture();
     fixture.profile.modelRevision = "rev-a";
     fixture.state.profiles[0].modelRevision = "rev-a";
+    fixture.profile.saved = {};
     const snapshot: ProbeSnapshot = {
       endpointId: fixture.endpoint.id, configurationRevision: 1,
       selectedModelId: fixture.profile.transportModelId, observedAt: Date.now(),
@@ -152,8 +153,11 @@ describe("real installed adapters serialize shared output/preflight", () => {
       if (command === "self_hosted_probe_cache" || command === "self_hosted_probe") return snapshot;
       return originalInvoke?.(command, args);
     });
-    const built = await buildConfiguredLanguageModel(selfHostedSelectionId(fixture.profile), EMPTY_PROVIDER_KEYS,
-      { selfHostedInference: fixture.state, capturedModelIdentity: fixture.identity });
+    const selected = selfHostedSelectionId(fixture.profile);
+    const identity = selfHostedTransportIdentity(selected, fixture.state);
+    if (!identity) throw new Error("Fixture did not capture the current deployment");
+    const built = await buildConfiguredLanguageModel(selected, EMPTY_PROVIDER_KEYS,
+      { selfHostedInference: fixture.state, capturedModelIdentity: identity });
     if (typeof built === "string" || built.specificationVersion !== "v3") throw new Error("Unexpected model");
     await expect(built.doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
       maxOutputTokens: 256 })).rejects.toThrow(/unavailable/i);
@@ -165,7 +169,11 @@ describe("real installed adapters serialize shared output/preflight", () => {
     try {
       const fixture = hostedEffortFixture();
       fixture.endpoint.backendHint = backend;
-      const captured = { ...captureEffort("selection", fixture.identity, undefined, fixture.state), choice: "high" };
+      fixture.profile.saved = {};
+      const selected = selfHostedSelectionId(fixture.profile);
+      const identity = selfHostedTransportIdentity(selected, fixture.state);
+      if (!identity) throw new Error("Fixture did not capture the current deployment");
+      const captured = { ...captureEffort("selection", identity, undefined, fixture.state), choice: "high" };
       const original = structuredClone(captured);
       let current = structuredClone(fixture.state);
       let metadataCalls = 0;
@@ -187,8 +195,8 @@ describe("real installed adapters serialize shared output/preflight", () => {
         }
         return baseInvoke?.(command, args);
       });
-      const built = await buildConfiguredLanguageModel(selfHostedSelectionId(fixture.profile), EMPTY_PROVIDER_KEYS,
-        { selfHostedInference: fixture.state, capturedModelIdentity: fixture.identity, reasoning: captured });
+      const built = await buildConfiguredLanguageModel(selected, EMPTY_PROVIDER_KEYS,
+        { selfHostedInference: fixture.state, capturedModelIdentity: identity, reasoning: captured });
       if (typeof built === "string" || built.specificationVersion !== "v3") throw new Error("Unexpected model");
       const request = { prompt: [{ role: "user" as const, content: [{ type: "text" as const, text: "Hello" }] }], maxOutputTokens: 256 };
       await Promise.resolve(built.doGenerate(request)).catch(() => undefined);

@@ -18,6 +18,11 @@ import type {
   SelfHostedProfile,
   SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
+import {
+  acceptsLegacyDeploymentQualification,
+  capabilityStatus,
+  resolveModelDeployment,
+} from "@/modules/ai/lib/localComputeFabric";
 
 export type ToolVerificationState =
   | "Advertised / unverified"
@@ -105,6 +110,12 @@ export function toolVerificationState(
     (e) => e.id === profile.endpointId && e.deletedAt == null,
   );
   if (!endpoint) return "Unverified";
+  const deployment = resolveModelDeployment(state, profile);
+  if (deployment && capabilityStatus(deployment.runtime, "native-tools") === "unsupported")
+    return "Unsupported";
+  // An LM2A receipt is bound to the migrated Ollama deployment only.
+  // A second runtime on the same machine cannot consume its proof.
+  if (!acceptsLegacyDeploymentQualification(state, profile, deployment)) return "Stale";
   if (
     contextMetadata(profile, endpoint, "trainedForTools", now, 300_000) ===
     false

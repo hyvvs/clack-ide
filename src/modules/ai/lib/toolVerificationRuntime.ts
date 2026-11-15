@@ -20,7 +20,6 @@ import {
 } from "@/modules/ai/lib/selfHostedProfiles";
 import {
   endpointAllowsPrivate,
-  compatibleServerBaseURL,
   selfHostedCredential,
   selfHostedSelectionId,
   selfHostedTransportIdentity,
@@ -43,6 +42,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { updateSelfHostedProfiles } from "@/modules/settings/store";
 import { useToolVerificationJobs } from "@/modules/ai/store/toolVerificationJobs";
 import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
+import { capabilityStatus, resolveModelDeployment } from "@/modules/ai/lib/localComputeFabric";
 import {resolveAutomaticAgentTools, toolEffortCapture} from "@/modules/ai/lib/agentConfiguration";
 import {effortProviderOptions} from "@/modules/ai/lib/reasoningEffort";
 import { automaticAgentRecommendation } from "@/modules/ai/lib/agentConfiguration";
@@ -92,6 +92,10 @@ export async function verifyModelTools(options: {
       (e) => e.id === profile?.endpointId && e.deletedAt == null,
     );
   if (!profile || !endpoint) throw new Error("Model unavailable");
+  const deployment = resolveModelDeployment(options.state, profile);
+  if (!deployment) throw new Error("Model deployment unavailable");
+  if (capabilityStatus(deployment.runtime, "native-tools") === "unsupported")
+    return { status: "unsupported" as const };
   if ((endpoint.backendHint ?? endpoint.detectedBackend) !== "ollama")
     return { status: "unavailable" as const };
   const view = modelOnboarding(options.state, profile);
@@ -225,8 +229,8 @@ export async function verifyModelTools(options: {
               toolVerification: true,
               toolVerificationContext: options.tierContext,
               reasoning,
-              ollamaBaseURL: endpoint.baseURL,
-              openaiCompatibleBaseURL: compatibleServerBaseURL(endpoint),
+              ollamaBaseURL: identity.endpointBaseURL,
+              openaiCompatibleBaseURL: identity.endpointBaseURL,
               allowPrivateNetwork: endpointAllowsPrivate(endpoint),
               inferenceScope: {
                 sessionId,

@@ -71,7 +71,10 @@ function routeSnapshot(modelId: string, preferences: Preferences) {
       ? budgetIdentity(preferences.selfHostedInference, hosted.profile.id) : hosted.status,
     endpoint: endpoint && { ...endpoint, name: undefined },
     savedModel: saved && { id: saved.id, providerId: saved.providerId, transportModelId: saved.transportModelId, enabled: saved.enabled, providerEvidence: saved.providerEvidence },
-    legacy: route.providerId === "lmstudio" ? preferences.lmstudioBaseURL
+    // A selected managed deployment owns its route. Legacy global URLs are
+    // irrelevant to its handoff fingerprint and cannot redirect it.
+    legacy: route.selfHosted ? undefined
+      : route.providerId === "lmstudio" ? preferences.lmstudioBaseURL
       : route.providerId === "mlx" ? preferences.mlxBaseURL
       : route.providerId === "ollama" ? preferences.ollamaBaseURL
       : modelId === "openai-compatible-custom" ? [preferences.openaiCompatibleBaseURL, preferences.openaiCompatibleContextLimit] : undefined,

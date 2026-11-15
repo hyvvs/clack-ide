@@ -14,7 +14,6 @@ import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { endpointBackend } from "@/modules/ai/lib/selfHostedProfiles";
 import {
   endpointAllowsPrivate,
-  compatibleServerBaseURL,
   selfHostedCredential,
   selfHostedTransportIdentity,
   selfHostedSelectionId,
@@ -244,8 +243,8 @@ export async function optimizeInferenceProfile(options: Options) {
               options.state,
             ),
             allowPrivateNetwork: endpointAllowsPrivate(endpoint),
-            openaiCompatibleBaseURL: compatibleServerBaseURL(endpoint),
-            ollamaBaseURL: endpoint.baseURL,
+            openaiCompatibleBaseURL: identity.endpointBaseURL,
+            ollamaBaseURL: identity.endpointBaseURL,
             calibration: { requestClass: "optimization", record, onQueued },
           },
           selfHostedCredential(identity, keys, endpointKeys),
