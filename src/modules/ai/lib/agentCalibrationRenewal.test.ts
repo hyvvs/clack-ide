@@ -10,7 +10,13 @@ import type { ToolVerification } from "@/modules/ai/lib/toolVerificationSchema";
 import { runContextCalibration } from "@/modules/ai/lib/contextCalibration";
 import { automaticAgentRecommendation } from "@/modules/ai/lib/agentConfiguration";
 import { selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
-import { agentCalibrationRenewalDue, renewAgentCalibrationAtBoundary } from "@/modules/ai/lib/agentCalibrationRenewal";
+import {
+  agentCalibrationRenewalDue, agentCalibrationPreparationHorizon,
+  AGENT_CALIBRATION_PREPARATION_HORIZON_MS,
+  AGENT_CALIBRATION_PROVIDER_HORIZON_MS,
+  AGENT_CALIBRATION_EXTRACTION_ATTEMPT_HORIZON_MS,
+  renewAgentCalibrationAtBoundary,
+} from "@/modules/ai/lib/agentCalibrationRenewal";
 import { createRequestPreflight, preflightFetch } from "@/modules/ai/lib/requestPreflight";
 import { compactionFixture, disposeCompactionFixtures, textMessage } from "@/modules/ai/lib/conversationCompaction.fixture";
 import { COMPACTION_POLICY } from "@/modules/ai/lib/compactionExtraction";
@@ -184,6 +190,22 @@ afterEach(() => {
 });
 
 describe("combined long-horizon continuation authority: offline campaign-06 reproduction", () => {
+  it("both ordinary and recovered Agent compaction reserve the whole bounded preparation horizon, then separately reserve native HTTP", () => {
+    expect(agentCalibrationPreparationHorizon(true)).toBe(
+      COMPACTION_POLICY.timeoutMs * COMPACTION_POLICY.maxModelAttemptsPerPreparation + 30_000,
+    );
+    expect(AGENT_CALIBRATION_PREPARATION_HORIZON_MS).toBe(630_000);
+    expect(AGENT_CALIBRATION_PROVIDER_HORIZON_MS).toBe(630_000);
+    expect(AGENT_CALIBRATION_EXTRACTION_ATTEMPT_HORIZON_MS).toBe(150_000);
+    expect(agentCalibrationPreparationHorizon(false)).toBe(30_000);
+    expect(AGENT_CALIBRATION_PROVIDER_HORIZON_MS).toBeLessThan(900_000);
+    const ordinaryLease = NOW + 590_000;
+    // The old 30-second lead would have begun a five-attempt compaction
+    // despite the lease being unable to span a legal preparation window.
+    expect(agentCalibrationRenewalDue(ordinaryLease, NOW, 30_000)).toBe(false);
+    expect(agentCalibrationRenewalDue(ordinaryLease, NOW, agentCalibrationPreparationHorizon(true))).toBe(true);
+    expect(agentCalibrationRenewalDue(ordinaryLease, NOW, AGENT_CALIBRATION_PROVIDER_HORIZON_MS)).toBe(true);
+  });
   it.each([
     { renewBeforeCompaction: false, label: "original fail-closed expiry" },
     { renewBeforeCompaction: true, label: "same-epoch safe-boundary renewal" },
@@ -379,6 +401,22 @@ describe("combined long-horizon continuation authority: offline campaign-06 repr
       if (renewBeforeCompaction) {
         // Only after compaction commits is one fresh provider coding segment
         // authorized; this is the SAME run and consumes no second recovery.
+        // In a long ordinary or recovered Agent step, separate post-compaction
+        // bookkeeping can legally consume another bounded segment of time.
+        // A lease that survived extraction need not span the next 600s native
+        // request; the safe pre-dispatch renewal must run AGAIN, not extend it.
+        await vi.advanceTimersByTimeAsync(180_000);
+        const beforeNative = f.currentProfile().contextCalibration!.expiresAt;
+        expect(beforeNative - Date.now()).toBeLessThan(AGENT_CALIBRATION_PROVIDER_HORIZON_MS);
+        expect(beforeNative).toBeGreaterThan(Date.now());
+        const renewedForRequest = await f.run(initial.proof,
+          new AbortController().signal, () => true, AGENT_CALIBRATION_PROVIDER_HORIZON_MS);
+        expect(renewedForRequest.proof.id).toBe(initial.proof.id);
+        expect(renewedForRequest.proof.scope).toEqual(initial.proof.scope);
+        expect(f.currentProfile().contextCalibration!.expiresAt).toBeGreaterThan(beforeNative);
+        expect(f.currentProfile().contextCalibration!.expiresAt - Date.now())
+          .toBeGreaterThan(AGENT_CALIBRATION_PROVIDER_HORIZON_MS);
+        preflight.updateAgentTrust(renewedForRequest.state, renewedForRequest.proof);
         const codingBody = { ...body(), stream: true,
           options: { num_ctx: tier, num_predict: 4096 },
           tools: [{ type: "function", function: { name: "read_file", description: "read",

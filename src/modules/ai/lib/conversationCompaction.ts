@@ -206,6 +206,9 @@ export async function createConversationCompactor(options: {
   checkpointHistory?: "ollama-native-v1";
   onStep?: (step: string | null) => void;
   onUsage?: (usage: ExtractionUsage) => void;
+  /** Called before EACH bounded extraction provider attempt; owner remains
+   * the calling Agent safe boundary, not the compaction/memory subsystem. */
+  beforeModelAttempt?: (signal: AbortSignal) => Promise<void>;
   onOptimized?: (notice: CompactionNotice) => void;
   memory?: Omit<typeof nativeMemory, "rebase"> & { rebase?: typeof rebaseConversationMemory };
   call?: ExtractionCall;
@@ -421,6 +424,7 @@ export async function createConversationCompactor(options: {
       preparationId: attempts.id,
       protectedCount: () => preparationProtectedCount,
       onAttempt: () => attempts.reserveAttempt(),
+      beforeModelAttempt: options.beforeModelAttempt,
       onValidationRetry: async () => {
         if (!attempts.canRetry()) return false;
         const captured = view;

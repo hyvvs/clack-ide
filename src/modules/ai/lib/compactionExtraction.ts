@@ -367,6 +367,10 @@ export function createBoundedExtractor(options: {
   onCall?: () => Promise<void>;
   /** One shared budget across all chunks and any new smaller-prefix extractor. */
   onAttempt?: () => number;
+  /** Requalify an exact native Agent lease, if due, only while NO extraction
+   * model request is active. Await settlement even if cancellation wins:
+   * a detached native qualification could mutate trust after this batch ends. */
+  beforeModelAttempt?: (signal: AbortSignal) => Promise<void>;
   /** Authorization and identity recheck before an invalid-output retry. */
   onValidationRetry?: () => Promise<boolean>;
   preparationId?: string;
@@ -572,6 +576,14 @@ export function createBoundedExtractor(options: {
               "batch-limit",
               "The preparation request/token limit was reached. Continue with another bounded preparation batch.",
             );
+          // The complete extractor may span several bounded model requests,
+          // native reads and atomic memory commits. The original safe-step
+          // lease cannot necessarily cover that full wall horizon. Every
+          // *new* provider attempt must independently retain valid authority
+          // before charging a call or invoking the provider. This callback is
+          // awaited, never raced/detached; failures keep memory uncommitted.
+          await options.beforeModelAttempt?.(controller.signal);
+          check();
           emitPreparationPhase(options.scope, "extraction-limits-start");
           const limits = await awaitAbortableRead(options.limits(), controller.signal);
           emitPreparationPhase(options.scope, "extraction-limits-settled");

@@ -241,6 +241,27 @@ beforeEach(() => {
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if(command==="remote_ssh_acquire")return {state:remoteStatus};
     if (command === "project_memory_load") return { workspace: "local:c:/workspace", checkout: "C:/workspace", baseSha: null, revision: 0, entries: [] };
+    if (command === "conversation_memory_load") {
+      // Native memory_load returns a real (possibly empty) MemoryView; a
+      // generic null IPC stub is not a valid empty revision. This model-switch
+      // test carries historical tool output so production compaction consults
+      // its native memory owner even when no extraction is necessary.
+      const owner = (args as { owner: { sessionId: string; workspaceId: string | null } }).owner;
+      return {
+        preparation: {
+          runtimeId: "offline-switch-fixture",
+          owner,
+          source: {
+            transcriptRevision: 1, profileRevision: 1,
+            transcriptHash: "a".repeat(64), profileHash: "b".repeat(64),
+          },
+          generation: 0, previous: null,
+        },
+        revisionId: null, revision: null,
+        uncoveredMessages: chats.get(owner.sessionId)?.messages.length ?? 0,
+        sourceChanged: false,
+      };
+    }
     if (
       command.startsWith("target_context_") ||
       command === "scoped_evidence_retrieve"

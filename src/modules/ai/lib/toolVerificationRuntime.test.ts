@@ -240,6 +240,38 @@ it("native competing verification lease performs no inference", async () => {
   expect(h.modelCalls).toBe(0);
   expect(useToolVerificationJobs.getState().jobs).toEqual({});
 });
+it("endpoint flight rechecks a different verification request after the first probe", async () => {
+  const invokeOriginal = vi.mocked(invoke).getMockImplementation();
+  if (!invokeOriginal) throw new Error("missing invoke fixture");
+  let releaseLease!: () => void;
+  const leaseGate = new Promise<void>(resolve => { releaseLease = resolve; });
+  let firstLeasePending = false;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "self_hosted_context_lease" && !firstLeasePending &&
+        !(args && "release" in args && args.release)) {
+      firstLeasePending = true;
+      await leaseGate;
+    }
+    return invokeOriginal(command, args);
+  });
+  const first = verifyModelTools({
+    state: state(), profileId: state().profiles[0].id,
+    signal: new AbortController().signal,
+  });
+  await vi.waitFor(() => expect(firstLeasePending).toBe(true));
+  const second = verifyModelTools({
+    state: state(), profileId: state().profiles[0].id,
+    signal: new AbortController().signal, force: true,
+  });
+  releaseLease();
+  const firstProof = await first;
+  const secondProof = await second;
+  expect(firstProof).toMatchObject({ status: "verified" });
+  expect(secondProof).toMatchObject({ status: "verified" });
+  expect(secondProof).not.toEqual(firstProof);
+  expect(h.modelCalls).toBe(2);
+  expect(useToolVerificationJobs.getState().jobs).toEqual({});
+});
 it("cancellation before dispatch produces no request", async () => {
   const controller = new AbortController();
   controller.abort();

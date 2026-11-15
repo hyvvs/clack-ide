@@ -95,7 +95,6 @@ import {
   type ConversationCompactionContext,
   type CompactionNotice,
 } from "@/modules/ai/lib/conversationCompaction";
-import { COMPACTION_POLICY } from "@/modules/ai/lib/compactionExtraction";
 import {
   retrieveConversationEvidence,
   type RetrievalNotice,
@@ -1291,6 +1290,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
   let targetSeed:
     | import("@/modules/ai/lib/conversationMemory").MemoryRevision
     | undefined;
+  let requalifyCompactionAttempt: ((signal: AbortSignal) => Promise<void>) | undefined;
   if (opts.compaction?.hasTargetContext && opts.inputCapabilities) {
     await opts.compaction.ready();
     const preferences = usePreferencesStore.getState();
@@ -1375,6 +1375,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
         scope: inferenceScope,
         limits: agentLimits,
         signal: opts.abortSignal,
+        beforeModelAttempt: signal => requalifyCompactionAttempt?.(signal) ?? Promise.resolve(),
         onStep: opts.onStep,
         onOptimized: opts.onOptimized,
         retrieve: retrieveConversationEvidence,
@@ -1440,34 +1441,35 @@ export async function runAgentStream(opts: RunAgentOptions) {
     onAbort: () => compactor?.dispose(),
     prepareStep: async ({ messages: stepMessages, stepNumber }) => {
       if (watchdog.error) throw watchdog.error;
-      if (activeAutomaticProof && opts.selfHostedInference &&
-          (!opts.recovery || opts.agentRequestFailureRecovery) && inferenceScope.isCurrent() &&
-          !opts.toolContext.isPeerReplyOnly?.()) {
+      // Load native requalification only for an actually verified Automatic
+      // Agent. Cloud/chat-only and peer-only paths must not gain a new probe
+      // or incur a native qualification dependency.
+      const renewal = activeAutomaticProof && opts.selfHostedInference &&
+        (!opts.recovery || opts.agentRequestFailureRecovery) &&
+        inferenceScope.isCurrent() && !opts.toolContext.isPeerReplyOnly?.()
+        ? await import("@/modules/ai/lib/agentCalibrationRenewal")
+        : null;
+      const renewAtSafeBoundary = async (minimumRemainingMs: number, attemptSignal?: AbortSignal) => {
+        if (!renewal || !activeAutomaticProof || !opts.selfHostedInference ||
+            (opts.recovery && !opts.agentRequestFailureRecovery) ||
+            !inferenceScope.isCurrent() || opts.toolContext.isPeerReplyOnly?.()) return;
         const current = opts.selfHostedInference.profiles.find(p =>
           p.endpointId === activeAutomaticProof?.scope.endpointId &&
           p.transportModelId === activeAutomaticProof.scope.model &&
           p.modelRevision === activeAutomaticProof.scope.digest);
-        const {
-          AGENT_CALIBRATION_RENEWAL_LEAD_MS,
-          agentCalibrationRenewalDue,
-          renewAgentCalibrationAtBoundary,
-        } =
-          await import("@/modules/ai/lib/agentCalibrationRenewal");
-        // The recovery checkpoint has reconciled prior tools before this
-        // safe provider-step boundary. A bounded compaction can consume up to
-        // five *separate* 120s model attempts; the normal 30s lead is too
-        // short and in campaign 06 the first attempt crossed the 15m lease.
-        // Only genuine exact-tier native renewal can extend that lease.
-        const preparationLeadMs = opts.agentRequestFailureRecovery && opts.compaction
-          ? COMPACTION_POLICY.timeoutMs * COMPACTION_POLICY.maxModelAttemptsPerPreparation +
-              AGENT_CALIBRATION_RENEWAL_LEAD_MS
-          : AGENT_CALIBRATION_RENEWAL_LEAD_MS;
+        const { agentCalibrationRenewalDue, renewAgentCalibrationAtBoundary } = renewal;
+        // A long preparation and the subsequent native request are separate
+        // authority horizons. Renewal is restricted to these two safe Agent
+        // step boundaries; never requalify in the middle of a provider call.
         if (current && !current.overrides.workingContext &&
             agentCalibrationRenewalDue(current.contextCalibration?.expiresAt,
-              Date.now(), preparationLeadMs)) {
+              Date.now(), minimumRemainingMs)) {
+          const signal = attemptSignal && opts.abortSignal
+            ? AbortSignal.any([attemptSignal, opts.abortSignal])
+            : attemptSignal ?? opts.abortSignal ?? new AbortController().signal;
           const refreshed = await renewAgentCalibrationAtBoundary(opts.selfHostedInference,
-            current.id, activeAutomaticProof, opts.abortSignal ?? new AbortController().signal,
-            inferenceScope.isCurrent, undefined, preparationLeadMs);
+            current.id, activeAutomaticProof, signal,
+            inferenceScope.isCurrent, undefined, minimumRemainingMs);
           // Provider recovery may renew its calibration, never silently
           // substitute a different native-tool proof inside the same run.
           if (opts.agentRequestFailureRecovery && refreshed.proof.id !== activeAutomaticProof.id)
@@ -1479,7 +1481,18 @@ export async function runAgentStream(opts: RunAgentOptions) {
           opts.onSelfHostedPrepared?.(refreshed.state, refreshed.proof.id,
             JSON.stringify(refreshed.proof.configuration ?? null));
         }
-      }
+      };
+      // The full compaction lifetime has a larger upper bound than five model
+      // attempts alone. A later extraction must not reuse earlier lease state
+      // after time-consuming native read/commit phases. The exact-tier Agent
+      // owns this requalification; the extractor only invokes it between
+      // already-settled requests and never creates proof itself.
+      requalifyCompactionAttempt = renewal
+        ? signal => renewAtSafeBoundary(
+            renewal.AGENT_CALIBRATION_EXTRACTION_ATTEMPT_HORIZON_MS, signal)
+        : undefined;
+      if (renewal)
+        await renewAtSafeBoundary(renewal.agentCalibrationPreparationHorizon(!!opts.compaction));
       const currentTools =
         opts.toolContext.isPeerReplyOnly?.() ||
         opts.inputCapabilities?.tools === "unsupported"
@@ -1506,7 +1519,11 @@ export async function runAgentStream(opts: RunAgentOptions) {
         },
       );
       for (const name of selection.names) pinnedTools.add(name);
-      if (!preparedContext) return { activeTools: selection.names };
+      if (!preparedContext) {
+        if (renewal)
+          await renewAtSafeBoundary(renewal.AGENT_CALIBRATION_PROVIDER_HORIZON_MS);
+        return { activeTools: selection.names };
+      }
       if ((opts.compaction?.remainingCalls() ?? 0) <= stepNumber)
         throw new ContextBudgetError(
           "compaction-run-budget",
@@ -1518,6 +1535,12 @@ export async function runAgentStream(opts: RunAgentOptions) {
         preparedMessages = await preparedContext.prepare(
           stepMessages.slice(finalMessages.length), selection.schemas,
         );
+        // Compaction may have consumed most of a legitimate calibration lease.
+        // Re-obtain genuine exact-tier evidence for the *following* bounded
+        // provider call rather than carrying the pre-compaction snapshot into
+        // native continuation preflight. The same tool-proof identity is held.
+        if (renewal)
+          await renewAtSafeBoundary(renewal.AGENT_CALIBRATION_PROVIDER_HORIZON_MS);
         emitPreparationPhase(inferenceScope, "agent-prepare-completed");
       } catch (error) {
         emitPreparationPhase(inferenceScope, "agent-prepare-failed");

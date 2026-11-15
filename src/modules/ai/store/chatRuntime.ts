@@ -704,8 +704,34 @@ async function resumeAgentAfterProviderFailure(
         await wait(contextDigest(current()?.run?.budget)) !== checkpoint.budgetDigest ||
         useChatStore.getState().pendingApprovalsBySession[sessionId]?.length ||
         current()?.run?.state !== "running" ||
-        !sameAgentRequestOwner(checkpoint, current()) || chat.status !== "error")
+        !sameAgentRequestOwner(checkpoint, current()) || chat.status !== "error" ||
+        await wait(contextDigest(chat.messages)) !== checkpoint.transcriptDigest)
       throw new Error("Recovery authorization was superseded before dispatch.");
+    // The durable 'dispatched' write above is asynchronous. Workspace effects
+    // and transcript can change while it settles, after the prior revision gate.
+    for (const receipt of checkpoint.workspaceReceipts) {
+      if (receipt.kind === "dir") {
+        if (!await wait(evidence.isDirectory(receipt.path)))
+          throw new Error("Workspace directory revision changed before recovery dispatch.");
+      } else if (await wait(contextDigest(await wait(evidence.readFile(receipt.path)))) !== receipt.digest)
+        throw new Error("Workspace file revision changed before recovery dispatch.");
+    }
+    if (nativeCheckpoint) await wait(validateWriteCheckpoint(nativeCheckpoint));
+    const finalWorkspaceWitness = await wait(native.agentWorkspaceFingerprint(sourceRoot, run.workspaceEnvironment));
+    if (!finalWorkspaceWitness.revision || finalWorkspaceWitness.revision !== checkpoint.workspaceRevision)
+      throw new Error("Workspace tree revision changed before recovery dispatch.");
+    const dispatchEnvironment = environment();
+    if (await wait(contextDigest(dispatchEnvironment.permissions)) !== checkpoint.permissionsDigest ||
+        await wait(contextDigest(dispatchEnvironment.todos)) !== checkpoint.todoDigest ||
+        await wait(contextDigest(dispatchEnvironment.plan)) !== checkpoint.planDigest ||
+        await wait(contextDigest(current()?.run?.budget)) !== checkpoint.budgetDigest ||
+        await wait(contextDigest(chat.messages)) !== checkpoint.transcriptDigest ||
+        !sameAgentRequestOwner(checkpoint, current()) ||
+        current()?.run?.agentRequestRecovery?.phase !== "dispatched" ||
+        current()?.run?.stop ||
+        useChatStore.getState().pendingApprovalsBySession[sessionId]?.length ||
+        chat.status !== "error")
+      throw new Error("Recovery owner or transcript became stale before dispatch.");
     chat.clearError();
     clearTimeout(deadline);
     // A new provider segment, *not* an SDK regenerate() of old tool calls.
@@ -1042,6 +1068,17 @@ export async function retryInterruptedRun(sessionId: string): Promise<boolean> {
     },
   };
   const originalMessages = JSON.stringify(chat.messages);
+  const originalModelRevision = session.modelRevision ?? null;
+  const originalPermissionAuthority = agentPermissionAuthoritySnapshot(sessionId, run.agentId ?? "");
+  const originalPermissions = JSON.stringify([
+    usePreferencesStore.getState().agentPermissionProfiles,
+    usePreferencesStore.getState().agentWorkspacePermissions,
+  ]);
+  const originalPlan = JSON.stringify({
+    active: usePlanStore.getState().active,
+    queue: usePlanStore.getState().queue,
+  });
+  const originalTodos = JSON.stringify(getTodos(sessionId));
   chat.clearError();
   useChatStore.setState((current) => ({
     sessions: current.sessions.map((item) =>
@@ -1078,7 +1115,32 @@ export async function retryInterruptedRun(sessionId: string): Promise<boolean> {
         "Conversation changed during recovery preparation; no request was replayed.",
       );
   };
+  const checkOwner = () => {
+    const latest = useChatStore.getState();
+    const owner = latest.sessions.find((item) => item.id === sessionId);
+    if (!current() || owner?.modelRevision !== session.modelRevision ||
+        (owner?.modelRevision ?? null) !== originalModelRevision ||
+        owner?.profile?.agentId !== run.agentId ||
+        owner?.profile?.modelId !== run.modelId ||
+        (owner?.profile?.workspaceId ?? undefined) !== run.workspaceId ||
+        latest.pendingApprovalsBySession[sessionId]?.length ||
+        agentPermissionAuthoritySnapshot(sessionId, run.agentId ?? "") !== originalPermissionAuthority ||
+        JSON.stringify([
+          usePreferencesStore.getState().agentPermissionProfiles,
+          usePreferencesStore.getState().agentWorkspacePermissions,
+        ]) !== originalPermissions ||
+        JSON.stringify({ active: usePlanStore.getState().active, queue: usePlanStore.getState().queue }) !== originalPlan ||
+        JSON.stringify(getTodos(sessionId)) !== originalTodos)
+      throw new Error("Interrupted-run recovery owner, permissions or plan changed before dispatch.");
+  };
   try {
+    checkOwner();
+    const sourceRoot = run.checkoutRoot ?? run.workspaceRoot;
+    const initialWorkspaceRevision = sourceRoot
+      ? await waitForRecovery(native.agentWorkspaceFingerprint(sourceRoot, run.workspaceEnvironment), preparation.signal)
+      : null;
+    if (initialWorkspaceRevision && (!initialWorkspaceRevision.revision || initialWorkspaceRevision.qualification === "unavailable"))
+      throw new Error("Interrupted-run recovery workspace revision is unavailable.");
     const records = await waitForRecovery(
       executionHistory(sessionId),
       preparation.signal,
@@ -1099,6 +1161,16 @@ export async function retryInterruptedRun(sessionId: string): Promise<boolean> {
       preparation.signal,
     );
     if (!current()) return false;
+    checkTranscript();
+    checkOwner();
+    if (sourceRoot && initialWorkspaceRevision) {
+      const latestWorkspace = await waitForRecovery(
+        native.agentWorkspaceFingerprint(sourceRoot, run.workspaceEnvironment), preparation.signal,
+      );
+      if (!latestWorkspace.revision || latestWorkspace.revision !== initialWorkspaceRevision.revision)
+        throw new Error("Interrupted-run recovery workspace changed before dispatch.");
+    }
+    checkOwner();
     checkTranscript();
     lifecycle.update("completed");
     lifecycle.settle();

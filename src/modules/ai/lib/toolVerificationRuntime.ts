@@ -57,7 +57,8 @@ export const canonicalProbeTools = () => ({
     inputSchema: probeArguments,
   }),
 });
-const flights = new Map<string, Promise<unknown>>();
+type ToolVerificationFlight = { key: string; work: Promise<unknown> };
+const flights = new Map<string, ToolVerificationFlight>();
 export async function readToolProfiles() {
   return readSelfHostedState(
     new Map(
@@ -100,8 +101,28 @@ export async function verifyModelTools(options: {
     (options.resolveAutomatic ? ["Verified", "Unsupported"] : ["Verified", "Incompatible", "Needs attention", "Unsupported"]).includes(verdict)
   )
     return options.resolveAutomatic ? view?.reasoning.agentRecommendation?.record ?? profile.toolVerification : profile.toolVerification;
+  // An endpoint lease serializes probes, but a completed probe only proves its
+  // own model, reasoning variant and exact tier. Another caller must run its
+  // own verification after the incumbent releases the endpoint lease.
+  const flightKey = JSON.stringify([
+    profile.id, profile.transportModelId, profile.modelRevision,
+    endpoint.configurationRevision, profile.overrides,
+    options.resolveAutomatic ?? false, options.force ?? false,
+    options.tierContext ?? null, options.tierConfiguration ?? null,
+  ]);
   const pending = flights.get(endpoint.id);
-  if (pending) return waitForRecovery(pending, options.signal);
+  if (pending) {
+    try {
+      await waitForRecovery(pending.work, options.signal);
+    } catch (error) {
+      options.signal.throwIfAborted();
+      // A failed verification of another proof must not fail this caller.
+      if (pending.key === flightKey) throw error;
+    }
+    options.signal.throwIfAborted();
+    if (pending.key === flightKey) return pending.work;
+    return verifyModelTools({ ...options, state: await readToolProfiles() });
+  }
   const controller = new AbortController(),
     signal = AbortSignal.any([options.signal, controller.signal]),
     owner = crypto.randomUUID();
@@ -298,7 +319,7 @@ export async function verifyModelTools(options: {
     }
     return runToolVerification({...options, signal}, deps);
   })();
-  flights.set(endpoint.id, work);
+  flights.set(endpoint.id, { key: flightKey, work });
   try {
     return await work;
   } finally {

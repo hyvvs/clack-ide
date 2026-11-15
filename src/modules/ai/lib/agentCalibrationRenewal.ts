@@ -2,6 +2,7 @@ import { budgetIdentity } from "@/modules/ai/lib/contextBudgetProfile";
 import { sameAgentRenewalIdentity } from "@/modules/ai/lib/agentRenewalIdentity";
 import { contextRuntime } from "@/modules/ai/lib/contextCalibrationTrust";
 import { CONTEXT_CALIBRATION } from "@/modules/ai/lib/contextCalibrationSchema";
+import { COMPACTION_POLICY } from "@/modules/ai/lib/compactionExtraction";
 import { endpointBackend } from "@/modules/ai/lib/selfHostedProfiles";
 import { inspectContextRuntime } from "@/modules/ai/lib/contextRuntimeClient";
 import { calibrateModelContext } from "@/modules/ai/lib/contextCalibrationRuntime";
@@ -18,6 +19,27 @@ import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 /** Only request a new calibration at a safe provider-step boundary, never
  * interrupt an admitted generation or silently extend an old evidence lease. */
 export const AGENT_CALIBRATION_RENEWAL_LEAD_MS = 30_000;
+// Rust's self-hosted native HTTP overall-deadline is 600 seconds. A long
+// provider generation requires a *fresh* authority window at its own safe
+// boundary, independent of the earlier compaction preparation window.
+// Keep this strictly below the unchanged 15-minute calibration lease.
+export const AGENT_CALIBRATION_PROVIDER_HORIZON_MS =
+  600_000 + AGENT_CALIBRATION_RENEWAL_LEAD_MS;
+// Both ordinary Agent steps AND checkpointed provider-recovery steps can
+// consume five separate bounded extraction attempts before native dispatch.
+export const AGENT_CALIBRATION_PREPARATION_HORIZON_MS =
+  COMPACTION_POLICY.timeoutMs * COMPACTION_POLICY.maxModelAttemptsPerPreparation +
+  AGENT_CALIBRATION_RENEWAL_LEAD_MS;
+// Even if slow native memory reads/commits make a complete preparation longer
+// than its original lease, each *subsequent* extractor inference gets its own
+// genuine safe-boundary renewal check before dispatch.
+export const AGENT_CALIBRATION_EXTRACTION_ATTEMPT_HORIZON_MS =
+  COMPACTION_POLICY.timeoutMs + AGENT_CALIBRATION_RENEWAL_LEAD_MS;
+export function agentCalibrationPreparationHorizon(hasCompaction: boolean) {
+  return hasCompaction
+    ? AGENT_CALIBRATION_PREPARATION_HORIZON_MS
+    : AGENT_CALIBRATION_RENEWAL_LEAD_MS;
+}
 export function agentCalibrationRenewalDue(
   expiresAt: number | undefined,
   now = Date.now(),

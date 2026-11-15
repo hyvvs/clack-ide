@@ -377,10 +377,43 @@ async function fixture(outputAllowance = 2048, alternative = false, ageMs = 1940
       signal: controller.signal, configuration: { choice: "none", wire: false }, force }, toolDeps);
     expect(profile().agentToolConfigurations?.[0].confirmation).toBeDefined();
   } else expect(profile().toolVerification?.status).toBe("verified");
-  const captured = structuredClone(state);
+  let captured = structuredClone(state);
   now += ageMs;
   await inspect();
   await refresh();
+  if (r5xRepresentative) {
+    // R5x's saved proof remains the continuation identity, but at +304441ms
+    // its original 15-minute calibration has <630s left. Re-measure the exact
+    // 65K tier through the real calibrator before the resumed Agent boundary.
+    // This commits a new measured lease to persistent state; it does not
+    // rewrite the captured proof, its scope, or the original calibration.
+    const previous = profile().contextCalibration;
+    if (!previous) throw new Error("Expected R5x measured context calibration");
+    const renewal = await runContextCalibration({
+      state, profileId: profile().id, signal: controller.signal,
+      renewalTier: 65536, force: true,
+    }, {
+      refresh, inspectRuntime: inspect, clock: () => now, commit,
+      request: async context => {
+        if (context !== 65536) throw new Error("R5x renewal changed the exact tier");
+        requested = context;
+        loaded = context;
+        now++;
+        return { finish: "stop" };
+      },
+    });
+    expect(renewal).toMatchObject({ status: "verified", highest: 65536 });
+    expect(profile().contextCalibration?.id).not.toBe(previous.id);
+    expect(profile().contextCalibration?.expiresAt).toBeGreaterThan(now + 630_000);
+    expect(profile().contextCalibration?.attempts.filter(a => a.outcome === "success"))
+      .toHaveLength(1);
+    // The continued request captures the genuinely recommitted calibration
+    // identity, while its earlier provider-observation cache remains aged.
+    // Both are real fixture observations from their respective boundaries.
+    const agedMetadata = captured.profiles[0].evidence;
+    captured = structuredClone(state);
+    captured.profiles[0].evidence = agedMetadata;
+  }
   const liveSnapshot = () => {
     const snapshot = profileSnapshot(state, profile());
     if (!snapshot) throw new Error("Expected provider snapshot");

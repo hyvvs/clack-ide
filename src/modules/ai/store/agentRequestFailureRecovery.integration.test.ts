@@ -73,7 +73,7 @@ import {
   recoverInterruptedSessions,
 } from "@/modules/ai/lib/sessions";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { getOrCreateChat, shouldAutomaticallySendSession } from "./chatRuntime";
+import { getOrCreateChat, retryInterruptedRun, shouldAutomaticallySendSession } from "./chatRuntime";
 import { chats, seedMessages, useChatStore } from "./chatStore";
 import { usePlanStore } from "./planStore";
 import { useTodosStore } from "./todoStore";
@@ -96,6 +96,8 @@ let unavailableRegistry = false;
 let unavailableFingerprint = false;
 let unregisteredFingerprint = false;
 let changePermissionsAtTimeout = false;
+let mutateDuringDispatchedSave: (() => void) | null = null;
+let mutateDuringExplicitRetrySave: (() => void) | null = null;
 
 const finish = (reason: "tool-calls" | "stop"): LanguageModelV3StreamPart => ({
   type: "finish",
@@ -267,6 +269,8 @@ beforeEach(() => {
   unavailableFingerprint = false;
   unregisteredFingerprint = false;
   changePermissionsAtTimeout = false;
+  mutateDuringDispatchedSave = null;
+  mutateDuringExplicitRetrySave = null;
   history.mockReset().mockResolvedValue([]);
   invoke.mockReset().mockImplementation(async (command, args) => {
     if (command === "shell_identity")
@@ -293,6 +297,18 @@ beforeEach(() => {
     if (command === "custom_tools_load")
       return { schemaVersion: 1, revision: 0, entries: [] };
     if (command === "conversation_source_set") {
+      if (Array.isArray(args.value) && args.value.some((item: { run?: { recoveryAttempts?: number; state?: string } }) =>
+        item.run?.recoveryAttempts === 1 && item.run.state === "running") && mutateDuringExplicitRetrySave) {
+        const mutate = mutateDuringExplicitRetrySave;
+        mutateDuringExplicitRetrySave = null;
+        mutate();
+      }
+      if (Array.isArray(args.value) && args.value.some((item: { run?: { agentRequestRecovery?: { phase?: string } } }) =>
+        item.run?.agentRequestRecovery?.phase === "dispatched") && mutateDuringDispatchedSave) {
+        const mutate = mutateDuringDispatchedSave;
+        mutateDuringDispatchedSave = null;
+        mutate();
+      }
       disk.set(args.key, structuredClone(args.value));
       return;
     }
@@ -1038,6 +1054,68 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
     expect(requestCount).toBe(1);
     expect(run().error?.message).toContain("Workspace tree revision");
   });
+
+  it.each(["transcript", "workspace", "completed-write"] as const)(
+    "rejects $0 mutation while the dispatched checkpoint is being persisted", async change => {
+      requests = change === "completed-write"
+        ? [
+            { kind: "write", id: "write-before-timeout", path: `${root}/tracked.ts`, content: "original" },
+            { kind: "fail", code: "stream-idle-timeout" },
+          ]
+        : [{ kind: "fail", code: "stream-idle-timeout" }];
+      const chat = getOrCreateChat(sessionId);
+      mutateDuringDispatchedSave = () => {
+        if (change === "transcript") {
+          chat.messages = [...chat.messages, {
+            id: "external-conversation-mutation",
+            role: "assistant",
+            parts: [{ type: "text", text: "stale addition" }],
+          }];
+        } else {
+          files.set(change === "completed-write" ? `${root}/tracked.ts` : `${root}/unrelated.ts`, "externally changed");
+        }
+      };
+      await chat.sendMessage({ text: "Task" });
+      await settle(() => run().state === "failed");
+      expect(requestCount).toBe(change === "completed-write" ? 2 : 1);
+      expect(run().agentRequestRecovery?.phase).toBe("dispatched");
+      expect(run().error?.message).toMatch(/stale|revision|dispatch/i);
+      expect(mutateDuringDispatchedSave).toBeNull();
+    },
+  );
+
+  it.each(["agent-owner", "permissions", "workspace"] as const)(
+    "explicit interrupted-run retry rejects $0 changes while persisting its preflight", async change => {
+      requests = [{ kind: "finish" }];
+      const chat = getOrCreateChat(sessionId);
+      await chat.sendMessage({ text: "Task" });
+      expect(chat.status).toBe("ready");
+      useChatStore.getState().finishRun(sessionId, "failed");
+      const previousPermissions = usePreferencesStore.getState().agentPermissionProfiles;
+      mutateDuringExplicitRetrySave = () => {
+        if (change === "workspace") files.set(`${root}/external.ts`, "changed during preflight");
+        if (change === "permissions") usePreferencesStore.setState({
+          agentPermissionProfiles: {
+            ...previousPermissions,
+            "builtin:coder": { mode: "full-access", categories: {} },
+          },
+        });
+        if (change === "agent-owner") useChatStore.setState(state => ({
+          sessions: state.sessions.map(item => item.id === sessionId && item.profile
+            ? { ...item, profile: { ...item.profile, agentId: "builtin:reviewer" } }
+            : item),
+        }));
+      };
+      try {
+        expect(await retryInterruptedRun(sessionId)).toBe(false);
+        expect(requestCount).toBe(1);
+        expect(mutateDuringExplicitRetrySave).toBeNull();
+        expect(run().state).toBe("failed");
+      } finally {
+        usePreferencesStore.setState({ agentPermissionProfiles: previousPermissions });
+      }
+    },
+  );
 
   it("unavailable native complete workspace witness refuses automatic recovery", async () => {
     unavailableFingerprint = true;
