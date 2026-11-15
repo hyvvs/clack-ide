@@ -117,7 +117,7 @@ export function buildPeerTaskTools(ctx: ToolContext) {
       },
     }),
     request_peer_task: tool({
-      description: `Ask another persistent Clack conversation to perform a bounded task in the same workspace. Use this for an independent review, a focused question, or delegated work that benefits from the target chat's own agent and model. The task and result are visible in both conversations. Starting another provider run may require user approval. Do not use this for a quick read-only subagent investigation.
+      description: `Assign a bounded same-workspace task to another persistent Clack conversation for review, a focused question or delegated work using its own agent/model. Task and result appear in both chats; starting another provider run may require user approval. For quick read-only investigation, use a subagent instead.
 
 Available target conversations:
 ${targets.length > 0 ? targets.join("\n") : "- No eligible peer conversations are currently configured."}
@@ -131,21 +131,21 @@ ${dependencyCandidates.length > 0 ? dependencyCandidates.join("\n") : "- No depe
           .min(1)
           .optional()
           .describe(
-            "Completed task ID you own or performed. Use kind review to review its immutable results, or delegate to return corrections. Preserves graph limits and creates a prerequisite edge; no private transcript transfer.",
+            "Completed owned/performed task ID; review its immutable result or delegate corrections. Adds a prerequisite edge within graph limits; never transfers private transcripts.",
           ),
         kind: z.enum(["delegate", "review", "question"]),
         executionMode: z
           .enum(["read-only", "shared-write", "isolated-worktree"])
           .default("read-only")
           .describe(
-            "Read-only blocks mutation tools. Shared-write serializes mutations in the project checkout. Isolated-worktree requires a clean local Git repository and returns a reviewable patch.",
+            "Read-only blocks mutations; shared-write serializes checkout writes; isolated-worktree requires clean local Git and returns a reviewable patch.",
           ),
         prompt: z
           .string()
           .min(1)
           .max(12_000)
           .describe(
-            "Self-contained bounded task. Do not include secrets or hidden reasoning.",
+            "Self-contained bounded task; no secrets or hidden reasoning.",
           ),
         artifactRefs: z
           .array(
@@ -157,14 +157,14 @@ ${dependencyCandidates.length > 0 ? dependencyCandidates.join("\n") : "- No depe
           .max(8)
           .optional()
           .describe(
-            "Optional workspace file or diff paths. Clack snapshots their exact contents when the task is created.",
+            "Workspace file/diff paths; contents snapshotted at task creation.",
           ),
         dependsOn: z
           .array(z.string().min(1))
           .max(PEER_TASK_MAX_DEPENDENCIES)
           .optional()
           .describe(
-            "Optional peer task IDs from this collaboration. This task waits until all listed tasks complete successfully and becomes blocked if one fails or is cancelled.",
+            "Peer task prerequisites; wait for all to succeed, block on failure or cancellation.",
           ),
       }),
       execute: async ({
@@ -205,7 +205,7 @@ ${dependencyCandidates.length > 0 ? dependencyCandidates.join("\n") : "- No depe
       },
     }),
     cancel_peer_task: tool({
-      description: `Cancel an active peer task in the current collaboration. Set cascade to true to cancel its active descendants as well. Completed, failed, blocked, sibling, and unrelated tasks are not cancelled.
+      description: `Cancel an active task in this collaboration; cascade=true also cancels active descendants. Never cancels completed, failed, blocked, sibling or unrelated tasks.
 
 Tasks in this collaboration:
 ${dependencyCandidates.length > 0 ? dependencyCandidates.join("\n") : "- No cancellable collaboration is active."}`,
@@ -215,14 +215,14 @@ ${dependencyCandidates.length > 0 ? dependencyCandidates.join("\n") : "- No canc
           .boolean()
           .default(false)
           .describe(
-            "Cancel active descendants in the selected task's subtree.",
+            "Also cancel active descendants in this task's subtree.",
           ),
         reason: z
           .string()
           .min(1)
           .max(500)
           .optional()
-          .describe("Brief human-readable reason for the cancellation."),
+          .describe("Brief cancellation reason."),
       }),
       execute: async ({ taskId, cascade, reason }) => {
         const currentSessionId = ctx.getSessionId();

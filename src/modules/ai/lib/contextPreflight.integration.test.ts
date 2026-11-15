@@ -188,7 +188,7 @@ it.each([
 
 it("keeps native-shell syntax explicit in core/lite prompts and both shell tool contracts", () => {
   for (const prompt of [CORE_SYSTEM_PROMPT, SYSTEM_PROMPT_LITE]) {
-    expect(prompt).toMatch(/(?:does|do) not imply Bash/);
+    expect(prompt).toMatch(/(?:does not|do not|don't) imply Bash/);
     expect(prompt).toContain("shell");
   }
   const tools = buildShellTools(context);

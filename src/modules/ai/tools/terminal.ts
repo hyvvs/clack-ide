@@ -62,12 +62,12 @@ export function buildTerminalTools(ctx: ToolContext) {
 
     open_preview: tool({
       description:
-        "Open a preview tab (in-app iframe) at the given URL — restricted to localhost/loopback addresses for the local dev server. Use this after starting a dev server (e.g. `npm run dev`, `vite`) to surface the rendered page next to the terminal. To preview external sites, the user should paste the URL into the preview address bar themselves.",
+        "Open an in-app preview tab for a local dev server URL, restricted to localhost/loopback. After starting a dev server, preview it beside the terminal. For external sites, the user must paste the URL into the preview address bar.",
       inputSchema: z.object({
         url: z
           .url()
           .describe(
-            "Full URL to load (e.g. http://localhost:5173). Must include scheme. Only http/https on loopback hosts are accepted.",
+            "Full URL with scheme; only http/https loopback hosts, e.g. http://localhost:5173.",
           ),
       }),
       execute: async ({ url }) => {

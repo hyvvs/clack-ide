@@ -509,7 +509,10 @@ it("normal Laguna inference and reselection share catalog capacity and keep full
   expect(chat.messages).toEqual(transcript);
   const cost = measureRequest(requests[0]);
   process.stdout.write(`Minimal normal wire audit ${JSON.stringify(cost)}\n`);
-  expect(cost.breakdown?.core).toBeGreaterThan(2500);
+  // Full semantics remain present, but the canonical protected instructions
+  // no longer repeat the same operational rules in several verbose sections.
+  expect(cost.breakdown?.core).toBeGreaterThan(1400);
+  expect(cost.breakdown?.core).toBeLessThan(2500);
   expect(cost.schemas?.exposed).toBe(0);
   expect(
     (requests[0].messages as Array<{ role: string; content: string }>).find(

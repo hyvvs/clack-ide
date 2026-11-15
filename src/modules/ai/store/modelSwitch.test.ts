@@ -169,6 +169,12 @@ describe.each([
     expect(seedMessages.get("chat-a")).toBe(messages);
   });
   it("does not override B1 when unknown capacity cannot fit mandatory context", async () => {
+    // This boundary must be oversized regardless of wording-only reductions
+    // to the stable system prompt. Preserve a genuinely required user
+    // instruction rather than relying on obsolete prompt padding.
+    usePreferencesStore.setState({
+      customInstructions: "Preserve the complete required task constraint. ".repeat(800),
+    });
     const result = await prepareModelSwitch(
       "chat-a",
       savedProviderModelSelectionId(saved.id),

@@ -24,24 +24,24 @@ export function buildFsTools(ctx: ToolContext) {
   return {
     read_file: tool({
       description:
-        "Read a UTF-8 text file. Defaults to the first 2000 lines (capped at 25KB). Pass `offset`/`limit` for line-based windowing of large files. Refuses binary, oversized, or sensitive files (.env, keys, credentials). If you call this on the same path twice in a session without edits in between, the second call returns `unchanged: true` instead of re-emitting the content — re-read the prior tool result.",
+        "Read UTF-8 text, first 2000 lines (max 25KB). Use `offset`/`limit` for line windows. Refuses binary, oversized and sensitive files (.env, keys, credentials). An unchanged full re-read returns `unchanged: true`; reuse the prior content.",
       inputSchema: z.object({
         path: z
           .string()
-          .describe("Absolute path, or relative to the active terminal cwd."),
+          .describe("Absolute or active-terminal-cwd-relative."),
         offset: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe("0-based start line. Default 0."),
+          .describe("Start line: 0-based; default 0."),
         limit: z
           .number()
           .int()
           .min(1)
           .max(10000)
           .optional()
-          .describe("Max lines to return. Default 2000."),
+          .describe("Max lines; default 2000."),
       }),
       execute: async ({ path, offset, limit }) => {
         const reqPath = resolvePath(path, ctx.getCwd());
@@ -113,11 +113,11 @@ export function buildFsTools(ctx: ToolContext) {
 
     list_directory: tool({
       description:
-        "List immediate entries (files + directories) in a directory. Hidden entries are omitted.",
+        "List immediate files and directories; hidden entries omitted.",
       inputSchema: z.object({
         path: z
           .string()
-          .describe("Absolute path, or relative to the active terminal cwd."),
+          .describe("Absolute or active-terminal-cwd-relative."),
       }),
       execute: async ({ path }) => {
         const reqPath = resolvePath(path, ctx.getCwd());
@@ -138,7 +138,7 @@ export function buildFsTools(ctx: ToolContext) {
 
     write_file: tool({
       description:
-        "Create a brand-new file or overwrite a previously read tiny text file with the given content. Confirm the parent directory exists first. Prefer an exposed exact-string editing capability for targeted existing-file changes; do not use full replacement as a proxy for a targeted change. Approval follows the active agent policy.",
+        "Create a brand-new file or overwrite a previously read small text file. Confirm its parent exists. Prefer exposed exact-string editing for targeted changes; do not replace a whole file for a targeted edit. Approval follows the active agent policy.",
       inputSchema: z.object({
         path: z.string(),
         content: z.string(),
@@ -216,7 +216,7 @@ export function buildFsTools(ctx: ToolContext) {
 
     create_directory: tool({
       description:
-        "Create a directory (and any missing parents). Approval follows the active agent policy.",
+        "Create a directory and missing parents. Approval follows the active agent policy.",
       inputSchema: z.object({
         path: z.string(),
       }),

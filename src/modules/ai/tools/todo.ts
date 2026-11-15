@@ -10,7 +10,7 @@ export function buildTodoTools(ctx: ToolContext) {
   return {
     todo_write: tool({
       description:
-        "Update the accepted Todo plan. Preserve stable IDs. Omitted prior obligations remain outstanding, not silently deleted. To record an explicit user correction, a new item may list existing old ids in supersedesIds; these remain historical and cannot reactivate. Do not infer supersession from cancellation or vague prose. Mark actual progress only; a completed Todo is not independent verification.",
+        "Update the accepted Todo plan; preserve stable IDs. Omitted obligations remain outstanding, never silently deleted. Only an explicit user correction permits new items to list old IDs in supersedesIds; superseded items remain historical and cannot reactivate. Never infer supersession from cancellation or vague prose. Mark actual progress; completed is not independent verification.",
       inputSchema: z.object({
         todos: z
           .array(
@@ -21,24 +21,24 @@ export function buildTodoTools(ctx: ToolContext) {
                 .max(128)
                 .optional()
                 .describe(
-                  "Stable id; generated if omitted. Reuse ids across calls to keep UI stable.",
+                  "Stable ID; generated if omitted. Reuse.",
                 ),
               title: z.string().trim().min(1).max(160),
               description: z.string().max(512).optional(),
               status: TodoStatus.describe(
-                "Use blocked, with a reason in description, when work needs clarification or unavailable access. Completed is reported progress, not proof of successful effects.",
+                "Use blocked with reason in description for missing access/clarification. Completed is progress, not proof.",
               ),
               supersedesIds: z
                 .array(z.string().min(1).max(128))
                 .max(8)
                 .optional()
                 .describe(
-                  "Explicit historical Todo ids replaced by this item after an authoritative user correction; never use for unrelated omitted Todos.",
+                  "Historical IDs superseded only by explicit user correction; never unrelated omitted Todos.",
                 ),
             }),
           )
           .max(16)
-          .describe("The complete list of todos for this task."),
+          .describe("Complete Todo list."),
       }),
       execute: async ({ todos }) => {
         const sessionId = ctx.getSessionId();

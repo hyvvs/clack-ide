@@ -39,24 +39,24 @@ export function buildSearchTools(ctx: ToolContext) {
   return {
     grep: tool({
       description:
-        "Search file contents in the workspace using a regular expression. Honors .gitignore. Returns up to `max_results` (default 30, max 500) `{path, line, text}` hits, with a `truncated` flag when more existed. Long match lines are clipped to 160 chars. Use this for code navigation — do NOT brute-force read_file across the tree. Narrow with `glob` when you can; raise `max_results` only if the first batch truly isn't enough.",
+        "Search workspace file contents by regex; honors .gitignore. Returns `{path, line, text}` hits (default 30, max 500), `truncated` if more, lines clipped to 160 chars. Do NOT brute-force read_file across the tree; narrow with `glob` and raise `max_results` only as needed.",
       inputSchema: z.object({
         pattern: z
           .string()
           .describe(
-            "Regex pattern (Rust ripgrep dialect). Anchor and escape literal characters as needed.",
+            "Rust ripgrep regex; escape literals.",
           ),
         root: z
           .string()
           .optional()
           .describe(
-            "Root to search under. Defaults to workspace root, then active cwd.",
+            "Root; default workspace root, then cwd.",
           ),
         glob: z
           .array(z.string())
           .optional()
           .describe(
-            "Optional include-globs over relative paths, e.g. ['**/*.ts', 'src/**/*.tsx'].",
+            "Relative include globs, e.g. **/*.ts.",
           ),
         case_insensitive: z.boolean().optional(),
         max_results: z.number().int().min(1).max(500).optional(),
@@ -104,7 +104,7 @@ export function buildSearchTools(ctx: ToolContext) {
 
     glob: tool({
       description:
-        "Find files by path pattern (gitignore-aware). Use over `list_directory` when you want all matches recursively. Patterns use globset syntax: `**/*.ts`, `src/**/test_*.py`. Returns up to `max_results` matches.",
+        "Find files recursively by gitignore-aware globset pattern, e.g. `**/*.ts`. Prefer over `list_directory` for recursive matches; returns up to `max_results`.",
       inputSchema: z.object({
         pattern: z.string().describe("Glob pattern over relative paths."),
         root: z.string().optional(),

@@ -38,7 +38,7 @@ export function buildShellTools(ctx: ToolContext) {
   return {
     bash_run: tool({
       description:
-        "Run a foreground command in this session's persistent native shell. Despite the historical tool id `bash_run`, this is NOT necessarily Bash: obey the current <env> shell and shell_syntax fields exactly. cwd persists across calls. Use for short-lived commands (lint, test, search, build), including creating new workspace files with noninteractive native-shell file-writing commands when authorized. Respect workspace scope, secret-path protections and approvals. Do not use for dev servers, watchers or daemons; these require an exposed background-process capability. NEVER invoke interactive tools (vim, less, top). Approval follows the active agent policy.",
+        "Run a foreground command in the persistent native shell; `bash_run` is NOT necessarily Bash. Obey <env> shell and shell_syntax exactly; cwd persists. Use for bounded lint/test/build or creating new workspace files via noninteractive native-shell commands when authorized. Respect workspace scope, secret-path protections and approvals. Dev servers, watchers and daemons require exposed background tools; NEVER invoke interactive tools (vim, less, top). Approval follows the active agent policy.",
       inputSchema: z.object({
         command: z.string(),
         timeout_secs: z.number().int().min(1).max(300).optional(),
@@ -48,7 +48,7 @@ export function buildShellTools(ctx: ToolContext) {
           .max(128)
           .optional()
           .describe(
-            "Explicit existing Todo identity to associate the native command's observed outcome with. Does not certify arbitrary application functionality.",
+            "Existing Todo ID for command observation, not proof of application functionality.",
           ),
         verification_purpose: z.string().trim().min(1).max(160).optional(),
       }),
@@ -198,7 +198,7 @@ export function buildShellTools(ctx: ToolContext) {
 
     bash_background: tool({
       description:
-        "Spawn a long-running process using the native shell declared by the current <env> shell and shell_syntax fields. Despite the historical `bash_` tool ids, do not assume POSIX Bash syntax. Returns a handle for exposed log/stop capabilities. Output is captured into a 4MB ring buffer. Approval follows the active agent policy.",
+        "Spawn a long-running process in the <env> native shell and shell_syntax; despite `bash_` names, do not assume POSIX Bash syntax. Returns a log/stop handle; output uses a 4MB ring buffer. Approval follows the active agent policy.",
       inputSchema: z.object({
         command: z.string(),
         cwd: z.string().nullable().optional(),
@@ -222,7 +222,7 @@ export function buildShellTools(ctx: ToolContext) {
 
     bash_logs: tool({
       description:
-        "Read accumulated logs from a managed background process. Pass `since_offset` from the previous response's `next_offset` to tail incrementally. `dropped` reports bytes evicted by the ring buffer.",
+        "Read managed background-process logs. Pass prior `next_offset` as `since_offset` to tail; `dropped` reports evicted ring-buffer bytes.",
       inputSchema: z.object({
         handle: z.number().int(),
         since_offset: z.number().int().optional(),
@@ -239,7 +239,7 @@ export function buildShellTools(ctx: ToolContext) {
 
     bash_list: tool({
       description:
-        "List all managed background processes in this app, running and exited. Always call this BEFORE spawning a new long-running process to avoid duplicates. If a matching process is already running, reuse it; inspect it through an exposed preview capability instead of respawning. Auto-executes.",
+        "List running and exited managed background processes. Always check BEFORE spawning to avoid duplicates; reuse a matching running process and inspect via exposed preview instead of respawning. Auto-executes.",
       inputSchema: z.object({}),
       execute: async () => {
         try {
@@ -253,7 +253,7 @@ export function buildShellTools(ctx: ToolContext) {
 
     bash_kill: tool({
       description:
-        "Terminate a managed background process by handle. Idempotent: kills nothing if the handle is unknown or already exited.",
+        "Terminate managed background process by handle; idempotent for unknown or exited handles.",
       inputSchema: z.object({ handle: z.number().int() }),
       execute: async ({ handle }) => {
         try {
