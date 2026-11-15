@@ -18,6 +18,7 @@ import { ServerDiscovery } from "@/settings/components/ServerDiscovery";
 import { selfHostedHealth } from "@/modules/ai/lib/selfHostedHealth";
 import {
   deleteSelfHostedEndpoint,
+  editSelfHostedEndpoint,
   type SelfHostedEndpoint,
   type SelfHostedBackend,
   endpointBackend,
@@ -45,6 +46,7 @@ import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
 import { ModelOnboardingDetails } from "@/settings/components/ModelOnboardingDetails";
 import { remoteSsh, remoteSshMessage, remoteSshUrl, type RemoteSshConfig, type RemoteSshStatus } from "@/modules/ai/lib/remoteSsh";
 import { RemoteSshFields } from "@/settings/components/RemoteSshFields";
+import { OllamaHostRow, type OllamaHostConnection } from "@/settings/components/OllamaHostRow";
 import "@/settings/components/SelfHostedServers.css";
 
 const probeClient = createSelfHostedProbeClient();
@@ -57,32 +59,106 @@ const options = (server: SelfHostedEndpoint, model?: string) => ({
 export function SelfHostedServers({ addRequest = 0 }: { addRequest?: number }) {
   useSelfHostedInventory();
   const state = usePreferencesStore((s) => s.selfHostedInference);
+  const [clock, setClock] = useState(Date.now());
   const [editing, setEditing] = useState<string | null>(null);
+  const [addingOllama, setAddingOllama] = useState(false);
+  const [toggling, setToggling] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState<string | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
-    if (addRequest) setEditing("new");
+    const timer = setInterval(() => setClock(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (addRequest) { setAddingOllama(false); setEditing("new"); }
   }, [addRequest]);
   const endpoints = state.endpoints.filter((e) => e.deletedAt === undefined);
+  const ollamaHosts = endpoints.filter((e) => endpointBackend(e) === "ollama" && !e.ssh);
+  const otherServers = endpoints.filter((e) => endpointBackend(e) !== "ollama" || !!e.ssh);
   const edit = endpoints.find((e) => e.id === editing);
+  const remove = (endpoint: SelfHostedEndpoint) => {
+    if (!window.confirm(`Delete ${endpoint.alias}? Its chats will show Model unavailable. Running requests keep their captured settings.`)) return;
+    void updateSelfHostedProfiles((s) => deleteSelfHostedEndpoint(s, endpoint.id))
+      .then(() => { if (editing === endpoint.id) setEditing(null); })
+      .catch(() => setError("Could not delete server. Try again."));
+  };
+  const toggle = (endpoint: SelfHostedEndpoint, enabled: boolean) => {
+    if (toggling || refreshing) return;
+    setError("");
+    setToggling(endpoint.id);
+    void updateSelfHostedProfiles((s) => editSelfHostedEndpoint(s, endpoint.id, { enabled }))
+      .catch(() => setError("Could not change host availability. Try again."))
+      .finally(() => setToggling(null));
+  };
+  const refresh = (endpoint: SelfHostedEndpoint) => {
+    if (refreshing || toggling || endpoint.enabled === false) return;
+    setRefreshing(endpoint.id);
+    setError("");
+    void probeClient.refresh(options(endpoint))
+      .catch(() => setError("Could not refresh Ollama host inventory. Check server availability."))
+      .finally(() => { setRefreshing(null); setClock(Date.now()); });
+  };
   return (
     <section className="self-hosted-servers" aria-label="Self-hosted servers">
       <div className="server-heading">
         <h3>Self-hosted servers</h3>
-        <Button size="sm" variant="outline" onClick={() => setEditing("new")}>
+        <Button size="sm" variant="outline" onClick={() => { setAddingOllama(false); setEditing("new"); }}>
           <HugeiconsIcon icon={Add01Icon} size={14} />
           Add self-hosted server
         </Button>
       </div>
+      <div className="server-heading">
+        <h4>Ollama hosts</h4>
+        <Button size="sm" variant="outline" onClick={() => { setAddingOllama(true); setEditing("new"); }}>
+          <HugeiconsIcon icon={Add01Icon} size={14} />
+          Add Ollama host
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">Ollama on this PC or another HTTP(S) host. Connection status does not verify the model or Agent tools.</p>
       {editing !== null ? (
         <ServerEditor
-          key={editing}
+          key={`${editing}:${addingOllama ? "ollama" : "generic"}`}
           endpoint={edit}
-          onClose={() => setEditing(null)}
-          onCreated={setEditing}
+          ollamaOnly={addingOllama && !edit}
+          onClose={() => { setEditing(null); setAddingOllama(false); }}
+          onCreated={(id) => { setEditing(id); setAddingOllama(false); }}
         />
       ) : null}
       {error ? <p role="alert">{error}</p> : null}
-      {endpoints.map((endpoint) => {
+      {ollamaHosts.length === 0 ? <p className="text-xs text-muted-foreground">No Ollama hosts configured.</p> : null}
+      {ollamaHosts.map((endpoint) => {
+        const inventory = state.inventories?.find((item) => item.endpointId === endpoint.id && item.configurationRevision === endpoint.configurationRevision);
+        const fresh = !!inventory && inventory.observedAt <= clock && clock - inventory.observedAt < 300_000;
+        const connection: OllamaHostConnection = !fresh || inventory?.error === "unsupported-probe-route"
+          ? "unknown" : inventory.connected ? "online" : "offline";
+        let location: "This PC" | "Other computer" = endpoint.location === "local" ? "This PC" : "Other computer";
+        if (!endpoint.location) {
+          try { if (["localhost", "127.0.0.1", "[::1]"].includes(new URL(endpoint.baseURL).hostname)) location = "This PC"; } catch { /* An invalid URL cannot establish locality. */ }
+        }
+        return (
+          <OllamaHostRow
+            key={endpoint.id}
+            alias={endpoint.alias}
+            address={endpoint.baseURL}
+            location={location}
+            enabled={endpoint.enabled !== false}
+            connection={connection}
+            modelCount={inventory?.models.length}
+            version={inventory?.version}
+            lastCheckedAt={inventory?.observedAt}
+            lastSuccessAt={inventory?.lastSuccessAt}
+            lastErrorCode={inventory?.error}
+            busy={toggling !== null || refreshing !== null}
+            refreshing={refreshing === endpoint.id}
+            onToggle={(enabled) => toggle(endpoint, enabled)}
+            onRefresh={() => refresh(endpoint)}
+            onEdit={() => { setAddingOllama(false); setEditing(endpoint.id); }}
+            onRemove={() => remove(endpoint)}
+          />
+        );
+      })}
+      {otherServers.length > 0 ? <h4 className="text-sm font-medium">Other self-hosted servers</h4> : null}
+      {otherServers.map((endpoint) => {
         const models = savedSelfHostedModelInfos({ ...state, endpoints: [endpoint] });
         return (
           <div className="server-row focus-visible:outline focus-visible:outline-1" key={endpoint.id} data-settings-connection={endpoint.id} tabIndex={-1}>
@@ -112,21 +188,7 @@ export function SelfHostedServers({ addRequest = 0 }: { addRequest?: number }) {
               variant="ghost"
               title={`Delete ${endpoint.alias}`}
               aria-label={`Delete ${endpoint.alias}`}
-              onClick={() => {
-                if (
-                  !window.confirm(
-                    `Delete ${endpoint.alias}? Its chats will show Model unavailable. Running requests keep their captured settings.`,
-                  )
-                )
-                  return;
-                void updateSelfHostedProfiles((s) =>
-                  deleteSelfHostedEndpoint(s, endpoint.id),
-                )
-                  .then(() => {
-                    if (editing === endpoint.id) setEditing(null);
-                  })
-                  .catch(() => setError("Could not delete server. Try again."));
-              }}
+              onClick={() => remove(endpoint)}
             >
               <HugeiconsIcon icon={Delete02Icon} size={15} />
             </Button>
@@ -139,27 +201,29 @@ export function SelfHostedServers({ addRequest = 0 }: { addRequest?: number }) {
 
 function ServerEditor({
   endpoint,
+  ollamaOnly = false,
   onClose,
   onCreated,
 }: {
   endpoint?: SelfHostedEndpoint;
+  ollamaOnly?: boolean;
   onClose: () => void;
   onCreated: (id: string) => void;
 }) {
   const formId = useId();
   const [draftId] = useState(() => `sh-${crypto.randomUUID()}`);
-  const [alias, setAlias] = useState(endpoint?.alias ?? "AI Server");
-  const [baseURL, setBaseURL] = useState(endpoint?.baseURL ?? "");
+  const [alias, setAlias] = useState(endpoint?.alias ?? (ollamaOnly ? "Ollama on this PC" : "AI Server"));
+  const [baseURL, setBaseURL] = useState(endpoint?.baseURL ?? (ollamaOnly ? "http://127.0.0.1:11434/" : ""));
   const [mode, setMode] = useState(endpoint?.ssh ? "ssh" : endpoint ? "direct" : "local");
   const [ssh, setSsh] = useState<RemoteSshConfig>(endpoint?.ssh ?? { host: "", username: "", port: 22, keyPath: null, remoteHost: "127.0.0.1", remotePort: 11434 });
   const [transport, setTransport] = useState<RemoteSshStatus | null>(null);
-  const remote = mode === "ssh";
+  const remote = !ollamaOnly && mode === "ssh";
   const address = remote ? remoteSshUrl(endpoint?.id ?? draftId) : baseURL;
   const [backend, setBackend] = useState<SelfHostedBackend | "">(
-    endpoint?.backendHint ?? "",
+    endpoint?.backendHint ?? (ollamaOnly ? "ollama" : ""),
   );
   const [privateNetwork, setPrivateNetwork] = useState(
-    endpoint ? endpointAllowsPrivate(endpoint) : false,
+    endpoint ? endpointAllowsPrivate(endpoint) : ollamaOnly,
   );
   const [password, setPassword] = useState("");
   const [removeCredential, setRemoveCredential] = useState(false);
@@ -274,7 +338,7 @@ function ServerEditor({
               alias,
               baseURL: address.trim(),
               ssh: remote ? ssh : null,
-              backendHint: backend || undefined,
+              backendHint: ollamaOnly ? "ollama" : backend || undefined,
               allowPrivateNetwork: privateNetwork,
               removeCredential,
             },
@@ -373,7 +437,7 @@ function ServerEditor({
   return (
     <div className="server-editor">
       <div className="server-heading">
-        <h4>{endpoint ? endpoint.alias : "Add self-hosted server"}</h4>
+        <h4>{endpoint ? endpoint.alias : ollamaOnly ? "Add Ollama host" : "Add self-hosted server"}</h4>
         <Button
           size="icon-sm"
           variant="ghost"
@@ -388,9 +452,10 @@ function ServerEditor({
       {!endpoint && !current && !remote && (
         <ServerDiscovery
           endpoints={state.endpoints}
+          backendFilter={ollamaOnly ? "ollama" : undefined}
           onSelect={(candidate) => {
             setBaseURL(candidate.baseURL);
-            setBackend(candidate.backendHint ?? "");
+            setBackend(ollamaOnly ? "ollama" : candidate.backendHint ?? "");
             setPrivateNetwork(false);
             setPassword("");
             setSnapshot(null);
@@ -416,7 +481,7 @@ function ServerEditor({
               setPassword(""); setRemoveCredential(remote); setSnapshot(null);
             }}>
               <option value="local">On this computer</option>
-              <option value="ssh">Another computer (SSH)</option>
+              {!ollamaOnly && <option value="ssh">Another computer (SSH)</option>}
               <option value="direct">Advanced HTTP / HTTPS endpoint</option>
             </select>
           </label>}
@@ -449,6 +514,7 @@ function ServerEditor({
             Server type
             <select
               value={backend}
+              disabled={ollamaOnly}
               onChange={(e) =>
                 setBackend(e.target.value as SelfHostedBackend | "")
               }

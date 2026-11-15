@@ -56,6 +56,7 @@ fn normalize(address: &str) -> Result<Endpoint, ProbeError> {
         detected_backend: None,
         credential_ref: None,
         configuration_revision: 1,
+        enabled: true,
         deleted_at: None,
     };
     // Apply the same URL guards and route construction as normal setup before DNS.

@@ -6,7 +6,7 @@ import {
   SELF_HOSTED_SETTINGS_KEY,
   type SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
-import { migrateSelfHostedProfiles } from "@/modules/ai/lib/selfHostedMigration";
+import { ensureDefaultOllamaHost, migrateSelfHostedProfiles } from "@/modules/ai/lib/selfHostedMigration";
 
 export type SelfHostedStorage = {
   entries: () => Promise<[string, unknown][]>;
@@ -25,7 +25,7 @@ export function createSelfHostedPersistence(storage: SelfHostedStorage) {
       const entries = new Map(await storage.entries());
       const raw = entries.get(SELF_HOSTED_SETTINGS_KEY) ?? null;
       assertWritableSelfHostedState(raw);
-      const migrated = migrateSelfHostedProfiles(raw, entries);
+      const migrated = ensureDefaultOllamaHost(migrateSelfHostedProfiles(raw, entries), entries);
       const changed = change(migrated);
       assertWritableSelfHostedState(changed);
       const next = readSelfHostedState(changed);

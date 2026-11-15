@@ -38,6 +38,28 @@ pub fn self_hosted_profiles_snapshot(app: AppHandle) -> Result<Vec<(String, Valu
         .collect())
 }
 
+// Persist historical proof after a host is re-enabled or reconfigured.
+// Historical evidence is NOT usable at the new revision: the TypeScript
+// context/tool admission paths require an exact CURRENT revision and fresh
+// runtime identity. Native persistence must still reject future, missing,
+// cross-host, or malformed revision claims rather than deleting old records.
+fn evidence_revision_is_not_future(state: &Value, scope: &Value) -> bool {
+    let Some(record_revision) = scope["configurationRevision"]
+        .as_u64()
+        .filter(|revision| *revision > 0)
+    else {
+        return false;
+    };
+    state["endpoints"].as_array().is_some_and(|endpoints| {
+        endpoints.iter().any(|endpoint| {
+            endpoint["id"] == scope["endpointId"]
+                && endpoint["configurationRevision"]
+                    .as_u64()
+                    .is_some_and(|current| current > 0 && record_revision <= current)
+        })
+    })
+}
+
 pub(super) fn validate(value: &Value) -> Result<(), String> {
     if value.get("version").and_then(Value::as_u64) != Some(1)
         || value.get("revision").and_then(Value::as_u64).is_none()
@@ -120,12 +142,7 @@ pub(super) fn validate(value: &Value) -> Result<(), String> {
             && string(&scope["runtimeEpoch"], 128)
             && string(&scope["providerVersion"], 64)
             && string(&scope["reasoning"], 2048)
-            && value["endpoints"].as_array().is_some_and(|es| {
-                es.iter().any(|e| {
-                    e["id"] == scope["endpointId"]
-                        && e["configurationRevision"] == scope["configurationRevision"]
-                })
-            })
+            && evidence_revision_is_not_future(value, scope)
             && matches!(
                 record["status"].as_str(),
                 Some(
@@ -270,12 +287,7 @@ fn validate_tool_verification(
         || !bounded(&scope["runtimeEpoch"], 128)
         || !bounded(&scope["providerVersion"], 64)
         || !bounded(&scope["reasoning"], 2048)
-        || !state["endpoints"].as_array().is_some_and(|es| {
-            es.iter().any(|e| {
-                e["id"] == scope["endpointId"]
-                    && e["configurationRevision"] == scope["configurationRevision"]
-            })
-        })
+        || !evidence_revision_is_not_future(state, scope)
         || !matches!(
             record["status"].as_str(),
             Some(
@@ -632,6 +644,50 @@ mod tests {
             compare_and_save(value.clone(), Value::Null, value, |_| panic!("stale write")),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn reenable_preserves_old_proof_but_rejects_future_revision_and_cross_identity() {
+        let original = tool_verified();
+        validate(&original).unwrap();
+        let mut reenabled = original.clone();
+        reenabled["endpoints"][0]["configurationRevision"] = json!(2);
+        reenabled["endpoints"][0]["enabled"] = json!(true);
+        // A native CAS must preserve, not erase, the previous revision's
+        // context and tool receipts. Admission requires an exact live scope.
+        validate(&reenabled).unwrap();
+        assert_eq!(
+            compare_and_save(original.clone(), original, reenabled.clone(), |_| Ok(())),
+            Ok(true)
+        );
+        assert_eq!(
+            reenabled["profiles"][0]["toolVerification"]["scope"]["configurationRevision"],
+            json!(1)
+        );
+        assert_eq!(
+            reenabled["profiles"][0]["contextCalibration"]["scope"]["configurationRevision"],
+            json!(1)
+        );
+        for scope in ["contextCalibration", "toolVerification"] {
+            let mut future = reenabled.clone();
+            future["profiles"][0][scope]["scope"]["configurationRevision"] = json!(3);
+            assert!(validate(&future).is_err(), "{scope} future proof admitted");
+            let mut missing = reenabled.clone();
+            missing["profiles"][0][scope]["scope"]["configurationRevision"] = json!(0);
+            assert!(validate(&missing).is_err(), "{scope} zero revision admitted");
+            let mut foreign = reenabled.clone();
+            foreign["profiles"][0][scope]["scope"]["endpointId"] = json!("foreign");
+            assert!(validate(&foreign).is_err(), "{scope} foreign endpoint admitted");
+            let mut digest = reenabled.clone();
+            digest["profiles"][0][scope]["scope"]["digest"] = json!("wrong");
+            assert!(validate(&digest).is_err(), "{scope} foreign digest admitted");
+            let mut model = reenabled.clone();
+            model["profiles"][0][scope]["scope"]["model"] = json!("wrong");
+            assert!(validate(&model).is_err(), "{scope} foreign model admitted");
+        }
+        let mut missing_host = reenabled;
+        missing_host["endpoints"] = json!([]);
+        assert!(validate(&missing_host).is_err());
     }
 
     #[test]

@@ -44,6 +44,14 @@ export function normalizeEndpointUrl(value: string): string {
   return url.href;
 }
 
+/** Ollama host location refers to the configured HTTP destination, not SSH.
+ * No network lookup occurs; LAN/VPN hostnames are intentionally remote. */
+export function endpointHostLocation(baseURL: string): "local" | "remote" {
+  const hostname = new URL(baseURL).hostname.toLowerCase();
+  return ["localhost", "127.0.0.1", "[::1]"].includes(hostname)
+    ? "local" : "remote";
+}
+
 const endpointUrl = z.string().transform((value, ctx) => {
   try {
     return normalizeEndpointUrl(value);
@@ -75,6 +83,10 @@ const endpointSchema = z.object({
   id,
   alias: z.string().trim().min(1).max(128),
   baseURL: endpointUrl,
+  location: z.enum(["local", "remote"]).optional(),
+  // LM0 host availability is configuration, not a deletion or proof reset.
+  // Absent on existing durable endpoints means enabled.
+  enabled: z.boolean().optional(),
   ssh: remoteSshSchema.nullish(),
   backendHint: backend.optional(),
   detectedBackend: backend.nullish(),
@@ -101,13 +113,21 @@ const inventoryModelSchema = z.object({
   digest: z.string().min(1).max(1024).optional(),
   size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   modifiedAt: z.string().max(1024).optional(),
+  family: z.string().min(1).max(1024).optional(),
+  parameterSize: z.string().min(1).max(1024).optional(),
+  quantizationLevel: z.string().min(1).max(1024).optional(),
 });
 export const selfHostedInventorySchema = z.object({
   endpointId: id,
   configurationRevision: z.number().int().positive(),
   observedAt: timestamp,
+  // The native probe writes JSON null when these optional observations are
+  // unknown. Interpret that as absence so a failed offline probe cannot make
+  // the entire durable host registry unwritable on the next Settings edit.
+  lastSuccessAt: z.preprocess(value => value === null ? undefined : value, timestamp.optional()),
   connected: z.boolean(),
   backend: backend.nullish(),
+  version: z.preprocess(value => value === null ? undefined : value, z.string().min(1).max(64).optional()),
   error: z.string().max(64).nullish(),
   models: z.array(inventoryModelSchema).max(5000).refine(rows => new Set(rows.map(m => m.id)).size === rows.length),
 });
@@ -330,6 +350,7 @@ export function createSelfHostedEndpoint(
     backendHint?: SelfHostedBackend;
     credentialRef?: EndpointCredentialReference | null;
     allowPrivateNetwork?: boolean;
+    enabled?: boolean;
     ssh?: RemoteSshConfig | null;
   },
   endpointId = `sh-${crypto.randomUUID()}`,
@@ -342,9 +363,11 @@ export function createSelfHostedEndpoint(
     baseURL,
     ssh: input.ssh,
     backendHint: input.backendHint,
+    enabled: input.enabled ?? true,
     credentialRef: input.credentialRef ?? null,
     allowPrivateNetwork: input.allowPrivateNetwork,
     transportSecurity: transportSecurity(baseURL),
+    location: endpointHostLocation(baseURL),
     revision: 1,
     configurationRevision: 1,
     createdAt: now,
@@ -372,6 +395,7 @@ export function editSelfHostedEndpoint(
   patch: {
     alias?: string;
     baseURL?: string;
+    enabled?: boolean;
     backendHint?: SelfHostedBackend;
     credentialRef?: EndpointCredentialReference | null;
     allowPrivateNetwork?: boolean;
@@ -386,6 +410,9 @@ export function editSelfHostedEndpoint(
     next.baseURL !== previous.baseURL ||
     next.backendHint !== previous.backendHint ||
     next.allowPrivateNetwork !== previous.allowPrivateNetwork ||
+    // Re-enabling may reach a restarted/replaced runtime. Do not resurrect
+    // a cached inventory or native-tool/context proof without fresh evidence.
+    (previous.enabled === false && next.enabled !== false) ||
     JSON.stringify(next.credentialRef) !==
       JSON.stringify(previous.credentialRef);
   next.revision = previous.revision + 1;
@@ -393,6 +420,7 @@ export function editSelfHostedEndpoint(
     previous.configurationRevision + (configChanged ? 1 : 0);
   next.updatedAt = now;
   next.transportSecurity = transportSecurity(next.baseURL);
+  next.location = endpointHostLocation(next.baseURL);
   if (configChanged) delete next.detectedBackend;
   return {
     ...state,
@@ -648,7 +676,7 @@ export function resolveSelfHostedProfile(
   const profile = state.profiles.find(
     (p) => p.id === profileId && p.endpointId === endpointId,
   );
-  if (!endpoint || endpoint.deletedAt !== undefined || !profile)
+  if (!endpoint || endpoint.deletedAt !== undefined || endpoint.enabled === false || !profile)
     return {
       status: "missing",
       endpointId,

@@ -15,6 +15,45 @@ import {
   type SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
 
+/** LM0 durable, removable default. Kept outside legacy conversion so old
+ * migration callers retain their original additive ordering and semantics. */
+export function ensureDefaultOllamaHost(
+  state: SelfHostedState,
+  legacy: ReadonlyMap<string, unknown>,
+  now = Date.now(),
+): SelfHostedState {
+  if (state.endpoints.some((endpoint) =>
+    endpoint.id === "legacy:ollama" || endpoint.legacy?.selectionId === "ollama-local"))
+    return state; // Tombstones mean intentionally removed, never recreate.
+  if (state.endpoints.length >= 256) return state;
+  const stored = legacy.get("ollamaBaseURL");
+  const preferred = typeof stored === "string" && stored.trim()
+    ? stored.trim() : OLLAMA_DEFAULT_BASE_URL;
+  const install = (baseURL: string) => {
+    const host = createSelfHostedEndpoint({
+      alias: "This PC", baseURL, backendHint: "ollama", allowPrivateNetwork: true,
+    }, "legacy:ollama", now);
+    return addSelfHostedEndpoint(state, {
+      ...host,
+      legacy: {
+        selectionId: "ollama-local",
+        profileId: null,
+        snapshot: JSON.stringify({
+          alias: "This PC", baseURL: host.baseURL,
+          modelId: "", contextLimit: null,
+        }),
+      },
+    });
+  };
+  try {
+    return install(preferred);
+  } catch {
+    // An invalid old URL is retained untouched in the old setting; safely
+    // initialize the local fallback rather than persisting a broken host.
+    return install(OLLAMA_DEFAULT_BASE_URL);
+  }
+}
+
 type LegacyEndpoint = {
   id: string;
   selectionId: string;
@@ -71,7 +110,7 @@ export function migrateSelfHostedProfiles(
         state,
         endpoint.id,
         {
-          ...(previous.alias !== snapshot.alias
+          ...(previous.alias !== snapshot.alias && endpoint.alias === previous.alias
             ? { alias: snapshot.alias }
             : {}),
           ...(previous.baseURL !== snapshot.baseURL
@@ -171,7 +210,7 @@ function legacyEndpoints(
 ): LegacyEndpoint[] {
   const result: LegacyEndpoint[] = [];
   const locals = [
-    ["ollama", "Ollama", OLLAMA_DEFAULT_BASE_URL],
+    ["ollama", "This PC", OLLAMA_DEFAULT_BASE_URL],
     ["lmstudio", "LM Studio", LMSTUDIO_DEFAULT_BASE_URL],
     ["mlx", "MLX", MLX_DEFAULT_BASE_URL],
   ] as const;

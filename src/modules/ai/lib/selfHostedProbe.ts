@@ -50,9 +50,13 @@ export type ProbeSnapshot = {
     digest?: string;
     size?: number;
     modifiedAt?: string;
+    family?: string;
+    parameterSize?: string;
+    quantizationLevel?: string;
   }[];
   errors: { route: string | null; error: ProbeError }[];
   backend?: SelfHostedBackend;
+  version?: string;
 };
 export type ProbeOptions = {
   endpointId: string;

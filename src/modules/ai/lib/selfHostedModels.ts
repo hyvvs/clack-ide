@@ -93,7 +93,7 @@ export function selfHostedModelInfo(
 export function savedSelfHostedModelInfos(state: SelfHostedState): ModelInfo[] {
   return state.profiles.flatMap((p) => {
     const endpoint = state.endpoints.find(
-      (e) => e.id === p.endpointId && e.deletedAt === undefined,
+      (e) => e.id === p.endpointId && e.deletedAt === undefined && e.enabled !== false,
     );
     if (
       !endpoint ||
@@ -190,6 +190,48 @@ export function selfHostedTransportIdentity(
       credentialRequired: !!endpoint.credentialRef && !endpoint.legacy,
     },
   };
+}
+
+/**
+ * A captured HTTP route must still name the selected host, not merely the
+ * model tag or a profile with the same endpoint ID. A stale captured URL
+ * cannot consume calibration/native-tool proof from a newly configured host.
+ *
+ * Unmanaged legacy routes remain supported only when no managed Ollama host
+ * exists; once hosts are managed, an ambiguous bare Ollama route fails closed.
+ */
+export function assertCurrentOllamaHostIdentity(
+  captured: ModelTransportIdentity,
+  modelId: string,
+  state: SelfHostedState,
+): void {
+  const mismatch = (): never => {
+    throw new Error(
+      "Selected self-hosted endpoint or model identity changed. Choose the current host and model explicitly. No inference was sent.",
+    );
+  };
+  const selected = resolveSelfHostedSelection(state, modelId);
+  if (selected.status === "not-managed") {
+    if (captured.selfHosted ||
+        (captured.providerId === "ollama" && state.endpoints.some(endpoint =>
+          endpoint.deletedAt === undefined && endpointBackend(endpoint) === "ollama")))
+      mismatch();
+    return;
+  }
+  if (selected.status !== "available") mismatch();
+  const current = selfHostedTransportIdentity(modelId, state);
+  if (!current?.selfHosted || !captured.selfHosted ||
+      captured.providerId !== current.providerId ||
+      captured.transportModelId !== current.transportModelId ||
+      captured.endpointBaseURL !== current.endpointBaseURL ||
+      captured.selfHosted.endpointId !== current.selfHosted.endpointId ||
+      captured.selfHosted.profileId !== current.selfHosted.profileId ||
+      captured.selfHosted.configurationRevision !== current.selfHosted.configurationRevision ||
+      captured.selfHosted.allowPrivateNetwork !== current.selfHosted.allowPrivateNetwork ||
+      captured.selfHosted.credentialRequired !== current.selfHosted.credentialRequired ||
+      JSON.stringify(captured.selfHosted.credentialRef) !==
+        JSON.stringify(current.selfHosted.credentialRef))
+    mismatch();
 }
 
 export function managedReconnectAvailable(selectionId: string,state: SelfHostedState): boolean {

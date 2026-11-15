@@ -24,7 +24,7 @@ vi.mock("@/modules/settings/preferences", async (importOriginal) => {
   ) };
 });
 
-import { ModelDropdown } from "@/modules/ai/components/AiStatusBarControls";
+import { ModelDropdown, groupOllamaPickerModels, modelPickerHostAvailability } from "@/modules/ai/components/AiStatusBarControls";
 import { ModelSwitchNotice } from "./ModelSwitchNotice";
 import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
 import type { SessionRunState } from "@/modules/ai/lib/sessions";
@@ -33,6 +33,10 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { createSavedProviderModel, resolveModelTransportIdentity, savedProviderModelSelectionId } from "@/modules/ai/lib/savedProviderModels";
 import { parseProviderContextCatalog } from "@/modules/ai/lib/providerModelEvidence";
 import { minimaxFreeCatalogRecord } from "@/modules/ai/lib/openrouterCatalog.fixture";
+import { createSelfHostedEndpoint, type SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import { saveSelfHostedModel, savedSelfHostedModelInfos, selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
+import { migrateSelfHostedProfiles } from "@/modules/ai/lib/selfHostedMigration";
+import { resolveModel } from "@/modules/ai/config";
 
 const original = useChatStore.getState();
 
@@ -176,6 +180,79 @@ describe.each([
 });
 
 describe("model picker scope", () => {
+  it("groups the migrated ollama-local model under This PC instead of leaving it unbound", () => {
+    const state = migrateSelfHostedProfiles(null, new Map<string, unknown>([
+      ["ollamaModelId", "legacy:latest"],
+    ]), 1);
+    const groups = groupOllamaPickerModels([resolveModel("ollama-local")], state);
+    expect(groups.otherModels).toHaveLength(0);
+    expect(groups.hostGroups).toHaveLength(1);
+    expect(groups.hostGroups[0]).toMatchObject({
+      endpointId: "legacy:ollama",
+      alias: "This PC",
+    });
+    expect(groups.hostGroups[0].models[0].id).toBe("ollama-local");
+  });
+  it("groups identically named Ollama models under distinct host IDs without dropping cloud models", () => {
+    const hosts: SelfHostedState = {
+      version: 1,
+      revision: 0,
+      endpoints: [
+        createSelfHostedEndpoint({
+          alias: "This PC",
+          baseURL: "http://127.0.0.1:11434/",
+          backendHint: "ollama",
+          allowPrivateNetwork: true,
+        }, "ollama-local-pick", 1),
+        createSelfHostedEndpoint({
+          alias: "Workstation",
+          baseURL: "http://192.0.2.20:11434/",
+          backendHint: "ollama",
+          allowPrivateNetwork: true,
+        }, "ollama-remote-pick", 1),
+      ],
+      profiles: [],
+    };
+    const once = saveSelfHostedModel(hosts, "ollama-local-pick", "duplicate:7b", "Same name");
+    const twice = saveSelfHostedModel(once, "ollama-remote-pick", "duplicate:7b", "Same name");
+    const saved = savedSelfHostedModelInfos(twice);
+    expect(saved).toHaveLength(2);
+    const cloud = { ...saved[0], id: "cloud-record", label: "Cloud", provider: "openai" as const };
+    const groups = groupOllamaPickerModels([cloud, saved[1], saved[0]], twice);
+    expect(groups.otherModels).toEqual([cloud]);
+    expect(groups.hostGroups.map(group => [group.endpointId, group.alias, group.address])).toEqual([
+      ["ollama-remote-pick", "Workstation", "http://192.0.2.20:11434/"],
+      ["ollama-local-pick", "This PC", "http://127.0.0.1:11434/"],
+    ]);
+    expect(groups.hostGroups.flatMap(group => group.models.map(model => model.label)))
+      .toEqual(["Same name", "Same name"]);
+    expect(groups.hostGroups[0].models[0].id).not.toBe(groups.hostGroups[1].models[0].id);
+  });
+
+  it("labels a disabled Ollama host without allowing an offline reconnect bypass", () => {
+    const base: SelfHostedState = {
+      version: 1,
+      revision: 0,
+      endpoints: [{
+        ...createSelfHostedEndpoint({
+          alias: "My PC",
+          baseURL: "http://127.0.0.1:11434/",
+          backendHint: "ollama",
+          allowPrivateNetwork: true,
+        }, "picker-disabled-ollama", 1),
+        enabled: false,
+      }],
+      profiles: [],
+    };
+    const saved = saveSelfHostedModel(base, "picker-disabled-ollama", "test-model:latest");
+    const selectionId = selfHostedSelectionId(saved.profiles[0]);
+    expect(modelPickerHostAvailability(selectionId, saved)).toEqual({
+      label: "Disabled in Settings",
+      disabled: true,
+    });
+    expect(modelPickerHostAvailability("gpt-5.4-mini", saved)).toBeUndefined();
+  });
+
   it("renders an exact catalog-backed saved selection without discarding its routing evidence", () => {
     const preferences = usePreferencesStore.getState();
     const model = createSavedProviderModel({ providerId: "openrouter", transportModelId: minimaxFreeCatalogRecord.id,

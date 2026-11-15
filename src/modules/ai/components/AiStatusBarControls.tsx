@@ -77,6 +77,7 @@ import { useChatStore } from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
 import { savedSelfHostedModelInfos, selfHostedPickerStatus, canonicalSelfHostedSelectionId, managedReconnectAvailable } from "@/modules/ai/lib/selfHostedModels";
+import { endpointBackend, resolveSelfHostedSelection, type SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { useSelfHostedInventory } from "@/modules/ai/hooks/useSelfHostedInventory";
 import { hasKeyForModel } from "@/modules/ai/store/chatStore";
 import { modelConnectionLabel } from "@/modules/ai/lib/connectionPresentation";
@@ -238,6 +239,48 @@ export function AiStatusBarControls() {
 
 type Tab = "all" | "favorites" | "recent";
 
+/** Picker presentation; the provider's routing and admission checks remain authoritative. */
+export function modelPickerHostAvailability(selectionId: string, state: SelfHostedState) {
+  const target = resolveSelfHostedSelection(state, selectionId);
+  if (target.status === "available" && target.endpoint.enabled === false)
+    return { label: "Disabled in Settings", disabled: true };
+  if (target.status === "missing" && state.endpoints.some((endpoint) =>
+    endpoint.id === target.endpointId && endpoint.deletedAt === undefined && endpoint.enabled === false))
+    return { label: "Disabled in Settings", disabled: true };
+  return managedReconnectAvailable(selectionId, state)
+    ? { label: "Offline / reconnect", disabled: false }
+    : selfHostedPickerStatus(selectionId, state);
+}
+
+/** Group only managed Ollama models by stable endpoint identity, never by model label. */
+export function groupOllamaPickerModels(models: readonly ModelInfo[], state: SelfHostedState) {
+  const otherModels: ModelInfo[] = [];
+  const hostGroups: { endpointId: string; alias: string; address: string; models: ModelInfo[] }[] = [];
+  const byEndpointId = new Map<string, (typeof hostGroups)[number]>();
+  for (const model of models) {
+    // Migrated ollama-local is also a managed host selection. Non-Ollama
+    // static/cloud selections return not-managed and retain their old layout.
+    const target = resolveSelfHostedSelection(state, model.id);
+    if (target?.status !== "available" || endpointBackend(target.endpoint) !== "ollama" || target.endpoint.ssh) {
+      otherModels.push(model);
+      continue;
+    }
+    let group = byEndpointId.get(target.endpoint.id);
+    if (!group) {
+      group = {
+        endpointId: target.endpoint.id,
+        alias: target.endpoint.alias,
+        address: target.endpoint.baseURL,
+        models: [],
+      };
+      hostGroups.push(group);
+      byEndpointId.set(group.endpointId, group);
+    }
+    group.models.push(model);
+  }
+  return { otherModels, hostGroups };
+}
+
 export function ModelDropdown({
   sessionId,
   compact = false,
@@ -285,6 +328,7 @@ export function ModelDropdown({
   const recentIds = usePreferencesStore((s) => s.recentModelIds);
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
   const selfHosted = usePreferencesStore((s) => s.selfHostedInference);
+  const selectedHostDisabled = modelPickerHostAvailability(selected, selfHosted)?.label === "Disabled in Settings";
   const pickerFavorites = useMemo(() => favoriteIds.map(id => canonicalSelfHostedSelectionId(id, selfHosted)), [favoriteIds, selfHosted]);
   const pickerRecents = useMemo(() => recentIds.map(id => canonicalSelfHostedSelectionId(id, selfHosted)), [recentIds, selfHosted]);
   const pickerSelection = canonicalSelfHostedSelectionId(selected, selfHosted);
@@ -407,6 +451,33 @@ export function ModelDropdown({
     return pool;
   }, [activeProvider, allModels, pickerFavorites, pickerRecents, search, tab]);
 
+  const groups = useMemo(() => groupOllamaPickerModels(filtered, selfHosted), [filtered, selfHosted]);
+  const renderModel = (m: ModelInfo) => (
+    <ModelRow
+      key={m.id}
+      model={m}
+      destination={modelConnectionLabel(m.id, connectionSettings)}
+      selected={m.id === pickerSelection}
+      disabled={locked}
+      status={modelPickerHostAvailability(m.id, selfHosted)}
+      hasKey={m.id.startsWith("self-hosted:")
+        ? hasKeyForModel(m.id)
+        : isCompatModelId(m.id) || hasKeyFor(m.provider)}
+      favorite={pickerFavorites.includes(m.id)}
+      showProviderIcon={activeProvider === null}
+      onPick={() => {
+        if (m.id.startsWith("self-hosted:")
+          ? !hasKeyForModel(m.id)
+          : !isCompatModelId(m.id) && !hasKeyFor(m.provider)) {
+          void openSettingsWindow("models");
+          return;
+        }
+        void setSelected(m.id);
+      }}
+      onToggleFavorite={() => void toggleFavoriteModel(m.id)}
+    />
+  );
+
   return (
     <DropdownMenu
       open={open && (!locked || modelSwitch.checking)}
@@ -430,7 +501,7 @@ export function ModelDropdown({
             aria-label={
               locked
                 ? `Model: ${current.label}. Locked until this run finishes or stops completely.`
-                : `Change model: ${current.label}. ${targetId ? "This chat" : "New chats"}. ${destination}`
+                : `Change model: ${current.label}. ${targetId ? "This chat" : "New chats"}. ${destination}${selectedHostDisabled ? ". Disabled in Settings" : ""}`
             }
             variant="ghost"
             size="sm"
@@ -444,7 +515,9 @@ export function ModelDropdown({
             title={
               locked
                 ? "Model locked until this run finishes or stops completely."
-                : currentProviderHasKey
+                : selectedHostDisabled
+                  ? `${current.hint}: ${current.label} — Disabled in Settings`
+                  : currentProviderHasKey
                   ? `${current.hint}: ${current.label}`
                   : `${current.hint}: ${current.label} — no key configured`
             }
@@ -638,35 +711,22 @@ export function ModelDropdown({
                         : "No models match."}
                   </div>
                 ) : (
-                  filtered.map((m) => (
-                    <ModelRow
-                      key={m.id}
-                      model={m}
-                      destination={modelConnectionLabel(m.id, connectionSettings)}
-                      selected={m.id === pickerSelection}
-                      disabled={locked}
-                      status={managedReconnectAvailable(m.id,selfHosted) ? {label:"Offline / reconnect",disabled:false} : selfHostedPickerStatus(m.id, selfHosted)}
-                      hasKey={
-                        m.id.startsWith("self-hosted:")
-                          ? hasKeyForModel(m.id)
-                          : isCompatModelId(m.id) || hasKeyFor(m.provider)
-                      }
-                      favorite={pickerFavorites.includes(m.id)}
-                      showProviderIcon={activeProvider === null}
-                      onPick={() => {
-                        if (
-                          m.id.startsWith("self-hosted:")
-                            ? !hasKeyForModel(m.id)
-                            : !isCompatModelId(m.id) && !hasKeyFor(m.provider)
-                        ) {
-                          void openSettingsWindow("models");
-                          return;
-                        }
-                        void setSelected(m.id);
-                      }}
-                      onToggleFavorite={() => void toggleFavoriteModel(m.id)}
-                    />
-                  ))
+                  <>
+                    {groups.otherModels.map(renderModel)}
+                    {groups.hostGroups.map((host) => (
+                      <div
+                        key={host.endpointId}
+                        role="group"
+                        aria-label={`Ollama host ${host.alias} at ${host.address}`}
+                      >
+                        <div className="flex min-w-0 flex-col gap-0.5 border-t border-border/60 px-3 pb-1 pt-2 text-[11px] text-muted-foreground">
+                          <span className="font-semibold text-foreground/85">Ollama · {host.alias}</span>
+                          <span className="truncate font-mono text-[10px]" title={host.address}>{host.address}</span>
+                        </div>
+                        {host.models.map(renderModel)}
+                      </div>
+                    ))}
+                  </>
                 )}
               </div>
             </div>

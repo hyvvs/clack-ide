@@ -26,12 +26,24 @@ const SOURCES: Record<ServerCandidate["source"], string> = {
     "Authentication required; backend unspecified",
 };
 
+export function visibleDiscoveryCandidates(
+  candidates: readonly ServerCandidate[],
+  backendFilter?: "ollama",
+): ServerCandidate[] {
+  return backendFilter === "ollama"
+    ? candidates.filter((candidate) => candidate.backendHint === "ollama")
+    : [...candidates];
+}
+
 export function ServerDiscovery({
   endpoints,
   onSelect,
+  backendFilter,
 }: {
   endpoints: readonly SelfHostedEndpoint[];
   onSelect: (candidate: ServerCandidate) => void;
+  /** UI filter only: discovery remains an untrusted, bounded metadata check. */
+  backendFilter?: "ollama";
 }) {
   const id = useId();
   const [addresses, setAddresses] = useState("");
@@ -77,13 +89,16 @@ export function ServerDiscovery({
         run.signal,
       );
       if (token !== epoch.current) return;
-      setResult(found);
+      const candidates = visibleDiscoveryCandidates(found.candidates, backendFilter);
+      setResult({ ...found, candidates });
       setStatus(
         found.timedOut
           ? "Discovery timed out; only completed candidates are shown."
-          : found.candidates.length
-            ? `${found.candidates.length} untrusted candidates found.`
-            : "No discoverable servers found. You can still add one manually.",
+          : candidates.length
+            ? `${candidates.length} untrusted candidates found.`
+            : backendFilter === "ollama"
+              ? "No Ollama-shaped inventory found. You can still enter an Ollama address manually."
+              : "No discoverable servers found. You can still add one manually.",
       );
     } catch (error) {
       if (token === epoch.current)
@@ -100,10 +115,10 @@ export function ServerDiscovery({
   };
   return (
     <details className="server-discovery">
-      <summary>Discover servers</summary>
+      <summary>{backendFilter === "ollama" ? "Find Ollama hosts" : "Discover servers"}</summary>
       <div className="server-discovery-body">
         <label htmlFor={`${id}-addresses`}>
-          Candidate addresses (one per line)
+          {backendFilter === "ollama" ? "Ollama host addresses (one per line)" : "Candidate addresses (one per line)"}
         </label>
         <textarea
           id={`${id}-addresses`}
@@ -128,6 +143,12 @@ export function ServerDiscovery({
           64 KiB per response, 15 seconds. No credentials. Results are not
           trusted or configured.
         </p>
+        {backendFilter === "ollama" ? (
+          <p className="text-xs text-muted-foreground">
+            Only Ollama-shaped inventories are shown. Discovery does not connect,
+            install, load, or verify model tools.
+          </p>
+        ) : null}
         <div className="server-heading">
           {busy ? (
             <Button type="button" size="sm" variant="outline" onClick={cancel}>

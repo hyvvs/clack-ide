@@ -149,7 +149,7 @@ describe("persistent self-hosted settings", () => {
       repository.update((state) => addSelfHostedEndpoint(state, b)),
     ]);
     expect((await repository.load()).endpoints.map((e) => e.id).sort()).toEqual(
-      ["a", "b"],
+      ["a", "b", "legacy:ollama"],
     );
   });
 
@@ -200,6 +200,49 @@ describe("persistent self-hosted settings", () => {
     expect(mocks.invokes).not.toContain(
       "self_hosted_profiles_compare_and_swap",
     );
+  });
+
+  it("allows a remote host to be added after native offline Ollama inventory stored unknown metadata as null", async () => {
+    const repository = createSelfHostedPersistence(nativeSelfHostedStorage());
+    const initial = await repository.load();
+    const local = initial.endpoints.find(endpoint => endpoint.id === "legacy:ollama");
+    if (!local) throw new Error("default host missing");
+    const withProfile = await repository.update(state =>
+      ensureSelfHostedProfile(state, local.id, "qwen").state,
+    );
+    const nativeOfflineState = {
+      ...withProfile,
+      inventories: [{
+        endpointId: local.id,
+        configurationRevision: local.configurationRevision,
+        observedAt: 1_000,
+        connected: false,
+        backend: "ollama",
+        error: "unreachable",
+        models: [],
+        lastSuccessAt: null,
+        version: null,
+      }],
+    };
+    mocks.data.set(SELF_HOSTED_SETTINGS_KEY, nativeOfflineState);
+
+    const remote = createSelfHostedEndpoint({
+      alias: "Secondary PC",
+      baseURL: "http://192.168.1.44:11434/",
+      backendHint: "ollama",
+      allowPrivateNetwork: true,
+    }, "secondary-pc", 2_000);
+    const saved = await repository.update(state => addSelfHostedEndpoint(state, remote));
+    expect(saved.endpoints.find(endpoint => endpoint.id === remote.id)).toEqual(remote);
+    expect(saved.profiles).toEqual(withProfile.profiles);
+    expect(saved.inventories?.[0]).toMatchObject({
+      endpointId: local.id,
+      connected: false,
+      models: [],
+    });
+    expect(saved.inventories?.[0]?.lastSuccessAt).toBeUndefined();
+    expect(saved.inventories?.[0]?.version).toBeUndefined();
+    expect((await repository.load()).profiles).toEqual(withProfile.profiles);
   });
 
   it("rejects invalid mutations instead of silently discarding profile pins", async () => {

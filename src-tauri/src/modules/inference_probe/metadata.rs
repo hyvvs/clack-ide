@@ -42,7 +42,12 @@ pub struct Endpoint {
     pub detected_backend: Option<Backend>,
     pub credential_ref: Option<CredentialRef>,
     pub configuration_revision: u64,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     pub deleted_at: Option<u64>,
+}
+fn default_enabled() -> bool {
+    true
 }
 
 impl Endpoint {
@@ -153,6 +158,12 @@ pub struct Model {
     pub size: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter_size: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantization_level: Option<String>,
 }
 impl Model {
     pub(super) fn new(id: String) -> Self {
@@ -164,6 +175,9 @@ impl Model {
             digest: None,
             size: None,
             modified_at: None,
+            family: None,
+            parameter_size: None,
+            quantization_level: None,
         }
     }
     pub(super) fn add(
@@ -298,6 +312,15 @@ pub fn inventory(
             model.size = number(&record["size"])?.and_then(|v| v.as_u64());
             if !record["modified_at"].is_null() {
                 model.modified_at = Some(name(&record["modified_at"])?);
+            }
+            for (field, target) in [
+                ("family", &mut model.family),
+                ("parameter_size", &mut model.parameter_size),
+                ("quantization_level", &mut model.quantization_level),
+            ] {
+                if !record["details"][field].is_null() {
+                    *target = Some(name(&record["details"][field])?);
+                }
             }
         }
         model.add(endpoint, at, None, "listed", json!(true), false);

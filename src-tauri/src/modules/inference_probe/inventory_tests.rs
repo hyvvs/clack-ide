@@ -60,6 +60,7 @@ async fn automatic_ollama_signature_prefers_native_inventory_without_generating(
         .unwrap();
     assert!(snapshot.connected);
     assert_eq!(snapshot.backend, Some(Backend::Ollama));
+    assert_eq!(snapshot.version.as_deref(), Some("0.40.5"));
     assert_eq!(snapshot.models.len(), 10);
     assert_eq!(snapshot.models[0].digest.as_deref(), Some("a-0"));
     assert_eq!(snapshot.models[0].size, Some(1234));
@@ -146,6 +147,7 @@ fn one_connection_publishes_profiles_without_manual_saved_flags_or_credentials()
 fn changed_digest_invalidates_evidence_recommendations_and_calibration_but_keeps_labels_pins() {
     let mut state = settings();
     merge_evidence(&mut state, &observed(1, "a")).unwrap();
+    assert_eq!(state["inventories"][0]["lastSuccessAt"], json!(100));
     state["profiles"][0]["saved"] = json!({"label":"My model"});
     state["profiles"][0]["overrides"] =
         json!({"workingContext":{"mode":"manual","evidence":{"value":32768}}});
@@ -239,12 +241,15 @@ fn add_remove_offline_and_return_online_update_inventory_without_deleting_histor
     });
     merge_evidence(&mut state, &offline).unwrap();
     assert_eq!(state["inventories"][0]["connected"], false);
+    assert_eq!(state["inventories"][0]["lastSuccessAt"], json!(100));
+    assert_eq!(state["inventories"][0]["error"], "unreachable");
     assert_eq!(
         state["inventories"][0]["models"].as_array().unwrap().len(),
         1
     );
     merge_evidence(&mut state, &observed(2, "a")).unwrap();
     assert_eq!(state["inventories"][0]["connected"], true);
+    assert_eq!(state["inventories"][0]["lastSuccessAt"], json!(100));
     assert_eq!(
         state["inventories"][0]["models"].as_array().unwrap().len(),
         2

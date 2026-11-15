@@ -100,6 +100,7 @@ import {
   type RetrievalNotice,
 } from "@/modules/ai/lib/conversationRetrieval";
 import {
+  assertCurrentOllamaHostIdentity,
   selfHostedTransportIdentity,
   selfHostedCredential,
   endpointAllowsPrivate,
@@ -531,9 +532,38 @@ export function buildConfiguredLanguageModel(
   keys: ProviderKeys,
   local: LocalProviderConfig = {},
 ): Promise<LanguageModel> {
-  const hosted =
-    local.capturedModelIdentity ??
-    selfHostedTransportIdentity(modelId, local.selfHostedInference);
+  if (local.capturedModelIdentity) {
+    if (local.capturedModelIdentity.selfHosted && !local.selfHostedInference) {
+      throw new Error(
+        "Captured host identity has no current host configuration. Choose the host and model again.",
+      );
+    }
+    if (local.selfHostedInference) {
+      assertCurrentOllamaHostIdentity(
+        local.capturedModelIdentity,
+        modelId,
+        local.selfHostedInference,
+      );
+    }
+  }
+  const currentHosted = selfHostedTransportIdentity(
+    modelId,
+    local.selfHostedInference,
+  );
+  if (
+    modelId === "ollama-local" &&
+    local.selfHostedInference?.endpoints.some(
+      (endpoint) =>
+        endpoint.deletedAt === undefined &&
+        (endpoint.backendHint === "ollama" || endpoint.detectedBackend === "ollama"),
+    ) &&
+    !currentHosted
+  ) {
+    throw new Error(
+      "The Ollama model has no bound host. Select a model from a configured Ollama host.",
+    );
+  }
+  const hosted = local.capturedModelIdentity ?? currentHosted;
   if (hosted?.selfHosted) {
     return buildLanguageModel(
       hosted.providerId === "ollama" ? "ollama" : "openai-compatible",

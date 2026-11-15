@@ -62,6 +62,8 @@ pub struct Snapshot {
     pub errors: Vec<RouteError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<Backend>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,7 +134,7 @@ fn configured(value: &Value, id: &str) -> Result<Endpoint, ProbeError> {
     }
     endpoints(value)
         .into_iter()
-        .find(|e| e.id == id && e.deleted_at.is_none() && e.configuration_revision > 0)
+        .find(|e| e.id == id && e.enabled && e.deleted_at.is_none() && e.configuration_revision > 0)
         .ok_or_else(|| ProbeError::new(ErrorCode::InvalidConfiguration))
 }
 
@@ -236,10 +238,11 @@ async fn handshake(
         models: vec![],
         errors: vec![],
         backend: endpoint.backend(),
+        version: None,
     };
     let mut count = 0;
     let mut detected = endpoint.clone();
-    if endpoint.backend_hint.is_none() {
+    if endpoint.backend_hint.is_none() || endpoint.backend_hint == Some(Backend::Ollama) {
         detected.detected_backend = None;
         // Native version + inventory signatures, never ports, aliases or model names.
         let version = transport
@@ -262,7 +265,17 @@ async fn handshake(
                             .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
                 }) =>
             {
+                result.version = value["version"].as_str().map(str::to_owned);
                 detected.backend_hint = Some(Backend::Ollama);
+            }
+            Err(error)
+                if endpoint.backend_hint == Some(Backend::Ollama) =>
+            {
+                // Version is optional; a reachable Ollama tag route may still work.
+                result.errors.push(RouteError {
+                    route: Some(Route::OllamaVersion),
+                    error,
+                });
             }
             Err(error)
                 if !matches!(
@@ -631,8 +644,15 @@ fn merge_inventory(value: &mut Value, snapshot: &Snapshot) -> Result<(), ProbeEr
         .unwrap_or(Value::Null);
     let inventory = json!({"endpointId": snapshot.endpoint_id,
         "configurationRevision": snapshot.configuration_revision, "observedAt": snapshot.observed_at,
+        "lastSuccessAt": if snapshot.connected {
+            Some(snapshot.observed_at)
+        } else {
+            previous.and_then(|v| v["lastSuccessAt"].as_u64()
+                .or_else(|| if v["connected"] == true { v["observedAt"].as_u64() } else { None }))
+        },
         "connected": snapshot.connected, "backend": backend, "models": models,
-        "error": snapshot.errors.last().map(|e| e.error.code)});
+        "error": snapshot.errors.last().map(|e| e.error.code),
+        "version": snapshot.version.as_ref().map(|v| json!(v)).or_else(|| previous.and_then(|v| v.get("version")).cloned())});
     inventories.retain(|v| v["endpointId"] != snapshot.endpoint_id);
     inventories.push(inventory);
     Ok(())
@@ -704,6 +724,7 @@ fn finish(app: &AppHandle, endpoint: &Endpoint, generation: u64, mut outcome: ca
                         error: error.clone(),
                     }],
                     backend: endpoint.backend(),
+                    version: None,
                 };
                 Some(&failed)
             }

@@ -22,6 +22,7 @@ fn endpoint(backend: Backend) -> Endpoint {
         detected_backend: None,
         credential_ref: None,
         configuration_revision: 1,
+        enabled: true,
         deleted_at: None,
     }
 }
@@ -242,8 +243,46 @@ fn ollama_tags_inventory() {
     )
     .unwrap();
     assert_eq!(list[0].id, "model-a");
+    assert_eq!(list[0].family.as_deref(), Some("irrelevant"));
     assert_eq!(list[0].chat, Support::Unknown);
     assert!(evidence(&list[0], "loaded").is_none());
+}
+#[test]
+fn lm_multi_host_native_tags_preserve_optional_details_without_fabrication() {
+    let endpoint = endpoint(Backend::Ollama);
+    let models = inventory(
+        &endpoint,
+        Route::OllamaTags,
+        None,
+        &json!({"models":[
+            {"name":"same:latest","digest":"a1","size":4096,"modified_at":"2026-11-15T00:00:00Z",
+             "details":{"family":"qwen3","parameter_size":"30.5B","quantization_level":"Q4_K_M"}},
+            {"name":"other:latest"}
+        ]}),
+        10,
+    ).unwrap();
+    assert_eq!(models[0].digest.as_deref(), Some("a1"));
+    assert_eq!(models[0].family.as_deref(), Some("qwen3"));
+    assert_eq!(models[0].parameter_size.as_deref(), Some("30.5B"));
+    assert_eq!(models[0].quantization_level.as_deref(), Some("Q4_K_M"));
+    assert_eq!(models[1].family, None);
+    assert_eq!(models[1].parameter_size, None);
+    assert_eq!(models[1].quantization_level, None);
+}
+
+#[test]
+fn lm_multi_host_native_probe_rejects_disabled_without_removing_configuration() {
+    let mut saved = json!({"version":1,"revision":3,"endpoints":[
+        {"id":"gpu-host","baseURL":"http://10.0.0.5:11434","configurationRevision":1,
+         "enabled":false,"credentialRef":null}
+    ],"profiles":[]});
+    assert_eq!(
+        configured(&saved, "gpu-host").unwrap_err().code,
+        ErrorCode::InvalidConfiguration
+    );
+    saved["endpoints"][0]["enabled"] = json!(true);
+    assert!(configured(&saved, "gpu-host").is_ok());
+    assert_eq!(saved["endpoints"].as_array().unwrap().len(), 1);
 }
 #[test]
 fn ollama_show_separates_advertised_context_from_runtime_and_parser() {
@@ -402,6 +441,7 @@ fn requested_ollama_context_is_scoped_and_survives_existing_probe_persistence() 
 #[tokio::test]
 async fn ollama_optional_route_missing_keeps_inventory_and_never_generates() {
     let server = Server::new(vec![
+        Reply::json(json!({"version":"0.40.11"})),
         Reply::json(json!({"models":[{"name":"model-a"}]})),
         Reply::status(404),
         Reply::status(404),
@@ -411,10 +451,11 @@ async fn ollama_optional_route_missing_keeps_inventory_and_never_generates() {
     assert_eq!(result.models.len(), 1);
     assert_eq!(result.errors.len(), 2);
     let requests = server.requests.lock().unwrap();
-    assert!(requests[0].starts_with("GET /proxy/api/tags "));
-    assert!(requests[1].starts_with("POST /proxy/api/show "));
-    assert!(requests[1].ends_with("{\"model\":\"model-a\",\"verbose\":false}"));
-    assert!(requests[2].starts_with("GET /proxy/api/ps "));
+    assert!(requests[0].starts_with("GET /proxy/api/version "));
+    assert!(requests[1].starts_with("GET /proxy/api/tags "));
+    assert!(requests[2].starts_with("POST /proxy/api/show "));
+    assert!(requests[2].ends_with("{\"model\":\"model-a\",\"verbose\":false}"));
+    assert!(requests[3].starts_with("GET /proxy/api/ps "));
 }
 #[test]
 fn malformed_ollama_metadata_is_rejected() {
@@ -903,6 +944,7 @@ fn snapshot() -> Snapshot {
         models: parse(Backend::Mlx, models()),
         errors: vec![],
         backend: None,
+        version: None,
     }
 }
 fn begin(
@@ -1159,7 +1201,10 @@ fn expanded_evidence_is_bounded_during_parsing() {
 
 #[tokio::test]
 async fn no_selected_model_means_no_show_request() {
-    let server = Server::new(vec![Reply::json(json!({"models":[]}))]);
+    let server = Server::new(vec![
+        Reply::json(json!({"version":"0.40.11"})),
+        Reply::json(json!({"models":[]})),
+    ]);
     let result = handshake(
         &Transport::default(),
         &server.endpoint(Backend::Ollama),
@@ -1170,8 +1215,9 @@ async fn no_selected_model_means_no_show_request() {
     .await
     .unwrap();
     assert!(result.connected);
+    assert_eq!(result.version.as_deref(), Some("0.40.11"));
     let requests = server.requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert!(requests.iter().all(|r| r.starts_with("GET ")));
 }
 
@@ -1190,6 +1236,7 @@ async fn server_failure_never_claims_connected_or_retries_other_routes() {
 #[tokio::test]
 async fn malformed_optional_metadata_does_not_partially_commit() {
     let server = Server::new(vec![
+        Reply::json(json!({"version":"0.40.11"})),
         Reply::json(json!({"models":[{"name":"model-a"}]})),
         Reply::json(
             json!({"capabilities":["vision","completion"],"model_info":{"general.architecture":"x","x.context_length":"invalid"}}),
