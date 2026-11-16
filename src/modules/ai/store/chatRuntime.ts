@@ -49,6 +49,10 @@ import {
 } from "../lib/errors";
 import type { ProviderRetryEvent } from "../lib/providerRetry";
 import { findSavedProviderModel } from "../lib/savedProviderModels";
+import {
+  isManagedLocalSelectionId,
+  managedLocalTransportIdentity,
+} from "@/modules/ai/lib/managedLocalModels";
 import { native } from "@/modules/ai/lib/native";
 import {
   loadMessages,
@@ -417,7 +421,22 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       usePreferencesStore.getState().savedProviderModels,
     getCapturedModelIdentity: () => {
       const run = owner()?.run;
-      if (!run?.providerId || !run.transportModelId) return undefined;
+      const capturedModelId = run?.modelId;
+      if (!run?.providerId || !run.transportModelId || !capturedModelId) return undefined;
+      if (isManagedLocalSelectionId(capturedModelId)) {
+        // The immutable run selection is a full host/runtime/artifact/config
+        // identity. Rebuild it against its run-captured fabric, never flatten
+        // it into a generic OpenAI-compatible provider. The native process,
+        // model bytes and epoch are still rechecked for every request.
+        const snapshot = capturedSelfHostedRuns.get(sessionId)?.profiles;
+        const identity = managedLocalTransportIdentity(capturedModelId, snapshot);
+        if (!snapshot || !identity?.managedLocal ||
+            identity.providerId !== run.providerId ||
+            identity.transportModelId !== run.transportModelId) {
+          throw new Error("Managed runtime run identity is missing or changed");
+        }
+        return identity;
+      }
       const providerEvidence = capturedProviderModelEvidence.get(sessionId);
       return {
         providerId: run.providerId,

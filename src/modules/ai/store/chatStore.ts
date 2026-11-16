@@ -52,6 +52,10 @@ import {
   selfHostedCredential,
 } from "@/modules/ai/lib/selfHostedModels";
 import {
+  isManagedLocalSelectionId,
+  resolveManagedLocalSelection,
+} from "@/modules/ai/lib/managedLocalModels";
+import {
   resolveModelTransportIdentity,
   type ModelTransportIdentity,
 } from "../lib/savedProviderModels";
@@ -758,7 +762,11 @@ export const useChatStore = create<StoreState>((set, get) => ({
     } catch (error) {
       return { ok: false, reason: String(error) };
     }
-    if (transportIdentity.selfHosted)
+    // Managed llama.cpp also needs an immutable native-fabric snapshot for
+    // this run. It has no user endpoint or cloud key, but dropping the
+    // full deployment identity here would make the stream guard fail closed
+    // before it can reach the native process/epoch verification.
+    if (transportIdentity.selfHosted || transportIdentity.managedLocal)
       capturedSelfHostedRuns.set(id, {
         keys: { ...get().apiKeys },
         endpointKeys: { ...get().customEndpointKeys },
@@ -1474,6 +1482,22 @@ export function getActiveProviderKey(): string | null {
 }
 
 export function hasKeyForModel(modelId: string): boolean {
+  // A Clack-owned deployment uses an ephemeral native runtime key, not a
+  // user-configured cloud/OpenAI-compatible credential. Only an exactly
+  // registered managed identity passes this credential-presence check;
+  // the native route still independently enforces Ready, epoch, GGUF digest,
+  // and deployment identity before admitting any inference request.
+  if (isManagedLocalSelectionId(modelId)) {
+    try {
+      const selection = resolveManagedLocalSelection(
+        usePreferencesStore.getState().selfHostedInference,
+        modelId,
+      );
+      return selection.status === "available" || selection.status === "unavailable";
+    } catch {
+      return false;
+    }
+  }
   const { apiKeys } = useChatStore.getState();
   try {
     const hosted = selfHostedTransportIdentity(

@@ -26,6 +26,15 @@ const MAX_LOG_BYTES: usize = 16 * 1024;
 const START_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[cfg(windows)]
+mod cpu_payload {
+    include!("managed_llama_cpu_b12248_manifest.rs");
+}
+#[cfg(windows)]
+mod windows_acl {
+    include!("managed_llama_windows_acl.rs");
+}
+
+#[cfg(windows)]
 const EXECUTABLE: &str = "llama-server.exe";
 #[cfg(not(windows))]
 const EXECUTABLE: &str = "llama-server";
@@ -117,7 +126,63 @@ fn verified_engine(app: &AppHandle) -> Result<PathBuf, String> {
             "Managed runtime binary is missing or fails its pinned SHA-256 identity".into(),
         );
     }
+    #[cfg(windows)]
+    {
+        let root = private_root(app)?;
+        let parent = root.join("engine");
+        windows_acl::check_private_acl(&root)?;
+        windows_acl::check_private_acl(&parent)?;
+        windows_acl::check_private_acl(&engine_dir(app)?)?;
+        verify_payload_dir(&engine_dir(app)?)?;
+    }
     Ok(path)
+}
+
+/// Verify all and only the files from the in-binary, upstream-attested
+/// release manifest. No adjacent file can replace this trust authority.
+#[cfg(windows)]
+fn verify_payload_dir(dir: &Path) -> Result<(), String> {
+    verify_payload_dir_expected(dir, cpu_payload::FILES)
+}
+
+#[cfg(windows)]
+fn verify_payload_dir_expected(
+    dir: &Path,
+    expected_files: &[(&str, u64, &str)],
+) -> Result<(), String> {
+    use std::collections::HashSet;
+    let metadata = fs::symlink_metadata(dir).map_err(|_| "Runtime directory is missing")?;
+    if !metadata.is_dir() || windows_acl::is_reparse(&metadata) {
+        return Err("Runtime directory is not a regular private directory".into());
+    }
+    let mut seen = HashSet::new();
+    for entry in fs::read_dir(dir).map_err(|_| "Runtime payload directory unreadable")? {
+        let entry = entry.map_err(|_| "Runtime payload entry unreadable")?;
+        let name = entry.file_name();
+        let name = name.to_str().ok_or("Runtime payload name is not Unicode")?;
+        let expected = expected_files
+            .iter()
+            .find(|(filename, _, _)| *filename == name)
+            .ok_or("Unexpected file in installed runtime payload")?;
+        if !seen.insert(name.to_ascii_lowercase()) {
+            return Err("Duplicate runtime payload filename".into());
+        }
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|_| "Runtime file metadata missing")?;
+        if !metadata.is_file()
+            || windows_acl::is_reparse(&metadata)
+            || metadata.len() != expected.1
+            || sha256_file(&path)? != expected.2
+        {
+            return Err(format!(
+                "Managed runtime dependency failed pinned identity: {name}"
+            ));
+        }
+    }
+    if seen.len() != expected_files.len() {
+        return Err("Managed runtime payload is incomplete".into());
+    }
+    Ok(())
 }
 
 fn u32_from(reader: &mut impl Read) -> io::Result<u32> {
@@ -367,13 +432,26 @@ pub fn managed_local_runtime_install_bundle(app: AppHandle, path: String) -> Res
     }
     let parent = destination.parent().ok_or("Invalid runtime directory")?;
     fs::create_dir_all(parent).map_err(|_| "Runtime install directory unavailable")?;
+    #[cfg(windows)]
+    {
+        windows_acl::apply_private_acl(&private_root(&app)?)?;
+        windows_acl::apply_private_acl(parent)?;
+    }
     let stage = tempfile::tempdir_in(parent).map_err(|_| "Runtime staging unavailable")?;
+    #[cfg(windows)]
+    windows_acl::apply_private_acl(stage.path())?;
     let mut archive = zip::ZipArchive::new(source_file(source)?)
         .map_err(|_| "Runtime archive cannot be opened")?;
     if archive.len() > 256 {
         return Err("Runtime archive has too many entries".into());
     }
+    #[cfg(windows)]
+    if archive.len() != cpu_payload::FILES.len() {
+        return Err("Runtime archive has a different set of files than approved".into());
+    }
     let mut total = 0u64;
+    #[cfg(windows)]
+    let mut seen = std::collections::HashSet::new();
     for index in 0..archive.len() {
         let mut item = archive
             .by_index(index)
@@ -382,6 +460,25 @@ pub fn managed_local_runtime_install_bundle(app: AppHandle, path: String) -> Res
             .enclosed_name()
             .ok_or("Unsafe runtime archive path")?
             .to_owned();
+        #[cfg(windows)]
+        {
+            let supplied = item.name();
+            if name.components().count() != 1 || supplied != name.to_string_lossy() {
+                return Err("Runtime archive contains an unapproved path or subdirectory".into());
+            }
+            let approved = cpu_payload::FILES
+                .iter()
+                .find(|(filename, _, _)| *filename == supplied)
+                .ok_or("Runtime archive contains an unexpected dependency")?;
+            if item.is_dir()
+                || item.size() != approved.1
+                || !seen.insert(supplied.to_ascii_lowercase())
+            {
+                return Err(
+                    "Runtime archive has a directory, duplicate or incorrect file size".into(),
+                );
+            }
+        }
         if item
             .unix_mode()
             .is_some_and(|mode| mode & 0o170000 == 0o120000)
@@ -404,6 +501,14 @@ pub fn managed_local_runtime_install_bundle(app: AppHandle, path: String) -> Res
                 .map_err(|_| "Runtime extraction sync failed")?;
         }
     }
+    #[cfg(windows)]
+    {
+        if seen.len() != cpu_payload::FILES.len() {
+            return Err("Runtime archive is missing approved payload entries".into());
+        }
+        verify_payload_dir(stage.path())?;
+        windows_acl::check_private_acl(stage.path())?;
+    }
     if sha256_file(&stage.path().join(EXECUTABLE))? != approved_binary {
         return Err("Extracted runtime binary identity does not match the approved release".into());
     }
@@ -419,6 +524,11 @@ pub fn managed_local_runtime_install_bundle(app: AppHandle, path: String) -> Res
     // No replacing an existing running binary or rewriting an unrelated path.
     fs::rename(stage.path(), &destination)
         .map_err(|_| "Runtime install collision; existing content was preserved")?;
+    #[cfg(windows)]
+    {
+        windows_acl::check_private_acl(&destination)?;
+        verify_payload_dir(&destination)?;
+    }
     Ok(())
 }
 
@@ -551,6 +661,36 @@ fn current_binding(
         .get("selfHostedInference")
         .ok_or("Managed deployment is not registered in native settings")?;
     validate_binding(&state, deployment_id, identity)
+}
+
+/// The native conversation-switch CAS accepts a longer managed selection ID
+/// only when it is the exact canonical ID of a currently registered, valid
+/// Clack-owned deployment. This never authorizes a route or an executable:
+/// native readiness, the runtime epoch, payload and model hashes are checked
+/// again at actual inference admission.
+pub(crate) fn validate_managed_model_switch(
+    app: &AppHandle,
+    selection_id: &str,
+) -> Result<(), String> {
+    let invalid = || "Managed model-switch selection is missing or invalid".to_owned();
+    let json = selection_id
+        .strip_prefix("managed-local:")
+        .ok_or_else(invalid)?;
+    if selection_id.len() > 2048 {
+        return Err(invalid());
+    }
+    let parsed: Value = serde_json::from_str(json).map_err(|_| invalid())?;
+    let values = parsed
+        .as_array()
+        .filter(|values| values.len() == 2)
+        .ok_or_else(invalid)?;
+    let deployment_id = values[0].as_str().ok_or_else(invalid)?;
+    let identity = values[1].as_str().ok_or_else(invalid)?;
+    let binding = current_binding(app, deployment_id, identity).map_err(|_| invalid())?;
+    if selection_id != format!("managed-local:{}", json!([binding.id, binding.identity])) {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 struct RuntimeOwner {
@@ -824,14 +964,21 @@ pub fn managed_local_runtime_start(
     // must have their own trusted dependencies next to the executable.
     command.env_clear();
     #[cfg(windows)]
-    for key in ["SystemRoot", "WINDIR"] {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
+    {
+        // Do not inherit a user-controlled DLL PATH or a forged SystemRoot.
+        // The only DLL locations available to the child are its verified
+        // executable/current directory and the Windows system DLL directory.
+        let system32 = windows_acl::system_directory()?;
+        let windir = system32.parent().ok_or("Windows directory unavailable")?;
+        command.env("SystemRoot", windir);
+        command.env("WINDIR", windir);
+        command.env("PATH", &system32);
     }
     let secret_dir = private_root(&app)?.join("run");
     fs::create_dir_all(&secret_dir)
         .map_err(|_| "Could not create private runtime credential directory")?;
+    #[cfg(windows)]
+    windows_acl::apply_private_acl(&secret_dir)?;
     let mut secret_file = tempfile::NamedTempFile::new_in(&secret_dir)
         .map_err(|_| "Could not create private runtime credential")?;
     secret_file
@@ -1136,5 +1283,38 @@ mod tests {
         }
         assert!(!valid_hex("untrusted"));
         assert!(valid_hex(&"a".repeat(64)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn private_windows_acl_and_complete_payload_enforcement() {
+        let staging = tempfile::tempdir().unwrap();
+        let dir = staging.path().join("managed-runtime-test");
+        fs::create_dir(&dir).unwrap();
+        windows_acl::apply_private_acl(&dir).unwrap();
+        windows_acl::check_private_acl(&dir).unwrap();
+
+        let dependency = dir.join("llama-server-impl.dll");
+        fs::write(&dependency, b"fixture dependency").unwrap();
+        let expected = [(
+            "llama-server-impl.dll",
+            18u64,
+            "901b608999d7683ab72289c6ce73dd2c580dbdc9c4eb14ab440f1d3a47d30926",
+        )];
+        // Use the computed fixture SHA only; never treat test data as the
+        // production, statically embedded trusted dependency manifest.
+        let digest = sha256_file(&dependency).unwrap();
+        let fixture = [(expected[0].0, 18u64, digest.as_str())];
+        assert!(verify_payload_dir_expected(&dir, &fixture).is_ok());
+
+        fs::write(&dependency, b"fixture tampered!!").unwrap();
+        assert!(verify_payload_dir_expected(&dir, &fixture).is_err());
+        fs::write(&dependency, b"fixture dependency").unwrap();
+
+        fs::write(dir.join("unexpected.dll"), b"unexpected").unwrap();
+        assert!(verify_payload_dir_expected(&dir, &fixture).is_err());
+        fs::remove_file(dir.join("unexpected.dll")).unwrap();
+        fs::remove_file(&dependency).unwrap();
+        assert!(verify_payload_dir_expected(&dir, &fixture).is_err());
     }
 }

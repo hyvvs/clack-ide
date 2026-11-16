@@ -202,6 +202,13 @@ export function ClackManagedModels() {
           {runtime?.state ?? "Unavailable"} {runtime?.installed ? `· ${runtime.version}` : ""}
         </span>
       </div>
+      {installed && runtime?.epoch && (
+        <p aria-label="Managed runtime process identity" className="break-all font-mono text-[10px] text-muted-foreground">
+          Runtime epoch {runtime.epoch}
+          {runtime.processId ? ` · Native PID ${runtime.processId}` : ""}
+          {runtime.port ? ` · 127.0.0.1:${runtime.port}` : ""}
+        </p>
+      )}
       {!installed && (
         <p className="text-xs text-muted-foreground">
           Not installed. Clack never runs an executable from PATH or silently downloads a model.

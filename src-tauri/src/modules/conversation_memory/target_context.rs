@@ -97,7 +97,8 @@ fn validate_snapshot(snapshot: &Snapshot, originals: &Originals) -> Result<bool>
         if revision.schema_version != SCHEMA
             || (revision.policy_version != "c1b-extraction-v1"
                 && revision.policy_version != "c1b-extraction-agent-steps-v1")
-            || (mode == Some(AGENT_STEP_UNITS)) != (revision.policy_version == "c1b-extraction-agent-steps-v1")
+            || (mode == Some(AGENT_STEP_UNITS))
+                != (revision.policy_version == "c1b-extraction-agent-steps-v1")
             || revision.coverage.start != 0
             || revision.coverage.end > source_units.len()
             || revision.coverage.end == 0
@@ -188,7 +189,20 @@ fn switched_session(
         return Err("target_context_stale_session".into());
     }
     idle_token(&originals.meta)?;
-    if request.model_id.is_empty() || request.model_id.len() > 512 || !valid_hash(&request.key) {
+    // Ordinary provider selections retain the original 512-byte bound. A
+    // Clack-managed GGUF selection embeds the full immutable deployment and
+    // configuration identities and can exceed it. Its exceptional length is
+    // only accepted here; target_context_commit independently revalidates
+    // the exact canonical selection against the native registered fabric.
+    let allowed_length = if request.model_id.starts_with("managed-local:") {
+        2048
+    } else {
+        512
+    };
+    if request.model_id.is_empty()
+        || request.model_id.len() > allowed_length
+        || !valid_hash(&request.key)
+    {
         return Err("target_context_invalid_target".into());
     }
     if let Some(revision) = &mut revision {
@@ -245,6 +259,12 @@ pub async fn target_context_commit(
                     .map(|(_, revision)| revision)
             })
             .transpose()?;
+        if request.model_id.starts_with("managed-local:") {
+            crate::modules::managed_local_runtime::validate_managed_model_switch(
+                &app,
+                &request.model_id,
+            )?;
+        }
         let meta = switched_session(&originals, &request, revision)?;
         if settings_hash(&app)? != request.settings_hash {
             return Err("target_context_settings_changed".into());
@@ -394,6 +414,26 @@ mod tests {
     }
 
     #[test]
+    fn managed_selection_uses_bounded_extended_identity_without_weakening_other_targets() {
+        let f = Fixture::new();
+        let mut request = request(&f);
+        // Managed selections contain the exact deployment ID and full host /
+        // runtime / artifact / configuration identity, not a short model tag.
+        request.model_id = format!(
+            "managed-local:{}",
+            json!(["deployment".repeat(60), "identity".repeat(35)])
+        );
+        assert!(request.model_id.len() > 512);
+        assert!(request.model_id.len() < 2048);
+        assert!(switched_session(&f.originals, &request, None).is_ok());
+
+        request.model_id = "ordinary-model:".to_owned() + &"x".repeat(520);
+        assert!(switched_session(&f.originals, &request, None).is_err());
+        request.model_id = "managed-local:".to_owned() + &"x".repeat(2048);
+        assert!(switched_session(&f.originals, &request, None).is_err());
+    }
+
+    #[test]
     fn preview_does_not_publish_or_copy_source_blobs() {
         let f = Fixture::new();
         let before = serde_json::to_value(f.view().unwrap()).unwrap();
@@ -488,14 +528,42 @@ mod tests {
         candidate.policy_version = "c1b-extraction-agent-steps-v1".into();
         candidate.unit_mode = Some(AGENT_STEP_UNITS.into());
         candidate.end = 3;
-        candidate.sources.push(SourceLocator::AgentStep { message_id: "a1".into(), step_index: 0 });
-        candidate.sources.push(SourceLocator::AgentStep { message_id: "a1".into(), step_index: 1 });
-        let revision = prepare_revision(&f.root, &f.content, &f.originals, candidate, false, |_| Ok(())).unwrap().1;
+        candidate.sources.push(SourceLocator::AgentStep {
+            message_id: "a1".into(),
+            step_index: 0,
+        });
+        candidate.sources.push(SourceLocator::AgentStep {
+            message_id: "a1".into(),
+            step_index: 1,
+        });
+        let revision =
+            prepare_revision(&f.root, &f.content, &f.originals, candidate, false, |_| {
+                Ok(())
+            })
+            .unwrap()
+            .1;
         let next = switched_session(&f.originals, &request(&f), Some(revision)).unwrap();
         let snapshot: Snapshot = serde_json::from_value(next["targetContext"].clone()).unwrap();
         assert!(validate_snapshot(&snapshot, &f.originals).unwrap());
-        assert_eq!(snapshot.revision.as_ref().unwrap().coverage.unit_mode.as_deref(), Some(AGENT_STEP_UNITS));
-        assert_eq!(snapshot.revision.as_ref().unwrap().coverage.latest_message_id, "agent-step:a1:1");
+        assert_eq!(
+            snapshot
+                .revision
+                .as_ref()
+                .unwrap()
+                .coverage
+                .unit_mode
+                .as_deref(),
+            Some(AGENT_STEP_UNITS)
+        );
+        assert_eq!(
+            snapshot
+                .revision
+                .as_ref()
+                .unwrap()
+                .coverage
+                .latest_message_id,
+            "agent-step:a1:1"
+        );
         let mut mismatch = snapshot.clone();
         mismatch.revision.as_mut().unwrap().coverage.unit_mode = None;
         mismatch.integrity = snapshot_integrity(&mismatch).unwrap();
@@ -506,9 +574,13 @@ mod tests {
         assert!(validate_snapshot(&mismatch, &f.originals).is_err());
         // A different continuation to the *same* original UI message is a
         // different source snapshot. It cannot silently reuse staged context.
-        f.originals.messages[1]["parts"].as_array_mut().unwrap().extend([
-            json!({"type":"step-start"}), json!({"type":"text","text":"New continuation"})
-        ]);
+        f.originals.messages[1]["parts"]
+            .as_array_mut()
+            .unwrap()
+            .extend([
+                json!({"type":"step-start"}),
+                json!({"type":"text","text":"New continuation"}),
+            ]);
         assert!(!validate_snapshot(&snapshot, &f.originals).unwrap());
     }
 
