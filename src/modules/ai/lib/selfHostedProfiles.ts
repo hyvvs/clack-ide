@@ -100,7 +100,7 @@ const endpointSchema = z.object({
   updatedAt: timestamp,
   deletedAt: timestamp.optional(),
   legacy: legacyBinding.optional(),
-}).refine(e => e.ssh ? e.baseURL === remoteSshUrl(e.id) && e.credentialRef === null : new URL(e.baseURL).hostname !== "clack-ssh.invalid");
+}).passthrough().refine(e => e.ssh ? e.baseURL === remoteSshUrl(e.id) && e.credentialRef === null : new URL(e.baseURL).hostname !== "clack-ssh.invalid");
 export type SelfHostedEndpoint = z.infer<typeof endpointSchema>;
 
 export function endpointBackend(endpoint: SelfHostedEndpoint): SelfHostedBackend | undefined {
@@ -117,7 +117,7 @@ const inventoryModelSchema = z.object({
   family: z.string().min(1).max(1024).optional(),
   parameterSize: z.string().min(1).max(1024).optional(),
   quantizationLevel: z.string().min(1).max(1024).optional(),
-});
+}).passthrough();
 export const selfHostedInventorySchema = z.object({
   endpointId: id,
   configurationRevision: z.number().int().positive(),
@@ -131,7 +131,7 @@ export const selfHostedInventorySchema = z.object({
   version: z.preprocess(value => value === null ? undefined : value, z.string().min(1).max(64).optional()),
   error: z.string().max(64).nullish(),
   models: z.array(inventoryModelSchema).max(5000).refine(rows => new Set(rows.map(m => m.id)).size === rows.length),
-});
+}).passthrough();
 export type SelfHostedInventory = z.infer<typeof selfHostedInventorySchema>;
 
 export const evidenceSchema = z.object({
@@ -200,7 +200,7 @@ const profileSchema = z.object({
     .optional(),
   modelRevision: z.string().max(1024).optional(),
   backend: backend.optional(),
-});
+}).passthrough();
 export type SelfHostedProfile = z.infer<typeof profileSchema>;
 export type SelfHostedState = {
   version: 1;
@@ -229,6 +229,22 @@ export function profileIdentity(
   return JSON.stringify([endpointId, model, deploymentId]);
 }
 
+// Schema-v1 extension fields are opaque and never trusted as authorization.
+// Preserve future *metadata* but do not inadvertently migrate credentials
+// embedded as unknown JSON fields (including inside nested future objects).
+// Legitimate credentialRef is a reference only; raw secrets belong to the
+// native keychain, not the self-hosted model registry.
+const rawSecretField = /api.?key|password|passphrase|secret|(?:access|refresh|auth).?token|authorization|cookie|bearer|private.?key|credential.?value/i;
+function withoutUnknownSecrets<T>(value: T): T {
+  if (Array.isArray(value))
+    return value.map(withoutUnknownSecrets) as T;
+  if (value !== null && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).filter(([key]) =>
+      !rawSecretField.test(key)).map(([key, item]) =>
+      [key, withoutUnknownSecrets(item)])) as T;
+  return value;
+}
+
 export function readSelfHostedState(raw: unknown): SelfHostedState {
   const envelope = z
     .object({
@@ -238,7 +254,7 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
       profiles: z.array(z.unknown()).max(2048),
       inventories: z.array(z.unknown()).max(256).optional(),
       fabric: z.unknown().optional(),
-    })
+    }).passthrough()
     .safeParse(raw);
   if (!envelope.success) return emptySelfHostedState();
   const endpoints: SelfHostedEndpoint[] = [];
@@ -317,9 +333,13 @@ export function readSelfHostedState(raw: unknown): SelfHostedState {
       e.configurationRevision === parsed.data.configurationRevision) ? [parsed.data] : [];
   }).filter((item, index, all) => all.findIndex(i => i.endpointId === item.endpointId) === index);
   const fabric = localComputeFabricSchema.safeParse(envelope.data.fabric);
-  return { version: 1, revision: envelope.data.revision, endpoints, profiles,
+  const extensions = Object.fromEntries(Object.entries(envelope.data).filter(([key]) =>
+    !["version", "revision", "endpoints", "profiles", "inventories", "fabric"].includes(key)));
+  // Preserve inert future fields under the supported envelope version on
+  // every additive CAS edit. Their presence conveys no runtime permission.
+  return withoutUnknownSecrets({ ...extensions, version: 1, revision: envelope.data.revision, endpoints, profiles,
     ...(inventories ? { inventories } : {}),
-    ...(fabric.success ? { fabric: fabric.data } : {}) };
+    ...(fabric.success ? { fabric: fabric.data } : {}) });
 }
 
 export function assertWritableSelfHostedState(raw: unknown): void {
@@ -332,7 +352,7 @@ export function assertWritableSelfHostedState(raw: unknown): void {
       profiles: z.array(profileSchema).max(2048),
       inventories: z.array(selfHostedInventorySchema).max(256).optional(),
       fabric: localComputeFabricSchema.optional(),
-    })
+    }).passthrough()
     .safeParse(raw);
   if (!parsed.success) {
     throw new Error(

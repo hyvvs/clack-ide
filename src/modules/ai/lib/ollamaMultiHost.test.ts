@@ -111,7 +111,12 @@ describe("LM0/LM1/LM2 Ollama host identity and migration", () => {
     expect(state.endpoints[1].configurationRevision).toBe(oldRevision);
     expect(resolveSelfHostedSelection(state, remoteSelected).status).toBe("missing");
     expect(() => selfHostedTransportIdentity(remoteSelected, state)).toThrow(/unavailable/);
-    expect(savedSelfHostedModelInfos(state)).toHaveLength(1);
+    // LM2E retains the disabled deployment in the user's picker so it can
+    // be restored without rebuilding the host; route admission above still
+    // refuses to send inference to it.
+    expect(savedSelfHostedModelInfos(state).map(m => m.id)).toEqual([
+      localSelected, remoteSelected,
+    ]);
     expect(selfHostedTransportIdentity(localSelected, state)?.selfHosted?.endpointId).toBe("local");
     const restarted = readSelfHostedState(JSON.parse(JSON.stringify(state)));
     expect(restarted.endpoints[1].enabled).toBe(false);

@@ -40,7 +40,7 @@ export const runtimeCapabilitySchema = z.object({
   status: z.string().min(1).max(64),
   source: z.string().min(1).max(64),
   observedAt: z.number().int().nonnegative().optional(),
-});
+}).passthrough();
 export type RuntimeCapability = z.infer<typeof runtimeCapabilitySchema>;
 const capabilitiesSchema = z.record(z.string().min(1).max(64), runtimeCapabilitySchema)
   .refine(value => Object.keys(value).length <= 64);
@@ -53,7 +53,7 @@ export const computeHostSchema = z.object({
   os: optionalName,
   hardwareProfileId: name.optional(),
   runtimeIds: z.array(name).max(32),
-});
+}).passthrough();
 export const localRuntimeSchema = z.object({
   id: name,
   hostId: name,
@@ -69,7 +69,7 @@ export const localRuntimeSchema = z.object({
   configurationRevision: revision,
   runtimeEpoch: optionalName,
   capabilities: capabilitiesSchema,
-});
+}).passthrough();
 export const modelArtifactSchema = z.object({
   id: longIdentity,
   displayName: z.string().min(1).max(1024),
@@ -83,7 +83,7 @@ export const modelArtifactSchema = z.object({
   declaredContext: revision.optional(),
   size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   provenance: z.enum(["runtime-inventory", "user-supplied", "unknown"]),
-});
+}).passthrough();
 export const modelDeploymentSchema = z.object({
   id: longIdentity,
   hostId: name,
@@ -95,14 +95,14 @@ export const modelDeploymentSchema = z.object({
   profileId: longIdentity.optional(),
   variantId: name.nullable().optional(),
   configurationIdentity: z.string().max(4096).optional(),
-});
+}).passthrough();
 export const localComputeFabricSchema = z.object({
   version: z.literal(LOCAL_COMPUTE_FABRIC_VERSION),
   hosts: z.array(computeHostSchema).max(256),
   runtimes: z.array(localRuntimeSchema).max(512),
   artifacts: z.array(modelArtifactSchema).max(5000),
   deployments: z.array(modelDeploymentSchema).max(2048),
-});
+}).passthrough();
 export type ComputeHost = z.infer<typeof computeHostSchema>;
 export type LocalRuntime = z.infer<typeof localRuntimeSchema>;
 export type ModelArtifact = z.infer<typeof modelArtifactSchema>;
@@ -309,6 +309,13 @@ function unique<T extends { id: string }>(rows: T[]): T[] {
   return [...new Map(rows.map(row => [row.id, row])).values()];
 }
 
+/** Retain future inert metadata without carrying stale routing/trust fields
+ * from a previous endpoint revision into an authoritative projection. */
+function inertExtensions(row: Record<string, unknown> | undefined, known: Record<string, unknown>) {
+  if (!row) return {};
+  return Object.fromEntries(Object.entries(row).filter(([key]) => !(key in known)));
+}
+
 /**
  * Reconcile from authoritative endpoint/profile/inventory snapshots. Native
  * discovery may update those while Clack is running, independently of the
@@ -337,6 +344,7 @@ export function reconcileLocalComputeFabric(state: SelfHostedState): LocalComput
     const hostId = previousRuntime?.hostId ?? endpoint.id;
     const previousHost = hosts.find(row => row.id === hostId);
     const runtime: LocalRuntime = {
+      ...inertExtensions(previousRuntime, localRuntimeSchema.shape),
       id: runtimeId, hostId,
       // Runtime identity is independent of the machine name and endpoint.
       type: previousRuntime?.configurationRevision === endpoint.configurationRevision
@@ -356,6 +364,7 @@ export function reconcileLocalComputeFabric(state: SelfHostedState): LocalComput
         : previousRuntime?.capabilities ?? {},
     };
     const host: ComputeHost = {
+      ...inertExtensions(previousHost, computeHostSchema.shape),
       id: hostId,
       displayName: previousHost && previousHost.id !== endpoint.id
         ? previousHost.displayName : endpoint.alias,
@@ -419,6 +428,7 @@ export function reconcileLocalComputeFabric(state: SelfHostedState): LocalComput
         ? "offline" : "unknown";
   }
   return localComputeFabricSchema.parse({
+    ...(saved ?? {}),
     version: LOCAL_COMPUTE_FABRIC_VERSION,
     hosts: unique(hosts), runtimes: unique(runtimes),
     artifacts: unique(artifacts), deployments: unique(deployments),
@@ -451,12 +461,24 @@ export function resolveModelDeployment(
   profile: SelfHostedProfile,
 ): ResolvedModelDeployment | undefined {
   const endpoint = state.endpoints.find(e => e.id === profile.endpointId);
-  if (!endpoint || endpoint.deletedAt !== undefined || endpoint.enabled === false) return;
+  if (!endpoint || endpoint.deletedAt !== undefined || endpoint.enabled === false ||
+      state.endpoints.filter(e => e.id === endpoint.id).length !== 1 ||
+      state.profiles.filter(p => p.id === profile.id).length !== 1) return;
   const fabric = reconcileLocalComputeFabric(state);
   const deployment = fabric.deployments.find(d => d.id === profile.id && d.profileId === profile.id);
   const runtime = fabric.runtimes.find(r => r.id === deployment?.runtimeId);
   const host = fabric.hosts.find(h => h.id === deployment?.hostId);
   const artifact = fabric.artifacts.find(a => a.id === deployment?.artifactId);
+  // The compatibility projection deliberately de-duplicates stale cache
+  // rows. It must not conceal ambiguous *persisted* identities at admission.
+  const saved = state.fabric;
+  if (saved && [
+    [saved.hosts, host?.id],
+    [saved.runtimes, runtime?.id],
+    [saved.artifacts, artifact?.id],
+    [saved.deployments, deployment?.id],
+  ].some(([rows, id]) => !!id && (rows as { id: string }[]).filter(row => row.id === id).length > 1))
+    return;
   if (!deployment || !runtime || !host || !artifact || !host.enabled ||
       !runtime.enabled || runtime.legacyEndpointId !== endpoint.id ||
       runtime.hostId !== host.id ||

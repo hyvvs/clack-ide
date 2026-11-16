@@ -98,7 +98,7 @@ export function selfHostedModelInfo(
 export function savedSelfHostedModelInfos(state: SelfHostedState): ModelInfo[] {
   return state.profiles.flatMap((p) => {
     const endpoint = state.endpoints.find(
-      (e) => e.id === p.endpointId && e.deletedAt === undefined && e.enabled !== false,
+      (e) => e.id === p.endpointId && e.deletedAt === undefined,
     );
     if (
       !endpoint ||
@@ -112,6 +112,22 @@ export function savedSelfHostedModelInfos(state: SelfHostedState): ModelInfo[] {
       endpoint.legacy?.profileId === p.id && !p.modelRevision
         ? endpoint.legacy.selectionId
         : selfHostedSelectionId(p);
+    // A disabled server is still a saved deployment. Keep its exact model
+    // choice visible so it can be restored without reconstructing a provider;
+    // never resolve its route or present it as selectable while disabled.
+    if (endpoint.enabled === false) {
+      const inventory = state.inventories?.find(i => i.endpointId === endpoint.id &&
+        i.configurationRevision === endpoint.configurationRevision);
+      const observed = inventory?.models.find(m => m.id === p.transportModelId &&
+        (!p.modelRevision || m.digest === p.modelRevision));
+      return [{
+        id, provider: endpointProvider(endpoint),
+        label: p.saved?.label ?? observed?.name ?? p.transportModelId,
+        hint: endpoint.alias,
+        description: `${endpoint.alias} / ${p.transportModelId}`,
+        capabilities: { intelligence: 0, speed: 0, cost: 0 },
+      }];
+    }
     const info = selfHostedModelInfo(id, state);
     return info ? [info] : [];
   });
@@ -128,7 +144,12 @@ export function canonicalSelfHostedSelectionId(id: string, state?: SelfHostedSta
 export function selfHostedPickerStatus(selectionId: string, state: SelfHostedState, now = Date.now()): { label: string; disabled: boolean } | undefined {
   const target = resolveSelfHostedSelection(state, selectionId);
   if (target.status === "not-managed") return undefined;
-  if (target.status === "missing") return { label: "Unavailable", disabled: true };
+  if (target.status === "missing") return {
+    label: state.endpoints.some(e => e.id === target.endpointId &&
+      e.deletedAt === undefined && e.enabled === false)
+      ? "Disabled in Settings" : "Unavailable",
+    disabled: true,
+  };
   // A compute host can be disabled independently of the installed runtime.
   // Never advertise it as reconnectable merely because its old HTTP
   // endpoint/model inventory is still saved.
@@ -143,12 +164,20 @@ export function selfHostedPickerStatus(selectionId: string, state: SelfHostedSta
   }
   const model = inventory.models.find(m => m.id === target.profile.transportModelId);
   if (!model) return { label: "Unavailable", disabled: true };
+  // A model tag is not an artifact identity. Once discovery reports a
+  // different (or no) digest for a pinned profile, do not route the old
+  // selection to that newly installed artifact.
+  if (target.profile.modelRevision && model.digest !== target.profile.modelRevision)
+    return { label: "Model changed · reselect", disabled: true };
   if (model.chat === "unsupported") return { label: "Incompatible", disabled: true };
   const readiness = modelOnboarding(state, target.profile, now);
   if (readiness?.status === "Incompatible")
     return { label: readiness.status, disabled: true };
   if (inventory.observedAt > now || now - inventory.observedAt >= 300_000)
-    return { label: "Unverified", disabled: false };
+    // A stale observation is not a fresh readiness claim. Keep the existing
+    // legacy model-switch route possible while runtime admission independently
+    // validates its endpoint; never promote stale capability evidence.
+    return { label: "Stale inventory · refresh", disabled: false };
   return { label: readiness?.status ?? "Unverified", disabled: readiness?.status === "Needs attention" &&
     (readiness.tools !== "Needs attention" || !!readiness.problem) };
 }

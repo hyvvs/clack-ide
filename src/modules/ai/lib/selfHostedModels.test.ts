@@ -15,6 +15,7 @@ import {
   endpointAllowsPrivate,
   saveSelfHostedModel,
   savedSelfHostedModelInfos,
+  selfHostedPickerStatus,
   selfHostedCredential,
   selfHostedSelectionId,
   selfHostedTransportIdentity,
@@ -139,6 +140,52 @@ describe("self-hosted saved model bindings", () => {
       resolveModelTransportIdentity(selection, { selfHostedInference: next }),
     ).toThrow("unavailable");
     expect(captured.endpointBaseURL).toBe("http://localhost:11434/v1");
+  });
+  it("keeps a disabled host's saved deployment visible, but refuses to route it", () => {
+    const { state, selection, endpoint } = fixture();
+    const disabled = editSelfHostedEndpoint(state, endpoint.id, { enabled: false }, 2);
+    expect(savedSelfHostedModelInfos(disabled)).toMatchObject([{
+      id: selection, label: "Friendly model", hint: "AI Server",
+    }]);
+    expect(selfHostedPickerStatus(selection, disabled)).toEqual({
+      label: "Disabled in Settings", disabled: true,
+    });
+    expect(() => selfHostedTransportIdentity(selection, disabled)).toThrow(/unavailable/);
+    const enabled = editSelfHostedEndpoint(disabled, endpoint.id, { enabled: true }, 3);
+    expect(savedSelfHostedModelInfos(enabled)[0].id).toBe(selection);
+  });
+  it("shows stale inventory explicitly without treating it as a new route or fresh qualification", () => {
+    const { state, selection, endpoint } = fixture();
+    const stale = { ...state, inventories: [{
+      endpointId: endpoint.id, configurationRevision: endpoint.configurationRevision,
+      observedAt: 1, connected: true, backend: "ollama" as const,
+      models: [{ id: "model-a", name: "Old inventory label", chat: "supported" as const }],
+    }] };
+    expect(savedSelfHostedModelInfos(stale)[0].id).toBe(selection);
+    expect(selfHostedPickerStatus(selection, stale, 300_002)).toEqual({
+      label: "Stale inventory · refresh", disabled: false,
+    });
+    expect(selfHostedTransportIdentity(selection, stale)?.selfHosted?.endpointId)
+      .toBe(endpoint.id);
+  });
+  it("rejects a model tag that now resolves to another digest or to unknown bytes", () => {
+    const { state, endpoint } = fixture();
+    const pinned = { ...state, profiles: state.profiles.map(profile => ({
+      ...profile, modelRevision: "digest-old",
+    })) };
+    const selected = selfHostedSelectionId(pinned.profiles[0]);
+    for (const digest of ["digest-new", undefined]) {
+      const changed = { ...pinned, inventories: [{
+        endpointId: endpoint.id, configurationRevision: endpoint.configurationRevision,
+        observedAt: Date.now(), connected: true, backend: "ollama" as const,
+        models: [{ id: "model-a", name: "Same model name", chat: "supported" as const,
+          ...(digest ? { digest } : {}) }],
+      }] };
+      expect(selfHostedPickerStatus(selected, changed)).toEqual({
+        label: "Model changed · reselect", disabled: true,
+      });
+      expect(() => selfHostedTransportIdentity(selected, changed)).toThrow(/Model changed/);
+    }
   });
   it("does not silently resolve missing profile selections through the static catalog", () => {
     expect(() => resolveModelSelectionInfo("self-hosted:missing")).toThrow(

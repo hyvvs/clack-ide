@@ -18,15 +18,23 @@ vi.mock("../lib/transport", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/transport")>()),
   readProjectMemory: vi.fn().mockResolvedValue(null),
 }));
+vi.mock("@/modules/ai/tools/customExecution", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/ai/tools/customExecution")>();
+  return { ...actual, buildRuntimeTools: vi.fn(actual.buildRuntimeTools) };
+});
 
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { EMPTY_PROVIDER_KEYS } from "../lib/keyring";
 import { loadMessages } from "../lib/sessions";
 import { readProjectMemory } from "../lib/transport";
+import { buildRuntimeTools } from "@/modules/ai/tools/customExecution";
 import {
   createSavedProviderModel,
   savedProviderModelSelectionId,
 } from "../lib/savedProviderModels";
+import { attachManagedLocalGguf } from "../lib/managedLocalModels";
+import { createSelfHostedEndpoint, emptySelfHostedState } from "../lib/selfHostedProfiles";
+import { saveSelfHostedModel, selfHostedSelectionId } from "../lib/selfHostedModels";
 import { chats, seedMessages, useChatStore } from "./chatStore";
 import { prepareModelSwitch } from "./modelSwitch";
 
@@ -446,5 +454,152 @@ describe("pre-switch race and history loading", () => {
     expect(useChatStore.getState().sessions[0].profile?.modelId).toBe(
       "gpt-5.4-mini",
     );
+  });
+});
+
+describe("managed GGUF model-switch native Ready commit revalidation", () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+  const anotherDigest = `sha256:${"b".repeat(64)}`;
+  const epoch = "e".repeat(64);
+  const differentEpoch = "d".repeat(64);
+  const material = { version: 1 as const, context: 4096,
+    gpu: 0 as const, tool: false as const, grammar: false as const };
+
+  function fixture() {
+    const first = attachManagedLocalGguf(emptySelfHostedState(), {
+      digest, displayName: "Same name", material,
+    });
+    const second = attachManagedLocalGguf(first.state, {
+      digest: anotherDigest, displayName: "Same name", material,
+    });
+    const deploymentId = first.state.fabric!.deployments[0].id;
+    usePreferencesStore.setState({ selfHostedInference: second.state });
+    // A new-chat switch avoids transcript rewriting; it must still recheck
+    // readiness before committing the selected model preference.
+    useChatStore.setState({ activeSessionId: null });
+    // The managed Chat-only target cannot claim Agent-native tools. For this
+    // fixture, model preparation has no required tool schemas.
+    vi.mocked(buildRuntimeTools).mockResolvedValueOnce({});
+    let status = {
+      installed: true, state: "Ready", epoch,
+      deploymentId, modelDigest: digest, processId: 3601,
+    };
+    let present = true;
+    let failure: string | null = null;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "managed_local_runtime_status") {
+        if (failure === "status") throw new Error("Native runtime unavailable");
+        return { ...status };
+      }
+      if (command === "managed_local_runtime_model_present") {
+        expect(args).toEqual({ digest });
+        if (failure === "presence") throw new Error("Native model lookup unavailable");
+        return present;
+      }
+      if (command === "managed_local_runtime_route") {
+        if (failure === "route") throw new Error("Native route unavailable");
+        expect(args).toEqual({
+          deploymentId,
+          deploymentIdentity: JSON.parse(first.selectionId.slice("managed-local:".length))[1],
+        });
+        return {
+          baseUrl: "http://127.0.0.1:51419/v1", apiKey: "f".repeat(64),
+          epoch: status.epoch,
+          modelAlias: `clack-${digest.slice(7, 23)}`,
+          processId: status.processId,
+        };
+      }
+      return targetContextFixture(command, args);
+    });
+    return {
+      first, second,
+      setStatus: (patch: Partial<typeof status>) => { status = { ...status, ...patch }; },
+      setPresent: (value: boolean) => { present = value; },
+      setFailure: (value: string) => { failure = value; },
+    };
+  }
+
+  it("commits only a fresh exact same-epoch native Ready GGUF without Ollama fallback", async () => {
+    const { first } = fixture();
+    const result = await prepareModelSwitch(null, first.selectionId);
+    expect(result.assessment.status, result.assessment.reasons.join(" ")).not.toBe("blocked");
+    expect(await result.commit(true)).toEqual({ ok: true });
+    expect(useChatStore.getState().selectedModelId).toBe(first.selectionId);
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "managed_local_runtime_status")).toHaveLength(2);
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "managed_local_runtime_model_present")).toHaveLength(2);
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "managed_local_runtime_route").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it.each(["Stopped", "Loading", "Failed", "Not Installed"])(
+    "refuses an in-flight managed deployment becoming %s after preparation", async (phase) => {
+      const { first, setStatus } = fixture();
+      const result = await prepareModelSwitch(null, first.selectionId);
+      expect(result.assessment.status).not.toBe("blocked");
+      setStatus({ state: phase });
+      expect(await result.commit(true)).toMatchObject({ ok: false,
+        reason: expect.stringContaining("managed GGUF deployment") });
+      expect(useChatStore.getState().selectedModelId).toBe("gpt-5.4-mini");
+    },
+  );
+
+  it.each([
+    "epoch", "process", "deployment", "digest", "missing file",
+    "not installed", "missing epoch", "missing process",
+    "native error", "file lookup error", "route failure",
+  ])(
+    "refuses a stale %s and preserves the original selection", async (change) => {
+      const { first, second, setStatus, setPresent, setFailure } = fixture();
+      const result = await prepareModelSwitch(null, first.selectionId);
+      expect(result.assessment.status).not.toBe("blocked");
+      if (change === "epoch") setStatus({ epoch: differentEpoch });
+      if (change === "process") setStatus({ processId: 3602 });
+      if (change === "deployment") setStatus({ deploymentId: second.state.fabric!.deployments[1].id });
+      if (change === "digest") setStatus({ modelDigest: anotherDigest });
+      if (change === "missing file") setPresent(false);
+      if (change === "not installed") setStatus({ installed: false });
+      if (change === "missing epoch") setStatus({ epoch: "" });
+      if (change === "missing process") setStatus({ processId: 0 });
+      if (change === "native error") setFailure("status");
+      if (change === "file lookup error") setFailure("presence");
+      if (change === "route failure") setFailure("route");
+      expect(await result.commit(true)).toMatchObject({ ok: false,
+        reason: expect.stringContaining("managed GGUF deployment") });
+      expect(useChatStore.getState().selectedModelId).toBe("gpt-5.4-mini");
+    },
+  );
+
+  it("rejects changed managed settings before querying native Ready again", async () => {
+    const { first, second } = fixture();
+    const result = await prepareModelSwitch(null, first.selectionId);
+    expect(result.assessment.status).not.toBe("blocked");
+    const before = vi.mocked(invoke).mock.calls.length;
+    usePreferencesStore.setState({
+      selfHostedInference: { ...second.state, fabric: {
+        ...second.state.fabric!,
+        deployments: second.state.fabric!.deployments.filter(row => row.id !== first.state.fabric!.deployments[0].id),
+      } },
+    });
+    expect(await result.commit(true)).toMatchObject({ ok: false,
+      reason: expect.stringContaining("settings changed") });
+    expect(vi.mocked(invoke).mock.calls).toHaveLength(before);
+    expect(useChatStore.getState().selectedModelId).toBe("gpt-5.4-mini");
+  });
+
+  it("leaves a normal Ollama selection free of managed runtime IPC checks", async () => {
+    const endpoint = createSelfHostedEndpoint({
+      alias: "Local Ollama", backendHint: "ollama",
+      baseURL: "http://127.0.0.1:11434/",
+    }, "local-ollama-switch", 1);
+    const state = saveSelfHostedModel({ ...emptySelfHostedState(), endpoints: [endpoint] }, endpoint.id, "same-name:latest");
+    const selection = selfHostedSelectionId(state.profiles[0]);
+    usePreferencesStore.setState({ selfHostedInference: state });
+    useChatStore.setState({ activeSessionId: null });
+    const result = await prepareModelSwitch(null, selection);
+    expect(result.targetLabel).not.toBe("Model change");
+    expect(result.assessment.status, result.assessment.reasons.join(" ")).not.toBe("blocked");
+    expect(await result.commit(true)).toEqual({ ok: true });
+    expect(useChatStore.getState().selectedModelId).toBe(selection);
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command.startsWith("managed_local_runtime_"))).toBe(false);
+    result.dispose?.();
   });
 });

@@ -24,7 +24,7 @@ vi.mock("@/modules/settings/preferences", async (importOriginal) => {
   ) };
 });
 
-import { ModelDropdown, groupFabricPickerModels, modelPickerHostAvailability } from "@/modules/ai/components/AiStatusBarControls";
+import { ModelDropdown, firstEnabledPickerMenuItem, groupFabricPickerModels, modelPickerHostAvailability, pickerArtifactMetadata, pickerDeploymentAccessibleLabel } from "@/modules/ai/components/AiStatusBarControls";
 import { ModelSwitchNotice } from "./ModelSwitchNotice";
 import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
 import type { SessionRunState } from "@/modules/ai/lib/sessions";
@@ -33,7 +33,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { createSavedProviderModel, resolveModelTransportIdentity, savedProviderModelSelectionId } from "@/modules/ai/lib/savedProviderModels";
 import { parseProviderContextCatalog } from "@/modules/ai/lib/providerModelEvidence";
 import { minimaxFreeCatalogRecord } from "@/modules/ai/lib/openrouterCatalog.fixture";
-import { createSelfHostedEndpoint, type SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import { createSelfHostedEndpoint, ensureSelfHostedProfile, type SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { saveSelfHostedModel, savedSelfHostedModelInfos, selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
 import { migrateSelfHostedProfiles } from "@/modules/ai/lib/selfHostedMigration";
 import { resolveModel } from "@/modules/ai/config";
@@ -42,6 +42,11 @@ import { remoteSshUrl } from "@/modules/ai/lib/remoteSsh";
 import { attachManagedLocalGguf, savedManagedLocalModelInfos } from "@/modules/ai/lib/managedLocalModels";
 
 const original = useChatStore.getState();
+
+type PickerRuntime = ReturnType<typeof groupFabricPickerModels>["hostGroups"][number]["runtimes"][number];
+const runtimeModels = (runtime: PickerRuntime) => runtime.artifacts.flatMap(
+  artifact => artifact.deployments.map(item => item.model),
+);
 
 describe("model compatibility notice", () => {
   it("offers confirmation only for uncertain switches", () => {
@@ -183,6 +188,149 @@ describe.each([
 });
 
 describe("model picker scope", () => {
+  it("shows only registered artifact facts and never invents format, size, or context", () => {
+    const unknown: ModelArtifact = {
+      id: "unknown", displayName: "Unverified model", format: "opaque", provenance: "unknown",
+    };
+    expect(pickerArtifactMetadata(unknown)).toEqual([]);
+    const imported: ModelArtifact = {
+      id: "registered", displayName: "Known GGUF", format: "gguf", provenance: "user-supplied",
+      quantization: "Q4_K_M", size: 5 * 1024 ** 3, declaredContext: 8192,
+    };
+    expect(pickerArtifactMetadata(imported)).toEqual([
+      "Registered format · GGUF",
+      "Registered quantization · Q4_K_M",
+      "Registered size · 5.0 GiB",
+      "Declared context · 8,192 tokens",
+    ]);
+    expect(pickerArtifactMetadata({ ...imported, provenance: "runtime-inventory", quantization: undefined }))
+      .toContain("Runtime-reported size · 5.0 GiB");
+    expect(pickerArtifactMetadata({ ...imported, size: 0, declaredContext: undefined }))
+      .not.toContain("Registered size · 0.0 MiB");
+  });
+
+  it("groups two exact deployments under one shared artifact and keeps distinct accessible identities", () => {
+    const endpointId = "one-artifact-two-deployments";
+    const base: SelfHostedState = {
+      version: 1, revision: 0, profiles: [],
+      endpoints: [createSelfHostedEndpoint({
+        alias: "Same PC", baseURL: "http://127.0.0.1:11434/", backendHint: "ollama",
+      }, endpointId, 1)],
+    };
+    const withModels = saveSelfHostedModel(
+      saveSelfHostedModel(base, endpointId, "tag-a:latest", "Same visible label"),
+      endpointId, "tag-b:latest", "Same visible label",
+    );
+    const digest = `sha256:${"c".repeat(64)}`;
+    const state: SelfHostedState = {
+      ...withModels,
+      profiles: withModels.profiles.map(profile => ({ ...profile, modelRevision: digest })),
+    };
+    const choices = savedSelfHostedModelInfos(state);
+    expect(choices).toHaveLength(2);
+    const groups = groupFabricPickerModels(choices, state);
+    expect(groups.otherModels).toEqual([]);
+    const host = groups.hostGroups[0];
+    const runtime = host.runtimes[0];
+    expect(host.runtimes).toHaveLength(1);
+    expect(runtime.artifacts).toHaveLength(1);
+    const { artifact, deployments } = runtime.artifacts[0];
+    expect(artifact.id).toBe(JSON.stringify(["digest", digest]));
+    expect(artifact.format).toBe("ollama-manifest");
+    expect(pickerArtifactMetadata(artifact)).toEqual(["Recorded format · Ollama manifest"]);
+    expect(deployments.map(row => row.deployment.runtimeModelName))
+      .toEqual(["tag-a:latest", "tag-b:latest"]);
+    expect(deployments.map(row => row.model.id)).toEqual(choices.map(model => model.id));
+    const labels = deployments.map((row, index) => pickerDeploymentAccessibleLabel(
+      row.model, "Same-PC address: http://127.0.0.1:11434", host, runtime,
+      artifact, row.deployment, index + 1, deployments.length,
+    ));
+    expect(labels[0]).toContain("Deployment 1 of 2: tag-a:latest");
+    expect(labels[1]).toContain("Deployment 2 of 2: tag-b:latest");
+    expect(labels[0]).not.toBe(labels[1]);
+    expect(labels.every(label => label.includes(digest))).toBe(true);
+  });
+
+  it("keeps a saved disabled profile grouped for display, never recovers a deleted or stale route", () => {
+    const endpointId = "disabled-display-only";
+    const base: SelfHostedState = {
+      version: 1, revision: 0, profiles: [],
+      endpoints: [createSelfHostedEndpoint({
+        alias: "Offline workstation", baseURL: "http://192.0.2.20:11434/", backendHint: "ollama",
+      }, endpointId, 1)],
+    };
+    const saved = saveSelfHostedModel(base, endpointId, "known:latest", "Known model");
+    const model = savedSelfHostedModelInfos(saved)[0];
+    const disabled: SelfHostedState = {
+      ...saved, endpoints: saved.endpoints.map(endpoint => ({ ...endpoint, enabled: false })),
+    };
+    const view = groupFabricPickerModels([model], disabled);
+    expect(view.otherModels).toEqual([]);
+    expect(runtimeModels(view.hostGroups[0].runtimes[0]).map(row => row.id)).toEqual([model.id]);
+    expect(modelPickerHostAvailability(model.id, disabled)).toEqual({
+      label: "Disabled in Settings", disabled: true,
+    });
+    const deleted: SelfHostedState = {
+      ...disabled, endpoints: disabled.endpoints.map(endpoint => ({ ...endpoint, deletedAt: 42 })),
+    };
+    expect(groupFabricPickerModels([model], deleted).otherModels).toEqual([model]);
+    const stale: SelfHostedState = {
+      ...disabled, profiles: disabled.profiles.map(profile => ({ ...profile, transportModelId: "different:latest" })),
+    };
+    expect(groupFabricPickerModels([model], stale).otherModels).toEqual([model]);
+  });
+
+  it("groups inventoried-only disabled deployments only with the exact current configuration", () => {
+    const endpointId = "disabled-inventoried-only";
+    const base: SelfHostedState = {
+      version: 1, revision: 0, profiles: [],
+      endpoints: [createSelfHostedEndpoint({
+        alias: "Inventory host", baseURL: "http://192.0.2.40:11434/", backendHint: "ollama",
+      }, endpointId, 1)],
+    };
+    const prepared = ensureSelfHostedProfile(base, endpointId, "reported:latest").state;
+    expect(prepared.profiles[0].saved).toBeUndefined();
+    const disabled: SelfHostedState = {
+      ...prepared,
+      endpoints: prepared.endpoints.map(endpoint => ({ ...endpoint, enabled: false })),
+      inventories: [{
+        endpointId,
+        configurationRevision: prepared.endpoints[0].configurationRevision,
+        observedAt: Date.now(),
+        connected: false,
+        backend: "ollama",
+        models: [{ id: "reported:latest", name: "Reported model", chat: "unknown" }],
+      }],
+    };
+    const choices = savedSelfHostedModelInfos(disabled);
+    expect(choices).toHaveLength(1);
+    const grouped = groupFabricPickerModels(choices, disabled);
+    expect(grouped.otherModels).toEqual([]);
+    expect(runtimeModels(grouped.hostGroups[0].runtimes[0]).map(row => row.id))
+      .toEqual(choices.map(row => row.id));
+    expect(modelPickerHostAvailability(choices[0].id, disabled)).toEqual({
+      label: "Disabled in Settings", disabled: true,
+    });
+    const stale: SelfHostedState = {
+      ...disabled,
+      inventories: disabled.inventories!.map(inventory => ({
+        ...inventory, configurationRevision: inventory.configurationRevision + 1,
+      })),
+    };
+    expect(groupFabricPickerModels(choices, stale).otherModels).toEqual(choices);
+  });
+
+  it("skips disabled menu rows when entering from search via ArrowDown", () => {
+    const item = { focus: vi.fn() };
+    const querySelector = vi.fn(() => item);
+    const menu = { querySelector } as unknown as ParentNode;
+    expect(firstEnabledPickerMenuItem(menu)).toBe(item);
+    expect(querySelector).toHaveBeenCalledWith(
+      '[role="menuitem"]:not([data-disabled]):not([aria-disabled="true"])',
+    );
+    expect(firstEnabledPickerMenuItem(null)).toBeNull();
+  });
+
   it("groups the migrated ollama-local model under This PC instead of leaving it unbound", () => {
     const state = migrateSelfHostedProfiles(null, new Map<string, unknown>([
       ["ollamaModelId", "legacy:latest"],
@@ -195,7 +343,7 @@ describe("model picker scope", () => {
       alias: "This PC",
       runtimes: [{ runtimeId: "runtime:legacy:ollama", label: "Ollama" }],
     });
-    expect(groups.hostGroups[0].runtimes[0].models[0].id).toBe("ollama-local");
+    expect(runtimeModels(groups.hostGroups[0].runtimes[0])[0].id).toBe("ollama-local");
   });
   it("groups identically named Ollama models under distinct host IDs without dropping cloud models", () => {
     const hosts: SelfHostedState = {
@@ -228,9 +376,9 @@ describe("model picker scope", () => {
       ["ollama-remote-pick", "Workstation", "http://192.0.2.20:11434/"],
       ["ollama-local-pick", "This PC", "http://127.0.0.1:11434/"],
     ]);
-    expect(groups.hostGroups.flatMap(group => group.runtimes.flatMap(runtime => runtime.models.map(model => model.label))))
+    expect(groups.hostGroups.flatMap(group => group.runtimes.flatMap(runtime => runtimeModels(runtime).map(model => model.label))))
       .toEqual(["Same name", "Same name"]);
-    expect(groups.hostGroups[0].runtimes[0].models[0].id).not.toBe(groups.hostGroups[1].runtimes[0].models[0].id);
+    expect(runtimeModels(groups.hostGroups[0].runtimes[0])[0].id).not.toBe(runtimeModels(groups.hostGroups[1].runtimes[0])[0].id);
   });
 
   it("groups multiple runtimes under the same physical host using deployment ownership", () => {
@@ -267,9 +415,9 @@ describe("model picker scope", () => {
         { runtimeId: `runtime:${studioId}`, label: "Studio process" },
       ],
     });
-    expect(groups.hostGroups[0].runtimes.map(runtime => runtime.models[0].id))
+    expect(groups.hostGroups[0].runtimes.map(runtime => runtimeModels(runtime)[0].id))
       .toEqual(savedSelfHostedModelInfos(combined).map(model => model.id));
-    expect(new Set(groups.hostGroups[0].runtimes.map(runtime => runtime.models[0].id)).size).toBe(2);
+    expect(new Set(groups.hostGroups[0].runtimes.map(runtime => runtimeModels(runtime)[0].id)).size).toBe(2);
   });
 
   it("keeps remote SSH Ollama and other self-hosted backends grouped without exposing synthetic URLs", () => {
@@ -298,7 +446,7 @@ describe("model picker scope", () => {
     expect(groups.hostGroups.map(host => [host.alias, host.location, host.runtimes[0].label]))
       .toEqual([["Remote GPU", "remote", "Ollama"], ["vLLM server", "remote", "vLLM server"]]);
     expect(groups.hostGroups[0].runtimes[0].address).toBe("Managed SSH connection");
-    expect(groups.hostGroups.flatMap(host => host.runtimes.flatMap(runtime => runtime.models.map(model => model.id))))
+    expect(groups.hostGroups.flatMap(host => host.runtimes.flatMap(runtime => runtimeModels(runtime).map(model => model.id))))
       .toEqual(models.map(model => model.id));
     expect(modelPickerHostAvailability(models[0].id, saved)).toEqual({ label: "Offline / reconnect", disabled: false });
   });
@@ -321,8 +469,8 @@ describe("model picker scope", () => {
     const models = savedSelfHostedModelInfos(expanded);
     const groups = groupFabricPickerModels(models, expanded);
     expect(groups.hostGroups[0].runtimes).toHaveLength(1);
-    expect(groups.hostGroups[0].runtimes[0].models.map(model => model.id)).toEqual(models.map(model => model.id));
-    expect(groups.hostGroups[0].runtimes[0].models.some(model => model.label === "future.gguf")).toBe(false);
+    expect(runtimeModels(groups.hostGroups[0].runtimes[0]).map(model => model.id)).toEqual(models.map(model => model.id));
+    expect(runtimeModels(groups.hostGroups[0].runtimes[0]).some(model => model.label === "future.gguf")).toBe(false);
   });
 
   it("renders exactly registered managed GGUF deployments under This PC → Clack Managed alongside Ollama", () => {
@@ -351,11 +499,11 @@ describe("model picker scope", () => {
         address: "Registered local runtime",
       }],
     });
-    const managedModels = groups.hostGroups.find(host => host.hostId === "clack-this-pc")!.runtimes[0].models;
+    const managedModels = runtimeModels(groups.hostGroups.find(host => host.hostId === "clack-this-pc")!.runtimes[0]);
     expect(managedModels.map(model => model.id)).toEqual([first.selectionId, second.selectionId]);
     expect(managedModels.map(model => model.label)).toEqual(["Shared display name", "Shared display name"]);
     expect(new Set(managedModels.map(model => model.id)).size).toBe(2);
-    expect(groups.hostGroups.find(host => host.hostId === ollamaId)!.runtimes[0].models)
+    expect(runtimeModels(groups.hostGroups.find(host => host.hostId === ollamaId)!.runtimes[0]))
       .toHaveLength(1);
   });
 

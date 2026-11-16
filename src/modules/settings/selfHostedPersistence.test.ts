@@ -19,7 +19,7 @@ import {
   resolveModelDeployment,
   withLocalComputeFabric,
 } from "@/modules/ai/lib/localComputeFabric";
-import { selfHostedSelectionId, selfHostedTransportIdentity } from "@/modules/ai/lib/selfHostedModels";
+import { saveSelfHostedModel, selfHostedSelectionId, selfHostedTransportIdentity } from "@/modules/ai/lib/selfHostedModels";
 
 const mocks = vi.hoisted(() => ({
   data: new Map<string, unknown>(),
@@ -197,6 +197,44 @@ describe("persistent self-hosted settings", () => {
     expect(mocks.data.get(SELF_HOSTED_SETTINGS_KEY)).toEqual(future);
     await expect(repo.update(s => s)).rejects.toThrow(/unsupported schema/);
     expect(mocks.data.get(SELF_HOSTED_SETTINGS_KEY)).toEqual(future);
+  });
+
+  it("retains unknown inert fields in the supported envelope and fabric during an additive host edit", async () => {
+    const endpoint = createSelfHostedEndpoint({
+      alias: "This PC", baseURL: "http://127.0.0.1:11434/", backendHint: "ollama",
+    }, "future-safe-host", 1);
+    const saved = withLocalComputeFabric(saveSelfHostedModel(
+      addSelfHostedEndpoint(emptySelfHostedState(), endpoint), endpoint.id, "local:latest",
+    ));
+    const selection = selfHostedSelectionId(saved.profiles[0]);
+    const raw = {
+      ...saved,
+      nextSchemaMetadata: { release: 4, opaque: ["do-not-flatten"] },
+      endpoints: saved.endpoints.map(e => ({ ...e, futureLocationEvidence: { method: "upcoming" } })),
+      profiles: saved.profiles.map(p => ({ ...p, futureQualificationRecord: { eligible: true } })),
+      fabric: {
+        ...saved.fabric!,
+        futureFabricIndex: { version: 3 },
+        hosts: saved.fabric!.hosts.map(h => ({ ...h, futureHostAttestation: "opaque" })),
+        runtimes: saved.fabric!.runtimes.map(r => ({ ...r, futureRuntimeField: { state: "unknown" } })),
+      },
+    };
+    mocks.data.set(SELF_HOSTED_SETTINGS_KEY, structuredClone(raw));
+    const repo = createSelfHostedPersistence(nativeSelfHostedStorage());
+    const loaded = await repo.load();
+    expect((loaded as typeof raw).nextSchemaMetadata).toEqual(raw.nextSchemaMetadata);
+    const changed = await repo.update(state => editSelfHostedEndpoint(state, endpoint.id,
+      { alias: "Renamed local runtime" }, 20));
+    expect(changed.endpoints[0].alias).toBe("Renamed local runtime");
+    const stored = mocks.data.get(SELF_HOSTED_SETTINGS_KEY) as typeof raw;
+    expect(stored.nextSchemaMetadata).toEqual(raw.nextSchemaMetadata);
+    expect(stored.endpoints[0].futureLocationEvidence).toEqual(raw.endpoints[0].futureLocationEvidence);
+    expect(stored.profiles[0].futureQualificationRecord).toEqual(raw.profiles[0].futureQualificationRecord);
+    expect(stored.fabric.futureFabricIndex).toEqual(raw.fabric.futureFabricIndex);
+    expect(stored.fabric.hosts[0].futureHostAttestation).toBe("opaque");
+    expect(stored.fabric.runtimes[0].futureRuntimeField).toEqual({ state: "unknown" });
+    expect(stored.profiles[0].id).toBe(saved.profiles[0].id);
+    expect(selfHostedSelectionId(stored.profiles[0])).toBe(selection);
   });
 
   it("persists migration once and reloads the same identities", async () => {

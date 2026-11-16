@@ -480,6 +480,25 @@ describe("additive legacy migration", () => {
     expect(JSON.stringify(normalized)).not.toContain("SECRET");
   });
 
+  it("retains harmless future metadata but strips nested unknown credential values", () => {
+    const { state, profile } = fixture();
+    const normalized = readSelfHostedState({
+      ...state,
+      futureMetadata: { note: "opaque", nested: { apiKey: "SECRET-A", status: "unknown" } },
+      endpoints: [{ ...state.endpoints[0], futureRuntime: {
+        description: "registered", accessToken: "SECRET-B",
+      } }],
+      profiles: [{ ...profile, futureCalibration: {
+        proof: "unqualified", secrets: { password: "SECRET-C" },
+      } }],
+    });
+    expect(JSON.stringify(normalized)).not.toContain("SECRET");
+    expect((normalized as unknown as { futureMetadata: { note: string; nested: { status: string } } })
+      .futureMetadata).toEqual({ note: "opaque", nested: { status: "unknown" } });
+    expect((normalized.endpoints[0] as unknown as { futureRuntime: { description: string } })
+      .futureRuntime).toEqual({ description: "registered" });
+  });
+
   it("handles malformed partial legacy settings without writing them", () => {
     const legacy = new Map<string, unknown>([
       ["ollamaBaseURL", 42],

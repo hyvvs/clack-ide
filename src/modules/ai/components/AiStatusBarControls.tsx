@@ -77,13 +77,13 @@ import {
 import { useChatStore } from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
-import { savedSelfHostedModelInfos, selfHostedPickerStatus, canonicalSelfHostedSelectionId, managedReconnectAvailable } from "@/modules/ai/lib/selfHostedModels";
-import { resolveSelfHostedSelection, type SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import { savedSelfHostedModelInfos, selfHostedPickerStatus, canonicalSelfHostedSelectionId, managedReconnectAvailable, selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
+import { endpointBackend, profileIdentity, resolveSelfHostedSelection, type SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { useSelfHostedInventory } from "@/modules/ai/hooks/useSelfHostedInventory";
 import { hasKeyForModel } from "@/modules/ai/store/chatStore";
 import { modelConnectionLabel } from "@/modules/ai/lib/connectionPresentation";
 import { chatConnectionSummary } from "@/modules/ai/lib/chatConnectionSummary";
-import { reconcileLocalComputeFabric } from "@/modules/ai/lib/localComputeFabric";
+import { reconcileLocalComputeFabric, type ModelArtifact, type ModelDeployment } from "@/modules/ai/lib/localComputeFabric";
 import {
   isManagedLocalSelectionId,
   resolveManagedLocalSelection,
@@ -324,45 +324,125 @@ export function modelPickerHostAvailability(
     : selfHostedPickerStatus(selectionId, state);
 }
 
-/** Present saved self-hosted selections by their fabric ownership, not a model tag or URL. */
+type PickerDeployment = { deployment: ModelDeployment; model: ModelInfo };
+type PickerArtifact = { artifact: ModelArtifact; deployments: PickerDeployment[] };
+type PickerRuntime = {
+  runtimeId: string;
+  label: string;
+  address: string;
+  artifacts: PickerArtifact[];
+};
+type PickerHost = {
+  hostId: string;
+  alias: string;
+  location: "local" | "remote" | "unknown";
+  runtimes: PickerRuntime[];
+};
+
+/** Metadata is descriptive, not evidence of current residency, context or tool readiness. */
+export function pickerArtifactMetadata(artifact: ModelArtifact): string[] {
+  const source = artifact.provenance === "runtime-inventory" ? "Runtime-reported"
+    : artifact.provenance === "user-supplied" ? "Registered" : "Recorded";
+  const values: string[] = [];
+  const formats: Partial<Record<ModelArtifact["format"], string>> = {
+    "ollama-manifest": "Ollama manifest", gguf: "GGUF",
+    safetensors: "SafeTensors", "mlx-package": "MLX package",
+  };
+  const format = formats[artifact.format];
+  if (format) values.push(`${source} format · ${format}`);
+  if (artifact.quantization?.trim())
+    values.push(`${source} quantization · ${artifact.quantization}`);
+  if (artifact.size !== undefined && artifact.size >= 1024 * 1024) {
+    const gib = artifact.size / (1024 ** 3);
+    values.push(`${source} size · ${gib >= 1 ? `${gib.toFixed(1)} GiB` : `${(artifact.size / (1024 ** 2)).toFixed(1)} MiB`}`);
+  }
+  if (artifact.declaredContext !== undefined)
+    values.push(`Declared context · ${artifact.declaredContext.toLocaleString("en-US")} tokens`);
+  return values;
+}
+
+/** Disambiguate same-name deployments without changing exact selection IDs. */
+export function pickerDeploymentAccessibleLabel(
+  model: ModelInfo,
+  destination: string,
+  host: PickerHost,
+  runtime: PickerRuntime,
+  artifact: ModelArtifact,
+  deployment: ModelDeployment,
+  ordinal: number,
+  count: number,
+): string {
+  return [
+    model.label,
+    `Host ${host.alias} (${host.location})`,
+    `Runtime ${runtime.label}`,
+    `Artifact ${artifact.displayName}`,
+    ...(artifact.digest ? [`Digest ${artifact.digest}`] : []),
+    `Deployment ${ordinal} of ${count}: ${deployment.runtimeModelName}`,
+    ...(deployment.variantId ? [`Variant ${deployment.variantId}`] : []),
+    destination,
+  ].join(". ");
+}
+
+/** Skip disabled Radix items when moving from the model search field into the menu. */
+export function firstEnabledPickerMenuItem(menu: ParentNode | null): HTMLElement | null {
+  return menu?.querySelector<HTMLElement>(
+    '[role="menuitem"]:not([data-disabled]):not([aria-disabled="true"])',
+  ) ?? null;
+}
+
+/** Present exact registered deployments under the Fabric host/runtime/artifact hierarchy. */
 export function groupFabricPickerModels(models: readonly ModelInfo[], state: SelfHostedState) {
   const otherModels: ModelInfo[] = [];
-  const hostGroups: {
-    hostId: string;
-    alias: string;
-    location: "local" | "remote" | "unknown";
-    runtimes: {
-      runtimeId: string;
-      label: string;
-      address: string;
-      models: ModelInfo[];
-    }[];
-  }[] = [];
+  const hostGroups: PickerHost[] = [];
   const fabric = reconcileLocalComputeFabric(state);
-  const byHostId = new Map<string, (typeof hostGroups)[number]>();
+  const byHostId = new Map<string, PickerHost>();
   for (const model of models) {
     const managedSelection = isManagedLocalSelectionId(model.id)
       ? resolveManagedLocalSelection(state, model.id) : null;
     const conceptual = managedSelection?.status === "available" || managedSelection?.status === "unavailable"
       ? managedSelection : undefined;
     const target = conceptual ? undefined : resolveSelfHostedSelection(state, model.id);
-    if (!conceptual && target?.status !== "available") {
+    // A disabled endpoint is not selectable, but a saved exact profile remains
+    // displayable. Never recover deleted endpoints or a stale/ambiguous route.
+    const disabledMatches = !conceptual && target?.status === "missing"
+      ? state.profiles.flatMap(profile => {
+          const endpoint = state.endpoints.find(row => row.id === profile.endpointId &&
+            row.deletedAt === undefined && row.enabled === false);
+          const inventoried = state.inventories?.some(inventory =>
+            inventory.endpointId === profile.endpointId &&
+            inventory.configurationRevision === endpoint?.configurationRevision &&
+            inventory.models.some(entry => entry.id === profile.transportModelId &&
+              (!profile.modelRevision || entry.digest === profile.modelRevision)));
+          if (!endpoint || profile.id !== profileIdentity(profile.endpointId, profile.transportModelId, profile.deploymentId) ||
+              (profile.backend && profile.backend !== endpointBackend(endpoint)) ||
+              (!profile.saved && endpoint.legacy?.profileId !== profile.id && !inventoried)) return [];
+          const id = endpoint.legacy?.profileId === profile.id && !profile.modelRevision
+            ? endpoint.legacy.selectionId : selfHostedSelectionId(profile);
+          return id === model.id ? [{ endpoint, profile }] : [];
+        }) : [];
+    const owner = target?.status === "available" ? target
+      : disabledMatches.length === 1 ? disabledMatches[0] : undefined;
+    if (!conceptual && !owner) {
       otherModels.push(model);
       continue;
     }
     // A legacy selection remains profile-owned. Conceptual GGUF selections
     // must match the exact deployment identity and are display-only.
     const deployment = conceptual?.deployment ?? fabric.deployments.find(row =>
-      target?.status === "available" && row.profileId === target.profile.id && row.id === target.profile.id);
+      owner && row.profileId === owner.profile.id && row.id === owner.profile.id);
     const runtime = fabric.runtimes.find(row => row.id === deployment?.runtimeId &&
       row.hostId === deployment?.hostId);
     const host = fabric.hosts.find(row => row.id === deployment?.hostId);
-    if (!deployment || !runtime || !host ||
-        !conceptual && (target?.status !== "available" ||
-          runtime.legacyEndpointId !== target.endpoint.id ||
-          deployment.runtimeModelName !== target.profile.transportModelId ||
-          deployment.configurationRevision !== target.endpoint.configurationRevision ||
-          runtime.configurationRevision !== target.endpoint.configurationRevision)) {
+    const artifact = fabric.artifacts.find(row => row.id === deployment?.artifactId);
+    if (!deployment || !runtime || !host || !artifact ||
+        (conceptual && (conceptual.artifact.id !== artifact.id ||
+          conceptual.host.id !== host.id || conceptual.runtime.id !== runtime.id)) ||
+        (!conceptual && (!owner ||
+          runtime.legacyEndpointId !== owner.endpoint.id ||
+          deployment.runtimeModelName !== owner.profile.transportModelId ||
+          deployment.configurationRevision !== owner.endpoint.configurationRevision ||
+          runtime.configurationRevision !== owner.endpoint.configurationRevision))) {
       otherModels.push(model);
       continue;
     }
@@ -384,14 +464,19 @@ export function groupFabricPickerModels(models: readonly ModelInfo[], state: Sel
         label: conceptual ? "Clack Managed" : runtime.displayName,
         // An SSH endpoint's synthetic URL is never a user-facing host address.
         address: conceptual ? "Registered local runtime"
-          : target?.status === "available" && target.endpoint.ssh
+          : owner?.endpoint.ssh
             ? "Managed SSH connection"
-            : target?.status === "available" ? target.endpoint.baseURL : "",
-        models: [],
+            : owner?.endpoint.baseURL ?? "",
+        artifacts: [],
       };
       hostGroup.runtimes.push(runtimeGroup);
     }
-    runtimeGroup.models.push(model);
+    let artifactGroup = runtimeGroup.artifacts.find(row => row.artifact.id === artifact.id);
+    if (!artifactGroup) {
+      artifactGroup = { artifact, deployments: [] };
+      runtimeGroup.artifacts.push(artifactGroup);
+    }
+    artifactGroup.deployments.push({ deployment, model });
   }
   return { otherModels, hostGroups };
 }
@@ -627,12 +712,22 @@ export function ModelDropdown({
     return pool;
   }, [activeProvider, allModels, pickerFavorites, pickerRecents, search, tab]);
 
+  const duplicateLabels = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const model of filtered) {
+      const label = model.label.trim().toLocaleLowerCase();
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    return new Set([...counts].filter(([, count]) => count > 1).map(([label]) => label));
+  }, [filtered]);
   const groups = useMemo(() => groupFabricPickerModels(filtered, selfHosted), [filtered, selfHosted]);
-  const renderModel = (m: ModelInfo) => (
+  const renderModel = (m: ModelInfo, accessibleLabel?: string, deploymentName?: string) => (
     <ModelRow
       key={m.id}
       model={m}
       destination={destinationFor(m.id)}
+      accessibleLabel={accessibleLabel}
+      deploymentName={deploymentName}
       selected={m.id === pickerSelection}
       disabled={locked}
       status={modelPickerHostAvailability(m.id, selfHosted, managedRuntimeStatus, managedFilePresence)}
@@ -797,10 +892,7 @@ export function ModelDropdown({
                 onKeyDown={(e) => {
                   if (e.key === "ArrowDown") {
                     e.preventDefault();
-                    e.currentTarget
-                      .closest('[role="menu"]')
-                      ?.querySelector<HTMLElement>('[role="menuitem"]')
-                      ?.focus();
+                    firstEnabledPickerMenuItem(e.currentTarget.closest('[role="menu"]'))?.focus();
                   }
                   if (e.key !== "Escape" && e.key !== "Tab")
                     e.stopPropagation();
@@ -920,7 +1012,7 @@ export function ModelDropdown({
                   </div>
                 ) : (
                   <>
-                    {groups.otherModels.map(renderModel)}
+                    {groups.otherModels.map(m => renderModel(m))}
                     {groups.hostGroups.map((host) => (
                       <div
                         key={host.hostId}
@@ -938,9 +1030,45 @@ export function ModelDropdown({
                             <div className="flex min-w-0 flex-col gap-0.5 px-4 pb-1 pt-1 text-[11px] text-muted-foreground">
                               <span className="font-medium text-foreground/80">Runtime · {runtime.label}</span>
                               <span className="truncate font-mono text-[10px]" title={runtime.address}>{runtime.address}</span>
-                              <span className="text-[10px]">Deployments</span>
                             </div>
-                            {runtime.models.map(renderModel)}
+                            {runtime.artifacts.map(({ artifact, deployments }) => {
+                              const metadata = pickerArtifactMetadata(artifact);
+                              return (
+                                <div
+                                  key={artifact.id}
+                                  role="group"
+                                  aria-label={`Artifact ${artifact.displayName}${artifact.digest ? `, digest ${artifact.digest}` : ""} in ${runtime.label}`}
+                                  className="ml-3 border-l border-border/50"
+                                >
+                                  <div className="space-y-1 px-3 py-1.5 text-[10px] text-muted-foreground">
+                                    <span className="block min-w-0 truncate font-medium text-foreground/75" title={artifact.displayName}>
+                                      Artifact · {artifact.displayName}
+                                    </span>
+                                    {artifact.digest ? (
+                                      <span className="block truncate font-mono" title={artifact.digest}>
+                                        Digest · {artifact.digest.length > 30 ? `${artifact.digest.slice(0, 27)}…` : artifact.digest}
+                                      </span>
+                                    ) : null}
+                                    {metadata.length ? (
+                                      <span className="block leading-relaxed" title={metadata.join(" · ")}>
+                                        {metadata.join(" · ")}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  <div role="group" aria-label={`Deployments of ${artifact.displayName} on ${runtime.label}`}>
+                                    {deployments.map(({ deployment, model }, i) => renderModel(
+                                      model,
+                                      duplicateLabels.has(model.label.trim().toLocaleLowerCase())
+                                        ? pickerDeploymentAccessibleLabel(
+                                        model, destinationFor(model.id), host, runtime, artifact,
+                                        deployment, i + 1, deployments.length,
+                                        ) : undefined,
+                                      deployment.runtimeModelName,
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         ))}
                       </div>
@@ -1057,6 +1185,8 @@ function ProviderConfigureCTA({ providerId }: { providerId: ProviderId }) {
 function ModelRow({
   model,
   destination,
+  accessibleLabel,
+  deploymentName,
   selected,
   disabled,
   hasKey,
@@ -1068,6 +1198,8 @@ function ModelRow({
 }: {
   model: ModelInfo;
   destination: string;
+  accessibleLabel?: string;
+  deploymentName?: string;
   selected: boolean;
   disabled: boolean;
   hasKey: boolean;
@@ -1079,7 +1211,7 @@ function ModelRow({
 }) {
   return (
     <DropdownMenuItem
-      aria-label={`${model.label}. ${destination}`}
+      aria-label={accessibleLabel ?? `${model.label}. ${destination}`}
       disabled={disabled || status?.disabled}
       aria-description={status?.label}
       aria-current={selected ? "true" : undefined}
@@ -1101,6 +1233,11 @@ function ModelRow({
           onToggleFavorite();
         }}
         title={favorite ? "Unfavorite" : "Favorite"}
+        aria-label={`${favorite ? "Unfavorite" : "Favorite"} ${model.label}`}
+        onKeyDown={(e) => {
+          // The nested favorite action is independent of Radix row selection.
+          if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+        }}
         className={cn(
           "shrink-0 rounded p-0.5 transition-colors",
           favorite
@@ -1132,6 +1269,11 @@ function ModelRow({
         >
           {model.label}
         </span>
+        {deploymentName ? (
+          <span className="max-w-full truncate text-[10px] text-muted-foreground/90" title={deploymentName}>
+            Deployment · {deploymentName}
+          </span>
+        ) : null}
         <span className="max-w-full truncate text-[10.5px] leading-none text-muted-foreground" title={destination}>
           {destination}
         </span>

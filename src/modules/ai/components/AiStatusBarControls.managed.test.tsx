@@ -68,6 +68,7 @@ function managedWithOllama(): SelfHostedState {
     tool: false as const, grammar: false as const };
   const first = attachManagedLocalGguf(withOllama, {
     digest: `sha256:${"a".repeat(64)}`, displayName: "Same label", material,
+    quantization: "Q4_K_M", size: 5 * 1024 ** 3, declaredContext: 8192,
   });
   return attachManagedLocalGguf(first.state, {
     digest: `sha256:${"b".repeat(64)}`, displayName: "Same label", material,
@@ -113,11 +114,19 @@ describe("normal model picker managed GGUF presentation", () => {
     expect(html).toContain('role="group" aria-label="Runtime Clack Managed on This PC"');
     expect(html).toContain("Runtime · Ollama");
     expect(html).toContain("Runtime · Clack Managed");
+    expect(html).toContain('role="group" aria-label="Artifact Same label, digest sha256:');
+    expect(html).toContain('role="group" aria-label="Deployments of Same label on Clack Managed"');
     expect(html).toContain("Deployments");
     expect(html).toContain('title="Clack Managed"');
-    const managedRows = html.match(/role="menuitem" aria-label="Same label\. GGUF sha256:[^"]+" aria-description="Registered · runtime status unknown" aria-disabled="true"/g);
+    const managedRows = html.match(/role="menuitem" aria-label="Same label\. Host This PC \(local\)\. Runtime Clack Managed\. Artifact Same label\. Digest sha256:[^"]+" aria-description="Registered · runtime status unknown" aria-disabled="true"/g);
     expect(managedRows).toHaveLength(2);
     expect(managedRows![0]).not.toBe(managedRows![1]);
+    expect(managedRows![0]).toContain(`sha256:${"a".repeat(64)}`);
+    expect(managedRows![1]).toContain(`sha256:${"b".repeat(64)}`);
+    expect(html).toContain("Registered format · GGUF");
+    expect(html).toContain("Registered quantization · Q4_K_M");
+    expect(html).toContain("Registered size · 5.0 GiB");
+    expect(html).toContain("Declared context · 8,192 tokens");
     expect(html).not.toContain("Ready · Chat only");
     expect(html).toContain("Cloud connection");
   });

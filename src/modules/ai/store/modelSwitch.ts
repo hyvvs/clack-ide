@@ -1,6 +1,12 @@
 import type { UIMessage } from "ai";
+import { invoke } from "@tauri-apps/api/core";
 import { captureEffort, effortBudget } from "@/modules/ai/lib/reasoningEffort";
 import { resolveModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
+import {
+  admittedManagedLocalRoute,
+  type ManagedLocalNativeStatus,
+  type ManagedLocalRouteIdentity,
+} from "@/modules/ai/lib/managedLocalRuntime";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { workspacePathsEqual } from "@/modules/workspace";
 import { currentWorkspaceEnv } from "@/modules/workspace/env";
@@ -38,6 +44,51 @@ import { SwitchConsentRequired } from "@/modules/ai/lib/targetContext";
 import { applyCommittedModelSwitch } from "@/modules/ai/store/modelSwitchSync";
 
 type CommitResult = { ok: true } | { ok: false; reason: string };
+type ManagedSwitchObservation = { epoch: string; processId: number };
+
+class ManagedSwitchNotReadyError extends Error {
+  constructor() {
+    super("The exact managed GGUF deployment is no longer Ready, or its runtime or model file changed. Nothing was switched. Start the deployment in Settings and try again.");
+  }
+}
+
+/**
+ * A prepared model switch is not a runtime lease. Require the *same* native
+ * process epoch at preparation and commit, plus an exact native-authorized
+ * deployment route. Persisted fabric health and same-name model tags never
+ * establish readiness. All native failures fail closed without a fallback.
+ */
+async function verifyManagedSwitchReady(
+  deployment: ManagedLocalRouteIdentity,
+  prepared?: ManagedSwitchObservation,
+): Promise<ManagedSwitchObservation> {
+  try {
+    const status = await invoke<ManagedLocalNativeStatus>("managed_local_runtime_status");
+    if (!status || status.installed !== true || status.state !== "Ready" ||
+        status.deploymentId !== deployment.deploymentId ||
+        status.modelDigest !== deployment.artifactDigest ||
+        !/^[0-9a-f]{64}$/.test(status.epoch) ||
+        !Number.isSafeInteger(status.processId) || (status.processId ?? 0) < 1 ||
+        (prepared && (status.epoch !== prepared.epoch ||
+          status.processId !== prepared.processId)))
+      throw new ManagedSwitchNotReadyError();
+
+    // File presence is only a UX hint, not proof of GGUF bytes. The native
+    // route additionally verifies the current registered binding and model.
+    if (await invoke<boolean>("managed_local_runtime_model_present", {
+      digest: deployment.artifactDigest,
+    }) !== true)
+      throw new ManagedSwitchNotReadyError();
+
+    const route = await admittedManagedLocalRoute(deployment);
+    if (route.epoch !== status.epoch || route.processId !== status.processId)
+      throw new ManagedSwitchNotReadyError();
+    return { epoch: status.epoch, processId: status.processId! };
+  } catch {
+    throw new ManagedSwitchNotReadyError();
+  }
+}
+
 export type PreparedModelSwitch = {
   targetLabel: string;
   assessment: ModelSwitchAssessment;
@@ -59,6 +110,7 @@ function unavailable(reason: string): PreparedModelSwitch {
 }
 
 function switchFailure(error: unknown): string {
+  if (error instanceof ManagedSwitchNotReadyError) return error.message;
   if (
     error instanceof ContextBudgetError &&
     error.budget &&
@@ -262,6 +314,11 @@ export async function prepareModelSwitch(
         inferenceScope: scope,
       },
     );
+    // The model builder admits the initial native route; independently record
+    // its observed process epoch so a later commit cannot reuse stale Ready.
+    const managedReady = identity.managedLocal
+      ? await verifyManagedSwitchReady(identity.managedLocal)
+      : null;
     const limits = await modelBudgetLimits(model);
     const selectionContext = {
       ...sessionToolContext(sessionId ?? "").toolContext,
@@ -506,6 +563,11 @@ export async function prepareModelSwitch(
         try {
           if (needsConsent) await optimize(true);
           check();
+          if (identity.managedLocal) {
+            await verifyManagedSwitchReady(identity.managedLocal, managedReady!);
+            // A settings or session change during native IPC is still fatal.
+            check();
+          }
           if (sessionId) {
             lease = beginInference(scope, () => controller.abort());
             if (!prepared)

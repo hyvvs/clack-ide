@@ -168,6 +168,28 @@ describe("LM2B compute fabric: durable identity and reversible migration", () =>
       .toThrow(/identity changed/);
   });
 
+  it("fails closed on ambiguous persisted host, runtime, artifact or deployment identity", () => {
+    const state = withLocalComputeFabric(prepared());
+    const profile = state.profiles[0];
+    const original = resolveModelDeployment(state, profile)!;
+    const fabric = reconcileLocalComputeFabric(state);
+    // Explicit stale or tampered cache rows must not be normalized into a
+    // second host/model authority, even if projection would pick one row.
+    for (const collection of ["hosts", "runtimes", "artifacts", "deployments"] as const) {
+      const nextFabric = structuredClone(fabric);
+      nextFabric[collection].push(structuredClone(nextFabric[collection][0]) as never);
+      const altered = { ...state, fabric: nextFabric };
+      expect(resolveModelDeployment(altered, profile)).toBeUndefined();
+      expect(() => selfHostedTransportIdentity(selfHostedSelectionId(profile), altered))
+        .toThrow(/deployment changed or disabled/);
+    }
+    expect(resolveModelDeployment(state, profile)!.identity).toBe(original.identity);
+    expect(resolveModelDeployment({ ...state, profiles: [...state.profiles, profile] }, profile))
+      .toBeUndefined();
+    expect(resolveModelDeployment({ ...state, endpoints: [...state.endpoints, state.endpoints[0]] }, profile))
+      .toBeUndefined();
+  });
+
   it("does not invalidate an unrelated host's native-tool receipt when the other host is reconfigured", () => {
     const a = verified(prepared());
     const b = verified(prepared("other-host"));
