@@ -75,6 +75,8 @@ export const modelArtifactSchema = z.object({
   displayName: z.string().min(1).max(1024),
   format: z.enum(["ollama-manifest", "gguf", "safetensors", "mlx-package", "opaque"]),
   digest: z.string().min(1).max(1024).optional(),
+  /** Native-inspected byte identity; no filesystem location or filename. */
+  fileIdentity: z.string().min(1).max(1024).optional(),
   family: optionalName,
   parameterSize: optionalName,
   quantization: optionalName,
@@ -115,6 +117,139 @@ export type ResolvedModelDeployment = {
   profile: SelfHostedProfile;
   identity: string;
 };
+
+/**
+ * LM2F: deployment evidence belongs to one active runtime instance and one
+ * model configuration. A shared artifact digest is never a qualification
+ * identity. Receipts are deliberately separate from the durable fabric graph:
+ * this contract does not make a conceptual runtime executable or persist
+ * qualification in the legacy Ollama profile.
+ */
+const evidenceTime = z.number().int().nonnegative();
+export const deploymentRuntimeObservationSchema = z.object({
+  runtimeId: name,
+  configurationRevision: revision,
+  version: small,
+  epoch: name,
+  observedAt: evidenceTime,
+}).strict();
+export type DeploymentRuntimeObservation = z.infer<typeof deploymentRuntimeObservationSchema>;
+
+export const deploymentQualificationScopeSchema = z.object({
+  deploymentIdentity: longIdentity,
+  hostId: name,
+  runtimeId: name,
+  runtimeType: small,
+  runtimeProcessIdentity: z.string().max(1024).nullable(),
+  runtimeConfigurationRevision: revision,
+  runtimeVersion: small,
+  runtimeEpoch: name,
+  artifactId: longIdentity,
+  artifactDigest: z.string().min(1).max(1024),
+  artifactFormat: modelArtifactSchema.shape.format,
+}).strict();
+export type DeploymentQualificationScope = z.infer<typeof deploymentQualificationScopeSchema>;
+
+export const deploymentQualificationReceiptSchema = z.object({
+  version: z.literal(1),
+  scope: deploymentQualificationScopeSchema,
+  capability: z.enum(RUNTIME_CAPABILITIES),
+  status: z.enum(["verified", "incomplete", "unsupported"]),
+  verifiedAt: evidenceTime,
+  expiresAt: evidenceTime,
+}).strict().refine(receipt => receipt.expiresAt > receipt.verifiedAt &&
+  receipt.expiresAt - receipt.verifiedAt <= 86_400_000);
+export type DeploymentQualificationReceipt = z.infer<typeof deploymentQualificationReceiptSchema>;
+export type DeploymentQualificationState =
+  "Verified" | "Unverified" | "Stale" | "Incomplete" | "Unsupported";
+
+/** A fresh, external runtime observation is mandatory for all non-legacy proof. */
+export function deploymentQualificationScope(
+  fabric: LocalComputeFabric,
+  deploymentId: string,
+  observation: DeploymentRuntimeObservation | undefined,
+  now = Date.now(),
+): DeploymentQualificationScope | undefined {
+  if (!observation || !deploymentRuntimeObservationSchema.safeParse(observation).success ||
+      observation.observedAt > now || now - observation.observedAt >= 30_000)
+    return;
+  const deployment = fabric.deployments.find(row => row.id === deploymentId);
+  const runtime = fabric.runtimes.find(row => row.id === deployment?.runtimeId);
+  const host = fabric.hosts.find(row => row.id === deployment?.hostId);
+  const artifact = fabric.artifacts.find(row => row.id === deployment?.artifactId);
+  if (!deployment || !runtime || !host || !artifact ||
+      fabric.deployments.filter(row => row.id === deploymentId).length !== 1 ||
+      fabric.runtimes.filter(row => row.id === runtime.id).length !== 1 ||
+      fabric.hosts.filter(row => row.id === host.id).length !== 1 ||
+      fabric.artifacts.filter(row => row.id === artifact.id).length !== 1 ||
+      !runtime.enabled || runtime.health !== "online" ||
+      !host.enabled || host.reachability !== "online" ||
+      runtime.hostId !== host.id || !host.runtimeIds.includes(runtime.id) ||
+      deployment.runtimeId !== runtime.id ||
+      deployment.configurationRevision !== runtime.configurationRevision ||
+      observation.runtimeId !== runtime.id ||
+      observation.configurationRevision !== runtime.configurationRevision ||
+      (runtime.version !== undefined && runtime.version !== observation.version) ||
+      (runtime.runtimeEpoch !== undefined && runtime.runtimeEpoch !== observation.epoch) ||
+      // Unknown model contents or behavior cannot be certified by a stale path
+      // or display name. The legacy Ollama bridge retains its own proven scope.
+      !artifact.digest || !deployment.configurationIdentity?.trim())
+    return;
+  const scope = deploymentQualificationScopeSchema.safeParse({
+    deploymentIdentity: deploymentIdentity(deployment),
+    hostId: host.id,
+    runtimeId: runtime.id,
+    runtimeType: runtime.type,
+    runtimeProcessIdentity: runtime.processIdentity ?? null,
+    runtimeConfigurationRevision: runtime.configurationRevision,
+    runtimeVersion: observation.version,
+    runtimeEpoch: observation.epoch,
+    artifactId: artifact.id,
+    artifactDigest: artifact.digest,
+    artifactFormat: artifact.format,
+  });
+  return scope.success ? scope.data : undefined;
+}
+
+export function deploymentQualificationState(
+  fabric: LocalComputeFabric,
+  deploymentId: string,
+  capability: RuntimeCapabilityName,
+  observation: DeploymentRuntimeObservation | undefined,
+  receipt?: DeploymentQualificationReceipt,
+  now = Date.now(),
+): DeploymentQualificationState {
+  const deployment = fabric.deployments.find(row => row.id === deploymentId);
+  const runtime = fabric.runtimes.find(row => row.id === deployment?.runtimeId);
+  if (runtime && capabilityStatus(runtime, capability) === "unsupported")
+    return "Unsupported";
+  if (!receipt) return "Unverified";
+  const parsed = deploymentQualificationReceiptSchema.safeParse(receipt);
+  const current = deploymentQualificationScope(fabric, deploymentId, observation, now);
+  if (!parsed.success || !current || receipt.capability !== capability ||
+      JSON.stringify(parsed.data.scope) !== JSON.stringify(current) ||
+      receipt.verifiedAt > now || receipt.expiresAt <= now)
+    return "Stale";
+  if (receipt.status === "incomplete") return "Incomplete";
+  if (receipt.status === "unsupported") return "Unsupported";
+  return "Verified";
+}
+
+/** An affirmative per-deployment receipt must also respect runtime support. */
+export function deploymentCapabilityQualified(
+  fabric: LocalComputeFabric,
+  deploymentId: string,
+  capability: RuntimeCapabilityName,
+  observation: DeploymentRuntimeObservation | undefined,
+  receipt?: DeploymentQualificationReceipt,
+  now = Date.now(),
+) {
+  const deployment = fabric.deployments.find(row => row.id === deploymentId);
+  const runtime = fabric.runtimes.find(row => row.id === deployment?.runtimeId);
+  return !!runtime && deploymentQualificationState(
+    fabric, deploymentId, capability, observation, receipt, now,
+  ) === "Verified" && runtimeCapabilityAllows(runtime, capability, true);
+}
 
 export function runtimeIdForEndpoint(endpointId: string) {
   return `runtime:${endpointId}`;

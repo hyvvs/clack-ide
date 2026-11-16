@@ -9,6 +9,7 @@ import {
 } from "@/modules/ai/lib/activityStream";
 import type { CustomEndpoint } from "../config";
 import { runAgentStream, type AgentUsageDelta } from "./agent";
+import { isManagedLocalSelectionId } from "@/modules/ai/lib/managedLocalModels";
 import { acquireRemoteConnection, holdRemoteStream, remoteEndpointForModel } from "@/modules/ai/lib/remoteConnection";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { native } from "./native";
@@ -369,6 +370,15 @@ export function createContextAwareTransport(deps: Deps) {
       throw new Error(
         "Captured model selection is unavailable. Choose a model before sending.",
       );
+    // LM2D's native epoch is intentionally ephemeral and not persisted in the
+    // LM2B selection. A later logical segment has no trustworthy same-epoch
+    // continuation proof; retain transcript/history but require a fresh user
+    // request rather than auto-resume against a newly started llama-server.
+    if (isManagedLocalSelectionId(configuration.modelId) &&
+        (recovery || batch.isLogicalContinuation))
+      throw new Error(
+        "Managed local runtime continuation requires a new explicitly started request; no stale process epoch is inherited.",
+      );
     const route =
       configuration.capturedModelIdentity ??
       resolveModelTransportIdentity(configuration.modelId, configuration);
@@ -534,6 +544,9 @@ export function createContextAwareTransport(deps: Deps) {
       eligible:
         !recovery &&
         !batch.isLogicalContinuation &&
+        // Exact managed deployments must never silently reroute to a second
+        // provider/host when their native process or artifact disappears.
+        !isManagedLocalSelectionId(configuration.modelId) &&
         safeFallbackHistory(options.messages),
       signal: options.abortSignal,
       formatError: (error) =>

@@ -7,6 +7,7 @@ pub mod conversation_memory;
 pub mod fs;
 pub mod git;
 pub mod history;
+pub mod managed_local_runtime;
 pub mod inference_probe;
 pub mod net;
 pub mod opener;

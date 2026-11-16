@@ -387,6 +387,14 @@ pub fn run() {
             modules::remote_ssh::remote_ssh_status,
             modules::self_hosted_profiles::self_hosted_profiles_compare_and_swap,
             modules::self_hosted_profiles::self_hosted_profiles_snapshot,
+            modules::managed_local_runtime::managed_local_runtime_status,
+            modules::managed_local_runtime::managed_local_runtime_inspect,
+            modules::managed_local_runtime::managed_local_runtime_model_present,
+            modules::managed_local_runtime::managed_local_runtime_import,
+            modules::managed_local_runtime::managed_local_runtime_install_bundle,
+            modules::managed_local_runtime::managed_local_runtime_start,
+            modules::managed_local_runtime::managed_local_runtime_stop,
+            modules::managed_local_runtime::managed_local_runtime_route,
             modules::inference_probe::self_hosted_probe,
             modules::inference_probe::self_hosted_probe_cache,
             modules::inference_probe::self_hosted_probe_cancel,
@@ -422,6 +430,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                modules::managed_local_runtime::shutdown();
                 modules::remote_ssh::shutdown();
                 app.state::<net::inference::InferenceState>().shutdown();
             }

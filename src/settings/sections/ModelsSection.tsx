@@ -85,6 +85,7 @@ import { ProviderIcon } from "../components/ProviderIcon";
 import { ProviderKeyCard } from "../components/ProviderKeyCard";
 import { SectionHeader } from "../components/SectionHeader";
 import { SelfHostedServers } from "@/settings/components/SelfHostedServers";
+import { ClackManagedModels } from "@/settings/components/ClackManagedModels";
 
 type KeysMap = Record<ProviderId, string | null>;
 
@@ -446,6 +447,7 @@ export function ModelsSection() {
       />
 
       <SelfHostedServers addRequest={serverAddRequest} />
+      <ClackManagedModels />
 
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">

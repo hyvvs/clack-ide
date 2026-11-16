@@ -11,10 +11,13 @@ import {
 import {
   acceptsLegacyDeploymentQualification, addConceptualRuntime, artifactIdFor,
   capabilityStatus, deploymentIdentity, localComputeFabricSchema,
+  deploymentQualificationReceiptSchema, deploymentQualificationScope,
+  deploymentQualificationState, deploymentCapabilityQualified,
   ollamaRuntimeCapabilities, reconcileLocalComputeFabric,
   resolveModelDeployment, runtimeCapabilityAllows, runtimeIdForEndpoint,
   withLocalComputeFabric, type LocalRuntime, type ModelArtifact,
-  type ModelDeployment,
+  type ModelDeployment, type DeploymentQualificationReceipt,
+  type DeploymentRuntimeObservation, type LocalComputeFabric,
 } from "@/modules/ai/lib/localComputeFabric";
 import { OllamaRuntimeAdapter, resolveRuntimeProviderTransport } from "@/modules/ai/lib/localRuntimeAdapters";
 import { ensureDefaultOllamaHost, migrateSelfHostedProfiles } from "@/modules/ai/lib/selfHostedMigration";
@@ -340,5 +343,202 @@ describe("LM2C runtime declarations remain separate from deployment qualificatio
     expect(withLocalComputeFabric(readSelfHostedState(expanded)).fabric?.deployments)
       .toContainEqual(deployment);
     expect(expanded.profiles).toHaveLength(0);
+  });
+});
+
+describe("LM2F per-deployment, cross-runtime qualification isolation", () => {
+  const at = 1_800_000_000_000;
+  const managedId = "managed:qualified-gguf";
+  const observed = (
+    runtimeId = "managed-runtime", version = "1.2.3", epoch = "boot-a",
+  ): DeploymentRuntimeObservation => ({
+    runtimeId, version, epoch, configurationRevision: 1, observedAt: at - 100,
+  });
+  function setup() {
+    const original = withLocalComputeFabric(verified(prepared()));
+    const legacy = resolveModelDeployment(original, original.profiles[0])!;
+    const runtime: LocalRuntime = {
+      id: "managed-runtime", hostId: legacy.host.id, type: "clack-llama-cpp",
+      displayName: "Managed GGUF", enabled: true, health: "online",
+      configurationRevision: 1, version: "1.2.3", runtimeEpoch: "boot-a",
+      processIdentity: "process-42", capabilities: {
+        "native-tools": { status: "requires-qualification", source: "declared" },
+        chat: { status: "supported", source: "declared" },
+      },
+    };
+    const deployment: ModelDeployment = {
+      id: managedId, hostId: legacy.host.id, runtimeId: runtime.id,
+      artifactId: legacy.artifact.id, runtimeModelName: "devstral.gguf",
+      configurationRevision: 1, variantId: "q4",
+      configurationIdentity: '{"context":4096,"reasoning":false}',
+    };
+    const state = addConceptualRuntime(original, runtime, legacy.host, legacy.artifact, deployment);
+    const fabric = reconcileLocalComputeFabric(state);
+    const observation = observed();
+    const scope = deploymentQualificationScope(fabric, managedId, observation, at)!;
+    const receipt: DeploymentQualificationReceipt = {
+      version: 1, scope, capability: "native-tools",
+      status: "verified", verifiedAt: at - 5_000, expiresAt: at + 60_000,
+    };
+    return { state, fabric, observation, receipt };
+  }
+
+  it("accepts only an explicitly scoped, fresh deployment receipt while retaining proven legacy Ollama", () => {
+    const { state, fabric, observation, receipt } = setup();
+    expect(deploymentQualificationReceiptSchema.safeParse(receipt).success).toBe(true);
+    expect(deploymentQualificationState(fabric, managedId, "native-tools", observation, undefined, at))
+      .toBe("Unverified");
+    expect(deploymentCapabilityQualified(fabric, managedId, "native-tools", observation, undefined, at))
+      .toBe(false);
+    expect(deploymentQualificationState(fabric, managedId, "native-tools", observation, receipt, at))
+      .toBe("Verified");
+    expect(deploymentCapabilityQualified(fabric, managedId, "native-tools", observation, receipt, at))
+      .toBe(true);
+    expect(toolVerificationState(state, state.profiles[0])).toBe("Verified");
+    expect(acceptsLegacyDeploymentQualification(state, state.profiles[0])).toBe(true);
+    // A migrated Ollama tool receipt does not become a managed-runtime receipt.
+    expect(deploymentQualificationState(fabric, managedId, "native-tools",
+      observation, state.profiles[0].toolVerification as unknown as DeploymentQualificationReceipt, at))
+      .toBe("Stale");
+  });
+
+  it.each([
+    ["host", (f: LocalComputeFabric, o: DeploymentRuntimeObservation) => {
+      const hostId = "replaced-host";
+      f.hosts.find(h => h.id === secondaryId)!.id = hostId;
+      f.runtimes.find(r => r.id === o.runtimeId)!.hostId = hostId;
+      f.deployments.find(d => d.id === managedId)!.hostId = hostId;
+    }],
+    ["runtime", (f: LocalComputeFabric, o: DeploymentRuntimeObservation) => {
+      const id = "replacement-managed-runtime";
+      f.runtimes.find(r => r.id === o.runtimeId)!.id = id;
+      f.hosts.find(h => h.id === secondaryId)!.runtimeIds =
+        f.hosts.find(h => h.id === secondaryId)!.runtimeIds.map(v => v === o.runtimeId ? id : v);
+      f.deployments.find(d => d.id === managedId)!.runtimeId = id;
+      o.runtimeId = id;
+    }],
+    ["runtime type", (f: LocalComputeFabric, o: DeploymentRuntimeObservation) => {
+      f.runtimes.find(r => r.id === o.runtimeId)!.type = "new-engine";
+    }],
+    ["runtime configuration", (f: LocalComputeFabric, o: DeploymentRuntimeObservation) => {
+      f.runtimes.find(r => r.id === o.runtimeId)!.configurationRevision = 2;
+      f.deployments.find(d => d.id === managedId)!.configurationRevision = 2;
+      o.configurationRevision = 2;
+    }],
+    ["artifact", (f: LocalComputeFabric) => {
+      f.artifacts.find(a => a.digest === digest)!.digest = "new-artifact-digest";
+    }],
+    ["artifact identifier", (f: LocalComputeFabric) => {
+      const artifact = f.artifacts.find(a => a.digest === digest)!;
+      artifact.id = "replacement-artifact";
+      f.deployments.find(d => d.id === managedId)!.artifactId = artifact.id;
+    }],
+    ["runtime version", (f: LocalComputeFabric, o: DeploymentRuntimeObservation) => {
+      f.runtimes.find(r => r.id === o.runtimeId)!.version = "2.0.0";
+      o.version = "2.0.0";
+    }],
+    ["runtime epoch", (f: LocalComputeFabric, o: DeploymentRuntimeObservation) => {
+      f.runtimes.find(r => r.id === o.runtimeId)!.runtimeEpoch = "boot-b";
+      o.epoch = "boot-b";
+    }],
+    ["process identity", (f: LocalComputeFabric, o: DeploymentRuntimeObservation) => {
+      f.runtimes.find(r => r.id === o.runtimeId)!.processIdentity = "process-43";
+    }],
+    ["configured behavior", (f: LocalComputeFabric) => {
+      f.deployments.find(d => d.id === managedId)!.configurationIdentity = '{"context":8192,"reasoning":true}';
+    }],
+    ["model name", (f: LocalComputeFabric) => {
+      f.deployments.find(d => d.id === managedId)!.runtimeModelName = "other.gguf";
+    }],
+    ["variant", (f: LocalComputeFabric) => {
+      f.deployments.find(d => d.id === managedId)!.variantId = "q8";
+    }],
+  ] as const)("withdraws a previous receipt on %s change", (_kind, mutate) => {
+    const { fabric, observation, receipt } = setup();
+    mutate(fabric, observation);
+    expect(deploymentQualificationState(fabric, managedId, "native-tools", observation, receipt, at))
+      .toBe("Stale");
+    expect(deploymentCapabilityQualified(fabric, managedId, "native-tools", observation, receipt, at))
+      .toBe(false);
+  });
+
+  it("never transfers a digest-identical receipt to a second deployment, runtime or host", () => {
+    const { fabric, observation, receipt } = setup();
+    const runtime = fabric.runtimes.find(r => r.id === observation.runtimeId)!;
+    const deployment = fabric.deployments.find(d => d.id === managedId)!;
+    const alternate = structuredClone(fabric);
+    alternate.runtimes.push({ ...runtime, id: "another-runtime" });
+    alternate.hosts.find(h => h.id === secondaryId)!.runtimeIds.push("another-runtime");
+    alternate.deployments.push({ ...deployment, id: "another-deployment", runtimeId: "another-runtime" });
+    const otherObservation = observed("another-runtime");
+    expect(deploymentQualificationState(alternate, "another-deployment", "native-tools",
+      otherObservation, receipt, at)).toBe("Stale");
+    const crossHost = structuredClone(fabric);
+    crossHost.hosts.push({
+      ...crossHost.hosts[0], id: "another-host", runtimeIds: ["remote-managed"],
+    });
+    crossHost.runtimes.push({ ...runtime, id: "remote-managed", hostId: "another-host" });
+    crossHost.deployments.push({ ...deployment, id: "remote-deployment",
+      hostId: "another-host", runtimeId: "remote-managed" });
+    expect(deploymentQualificationState(crossHost, "remote-deployment", "native-tools",
+      observed("remote-managed"), receipt, at)).toBe("Stale");
+  });
+
+  it("requires an online host/runtime, a current observation, fingerprinted artifact and explicit behavior", () => {
+    const { fabric, observation, receipt } = setup();
+    expect(deploymentQualificationState(fabric, managedId, "native-tools",
+      { ...observation, observedAt: at - 30_000 }, receipt, at)).toBe("Stale");
+    expect(deploymentQualificationState(fabric, managedId, "native-tools",
+      { ...observation, observedAt: at + 1 }, receipt, at)).toBe("Stale");
+    expect(deploymentQualificationState(fabric, managedId, "native-tools",
+      { ...observation, epoch: "surprise-restart" }, receipt, at)).toBe("Stale");
+    for (const mutate of [
+      (f: LocalComputeFabric) => { f.hosts[0].enabled = false; },
+      (f: LocalComputeFabric) => { f.runtimes.find(r => r.id === observation.runtimeId)!.health = "offline"; },
+      (f: LocalComputeFabric) => { delete f.artifacts.find(a => a.digest === digest)!.digest; },
+      (f: LocalComputeFabric) => { delete f.deployments.find(d => d.id === managedId)!.configurationIdentity; },
+      (f: LocalComputeFabric) => { f.deployments.find(d => d.id === managedId)!.configurationIdentity = " "; },
+    ]) {
+      const modified = structuredClone(fabric);
+      mutate(modified);
+      expect(deploymentQualificationState(modified, managedId, "native-tools", observation, receipt, at))
+        .toBe("Stale");
+    }
+  });
+
+  it("fails closed when persisted conceptual IDs are ambiguous", () => {
+    const { fabric, observation, receipt } = setup();
+    for (const duplicate of [
+      (f: LocalComputeFabric) => f.hosts.push({ ...f.hosts[0] }),
+      (f: LocalComputeFabric) => f.runtimes.push({ ...f.runtimes.find(r => r.id === observation.runtimeId)! }),
+      (f: LocalComputeFabric) => f.artifacts.push({ ...f.artifacts.find(a => a.digest === digest)! }),
+      (f: LocalComputeFabric) => f.deployments.push({ ...f.deployments.find(d => d.id === managedId)! }),
+    ]) {
+      const modified = structuredClone(fabric);
+      duplicate(modified);
+      expect(deploymentQualificationState(modified, managedId, "native-tools", observation, receipt, at))
+        .toBe("Stale");
+    }
+  });
+
+  it("rejects expired, malformed and capability-mismatched receipts, and respects runtime denial", () => {
+    const { fabric, observation, receipt } = setup();
+    expect(deploymentQualificationState(fabric, managedId, "native-tools",
+      observation, receipt, at + 60_001)).toBe("Stale");
+    expect(deploymentQualificationState(fabric, managedId, "chat", observation, receipt, at))
+      .toBe("Stale");
+    expect(deploymentQualificationState(fabric, managedId, "native-tools", observation,
+      { ...receipt, expiresAt: receipt.verifiedAt + 86_400_001 }, at)).toBe("Stale");
+    expect(deploymentQualificationState(fabric, managedId, "native-tools", observation,
+      { ...receipt, status: "incomplete" }, at)).toBe("Incomplete");
+    expect(deploymentQualificationState(fabric, managedId, "native-tools", observation,
+      { ...receipt, status: "unsupported" }, at)).toBe("Unsupported");
+    const denied = structuredClone(fabric);
+    denied.runtimes.find(r => r.id === observation.runtimeId)!.capabilities["native-tools"] =
+      { status: "unsupported", source: "observed" };
+    expect(deploymentQualificationState(denied, managedId, "native-tools", observation, receipt, at))
+      .toBe("Unsupported");
+    expect(deploymentCapabilityQualified(denied, managedId, "native-tools", observation, receipt, at))
+      .toBe(false);
   });
 });

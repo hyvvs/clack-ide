@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/tooltip";
 import { fmtShortcut, MOD_KEY } from "@/lib/platform";
 import { cn } from "@/lib/utils";
+import { invoke } from "@tauri-apps/api/core";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import {
   Add01Icon,
@@ -77,11 +78,17 @@ import { useChatStore } from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
 import { savedSelfHostedModelInfos, selfHostedPickerStatus, canonicalSelfHostedSelectionId, managedReconnectAvailable } from "@/modules/ai/lib/selfHostedModels";
-import { endpointBackend, resolveSelfHostedSelection, type SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import { resolveSelfHostedSelection, type SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { useSelfHostedInventory } from "@/modules/ai/hooks/useSelfHostedInventory";
 import { hasKeyForModel } from "@/modules/ai/store/chatStore";
 import { modelConnectionLabel } from "@/modules/ai/lib/connectionPresentation";
 import { chatConnectionSummary } from "@/modules/ai/lib/chatConnectionSummary";
+import { reconcileLocalComputeFabric } from "@/modules/ai/lib/localComputeFabric";
+import {
+  isManagedLocalSelectionId,
+  resolveManagedLocalSelection,
+  savedManagedLocalModelInfos,
+} from "@/modules/ai/lib/managedLocalModels";
 
 const PROVIDER_ICON = {
   openai: ChatGptIcon,
@@ -239,8 +246,73 @@ export function AiStatusBarControls() {
 
 type Tab = "all" | "favorites" | "recent";
 
+/** Read-only native observation. The persisted fabric has no authority to assert Ready. */
+export type ManagedPickerRuntimeStatus = {
+  installed: boolean;
+  state: string;
+  epoch?: string | null;
+  deploymentId?: string | null;
+  modelDigest?: string | null;
+};
+
+function readManagedPickerRuntimeStatus(value: unknown): ManagedPickerRuntimeStatus | null {
+  if (typeof value !== "object" || value === null) return null;
+  const status = value as Record<string, unknown>;
+  if (typeof status.installed !== "boolean" || typeof status.state !== "string") return null;
+  for (const field of ["epoch", "deploymentId", "modelDigest"]) {
+    if (status[field] !== undefined && status[field] !== null && typeof status[field] !== "string") return null;
+  }
+  return status as ManagedPickerRuntimeStatus;
+}
+
+async function queryManagedPickerRuntimeStatus(): Promise<ManagedPickerRuntimeStatus | null> {
+  try {
+    return readManagedPickerRuntimeStatus(await invoke<unknown>("managed_local_runtime_status"));
+  } catch {
+    // A missing native adapter is a normal not-installed case, never evidence of readiness.
+    return null;
+  }
+}
+
+async function queryManagedModelFilePresence(digest: string): Promise<boolean> {
+  try {
+    return await invoke<boolean>("managed_local_runtime_model_present", { digest }) === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Picker presentation; the provider's routing and admission checks remain authoritative. */
-export function modelPickerHostAvailability(selectionId: string, state: SelfHostedState) {
+export function modelPickerHostAvailability(
+  selectionId: string,
+  state: SelfHostedState,
+  observed?: ManagedPickerRuntimeStatus | null,
+  filePresence?: Record<string, boolean>,
+) {
+  if (isManagedLocalSelectionId(selectionId)) {
+    const managed = resolveManagedLocalSelection(state, selectionId);
+    if (managed.status !== "available" && managed.status !== "unavailable")
+      return { label: "Unavailable (registration changed)", disabled: true };
+    if (!managed.host.enabled || !managed.runtime.enabled)
+      return { label: "Registered · runtime disabled", disabled: true };
+    if (filePresence?.[managed.artifact.digest!] === false)
+      return { label: "Registered · model file missing", disabled: true };
+    if (!observed) return { label: "Registered · runtime status unknown", disabled: true };
+    if (!observed.installed) return { label: "Registered · not installed", disabled: true };
+    const phase = observed.state.toLowerCase();
+    if (phase === "ready") {
+      if (observed.deploymentId === managed.deployment.id &&
+          observed.modelDigest === managed.artifact.digest &&
+          typeof observed.epoch === "string" && observed.epoch.length > 0)
+        return { label: "Ready · Chat only", disabled: false };
+      return { label: "Registered · different deployment loaded", disabled: true };
+    }
+    const description: Record<string, string> = {
+      stopped: "stopped", starting: "starting", loading: "loading",
+      failed: "failed", offline: "offline",
+    };
+    return { label: `Registered · ${description[phase] ?? "runtime unavailable"}`, disabled: true };
+  }
   const target = resolveSelfHostedSelection(state, selectionId);
   if (target.status === "available" && target.endpoint.enabled === false)
     return { label: "Disabled in Settings", disabled: true };
@@ -252,31 +324,74 @@ export function modelPickerHostAvailability(selectionId: string, state: SelfHost
     : selfHostedPickerStatus(selectionId, state);
 }
 
-/** Group only managed Ollama models by stable endpoint identity, never by model label. */
-export function groupOllamaPickerModels(models: readonly ModelInfo[], state: SelfHostedState) {
+/** Present saved self-hosted selections by their fabric ownership, not a model tag or URL. */
+export function groupFabricPickerModels(models: readonly ModelInfo[], state: SelfHostedState) {
   const otherModels: ModelInfo[] = [];
-  const hostGroups: { endpointId: string; alias: string; address: string; models: ModelInfo[] }[] = [];
-  const byEndpointId = new Map<string, (typeof hostGroups)[number]>();
+  const hostGroups: {
+    hostId: string;
+    alias: string;
+    location: "local" | "remote" | "unknown";
+    runtimes: {
+      runtimeId: string;
+      label: string;
+      address: string;
+      models: ModelInfo[];
+    }[];
+  }[] = [];
+  const fabric = reconcileLocalComputeFabric(state);
+  const byHostId = new Map<string, (typeof hostGroups)[number]>();
   for (const model of models) {
-    // Migrated ollama-local is also a managed host selection. Non-Ollama
-    // static/cloud selections return not-managed and retain their old layout.
-    const target = resolveSelfHostedSelection(state, model.id);
-    if (target?.status !== "available" || endpointBackend(target.endpoint) !== "ollama" || target.endpoint.ssh) {
+    const managedSelection = isManagedLocalSelectionId(model.id)
+      ? resolveManagedLocalSelection(state, model.id) : null;
+    const conceptual = managedSelection?.status === "available" || managedSelection?.status === "unavailable"
+      ? managedSelection : undefined;
+    const target = conceptual ? undefined : resolveSelfHostedSelection(state, model.id);
+    if (!conceptual && target?.status !== "available") {
       otherModels.push(model);
       continue;
     }
-    let group = byEndpointId.get(target.endpoint.id);
-    if (!group) {
-      group = {
-        endpointId: target.endpoint.id,
-        alias: target.endpoint.alias,
-        address: target.endpoint.baseURL,
+    // A legacy selection remains profile-owned. Conceptual GGUF selections
+    // must match the exact deployment identity and are display-only.
+    const deployment = conceptual?.deployment ?? fabric.deployments.find(row =>
+      target?.status === "available" && row.profileId === target.profile.id && row.id === target.profile.id);
+    const runtime = fabric.runtimes.find(row => row.id === deployment?.runtimeId &&
+      row.hostId === deployment?.hostId);
+    const host = fabric.hosts.find(row => row.id === deployment?.hostId);
+    if (!deployment || !runtime || !host ||
+        !conceptual && (target?.status !== "available" ||
+          runtime.legacyEndpointId !== target.endpoint.id ||
+          deployment.runtimeModelName !== target.profile.transportModelId ||
+          deployment.configurationRevision !== target.endpoint.configurationRevision ||
+          runtime.configurationRevision !== target.endpoint.configurationRevision)) {
+      otherModels.push(model);
+      continue;
+    }
+    let hostGroup = byHostId.get(host.id);
+    if (!hostGroup) {
+      hostGroup = {
+        hostId: host.id,
+        alias: host.displayName,
+        location: host.location,
+        runtimes: [],
+      };
+      hostGroups.push(hostGroup);
+      byHostId.set(host.id, hostGroup);
+    }
+    let runtimeGroup = hostGroup.runtimes.find(row => row.runtimeId === runtime.id);
+    if (!runtimeGroup) {
+      runtimeGroup = {
+        runtimeId: runtime.id,
+        label: conceptual ? "Clack Managed" : runtime.displayName,
+        // An SSH endpoint's synthetic URL is never a user-facing host address.
+        address: conceptual ? "Registered local runtime"
+          : target?.status === "available" && target.endpoint.ssh
+            ? "Managed SSH connection"
+            : target?.status === "available" ? target.endpoint.baseURL : "",
         models: [],
       };
-      hostGroups.push(group);
-      byEndpointId.set(group.endpointId, group);
+      hostGroup.runtimes.push(runtimeGroup);
     }
-    group.models.push(model);
+    runtimeGroup.models.push(model);
   }
   return { otherModels, hostGroups };
 }
@@ -294,6 +409,48 @@ export function ModelDropdown({
   const resetSwitch = modelSwitch.reset;
   const [open, setOpen] = useState(false);
   useSelfHostedInventory(open);
+  const selfHosted = usePreferencesStore((s) => s.selfHostedInference);
+  const managedModels = useMemo(() => savedManagedLocalModelInfos(selfHosted), [selfHosted]);
+  const [managedRuntimeStatus, setManagedRuntimeStatus] = useState<ManagedPickerRuntimeStatus | null>(null);
+  const [managedFilePresence, setManagedFilePresence] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!open || managedModels.length === 0) {
+      setManagedRuntimeStatus(null);
+      return;
+    }
+    let active = true;
+    const refresh = async () => {
+      const observed = await queryManagedPickerRuntimeStatus();
+      if (active) setManagedRuntimeStatus(observed);
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 2500);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [open, managedModels.length]);
+  useEffect(() => {
+    if (!open || managedModels.length === 0) {
+      setManagedFilePresence({});
+      return;
+    }
+    let active = true;
+    const refresh = async () => {
+      const statuses = await Promise.all(managedModels.map(async model => {
+        const found = resolveManagedLocalSelection(selfHosted, model.id);
+        if (found.status !== "available" && found.status !== "unavailable") return null;
+        const digest = found.artifact.digest!;
+        return [digest, await queryManagedModelFilePresence(digest)] as const;
+      }));
+      if (active) setManagedFilePresence(Object.fromEntries(statuses.filter(
+        (entry): entry is readonly [string, boolean] => entry !== null,
+      )));
+    };
+    void refresh();
+    const timer = setInterval(() => { void refresh(); }, 8_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [open, managedModels, selfHosted]);
   const previousTargetId = useRef(targetId);
   useEffect(() => {
     if (
@@ -327,8 +484,7 @@ export function ModelDropdown({
   const favoriteIds = usePreferencesStore((s) => s.favoriteModelIds);
   const recentIds = usePreferencesStore((s) => s.recentModelIds);
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
-  const selfHosted = usePreferencesStore((s) => s.selfHostedInference);
-  const selectedHostDisabled = modelPickerHostAvailability(selected, selfHosted)?.label === "Disabled in Settings";
+  const selectedHostDisabled = modelPickerHostAvailability(selected, selfHosted, managedRuntimeStatus)?.label === "Disabled in Settings";
   const pickerFavorites = useMemo(() => favoriteIds.map(id => canonicalSelfHostedSelectionId(id, selfHosted)), [favoriteIds, selfHosted]);
   const pickerRecents = useMemo(() => recentIds.map(id => canonicalSelfHostedSelectionId(id, selfHosted)), [recentIds, selfHosted]);
   const pickerSelection = canonicalSelfHostedSelectionId(selected, selfHosted);
@@ -343,8 +499,25 @@ export function ModelDropdown({
   const openaiCompatibleModelId = usePreferencesStore((s) => s.openaiCompatibleModelId);
   const openrouterModelId = usePreferencesStore((s) => s.openrouterModelId);
   const connectionSettings = { customEndpoints, savedProviderModels, selfHostedInference: selfHosted, lmstudioBaseURL, lmstudioModelId, mlxBaseURL, mlxModelId, ollamaBaseURL, ollamaModelId, openaiCompatibleBaseURL, openaiCompatibleModelId, openrouterModelId };
+  const destinationFor = (modelId: string) => {
+    const managed = resolveManagedLocalSelection(selfHosted, modelId);
+    if (managed.status === "available" || managed.status === "unavailable") {
+      // Same-name registrations expose their full digest and exact configuration
+      // in row labels/tooltips, without implying an HTTP inference endpoint.
+      return `GGUF ${managed.artifact.digest} · ${managed.deployment.configurationIdentity}`;
+    }
+    const target = resolveSelfHostedSelection(selfHosted, modelId);
+    if (target.status === "available" && target.endpoint.ssh) {
+      const ssh = target.endpoint.ssh;
+      return `SSH ${ssh.host}:${ssh.port} → ${ssh.remoteHost}:${ssh.remotePort}`;
+    }
+    return modelConnectionLabel(modelId, connectionSettings);
+  };
   const owner = useChatStore(s => s.sessions.find(item => item.id === sessionId));
-  const destination = owner ? chatConnectionSummary(owner, connectionSettings).destination : modelConnectionLabel(selected, connectionSettings);
+  const ownerConnection = owner ? chatConnectionSummary(owner, connectionSettings) : null;
+  // During a running request, display its captured route. For idle chats the
+  // selected connection's SSH details are more meaningful than its virtual URL.
+  const destination = ownerConnection?.running ? ownerConnection.destination : destinationFor(selected);
   const currentState = useMemo(() => {
     try {
       return {
@@ -421,10 +594,11 @@ export function ModelDropdown({
       ...epModelInfos,
     ]
       .filter((m) => !managed.has(m.id))
-      .concat(hosted);
-  }, [epModelInfos, savedModelInfos, selfHosted]);
+      .concat(hosted, managedModels);
+  }, [epModelInfos, savedModelInfos, selfHosted, managedModels]);
 
   const COMPAT_PROVIDER_ID = "__compat__";
+  const MANAGED_PROVIDER_ID = "__managed__";
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -442,6 +616,8 @@ export function ModelDropdown({
       pool = pool.filter(
         (m) => isCompatModelId(m.id) || m.id.startsWith("self-hosted:"),
       );
+    } else if (activeProvider === MANAGED_PROVIDER_ID) {
+      pool = pool.filter(m => isManagedLocalSelectionId(m.id));
     } else if (activeProvider !== null) {
       pool = pool.filter((m) => m.provider === activeProvider);
     }
@@ -451,21 +627,38 @@ export function ModelDropdown({
     return pool;
   }, [activeProvider, allModels, pickerFavorites, pickerRecents, search, tab]);
 
-  const groups = useMemo(() => groupOllamaPickerModels(filtered, selfHosted), [filtered, selfHosted]);
+  const groups = useMemo(() => groupFabricPickerModels(filtered, selfHosted), [filtered, selfHosted]);
   const renderModel = (m: ModelInfo) => (
     <ModelRow
       key={m.id}
       model={m}
-      destination={modelConnectionLabel(m.id, connectionSettings)}
+      destination={destinationFor(m.id)}
       selected={m.id === pickerSelection}
       disabled={locked}
-      status={modelPickerHostAvailability(m.id, selfHosted)}
-      hasKey={m.id.startsWith("self-hosted:")
+      status={modelPickerHostAvailability(m.id, selfHosted, managedRuntimeStatus, managedFilePresence)}
+      hasKey={isManagedLocalSelectionId(m.id) || (m.id.startsWith("self-hosted:")
         ? hasKeyForModel(m.id)
-        : isCompatModelId(m.id) || hasKeyFor(m.provider)}
+        : isCompatModelId(m.id) || hasKeyFor(m.provider))}
       favorite={pickerFavorites.includes(m.id)}
       showProviderIcon={activeProvider === null}
       onPick={() => {
+        if (isManagedLocalSelectionId(m.id)) {
+          // A visible Ready status can turn stale before the click. Recheck
+          // native state before entering the ordinary model-switch admission.
+          const selection = resolveManagedLocalSelection(selfHosted, m.id);
+          if (selection.status !== "available" && selection.status !== "unavailable") return;
+          const digest = selection.artifact.digest!;
+          void Promise.all([
+            queryManagedPickerRuntimeStatus(),
+            queryManagedModelFilePresence(digest),
+          ]).then(([observed, present]) => {
+            setManagedRuntimeStatus(observed);
+            setManagedFilePresence(current => ({ ...current, [digest]: present }));
+            if (!modelPickerHostAvailability(m.id, selfHosted, observed, { [digest]: present })?.disabled)
+              void setSelected(m.id);
+          });
+          return;
+        }
         if (m.id.startsWith("self-hosted:")
           ? !hasKeyForModel(m.id)
           : !isCompatModelId(m.id) && !hasKeyFor(m.provider)) {
@@ -677,6 +870,14 @@ export function ModelDropdown({
                     onClick={() => setActiveProvider(COMPAT_PROVIDER_ID)}
                   />
                 )}
+                {managedModels.length > 0 && (
+                  <ProviderPill
+                    icon={CpuIcon}
+                    title="Clack Managed"
+                    active={activeProvider === MANAGED_PROVIDER_ID}
+                    onClick={() => setActiveProvider(MANAGED_PROVIDER_ID)}
+                  />
+                )}
               </div>
 
               {/* Models list */}
@@ -691,12 +892,19 @@ export function ModelDropdown({
                     <span>OpenAI Compatible</span>
                   </div>
                 )}
+                {activeProvider === MANAGED_PROVIDER_ID && (
+                  <div className="px-3 pt-1 pb-1.5 text-[11px] font-medium text-muted-foreground">
+                    Clack Managed · local GGUF
+                  </div>
+                )}
                 {activeProvider !== null &&
-                activeProvider !== COMPAT_PROVIDER_ID ? (
+                activeProvider !== COMPAT_PROVIDER_ID &&
+                activeProvider !== MANAGED_PROVIDER_ID ? (
                   <ProviderHeader providerId={activeProvider as ProviderId} />
                 ) : null}
                 {activeProvider !== null &&
                 activeProvider !== COMPAT_PROVIDER_ID &&
+                activeProvider !== MANAGED_PROVIDER_ID &&
                 !hasKeyFor(activeProvider as ProviderId) ? (
                   <ProviderConfigureCTA
                     providerId={activeProvider as ProviderId}
@@ -715,15 +923,26 @@ export function ModelDropdown({
                     {groups.otherModels.map(renderModel)}
                     {groups.hostGroups.map((host) => (
                       <div
-                        key={host.endpointId}
+                        key={host.hostId}
                         role="group"
-                        aria-label={`Ollama host ${host.alias} at ${host.address}`}
+                        aria-label={`Host ${host.alias} (${host.location})`}
                       >
-                        <div className="flex min-w-0 flex-col gap-0.5 border-t border-border/60 px-3 pb-1 pt-2 text-[11px] text-muted-foreground">
-                          <span className="font-semibold text-foreground/85">Ollama · {host.alias}</span>
-                          <span className="truncate font-mono text-[10px]" title={host.address}>{host.address}</span>
+                        <div className="flex min-w-0 items-center justify-between gap-2 border-t border-border/60 px-3 pb-1 pt-2 text-[11px] text-muted-foreground">
+                          <span className="min-w-0 truncate font-semibold text-foreground/85">Host · {host.alias}</span>
+                          {host.location !== "unknown" && (
+                            <span className="shrink-0 text-[10px]">{host.location === "local" ? "This PC" : "Remote"}</span>
+                          )}
                         </div>
-                        {host.models.map(renderModel)}
+                        {host.runtimes.map(runtime => (
+                          <div key={runtime.runtimeId} role="group" aria-label={`Runtime ${runtime.label} on ${host.alias}`}>
+                            <div className="flex min-w-0 flex-col gap-0.5 px-4 pb-1 pt-1 text-[11px] text-muted-foreground">
+                              <span className="font-medium text-foreground/80">Runtime · {runtime.label}</span>
+                              <span className="truncate font-mono text-[10px]" title={runtime.address}>{runtime.address}</span>
+                              <span className="text-[10px]">Deployments</span>
+                            </div>
+                            {runtime.models.map(renderModel)}
+                          </div>
+                        ))}
                       </div>
                     ))}
                   </>

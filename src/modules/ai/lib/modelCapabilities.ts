@@ -10,6 +10,11 @@ import {
   type SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
 import { selfHostedCapabilities } from "@/modules/ai/lib/selfHostedCapabilities";
+import {
+  isManagedLocalSelectionId,
+  managedLocalChatDeclared,
+  resolveManagedLocalSelection,
+} from "@/modules/ai/lib/managedLocalModels";
 import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
 
 export type CapabilitySupport = "supported" | "unsupported" | "unknown";
@@ -60,6 +65,17 @@ export function resolveModelInputCapabilities(
     evidence?: ReportedContextEvidence;
   },
 ): ModelInputCapabilities {
+  if (isManagedLocalSelectionId(selectionId)) {
+    const managed = resolveManagedLocalSelection(state, selectionId);
+    return {
+      text: managedLocalChatDeclared(managed) ? "supported" : "unsupported",
+      image: "unknown",
+      document: "unknown",
+      tools: "unsupported",
+      audio: "unknown",
+      evidence: "unknown-model",
+    };
+  }
   const target = state && resolveSelfHostedSelection(state, selectionId);
   if (target?.status === "available")
     return selfHostedCapabilities(

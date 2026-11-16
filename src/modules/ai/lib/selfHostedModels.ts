@@ -14,6 +14,7 @@ import type {
   CustomEndpointKeys,
 } from "@/modules/ai/lib/keyring";
 import { resolveModelDeployment } from "@/modules/ai/lib/localComputeFabric";
+import { managedLocalModelInfo } from "@/modules/ai/lib/managedLocalModels";
 import { compatibleRuntimeEndpoint, resolveRuntimeProviderTransport } from "@/modules/ai/lib/localRuntimeAdapters";
 
 export const SELF_HOSTED_BACKENDS = {
@@ -72,6 +73,8 @@ export function selfHostedModelInfo(
   selectionId: string,
   state?: SelfHostedState,
 ): ModelInfo | null {
+  const managed = managedLocalModelInfo(selectionId, state);
+  if (managed) return managed;
   if (!state) {
     if (selectionId.startsWith("self-hosted:"))
       throw new Error("Model unavailable");

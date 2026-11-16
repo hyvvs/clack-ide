@@ -1,5 +1,7 @@
 import type { ProviderId } from "@/modules/ai/config";
 import type { SelfHostedEndpoint } from "@/modules/ai/lib/selfHostedProfiles";
+import type { ManagedLocalRouteIdentity, ManagedLocalNativeRoute } from "@/modules/ai/lib/managedLocalRuntime";
+import { assertManagedLocalNativeRoute } from "@/modules/ai/lib/managedLocalRuntime";
 import type {
   ResolvedModelDeployment, RuntimeCapability,
   RuntimeCapabilityStatus,
@@ -17,6 +19,28 @@ export interface RuntimeAdapter {
   resolve(target: ResolvedModelDeployment): RuntimeProviderTransport;
   capabilities(connected?: boolean, version?: string): Record<string, RuntimeCapability>;
 }
+
+/** LM2D: conceptual managed GGUF has no legacy endpoint/profile. Its own
+ * adapter requires the native-verified process route, never a generic URL. */
+export const ManagedLlamaRuntimeAdapter = {
+  type: "clack-managed-llama.cpp" as const,
+  resolve(deployment: ManagedLocalRouteIdentity, nativeRoute: ManagedLocalNativeRoute): RuntimeProviderTransport {
+    assertManagedLocalNativeRoute(nativeRoute);
+    const digest = deployment.artifactDigest;
+    if (!/^sha256:[a-f0-9]{64}$/.test(digest) ||
+        nativeRoute.modelAlias !== `clack-${digest.slice(7, 23)}` ||
+        !deployment.deploymentId || !deployment.deploymentIdentity ||
+        !Number.isSafeInteger(deployment.configurationRevision) ||
+        deployment.configurationRevision < 1) {
+      throw new Error("Native managed runtime route does not match the exact GGUF deployment");
+    }
+    return {
+      providerId: "openai-compatible",
+      modelName: nativeRoute.modelAlias,
+      baseURL: nativeRoute.baseUrl,
+    };
+  },
+};
 
 export function compatibleRuntimeEndpoint(endpoint: SelfHostedEndpoint) {
   const url = new URL(endpoint.baseURL);

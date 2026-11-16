@@ -16,6 +16,7 @@ import {
   selfHostedModelInfo,
   selfHostedTransportIdentity,
 } from "@/modules/ai/lib/selfHostedModels";
+import { managedLocalTransportIdentity } from "@/modules/ai/lib/managedLocalModels";
 import {
   freshProviderModelEvidence,
   normalizeProviderModelEvidence,
@@ -49,6 +50,12 @@ export type ModelTransportIdentity = {
   providerEvidence?: ProviderModelEvidence;
   endpointBaseURL?: string;
   customEndpointId?: string;
+  managedLocal?: {
+    deploymentId: string;
+    deploymentIdentity: string;
+    artifactDigest: string;
+    configurationRevision: number;
+  };
   selfHosted?: {
     endpointId: string;
     profileId: string;
@@ -322,6 +329,11 @@ export function resolveModelTransportIdentity(
     openrouterModelId?: string;
   } = {},
 ): ModelTransportIdentity {
+  const managed = managedLocalTransportIdentity(
+    selectionId,
+    config.selfHostedInference,
+  );
+  if (managed) return managed;
   const hosted = selfHostedTransportIdentity(
     selectionId,
     config.selfHostedInference,

@@ -28,6 +28,7 @@ import { selfHostedCapabilities } from "@/modules/ai/lib/selfHostedCapabilities"
 import { effectiveFallback } from "@/modules/ai/lib/inferenceFallback";
 import { modelOnboarding } from "@/modules/ai/lib/modelOnboarding";
 import { ModelOnboardingDetails } from "@/settings/components/ModelOnboardingDetails";
+import { remoteSshUrl } from "@/modules/ai/lib/remoteSsh";
 
 vi.mock("@/modules/ai/store/chatStore", async (original) => {
   const actual =
@@ -165,6 +166,43 @@ afterEach(() => {
 });
 
 describe("discovery-to-normal-picker persistence boundaries", () => {
+  it("shows selectable deployments beneath their host and runtime in the normal picker", () => {
+    const local = saveSelfHostedModel(fresh(), endpoint.id, "local-model:latest", "Local deployment");
+    const studio = createSelfHostedEndpoint({
+      alias: "Studio computer", baseURL: "http://192.0.2.25:1234/", backendHint: "lmstudio",
+    }, "picker-studio-host", 1);
+    const state = saveSelfHostedModel({ ...local, endpoints: [...local.endpoints, studio] },
+      studio.id, "studio-model:latest", "Studio deployment");
+    const html = picker(state);
+    expect(html).toContain('role="group" aria-label="Host Development PC (local)"');
+    expect(html).toContain('role="group" aria-label="Runtime Ollama on Development PC"');
+    expect(html).toContain('role="group" aria-label="Host Studio computer (remote)"');
+    expect(html).toContain('role="group" aria-label="Runtime Studio computer on Studio computer"');
+    expect(html).toContain("Host · Development PC");
+    expect(html).toContain("Runtime · Ollama");
+    expect(html).toContain("Deployments");
+    expect(html).toContain("Local deployment");
+    expect(html).toContain("Studio deployment");
+    expect(html).toContain("Cloud connection");
+    expect(html).not.toContain("Ollama · Development PC");
+  });
+  it("shows the configured remote SSH host instead of a synthetic transport URL", () => {
+    const id = "ssh-picker-view";
+    const remote = createSelfHostedEndpoint({
+      alias: "Remote Ollama",
+      baseURL: remoteSshUrl(id),
+      backendHint: "ollama",
+      allowPrivateNetwork: true,
+      ssh: { host: "compute.example.test", username: "developer", port: 2222,
+        keyPath: null, remoteHost: "127.0.0.1", remotePort: 11434 },
+    }, id, 1);
+    const state = saveSelfHostedModel({ ...fresh(), endpoints: [remote] }, id, "model:latest");
+    const html = picker(state, selfHostedSelectionId(state.profiles[0]));
+    expect(html).toContain('aria-label="Host Remote Ollama (remote)"');
+    expect(html).toContain("Managed SSH connection");
+    expect(html).toContain("SSH compute.example.test:2222");
+    expect(html).not.toContain("clack-ssh.invalid");
+  });
   it("renders normal Automatic settings and truthful advanced details for an unsaved discovered model", () => {
     const state = saveInventory(inventory());
     usePreferencesStore.setState({ selfHostedInference: state });

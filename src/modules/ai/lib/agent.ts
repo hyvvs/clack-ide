@@ -30,6 +30,9 @@ import type { ToolVerification } from "@/modules/ai/lib/toolVerificationSchema";
 import { compactModelMessagesDetailed } from "./compact";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
+import { isManagedLocalSelectionId, managedLocalTransportIdentity } from "@/modules/ai/lib/managedLocalModels";
+import { admittedManagedLocalRoute, assertCurrentManagedLocalRoute } from "@/modules/ai/lib/managedLocalRuntime";
+import { ManagedLlamaRuntimeAdapter } from "@/modules/ai/lib/localRuntimeAdapters";
 import { emitSelfHostedInferencePhase, selfHostedInferencePhaseObserved } from "./inferenceDiagnosticCorrelation";
 import { cancelSessionInference, type InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import { emitPreparationPhase } from "@/modules/ai/lib/preparationLifecycle";
@@ -153,6 +156,8 @@ function ellipsize(s: string, max: number): string {
 }
 
 export type BuildModelOptions = {
+  /** Trusted native-CAS epoch and process gate, checked for every managed request. */
+  managedRuntimeGuard?: () => Promise<void>;
   requiredRuntimeContext?: number;
   requiredContinuationProof?: ToolVerification;
   onOllamaRouteDecision?: (decision: OllamaRouteDecision) => void;
@@ -284,7 +289,8 @@ export async function buildLanguageModel(
     options.requiredRuntimeContext,
     options.requiredContinuationProof,
   ]);
-  const hit = options.inferenceScope || options.calibration ? undefined : modelCache.get(cacheKey);
+  const hit = options.inferenceScope || options.calibration || options.managedRuntimeGuard
+    ? undefined : modelCache.get(cacheKey);
   if (hit) return hit;
 
   let built: LanguageModel;
@@ -432,6 +438,14 @@ export async function buildLanguageModel(
       const { createOpenAICompatible } = await import(
         "@ai-sdk/openai-compatible"
       );
+      const hostedFetch = createProxyFetch({
+        allowPrivateNetwork: options.allowPrivateNetwork === true,
+        selfHosted: true,
+        scope: options.inferenceScope,
+        admission,
+        preflight,
+        onAdmission: calibration?.observe,
+      });
       built = createOpenAICompatible({
         name: "openai-compatible",
         baseURL: compatURL,
@@ -440,14 +454,12 @@ export async function buildLanguageModel(
           : epKey || key || undefined,
         fetch: options.selfHosted
           ? verifiedProviderFetch(
-              createProxyFetch({
-                allowPrivateNetwork: options.allowPrivateNetwork === true,
-                selfHosted: true,
-                scope: options.inferenceScope,
-                admission,
-                preflight,
-                onAdmission: calibration?.observe,
-              }),
+              options.managedRuntimeGuard
+                ? async (input, init) => {
+                    await options.managedRuntimeGuard!();
+                    return hostedFetch(input, init);
+                  }
+                : hostedFetch,
               options.inferenceScope?.onResponseBody,
             )
           : scopedLocalFetch,
@@ -497,7 +509,8 @@ export async function buildLanguageModel(
     }
   }
   built = preflight.wrap(calibration ? calibration.wrap(built) : built);
-  if (!options.inferenceScope && !options.calibration) modelCache.set(cacheKey, built);
+  if (!options.inferenceScope && !options.calibration && !options.managedRuntimeGuard)
+    modelCache.set(cacheKey, built);
   return built;
 }
 
@@ -532,6 +545,44 @@ export function buildConfiguredLanguageModel(
   keys: ProviderKeys,
   local: LocalProviderConfig = {},
 ): Promise<LanguageModel> {
+  const managed = managedLocalTransportIdentity(modelId, local.selfHostedInference);
+  if (managed?.managedLocal || local.capturedModelIdentity?.managedLocal) {
+    const captured = local.capturedModelIdentity;
+    if (!managed?.managedLocal || !local.selfHostedInference ||
+        (captured && JSON.stringify(captured) !== JSON.stringify(managed))) {
+      throw new Error(
+        "The managed model deployment changed or is missing. No inference was sent.",
+      );
+    }
+    if (local.reasoning && local.reasoning.choice !== "automatic" &&
+        local.reasoning.choice !== "none") {
+      throw new Error(
+        "Explicit reasoning controls are not qualified for this managed GGUF deployment.",
+      );
+    }
+    // No model tag, persisted URL, or same-name Ollama fallback can bypass
+    // the Rust-owned process+artifact+epoch gate. The key is runtime-ephemeral.
+    return admittedManagedLocalRoute(managed.managedLocal).then(route => {
+      const transport = ManagedLlamaRuntimeAdapter.resolve(managed.managedLocal!, route);
+      return buildLanguageModel(transport.providerId, keys, transport.modelName, {
+        selfHosted: true,
+        selfHostedInference: local.selfHostedInference,
+        allowPrivateNetwork: true,
+        inferenceScope: local.inferenceScope,
+        // The native alias is an execution identity, not another reasoning
+        // model. No explicit reasoning protocol is installed for llama.cpp.
+        reasoning: undefined,
+        admission: endpointInferenceAdmission(
+          "clack-managed", managed.managedLocal!.deploymentId,
+          local.selfHostedInference,
+        ),
+        openaiCompatibleBaseURL: transport.baseURL,
+        managedRuntimeGuard: () => assertCurrentManagedLocalRoute(
+          managed.managedLocal!, route,
+        ),
+      }, route.apiKey);
+    });
+  }
   if (local.capturedModelIdentity) {
     if (local.capturedModelIdentity.selfHosted && !local.selfHostedInference) {
       throw new Error(
@@ -869,6 +920,18 @@ export type RunAgentOptions = {
   abortSignal?: AbortSignal;
 };
 
+/** Chat uses the same stream pipeline as Agent, but only Agent may request
+ * native tools. Managed llama.cpp has no deployment-qualified native tools. */
+export function managedLocalRequiresAgentQualification(
+  modelId: string,
+  permissionSource: string,
+  mandatoryTools: boolean,
+  peerReplyOnly: boolean,
+): boolean {
+  return isManagedLocalSelectionId(modelId) &&
+    (mandatoryTools || (!peerReplyOnly && permissionSource !== "chat-only"));
+}
+
 export async function runAgentStream(opts: RunAgentOptions) {
   let pinnedAutomaticContinuationContext: number | undefined;
   let pinnedAutomaticContinuationProof: ToolVerification | undefined;
@@ -884,6 +947,20 @@ export async function runAgentStream(opts: RunAgentOptions) {
   inferenceScope.validateEvidence = opts.validateRouting ?? inferenceScope.validateEvidence;
   inferenceScope.validateFallback = opts.validateRouting;
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
+  if (managedLocalRequiresAgentQualification(
+    modelId,
+    isManagedLocalSelectionId(modelId)
+      ? resolveCurrentAgentPermission("read_file", {}, opts.toolContext).source
+      : "chat-only",
+    Boolean(opts.mandatoryTools?.length),
+    opts.toolContext.isPeerReplyOnly?.() === true,
+  )) {
+    // Ordinary Chat also uses runAgentStream. Only reject tool-capable Agent,
+    // not Chat-only streams. JSON/grammar is not native tool qualification.
+    throw new Error(
+      "Automatic Agent is unavailable for this managed GGUF deployment without verified native tool calling. Use Chat.",
+    );
+  }
   if (opts.reasoning?.unresolvedExplicitChoice)
     throw new Error("The saved explicit reasoning choice needs revalidation. Refresh model metadata or select the choice again. Automatic Agent recovery was not used.");
   if (opts.selfHostedInference && !opts.recovery && !opts.logicalContinuation && !opts.toolContext.isPeerReplyOnly?.() &&
@@ -1052,6 +1129,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
       }
     : opts.toolContext;
   const availableTools =
+    isManagedLocalSelectionId(modelId) ||
     opts.toolContext.isPeerReplyOnly?.() ||
     opts.inputCapabilities?.tools === "unsupported"
       ? {}
