@@ -12,8 +12,10 @@ import {
   assessDeploymentSuitability,
   contextTargets,
   WORKLOADS,
+  type ScopedMeasuredPerformance,
   type Workload,
 } from "@/modules/ai/lib/deploymentSuitability";
+import { deploymentMeasurementPanel } from "@/modules/ai/lib/deploymentMeasurement";
 import {
   type EvidenceValue,
   type GpuHardware,
@@ -348,6 +350,38 @@ export function DeploymentSuitabilityControl({
         )
       : null;
   const tiers = resource ? contextTargets(resource) : [];
+  // LM6 current-scope matching checks the FULL procedure, epoch, artifact,
+  // host, runtime, context and backend before showing a measured claim.
+  // Historic data is left to the Measurement panel, never promoted here.
+  const measured = resolved && resource
+    ? deploymentMeasurementPanel(
+        { ...state, fabric: resolved.fabric }, resolved.deploymentId,
+        resolved.observation, resource.configuredContext.value,
+        resource.executionPlacement.value ?? "Unknown", now)
+    : null;
+  const currentLm6 = measured?.current;
+  const measuredAttempts = currentLm6?.attempts.filter(a =>
+    !!a.requestId && a.terminalObserved && a.result === "passed") ?? [];
+  const speedEvidence = measuredAttempts.find(a =>
+    a.usage.generationTokensPerSecond.value !== null)?.usage.generationTokensPerSecond;
+  const perf: ScopedMeasuredPerformance | undefined =
+    currentLm6 && resolved?.observation && resource && measuredAttempts.length
+      ? {
+          source: "clack-native-measured",
+          deploymentId: resolved.deploymentId,
+          runtimeId: resource.runtimeId,
+          runtimeEpoch: resolved.observation.epoch,
+          configurationRevision: resolved.observation.configurationRevision,
+          artifactDigest: resource.artifactDigest,
+          configuredContext: resource.configuredContext.value,
+          placement: resource.executionPlacement.value,
+          observedAt: currentLm6.endedAt,
+          sampleCount: measuredAttempts.length,
+          reliabilityFraction: currentLm6.reliability.completionFraction,
+          ...(speedEvidence?.value !== null && speedEvidence?.value !== undefined
+            ? { generationTokensPerSecond: speedEvidence.value } : {}),
+        }
+      : undefined;
   const selectedContext =
     tiers.find((row) => row.tokens === context)?.tokens ?? tiers[0]?.tokens;
   const calculate = (targetWorkload: Workload, tokens: number) =>
@@ -360,6 +394,7 @@ export function DeploymentSuitabilityControl({
           workload: targetWorkload,
           context: tokens,
           observation: resolved.observation,
+          measuredPerformance: perf,
           // Native Ready is not transferable to an Ollama host, another
           // deployment/digest/epoch or a hypothetical context configuration.
           observedLoaded:
@@ -514,6 +549,17 @@ export function DeploymentSuitabilityControl({
               {" · "}Behavioral qualification is independent of hardware
               suitability.
             </p>
+            {currentLm6 && (
+              <div className="border-t pt-2 space-y-1">
+                <p className="font-medium">LM6 · Current exact-scope measured run</p>
+                <p>Reliability: {currentLm6.reliability.completed}/{currentLm6.reliability.requested} completed
+                  {" · "}{currentLm6.reliability.failed} failed
+                  {" · "}{currentLm6.reliability.cancelled} cancelled</p>
+                <p>Generation: {speedEvidence?.value === null || speedEvidence === undefined
+                  ? "Unknown" : `${speedEvidence.value?.toFixed(2)} tokens/s · ${speedEvidence.provenance}`}</p>
+                <p className="text-muted-foreground">Measured timings do not grant instruction adherence, native tools or Agent eligibility.</p>
+              </div>
+            )}
             <div className="space-y-1 border-t pt-2">
               <p className="font-medium">Host and model resources</p>
               <p>

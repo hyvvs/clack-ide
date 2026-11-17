@@ -81,6 +81,9 @@ export type ScopedMeasuredPerformance = {
   runtimeId: string;
   runtimeEpoch: string;
   configurationRevision: number;
+  artifactDigest?: string | null;
+  configuredContext?: number | null;
+  placement?: string | null;
   observedAt: number;
   coldFirstOutputMs?: number;
   warmFirstOutputMs?: number;
@@ -432,6 +435,12 @@ function scopeMatches(
     measured.runtimeId === resource.runtimeId &&
     measured.runtimeEpoch === observation.epoch &&
     measured.configurationRevision === observation.configurationRevision &&
+    (measured.artifactDigest === undefined ||
+      measured.artifactDigest === resource.artifactDigest) &&
+    (measured.configuredContext === undefined ||
+      measured.configuredContext === resource.configuredContext.value) &&
+    (measured.placement === undefined ||
+      measured.placement === resource.executionPlacement.value) &&
     measured.observedAt <= now &&
     now - measured.observedAt < 30 * 60_000 &&
     (measured.sampleCount ?? 0) > 0

@@ -13,6 +13,7 @@ import type {
 import { ContextBudgetError } from "@/modules/ai/lib/contextBudget";
 import { associateNativeResponse } from "@/modules/ai/lib/ollamaParserFailureDiagnostics";
 import { observeWebviewDelivery } from "@/modules/ai/lib/localDeliveryObserver";
+import { observeDeploymentQualificationNative } from "@/modules/ai/lib/deploymentQualificationFlight";
 import { nativeDiagnosticSignalObserved, observeNativeDiagnostic, safeInferenceControls,
   type InferenceDiagnosticControls } from "@/modules/ai/lib/inferenceDiagnosticCorrelation";
 import type { createRequestPreflight } from "@/modules/ai/lib/requestPreflight";
@@ -209,6 +210,13 @@ async function proxyFetchImpl(
       channel.onmessage = (event) => {
         if (finished || terminal || event.requestId !== nativeId) return;
         if (event.kind === "settled") {
+          if (event.phase === "completed" && !event.error) {
+            observeDeploymentQualificationNative(opts.scope?.sessionId,
+              "terminal", nativeId, Date.now());
+          } else if (event.phase === "cancelled" || event.cancellation) {
+            observeDeploymentQualificationNative(opts.scope?.sessionId,
+              "cancelled", nativeId, Date.now());
+          }
           observeWebviewDelivery(nativeId, "webview-settled-received", deliverySequence, 0);
           observeNativeDiagnostic(signal, "native-settled", nativeId);
           terminal = event;
@@ -249,6 +257,8 @@ async function proxyFetchImpl(
           case "admission":
             attempt?.observe(event.observation);
             opts.onAdmission?.(signal, event.observation);
+            observeDeploymentQualificationNative(opts.scope?.sessionId, "admission",
+              nativeId, Date.now(), event.observation.admittedAt);
             break;
           case "phase":
             attempt?.update(event.phase, nativeId);
@@ -287,6 +297,8 @@ async function proxyFetchImpl(
             observeWebviewDelivery(nativeId, "webview-ipc-received", deliverySequence, event.bytes.length);
             if (!firstChunkObserved && event.bytes.length) {
               firstChunkObserved = true;
+              observeDeploymentQualificationNative(opts.scope?.sessionId,
+                "frame", nativeId, Date.now());
               observeNativeDiagnostic(signal, "native-first-chunk", nativeId);
             }
             if (status >= 200 && status < 300 && event.bytes.length) opts.scope?.onResponseBody?.();
@@ -333,6 +345,8 @@ async function proxyFetchImpl(
           reject(new InferenceTransportError("native-transport", nativeId));
       };
       observeNativeDiagnostic(signal, "native-ipc-start", nativeId);
+      if (nativeId) observeDeploymentQualificationNative(opts.scope?.sessionId,
+        "request", nativeId, Date.now());
       void invoke("ai_http_stream", {
         requestId: nativeId,
         url,

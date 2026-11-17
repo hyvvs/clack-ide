@@ -388,6 +388,86 @@ describe("Ollama native adapter", () => {
       "Bearer scoped-key",
     );
   });
+  it("observes structured Ollama terminal timing in nanoseconds once for streaming", async () => {
+    const onTiming = vi.fn();
+    const model = createOllamaModel({
+      modelId: "test",
+      baseURL: "http://localhost",
+      fetch: async () => reply([
+        { ...frame({ content: "partial" }, false), total_duration: 123 },
+        {
+          ...frame({ content: "complete" }),
+          total_duration: 1_234_567_890,
+          load_duration: 0,
+          prompt_eval_duration: 250_000_000,
+          eval_duration: 750_000_000,
+          prompt_eval_cached_count: 3,
+        },
+      ]),
+      onTiming,
+    });
+    const parts = await collect((await model.doStream({ prompt, maxOutputTokens: 50 })).stream);
+    expect(parts[parts.length - 1]).toMatchObject({
+      type: "finish",
+      usage: { inputTokens: { total: 12 }, outputTokens: { total: 4 } },
+    });
+    expect(onTiming).toHaveBeenCalledExactlyOnceWith({
+      totalDurationNs: 1_234_567_890,
+      loadDurationNs: 0,
+      promptEvalDurationNs: 250_000_000,
+      evalDurationNs: 750_000_000,
+      promptEvalCount: 12,
+      promptEvalCachedCount: 3,
+      evalCount: 4,
+    });
+  });
+  it("preserves valid partial timing when other terminal metrics are malformed", async () => {
+    const onTiming = vi.fn();
+    const model = createOllamaModel({
+      modelId: "test",
+      baseURL: "http://localhost",
+      fetch: async () => new Response(JSON.stringify({
+        ...frame({ content: "answer" }),
+        total_duration: -1,
+        load_duration: 12.5,
+        prompt_eval_duration: Number.MAX_SAFE_INTEGER + 1,
+        eval_duration: 0,
+        prompt_eval_cached_count: "unknown",
+      })),
+      onTiming,
+    });
+    const result = await model.doGenerate({ prompt, maxOutputTokens: 50 });
+    expect(result.content).toEqual([{ type: "text", text: "answer" }]);
+    expect(result.usage).toMatchObject({
+      inputTokens: { total: 12 }, outputTokens: { total: 4 },
+    });
+    expect(onTiming).toHaveBeenCalledExactlyOnceWith({
+      evalDurationNs: 0, promptEvalCount: 12, evalCount: 4,
+    });
+  });
+  it("keeps timing callbacks observational and rejects incomplete terminal claims", async () => {
+    const onTiming = vi.fn(() => { throw new Error("consumer failed"); });
+    const model = createOllamaModel({
+      modelId: "test",
+      baseURL: "http://localhost",
+      fetch: async () => reply([{ ...frame({ content: "ok" }), total_duration: 12 }]),
+      onTiming,
+    });
+    const parts = await collect((await model.doStream({ prompt, maxOutputTokens: 50 })).stream);
+    expect(parts[parts.length - 1]).toMatchObject({ type: "finish" });
+    expect(onTiming).toHaveBeenCalledOnce();
+
+    onTiming.mockClear();
+    const incomplete = createOllamaModel({
+      modelId: "test",
+      baseURL: "http://localhost",
+      fetch: async () => reply([{ ...frame({ content: "unfinished" }, false), total_duration: 12 }]),
+      onTiming,
+    });
+    await expect(collect((await incomplete.doStream({ prompt, maxOutputTokens: 50 })).stream))
+      .rejects.toThrow();
+    expect(onTiming).not.toHaveBeenCalled();
+  });
   it("performs a structured multi-step tool roundtrip through the real SDK", async () => {
     const bodies: ReturnType<typeof ollamaBody>[] = [];
     const execute = vi.fn(({ number }) => ({ echoed: number }));

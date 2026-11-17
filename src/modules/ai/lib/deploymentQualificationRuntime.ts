@@ -74,6 +74,8 @@ export function inspectBoundedChat(
   workspaceId: string | null,
   selectedModelId: string,
   snapshot: QualificationFlightSnapshot,
+  expectedPrompt = MANAGED_QUALIFICATION_PROMPT,
+  expectedProvider = "openai-compatible",
 ): BoundedChatObservation | null {
   if (snapshot.prepared !== 1 || !snapshot.systemContextDigest ||
       !snapshot.modelMessagesDigest || snapshot.violations.length ||
@@ -81,7 +83,7 @@ export function inspectBoundedChat(
       messages[1].role !== "assistant" ||
       messages[0].parts.length !== 1 ||
       messages[0].parts[0].type !== "text" ||
-      messages[0].parts[0].text !== MANAGED_QUALIFICATION_PROMPT)
+      messages[0].parts[0].text !== expectedPrompt)
     return null;
   const assistant = messages[1];
   const activity = readActivity(assistant, sessionId, workspaceId);
@@ -90,11 +92,11 @@ export function inspectBoundedChat(
       activity.owner.sessionId !== sessionId ||
       activity.owner.modelId !== selectedModelId ||
       activity.owner.agentId !== "builtin:coder" ||
-      activity.owner.providerId !== "openai-compatible" ||
+      activity.owner.providerId !== expectedProvider ||
       activity.omitted !== 0 ||
       answer.segments.length !== 1 ||
       answer.continuations !== 0 || answer.repairs !== 0 ||
-      answer.segments[0].provider !== "openai-compatible" ||
+      answer.segments[0].provider !== expectedProvider ||
       answer.segments[0].model !== selectedModelId ||
       assistant.parts.some(p => p.type === "dynamic-tool" || p.type.startsWith("tool-")))
     return null;

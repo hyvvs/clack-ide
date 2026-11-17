@@ -74,6 +74,10 @@ import { effectiveProfileValue, resolveSelfHostedSelection } from "@/modules/ai/
 import { createCalibrationCapture, type CalibrationCaptureOptions } from "@/modules/ai/lib/calibrationCapture";
 import { recordPassiveCalibration } from "@/modules/ai/lib/inferenceCalibration";
 import {
+  observeDeploymentQualificationUsage,
+  observeDeploymentQualificationOllamaTiming,
+} from "@/modules/ai/lib/deploymentQualificationFlight";
+import {
   captureEffort,
   effortCapability,
   sameEffortContract,
@@ -500,6 +504,8 @@ export async function buildLanguageModel(
         }), options.inferenceScope?.onResponseBody) : scopedLocalFetch,
         onFinish: preflight.observeOllamaRuntime,
         onStreamBoundary: options.calibration?.onStreamBoundary,
+        onTiming: value => observeDeploymentQualificationOllamaTiming(
+          options.inferenceScope?.sessionId, value),
       });
       break;
     }
@@ -1721,6 +1727,11 @@ export async function runAgentStream(opts: RunAgentOptions) {
           lastCachedTokens: stepCached,
         });
       }
+      if (step.usage) observeDeploymentQualificationUsage(
+        inferenceScope.sessionId,
+        step.usage.inputTokens ?? null,
+        step.usage.outputTokens ?? null,
+      );
       for (const call of step.toolCalls ?? []) {
         const observation = runStepObservation({ toolResults: step.toolResults, toolCalls: [call] });
         if (!observation) continue;

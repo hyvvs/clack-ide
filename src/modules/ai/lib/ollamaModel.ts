@@ -195,9 +195,45 @@ const frameSchema = z.object({
   done_reason: z.string().optional(),
   error: z.string().optional(),
   prompt_eval_count: count,
+  prompt_eval_cached_count: z.unknown().optional(),
   eval_count: count,
+  // Timing metadata must never invalidate an otherwise valid provider reply.
+  total_duration: z.unknown().optional(),
+  load_duration: z.unknown().optional(),
+  prompt_eval_duration: z.unknown().optional(),
+  eval_duration: z.unknown().optional(),
 });
 type Frame = z.infer<typeof frameSchema>;
+
+/** Raw Ollama terminal metrics. Durations are provider nanoseconds, not app clocks. */
+export type OllamaProviderTiming = Readonly<{
+  totalDurationNs?: number;
+  loadDurationNs?: number;
+  promptEvalDurationNs?: number;
+  evalDurationNs?: number;
+  promptEvalCount?: number;
+  promptEvalCachedCount?: number;
+  evalCount?: number;
+}>;
+
+const timingFields = {
+  total_duration: "totalDurationNs",
+  load_duration: "loadDurationNs",
+  prompt_eval_duration: "promptEvalDurationNs",
+  eval_duration: "evalDurationNs",
+  prompt_eval_count: "promptEvalCount",
+  prompt_eval_cached_count: "promptEvalCachedCount",
+  eval_count: "evalCount",
+} as const;
+function terminalTiming(frame: Frame): OllamaProviderTiming | undefined {
+  const metrics: Record<string, number> = {};
+  for (const [source, target] of Object.entries(timingFields)) {
+    const value = frame[source as keyof typeof timingFields];
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+      metrics[target] = value;
+  }
+  return Object.keys(metrics).length ? metrics : undefined;
+}
 function finish(frame: Frame, tools: boolean): LanguageModelV3FinishReason {
   return {
     unified:
@@ -273,9 +309,16 @@ export function createOllamaModel(config: {
   apiKey?: string;
   onFinish?: () => Promise<void>;
   onStreamBoundary?: (stage: string) => void;
+  onTiming?: (timing: OllamaProviderTiming) => void;
 }): LanguageModelV3 {
   const boundary = (stage: string) => {
     try { config.onStreamBoundary?.(stage); } catch { /* diagnostics only */ }
+  };
+  const observeTiming = (frame: Frame) => {
+    const timing = terminalTiming(frame);
+    if (timing) {
+      try { config.onTiming?.(timing); } catch { /* observation only */ }
+    }
   };
   const url = ollamaChatURL(config.baseURL);
   const send = async (params: LanguageModelV3CallOptions, stream: boolean) => {
@@ -326,6 +369,7 @@ export function createOllamaModel(config: {
       observePreparationSignal(params.abortSignal, "sdk-frame-validated");
       const calls = toolParts(frame, priorCallIds(params));
       await config.onFinish?.();
+      observeTiming(frame);
       return {
         content: [
           ...(frame.message.thinking
@@ -455,6 +499,7 @@ export function createOllamaModel(config: {
                     throw new InferenceTransportError("missing-final-event");
                   eof = true;
                   await config.onFinish?.();
+                  observeTiming(terminal);
                   events.push({
                     type: "finish",
                     finishReason: finish(terminal, calls > 0),

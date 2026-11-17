@@ -108,6 +108,11 @@ export const localComputeFabricSchema = z.object({
   // Unknown future versions remain inert, bounded, and losslessly preserved.
   qualificationReceipts: z.array(z.unknown()).max(128).refine(rows =>
     rows.every(row => JSON.stringify(row)?.length <= 4096)).optional(),
+  // LM6: bounded *measurement* history, deliberately never an LM2F grant.
+  // Unknown newer records remain inert and losslessly retained on read.
+  // Exact v1 validation and current/stale selection live in the LM6 adapter.
+  measurementRuns: z.array(z.unknown()).max(48).refine(rows =>
+    rows.every(row => JSON.stringify(row)?.length <= 16 * 1024)).optional(),
 }).passthrough();
 export type ComputeHost = z.infer<typeof computeHostSchema>;
 export type LocalRuntime = z.infer<typeof localRuntimeSchema>;
