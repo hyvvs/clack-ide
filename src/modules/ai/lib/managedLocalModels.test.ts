@@ -119,6 +119,8 @@ describe("LM2D conceptual managed GGUF identity and selection", () => {
       completions: { status: "supported", source: "declared" },
       streaming: { status: "supported", source: "declared" },
       cancellation: { status: "supported", source: "declared" },
+      "terminal-completion": { status: "requires-qualification", source: "declared" },
+      "instruction-adherence": { status: "requires-qualification", source: "declared" },
       "context-configuration": { status: "requires-qualification", source: "declared" },
       "json-schema": { status: "requires-qualification", source: "declared" },
       grammar: { status: "requires-qualification", source: "declared" },
@@ -128,7 +130,8 @@ describe("LM2D conceptual managed GGUF identity and selection", () => {
     for (const capability of ["chat", "completions", "streaming", "cancellation"] as const) {
       expect(capabilityStatus(runtime, capability)).toBe("supported");
     }
-    for (const capability of ["context-configuration", "json-schema", "grammar"] as const) {
+    for (const capability of ["context-configuration", "json-schema", "grammar",
+      "terminal-completion", "instruction-adherence"] as const) {
       expect(capabilityStatus(runtime, capability)).toBe("requires-qualification");
       expect(runtimeCapabilityAllows(runtime, capability)).toBe(false);
     }

@@ -20,6 +20,25 @@ export const MANAGED_LOCAL_HOST_ID = "clack-this-pc";
 export const MANAGED_LOCAL_RUNTIME_ID = "clack-managed-llama.cpp";
 export const MANAGED_LOCAL_RUNTIME_TYPE = "clack-managed-llama.cpp";
 export const MANAGED_LLAMA_ENGINE_VERSION = "b12248";
+/** A pre-LM2F managed registration predates these two *verifier protocols*.
+ * Their absence must not prevent recording an observed negative result.
+ * This is a pure, read-only declaration projection, NEVER a capability PASS;
+ * an explicit persisted `unsupported`/`unknown` remains authoritative. */
+export function projectManagedQualificationDeclarations(runtime: LocalRuntime): LocalRuntime {
+  if (runtime.id !== MANAGED_LOCAL_RUNTIME_ID ||
+      runtime.type !== MANAGED_LOCAL_RUNTIME_TYPE ||
+      runtime.version !== MANAGED_LLAMA_ENGINE_VERSION ||
+      (runtime.capabilities["terminal-completion"] !== undefined &&
+        runtime.capabilities["instruction-adherence"] !== undefined)) return runtime;
+  return {
+    ...runtime,
+    capabilities: {
+      "terminal-completion": { status: "requires-qualification", source: "declared" },
+      "instruction-adherence": { status: "requires-qualification", source: "declared" },
+      ...runtime.capabilities,
+    },
+  };
+}
 const ggufDigest = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 export const managedLocalMaterialSchema = z.object({
   version: z.literal(1),
@@ -91,7 +110,11 @@ function managedLocalFabric(state: SelfHostedState): LocalComputeFabric {
     state.fabric.deployments,
   ].some(rows => new Set(rows.map(row => row.id)).size !== rows.length))
     throw new Error("Ambiguous managed fabric identity");
-  return reconcileLocalComputeFabric(state);
+  const fabric = reconcileLocalComputeFabric(state);
+  return {
+    ...fabric,
+    runtimes: fabric.runtimes.map(projectManagedQualificationDeclarations),
+  };
 }
 
 function managedLocalAttachment(fabric: LocalComputeFabric, deployment: ModelDeployment): ManagedLocalDeployment | undefined {
@@ -188,6 +211,8 @@ export function attachManagedLocalGguf(
       completions: { status: "supported", source: "declared" },
       streaming: { status: "supported", source: "declared" },
       cancellation: { status: "supported", source: "declared" },
+      "terminal-completion": { status: "requires-qualification", source: "declared" },
+      "instruction-adherence": { status: "requires-qualification", source: "declared" },
       "context-configuration": { status: "requires-qualification", source: "declared" },
       "json-schema": { status: "requires-qualification", source: "declared" },
       grammar: { status: "requires-qualification", source: "declared" },

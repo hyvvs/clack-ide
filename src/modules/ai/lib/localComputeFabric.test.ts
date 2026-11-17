@@ -11,8 +11,8 @@ import {
 import {
   acceptsLegacyDeploymentQualification, addConceptualRuntime, artifactIdFor,
   capabilityStatus, deploymentIdentity, localComputeFabricSchema,
-  deploymentQualificationReceiptSchema, deploymentQualificationScope,
-  deploymentQualificationState, deploymentCapabilityQualified,
+  deploymentQualificationReceiptSchema, deploymentQualificationEvidenceReceiptSchema, deploymentQualificationScope,
+  deploymentQualificationState as evaluateQualificationState, deploymentCapabilityQualified as assessQualifiedCapability,
   ollamaRuntimeCapabilities, reconcileLocalComputeFabric,
   resolveModelDeployment, runtimeCapabilityAllows, runtimeIdForEndpoint,
   withLocalComputeFabric, type LocalRuntime, type ModelArtifact,
@@ -371,6 +371,21 @@ describe("LM2C runtime declarations remain separate from deployment qualificatio
 describe("LM2F per-deployment, cross-runtime qualification isolation", () => {
   const at = 1_800_000_000_000;
   const managedId = "managed:qualified-gguf";
+  const sha = `sha256:${"a".repeat(64)}`;
+  // Test fixtures explicitly supply the scope of the tool protocol they
+  // are examining; production call sites must supply their actual context.
+  const deploymentQualificationState = (
+    ...args: Parameters<typeof evaluateQualificationState>
+  ) => evaluateQualificationState(
+    args[0], args[1], args[2], args[3], args[4], args[5],
+    args[4]?.version === 2 ? args[4].context : {},
+  );
+  const deploymentCapabilityQualified = (
+    ...args: Parameters<typeof assessQualifiedCapability>
+  ) => assessQualifiedCapability(
+    args[0], args[1], args[2], args[3], args[4], args[5],
+    args[4]?.version === 2 ? args[4].context : {},
+  );
   const observed = (
     runtimeId = "managed-runtime", version = "1.2.3", epoch = "boot-a",
   ): DeploymentRuntimeObservation => ({
@@ -399,15 +414,25 @@ describe("LM2F per-deployment, cross-runtime qualification isolation", () => {
     const observation = observed();
     const scope = deploymentQualificationScope(fabric, managedId, observation, at)!;
     const receipt: DeploymentQualificationReceipt = {
-      version: 1, scope, capability: "native-tools",
+      version: 2, scope: { ...scope, deploymentId: managedId }, capability: "native-tools",
       status: "verified", verifiedAt: at - 5_000, expiresAt: at + 60_000,
+      context: { toolProtocol: "ollama-native-v1", toolSchemaDigest: sha },
+      procedure: { id: "clack-native-tools-qualification", version: 1 },
+      evidence: { source: "native-observation", reference: "probe-1", digest: sha,
+        checks: [{ id: "arguments", result: "pass" }] },
     };
     return { state, fabric, observation, receipt };
   }
 
   it("accepts only an explicitly scoped, fresh deployment receipt while retaining proven legacy Ollama", () => {
     const { state, fabric, observation, receipt } = setup();
-    expect(deploymentQualificationReceiptSchema.safeParse(receipt).success).toBe(true);
+    expect(deploymentQualificationEvidenceReceiptSchema.safeParse(receipt).success).toBe(true);
+    // The pre-LM2F receipt lacks evidence and can be preserved but not promoted.
+    const historical = { version: 1 as const, scope: deploymentQualificationScope(fabric, managedId, observation, at)!,
+      capability: "native-tools" as const, status: "verified" as const,
+      verifiedAt: at - 100, expiresAt: at + 1_000 };
+    expect(deploymentQualificationReceiptSchema.safeParse(historical).success).toBe(true);
+    expect(deploymentQualificationState(fabric, managedId, "native-tools", observation, historical, at)).toBe("Stale");
     expect(deploymentQualificationState(fabric, managedId, "native-tools", observation, undefined, at))
       .toBe("Unverified");
     expect(deploymentCapabilityQualified(fabric, managedId, "native-tools", observation, undefined, at))
@@ -550,11 +575,15 @@ describe("LM2F per-deployment, cross-runtime qualification isolation", () => {
     expect(deploymentQualificationState(fabric, managedId, "chat", observation, receipt, at))
       .toBe("Stale");
     expect(deploymentQualificationState(fabric, managedId, "native-tools", observation,
-      { ...receipt, expiresAt: receipt.verifiedAt + 86_400_001 }, at)).toBe("Stale");
+      { ...receipt, expiresAt: receipt.verifiedAt + 7 * 86_400_000 + 1 }, at)).toBe("Stale");
     expect(deploymentQualificationState(fabric, managedId, "native-tools", observation,
-      { ...receipt, status: "incomplete" }, at)).toBe("Incomplete");
+      { ...receipt, status: "incomplete", evidence: {
+        ...receipt.evidence, checks: [{ id: "arguments", result: "incomplete" }],
+      } }, at)).toBe("Incomplete");
     expect(deploymentQualificationState(fabric, managedId, "native-tools", observation,
-      { ...receipt, status: "unsupported" }, at)).toBe("Unsupported");
+      { ...receipt, status: "unsupported", evidence: {
+        ...receipt.evidence, checks: [{ id: "arguments", result: "fail" }],
+      } }, at)).toBe("Unsupported");
     const denied = structuredClone(fabric);
     denied.runtimes.find(r => r.id === observation.runtimeId)!.capabilities["native-tools"] =
       { status: "unsupported", source: "observed" };

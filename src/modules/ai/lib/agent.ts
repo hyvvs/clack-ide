@@ -915,6 +915,10 @@ export type RunAgentOptions = {
   /** Only the already verified same-run Agent native-tool schema signature. */
   requiredAgentToolSetDigest?: string;
   onAgentToolSetPrepared?: (digest: string) => void;
+  /** Explicit one-shot LM2F capture: only normalized, actual request shape,
+   * before the existing SDK dispatch; no special prompt path or fallback. */
+  onQualificationPrepared?: (value: import("./deploymentQualificationFlight").PreparedQualification) => Promise<void>;
+  qualificationOutputLimit?: number;
   uiMessages: UIMessage[];
   toolSelectionMessages?: UIMessage[];
   abortSignal?: AbortSignal;
@@ -1260,7 +1264,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
       onRetry: (event) => opts.onProviderRetry?.(event),
       onRecovered: () => opts.onProviderRecovered?.(),
     },
-    AGENT_PROVIDER_MAX_RETRIES,
+    opts.qualificationOutputLimit ? 0 : AGENT_PROVIDER_MAX_RETRIES,
     {
       isCurrent: inferenceScope.isCurrent,
       ...(phaseDiagnostic ? { onDiagnostic: phaseDiagnostic } : {}),
@@ -1315,7 +1319,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
     signal: opts.abortSignal,
     isCurrent: inferenceScope.isCurrent,
     onState: state => { answerState = state; opts.onAnswerState?.(state); },
-    maxContinuations: continuationSetting === false ? 0
+    maxContinuations: opts.qualificationOutputLimit ? 0 : continuationSetting === false ? 0
       : typeof continuationCount === "number"
         ? Math.max(0, Math.min(3, continuationCount)) : 3,
     limits: agentLimits,
@@ -1529,8 +1533,18 @@ export async function runAgentStream(opts: RunAgentOptions) {
     await opts.toolContext.validatePeerReview?.();
     emitPreparationPhase(inferenceScope, "agent-trust-completed");
   };
+  const actualOutputLimit = opts.qualificationOutputLimit
+    ? Math.min(preparationBudget.output, opts.qualificationOutputLimit)
+    : preparationBudget.output;
+  if (opts.onQualificationPrepared) {
+    await opts.onQualificationPrepared({
+      modelId, messages: finalMessages, activeTools: exposure.names,
+      outputLimit: actualOutputLimit,
+    });
+  }
   return streamText({
-    maxOutputTokens: preparationBudget.output,
+    maxOutputTokens: actualOutputLimit,
+    ...(opts.qualificationOutputLimit ? { maxRetries: 0 } : {}),
     model,
     messages: finalMessages,
     tools,

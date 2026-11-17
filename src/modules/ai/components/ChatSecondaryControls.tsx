@@ -7,6 +7,7 @@ import {
 } from "@/modules/ai/components/ChatFallbackControl";
 import { EffortControl } from "@/modules/ai/components/EffortControl";
 import { AgentPermissionControl } from "@/modules/ai/components/AgentPermissionControl";
+import { DeploymentQualificationControl } from "@/modules/ai/components/DeploymentQualificationControl";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -47,6 +48,7 @@ export function ChatSecondaryControls({
         <AgentPermissionControl agentId={agentId} />
         <ChatToolsControl sessionId={sessionId} />
         <ChatConnectionControl sessionId={sessionId} />
+        <DeploymentQualificationControl sessionId={sessionId} />
         <ChatFallbackControl sessionId={sessionId} showLabel />
         {capacity}
       </fieldset>

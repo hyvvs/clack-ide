@@ -118,13 +118,16 @@ describe("staged target-context key and Agent output/verified-context contract (
   it("4: digest change invalidates old selected identity, key, calibrated context and native proof", async () => {
     const f = preservedState();
     const before = input(f);
-    const oldKey = await targetContextKey(before);
+    await expect(targetContextKey(before)).resolves.toMatch(/^[0-9a-f]{64}$/);
     const oldSelection = before.modelId;
     f.profile.modelRevision = "changed-digest-without-new-measurement";
     expect(() => resolveModelTransportIdentity(oldSelection, config(f))).toThrow();
     expect(verified(f)).toEqual([]);
     expect(automaticAgentRecommendation(f.state, f.profile, TIER)).toBeUndefined();
-    expect(await targetContextKey(input(f))).not.toBe(oldKey);
+    // The stronger deployment-identity gate rejects this hypothetical
+    // changed digest altogether; it cannot be transformed into a seemingly
+    // qualified new context key for an old model selection.
+    expect(() => input(f)).toThrow(/Model unavailable|Model changed/);
   });
 
   it("5: runtime epoch mismatch invalidates trust and a changed scoped calibration changes the target key", async () => {

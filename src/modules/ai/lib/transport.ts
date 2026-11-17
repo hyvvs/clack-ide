@@ -34,6 +34,12 @@ import { resolveModelDeployment } from "@/modules/ai/lib/localComputeFabric";
 import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities";
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import {
+  hasActiveDeploymentQualification,
+  observeDeploymentQualificationPrepared,
+  observeDeploymentQualificationStream,
+  qualificationMaxOutputTokens,
+} from "./deploymentQualificationFlight";
+import {
   createOutputWatchdog,
   watchdogInstruction,
   type OutputWatchdog,
@@ -430,7 +436,14 @@ export function createContextAwareTransport(deps: Deps) {
               attempt.capabilities,
             )
           : messagesWithAttachments;
+        const qualificationSession = !attempt && scope?.sessionId &&
+          hasActiveDeploymentQualification(scope.sessionId) ? scope.sessionId : undefined;
         const result = await runAgentStream({
+          ...(qualificationSession ? {
+            qualificationOutputLimit: qualificationMaxOutputTokens(qualificationSession),
+            onQualificationPrepared: (value: import("./deploymentQualificationFlight").PreparedQualification) =>
+              observeDeploymentQualificationPrepared(qualificationSession, value),
+          } : {}),
           watchdog,
           onAnswerState,
           reasoning,
@@ -535,7 +548,7 @@ export function createContextAwareTransport(deps: Deps) {
             );
           },
         });
-      });
+      }, (chunk) => observeDeploymentQualificationStream(scope?.sessionId, chunk));
     if (!deps.prepareFallback || fallbackCapture)
       return execute(fallbackCapture?.attempt);
     return fallbackStream({

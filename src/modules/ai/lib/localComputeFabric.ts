@@ -23,9 +23,11 @@ const optionalName = z.string().min(1).max(1024).optional();
 const revision = z.number().int().positive();
 const status = z.enum(["supported", "unsupported", "unknown", "requires-qualification"]);
 export const RUNTIME_CAPABILITIES = [
-  "chat", "completions", "streaming", "cancellation", "reasoning-controls",
+  "chat", "completions", "streaming", "cancellation", "terminal-completion",
+  "instruction-adherence", "reasoning-controls",
   "context-configuration", "token-accounting", "native-tools",
-  "parallel-tools", "json-mode", "json-schema", "grammar",
+  "tool-protocol", "tool-arguments", "tool-results", "sequential-tools",
+  "no-fabricated-effects", "parallel-tools", "json-mode", "json-schema", "grammar",
   "list-models", "inspect-model", "load-model", "unload-model",
   "model-residency", "runtime-health", "runtime-version",
   "hardware-telemetry", "gpu-offload", "kv-cache", "prompt-cache",
@@ -102,6 +104,10 @@ export const localComputeFabricSchema = z.object({
   runtimes: z.array(localRuntimeSchema).max(512),
   artifacts: z.array(modelArtifactSchema).max(5000),
   deployments: z.array(modelDeploymentSchema).max(2048),
+  // One historical receipt stream INSIDE the existing native CAS registry.
+  // Unknown future versions remain inert, bounded, and losslessly preserved.
+  qualificationReceipts: z.array(z.unknown()).max(128).refine(rows =>
+    rows.every(row => JSON.stringify(row)?.length <= 4096)).optional(),
 }).passthrough();
 export type ComputeHost = z.infer<typeof computeHostSchema>;
 export type LocalRuntime = z.infer<typeof localRuntimeSchema>;
@@ -159,9 +165,106 @@ export const deploymentQualificationReceiptSchema = z.object({
   expiresAt: evidenceTime,
 }).strict().refine(receipt => receipt.expiresAt > receipt.verifiedAt &&
   receipt.expiresAt - receipt.verifiedAt <= 86_400_000);
-export type DeploymentQualificationReceipt = z.infer<typeof deploymentQualificationReceiptSchema>;
+/** V1 is recognized as historical only: no observed evidence or procedure was
+ * recorded, so it is never sufficient for a new LM2F capability grant. */
+export type HistoricalDeploymentQualificationReceipt = z.infer<typeof deploymentQualificationReceiptSchema>;
+
+export const deploymentQualificationContextSchema = z.object({
+  contextTokens: z.number().int().positive().max(8_388_608).optional(),
+  personaId: name.optional(),
+  systemContextDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  toolProtocol: small.optional(),
+  toolSchemaDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  formatSchemaDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+}).strict();
+export type DeploymentQualificationContext = z.infer<typeof deploymentQualificationContextSchema>;
+
+/** V2 carries only bounded verifier-owned facts; never transcripts, paths or
+ * provider-supplied capability claims. This is behavioral deployment proof,
+ * not an artifact-scoped metadata declaration. */
+export const deploymentQualificationEvidenceReceiptSchema = z.object({
+  version: z.literal(2),
+  scope: deploymentQualificationScopeSchema.extend({ deploymentId: longIdentity }).strict(),
+  capability: z.enum(RUNTIME_CAPABILITIES),
+  status: z.enum(["verified", "failed", "incomplete", "unsupported"]),
+  verifiedAt: evidenceTime,
+  expiresAt: evidenceTime,
+  procedure: z.object({
+    id: small,
+    version: revision,
+  }).strict(),
+  context: deploymentQualificationContextSchema,
+  evidence: z.object({
+    source: z.enum(["clack-transport", "native-observation", "deterministic-evaluator", "legacy-ollama-tool-verification"]),
+    reference: z.string().min(1).max(256),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    checks: z.array(z.object({
+      id: small,
+      result: z.enum(["pass", "fail", "incomplete"]),
+    }).strict()).min(1).max(16),
+  }).strict(),
+}).passthrough().superRefine((receipt, ctx) => {
+  if (receipt.expiresAt <= receipt.verifiedAt ||
+      receipt.expiresAt - receipt.verifiedAt > 7 * 86_400_000)
+    ctx.addIssue({ code: "custom", message: "Invalid qualification lifetime" });
+  if (receipt.status === "verified" &&
+      receipt.evidence.checks.some(check => check.result !== "pass"))
+    ctx.addIssue({ code: "custom", message: "A verified qualification requires passing checks" });
+  if (receipt.status === "failed" &&
+      !receipt.evidence.checks.some(check => check.result === "fail"))
+    ctx.addIssue({ code: "custom", message: "Failed qualification requires a failed check" });
+  if (receipt.status === "unsupported" &&
+      !receipt.evidence.checks.some(check => check.result === "fail"))
+    ctx.addIssue({ code: "custom", message: "Unsupported requires an observed negative check" });
+  if (receipt.status === "incomplete" &&
+      !receipt.evidence.checks.some(check => check.result === "incomplete"))
+    ctx.addIssue({ code: "custom", message: "Incomplete qualification requires incomplete evidence" });
+  if (receipt.capability === "instruction-adherence" &&
+      (!receipt.context.personaId || !receipt.context.systemContextDigest))
+    ctx.addIssue({ code: "custom", message: "Adherence requires exact persona/system context" });
+  if (["native-tools", "tool-protocol", "tool-arguments", "tool-results",
+      "sequential-tools", "no-fabricated-effects", "parallel-tools"].includes(receipt.capability) &&
+      (!receipt.context.toolProtocol || !receipt.context.toolSchemaDigest))
+    ctx.addIssue({ code: "custom", message: "Tool qualification requires exact protocol/schema" });
+  if (["json-schema", "grammar"].includes(receipt.capability) &&
+      !receipt.context.formatSchemaDigest)
+    ctx.addIssue({ code: "custom", message: "Constrained output requires schema/grammar identity" });
+});
+export type DeploymentQualificationEvidenceReceipt = z.infer<typeof deploymentQualificationEvidenceReceiptSchema>;
+export type DeploymentQualificationReceipt =
+  | HistoricalDeploymentQualificationReceipt | DeploymentQualificationEvidenceReceipt;
 export type DeploymentQualificationState =
-  "Verified" | "Unverified" | "Stale" | "Incomplete" | "Unsupported";
+  "Verified" | "Unverified" | "Stale" | "Incomplete" | "Unsupported" | "Failed";
+
+/** Procedure revisions are part of the authority policy, not untrusted
+ * provider metadata. Bumping a verifier/protocol here invalidates its old
+ * PASS receipts while keeping the original evidence for historical review.
+ * No capability without a registered procedure can ever become qualified. */
+export const CURRENT_DEPLOYMENT_QUALIFICATION_PROCEDURES = {
+  chat: { id: "clack-managed-chat-bounded", version: 1 },
+  streaming: { id: "clack-managed-chat-bounded", version: 1 },
+  "terminal-completion": { id: "clack-managed-chat-bounded", version: 1 },
+  "instruction-adherence": { id: "clack-instruction-adherence", version: 1 },
+  "context-configuration": { id: "clack-context-qualification", version: 1 },
+  "native-tools": { id: "clack-native-tools-qualification", version: 1 },
+  "tool-protocol": { id: "clack-native-tools-qualification", version: 1 },
+  "tool-arguments": { id: "clack-native-tools-qualification", version: 1 },
+  "tool-results": { id: "clack-native-tools-qualification", version: 1 },
+  "sequential-tools": { id: "clack-native-tools-qualification", version: 1 },
+  "no-fabricated-effects": { id: "clack-native-tools-qualification", version: 1 },
+  "parallel-tools": { id: "clack-native-tools-qualification", version: 1 },
+  "json-mode": { id: "clack-structured-output-qualification", version: 1 },
+  "json-schema": { id: "clack-structured-output-qualification", version: 1 },
+  grammar: { id: "clack-structured-output-qualification", version: 1 },
+} as const satisfies Partial<Record<RuntimeCapabilityName, { id: string; version: number }>>;
+
+function currentQualificationProcedure(
+  capability: RuntimeCapabilityName,
+): { id: string; version: number } | undefined {
+  return (CURRENT_DEPLOYMENT_QUALIFICATION_PROCEDURES as Partial<Record<
+    RuntimeCapabilityName, { id: string; version: number }
+  >>)[capability];
+}
 
 /** A fresh, external runtime observation is mandatory for all non-legacy proof. */
 export function deploymentQualificationScope(
@@ -218,20 +321,40 @@ export function deploymentQualificationState(
   observation: DeploymentRuntimeObservation | undefined,
   receipt?: DeploymentQualificationReceipt,
   now = Date.now(),
+  context: DeploymentQualificationContext = {},
 ): DeploymentQualificationState {
   const deployment = fabric.deployments.find(row => row.id === deploymentId);
   const runtime = fabric.runtimes.find(row => row.id === deployment?.runtimeId);
   if (runtime && capabilityStatus(runtime, capability) === "unsupported")
     return "Unsupported";
-  if (!receipt) return "Unverified";
-  const parsed = deploymentQualificationReceiptSchema.safeParse(receipt);
+  const historical = fabric.qualificationReceipts?.filter(row =>
+    !!row && typeof row === "object" && "scope" in row &&
+    (row as { scope?: { deploymentId?: unknown } }).scope?.deploymentId === deploymentId &&
+    "capability" in row && row.capability === capability) ?? [];
+  // If two observations have the same millisecond timestamp the last
+  // appended record wins. Otherwise an older PASS could outrank an equally
+  // timestamped later FAIL and accidentally resurrect revoked authority.
+  const selected = receipt ?? (historical
+    .map((record, index) => ({
+      record, index, at: Number((record as { verifiedAt?: number }).verifiedAt ?? 0),
+    }))
+    .sort((a, b) => b.at - a.at || b.index - a.index)[0]
+    ?.record as DeploymentQualificationReceipt | undefined);
+  if (!selected) return "Unverified";
+  if (selected.version !== 2) return "Stale";
+  const parsed = deploymentQualificationEvidenceReceiptSchema.safeParse(selected);
   const current = deploymentQualificationScope(fabric, deploymentId, observation, now);
-  if (!parsed.success || !current || receipt.capability !== capability ||
-      JSON.stringify(parsed.data.scope) !== JSON.stringify(current) ||
-      receipt.verifiedAt > now || receipt.expiresAt <= now)
+  const requestedContext = deploymentQualificationContextSchema.safeParse(context);
+  const expectedProcedure = currentQualificationProcedure(capability);
+  if (!parsed.success || !current || !requestedContext.success || selected.capability !== capability ||
+      !expectedProcedure || JSON.stringify(parsed.data.procedure) !== JSON.stringify(expectedProcedure) ||
+      JSON.stringify(parsed.data.scope) !== JSON.stringify({ ...current, deploymentId }) ||
+      JSON.stringify(parsed.data.context) !== JSON.stringify(requestedContext.data) ||
+      selected.verifiedAt > now || selected.expiresAt <= now)
     return "Stale";
-  if (receipt.status === "incomplete") return "Incomplete";
-  if (receipt.status === "unsupported") return "Unsupported";
+  if (selected.status === "incomplete") return "Incomplete";
+  if (selected.status === "unsupported") return "Unsupported";
+  if (selected.status === "failed") return "Failed";
   return "Verified";
 }
 
@@ -243,12 +366,43 @@ export function deploymentCapabilityQualified(
   observation: DeploymentRuntimeObservation | undefined,
   receipt?: DeploymentQualificationReceipt,
   now = Date.now(),
+  context: DeploymentQualificationContext = {},
 ) {
   const deployment = fabric.deployments.find(row => row.id === deploymentId);
   const runtime = fabric.runtimes.find(row => row.id === deployment?.runtimeId);
   return !!runtime && deploymentQualificationState(
-    fabric, deploymentId, capability, observation, receipt, now,
+    fabric, deploymentId, capability, observation, receipt, now, context,
   ) === "Verified" && runtimeCapabilityAllows(runtime, capability, true);
+}
+
+/** Historical evidence is never silently promoted. Writes use the same
+ * topology and compare-and-swap persistence as the rest of the fabric. */
+export function recordDeploymentQualification(
+  state: SelfHostedState,
+  deploymentId: string,
+  observation: DeploymentRuntimeObservation,
+  value: DeploymentQualificationEvidenceReceipt,
+  now = Date.now(),
+): SelfHostedState {
+  const receipt = deploymentQualificationEvidenceReceiptSchema.parse(value);
+  const fabric = reconcileLocalComputeFabric(state);
+  const verdict = deploymentQualificationState(
+    fabric, deploymentId, receipt.capability, observation, receipt, now, receipt.context,
+  );
+  if (!["Verified", "Failed", "Incomplete", "Unsupported"].includes(verdict))
+    throw new Error("Qualification result does not match the current execution identity");
+  const runtime = fabric.runtimes.find(row => row.id ===
+    fabric.deployments.find(row => row.id === deploymentId)?.runtimeId);
+  if (!runtime || capabilityStatus(runtime, receipt.capability) === "unknown" ||
+      (capabilityStatus(runtime, receipt.capability) === "unsupported" &&
+        receipt.status !== "unsupported") ||
+      (verdict === "Verified" && !runtimeCapabilityAllows(runtime, receipt.capability, true)))
+    throw new Error("Runtime declaration cannot authorize this capability");
+  const history = [...(fabric.qualificationReceipts ?? []), receipt].slice(-128);
+  return withLocalComputeFabric({
+    ...state,
+    fabric: localComputeFabricSchema.parse({ ...fabric, qualificationReceipts: history }),
+  });
 }
 
 export function runtimeIdForEndpoint(endpointId: string) {

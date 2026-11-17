@@ -129,8 +129,14 @@ function qualifyingManaged(state: SelfHostedState) {
   };
   const scope = deploymentQualificationScope(fabric, deployment.id, observed, now)!;
   const receipt: DeploymentQualificationReceipt = {
-    version: 1, scope, capability: "context-configuration",
+    version: 2, scope: { ...scope, deploymentId: deployment.id },
+    capability: "context-configuration",
     status: "verified", verifiedAt: now - 90, expiresAt: now + 10_000,
+    context: { contextTokens: 2048 },
+    procedure: { id: "clack-context-qualification", version: 1 },
+    evidence: { source: "native-observation", reference: "context-1",
+      digest: `sha256:${"e".repeat(64)}`,
+      checks: [{ id: "allocated-context", result: "pass" }] },
   };
   return { live, fabric, deployment, observed, receipt, now };
 }
@@ -309,12 +315,12 @@ describe("LM2E unified Host → Runtime → Artifact → Deployment selection: 1
     const { fabric, deployment, observed, receipt, now } = qualifyingManaged(state);
     expect(receipt.scope.deploymentIdentity).toBe(deploymentIdentity(deployment));
     expect(deploymentCapabilityQualified(fabric, deployment.id, "context-configuration",
-      observed, receipt, now)).toBe(true);
+      observed, receipt, now, receipt.version === 2 ? receipt.context : {})).toBe(true);
     const restarted = { ...observed, epoch: "boot-42" };
     expect(deploymentQualificationState(fabric, deployment.id, "context-configuration",
-      restarted, receipt, now)).toBe("Stale");
+      restarted, receipt, now, receipt.version === 2 ? receipt.context : {})).toBe("Stale");
     expect(deploymentCapabilityQualified(fabric, deployment.id, "context-configuration",
-      restarted, receipt, now)).toBe(false);
+      restarted, receipt, now, receipt.version === 2 ? receipt.context : {})).toBe(false);
   });
 
   it("13 removing one deployment never routes its historical selection to another", () => {

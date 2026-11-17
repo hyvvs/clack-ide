@@ -249,8 +249,10 @@ describe("inventory-backed picker identities and lifecycle", () => {
   it("stale inventory is unverified; configuration edits discard its authority and detection", () => {
     const state = committed(connection(), ["same"]);
     const id = selfHostedSelectionId(state.profiles[0]);
+    // LM2F distinguishes stale historical inventory from never-observed
+    // capability; neither is current qualification authority.
     expect(selfHostedPickerStatus(id, state, at + 300_000)?.label).toBe(
-      "Unverified",
+      "Stale inventory · refresh",
     );
     const edited = editSelfHostedEndpoint(state, "a", {
       baseURL: "https://replacement.example",

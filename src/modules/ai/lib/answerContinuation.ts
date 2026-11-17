@@ -414,6 +414,7 @@ export function answerMetadataStream(
   execute: (
     onState: (state: AnswerState) => void,
   ) => Promise<ReadableStream<UIMessageChunk>>,
+  onObservedChunk?: (chunk: UIMessageChunk) => void,
 ): ReadableStream<UIMessageChunk> {
   let active = true,
     started = false;
@@ -439,6 +440,9 @@ export function answerMetadataStream(
         while (active) {
           const next = await reader.read();
           if (next.done || !active) break;
+          // Passive, bounded qualification observation must never change a
+          // Chat response or fail a provider request.
+          try { onObservedChunk?.(next.value); } catch { /* observation only */ }
           controller.enqueue(next.value);
           if (!started && next.value.type === "start") {
             started = true;
