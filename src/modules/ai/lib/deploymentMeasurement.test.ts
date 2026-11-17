@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { UIMessage } from "ai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { attachManagedLocalGguf, resolveManagedLocalSelection } from "./managedLocalModels";
 import { emptySelfHostedState, readSelfHostedState } from "./selfHostedProfiles";
 import { observedManagedFabric } from "./deploymentQualificationView";
@@ -7,7 +9,14 @@ import {
   armDeploymentQualification,
   observeDeploymentQualificationNative,
   disarmDeploymentQualification,
+  peekDeploymentQualificationMeasurement,
+  hasActiveLm6Measurement,
+  observeDeploymentQualificationCancellation,
+  observeDeploymentQualificationStream,
+  observeLm6CancellationQuiescence,
+  waitForRecordedLm6NativeSettlement,
 } from "./deploymentQualificationFlight";
+import { lm6CancelledChatRequestId } from "./deploymentMeasurementRuntime";
 import { reconcileLocalComputeFabric, type DeploymentRuntimeObservation, type LocalComputeFabric } from "./localComputeFabric";
 import {
   LM6_MAX_ATTEMPTS, LM6_PROCEDURE,
@@ -587,5 +596,213 @@ describe("LM6 bounded deployment measurement — deterministic 30-case matrix", 
     expect(lm6SingleNativeRequest({
       nativeRequestIds: ["some-uuid"], nativeRequestOpenEvents: 1,
     })).toBeNull();
+  });
+
+  it("42 waits for an actual delayed native terminal event without a new provider dispatch", async () => {
+    const sessionId = "lm6-fixture-42";
+    armDeploymentQualification(sessionId, "exact-managed-fixture", "builtin:coder", {
+      expectedPrompt: "short bounded prompt", measure: true,
+    });
+    try {
+      observeDeploymentQualificationNative(sessionId, "request", "inference-1");
+      const waiting = waitForRecordedLm6NativeSettlement(sessionId, 120);
+      setTimeout(() => observeDeploymentQualificationNative(sessionId,
+        "terminal", "inference-1"), 10);
+      await waiting;
+      const measured = peekDeploymentQualificationMeasurement(sessionId);
+      expect(measured?.nativeTerminalAt).toEqual(expect.any(Number));
+      expect(measured?.nativeRequestOpenEvents).toBe(1);
+      expect(measured?.nativeRequestIds).toEqual(["inference-1"]);
+    } finally {
+      disarmDeploymentQualification(sessionId);
+    }
+  });
+
+  it("43 an absent native terminal stays Unknown after the fixed observation bound", async () => {
+    const sessionId = "lm6-fixture-43";
+    armDeploymentQualification(sessionId, "exact-managed-fixture", "builtin:coder", {
+      expectedPrompt: "short bounded prompt", measure: true,
+    });
+    try {
+      observeDeploymentQualificationNative(sessionId, "request", "inference-2");
+      await waitForRecordedLm6NativeSettlement(sessionId, 20);
+      expect(peekDeploymentQualificationMeasurement(sessionId)?.nativeTerminalAt).toBeNull();
+      await expect(waitForRecordedLm6NativeSettlement(sessionId, 1_501))
+        .rejects.toThrow(/fixed bound/);
+      expect(peekDeploymentQualificationMeasurement(sessionId)?.nativeRequestOpenEvents).toBe(1);
+    } finally {
+      disarmDeploymentQualification(sessionId);
+    }
+  });
+
+  it("44 native cancellation acknowledgement does not imply no future continuation", async () => {
+    const sessionId = "lm6-fixture-44";
+    armDeploymentQualification(sessionId, "exact-managed-fixture", "builtin:coder", {
+      expectedPrompt: "short bounded prompt", measure: true,
+    });
+    try {
+      observeDeploymentQualificationNative(sessionId, "request", "inference-3");
+      observeDeploymentQualificationNative(sessionId, "cancelled", "inference-3");
+      await waitForRecordedLm6NativeSettlement(sessionId, 20);
+      const captured = disarmDeploymentQualification(sessionId);
+      expect(captured?.measurement?.cancelAcknowledgedAt).toEqual(expect.any(Number));
+      expect(captured?.measurement?.nativeTerminalAt).toBeNull();
+      expect(captured?.measurement?.nativeRequestOpenEvents).toBe(1);
+    } finally {
+      disarmDeploymentQualification(sessionId);
+    }
+  });
+
+  it("45 a foreign native terminal, even in the same Chat session, cannot settle the opened inference", async () => {
+    const sessionId = "lm6-fixture-45";
+    armDeploymentQualification(sessionId, "model", "builtin:coder", {
+      expectedPrompt: "short bounded prompt", measure: true,
+    });
+    try {
+      observeDeploymentQualificationNative(sessionId, "request", "inference-10");
+      observeDeploymentQualificationNative(sessionId, "terminal", "inference-99");
+      expect(peekDeploymentQualificationMeasurement(sessionId)?.nativeTerminalAt).toBeNull();
+      await waitForRecordedLm6NativeSettlement(sessionId, 20);
+      const end = disarmDeploymentQualification(sessionId);
+      expect(end?.violations).toContain("native-event-without-matching-open");
+      expect(end?.measurement?.nativeRequestIds).toEqual(["inference-10"]);
+    } finally {
+      disarmDeploymentQualification(sessionId);
+    }
+  });
+
+  it("46 duplicate terminal and post-terminal content are rejected instead of qualifying twice", () => {
+    const sessionId = "lm6-fixture-46";
+    armDeploymentQualification(sessionId, "model", "builtin:coder", {
+      expectedPrompt: "short bounded prompt", measure: true,
+    });
+    try {
+      observeDeploymentQualificationNative(sessionId, "request", "inference-11");
+      observeDeploymentQualificationNative(sessionId, "terminal", "inference-11");
+      const first = peekDeploymentQualificationMeasurement(sessionId)?.nativeTerminalAt;
+      observeDeploymentQualificationNative(sessionId, "terminal", "inference-11");
+      observeDeploymentQualificationNative(sessionId, "frame", "inference-11");
+      const end = disarmDeploymentQualification(sessionId);
+      expect(end?.measurement?.nativeTerminalAt).toBe(first);
+      expect(end?.violations.filter(x => x === "native-event-after-terminal")).toHaveLength(2);
+    } finally {
+      disarmDeploymentQualification(sessionId);
+    }
+  });
+
+  it("47 post-disarm late native event from the old session cannot qualify a new flight", () => {
+    armDeploymentQualification("lm6-old-47", "model", "builtin:coder", { measure: true });
+    try {
+      observeDeploymentQualificationNative("lm6-old-47", "request", "inference-12");
+      disarmDeploymentQualification("lm6-old-47");
+      armDeploymentQualification("lm6-new-47", "model", "builtin:coder", { measure: true });
+      observeDeploymentQualificationNative("lm6-old-47", "terminal", "inference-12");
+      observeDeploymentQualificationNative("lm6-new-47", "terminal", "inference-12");
+      expect(peekDeploymentQualificationMeasurement("lm6-new-47")?.nativeTerminalAt).toBeNull();
+      const result = disarmDeploymentQualification("lm6-new-47");
+      expect(result?.violations).toContain("native-event-without-matching-open");
+    } finally {
+      disarmDeploymentQualification("lm6-old-47");
+      disarmDeploymentQualification("lm6-new-47");
+    }
+  });
+
+  it("48 a finite post-cancellation observation can prove only bounded quiescence", async () => {
+    const sessionId = "lm6-fixture-48";
+    armDeploymentQualification(sessionId, "model", "builtin:coder", { measure: true });
+    try {
+      observeDeploymentQualificationNative(sessionId, "request", "inference-13");
+      observeDeploymentQualificationStream(sessionId,
+        { type: "text-delta", id: "part", delta: "1" });
+      observeDeploymentQualificationCancellation(sessionId);
+      observeDeploymentQualificationNative(sessionId, "cancelled", "inference-13");
+      expect(await observeLm6CancellationQuiescence(sessionId, 20)).toBe(true);
+      expect(peekDeploymentQualificationMeasurement(sessionId)?.nativeTerminalAt).toBeNull();
+      await expect(observeLm6CancellationQuiescence(sessionId, 1501))
+        .rejects.toThrow(/fixed bound/);
+    } finally {
+      disarmDeploymentQualification(sessionId);
+    }
+  });
+
+  it("49 a post-cancellation native frame or assistant delta defeats bounded no-continuation", async () => {
+    const sessionId = "lm6-fixture-49";
+    armDeploymentQualification(sessionId, "model", "builtin:coder", { measure: true });
+    try {
+      observeDeploymentQualificationNative(sessionId, "request", "inference-14");
+      observeDeploymentQualificationStream(sessionId,
+        { type: "text-delta", id: "part", delta: "1" });
+      observeDeploymentQualificationCancellation(sessionId);
+      observeDeploymentQualificationNative(sessionId, "cancelled", "inference-14");
+      const watching = observeLm6CancellationQuiescence(sessionId, 35);
+      setTimeout(() => observeDeploymentQualificationNative(sessionId,
+        "frame", "inference-14"), 10);
+      expect(await watching).toBe(false);
+      expect(disarmDeploymentQualification(sessionId)?.violations)
+        .toContain("native-event-after-terminal");
+    } finally {
+      disarmDeploymentQualification(sessionId);
+    }
+  });
+
+  it("50 cancellation retains its independently owner-bound Chat UUID, not a native inference-N", () => {
+    const sessionId = "lm6-fixture-50", modelId = "managed-local-exact";
+    const id = "05deba77-6a5a-450f-b554-682c883ef8f5";
+    const prompt = "Count to forty";
+    const messages: UIMessage[] = [
+      { id: "user", role: "user", parts: [{ type: "text", text: prompt }] },
+      { id: "assistant", role: "assistant", parts: [{ type: "text", text: "1" }],
+        metadata: {
+          clackActivity: { version: 1, omitted: 0,
+            owner: { sessionId, runId: `${sessionId}:1`, workspaceId: null,
+              agentId: "builtin:coder", modelId, providerId: "openai-compatible" },
+            receipts: [
+              { id: `request:${id}:generating`, kind: "request", label: "Generating...", at: NOW - 100 },
+              { id: `request:${id}:cancelled`, kind: "request", label: "Request cancelled", at: NOW },
+            ] },
+          clackAnswer: { version: 1, runId: `${sessionId}:1`, state: "incomplete",
+            continuations: 0, repairs: 0,
+            segments: [{ id: "segment", previous: null, provider: "openai-compatible",
+              model: modelId, startedAt: NOW - 200, endedAt: NOW, finish: "cancelled",
+              inputTokens: 0, outputTokens: 0, pending: [] }] },
+        } },
+    ];
+    expect(lm6CancelledChatRequestId(messages, sessionId, null, modelId,
+      prompt, "openai-compatible")).toBe(id);
+    expect(lm6CancelledChatRequestId(messages, "foreign-session", null, modelId,
+      prompt, "openai-compatible")).toBeNull();
+    expect(lm6CancelledChatRequestId(messages, sessionId, null, "another-deployment",
+      prompt, "openai-compatible")).toBeNull();
+  });
+
+  it("51 standard usage is explicitly requested only for an armed LM6 flight", async () => {
+    const sessionId = "lm6-fixture-51", bodies: unknown[] = [];
+    const fakeFetch: typeof fetch = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response("data: [DONE]\\n\\n", {
+        headers: { "content-type": "text/event-stream" },
+      });
+    };
+    const request = async () => {
+      const model = createOpenAICompatible({ name: "managed-lm6-test",
+        baseURL: "http://127.0.0.1:65534/v1", fetch: fakeFetch,
+        includeUsage: hasActiveLm6Measurement(sessionId),
+      }).chatModel("fixture");
+      await model.doStream({ prompt: [{ role: "user", content: [
+        { type: "text", text: "Hello" },
+      ] }] } as Parameters<typeof model.doStream>[0]);
+    };
+    expect(hasActiveLm6Measurement(sessionId)).toBe(false);
+    await request();
+    armDeploymentQualification(sessionId, "model", "builtin:coder", { measure: true });
+    try {
+      expect(hasActiveLm6Measurement(sessionId)).toBe(true);
+      await request();
+    } finally {
+      disarmDeploymentQualification(sessionId);
+    }
+    expect((bodies[0] as any).stream_options).toBeUndefined();
+    expect((bodies[1] as any).stream_options).toEqual({ include_usage: true });
+    expect((bodies[1] as any).stream).toBe(true);
   });
 });

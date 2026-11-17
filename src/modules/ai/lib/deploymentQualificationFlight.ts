@@ -104,6 +104,11 @@ export function disarmDeploymentQualification(sessionId: string): QualificationF
 export function hasActiveDeploymentQualification(sessionId: string | undefined): boolean {
   return !!sessionId && flights.has(sessionId);
 }
+/** Optional standardized streaming-usage request, only for a deliberately
+ * armed LM6 flight; ordinary Clack Chats and LM2F stay unchanged. */
+export function hasActiveLm6Measurement(sessionId: string | undefined): boolean {
+  return !!sessionId && !!flights.get(sessionId)?.snapshot.measurement;
+}
 export function qualificationMaxOutputTokens(sessionId: string | undefined): number | undefined {
   return hasActiveDeploymentQualification(sessionId) ? MANAGED_QUALIFICATION_MAX_OUTPUT : undefined;
 }
@@ -173,13 +178,31 @@ export function observeDeploymentQualificationNative(
   at = Date.now(),
   admittedAt?: number | null,
 ): void {
-  const m = sessionId ? flights.get(sessionId)?.snapshot.measurement : undefined;
+  const flight = sessionId ? flights.get(sessionId) : undefined;
+  const m = flight?.snapshot.measurement;
   if (!m || !requestId || requestId.length > 256 || !Number.isSafeInteger(at)) return;
   if (stage === "request") {
     m.nativeRequestOpenEvents = (m.nativeRequestOpenEvents ?? 0) + 1;
     if (!m.nativeRequestIds.includes(requestId))
       m.nativeRequestIds.push(requestId);
     m.requestStartAt ??= at;
+    if (!/^inference-[1-9]\d{0,19}$/.test(requestId) ||
+        m.nativeRequestOpenEvents !== 1 || m.nativeTerminalAt || m.cancelAcknowledgedAt)
+      flight!.snapshot.violations.push("invalid-or-duplicate-native-request");
+    return;
+  }
+  // The session is necessary but not sufficient identity. Rust channel
+  // stages must belong to exactly the one opened inference-N in this flight;
+  // neither a stray terminal nor a prior flight can certify this request.
+  if (m.nativeRequestOpenEvents !== 1 || m.nativeRequestIds.length !== 1 ||
+      m.nativeRequestIds[0] !== requestId) {
+    flight!.snapshot.violations.push("native-event-without-matching-open");
+    return;
+  }
+  if ((m.nativeTerminalAt || m.cancelAcknowledgedAt) &&
+      (stage === "terminal" || stage === "cancelled" || stage === "frame")) {
+    flight!.snapshot.violations.push("native-event-after-terminal");
+    return;
   }
   if (stage === "admission" && admittedAt != null && Number.isSafeInteger(admittedAt))
     m.providerAdmittedAt ??= admittedAt;
@@ -230,4 +253,54 @@ export function observeDeploymentQualificationCancellation(
  * No request is started by this observer and nothing is persisted here. */
 export function peekDeploymentQualificationMeasurement(sessionId: string) {
   return flights.get(sessionId)?.snapshot.measurement ?? null;
+}
+
+/** Native no-continuation proof is bounded to this already-open flight and its
+ * observation window. Never equate the finite window with eternal provider
+ * inactivity or infer anything from another session's activity. */
+export async function observeLm6CancellationQuiescence(
+  sessionId: string, windowMs = 1_500,
+): Promise<boolean | null> {
+  if (!Number.isSafeInteger(windowMs) || windowMs < 1 || windowMs > 1_500)
+    throw new Error("LM6 cancellation observation exceeds its fixed bound");
+  const flight = flights.get(sessionId);
+  const m = flight?.snapshot.measurement;
+  if (!flight || !m || !m.cancelRequestedAt || !m.cancelAcknowledgedAt ||
+      !m.firstMeaningfulAt || m.nativeRequestOpenEvents !== 1 ||
+      m.nativeRequestIds.length !== 1 || m.nativeTerminalAt || flight.snapshot.violations.length)
+    return null;
+  const original = {
+    opens: m.nativeRequestOpenEvents, id: m.nativeRequestIds[0],
+    output: flight.snapshot.textChars, deltas: flight.snapshot.textDeltas,
+    failures: flight.snapshot.violations.length,
+  };
+  await new Promise<void>(resolve => setTimeout(resolve, windowMs));
+  const after = flights.get(sessionId);
+  const current = after?.snapshot.measurement;
+  if (!after || !current) return null;
+  return current.nativeRequestOpenEvents === original.opens &&
+    current.nativeRequestIds.length === 1 && current.nativeRequestIds[0] === original.id &&
+    current.cancelAcknowledgedAt === m.cancelAcknowledgedAt &&
+    current.nativeTerminalAt === null && after.snapshot.textChars === original.output &&
+    after.snapshot.textDeltas === original.deltas &&
+    after.snapshot.violations.length === original.failures;
+}
+
+/** Allow the existing native request's asynchronous settled event to reach
+ * Clack before LM6 disarms its observer. This only waits for actual evidence:
+ * it never dispatches/retries inference and absence remains Unknown. */
+export async function waitForRecordedLm6NativeSettlement(
+  sessionId: string, maxWaitMs = 1_500,
+): Promise<void> {
+  if (!Number.isSafeInteger(maxWaitMs) || maxWaitMs < 0 || maxWaitMs > 1_500)
+    throw new Error("LM6 native settlement observation exceeds its fixed bound");
+  const until = Date.now() + maxWaitMs;
+  while (true) {
+    const m = peekDeploymentQualificationMeasurement(sessionId);
+    if (!m || m.nativeTerminalAt || m.cancelAcknowledgedAt)
+      return;
+    const remaining = until - Date.now();
+    if (remaining <= 0) return;
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(50, remaining)));
+  }
 }

@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { contextRuntime } from "./contextCalibrationTrust";
 import {
   appendLm6Run,
   completeLm6Run,
@@ -20,15 +19,19 @@ import {
   armDeploymentQualification,
   disarmDeploymentQualification,
   observeDeploymentQualificationCancellation,
+  observeLm6CancellationQuiescence,
   peekDeploymentQualificationMeasurement,
+  waitForRecordedLm6NativeSettlement,
   type QualificationFlightSnapshot,
 } from "./deploymentQualificationFlight";
 import { inspectBoundedChat } from "./deploymentQualificationRuntime";
+import { readActivity } from "./activity";
+import { readAnswer } from "./answerContinuation";
+import type { UIMessage } from "ai";
 import { evaluateInstructionAdherence } from "./instructionAdherenceQualification";
 import { observedManagedFabric } from "./deploymentQualificationView";
 import {
   reconcileLocalComputeFabric,
-  resolveModelDeployment,
   type DeploymentRuntimeObservation,
   type LocalComputeFabric,
 } from "./localComputeFabric";
@@ -36,11 +39,11 @@ import { isManagedLocalSelectionId, resolveManagedLocalSelection } from "./manag
 import { admittedManagedLocalRoute, type ManagedLocalNativeStatus } from "./managedLocalRuntime";
 import { projectModelResourceProfile } from "./modelResourceProfile";
 import { nativeHardwareObservationSchema } from "./hardwareProfile";
-import { resolveSelfHostedSelection, type SelfHostedState } from "./selfHostedProfiles";
+import type { SelfHostedState } from "./selfHostedProfiles";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getOrCreateChat, prepareSessionChat, sendMessageToSession } from "@/modules/ai/store/chatRuntime";
 import { awaitSessionWrites, saveMessages } from "./sessions";
-import { cancelSessionInference } from "./inferenceLifecycle";
+import { cancelSessionInference, sessionInference } from "./inferenceLifecycle";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { updateSelfHostedProfiles } from "@/modules/settings/store";
 
@@ -103,7 +106,6 @@ async function readyManaged(status: ManagedLocalNativeStatus, selectionId: strin
 
 async function targetFor(selectionId: string, allowStart: boolean): Promise<Target | null> {
   const state = usePreferencesStore.getState().selfHostedInference;
-  const now = Date.now();
   if (isManagedLocalSelectionId(selectionId)) {
     const raw = managedStatus(await invoke("managed_local_runtime_status"));
     const ready = allowStart ? await readyManaged(raw, selectionId, state) : {
@@ -132,33 +134,11 @@ async function targetFor(selectionId: string, allowStart: boolean): Promise<Targ
       provider: "openai-compatible", managed: true, native: ready.status,
     };
   }
-  if (!selectionId.startsWith("self-hosted:")) return null;
-  const selected = resolveSelfHostedSelection(state, selectionId);
-  if (selected.status !== "available") return null;
-  const resolved = resolveModelDeployment(state, selected.profile);
-  if (!resolved || resolved.runtime.type !== "ollama" ||
-      resolved.endpoint.allowPrivateNetwork !== true || resolved.endpoint.enabled === false)
-    return null;
-  const observed = contextRuntime(resolved.endpoint.id);
-  if (!observed || observed.at > now || now - observed.at >= 30_000 ||
-      observed.configurationRevision !== resolved.endpoint.configurationRevision)
-    return null;
-  const fabric = reconcileLocalComputeFabric(state);
-  // Cached native protocol/version observation may be fresh, but not proof
-  // of Ollama model residency; cold and warm stay Unknown.
-  const observation: DeploymentRuntimeObservation = {
-    runtimeId: resolved.runtime.id,
-    configurationRevision: observed.configurationRevision,
-    version: observed.version, epoch: observed.epoch, observedAt: observed.at,
-  };
-  const resource = projectModelResourceProfile(resolved.artifact, resolved.runtime, resolved.deployment);
-  return {
-    state, fabric, deploymentId: resolved.deployment.id, selectionId, observation,
-    contextTokens: resource.configuredContext.value,
-    backend: resource.executionPlacement.value ?? "Unknown",
-    thermal: "unknown", thermalSource: "remote-ollama-model-residency-not-verified",
-    provider: "ollama", managed: false, endpointId: resolved.endpoint.id,
-  };
+  // `self_hosted_context_runtime` verifies the remote Ollama /api/version,
+  // but its epoch() originates in Clack's Rust process. It is not the remote
+  // Ollama process/model epoch. Without independent remote identity and
+  // residency evidence, LM6 must not mark remote runs current or dispatch.
+  return null;
 }
 
 async function localResourcePoint(): Promise<{
@@ -204,6 +184,40 @@ function verifiedResponse(selectionId: string, sessionId: string,
     final.profile.workspaceId, selectionId, flight, prompt, provider);
 }
 
+/** A cancelled answer must not be mistaken for a complete Chat, but its own
+ * Clack activity receipts can still independently attest one Chat UUID.
+ * The native inference-N remains a separate authenticated registry namespace. */
+export function lm6CancelledChatRequestId(
+  messages: readonly UIMessage[], sessionId: string, workspaceId: string | null,
+  modelId: string, prompt: string, provider: string,
+): string | null {
+  if (messages.length !== 2 || messages[0].role !== "user" ||
+      messages[0].parts.length !== 1 || messages[0].parts[0].type !== "text" ||
+      messages[0].parts[0].text !== prompt || messages[1].role !== "assistant" ||
+      messages[1].parts.some(p => p.type.startsWith("tool-") || p.type === "dynamic-tool"))
+    return null;
+  const activity = readActivity(messages[1], sessionId, workspaceId);
+  const answer = readAnswer(messages[1]);
+  if (!activity || !answer || activity.omitted !== 0 ||
+      activity.owner.sessionId !== sessionId ||
+      activity.owner.workspaceId !== workspaceId ||
+      activity.owner.modelId !== modelId ||
+      activity.owner.agentId !== "builtin:coder" ||
+      activity.owner.providerId !== provider ||
+      answer.state !== "incomplete" || answer.segments.length !== 1 ||
+      answer.segments[0].finish !== "cancelled" ||
+      answer.segments[0].provider !== provider || answer.segments[0].model !== modelId ||
+      answer.continuations !== 0 || answer.repairs !== 0 ||
+      activity.receipts.some(r => r.kind === "retry" || r.kind === "recovered" || r.kind === "tool"))
+    return null;
+  const ids = new Set(activity.receipts.filter(r => r.kind === "request" &&
+    r.id.startsWith("request:")).map(r => r.id.split(":")[1]));
+  if (ids.size !== 1 || !activity.receipts.some(r => r.kind === "request" &&
+      r.label === "Request cancelled")) return null;
+  const id = [...ids][0];
+  return /^[0-9a-f-]{36}$/i.test(id) ? id : null;
+}
+
 async function boundedSend(sessionId: string, prompt: string, cancellation: boolean) {
   const sent = sendMessageToSession(sessionId, { text: prompt });
   // Prevent unhandled rejections if an explicit bound interrupts the sender.
@@ -240,7 +254,10 @@ async function boundedSend(sessionId: string, prompt: string, cancellation: bool
 
 /** Fixed 3-attempt plan: cold/unknown first Chat + warm/unknown one Chat +
  * one cancellation. No attempt is repeated to improve a result. */
-export async function runBoundedDeploymentMeasurement(selectionId: string): Promise<{
+export async function runBoundedDeploymentMeasurement(
+  selectionId: string,
+  mode: "standard" | "final-live-three" = "standard",
+): Promise<{
   status: "recorded" | "unavailable";
   runId: string | null;
   deploymentId: string | null;
@@ -258,14 +275,33 @@ export async function runBoundedDeploymentMeasurement(selectionId: string): Prom
     if (!lm6ExactScope(initial.fabric, initial.deploymentId, initial.observation, Date.now()))
       return { status: "unavailable", runId: null, deploymentId: initial.deploymentId, attempted: 0 };
     const startedAt = Date.now();
+    const runId = crypto.randomUUID();
     const attempts: Lm6Attempt[] = [];
-    const procedures = [
+    // Final-live-three is a separately authorized measurement-only procedure:
+    // cold Chat, same-epoch warm Chat, cancellation. Do NOT re-run the known
+    // LM2F adherence failure. Existing standard UI procedure is unchanged.
+    const procedures = (mode === "final-live-three" ? [
+      { kind: "chat" as const, prompt: LM6_WARM_CHAT_PROMPT, cancel: false },
+      { kind: "chat" as const, prompt: LM6_WARM_CHAT_PROMPT, cancel: false },
+      { kind: "cancellation" as const, prompt: LM6_CANCEL_CHAT_PROMPT, cancel: true },
+    ] : [
       { kind: "instruction-adherence" as const, prompt: MANAGED_QUALIFICATION_PROMPT, cancel: false },
       { kind: "chat" as const, prompt: LM6_WARM_CHAT_PROMPT, cancel: false },
       { kind: "cancellation" as const, prompt: LM6_CANCEL_CHAT_PROMPT, cancel: true },
-    ].slice(0, LM6_MAX_ATTEMPTS);
+    ]).slice(0, LM6_MAX_ATTEMPTS);
+    let unsafeToDispatchAgain = false;
     for (let i = 0; i < procedures.length; i++) {
       const plan = procedures[i];
+      if (unsafeToDispatchAgain) {
+        const at = Date.now();
+        attempts.push(lm6AttemptFromSignals({
+          attemptId: `attempt-${i + 1}`, workload: plan.kind,
+          thermal: "unknown", thermalSource: "prior-native-settlement-unverified",
+          startedAt: at, endedAt: at, result: "unavailable",
+          failure: "incomplete-evidence", outputObserved: false, terminalObserved: false,
+        }));
+        continue;
+      }
       const before = await targetFor(selectionId, false);
       // Never transfer evidence after restart/host/config/model changes.
       const stillSame = !!before && before.observation.epoch === initial.observation.epoch &&
@@ -287,6 +323,7 @@ export async function runBoundedDeploymentMeasurement(selectionId: string): Prom
       let failed: unknown = null;
       let settled = false;
       let cancellationResult: { startedOutput?: boolean; acknowledged?: boolean } = {};
+      let noContinuationObserved: boolean | null = null;
       const pointBefore = initial.managed ? await localResourcePoint() :
         { ram: null, vram: null, ramAt: null, vramAt: null };
       let pointDuring: Awaited<ReturnType<typeof localResourcePoint>> =
@@ -313,6 +350,20 @@ export async function runBoundedDeploymentMeasurement(selectionId: string): Prom
         settled = outcome.completedWithoutBound;
         failed = outcome.error;
         cancellationResult = outcome;
+        // Chat may settle just ahead of Rust's native Settled channel event.
+        // Allow only a fixed observation grace; never replay the provider.
+        await waitForRecordedLm6NativeSettlement(sessionId);
+        if (plan.cancel) {
+          const quiet = await observeLm6CancellationQuiescence(sessionId);
+          const chat = getOrCreateChat(sessionId);
+          const native = await targetFor(selectionId, false).catch(() => null);
+          noContinuationObserved = quiet === true &&
+            !sessionInference(sessionId) && chat.status !== "submitted" &&
+            chat.status !== "streaming" && !!native &&
+            native.native?.state === "Ready" &&
+            isCurrentSameDeployment(native, initial) ? true :
+            quiet === false ? false : null;
+        }
       } catch (error) {
         failed = error;
       } finally {
@@ -322,6 +373,15 @@ export async function runBoundedDeploymentMeasurement(selectionId: string): Prom
       const response = sessionId && !failed && !plan.cancel
         ? verifiedResponse(selectionId, sessionId, initial.provider, plan.prompt, flight)
         : null;
+      const cancelledChatId = sessionId && plan.cancel && !failed
+        ? (() => {
+            const session = useChatStore.getState().sessions.find(s => s.id === sessionId);
+            return session?.profile?.modelId === selectionId &&
+              session.profile.agentId === "builtin:coder"
+              ? lm6CancelledChatRequestId(getOrCreateChat(sessionId).messages, sessionId,
+                  session.profile.workspaceId, selectionId, plan.prompt, initial.provider)
+              : null;
+          })() : null;
       const ids = m?.nativeRequestIds ?? [];
       // Native ai_http_open IDs are "inference-N", while Chat activity owns
       // separate request UUIDs. Requiring equality would reject real traffic.
@@ -368,13 +428,14 @@ export async function runBoundedDeploymentMeasurement(selectionId: string): Prom
         // A cancelled SDK promise alone cannot prove all future provider
         // effects stopped; leave this Unknown absent a native no-continuation
         // proof instead of silently upgrading cancellation confidence.
-        noContinuationObserved: null,
+        noContinuationObserved,
         duplicateRequestObserved:
           ids.length > 1 || (m?.nativeRequestOpenEvents ?? 0) > 1,
       };
       const cancelled = plan.cancel && !!m?.cancelRequestedAt &&
-        !!m?.cancelAcknowledgedAt && cancellationResult.acknowledged === true &&
-        uniqueOne;
+        !!m?.cancelAcknowledgedAt && cancellationResult.startedOutput === true &&
+        cancellationResult.acknowledged === true && !!cancelledChatId &&
+        noContinuationObserved === true && uniqueOne && !flight?.violations.length;
       const failure = verified ? "none" as const :
         cancelled ? "cancelled" as const :
         failed && !plan.cancel ? lm6Failure(failed) :
@@ -383,7 +444,7 @@ export async function runBoundedDeploymentMeasurement(selectionId: string): Prom
         "incomplete-evidence" as const;
       attempts.push(lm6AttemptFromSignals({
         attemptId: `attempt-${i + 1}`,
-        requestId: response?.requestId ?? null,
+        requestId: response?.requestId ?? cancelledChatId ?? null,
         nativeRequestId,
         nativeRequestOpenEvents: m?.nativeRequestOpenEvents ?? null,
         distinctNativeRequestCount: m?.nativeRequestIds.length ?? null,
@@ -405,6 +466,10 @@ export async function runBoundedDeploymentMeasurement(selectionId: string): Prom
         await saveMessages(sessionId, messages).catch(() => {});
         await awaitSessionWrites(sessionId).catch(() => {});
       }
+      // Never start the next provider request if this one's native terminal
+      // state is not observed. A settled SDK promise alone is not a drain.
+      if (!m || (!m.nativeTerminalAt && !m.cancelAcknowledgedAt))
+        unsafeToDispatchAgain = true;
     }
     const endedAt = Date.now();
     const scope = lm6ExactScope(initial.fabric, initial.deploymentId, initial.observation, startedAt);
@@ -412,7 +477,7 @@ export async function runBoundedDeploymentMeasurement(selectionId: string): Prom
       status: "unavailable", runId: null, deploymentId: initial.deploymentId, attempted: attempts.length,
     };
     const run = completeLm6Run({
-      runId: crypto.randomUUID(), scope,
+      runId, scope,
       configuredContextTokens: initial.contextTokens, backend: initial.backend,
       startedAt, endedAt, requestedAttempts: procedures.length, attempts,
     });

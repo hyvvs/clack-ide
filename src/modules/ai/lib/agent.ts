@@ -74,6 +74,7 @@ import { effectiveProfileValue, resolveSelfHostedSelection } from "@/modules/ai/
 import { createCalibrationCapture, type CalibrationCaptureOptions } from "@/modules/ai/lib/calibrationCapture";
 import { recordPassiveCalibration } from "@/modules/ai/lib/inferenceCalibration";
 import {
+  hasActiveLm6Measurement,
   observeDeploymentQualificationUsage,
   observeDeploymentQualificationOllamaTiming,
 } from "@/modules/ai/lib/deploymentQualificationFlight";
@@ -453,6 +454,11 @@ export async function buildLanguageModel(
       built = createOpenAICompatible({
         name: "openai-compatible",
         baseURL: compatURL,
+        // The pinned managed llama.cpp server supports standard stream usage.
+        // Request it only for a deliberately armed, exact managed LM6 flight;
+        // normal/LM2F/external OpenAI-compatible traffic is unchanged.
+        includeUsage: !!options.managedRuntimeGuard &&
+          hasActiveLm6Measurement(options.inferenceScope?.sessionId),
         apiKey: options.selfHosted
           ? customEndpointKey || undefined
           : epKey || key || undefined,

@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { contextRuntime } from "@/modules/ai/lib/contextCalibrationTrust";
 import { deploymentMeasurementPanel, type Lm6Run } from "@/modules/ai/lib/deploymentMeasurement";
 import { observedManagedFabric } from "@/modules/ai/lib/deploymentQualificationView";
 import { unknown, type EvidenceValue } from "@/modules/ai/lib/hardwareProfile";
@@ -90,27 +89,18 @@ function resolveMeasurementSelection(
   const deployment = resolveModelDeployment(settings, target.profile);
   if (!deployment) return null;
   const resource = projectModelResourceProfile(deployment.artifact, deployment.runtime, deployment.deployment);
-  const runtime = contextRuntime(target.endpoint.id);
-  const observation = runtime && runtime.configurationRevision === target.endpoint.configurationRevision &&
-    runtime.at <= now && now - runtime.at < 30_000
-    ? {
-        runtimeId: deployment.runtime.id,
-        version: runtime.version,
-        configurationRevision: runtime.configurationRevision,
-        epoch: runtime.epoch,
-        observedAt: runtime.at,
-      }
-    : undefined;
+  // A native Ollama /api/version observation may be fresh, but its returned
+  // epoch identifies Clack, not the remote process or model residency.
+  // Historical evidence remains readable without granting current authority.
   return {
     state: { ...settings, fabric: reconcileLocalComputeFabric(settings) },
     deploymentId: deployment.deployment.id,
-    observation,
+    observation: undefined,
     contextTokens: resource.configuredContext.value,
     backend: resource.executionPlacement.value ?? "Unknown",
     label: deployment.artifact.displayName,
-    // Saved endpoint registration is NOT live provider availability. Without
-    // a fresh existing runtime observation, do not offer inference or probe.
-    ready: !!observation,
+    // Endpoint reachability cannot substitute for remote runtime identity.
+    ready: false,
   };
 }
 
@@ -357,8 +347,8 @@ export function DeploymentMeasurementControl({ sessionId }: { sessionId: string 
             <p className="text-muted-foreground">This exact managed deployment is Stopped. A user-initiated bounded run may start it once for a cold observation; opening this panel does not start it.</p>}
           {managed && !selection?.ready && !startableManaged &&
             <p className="text-muted-foreground">The current native state does not permit a safe bounded start. No measurement will run.</p>}
-          {!managed && !selection?.ready &&
-            <p className="text-muted-foreground">Secondary runtime availability is unverified. No SSH, provider probe or inference is initiated by this panel.</p>}
+          {!managed &&
+            <p className="text-muted-foreground">Ollama version reachability does not certify the remote runtime epoch or model residency. Remote LM6 is unavailable without independent proof; no SSH, provider probe or inference is initiated by this panel.</p>}
           <Button size="sm" variant="ghost" onClick={refreshStatus}>Refresh status</Button>
         </div>
       </PopoverContent>

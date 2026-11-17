@@ -318,6 +318,9 @@ describe("LM6 measurement popover is passive and scoped", () => {
 
     expect(html).toContain("Deployment measurements");
     expect(html).toContain("No current exact-scope measured run.");
+    expect(html).toContain("Ollama version reachability does not certify the remote runtime epoch");
+    expect(html).toContain("Remote LM6 is unavailable without independent proof");
+    expect(html).toContain("disabled");
     expect(invokeMock).not.toHaveBeenCalled();
     expect(harness.runMeasurement).not.toHaveBeenCalled();
   });
