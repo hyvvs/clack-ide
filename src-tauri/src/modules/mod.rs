@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod conversation_memory;
 pub mod fs;
 pub mod git;
+pub mod hardware_profile;
 pub mod history;
 pub mod managed_local_runtime;
 pub mod inference_probe;

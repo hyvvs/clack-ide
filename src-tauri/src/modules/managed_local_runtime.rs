@@ -253,6 +253,13 @@ pub struct ManagedArtifact {
     pub quantization: Option<String>,
     pub declared_context: Option<u64>,
     pub file_identity: String,
+    /// Read from the bounded GGUF header, not a filename or estimated family.
+    pub block_count: Option<u64>,
+    pub embedding_length: Option<u64>,
+    pub attention_head_count: Option<u64>,
+    pub attention_head_count_kv: Option<u64>,
+    pub attention_key_length: Option<u64>,
+    pub attention_value_length: Option<u64>,
 }
 
 fn inspect(path: &Path) -> Result<ManagedArtifact, String> {
@@ -299,12 +306,17 @@ fn inspect(path: &Path) -> Result<ManagedArtifact, String> {
                 key.as_str(),
                 "general.architecture"
                     | "general.name"
+                    | "general.size_label"
                     | "llama.context_length"
                     | "qwen2.context_length"
                     | "qwen3.context_length"
                     | "gemma.context_length"
                     | "general.file_type"
-            ) {
+            ) || (key.len() <= 96 && [
+                ".block_count", ".embedding_length", ".attention.head_count",
+                ".attention.head_count_kv", ".attention.key_length",
+                ".attention.value_length",
+            ].iter().any(|suffix| key.ends_with(suffix))) {
                 meta.insert(key, value);
             }
         }
@@ -319,6 +331,10 @@ fn inspect(path: &Path) -> Result<ManagedArtifact, String> {
         .and_then(|v| meta.get(&format!("{v}.context_length")))
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|v| *v > 0 && *v <= 8_388_608);
+    let numeric = |suffix: &str| family.as_deref()
+        .and_then(|arch| meta.get(&format!("{arch}.{suffix}")))
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0 && *value <= 1_048_576);
     let display_name = meta
         .get("general.name")
         .filter(|v| !v.is_empty() && !v.chars().any(char::is_control))
@@ -330,11 +346,33 @@ fn inspect(path: &Path) -> Result<ManagedArtifact, String> {
         format: "gguf",
         format_version: version,
         display_name,
-        family,
+        family: family.clone(),
         quantization: None,
         declared_context,
         file_identity: format!("{hex}:{size}"),
+        block_count: numeric("block_count"),
+        embedding_length: numeric("embedding_length"),
+        attention_head_count: numeric("attention.head_count"),
+        attention_head_count_kv: numeric("attention.head_count_kv"),
+        attention_key_length: numeric("attention.key_length"),
+        attention_value_length: numeric("attention.value_length"),
     })
+}
+
+/// Read-only metadata on the *existing* content-addressed imported GGUF.
+/// Recheck full digest: a private filename is not proof that bytes are intact.
+/// Does not load a model, start a server, or change its settings.
+#[tauri::command]
+pub fn managed_local_runtime_model_metadata(
+    app: AppHandle,
+    digest: String,
+) -> Result<ManagedArtifact, String> {
+    let path = model_path(&app, &digest)?;
+    let observed = inspect(&path)?;
+    if observed.digest != digest {
+        return Err("Imported GGUF no longer matches the exact digest".into());
+    }
+    Ok(observed)
 }
 
 #[tauri::command]
@@ -1153,6 +1191,40 @@ mod tests {
         bytes.extend_from_slice(&5u64.to_le_bytes());
         bytes.extend_from_slice(b"llama");
         bytes
+    }
+
+    #[test]
+    fn bounded_gguf_scalar_geometry_has_exact_header_provenance() {
+        let mut bytes = small_gguf();
+        // Expand the tiny synthetic GGUF's metadata count without changing
+        // its header. No real model runtime or external provider is invoked.
+        bytes[16..24].copy_from_slice(&8u64.to_le_bytes());
+        for (key, value) in [
+            ("llama.block_count", 24u64),
+            ("llama.embedding_length", 896),
+            ("llama.attention.head_count", 14),
+            ("llama.attention.head_count_kv", 2),
+            ("llama.attention.key_length", 64),
+            ("llama.attention.value_length", 64),
+            ("llama.context_length", 32_768),
+        ] {
+            bytes.extend_from_slice(&(key.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(key.as_bytes());
+            bytes.extend_from_slice(&10u32.to_le_bytes()); // GGUF uint64
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("metadata.gguf");
+        fs::write(&file, bytes).unwrap();
+        let data = inspect(&file).unwrap();
+        assert_eq!(data.family.as_deref(), Some("llama"));
+        assert_eq!(data.block_count, Some(24));
+        assert_eq!(data.embedding_length, Some(896));
+        assert_eq!(data.attention_head_count, Some(14));
+        assert_eq!(data.attention_head_count_kv, Some(2));
+        assert_eq!(data.attention_key_length, Some(64));
+        assert_eq!(data.attention_value_length, Some(64));
+        assert_eq!(data.declared_context, Some(32_768));
     }
 
     #[test]

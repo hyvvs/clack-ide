@@ -388,6 +388,8 @@ pub fn run() {
             modules::self_hosted_profiles::self_hosted_profiles_compare_and_swap,
             modules::self_hosted_profiles::self_hosted_profiles_snapshot,
             modules::managed_local_runtime::managed_local_runtime_status,
+            modules::hardware_profile::local_hardware_observation,
+            modules::managed_local_runtime::managed_local_runtime_model_metadata,
             modules::managed_local_runtime::managed_local_runtime_inspect,
             modules::managed_local_runtime::managed_local_runtime_model_present,
             modules::managed_local_runtime::managed_local_runtime_import,
