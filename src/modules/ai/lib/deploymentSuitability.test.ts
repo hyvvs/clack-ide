@@ -58,10 +58,27 @@ const osObservation = (
   os: "windows",
   architecture: "x86_64",
   logicalProcessors: 24,
+  logicalProcessorsSource: "windows-kernel-processor-topology",
+  cpuManufacturer: {
+    value: "AuthenticAMD",
+    source: "windows-registry-cpu-identity",
+    observedAt: at - 100,
+  },
+  cpuModel: {
+    value: "Synthetic CPU Model",
+    source: "windows-registry-cpu-identity",
+    observedAt: at - 100,
+  },
+  physicalCores: {
+    value: 12,
+    source: "windows-kernel-processor-topology",
+    observedAt: at - 100,
+  },
   totalRamBytes: total,
   availableRamBytes: available,
   observedAt: at - 100,
   source: "native-os-readonly",
+  gpus: [],
   gpuInventoryComplete: false,
 });
 

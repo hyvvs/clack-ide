@@ -634,6 +634,23 @@ export function assessDeploymentSuitability(input: {
       "cpu-only",
       "Keep the current CPU-only backend until a GPU-capable runtime and usable VRAM are independently verified.",
     );
+  if (
+    resource.executionPlacement.value === "CPU" &&
+    hardware.backends.cuda.hardwareSupports.value === true &&
+    hardware.backends.cuda.installedRuntimeExecutes.value === false &&
+    hardware.gpus.some(
+      (gpu) =>
+        gpu.supportedBackends.value?.includes("cuda") &&
+        gpu.totalVramBytes.provenance === "Measured" &&
+        (gpu.totalVramBytes.value ?? 0) >
+          (resource.weightMemoryBytes.value ?? Number.POSITIVE_INFINITY) +
+            512 * 1024 ** 2,
+    )
+  )
+    add(
+      "gpu-runtime",
+      "This GPU reports CUDA hardware capability and sufficient total VRAM for the estimated weights. A separately verified GPU-capable runtime might improve execution; current managed llama.cpp is CPU-only. No setting will change.",
+    );
   else if (
     resource.executionPlacement.value === "GPU" &&
     capacity.fit === "Fits"
