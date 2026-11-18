@@ -10,6 +10,7 @@ import { AgentPermissionControl } from "@/modules/ai/components/AgentPermissionC
 import { DeploymentQualificationControl } from "@/modules/ai/components/DeploymentQualificationControl";
 import { DeploymentSuitabilityControl } from "@/modules/ai/components/DeploymentSuitabilityControl";
 import { DeploymentMeasurementControl } from "@/modules/ai/components/DeploymentMeasurementControl";
+import { DeploymentEvidenceExplorer } from "@/modules/ai/components/DeploymentEvidenceExplorer";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -53,6 +54,7 @@ export function ChatSecondaryControls({
         <DeploymentQualificationControl sessionId={sessionId} />
         <DeploymentSuitabilityControl sessionId={sessionId} />
         <DeploymentMeasurementControl sessionId={sessionId} />
+        <DeploymentEvidenceExplorer sessionId={sessionId} />
         <ChatFallbackControl sessionId={sessionId} showLabel />
         {capacity}
       </fieldset>
