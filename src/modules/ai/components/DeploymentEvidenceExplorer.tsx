@@ -11,9 +11,11 @@ import {
   type EvidenceRecommendationCategory,
 } from "@/modules/ai/lib/deploymentEvidenceDecisions";
 import { buildDeploymentEvidenceHistory } from "@/modules/ai/lib/deploymentEvidenceHistory";
+import { profileCandidateDeployment } from "@/modules/ai/lib/candidateQualification";
+import { deploymentProductSummary, type DeploymentProductSummary } from "@/modules/ai/lib/deploymentProductStates";
 import { observedManagedFabric } from "@/modules/ai/lib/deploymentQualificationView";
 import { nativeHardwareObservationSchema, type NativeHardwareObservation } from "@/modules/ai/lib/hardwareProfile";
-import { resolveModelDeployment } from "@/modules/ai/lib/localComputeFabric";
+import { reconcileLocalComputeFabric, resolveModelDeployment } from "@/modules/ai/lib/localComputeFabric";
 import {
   isManagedLocalSelectionId,
   MANAGED_LOCAL_HOST_ID,
@@ -56,6 +58,15 @@ function validNativeStatus(value: unknown): ManagedLocalNativeStatus | null {
   return status as ManagedLocalNativeStatus;
 }
 
+/** Read-only IPC may stall under host pressure. Bound waiting for display;
+ * an unfinished read never becomes readiness or measurement authority. */
+function observedNativeRead(command: string, args?: Record<string, unknown>): Promise<unknown> {
+  return Promise.race([
+    invoke<unknown>(command, args).catch(() => null),
+    new Promise<null>(resolve => setTimeout(() => resolve(null), 4_000)),
+  ]);
+}
+
 /** Resolve the exact conversation selection. Display labels and model tags
  * are never used as lookup keys or evidence authority. */
 function selectedDeploymentId(state: SelfHostedState, selectionId: string): string | null {
@@ -76,8 +87,9 @@ function evidenceMetric(value: { value: number | null; provenance: string; unit:
   return `${value.value.toLocaleString()} ${value.unit} · ${value.provenance}`;
 }
 
-function Overview({ candidate, historyCount, instructionHistory }: {
+function Overview({ candidate, product, historyCount, instructionHistory }: {
   candidate: EvidenceCandidate;
+  product: DeploymentProductSummary;
   historyCount: number;
   instructionHistory: { verdict: string; status: string; at: number } | undefined;
 }) {
@@ -91,19 +103,20 @@ function Overview({ candidate, historyCount, instructionHistory }: {
         </p>
       </div>
       <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border p-2 sm:grid-cols-3">
-        <div><dt className="text-muted-foreground">Readiness</dt><dd className="font-medium">{candidate.readiness}</dd></div>
-        <div><dt className="text-muted-foreground">Chat qualification</dt><dd>{candidate.qualification.chat.state}</dd></div>
+        <div><dt className="text-muted-foreground">Readiness</dt><dd className="font-medium">{product.readiness}</dd></div>
+        <div><dt className="text-muted-foreground">Chat qualification</dt><dd>{product.qualification}</dd></div>
         <div><dt className="text-muted-foreground">Hardware fit</dt><dd>{candidate.hardwareFit} · {candidate.confidence} confidence</dd></div>
         <div><dt className="text-muted-foreground">Main limiting factor</dt><dd>{candidate.limitingFactor}</dd></div>
         <div><dt className="text-muted-foreground">Current warm first output</dt><dd>{evidenceMetric(candidate.warmFirstOutput)}</dd></div>
-        <div><dt className="text-muted-foreground">Instruction adherence</dt><dd>{candidate.qualification.instruction.state}</dd></div>
-        <div><dt className="text-muted-foreground">Native tools</dt><dd>{candidate.qualification.nativeTools.state}</dd></div>
+        <div><dt className="text-muted-foreground">Instruction adherence</dt><dd>{product.instruction}</dd></div>
+        <div><dt className="text-muted-foreground">Native tools</dt><dd>{product.nativeTools}</dd></div>
         <div><dt className="text-muted-foreground">Automatic Agent</dt><dd>{candidate.qualification.agent.eligible ? "Qualified" : "Unavailable"}</dd></div>
         <div><dt className="text-muted-foreground">Evidence history</dt><dd>{historyCount} records</dd></div>
         <div><dt className="text-muted-foreground">LM6 saved runs</dt><dd>{candidate.historyRunCount}</dd></div>
         <div><dt className="text-muted-foreground">Measured Chat samples</dt><dd>{candidate.measuredChatSamples}</dd></div>
         <div><dt className="text-muted-foreground">Generation</dt><dd>{evidenceMetric(candidate.generationThroughput)}</dd></div>
       </dl>
+      {product.readiness !== "Ready" && <p className="text-muted-foreground">{product.reason}</p>}
       {instructionHistory && (
         <p className="text-muted-foreground">
           Last recorded instruction evidence: {instructionHistory.verdict} · {instructionHistory.status}
@@ -173,11 +186,11 @@ export function DeploymentEvidenceExplorer({ sessionId }: { sessionId: string })
     // runtime status. Reading does not load/start a model or write settings.
     void (async () => {
       const [hardwareResult, metadataResult] = await Promise.allSettled([
-        invoke<unknown>("local_hardware_observation"),
-        invoke<unknown>("managed_local_runtime_model_metadata", { digest }),
+        observedNativeRead("local_hardware_observation"),
+        observedNativeRead("managed_local_runtime_model_metadata", { digest }),
       ]);
       if (token !== request.current) return;
-      const rawStatus = await invoke<unknown>("managed_local_runtime_status").catch(() => null);
+      const rawStatus = await observedNativeRead("managed_local_runtime_status");
       const observedAt = Date.now();
       if (token !== request.current ||
           selectedForSession(sessionId) !== selectionId ||
@@ -238,6 +251,9 @@ export function DeploymentEvidenceExplorer({ sessionId }: { sessionId: string })
   const compared = otherCandidates.find(row => row.deploymentId === comparisonId)
     ?? otherCandidates[0];
   const comparison = candidate && compared ? compareDeploymentEvidence(candidate, compared) : null;
+  const product = candidate ? deploymentProductSummary(candidate,
+    reconcileLocalComputeFabric(settings)) : undefined;
+  const candidateProfile = candidate ? profileCandidateDeployment(candidate) : null;
   const recommendations = recommendAllDeployments(candidates);
   const recommendation = recommendations.find(row => row.category === category);
   // LM6 pre-fix uncorrelated adherence attempts are informational, not an
@@ -267,10 +283,36 @@ export function DeploymentEvidenceExplorer({ sessionId }: { sessionId: string })
           <p role="status">Exact selected deployment unavailable. Readiness, fit, and recommendations are Unknown.</p>
         ) : (
           <>
-            <Overview candidate={candidate} historyCount={history?.total ?? 0}
+            <Overview candidate={candidate} product={product ?? {
+              readiness: "Unknown", qualification: "Unknown", instruction: "Unknown",
+              nativeTools: "Unknown", reason: "Current deployment observation unavailable.",
+            }} historyCount={history?.total ?? 0}
               instructionHistory={lastInstruction && {
                 verdict: lastInstruction.verdict, status: lastInstruction.status, at: lastInstruction.at,
               }} />
+            {candidateProfile && (
+              <details className="border-t pt-2">
+                <summary className="cursor-pointer font-medium">Candidate workload profile (current evidence only)</summary>
+                <div className="space-y-2 pt-2">
+                  <p className="text-muted-foreground">
+                    Workload-specific evidence, not a model reputation score. Coding and long-context
+                    results require independent deterministic tasks before they can be called qualified.
+                  </p>
+                  <dl className="space-y-1">
+                    {candidateProfile.workloads.map(item => (
+                      <div key={item.workload}>
+                        <dt className="inline font-medium">{item.workload}: </dt>
+                        <dd className="inline text-muted-foreground">{item.verdict} · {item.reason}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <p className="text-muted-foreground">Measured warm generation: {
+                    candidateProfile.generationTokensPerSecond === null ? "Unknown"
+                      : `${candidateProfile.generationTokensPerSecond.toFixed(2)} tokens/s`
+                  }. Agent acceptance is unavailable until independent current prerequisites pass.</p>
+                </div>
+              </details>
+            )}
             <details className="border-t pt-2">
               <summary className="cursor-pointer font-medium">Advanced evidence history ({history?.total ?? 0})</summary>
               <div className="space-y-2 pt-2">

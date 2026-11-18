@@ -11,6 +11,7 @@ import { DeploymentQualificationControl } from "@/modules/ai/components/Deployme
 import { DeploymentSuitabilityControl } from "@/modules/ai/components/DeploymentSuitabilityControl";
 import { DeploymentMeasurementControl } from "@/modules/ai/components/DeploymentMeasurementControl";
 import { DeploymentEvidenceExplorer } from "@/modules/ai/components/DeploymentEvidenceExplorer";
+import { DeploymentQualificationLab } from "@/modules/ai/components/DeploymentQualificationLab";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -51,10 +52,16 @@ export function ChatSecondaryControls({
         <AgentPermissionControl agentId={agentId} />
         <ChatToolsControl sessionId={sessionId} />
         <ChatConnectionControl sessionId={sessionId} />
-        <DeploymentQualificationControl sessionId={sessionId} />
-        <DeploymentSuitabilityControl sessionId={sessionId} />
-        <DeploymentMeasurementControl sessionId={sessionId} />
+        <DeploymentQualificationLab sessionId={sessionId} />
         <DeploymentEvidenceExplorer sessionId={sessionId} />
+        <details className="min-w-0">
+          <summary className="cursor-pointer py-1 text-muted-foreground">Advanced diagnostics</summary>
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <DeploymentQualificationControl sessionId={sessionId} />
+            <DeploymentSuitabilityControl sessionId={sessionId} />
+            <DeploymentMeasurementControl sessionId={sessionId} />
+          </div>
+        </details>
         <ChatFallbackControl sessionId={sessionId} showLabel />
         {capacity}
       </fieldset>

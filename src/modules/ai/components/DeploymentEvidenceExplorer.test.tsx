@@ -261,7 +261,7 @@ describe("LM8–LM10 passive deployment guide", () => {
     const html = await openGuide();
     expect(native).not.toHaveBeenCalled();
     expect(html).toContain("remote:latest");
-    expect(html).toContain("Unverified");
+    expect(html).toContain("Unknown"); // LM15 public readiness state, not internal Unverified.
     expect(html).toContain("Current warm first output");
     expect(html).toContain("Unknown");
     expect(html).toContain("No currently qualified recommendation");
@@ -324,7 +324,7 @@ describe("LM8–LM10 passive deployment guide", () => {
     // Fourth useState slot is the display TTL clock; no clock mocking or probe.
     harness.slots[3] = Date.now() + 31_000;
     const expired = render();
-    expect(expired).toContain("Unverified");
+    expect(expired).toContain("Unknown"); // Expired native observation has no authority.
     expect(expired).toContain("Unknown");
     expect(expired).toContain("No currently qualified recommendation");
     expect(native.mock.calls.length).toBe(calls);
