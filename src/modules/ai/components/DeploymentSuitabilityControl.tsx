@@ -17,10 +17,16 @@ import {
 } from "@/modules/ai/lib/deploymentSuitability";
 import { deploymentMeasurementPanel } from "@/modules/ai/lib/deploymentMeasurement";
 import {
+  deploymentRequestedExecution,
+  runtimeBackendVariants,
+  selectDeploymentExecution,
+} from "@/modules/ai/lib/executionBackendSelection";
+import {
   type EvidenceValue,
   type GpuHardware,
   type NativeHardwareObservation,
   nativeHardwareObservationSchema,
+  observedComputeHost,
   projectHardwareProfile,
 } from "@/modules/ai/lib/hardwareProfile";
 import {
@@ -208,6 +214,8 @@ export function DeploymentSuitabilityControl({
   const [clock, setClock] = useState(Date.now());
   const [workload, setWorkload] = useState<Workload>("Chat");
   const [context, setContext] = useState<number | null>(null);
+  const [backendPreview, setBackendPreview] = useState<"saved" | "cuda">("saved");
+  const [previewCpuFallback, setPreviewCpuFallback] = useState(false);
   const request = useRef(0);
   const state = usePreferencesStore((s) => s.selfHostedInference);
   const selection = useChatStore((s) => {
@@ -231,6 +239,8 @@ export function DeploymentSuitabilityControl({
     setLoading(false);
     setContext(null);
     setWorkload("Chat");
+    setBackendPreview("saved");
+    setPreviewCpuFallback(false);
   }, [selection, state, sessionId]);
   useEffect(() => {
     if (!open) return;
@@ -352,6 +362,24 @@ export function DeploymentSuitabilityControl({
           managed ? (currentRead?.metadata ?? null) : null,
         )
       : null;
+  const savedRequest = deployment && runtime
+    ? deploymentRequestedExecution(deployment, runtime) : null;
+  const observedHost = host && hardware ? observedComputeHost(host, hardware) : null;
+  const executionRequest = backendPreview === "cuda" && savedRequest
+    ? {
+        ...savedRequest, backend: "cuda", deviceIds: [], gpuLayers: 40,
+        fallback: {policy: previewCpuFallback ? "allow-compatible" as const : "disabled" as const},
+      }
+    : savedRequest;
+  const backendSelection = host && runtime && deployment && artifact && hardware
+    ? selectDeploymentExecution({
+        host, runtime, deployment, artifact, hardware, requested: executionRequest,
+        installedRuntime: managed ? freshNative : null,
+        nativeExecution: managed ? freshNative : null,
+        now,
+      }) : null;
+  const installedBackends = runtime
+    ? runtimeBackendVariants(runtime, managed ? freshNative : null) : [];
   const tiers = resource ? contextTargets(resource) : [];
   // LM6 current-scope matching checks the FULL procedure, epoch, artifact,
   // host, runtime, context and backend before showing a measured claim.
@@ -565,6 +593,66 @@ export function DeploymentSuitabilityControl({
             )}
             <div className="space-y-1 border-t pt-2">
               <p className="font-medium">Host and model resources</p>
+              <div className="space-y-1 border-b pb-2">
+                <p className="font-medium">Compute Fabric · backend admission (no launch)</p>
+                <p>
+                  Host devices: {(observedHost?.observedDevices ?? []).map(device =>
+                    `${device.kind === "cpu" ? "CPU" : device.model ?? "Accelerator"} (${device.availability})`
+                  ).join(" · ")}
+                </p>
+                <p>
+                  Physical CPU: {hardware.backendAvailability.cpu}
+                  {" · "}Physical CUDA: {hardware.backendAvailability.cuda}
+                </p>
+                <p className="text-muted-foreground">
+                  Other physical backends: {(["rocm", "intel", "metal", "vulkan", "directml"] as const)
+                    .map(name => `${name.toUpperCase()} ${hardware.backendAvailability[name]}`).join(" · ")}
+                </p>
+                <p>
+                  Runtime build {runtime?.version ?? "unknown"}: {installedBackends
+                    .filter(variant => variant.backend === "cpu" || variant.backend === "cuda")
+                    .map(variant => `${variant.backend.toUpperCase()} ${variant.support} / installed ${variant.installation}`)
+                    .join(" · ") || "Backend support UNKNOWN"}
+                </p>
+                <p>Saved request: {savedRequest
+                  ? `${savedRequest.backend.toUpperCase()} · ${savedRequest.gpuLayers ?? "Unknown"} GPU layers · fallback ${savedRequest.fallback.policy}`
+                  : "UNKNOWN (not a CPU default)"}</p>
+                {savedRequest && (
+                  <div className="flex flex-wrap gap-2">
+                    <label>
+                      Admission preview:{" "}
+                      <select aria-label="Backend admission preview" value={backendPreview}
+                        onChange={e => setBackendPreview(e.target.value as "saved" | "cuda")}
+                        className="rounded border border-border bg-background px-1 py-0.5">
+                        <option value="saved">Saved request</option>
+                        <option value="cuda">CUDA / 40 layers (preview)</option>
+                      </select>
+                    </label>
+                    {backendPreview === "cuda" && (
+                      <label>
+                        Fallback:{" "}
+                        <select aria-label="Backend preview fallback" value={previewCpuFallback ? "cpu" : "disabled"}
+                          onChange={e => setPreviewCpuFallback(e.target.value === "cpu")}
+                          className="rounded border border-border bg-background px-1 py-0.5">
+                          <option value="disabled">Disabled</option>
+                          <option value="cpu">Allow CPU</option>
+                        </select>
+                      </label>
+                    )}
+                  </div>
+                )}
+                <p>Requested for {backendPreview === "saved" ? "this deployment" : "preview only"}: {executionRequest?.backend.toUpperCase() ?? "UNKNOWN"}
+                  {" · "}Admission: {backendSelection?.state ?? "unknown"}
+                  {" · "}Selected: {backendSelection?.selected
+                    ? `${backendSelection.selected.backend.toUpperCase()} / ${backendSelection.selected.gpuLayers} GPU layers`
+                    : "None"}</p>
+                <p>Fallback used: {backendSelection?.fallbackUsed ? "Yes (authorized)" : "No"}
+                  {backendSelection?.reasons.length ? ` · ${backendSelection.reasons.join("; ")}` : ""}</p>
+                <p>Actual native execution: {backendSelection?.actual
+                  ? `${backendSelection.actual.backend.toUpperCase()} / ${backendSelection.actual.gpuLayers} GPU layers · ${backendSelection.actual.runtimeVariantId}`
+                  : "Not observed (no exact Ready native launch evidence)"}</p>
+                {backendPreview !== "saved" && <p className="text-muted-foreground">Preview only; no settings, deployment, runtime or selected model were changed.</p>}
+              </div>
               <p>
                 Configured context:{" "}
                 {resource.configuredContext.value === null

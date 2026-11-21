@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
+import type { ActualExecution } from "@/modules/ai/lib/localComputeFabric";
 
 export type ManagedLocalRouteIdentity = NonNullable<ModelTransportIdentity["managedLocal"]>;
 export type ManagedLocalNativeStatus = {
@@ -15,6 +16,8 @@ export type ManagedLocalNativeStatus = {
   processId?: number | null;
   port?: number | null;
   error?: string | null;
+  /** Native verified launch observation; absent unless exact owner is Ready. */
+  actualExecution?: ActualExecution | null;
 };
 export type ManagedLocalNativeRoute = {
   baseUrl: string;

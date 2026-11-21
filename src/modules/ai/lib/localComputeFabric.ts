@@ -46,6 +46,68 @@ export const runtimeCapabilitySchema = z.object({
 export type RuntimeCapability = z.infer<typeof runtimeCapabilitySchema>;
 const capabilitiesSchema = z.record(z.string().min(1).max(64), runtimeCapabilitySchema)
   .refine(value => Object.keys(value).length <= 64);
+/** Backend identifiers belong to the Fabric, not display labels. Unknown future
+ * identifiers are representable but never become executable by being named. */
+export const KNOWN_EXECUTION_BACKENDS = [
+  "cpu", "cuda", "rocm", "intel", "metal", "vulkan", "directml",
+] as const;
+export const executionBackendKindSchema = z.string().min(1).max(64)
+  .regex(/^[a-z][a-z0-9-]*$/);
+export type ExecutionBackendKind = z.infer<typeof executionBackendKindSchema>;
+export const backendStateSchema = z.enum([
+  "AVAILABLE", "UNAVAILABLE", "UNSUPPORTED", "UNKNOWN", "INSTALLED_NOT_USABLE",
+]);
+export type BackendState = z.infer<typeof backendStateSchema>;
+export const backendTrustSchema = z.enum(["VERIFIED", "UNQUALIFIED", "UNKNOWN"]);
+export const computeDeviceSchema = z.object({
+  id: name, hostId: name, kind: z.enum(["cpu", "accelerator"]),
+  vendor: optionalName, model: optionalName, architecture: optionalName,
+  backendKinds: z.array(executionBackendKindSchema).max(16),
+  availability: backendStateSchema,
+  totalMemoryBytes: z.number().int().nonnegative().safe().optional(),
+  availableMemoryBytes: z.number().int().nonnegative().safe().optional(),
+  driverVersion: optionalName, source: small, observedAt: z.number().int().nonnegative().safe(),
+  reason: optionalName, trust: backendTrustSchema,
+}).strict();
+export type ComputeDevice = z.infer<typeof computeDeviceSchema>;
+export const runtimeBackendVariantSchema = z.object({
+  id: name, backend: executionBackendKindSchema,
+  support: backendStateSchema, installation: backendStateSchema,
+  runtimeVersion: small.optional(), buildDigest: optionalName,
+  source: small, trust: backendTrustSchema,
+  supportedArtifactFormats: z.array(z.enum([
+    "gguf", "ollama-manifest", "safetensors", "mlx-package", "opaque",
+  ])).max(8).optional(),
+  limitations: z.array(small).max(16).optional(),
+}).strict();
+export type RuntimeBackendVariant = z.infer<typeof runtimeBackendVariantSchema>;
+export const executionFallbackSchema = z.object({
+  policy: z.enum(["disabled", "allow-compatible", "explicit-order"]),
+  order: z.array(executionBackendKindSchema).max(16).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.policy === "explicit-order" && !value.order?.length)
+    ctx.addIssue({code: "custom", message: "Explicit-order fallback requires an ordered list"});
+});
+export const requestedExecutionSchema = z.object({
+  backend: executionBackendKindSchema,
+  deviceIds: z.array(name).max(16).default([]),
+  gpuLayers: z.number().int().nonnegative().max(1_000_000).optional(),
+  cpuThreads: z.number().int().positive().max(65_536).optional(),
+  contextLength: z.number().int().positive().max(8_388_608).optional(),
+  minAvailableDeviceBytes: z.number().int().nonnegative().safe().optional(),
+  minAvailableHostBytes: z.number().int().nonnegative().safe().optional(),
+  fallback: executionFallbackSchema.default({policy: "disabled"}),
+}).strict();
+export type RequestedExecution = z.infer<typeof requestedExecutionSchema>;
+/** Observed native launch, never inferred from a placement or preference. */
+export const actualExecutionSchema = z.object({
+  backend: executionBackendKindSchema,
+  deviceIds: z.array(name).max(16), gpuLayers: z.number().int().nonnegative(),
+  runtimeVariantId: name, runtimeEpoch: name, source: small,
+  contextLength: z.number().int().positive().max(8_388_608).optional(),
+  observedAt: z.number().int().nonnegative().safe(),
+}).strict();
+export type ActualExecution = z.infer<typeof actualExecutionSchema>;
 export const computeHostSchema = z.object({
   id: name,
   displayName: small,
@@ -55,6 +117,9 @@ export const computeHostSchema = z.object({
   os: optionalName,
   hardwareProfileId: name.optional(),
   runtimeIds: z.array(name).max(32),
+  /** Optional ephemeral host snapshot. Never persist a free-memory snapshot as
+   * permanent machine capacity or copy it to another host. */
+  observedDevices: z.array(computeDeviceSchema).max(64).optional(),
 }).passthrough();
 export const localRuntimeSchema = z.object({
   id: name,
@@ -71,6 +136,7 @@ export const localRuntimeSchema = z.object({
   configurationRevision: revision,
   runtimeEpoch: optionalName,
   capabilities: capabilitiesSchema,
+  backendVariants: z.array(runtimeBackendVariantSchema).max(32).optional(),
 }).passthrough();
 export const modelArtifactSchema = z.object({
   id: longIdentity,
@@ -97,6 +163,7 @@ export const modelDeploymentSchema = z.object({
   profileId: longIdentity.optional(),
   variantId: name.nullable().optional(),
   configurationIdentity: z.string().max(4096).optional(),
+  requestedExecution: requestedExecutionSchema.optional(),
 }).passthrough();
 export const localComputeFabricSchema = z.object({
   version: z.literal(LOCAL_COMPUTE_FABRIC_VERSION),
@@ -481,11 +548,15 @@ function configuredBehavior(profile: SelfHostedProfile) {
 export function deploymentIdentity(
   deployment: ModelDeployment,
 ): string {
-  return JSON.stringify([
+  const base = [
     deployment.hostId, deployment.runtimeId, deployment.artifactId,
     deployment.runtimeModelName, deployment.configurationRevision,
     deployment.variantId ?? null, deployment.configurationIdentity ?? null,
-  ]);
+  ];
+  // Preserve every legacy identity byte-for-byte; only explicit new requests
+  // participate in a new deployment's identity.
+  return JSON.stringify(deployment.requestedExecution
+    ? [...base, requestedExecutionSchema.parse(deployment.requestedExecution)] : base);
 }
 function unique<T extends { id: string }>(rows: T[]): T[] {
   return [...new Map(rows.map(row => [row.id, row])).values()];
