@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, OnceLock},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager};
 
@@ -593,6 +593,13 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
         return Err(invalid());
     }
     let deployment = rows[0];
+    // Slice 1 introduces canonical requested execution, but this pinned native
+    // launcher still supports *only* legacy CPU material. A new CUDA request
+    // must be rejected rather than running the fixed --n-gpu-layers 0 command
+    // under an old seven-element identity or silently using CPU fallback.
+    if deployment.get("requestedExecution").is_some() {
+        return Err(invalid());
+    }
     let runtime_id = &deployment["runtimeId"];
     let host_id = &deployment["hostId"];
     if runtime_id != ENGINE || host_id != "clack-this-pc" || deployment["profileId"].is_string() {
@@ -1394,6 +1401,19 @@ fn drain_bounded<R: Read + Send + 'static>(mut stream: R, output: Arc<Mutex<Vec<
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ManagedActualExecution {
+    backend: &'static str,
+    device_ids: Vec<String>,
+    gpu_layers: u32,
+    runtime_variant_id: &'static str,
+    runtime_epoch: String,
+    source: &'static str,
+    context_length: u64,
+    observed_at: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ManagedRuntimeStatus {
     installed: bool,
     state: &'static str,
@@ -1406,6 +1426,9 @@ pub struct ManagedRuntimeStatus {
     process_id: Option<u32>,
     port: Option<u16>,
     error: Option<String>,
+    /// Only native-owned, authenticated Ready with a verified pinned launcher
+    /// establishes actual CPU execution; a backend request never does.
+    actual_execution: Option<ManagedActualExecution>,
 }
 fn snapshot(owner: &RuntimeOwner, installed: bool) -> ManagedRuntimeStatus {
     ManagedRuntimeStatus {
@@ -1425,6 +1448,24 @@ fn snapshot(owner: &RuntimeOwner, installed: bool) -> ManagedRuntimeStatus {
         process_id: owner.child.as_ref().map(Child::id),
         port: owner.port,
         error: owner.error.clone(),
+        actual_execution: owner.deployment.as_ref().and_then(|binding| {
+            (installed && owner.state == "Ready" && owner.child.is_some()).then(|| {
+                ManagedActualExecution {
+                    backend: "cpu",
+                    device_ids: vec!["clack-this-pc:cpu:0".to_owned()],
+                    gpu_layers: 0,
+                    runtime_variant_id: "b12248/cpu",
+                    runtime_epoch: owner.epoch.clone(),
+                    source: "native-verified-managed-cpu-launch",
+                    context_length: binding.context,
+                    observed_at: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                }
+            })
+        }),
     }
 }
 
@@ -1435,6 +1476,7 @@ fn idle_snapshot(installed: bool) -> ManagedRuntimeStatus {
         epoch: registry().idle_epoch.clone(), deployment_id: None,
         deployment_identity_hash: None, model_digest: None,
         process_id: None, port: None, error: None,
+        actual_execution: None,
     }
 }
 
@@ -2083,6 +2125,8 @@ mod tests {
         assert_eq!(serialized["deploymentIdentityHash"],
             format!("sha256:{:x}",Sha256::digest(b"revision-2")));
         assert_eq!(serialized["state"],"Stopped");
+        assert!(serialized["actualExecution"].is_null(),
+            "An idle runtime cannot claim actual CPU or CUDA execution");
         assert!(serialized.get("apiKey").is_none());
         assert!(serialized.get("credentialFingerprint").is_none());
         assert!(serialized.get("secretFile").is_none());
@@ -2135,6 +2179,13 @@ mod tests {
         let mut altered = state.clone();
         altered["fabric"]["artifacts"][0]["digest"] = json!(format!("sha256:{}", "b".repeat(64)));
         assert!(validate_binding(&altered, &deployment_id, &identity).is_err());
+        let mut altered = state.clone();
+        altered["fabric"]["deployments"][0]["requestedExecution"] = json!({
+            "backend":"cuda", "gpuLayers":40,
+            "fallback":{"policy":"disabled"}
+        });
+        assert!(validate_binding(&altered, &deployment_id, &identity).is_err(),
+            "The CPU-only native launcher must reject explicit backend requests");
     }
 
     #[test]

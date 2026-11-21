@@ -1,5 +1,11 @@
 import { z } from "zod";
-import type { ComputeHost, LocalRuntime } from "./localComputeFabric";
+import {
+  KNOWN_EXECUTION_BACKENDS,
+  type BackendState,
+  type ComputeDevice,
+  type ComputeHost,
+  type LocalRuntime,
+} from "./localComputeFabric";
 import {
   MANAGED_LLAMA_ENGINE_VERSION,
   MANAGED_LOCAL_HOST_ID,
@@ -48,6 +54,7 @@ export type ExecutionBackend =
   | "cpu"
   | "cuda"
   | "rocm"
+  | "intel"
   | "vulkan"
   | "metal"
   | "directml";
@@ -81,6 +88,9 @@ export type HardwareProfile = {
     pressure: EvidenceValue<number>;
   };
   gpus: GpuHardware[];
+  /** Ephemeral first-class devices scoped to the canonical ComputeHost. */
+  devices: ComputeDevice[];
+  backendAvailability: Record<ExecutionBackend, BackendState>;
   gpuInventoryComplete: boolean;
   backends: Record<
     ExecutionBackend,
@@ -141,14 +151,7 @@ export type NativeHardwareObservation = z.infer<
   typeof nativeHardwareObservationSchema
 >;
 
-const backends = [
-  "cpu",
-  "cuda",
-  "rocm",
-  "vulkan",
-  "metal",
-  "directml",
-] as const;
+const backends = KNOWN_EXECUTION_BACKENDS;
 const notObserved = "No authorized host telemetry for this field";
 const OS_SOURCE = "native-os-readonly";
 const LOCAL_RAM_FRESH_MS = 30_000;
@@ -262,7 +265,9 @@ export function projectHardwareProfile(
       backend,
       {
         hardwareSupports:
-          backend === "cuda" && cudaDevice
+          backend === "cpu" && snapshot
+            ? evidence(true, "boolean", "Measured", OS_SOURCE, snapshot.observedAt)
+            : backend === "cuda" && cudaDevice
             ? evidence(
                 true,
                 "boolean",
@@ -293,6 +298,48 @@ export function projectHardwareProfile(
   const cpuModel = fresh(snapshot?.cpuModel ?? null);
   const cpuManufacturer = fresh(snapshot?.cpuManufacturer ?? null);
   const cores = fresh(snapshot?.physicalCores ?? null);
+  // Stable physical identity is OS/device-id based. Unknown-ID display adapters
+  // are retained as GPU telemetry, but never invented as selectable devices.
+  const devices: ComputeDevice[] = [{
+    id: `${host.id}:cpu:0`, hostId: host.id, kind: "cpu",
+    backendKinds: ["cpu"],
+    availability: snapshot ? "AVAILABLE" : "UNKNOWN",
+    ...(cpuManufacturer ? { vendor: cpuManufacturer.value } : {}),
+    ...(cpuModel ? { model: cpuModel.value } : {}),
+    ...(snapshot ? { architecture: snapshot.architecture } : {}),
+    ...(snapshot?.totalRamBytes !== null && snapshot?.totalRamBytes !== undefined
+      ? { totalMemoryBytes: snapshot.totalRamBytes } : {}),
+    ...(snapshot?.availableRamBytes !== null && snapshot?.availableRamBytes !== undefined
+      ? { availableMemoryBytes: snapshot.availableRamBytes } : {}),
+    source: snapshot?.source ?? "no-local-host-observation",
+    observedAt: snapshot?.observedAt ?? 0,
+    trust: snapshot ? "VERIFIED" : "UNKNOWN",
+    ...(!snapshot ? { reason: "No fresh authorized local CPU observation" } : {}),
+  }];
+  localGpus.forEach((gpu, index) => {
+    // Index is never substituted for a stable physical device ID.
+    if (gpu.deviceId.value === null || gpu.deviceId.provenance !== "Measured") return;
+    devices.push({
+      id: `${host.id}:accelerator:${gpu.deviceId.value}`, hostId: host.id,
+      kind: "accelerator", backendKinds: gpu.supportedBackends.value ?? [],
+      availability: gpu.supportedBackends.value?.length ? "AVAILABLE" : "UNKNOWN",
+      ...(gpu.vendor.value !== null ? {vendor: gpu.vendor.value} : {}),
+      ...(gpu.model.value !== null ? {model: gpu.model.value} : {}),
+      ...(gpu.computeArchitecture.value !== null ? {architecture: gpu.computeArchitecture.value} : {}),
+      ...(gpu.totalVramBytes.value !== null ? {totalMemoryBytes: gpu.totalVramBytes.value} : {}),
+      ...(gpu.availableVramBytes.value !== null ? {availableMemoryBytes: gpu.availableVramBytes.value} : {}),
+      ...(gpu.driverVersion.value !== null ? {driverVersion: gpu.driverVersion.value} : {}),
+      source: gpu.deviceId.source, observedAt: gpu.deviceId.observedAt ?? 0,
+      trust: "VERIFIED",
+      ...(gpu.supportedBackends.value === null ? {reason: `Backend capability unknown for GPU adapter ${index + 1}`} : {}),
+    });
+  });
+  const backendAvailability = Object.fromEntries(backends.map(kind => [
+    kind,
+    kind === "cpu" ? devices[0].availability :
+      devices.some(device => device.availability === "AVAILABLE" && device.backendKinds.includes(kind))
+        ? "AVAILABLE" : "UNKNOWN",
+  ])) as HardwareProfile["backendAvailability"];
   return {
     hostId: host.id,
     runtimeId: runtime.id,
@@ -369,9 +416,18 @@ export function projectHardwareProfile(
     // Vendor-reported VRAM is not Win32 display AdapterRAM. Missing vendor
     // telemetry never becomes zero, and empty/incomplete does not mean no GPU.
     gpus: localGpus,
+    devices,
+    backendAvailability,
     gpuInventoryComplete: snapshot?.gpuInventoryComplete ?? false,
     backends: yesNoBackend,
   };
+}
+
+/** Enrich an existing ComputeHost for display/admission only. Never write this
+ * snapshot to settings: available memory and presence have a finite TTL. */
+export function observedComputeHost(host: ComputeHost, hardware: HardwareProfile): ComputeHost {
+  return hardware.hostId === host.id
+    ? { ...host, observedDevices: hardware.devices } : host;
 }
 
 /** Explicit optional future evidence hook: never auto-promote timestamps or
