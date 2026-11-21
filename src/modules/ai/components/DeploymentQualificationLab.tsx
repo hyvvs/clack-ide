@@ -178,9 +178,8 @@ export function DeploymentQualificationLab({ sessionId }: { sessionId: string })
   const candidateProfile = chosen ? profileCandidateDeployment(chosen) : null;
   const agentShortlist = selectAgentAcceptanceCandidates(candidates);
   const exactCurrentSelection = !!chosen && chosen.deploymentId === selectedId;
-  // An advertised plan does NOT license a runner whose aggregate wall bound
-  // is not yet enforced. The gate stays closed until the existing runner can
-  // prove end-to-end bounded cancellation and durable quiescence.
+  // Only the registered procedure with independent original-runner deadline
+  // proof may become runnable; plan and live scope gates remain authoritative.
   const canRun = !!plan?.enabled && plan.aggregateWallDeadlineEnforced &&
     !!plan.scope.exactObservedScope && exactCurrentSelection && !running && !activeRun.current;
 
@@ -318,7 +317,7 @@ export function DeploymentQualificationLab({ sessionId }: { sessionId: string })
                   ? "Procedure eligible after a separate native preflight."
                   : `Unavailable: ${plan?.unavailableReason ?? "No current exact deployment"}${
                     plan && !plan.aggregateWallDeadlineEnforced
-                      ? "; existing runners lack a verified aggregate wall deadline" : ""}.`}
+                      ? "; this procedure has no accepted aggregate runner deadline" : ""}.`}
               </p>
               {plan?.gates.some(gate => !gate.allowed) && (
                 <details><summary className="cursor-pointer">Admission details</summary>

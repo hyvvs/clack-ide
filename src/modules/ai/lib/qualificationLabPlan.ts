@@ -34,9 +34,8 @@ export type QualificationLabStep = {
 };
 export type QualificationLabBounds = {
   maxAttempts: number;
-  /** Proposed aggregate ceiling for a future lab executor, in milliseconds.
-   * Current adapters have per-request bounds but no verified overall deadline
-   * spanning native readiness, Chat, provider quiescence and CAS persistence. */
+  /** End-to-end runner ceiling in milliseconds. This is enforcement evidence
+   * only for procedures with an independently accepted original runner. */
   maxWallTimeMs: number;
   maxOutputTokensPerAttempt: number;
   maxOutputTokensTotal: number;
@@ -45,7 +44,7 @@ export type QualificationLabBounds = {
   cancelPolicy: "cancel-at-bound" | "bounded-cancellation-challenge" | "no-dispatch";
   sideEffectClass: "retained-chat-and-evidence" |
     "possible-native-start-and-retained-chat-evidence" | "none";
-  aggregateWallDeadlineEnforced: false;
+  aggregateWallDeadlineEnforced: boolean;
   outputTokensEnforcedByExistingFlight: boolean;
 };
 export type QualificationLabProcedureDescriptor = {
@@ -106,11 +105,12 @@ const unavailableStep = (id: string, title: string, workload: QualificationLabSt
 });
 const limits = (attempts: number, wallMs: number, output: number,
   cancel: QualificationLabBounds["cancelPolicy"],
-  effects: QualificationLabBounds["sideEffectClass"]): QualificationLabBounds => ({
+  effects: QualificationLabBounds["sideEffectClass"],
+  aggregateWallDeadlineEnforced = false): QualificationLabBounds => ({
   maxAttempts: attempts, maxWallTimeMs: wallMs,
   maxOutputTokensPerAttempt: output, maxOutputTokensTotal: attempts * output,
   maxRetries: 0, maxAutomaticContinuations: 0, cancelPolicy: cancel,
-  sideEffectClass: effects, aggregateWallDeadlineEnforced: false,
+  sideEffectClass: effects, aggregateWallDeadlineEnforced,
   outputTokensEnforcedByExistingFlight: attempts > 0,
 });
 
@@ -125,7 +125,7 @@ export const QUALIFICATION_LAB_PROCEDURES: readonly QualificationLabProcedureDes
     supportedProtocolRequired: ["chat", "streaming", "terminal-completion", "instruction-adherence"],
     runner: "managed-chat-qualification", runnerMode: "default",
     limits: limits(1, 120_000, MANAGED_QUALIFICATION_MAX_OUTPUT,
-      "cancel-at-bound", "retained-chat-and-evidence"),
+      "cancel-at-bound", "retained-chat-and-evidence", true),
     steps: [chatStep], expectedAuthority: "qualificationReceipts",
   },
   {
@@ -280,7 +280,7 @@ export type QualificationLabPlan = {
   runner: QualificationLabRunner;
   runnerMode: QualificationLabProcedureDescriptor["runnerMode"];
   requiresFinalPreflight: true;
-  aggregateWallDeadlineEnforced: false;
+  aggregateWallDeadlineEnforced: boolean;
 };
 
 function distinctId<T extends { id: string }>(rows: readonly T[], id: string): T | null {
@@ -380,12 +380,25 @@ export function buildQualificationLabPlan(
     "All required protocols are declared compatible with explicit verification.");
   gate("implementation", descriptor.runner !== null && managedSelection !== null,
     "Only exact managed Chat/LM6 adapters exist; other protocols have no safe executor.");
+  // The LM11 B01–B03 physical acceptance covers this ORIGINAL 120s Chat
+  // runner, not LM6's separately bounded three-attempt 300s procedure. A
+  // metadata flag alone cannot claim a different adapter has proven safety.
+  const aggregateDeadlineProven = descriptor.runner === "managed-chat-qualification" &&
+    descriptor.runnerMode === "default" &&
+    descriptor.expectedAuthority === "qualificationReceipts" &&
+    descriptor.limits.maxWallTimeMs === 120_000 &&
+    descriptor.limits.maxAttempts === 1 &&
+    descriptor.limits.cancelPolicy === "cancel-at-bound" &&
+    descriptor.limits.aggregateWallDeadlineEnforced === true;
   gate("bounds", descriptor.limits.maxAttempts > 0 &&
     descriptor.limits.maxAttempts === descriptor.steps.reduce((n, step) => n + step.maxDispatches, 0) &&
     descriptor.limits.maxOutputTokensPerAttempt === MANAGED_QUALIFICATION_MAX_OUTPUT &&
+    descriptor.limits.maxOutputTokensTotal ===
+      descriptor.limits.maxAttempts * descriptor.limits.maxOutputTokensPerAttempt &&
+    descriptor.limits.outputTokensEnforcedByExistingFlight === true &&
     descriptor.limits.maxRetries === 0 && descriptor.limits.maxAutomaticContinuations === 0 &&
-    descriptor.limits.aggregateWallDeadlineEnforced,
-    "Aggregate end-to-end wall deadline is not enforced by either existing runner; lab execution is disabled until a bounded wrapper exists.");
+    aggregateDeadlineProven,
+    "This procedure has no independently accepted aggregate runner deadline; Lab execution remains disabled.");
 
   if (consistent && descriptor.runner !== null && runtime && deployment) {
     let material: unknown;
@@ -423,6 +436,7 @@ export function buildQualificationLabPlan(
         gates.find(value => !value.allowed))?.reason ?? "No safe procedure",
     gates, runner: descriptor.runner,
     runnerMode: descriptor.runnerMode,
-    requiresFinalPreflight: true, aggregateWallDeadlineEnforced: false,
+    requiresFinalPreflight: true,
+    aggregateWallDeadlineEnforced: aggregateDeadlineProven,
   };
 }

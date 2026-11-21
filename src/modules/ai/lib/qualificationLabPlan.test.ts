@@ -55,7 +55,8 @@ describe("LM11–LM15 deterministic qualification lab planning", () => {
         procedure.limits.maxOutputTokensPerAttempt * procedure.limits.maxAttempts);
       expect(procedure.limits.maxRetries).toBe(0);
       expect(procedure.limits.maxAutomaticContinuations).toBe(0);
-      expect(procedure.limits.aggregateWallDeadlineEnforced).toBe(false);
+      expect(procedure.limits.aggregateWallDeadlineEnforced).toBe(
+        procedure.id === "chat-and-adherence");
       expect(procedure.capabilities.length).toBeGreaterThan(0);
       expect(procedure.steps.every(step => step.expectedEvidence.length > 0)).toBe(true);
       expect(procedure.title).not.toMatch(/qwen|devstral|glm/i);
@@ -64,31 +65,33 @@ describe("LM11–LM15 deterministic qualification lab planning", () => {
       runner: "managed-chat-qualification", runnerMode: "default",
       expectedAuthority: "qualificationReceipts",
       limits: { maxAttempts: 1, maxOutputTokensPerAttempt: 128, maxOutputTokensTotal: 128,
-        maxWallTimeMs: 120_000, sideEffectClass: "retained-chat-and-evidence" },
+        maxWallTimeMs: 120_000, aggregateWallDeadlineEnforced: true,
+        sideEffectClass: "retained-chat-and-evidence" },
     });
     expect(QUALIFICATION_LAB_PROCEDURES[1]).toMatchObject({
       runner: "bounded-deployment-measurement", runnerMode: "standard",
       expectedAuthority: "measurementRuns",
       limits: { maxAttempts: 3, maxOutputTokensTotal: 384, maxWallTimeMs: 300_000,
-        cancelPolicy: "bounded-cancellation-challenge",
+        cancelPolicy: "bounded-cancellation-challenge", aggregateWallDeadlineEnforced: false,
         sideEffectClass: "possible-native-start-and-retained-chat-evidence" },
     });
     for (const unsupported of QUALIFICATION_LAB_PROCEDURES.slice(2)) {
       expect(unsupported).toMatchObject({
         runner: null, runnerMode: null, expectedAuthority: "none",
         limits: { maxAttempts: 0, maxWallTimeMs: 0, maxOutputTokensTotal: 0,
+          aggregateWallDeadlineEnforced: false,
           sideEffectClass: "none", cancelPolicy: "no-dispatch" },
       });
     }
   });
 
-  it("previews exact deployment and adapter metadata but denies execution without aggregate wall deadline", () => {
+  it("enables only original 120s Chat runner for an exact fresh managed deployment", () => {
     const f = fixture();
     const original = JSON.stringify(f.state);
     const chat = buildQualificationLabPlan(f.candidate, "chat-and-adherence", f.options);
     const measure = buildQualificationLabPlan(f.candidate, "cold-warm-cancellation", f.options);
-    expect(chat.enabled).toBe(false);
-    expect(chat.unavailableReason).toContain("Aggregate end-to-end wall deadline");
+    expect(chat.enabled).toBe(true);
+    expect(chat.unavailableReason).toBeNull();
     expect(chat.runner).toBe("managed-chat-qualification");
     expect(chat.runnerMode).toBe("default");
     expect(chat.scope).toMatchObject({
@@ -104,15 +107,16 @@ describe("LM11–LM15 deterministic qualification lab planning", () => {
         runtimeProcessIdentity: "pid:4321" },
     });
     expect(chat.requiresFinalPreflight).toBe(true);
-    expect(chat.aggregateWallDeadlineEnforced).toBe(false);
+    expect(chat.aggregateWallDeadlineEnforced).toBe(true);
+    expect(chat.gates.every(g => g.allowed)).toBe(true);
     expect(measure.enabled).toBe(false);
+    expect(measure.aggregateWallDeadlineEnforced).toBe(false);
+    expect(measure.unavailableReason).toContain("no independently accepted aggregate runner deadline");
     expect(measure.runner).toBe("bounded-deployment-measurement");
     expect(measure.runnerMode).toBe("standard");
-    for (const result of [chat, measure]) {
-      expect(result.gates.filter(g => !g.allowed)).toMatchObject([{
-        id: "bounds", allowed: false,
-      }]);
-    }
+    expect(measure.gates.filter(g => !g.allowed)).toMatchObject([{
+      id: "bounds", allowed: false,
+    }]);
     expect(measure.procedure.steps.map(s => [s.workload, s.cancelAfterOutput])).toEqual([
       ["instruction-adherence", false], ["chat", false], ["cancellation", true],
     ]);
@@ -142,9 +146,10 @@ describe("LM11–LM15 deterministic qualification lab planning", () => {
       { ...f.options, managedStatus: { ...f.status, state: "Stopped" } },
     ];
     for (const options of cases) {
-      const plan = buildQualificationLabPlan(f.candidate, "cold-warm-cancellation", options);
+      const plan = buildQualificationLabPlan(f.candidate, "chat-and-adherence", options);
       expect(plan.enabled).toBe(false);
-      expect(plan.runner).toBe("bounded-deployment-measurement");
+      expect(plan.aggregateWallDeadlineEnforced).toBe(true);
+      expect(plan.runner).toBe("managed-chat-qualification");
       expect(plan.scope.exactObservedScope).toBeNull();
     }
     if (!f.candidate.observation) throw new Error("Fixture native observation unavailable");
@@ -222,7 +227,7 @@ describe("LM11–LM15 deterministic qualification lab planning", () => {
       ...f.options, state: legacy,
     });
     expect(projected.gates.find(g => g.id === "protocol")?.allowed).toBe(true);
-    expect(projected.enabled).toBe(false); // aggregate deadline remains unimplemented
+    expect(projected.enabled).toBe(true); // only absent declarations are projected
     const denied = structuredClone(legacy);
     if (!denied.fabric) throw new Error("Fixture fabric unavailable");
     denied.fabric.runtimes[0].capabilities["instruction-adherence"] = {
