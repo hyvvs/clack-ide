@@ -217,7 +217,14 @@ export function createSelfHostedPersistence(storage: SelfHostedStorage) {
       const changed = withLocalComputeFabric(change(migrated));
       assertWritableSelfHostedState(changed);
       const next = readSelfHostedState(changed);
-      if (JSON.stringify(next) === JSON.stringify(raw)) return next;
+      // The native probe represents unknown optional inventory observations as
+      // JSON null; the supported schema decodes those as absent. Comparing a
+      // normalized read with the raw native object would turn every otherwise
+      // idle startup into a settings CAS/revision solely to drop those nulls.
+      // Compare effective supported authority instead, preserving the raw
+      // on-disk bytes until a real migration or user change requires a write.
+      if (canonicalJson(next) === canonicalJson(readSelfHostedState(raw)))
+        return next;
       next.revision = migrated.revision + 1;
       if (await storage.compareAndSwap(raw, next)) return next;
     }

@@ -180,7 +180,12 @@ export const usePeerTaskStore = create<PeerTaskStore>((set, get) => ({
           worktrees,
         }),
       );
-      await savePeerTasks(recovered);
+      // Hydration is read-only when recovery has nothing to reconcile. The
+      // native ledger increments its revision for each commit; an unconditional
+      // save here advanced revision even for an empty task list on every launch.
+      // Keep the existing native CAS for genuine interrupted-task recovery.
+      if (JSON.stringify(recovered) !== JSON.stringify(loaded))
+        await savePeerTasks(recovered);
       set({
         tasks: recovered,
         hydrated: true,

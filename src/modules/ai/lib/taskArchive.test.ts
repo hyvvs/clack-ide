@@ -296,6 +296,65 @@ it("actual ledger reload and store hydration preserve archived state idempotentl
     });
   expect(usePeerTaskStore.getState().tasks).toHaveLength(1);
 });
+it("empty peer ledger startup hydration does not create a new native revision", async () => {
+  durable = { revision: 194, tasks: [] };
+  await loadPeerTasks();
+  usePeerTaskStore.setState({
+    tasks: [], hydrated: false, recoveryReady: false, recoveryError: null,
+  });
+  vi.mocked(invoke).mockClear();
+  const context = {
+    sessions,
+    isAgentConfigured: () => true,
+    isModelConfigured: () => true,
+  };
+  await usePeerTaskStore.getState().hydrate(context);
+  await usePeerTaskStore.getState().hydrate(context);
+  expect(usePeerTaskStore.getState()).toMatchObject({
+    hydrated: true, recoveryReady: true, tasks: [],
+  });
+  expect(durable).toEqual({ revision: 194, tasks: [] });
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) =>
+    command === "peer_ledger_commit")).toHaveLength(0);
+});
+
+it("unchanged completed peer tasks retain their ledger revision on hydration", async () => {
+  durable = { revision: 212, tasks: [task("settled")] };
+  await loadPeerTasks();
+  usePeerTaskStore.setState({
+    tasks: [], hydrated: false, recoveryReady: false, recoveryError: null,
+  });
+  vi.mocked(invoke).mockClear();
+  await usePeerTaskStore.getState().hydrate({
+    sessions,
+    isAgentConfigured: () => true,
+    isModelConfigured: () => true,
+  });
+  expect(usePeerTaskStore.getState().recoveryReady).toBe(true);
+  expect(usePeerTaskStore.getState().tasks).toEqual([task("settled")]);
+  expect(durable.revision).toBe(212);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) =>
+    command === "peer_ledger_commit")).toHaveLength(0);
+});
+
+it("interrupted peer tasks still commit the real recovery through native CAS", async () => {
+  durable = { revision: 213, tasks: [task("interrupted", { status: "running" })] };
+  await loadPeerTasks();
+  usePeerTaskStore.setState({
+    tasks: [], hydrated: false, recoveryReady: false, recoveryError: null,
+  });
+  vi.mocked(invoke).mockClear();
+  await usePeerTaskStore.getState().hydrate({
+    sessions,
+    isAgentConfigured: () => true,
+    isModelConfigured: () => true,
+  });
+  expect(usePeerTaskStore.getState().recoveryReady).toBe(true);
+  expect(durable.revision).toBe(214);
+  expect(durable.tasks[0]).not.toEqual(task("interrupted", { status: "running" }));
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) =>
+    command === "peer_ledger_commit")).toHaveLength(1);
+});
 it("archived prerequisites still resolve results and dependencies", () => {
   const prerequisite = task("before", {
     archivedAt: 3,

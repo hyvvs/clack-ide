@@ -393,6 +393,106 @@ describe("persistent self-hosted settings", () => {
     expect((await repository.load()).profiles).toEqual(withProfile.profiles);
   });
 
+  it("does not rewrite an otherwise current native inventory merely to remove unknown optional null observations", async () => {
+    const repository = createSelfHostedPersistence(nativeSelfHostedStorage());
+    const initial = await repository.load();
+    const local = initial.endpoints.find(endpoint => endpoint.id === "legacy:ollama");
+    if (!local) throw new Error("default host missing");
+    const current = withLocalComputeFabric({
+      ...initial,
+      inventories: [{
+        endpointId: local.id,
+        configurationRevision: local.configurationRevision,
+        observedAt: 1_000,
+        connected: false,
+        backend: "ollama" as const,
+        error: "unreachable",
+        models: [],
+      }],
+    });
+    const persisted = {
+      ...current,
+      revision: 1495,
+      inventories: current.inventories!.map(inventory => ({
+        ...inventory, lastSuccessAt: null, version: null,
+      })),
+    };
+    mocks.data.set(SELF_HOSTED_SETTINGS_KEY, structuredClone(persisted));
+    mocks.invokes.length = 0;
+    const first = await repository.load();
+    const second = await repository.load();
+
+    expect(first.revision).toBe(1495);
+    expect(second).toEqual(first);
+    expect(first.inventories?.[0]?.lastSuccessAt).toBeUndefined();
+    expect(first.inventories?.[0]?.version).toBeUndefined();
+    expect(mocks.invokes.filter(command =>
+      command === "self_hosted_profiles_compare_and_swap")).toHaveLength(0);
+    // The native writer's original null observations remain on disk verbatim.
+    expect(mocks.data.get(SELF_HOSTED_SETTINGS_KEY)).toEqual(persisted);
+  });
+
+  it("preserves ordinary preferences, unknown extensions, FAILED receipts, LM6 history, and conceptual registration on an idle load", async () => {
+    const repository = createSelfHostedPersistence(nativeSelfHostedStorage());
+    const installed = await repository.load();
+    const local = installed.endpoints.find(endpoint => endpoint.id === "legacy:ollama");
+    if (!local || !installed.fabric) throw new Error("default registered fabric missing");
+    const receipt = { version: 2, capability: "instruction-adherence", status: "failed", immutableEvidence: "historical" };
+    const lm6 = { version: 1, status: "complete", immutableEvidence: "historical-measurement" };
+    const current = withLocalComputeFabric({
+      ...installed,
+      inventories: [{
+        endpointId: local.id,
+        configurationRevision: local.configurationRevision,
+        observedAt: 2_000,
+        connected: false,
+        backend: "ollama" as const,
+        models: [],
+      }],
+      fabric: {
+        ...installed.fabric,
+        futureFabricMetadata: { opaque: ["retain"] },
+        qualificationReceipts: [receipt],
+        measurementRuns: [lm6],
+      },
+    });
+    const persisted = {
+      ...current,
+      revision: 800,
+      futureEnvelopeMetadata: { opaque: "keep", nested: { version: 42 } },
+      endpoints: current.endpoints.map(endpoint => ({
+        ...endpoint, futureEndpointMetadata: { retained: true },
+      })),
+      inventories: current.inventories!.map(inventory => ({
+        ...inventory, lastSuccessAt: null, version: null,
+      })),
+    };
+    const agentPermissions = {
+      "builtin:coder": { mode: "full-access", categories: {} },
+      "builtin:architect": { mode: "chat-only", categories: {} },
+    };
+    mocks.data.set(SELF_HOSTED_SETTINGS_KEY, structuredClone(persisted));
+    mocks.data.set("agentPermissionProfiles", structuredClone(agentPermissions));
+    mocks.data.set("futureTopLevelSettings", { opaque: "also retained" });
+    mocks.invokes.length = 0;
+    const first = await repository.load();
+    const second = await repository.load();
+
+    expect(first.revision).toBe(800);
+    expect(second).toEqual(first);
+    expect(first.fabric?.qualificationReceipts).toEqual([receipt]);
+    expect(first.fabric?.measurementRuns).toEqual([lm6]);
+    expect(first.fabric?.deployments).toEqual(installed.fabric.deployments);
+    expect(first.fabric?.artifacts).toEqual(installed.fabric.artifacts);
+    expect((first as unknown as typeof persisted).futureEnvelopeMetadata).toEqual(persisted.futureEnvelopeMetadata);
+    expect((first as unknown as typeof persisted).fabric?.futureFabricMetadata).toEqual(persisted.fabric?.futureFabricMetadata);
+    expect(mocks.invokes.filter(command =>
+      command === "self_hosted_profiles_compare_and_swap")).toHaveLength(0);
+    expect(mocks.data.get(SELF_HOSTED_SETTINGS_KEY)).toEqual(persisted);
+    expect(mocks.data.get("agentPermissionProfiles")).toEqual(agentPermissions);
+    expect(mocks.data.get("futureTopLevelSettings")).toEqual({ opaque: "also retained" });
+  });
+
   it("rejects invalid mutations instead of silently discarding profile pins", async () => {
     mocks.data.set("ollamaModelId", "qwen");
     const repository = createSelfHostedPersistence(nativeSelfHostedStorage());
