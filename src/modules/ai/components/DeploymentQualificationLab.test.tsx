@@ -151,6 +151,23 @@ afterEach(() => {
 });
 
 describe("LM11 Qualification Lab passive desktop surface", () => {
+  it("is absent for an ordinary chat model before exact managed selection", () => {
+    select(emptySelfHostedState(), "gpt-5.4-mini");
+    expect(render()).toBe("");
+    expect(native).not.toHaveBeenCalled();
+    expect(chatRunner).not.toHaveBeenCalled();
+  });
+
+  it("becomes visible only after the conversation actually holds the managed selection", () => {
+    const exact = managed();
+    select(exact.state, "gpt-5.4-mini");
+    expect(render()).toBe("");
+    select(exact.state, exact.selectionId);
+    expect(render()).toContain("Qualification Lab");
+    expect(native).not.toHaveBeenCalled();
+    expect(chatRunner).not.toHaveBeenCalled();
+    expect(lm6Runner).not.toHaveBeenCalled();
+  });
   it("01 closed Lab does not read native, send inference, or change settings", () => {
     const selected = managed();
     select(selected.state, selected.selectionId);

@@ -24,7 +24,7 @@ vi.mock("@/modules/settings/preferences", async (importOriginal) => {
   ) };
 });
 
-import { ModelDropdown, firstEnabledPickerMenuItem, groupFabricPickerModels, modelPickerHostAvailability, pickerArtifactMetadata, pickerDeploymentAccessibleLabel } from "@/modules/ai/components/AiStatusBarControls";
+import { ModelDropdown, firstEnabledPickerMenuItem, groupFabricPickerModels, modelPickerHostAvailability, pickerArtifactMetadata, pickerDeploymentAccessibleLabel, recheckManagedPickerSelection } from "@/modules/ai/components/AiStatusBarControls";
 import { ModelSwitchNotice } from "./ModelSwitchNotice";
 import { AI_CHAT_TOOLTIP, AiChatButton } from "./AiChatButton";
 import type { SessionRunState } from "@/modules/ai/lib/sessions";
@@ -87,6 +87,72 @@ describe("model compatibility notice", () => {
     expect(html).not.toContain("Optimize and switch");
     expect(html).toContain("Choose another model");
     expect(html).toContain("Cannot switch model");
+  });
+});
+
+describe("exact Clack-managed picker click recheck (no generation)", () => {
+  const digest = `sha256:${"c".repeat(64)}`;
+  const registered = attachManagedLocalGguf({ version: 1, revision: 0, endpoints: [], profiles: [] }, {
+    digest, displayName: "Qwen2.5-0.5B-Instruct", material: {
+      version: 1, context: 2048, gpu: 0, tool: false, grammar: false,
+    },
+  });
+  const deployment = registered.state.fabric!.deployments[0];
+  const identity = JSON.parse(registered.selectionId.slice("managed-local:".length))[1] as string;
+  const ready = { installed: true, state: "Ready", epoch: "a".repeat(64),
+    deploymentId: deployment.id, modelDigest: digest, processId: 1234 };
+  const status = (value = ready) => vi.fn(async () => value);
+  const presence = (value = true) => vi.fn(async () => value);
+
+  it("supplies the exact deployment ID/identity/digest to native status and accepts only fresh Ready", async () => {
+    const read = status();
+    const file = presence();
+    expect(await recheckManagedPickerSelection(registered.selectionId, registered.state, read, file))
+      .toEqual({ ok: true, observed: ready, digest });
+    expect(read).toHaveBeenCalledExactlyOnceWith(deployment.id, identity);
+    expect(file).toHaveBeenCalledExactlyOnceWith(digest);
+    expect(useChatStore.getState().sessions[0]?.profile?.modelId).not.toBe(registered.selectionId);
+  });
+
+  it.each(["Stopped", "Loading", "Failed", "Not Installed"])(
+    "rejects %s with a visible reason before any chat mutation", async (phase) => {
+      const result = await recheckManagedPickerSelection(registered.selectionId, registered.state,
+        status({ ...ready, state: phase }), presence());
+      expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("Cannot select") });
+      expect(result.ok === false && result.reason.toLowerCase()).toContain(phase === "Not Installed" ? "runtime unavailable" : phase.toLowerCase());
+    },
+  );
+
+  it.each([
+    ["other deployment", { deploymentId: "wrong-deployment" }],
+    ["other digest", { modelDigest: `sha256:${"d".repeat(64)}` }],
+    ["missing epoch", { epoch: "" }],
+    ["not installed", { installed: false }],
+  ])("rejects %s without using another deployment's native Ready", async (_, change) => {
+    const result = await recheckManagedPickerSelection(registered.selectionId, registered.state,
+      status({ ...ready, ...change }), presence());
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("Cannot select") });
+  });
+
+  it("rejects missing GGUF explicitly, preserving the old conversation identity", async () => {
+    const before = useChatStore.getState().selectedModelId;
+    expect(await recheckManagedPickerSelection(registered.selectionId, registered.state, status(), presence(false)))
+      .toMatchObject({ ok: false, reason: expect.stringContaining("model file missing") });
+    expect(useChatStore.getState().selectedModelId).toBe(before);
+  });
+
+  it("rejects a stale canonical deployment selection without invoking native status", async () => {
+    const read = status();
+    const stale = `managed-local:${JSON.stringify([deployment.id, `${identity}-stale`])}`;
+    const outcome = await recheckManagedPickerSelection(stale, registered.state, read, presence());
+    expect(outcome).toMatchObject({ ok: false, reason: expect.stringContaining("identity changed") });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("explicitly rejects native read failures instead of silently ignoring the picker click", async () => {
+    const result = await recheckManagedPickerSelection(registered.selectionId, registered.state,
+      vi.fn(async () => { throw new Error("native unavailable"); }), presence());
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("Nothing was switched") });
   });
 });
 
