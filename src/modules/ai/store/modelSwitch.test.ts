@@ -488,6 +488,10 @@ describe("managed GGUF model-switch native Ready commit revalidation", () => {
     let failure: string | null = null;
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       if (command === "managed_local_runtime_status") {
+        expect(args).toEqual({
+          deploymentId,
+          deploymentIdentity: JSON.parse(first.selectionId.slice("managed-local:".length))[1],
+        });
         if (failure === "status") throw new Error("Native runtime unavailable");
         return { ...status };
       }

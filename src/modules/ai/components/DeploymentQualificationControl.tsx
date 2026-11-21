@@ -7,6 +7,7 @@ import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   isManagedLocalSelectionId,
+  resolveManagedLocalSelection,
 } from "@/modules/ai/lib/managedLocalModels";
 import { deploymentQualificationView } from "@/modules/ai/lib/deploymentQualificationView";
 import type { ManagedLocalNativeStatus } from "@/modules/ai/lib/managedLocalRuntime";
@@ -30,9 +31,14 @@ export function DeploymentQualificationControl({ sessionId }: { sessionId: strin
   const refresh = () => {
     setReadAt(Date.now());
     setNative(null);
-    if (isManagedLocalSelectionId(selection))
-      void invoke<ManagedLocalNativeStatus>("managed_local_runtime_status")
-        .then(setNative).catch(() => setNative(null));
+    if (isManagedLocalSelectionId(selection)) {
+      const exact = resolveManagedLocalSelection(state, selection);
+      if (exact.status === "missing" || exact.status === "not-managed") return;
+      void invoke<ManagedLocalNativeStatus>("managed_local_runtime_status", {
+        deploymentId: exact.deployment.id,
+        deploymentIdentity: exact.identity,
+      }).then(setNative).catch(() => setNative(null));
+    }
   };
   const runQualification = () => {
     if (!selection || !isManagedLocalSelectionId(selection) || qualifying) return;

@@ -22,6 +22,7 @@ import {
   observeLm6CancellationQuiescence,
   peekDeploymentQualificationMeasurement,
   waitForRecordedLm6NativeSettlement,
+  QualificationOperationDeadline,
   type QualificationFlightSnapshot,
 } from "./deploymentQualificationFlight";
 import { inspectBoundedChat } from "./deploymentQualificationRuntime";
@@ -40,12 +41,16 @@ import { admittedManagedLocalRoute, type ManagedLocalNativeStatus } from "./mana
 import { projectModelResourceProfile } from "./modelResourceProfile";
 import { nativeHardwareObservationSchema } from "./hardwareProfile";
 import type { SelfHostedState } from "./selfHostedProfiles";
-import { useChatStore } from "@/modules/ai/store/chatStore";
+import { chats, useChatStore } from "@/modules/ai/store/chatStore";
 import { getOrCreateChat, prepareSessionChat, sendMessageToSession } from "@/modules/ai/store/chatRuntime";
 import { awaitSessionWrites, saveMessages } from "./sessions";
 import { cancelSessionInference, sessionInference } from "./inferenceLifecycle";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { updateSelfHostedProfiles } from "@/modules/settings/store";
+import { updateQualifiedSelfHostedProfiles } from "@/modules/settings/store";
+import {
+  beginNativeQualificationCas, cancelNativeQualificationCas,
+  type NativeQualificationCasTicket,
+} from "@/modules/settings/selfHostedPersistence";
 
 /** This user-invoked path is limited to a single preselected deployment.
  * It never executes a high-impact tool, retries-to-pass or promotes LM2F.
@@ -54,6 +59,7 @@ const MAX_SINGLE_MS = 65_000;
 const MAX_READY_MS = 60_000;
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 let active = false;
+let uncertainPreviousMeasurement = false;
 
 type Target = {
   state: SelfHostedState;
@@ -78,7 +84,8 @@ function managedStatus(raw: unknown): ManagedLocalNativeStatus {
 }
 
 async function readyManaged(status: ManagedLocalNativeStatus, selectionId: string,
-  state: SelfHostedState): Promise<{ status: ManagedLocalNativeStatus; thermal: Target["thermal"] }> {
+  state: SelfHostedState, deadline?: QualificationOperationDeadline,
+): Promise<{ status: ManagedLocalNativeStatus; thermal: Target["thermal"] }> {
   const selected = resolveManagedLocalSelection(state, selectionId);
   if (selected.status === "missing" || selected.status === "not-managed")
     throw new Error("Exact Qwen deployment unavailable");
@@ -87,6 +94,7 @@ async function readyManaged(status: ManagedLocalNativeStatus, selectionId: strin
     throw new Error("Native runtime cannot be safely started from its current state");
   // This is an existing native lifecycle command. No runtime settings, GPU
   // layers, artifact, permissions, or driver configuration are changed.
+  deadline?.assertOpen();
   const started = managedStatus(await invoke("managed_local_runtime_start", {
     deploymentId: selected.deployment.id,
     deploymentIdentity: selected.identity,
@@ -95,36 +103,51 @@ async function readyManaged(status: ManagedLocalNativeStatus, selectionId: strin
     throw new Error("Managed runtime start not accepted");
   const until = Date.now() + MAX_READY_MS;
   while (Date.now() < until) {
-    const next = managedStatus(await invoke("managed_local_runtime_status"));
+    deadline?.assertOpen();
+    const next = managedStatus(await invoke("managed_local_runtime_status", {
+      deploymentId: selected.deployment.id,
+      deploymentIdentity: selected.identity,
+    }));
+    deadline?.assertOpen();
     if (next.state === "Ready") return { status: next, thermal: "cold" };
     if (next.state === "Stopped" || next.state === "Failed")
       throw new Error("Managed runtime did not reach Ready");
-    await delay(500);
+    if (deadline) await deadline.within(() => delay(500));
+    else await delay(500);
   }
   throw new Error("Managed runtime Ready deadline exceeded");
 }
 
-async function targetFor(selectionId: string, allowStart: boolean): Promise<Target | null> {
+async function targetFor(selectionId: string, allowStart: boolean,
+  deadline?: QualificationOperationDeadline): Promise<Target | null> {
+  deadline?.assertOpen();
   const state = usePreferencesStore.getState().selfHostedInference;
   if (isManagedLocalSelectionId(selectionId)) {
-    const raw = managedStatus(await invoke("managed_local_runtime_status"));
-    const ready = allowStart ? await readyManaged(raw, selectionId, state) : {
+    const selected = resolveManagedLocalSelection(state, selectionId);
+    if (selected.status === "missing" || selected.status === "not-managed") return null;
+    const raw = managedStatus(await invoke("managed_local_runtime_status", {
+      deploymentId: selected.deployment.id,
+      deploymentIdentity: selected.identity,
+    }));
+    deadline?.assertOpen();
+    const ready = allowStart ? await readyManaged(raw, selectionId, state, deadline) : {
       status: raw, thermal: raw.state === "Ready" ? "warm" as const : "unknown" as const,
     };
     const current = observedManagedFabric(state, selectionId, ready.status, Date.now());
-    const selected = resolveManagedLocalSelection(state, selectionId);
-    if (!current?.observation || selected.status === "missing" || selected.status === "not-managed")
+    if (!current?.observation)
       return null;
     const resource = projectModelResourceProfile(selected.artifact, selected.runtime, selected.deployment);
     if (resource.executionPlacement.value !== "CPU") return null;
     const digest = selected.artifact.digest;
     if (!digest) return null;
+    deadline?.assertOpen();
     await admittedManagedLocalRoute({
       deploymentId: selected.deployment.id,
       deploymentIdentity: selected.identity,
       artifactDigest: digest,
       configurationRevision: selected.deployment.configurationRevision,
     });
+    deadline?.assertOpen();
     return {
       state, fabric: current.fabric, deploymentId: selected.deployment.id, selectionId,
       observation: current.observation, contextTokens: resource.configuredContext.value,
@@ -264,13 +287,26 @@ export async function runBoundedDeploymentMeasurement(
   attempted: number;
 }> {
   if (active) throw new Error("A bounded LM6 qualification is already active");
+  if (uncertainPreviousMeasurement)
+    throw new Error("Prior LM6 native/persistence outcome is unresolved; no automatic re-dispatch");
   active = true;
   const previousSessionId = useChatStore.getState().activeSessionId;
   const previousModelId = useChatStore.getState().selectedModelId;
+  let preparingSessionId: string | null = null;
+  let casTicket: NativeQualificationCasTicket | null = null;
+  const deadline = new QualificationOperationDeadline(300_000, () => {
+    if (casTicket)
+      void cancelNativeQualificationCas(casTicket).catch(() => undefined);
+    if (!preparingSessionId) return;
+    void cancelSessionInference(preparingSessionId, {
+      source: "explicit-user", reason: "cancel-requested",
+    }).catch(() => undefined);
+    void chats.get(preparingSessionId)?.stop().catch(() => undefined);
+  });
   try {
     if (usePreferencesStore.getState().agentPermissionProfiles["builtin:coder"]?.mode !== "chat-only")
       throw new Error("LM6 requires existing Coder Chat Only; it will not edit permissions");
-    const initial = await targetFor(selectionId, true);
+    const initial = await deadline.within(() => targetFor(selectionId, true, deadline));
     if (!initial) return { status: "unavailable", runId: null, deploymentId: null, attempted: 0 };
     if (!lm6ExactScope(initial.fabric, initial.deploymentId, initial.observation, Date.now()))
       return { status: "unavailable", runId: null, deploymentId: initial.deploymentId, attempted: 0 };
@@ -291,6 +327,7 @@ export async function runBoundedDeploymentMeasurement(
     ]).slice(0, LM6_MAX_ATTEMPTS);
     let unsafeToDispatchAgain = false;
     for (let i = 0; i < procedures.length; i++) {
+      deadline.assertOpen();
       const plan = procedures[i];
       if (unsafeToDispatchAgain) {
         const at = Date.now();
@@ -302,7 +339,7 @@ export async function runBoundedDeploymentMeasurement(
         }));
         continue;
       }
-      const before = await targetFor(selectionId, false);
+      const before = await deadline.within(() => targetFor(selectionId, false, deadline));
       // Never transfer evidence after restart/host/config/model changes.
       const stillSame = !!before && before.observation.epoch === initial.observation.epoch &&
         before.deploymentId === initial.deploymentId &&
@@ -322,14 +359,22 @@ export async function runBoundedDeploymentMeasurement(
       let flight: QualificationFlightSnapshot | null = null;
       let failed: unknown = null;
       let settled = false;
+      let sdkActuallySettled = false;
       let cancellationResult: { startedOutput?: boolean; acknowledged?: boolean } = {};
       let noContinuationObserved: boolean | null = null;
-      const pointBefore = initial.managed ? await localResourcePoint() :
+      const pointBefore = initial.managed ? await deadline.within(localResourcePoint) :
         { ram: null, vram: null, ramAt: null, vramAt: null };
       let pointDuring: Awaited<ReturnType<typeof localResourcePoint>> =
         { ram: null, vram: null, ramAt: null, vramAt: null };
       try {
         sessionId = useChatStore.getState().newSession();
+        preparingSessionId = sessionId;
+        // Register the single-use dispatch authority BEFORE session writes,
+        // retrieval, provider preparation and native inference registration.
+        armDeploymentQualification(sessionId, selectionId, "builtin:coder", {
+          expectedPrompt: plan.prompt, measure: true,
+          operation: deadline, cancelChallenge: plan.cancel,
+        });
         const store = useChatStore.getState();
         if (!store.setSessionModelId(sessionId, selectionId, false) ||
             !store.setSessionAgentId(sessionId, "builtin:coder"))
@@ -339,24 +384,26 @@ export async function runBoundedDeploymentMeasurement(
             session.profile.agentId !== "builtin:coder" ||
             (session.fallback?.mode && session.fallback.mode !== "never"))
           throw new Error("LM6 Chat not bound to exact model with fallback disabled");
-        await awaitSessionWrites(sessionId);
-        await prepareSessionChat(sessionId);
-        armDeploymentQualification(sessionId, selectionId, "builtin:coder", {
-          expectedPrompt: plan.prompt, measure: true,
-        });
-        const sent = boundedSend(sessionId, plan.prompt, plan.cancel);
-        if (initial.managed) pointDuring = await localResourcePoint();
+        await deadline.within(() => awaitSessionWrites(sessionId!));
+        await deadline.within(() => prepareSessionChat(sessionId!));
+        deadline.assertOpen();
+        const sent = deadline.within(() => boundedSend(sessionId!, plan.prompt, plan.cancel));
+        if (initial.managed) pointDuring = await deadline.within(localResourcePoint);
         const outcome = await sent;
         settled = outcome.completedWithoutBound;
         failed = outcome.error;
         cancellationResult = outcome;
+        sdkActuallySettled = plan.cancel
+          ? outcome.acknowledged === true
+          : outcome.completedWithoutBound || outcome.error !== null;
         // Chat may settle just ahead of Rust's native Settled channel event.
         // Allow only a fixed observation grace; never replay the provider.
-        await waitForRecordedLm6NativeSettlement(sessionId);
+        await deadline.within(() => waitForRecordedLm6NativeSettlement(sessionId!));
         if (plan.cancel) {
-          const quiet = await observeLm6CancellationQuiescence(sessionId);
+          const quiet = await deadline.within(() => observeLm6CancellationQuiescence(sessionId!));
           const chat = getOrCreateChat(sessionId);
-          const native = await targetFor(selectionId, false).catch(() => null);
+          const native = await deadline.within(() =>
+            targetFor(selectionId!, false, deadline)).catch(() => null);
           noContinuationObserved = quiet === true &&
             !sessionInference(sessionId) && chat.status !== "submitted" &&
             chat.status !== "streaming" && !!native &&
@@ -368,6 +415,7 @@ export async function runBoundedDeploymentMeasurement(
         failed = error;
       } finally {
         if (sessionId) flight = disarmDeploymentQualification(sessionId);
+        preparingSessionId = null;
       }
       const m = flight?.measurement;
       const response = sessionId && !failed && !plan.cancel
@@ -405,7 +453,7 @@ export async function runBoundedDeploymentMeasurement(
           }).status : "incomplete";
         capabilityCheck = verdict === "verified" ? "passed" : verdict;
       }
-      const pointAfter = initial.managed ? await localResourcePoint() :
+      const pointAfter = initial.managed ? await deadline.within(localResourcePoint) :
         { ram: null, vram: null, ramAt: null, vramAt: null };
       const endedAt = Date.now();
       const signals: Lm6Signals = {
@@ -463,14 +511,36 @@ export async function runBoundedDeploymentMeasurement(
       }));
       if (sessionId) {
         const messages = getOrCreateChat(sessionId).messages;
-        await saveMessages(sessionId, messages).catch(() => {});
-        await awaitSessionWrites(sessionId).catch(() => {});
+        // A successful native response without durable Chat evidence is not
+        // an accepted measurement. Preserve failed attempts in memory, but
+        // do not commit a positive measurement ledger from failed writes.
+        try {
+          await deadline.within(() => saveMessages(sessionId!, messages));
+          await deadline.within(() => awaitSessionWrites(sessionId!));
+        } catch {
+          unsafeToDispatchAgain = true;
+        }
       }
       // Never start the next provider request if this one's native terminal
       // state is not observed. A settled SDK promise alone is not a drain.
-      if (!m || (!m.nativeTerminalAt && !m.cancelAcknowledgedAt))
+      if (!sdkActuallySettled || !m ||
+          (!m.nativeTerminalAt && !m.cancelAcknowledgedAt) ||
+          flight?.violations.length ||
+          (plan.cancel && noContinuationObserved !== true) ||
+          (sessionId && !!sessionInference(sessionId)))
         unsafeToDispatchAgain = true;
     }
+    // Do not write a potentially qualifying measurement when native
+    // terminal/quiescence remains Unknown. The prior attempts cannot be
+    // replayed to manufacture success.
+    if (unsafeToDispatchAgain) {
+      uncertainPreviousMeasurement = true;
+      return { status: "unavailable", runId: null, deploymentId: initial.deploymentId,
+        attempted: attempts.length };
+    }
+    deadline.sdkSettled();
+    deadline.nativeAcknowledged();
+    deadline.nativeQuiescent();
     const endedAt = Date.now();
     const scope = lm6ExactScope(initial.fabric, initial.deploymentId, initial.observation, startedAt);
     if (!scope) return {
@@ -481,23 +551,48 @@ export async function runBoundedDeploymentMeasurement(
       configuredContextTokens: initial.contextTokens, backend: initial.backend,
       startedAt, endedAt, requestedAttempts: procedures.length, attempts,
     });
-    const final = await targetFor(selectionId, false);
+    const final = await deadline.within(() => targetFor(selectionId, false, deadline));
     if (!final || final.observation.epoch !== initial.observation.epoch ||
         !isCurrentSameDeployment(final, initial))
       return { status: "unavailable", runId: null, deploymentId: initial.deploymentId, attempted: attempts.length };
     // Existing CAS writer, new and historical data in separate measurementRuns
     // stream. Reproject native Ready against CAS *current* state inside update.
-    await updateSelfHostedProfiles(current => {
-      const expected = reconcileLocalComputeFabric(current).deployments
-        .find(d => d.id === initial.deploymentId);
-      if (!expected) throw new Error("Deployment removed before LM6 evidence commit");
-      const observed = initial.managed
-        ? observedManagedFabric(current, selectionId, final.native ?? null, Date.now())
-        : { fabric: reconcileLocalComputeFabric(current), observation: final.observation };
-      return appendLm6Run(current, run, observed?.observation, Date.now(), observed?.fabric);
-    });
+    deadline.beginPersistence();
+    try {
+      casTicket = await deadline.within(() => beginNativeQualificationCas({
+        kind: "lm6", deploymentId: initial.deploymentId,
+        runtimeEpoch: final.observation.epoch,
+        processId: initial.managed ? final.native?.processId ?? null : null,
+        remainingMs: Math.floor(deadline.remainingMs()),
+      }));
+      deadline.assertOpen();
+      const ticket = casTicket;
+      await deadline.within(() => updateQualifiedSelfHostedProfiles(current => {
+        deadline.assertOpen();
+        const expected = reconcileLocalComputeFabric(current).deployments
+          .find(d => d.id === initial.deploymentId);
+        if (!expected) throw new Error("Deployment removed before LM6 evidence commit");
+        const observed = initial.managed
+          ? observedManagedFabric(current, selectionId, final.native ?? null, Date.now())
+          : { fabric: reconcileLocalComputeFabric(current), observation: final.observation };
+        return appendLm6Run(current, run, observed?.observation, Date.now(), observed?.fabric);
+      }, ticket, () => deadline.assertOpen()));
+      deadline.persisted();
+    } catch (error) {
+      if (casTicket)
+        void cancelNativeQualificationCas(casTicket).catch(() => undefined);
+      if (error instanceof Error &&
+          error.message === "Self-hosted settings changed in another window. Try again.")
+        deadline.rejectPersistence();
+      else deadline.ambiguousPersistence();
+      uncertainPreviousMeasurement = true;
+      throw error;
+    }
     return { status: "recorded", runId: run.runId, deploymentId: run.scope.deploymentId, attempted: attempts.length };
   } finally {
+    if (deadline.state.terminal)
+      uncertainPreviousMeasurement = true;
+    deadline.finish();
     const store = useChatStore.getState();
     if (previousSessionId && store.sessions.some(s => s.id === previousSessionId))
       store.switchSession(previousSessionId);

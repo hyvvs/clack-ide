@@ -437,12 +437,14 @@ class OneEbpOfflineTests(unittest.TestCase):
         arm_evidence = collector.source_arm_evidence
 
         def simulated_live_arm(out, err, pid, port, before, after,
-                               before_links, after_links, tracer_pid):
+                               before_links, after_links, tracer_pid,
+                               controlled_objects=None):
             # The fake process preloads its END trailer. On real Linux END only
             # becomes readable *after* SIGINT/STOP, not while checking READY.
             return arm_evidence(out.replace(PROBE_END, b""), err,
                                 pid, port, before, after, before_links,
-                                after_links, tracer_pid)
+                                after_links, tracer_pid,
+                                controlled_objects=controlled_objects)
         inventory_reads = 0
 
         def fake_inventory(*_args):
@@ -491,6 +493,10 @@ class OneEbpOfflineTests(unittest.TestCase):
                     patch.object(collector.os, "read", side_effect=fake_read), \
                     patch.object(collector.selectors, "DefaultSelector", SyntheticSelector), \
                     patch.object(collector, "source_arm_evidence", side_effect=simulated_live_arm), \
+                    patch.object(collector, "tracer_process_identity",
+                                 return_value=(32155, 9, 24)), \
+                    patch.object(collector, "owned_bpf_link_fds",
+                                 return_value=[(101, 93, "kprobe_multi")]), \
                     patch.object(collector, "nonblocking_write", side_effect=capture_output):
                 code = collector.run_capture(PID, 3, ready_writer, control_reader, helper, "probe",
                                              "tracer", "bpftool", attach_timeout,

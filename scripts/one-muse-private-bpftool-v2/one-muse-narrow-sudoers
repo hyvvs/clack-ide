@@ -1,0 +1,6 @@
+# Dedicated lab-only Clack one-request transport diagnostic.
+# Exact immutable root wrapper, no arbitrary shell executable or sudo command.
+# Sudo 1.9.17 supports anchored argument regex; the Python wrapper separately
+# validates every argument, pins the current Ollama PID and fixes duration.
+# SHA256 digest locks the script bytes even against unintended root-side edits.
+hylab ALL=(root) NOPASSWD:NOSETENV: sha256:bdba04eb0952a2cd4c1e9f77f645be716b6ef220e124045d0e0f630ddee77260 /usr/local/libexec/clack-one-muse-root --self-check, sha256:bdba04eb0952a2cd4c1e9f77f645be716b6ef220e124045d0e0f630ddee77260 /usr/local/libexec/clack-one-muse-root ^--run muse-one-[a-f0-9]{24} [1-9][0-9]*$

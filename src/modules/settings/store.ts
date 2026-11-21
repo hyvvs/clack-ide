@@ -29,6 +29,7 @@ import type {
   PermissionCategory,
 } from "@/modules/ai/lib/permissions";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import {
   emptySelfHostedState,
@@ -351,7 +352,31 @@ export function normalizeAgentPermissionProfiles(
   return result;
 }
 
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
+// In the desktop app, all writes to the existing shared JSON pathname go
+// through its ONE native atomic replacement authority. Plugin Store remains
+// only the offline/web fallback; it cannot truncate an acknowledged native
+// qualifying receipt behind the new atomic CAS.
+const store: Pick<LazyStore, "entries" | "set" | "save" | "onChange"> =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+    ? {
+        entries: <T>() => invoke<[string, T][]>("self_hosted_settings_entries"),
+        set: (key, value) => invoke<void>("self_hosted_settings_set", { key, value }),
+        save: async () => undefined, // set itself committed atomically
+        // Native writes emit PREFS_CHANGED_EVENT, consumed below; do not
+        // register a second plugin-store observer for the same data.
+        onChange: async () => () => undefined,
+      }
+    : new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
+
+/** Keep the existing paired-key write as ONE durable JSON transition. */
+async function persistPreferenceBatch(changes: [string, unknown][]): Promise<void> {
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    await invoke<void>("self_hosted_settings_set_many", { changes });
+    return;
+  }
+  for (const [key, value] of changes) await store.set(key, value);
+  await store.save();
+}
 const selfHostedPersistence = createSelfHostedPersistence(
   nativeSelfHostedStorage(),
 );
@@ -360,6 +385,16 @@ export function updateSelfHostedProfiles(
   change: (state: SelfHostedState) => SelfHostedState,
 ): Promise<SelfHostedState> {
   return selfHostedPersistence.update(change);
+}
+
+/** B03-only qualification path through the SAME native settings CAS, with
+ * one operation ticket and no implicit conflict/timeout retry. */
+export function updateQualifiedSelfHostedProfiles(
+  change: (state: SelfHostedState) => SelfHostedState,
+  ticket: import("./selfHostedPersistence").NativeQualificationCasTicket,
+  assertCurrent: () => void,
+): Promise<SelfHostedState> {
+  return selfHostedPersistence.updateQualification(change, ticket, assertCurrent);
 }
 
 // LazyStore.onChange only fires within the writing process. The settings
@@ -396,15 +431,10 @@ export async function loadPreferences(): Promise<Preferences> {
     legacyOpenrouterModelId,
   });
   if (savedProviderModelsMigration.changed) {
-    await store.set(
-      KEY_SAVED_PROVIDER_MODELS,
-      savedProviderModelsMigration.models,
-    );
-    await store.set(
-      KEY_SAVED_PROVIDER_MODELS_VERSION,
-      SAVED_PROVIDER_MODELS_SCHEMA_VERSION,
-    );
-    await store.save();
+    await persistPreferenceBatch([
+      [KEY_SAVED_PROVIDER_MODELS, savedProviderModelsMigration.models],
+      [KEY_SAVED_PROVIDER_MODELS_VERSION, SAVED_PROVIDER_MODELS_SCHEMA_VERSION],
+    ]);
   }
   const selfHostedInference = await selfHostedPersistence.load();
   return {
@@ -612,9 +642,10 @@ export async function setLastUsedAiSelection(
   providerId: ProviderId,
   modelId: string,
 ): Promise<void> {
-  await store.set(KEY_LAST_USED_PROVIDER, providerId);
-  await store.set(KEY_LAST_USED_MODEL, modelId);
-  await store.save();
+  await persistPreferenceBatch([
+    [KEY_LAST_USED_PROVIDER, providerId],
+    [KEY_LAST_USED_MODEL, modelId],
+  ]);
   await emit(PREFS_CHANGED_EVENT, {
     key: KEY_LAST_USED_PROVIDER,
     value: providerId,

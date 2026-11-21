@@ -119,6 +119,20 @@ export type LocalRuntime = z.infer<typeof localRuntimeSchema>;
 export type ModelArtifact = z.infer<typeof modelArtifactSchema>;
 export type ModelDeployment = z.infer<typeof modelDeploymentSchema>;
 export type LocalComputeFabric = z.infer<typeof localComputeFabricSchema>;
+
+/** Keep unresolved or acknowledged native tickets within their original
+ * bounded CAS history. If the oldest row is protected and the history is
+ * full, fail closed rather than silently delete restart reconciliation. */
+export function appendNativeSafeHistory(
+  existing: readonly unknown[], additions: readonly unknown[], limit: number,
+): unknown[] {
+  const trim = Math.max(0, existing.length + additions.length - limit);
+  if (existing.length + additions.length < 1 || trim > existing.length ||
+      existing.slice(0, trim).some(row => !!row && typeof row === "object" &&
+        "qualificationCas" in row))
+    throw new Error("Native qualification history cannot evict an unresolved ticket");
+  return [...existing.slice(trim), ...additions];
+}
 export type ResolvedModelDeployment = {
   host: ComputeHost;
   runtime: LocalRuntime;
@@ -346,6 +360,15 @@ export function deploymentQualificationState(
     .sort((a, b) => b.at - a.at || b.index - a.index)[0]
     ?.record as DeploymentQualificationReceipt | undefined);
   if (!selected) return "Unverified";
+  // An abandoned native B03 prepared receipt is never usable. The exact
+  // existing CAS must have durably acknowledged its operation identity.
+  const qualifier = (selected as DeploymentQualificationReceipt & {
+    qualificationCas?: { phase?: unknown; operationId?: unknown; nativeEpoch?: unknown };
+  }).qualificationCas;
+  if (qualifier && (qualifier.phase !== "acknowledged" ||
+      typeof qualifier.operationId !== "string" ||
+      typeof qualifier.nativeEpoch !== "string"))
+    return "Incomplete";
   if (selected.version !== 2) return "Stale";
   const parsed = deploymentQualificationEvidenceReceiptSchema.safeParse(selected);
   const current = deploymentQualificationScope(fabric, deploymentId, observation, now);
@@ -403,7 +426,7 @@ export function recordDeploymentQualification(
         receipt.status !== "unsupported") ||
       (verdict === "Verified" && !runtimeCapabilityAllows(runtime, receipt.capability, true)))
     throw new Error("Runtime declaration cannot authorize this capability");
-  const history = [...(fabric.qualificationReceipts ?? []), receipt].slice(-128);
+  const history = appendNativeSafeHistory(fabric.qualificationReceipts ?? [], [receipt], 128);
   return withLocalComputeFabric({
     ...state,
     fabric: localComputeFabricSchema.parse({ ...fabric, qualificationReceipts: history }),

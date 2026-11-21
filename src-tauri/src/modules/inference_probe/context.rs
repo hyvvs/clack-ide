@@ -60,10 +60,9 @@ pub fn self_hosted_context_lease(
     }
     if !release {
         let _guard = WRITE_LOCK.lock().map_err(|_| "Settings unavailable")?;
-        let store = app
-            .store("terax-settings.json")
-            .map_err(|_| "Settings unavailable")?;
-        configured(&store.get(KEY).unwrap_or(Value::Null), &endpoint_id)
+        let state = crate::modules::self_hosted_profiles::authoritative_settings_value(&app, KEY)
+            .map_err(|_| "Settings unavailable")?.unwrap_or(Value::Null);
+        configured(&state, &endpoint_id)
             .map_err(|_| "Server unavailable")?;
     }
     let mut guard = leases().lock().map_err(|_| "Verification unavailable")?;
@@ -81,8 +80,9 @@ pub async fn self_hosted_context_runtime(
         .map_err(|_| ProbeError::new(ErrorCode::Unreachable))?;
     let endpoint = {
         let _guard = WRITE_LOCK.lock().map_err(|_| internal())?;
-        let store = app.store("terax-settings.json").map_err(|_| internal())?;
-        configured(&store.get(KEY).unwrap_or(Value::Null), &endpoint_id)?
+        let state = crate::modules::self_hosted_profiles::authoritative_settings_value(&app, KEY)
+            .map_err(|_| internal())?.unwrap_or(Value::Null);
+        configured(&state, &endpoint_id)?
     };
     if endpoint.backend() != Some(Backend::Ollama) {
         return Err(ProbeError::new(ErrorCode::UnsupportedProbeRoute));
@@ -106,8 +106,9 @@ pub async fn self_hosted_context_runtime(
         .ok_or_else(ProbeError::metadata)?;
     {
         let _guard = WRITE_LOCK.lock().map_err(|_| internal())?;
-        let store = app.store("terax-settings.json").map_err(|_| internal())?;
-        if configured(&store.get(KEY).unwrap_or(Value::Null), &endpoint_id)? != endpoint {
+        let state = crate::modules::self_hosted_profiles::authoritative_settings_value(&app, KEY)
+            .map_err(|_| internal())?.unwrap_or(Value::Null);
+        if configured(&state, &endpoint_id)? != endpoint {
             return Err(ProbeError::new(ErrorCode::InvalidConfiguration));
         }
     }

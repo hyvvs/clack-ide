@@ -22,7 +22,7 @@ assert(maxOutput === undefined || (Number.isSafeInteger(maxOutput) && maxOutput 
 const singleSpec = process.env.CLACK_PRODUCT_SINGLE_SPEC === "1";
 const traceStreams = process.env.CLACK_PRODUCT_TRACE === "1";
 const modelId = process.env.CLACK_PRODUCT_MODEL ?? "qwen38-uncensored:latest";
-assert(["qwen38-uncensored:latest", "qwen3-coder:30b", "devstral-small-2:24b"].includes(modelId) || [
+assert(["qwen38-uncensored:latest", "qwen3-coder:30b", "qwen38-iq4xs:latest", "devstral-small-2:24b"].includes(modelId) || [
   "muse-glimmer:30b",
   "north-mini-code-1.0:q4_K_M",
   "nemotron-3.5-lightning:30b-a3b-q4_K_M",

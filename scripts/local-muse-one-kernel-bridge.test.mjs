@@ -10,7 +10,8 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createOneMuseKernelBridge, kernelReaderCommand,
-  kernelStopCommand, parseKernelArm, parseKernelImportReceipt,
+  kernelStopCommand, KERNEL_TERMINAL_IMPORT_DRAIN_MS,
+  parseKernelArm, parseKernelImportReceipt,
 } from './local-muse-one-kernel-bridge.mjs';
 import { startDeliveryServer } from './local-muse-delivery-cli.mjs';
 
@@ -303,6 +304,52 @@ test('actual Node import-kernel receives synthetic FIFO EOF and writes durable k
     assert.equal((await bridge.stop({runId:RUN})).clean,true);
   } finally {
     if(server) await server.stop();
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
+test('post-STOP bulk import retains a complete kernel terminal under the bounded drain budget', async () => {
+  assert.equal(KERNEL_TERMINAL_IMPORT_DRAIN_MS,75000);
+  const root=await mkdtemp(path.join(os.tmpdir(),'one-muse-terminal-burst-offline-'));
+  let server,child,closeTimer;
+  try {
+    server=await startDeliveryServer(root,RUN,{requireKernelSession:true});
+    const pairs=3557; // One admitted run contained this many server socket returns.
+    const lines=[];
+    for(let i=1;i<=pairs;i++) {
+      const clock=100150000+i*10000,thread=987654+i;
+      lines.push(`TCPMETA attempt ${clock} ${PID} 1140 ${thread} 11434 43000 149 0 ollama`);
+      lines.push(`TCPMETA send ${clock+100} ${PID} 1140 ${thread} 11434 43000 149 149 ollama`);
+    }
+    lines.push(`TCPSESSION complete ${pairs} ${pairs} 0 0 450`);
+    let report='',unexpectedStdout='';
+    child=spawn(process.execPath,[
+      path.join(HERE,'local-muse-delivery-cli.mjs'),'import-kernel',
+      server.url,server.nonce,'ollama','ollama-loopback',
+      '5000','1794196108268000','100000',
+    ],{cwd:path.join(HERE,'..'),stdio:['pipe','pipe','pipe'],
+      windowsHide:true,env:{...process.env,CLACK_ONE_MUSE_DIAGNOSTIC_RUN_ID:RUN}});
+    child.stderr.on('data',chunk=>{if(report.length<2048)report+=chunk.toString('utf8');});
+    child.stdout.on('data',chunk=>{unexpectedStdout+=chunk.toString('utf8');});
+    const exited=new Promise((resolve,reject)=>{
+      child.once('error',reject);
+      child.once('close',(code,signal)=>resolve({code,signal}));
+    });
+    child.stdin.end(lines.join('\n')+'\n');
+    const terminal=await Promise.race([exited,new Promise((_,reject)=>{
+      closeTimer=setTimeout(()=>reject(Error('bounded-bulk-import-deadline')),KERNEL_TERMINAL_IMPORT_DRAIN_MS);
+    })]);
+    assert.deepEqual(terminal,{code:0,signal:null},report);
+    assert.equal(unexpectedStdout,'');
+    const receipt=parseKernelImportReceipt(report);
+    assert.equal(receipt,pairs*2+1);
+    assert.equal(server.snapshot().count,pairs*2+1);
+    assert.equal(server.snapshot().kernelCompletions,1);
+    assert.equal(server.snapshot().sourceFailed,false);
+  } finally {
+    clearTimeout(closeTimer);
+    if(child && child.exitCode===null)child.kill();
+    if(server)await server.stop();
     await rm(root,{recursive:true,force:true});
   }
 });

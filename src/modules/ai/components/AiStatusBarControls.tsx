@@ -265,9 +265,13 @@ function readManagedPickerRuntimeStatus(value: unknown): ManagedPickerRuntimeSta
   return status as ManagedPickerRuntimeStatus;
 }
 
-async function queryManagedPickerRuntimeStatus(): Promise<ManagedPickerRuntimeStatus | null> {
+async function queryManagedPickerRuntimeStatus(
+  deploymentId: string, deploymentIdentity: string,
+): Promise<ManagedPickerRuntimeStatus | null> {
   try {
-    return readManagedPickerRuntimeStatus(await invoke<unknown>("managed_local_runtime_status"));
+    return readManagedPickerRuntimeStatus(await invoke<unknown>("managed_local_runtime_status", {
+      deploymentId, deploymentIdentity,
+    }));
   } catch {
     // A missing native adapter is a normal not-installed case, never evidence of readiness.
     return null;
@@ -496,17 +500,26 @@ export function ModelDropdown({
   useSelfHostedInventory(open);
   const selfHosted = usePreferencesStore((s) => s.selfHostedInference);
   const managedModels = useMemo(() => savedManagedLocalModelInfos(selfHosted), [selfHosted]);
-  const [managedRuntimeStatus, setManagedRuntimeStatus] = useState<ManagedPickerRuntimeStatus | null>(null);
+  // One observation per exact Fabric deployment. A status for managed A must
+  // never make B unavailable or visually Ready under the wrong PID/epoch.
+  const [managedRuntimeStatuses, setManagedRuntimeStatuses] =
+    useState<Record<string, ManagedPickerRuntimeStatus | null>>({});
   const [managedFilePresence, setManagedFilePresence] = useState<Record<string, boolean>>({});
   useEffect(() => {
     if (!open || managedModels.length === 0) {
-      setManagedRuntimeStatus(null);
+      setManagedRuntimeStatuses({});
       return;
     }
     let active = true;
     const refresh = async () => {
-      const observed = await queryManagedPickerRuntimeStatus();
-      if (active) setManagedRuntimeStatus(observed);
+      const observations = await Promise.all(managedModels.map(async model => {
+        const exact = resolveManagedLocalSelection(selfHosted, model.id);
+        if (exact.status !== "available" && exact.status !== "unavailable")
+          return [model.id, null] as const;
+        return [model.id, await queryManagedPickerRuntimeStatus(
+          exact.deployment.id, exact.identity)] as const;
+      }));
+      if (active) setManagedRuntimeStatuses(Object.fromEntries(observations));
     };
     void refresh();
     const timer = setInterval(() => void refresh(), 2500);
@@ -514,7 +527,7 @@ export function ModelDropdown({
       active = false;
       clearInterval(timer);
     };
-  }, [open, managedModels.length]);
+  }, [open, managedModels, selfHosted]);
   useEffect(() => {
     if (!open || managedModels.length === 0) {
       setManagedFilePresence({});
@@ -569,7 +582,8 @@ export function ModelDropdown({
   const favoriteIds = usePreferencesStore((s) => s.favoriteModelIds);
   const recentIds = usePreferencesStore((s) => s.recentModelIds);
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
-  const selectedHostDisabled = modelPickerHostAvailability(selected, selfHosted, managedRuntimeStatus)?.label === "Disabled in Settings";
+  const selectedHostDisabled = modelPickerHostAvailability(selected, selfHosted,
+    managedRuntimeStatuses[selected])?.label === "Disabled in Settings";
   const pickerFavorites = useMemo(() => favoriteIds.map(id => canonicalSelfHostedSelectionId(id, selfHosted)), [favoriteIds, selfHosted]);
   const pickerRecents = useMemo(() => recentIds.map(id => canonicalSelfHostedSelectionId(id, selfHosted)), [recentIds, selfHosted]);
   const pickerSelection = canonicalSelfHostedSelectionId(selected, selfHosted);
@@ -730,7 +744,7 @@ export function ModelDropdown({
       deploymentName={deploymentName}
       selected={m.id === pickerSelection}
       disabled={locked}
-      status={modelPickerHostAvailability(m.id, selfHosted, managedRuntimeStatus, managedFilePresence)}
+      status={modelPickerHostAvailability(m.id, selfHosted, managedRuntimeStatuses[m.id], managedFilePresence)}
       hasKey={isManagedLocalSelectionId(m.id) || (m.id.startsWith("self-hosted:")
         ? hasKeyForModel(m.id)
         : isCompatModelId(m.id) || hasKeyFor(m.provider))}
@@ -744,10 +758,10 @@ export function ModelDropdown({
           if (selection.status !== "available" && selection.status !== "unavailable") return;
           const digest = selection.artifact.digest!;
           void Promise.all([
-            queryManagedPickerRuntimeStatus(),
+            queryManagedPickerRuntimeStatus(selection.deployment.id, selection.identity),
             queryManagedModelFilePresence(digest),
           ]).then(([observed, present]) => {
-            setManagedRuntimeStatus(observed);
+            setManagedRuntimeStatuses(current => ({ ...current, [m.id]: observed }));
             setManagedFilePresence(current => ({ ...current, [digest]: present }));
             if (!modelPickerHostAvailability(m.id, selfHosted, observed, { [digest]: present })?.disabled)
               void setSelected(m.id);

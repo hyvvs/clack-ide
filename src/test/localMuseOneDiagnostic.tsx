@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { createOllamaModel, ollamaBody } from "@/modules/ai/lib/ollamaModel";
 import { verifiedProviderFetch } from "@/modules/ai/lib/answerContinuation";
 import { createProxyFetch } from "@/modules/ai/lib/proxyFetch";
-import { installLocalDeliveryCapture, type DeliveryRow } from "@/modules/ai/lib/localDeliveryObserver";
+import { installLocalDeliveryCapture, ONE_MUSE_CLACK_CAPTURE_LIMIT, type DeliveryRow } from "@/modules/ai/lib/localDeliveryObserver";
 
 const RUN_ID = /^[a-z0-9][a-z0-9-]{7,79}$/;
 const MODEL = "muse-glimmer:30b";
@@ -107,7 +107,7 @@ export function createOneMuseBrowserDiagnostic() {
     if (!response || !RUN_ID.test(response.runId))
       throw new Error("Bound diagnostic identity is unavailable");
     state = { runId: response.runId };
-    captured = await installLocalDeliveryCapture(persist, 8192, state.runId);
+    captured = await installLocalDeliveryCapture(persist, ONE_MUSE_CLACK_CAPTURE_LIMIT, state.runId);
     if (captured.readiness?.runId !== state.runId || !captured.readiness.nativeReady ||
         !captured.readiness.webviewReady) throw new Error("Delivery observer handshake failed");
     for (const source of ["native", "semantic", "webview"] as const) {

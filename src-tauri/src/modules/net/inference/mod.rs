@@ -617,6 +617,26 @@ pub fn ai_http_open(
     });
     Ok(id)
 }
+/// Read-only observation of the EXISTING native request registry. The
+/// qualification renderer must not turn SDK/Channel terminal into persisted
+/// PASS while the original Rust lease is still running or undisposed.
+/// No new registry, cancellation token or persistence owner is created.
+#[tauri::command]
+pub fn ai_http_request_quiescent(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, InferenceState>,
+    request_id: String,
+) -> Result<bool, Failure> {
+    if !request_id.starts_with("inference-") || request_id.len() <= 10 ||
+        !request_id[10..].bytes().all(|b|b.is_ascii_digit()) ||
+        window.label().is_empty() {
+        return Err(Failure::new("invalid-request"));
+    }
+    // The registry is an in-memory singleton per app owner; only lease drop
+    // or an actual cancellation drain can remove the original ID. A retired
+    // ID is never reused, even across child-process runtime epoch changes.
+    Ok(state.completion(&request_id).is_none())
+}
 #[tauri::command]
 pub async fn ai_http_cancel(
     window: tauri::WebviewWindow,
@@ -626,7 +646,145 @@ pub async fn ai_http_cancel(
 ) -> Result<(), Failure> {
     state.cancel_with_origin(window.label(), &request_id,
         cancellation_origin.unwrap_or(CancelOrigin::Unspecified)).await;
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    match acceptance_cancel_ack_fault(&window, &request_id) {
+        Some("original-late-cancel-ack") => {
+            // AFTER the existing production cancellation and exact-ID native
+            // registry drain, hold ONLY the IPC response for a one-shot
+            // original-caller terminal witness. No alternate cancel owner or
+            // request semantics. The production handler above is unchanged.
+            acceptance_hold_original_cancel_ack(&window, &request_id).await?;
+        }
+        Some("delayed-cancellation-ack") => {
+            // The ORIGINAL native handler has already finished cancelling and
+            // draining the request. Only its test-owned IPC ACK is delayed.
+            tokio::time::sleep(Duration::from_millis(260)).await;
+        }
+        Some("cancellation-ack-failure") => {
+            // A lost/error ACK after actual native cancellation, never a mock
+            // registry mutation or a replacement handler. This cannot occur
+            // without the explicit isolated Windows acceptance feature.
+            return Err(Failure::new("synthetic-cancel-ack-delivery-failed"));
+        }
+        _ => {}
+    }
     Ok(())
+}
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+async fn acceptance_hold_original_cancel_ack(
+    window: &tauri::WebviewWindow, id: &str,
+) -> Result<(), Failure> {
+    use std::io::Write;
+    let data=window.app_handle().path().app_data_dir()
+        .map_err(|_|Failure::new("cancelled"))?
+        .canonicalize().map_err(|_|Failure::new("cancelled"))?;
+    let root=data.parent().ok_or_else(||Failure::new("cancelled"))?;
+    if !crate::modules::managed_local_runtime::acceptance_is_owned_webview_root(root)
+        || window.app_handle().state::<InferenceState>().completion(id).is_some() {
+        return Err(Failure::new("cancelled"));
+    }
+    let held=root.join("cancel-ack-held.json");
+    let release=root.join("cancel-ack-release.json");
+    let returned=root.join("cancel-ack-native-return.json");
+    let mut witness=std::fs::OpenOptions::new().write(true).create_new(true)
+        .open(&held).map_err(|_|Failure::new("cancelled"))?;
+    let value=serde_json::json!({
+        "requestId":id,"hostPid":std::process::id(),
+        "actualProductionCancelAndNativeDrainBeforeAck":true,
+        "syntheticOnly":true,
+    });
+    witness.write_all(&serde_json::to_vec(&value).map_err(|_|Failure::new("cancelled"))?)
+        .and_then(|_|witness.sync_all()).map_err(|_|Failure::new("cancelled"))?;
+    drop(witness);
+    for _ in 0..1500 {
+        if let Ok(raw)=std::fs::read(&release) {
+            let marker: serde_json::Value=serde_json::from_slice(&raw)
+                .map_err(|_|Failure::new("cancelled"))?;
+            if marker["requestId"]!=id || marker["hostPid"]!=std::process::id()
+                || marker["originalCallerAlreadyTerminal"]!=true
+                || marker["syntheticOnly"]!=true {
+                return Err(Failure::new("cancelled"));
+            }
+            if window.app_handle().state::<InferenceState>().completion(id).is_some() {
+                return Err(Failure::new("cancelled"));
+            }
+            let mut output=std::fs::OpenOptions::new().write(true).create_new(true)
+                .open(&returned).map_err(|_|Failure::new("cancelled"))?;
+            let bytes=serde_json::to_vec(&serde_json::json!({
+                "requestId":id,"hostPid":std::process::id(),
+                "returnedOnlyAfterOriginalCallerTerminal":true,
+                "nativeRegistryStillDrained":true,"syntheticOnly":true,
+            })).map_err(|_|Failure::new("cancelled"))?;
+            output.write_all(&bytes).and_then(|_|output.sync_all())
+                .map_err(|_|Failure::new("cancelled"))?;
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Err(Failure::new("cancelled"))
+}
+
+/// Test-only post-cancel IPC delivery fault, granted for ONE exact native
+/// request ID in ONE exact fresh acceptance case. The production command and
+/// native request registry have already settled before any fault is applied.
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+fn acceptance_cancel_ack_fault(
+    window: &tauri::WebviewWindow,
+    request_id: &str,
+) -> Option<&'static str> {
+    use std::os::windows::fs::MetadataExt;
+    let data = window.app_handle().path().app_data_dir().ok()?.canonicalize().ok()?;
+    if data.file_name()? != std::ffi::OsStr::new("data") {
+        return None;
+    }
+    let root = data.parent()?;
+    if root.file_name()?.to_string_lossy().starts_with("wry-")
+        && crate::modules::managed_local_runtime::acceptance_is_owned_webview_root(root)
+    {
+        let marker = root.join("cancel-ack-fault.json");
+        let meta = std::fs::symlink_metadata(&marker).ok()?;
+        const WINDOWS_REPARSE: u32 = 0x00000400;
+        if !meta.is_file() || meta.file_type().is_symlink()
+            || meta.file_attributes() & WINDOWS_REPARSE != 0
+            || marker.canonicalize().ok()? != marker
+        {
+            return None;
+        }
+        let bytes = std::fs::read(&marker).ok()?;
+        if bytes.len() > 1024 { return None; }
+        let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        let fault = value["runtimeScenario"].as_str()?;
+        if value["syntheticOnly"] != true
+            || value["requestId"] != request_id
+            || value["hostPid"] != u64::from(std::process::id())
+            || !matches!(fault, "delayed-cancellation-ack" | "cancellation-ack-failure" | "original-late-cancel-ack")
+        {
+            return None;
+        }
+        // The original Chat ACK case owns its isolated host scenario instead
+        // of activating a synthetic provider runtime fault. Earlier direct
+        // transport cases still require the prior exact runtime activation.
+        if fault != "original-late-cancel-ack" {
+            let active = root.join("runtime-active.json");
+            let meta = std::fs::symlink_metadata(&active).ok()?;
+            if !meta.is_file() || meta.file_type().is_symlink()
+                || meta.file_attributes() & WINDOWS_REPARSE != 0
+                || active.canonicalize().ok()? != active
+            { return None; }
+            let active: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(active).ok()?).ok()?;
+            if active["runtimeScenario"] != fault || active["syntheticOnly"] != true {
+                return None;
+            }
+        }
+        return match fault {
+            "delayed-cancellation-ack" => Some("delayed-cancellation-ack"),
+            "cancellation-ack-failure" => Some("cancellation-ack-failure"),
+            "original-late-cancel-ack" => Some("original-late-cancel-ack"),
+            _ => None,
+        };
+    }
+    None
 }
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -734,17 +892,206 @@ pub async fn ai_http_stream(
     )
     .await;
     let phase = terminal(&result);
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    if acceptance_defer_original_native_quiescence(&window, &request_id, phase, &on_event) {
+        // Fault-only: the original native request lease remains registered
+        // after the original terminal/invoke reply. The PRODUCTION registry
+        // authority and original Channel are unchanged. Cleanup after 3.5s
+        // is a real Lease drop, never a second synthetic registry.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(3_500)).await;
+            drop(lease);
+        });
+        return Ok(());
+    }
     let cancellation = if phase == Phase::Cancelled {
         lease.cancellation_provenance()
     } else { None };
     drop(lease);
     let _ = on_event.send(Event {
-        request_id,
+        request_id: request_id.clone(),
         payload: Payload::Settled {
             phase,
             error: result.err(),
             cancellation,
         },
     });
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    acceptance_schedule_post_terminal_channel_fault(&window, &request_id, phase, &on_event);
     Ok(())
+}
+
+/// Acceptance-only: the REAL provider HTTP stream has completed but its
+/// original native request still owns the registry lease. The original
+/// Channel is sent an intentionally premature terminal; the native registry
+/// still owns the lease. This is an isolated native-ACK-before-drain fault,
+/// NOT an SDK timer, fake handler or parallel request/persistence registry.
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+fn acceptance_defer_original_native_quiescence(
+    window: &tauri::WebviewWindow, id: &str, phase: Phase, channel: &Channel<Event>,
+) -> bool {
+    if std::env::var("CLACK_LM11_AUTHENTICATED_ACCEPTANCE_SCENARIO").as_deref()
+        != Ok("original-native-quiescence-failure") || phase != Phase::Completed
+        || window.label() != "main" { return false; }
+    use std::io::Write;
+    let Some(root)=window.app_handle().path().app_data_dir().ok()
+        .and_then(|p|p.canonicalize().ok())
+        .and_then(|p|p.parent().map(std::path::Path::to_path_buf)) else{return false};
+    if !crate::modules::managed_local_runtime::acceptance_is_owned_webview_root(&root)
+        || window.app_handle().state::<InferenceState>().completion(id).is_none() {return false;}
+    let original_native_terminal_sent=channel.send(Event {
+        request_id:id.to_owned(),
+        payload:Payload::Settled {
+            phase: Phase::Completed,error:None,cancellation:None,
+        },
+    }).is_ok();
+    if !original_native_terminal_sent{return false;}
+    let started=root.join("native-quiescence-original-held.json");
+    if let Ok(mut f)=std::fs::OpenOptions::new().create_new(true).write(true).open(&started) {
+        let _=f.write_all(serde_json::json!({
+            "requestId":id,"nativeLeaseStillRegistered":true,
+            "actualHttpResponseAlreadyCompleted":true,
+            "originalNativeTerminalSentBeforeNativeDrain":true,
+            "nativeRegistryDrainHeld":true,
+            "delayMs":3500,"syntheticOnly":true
+        }).to_string().as_bytes());
+        let _=f.sync_all();
+    }
+    true
+}
+
+/// Deliberate test-only post-terminal *native Channel* delivery, not an SSE
+/// parser event or a model token. It exercises whether the actual registered
+/// renderer's onmessage receives events AFTER the original native terminal.
+/// The original native request lease is dropped and Settled is sent already.
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+fn acceptance_schedule_post_terminal_channel_fault(
+    window: &tauri::WebviewWindow,
+    request_id: &str,
+    phase: Phase,
+    on_event: &Channel<Event>,
+) {
+    use std::io::Write;
+    use std::os::windows::fs::MetadataExt;
+    if !matches!(phase, Phase::Completed | Phase::Cancelled) || window.label() != "main" {
+        return;
+    }
+    let Some(root) = window.app_handle().path().app_data_dir().ok()
+        .and_then(|data| data.canonicalize().ok())
+        .and_then(|data| (data.file_name() == Some(std::ffi::OsStr::new("data")))
+            .then(|| data.parent().map(std::path::Path::to_path_buf)).flatten())
+    else { return; };
+    if !crate::modules::managed_local_runtime::acceptance_is_owned_webview_root(&root)
+        || !root.file_name().is_some_and(|name| name.to_string_lossy().starts_with("wry-"))
+    { return; }
+    let marker = root.join("post-terminal-channel-fault.json");
+    let output = root.join("post-terminal-channel-send.json");
+    const REPARSE: u32 = 0x00000400;
+    let valid_file = |path: &std::path::Path| {
+        std::fs::symlink_metadata(path).ok().is_some_and(|meta|
+            meta.is_file() && !meta.file_type().is_symlink()
+                && meta.file_attributes() & REPARSE == 0
+                && path.canonicalize().ok().as_deref() == Some(path))
+    };
+    if !valid_file(&marker) || output.exists() { return; }
+    let Ok(bytes) = std::fs::read(&marker) else { return };
+    if bytes.len() > 1024 { return; }
+    let Ok(data) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return };
+    let expected = match phase {
+        Phase::Completed if data["scenario"] == "original-duplicate-terminal" =>
+            "original-duplicate-terminal",
+        Phase::Completed => "post-terminal-channel-callback",
+        Phase::Cancelled if data["scenario"] == "post-cancel-original-lm2f-channel" =>
+            "post-cancel-original-lm2f-channel",
+        Phase::Cancelled => "post-cancel-channel-callback",
+        _ => return,
+    };
+    if data["syntheticOnly"] != true
+        || data["scenario"] != expected
+        || data["requestId"] != request_id
+        || data["hostPid"] != u64::from(std::process::id())
+    { return; }
+    // DO NOT await the late callback in the original ai_http_stream handler:
+    // doing so keeps its renderer IPC Promise pending while the callback
+    // arrives, which would not prove a post-terminal renderer callback.
+    // This is a strictly acceptance-gated same-Channel delayed observer, not
+    // a parallel response parser, completion authority or second registry.
+    let channel = on_event.clone();
+    let request_id = request_id.to_owned();
+    let app = window.app_handle().clone();
+    let production_lm2f = expected == "post-cancel-original-lm2f-channel";
+    tokio::spawn(async move {
+        // T13 only: never inject by elapsed time after the native terminal.
+        // Wait for the renderer's *original* LM2F promise to reject, its
+        // separately recorded Cancelled callback, and a one-shot canonical
+        // marker written by the isolated acceptance-only command. A missing
+        // marker is a retained failed attempt, not permission to send.
+        let release_confirmed = if production_lm2f {
+            let release = root.join("post-cancel-lm2f-release.json");
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if valid_file(&release) {
+                        if let Ok(bytes) = std::fs::read(&release) {
+                            if bytes.len() <= 2048 {
+                                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                    if value["scenario"] == "post-cancel-original-lm2f-channel"
+                                        && value["syntheticOnly"] == true
+                                        && value["hostPid"] == u64::from(std::process::id())
+                                        && value["requestId"] == request_id
+                                        && value["nativeTerminal"] == "cancelled"
+                                        && value["originalLm2fRejected"] == true
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }).await.is_ok()
+        } else {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            true
+        };
+        // The original lease was dropped before this helper was scheduled.
+        // Independently check no *new* registry membership was installed for
+        // the exact old ID. This is observation only; never open a request.
+        let old_registry_absent = app.state::<InferenceState>()
+            .completion(&request_id).is_none();
+        let may_inject = release_confirmed && (!production_lm2f || old_registry_absent);
+        let late_chunk_sent = may_inject && channel.send(Event {
+            request_id: request_id.clone(),
+            payload: Payload::Chunk {
+                bytes: b"LM11-POST-TERMINAL-NATIVE-CHANNEL-ONLY-NO-MODEL".to_vec(),
+            },
+        }).is_ok();
+        let late_terminal_sent = may_inject && channel.send(Event {
+            request_id: request_id.clone(),
+            payload: Payload::Settled {
+                phase, error: None, cancellation: None,
+            },
+        }).is_ok();
+        if let Ok(mut file) = std::fs::OpenOptions::new().create_new(true).write(true).open(&output) {
+            let recorded = serde_json::json!({
+                "requestId":request_id,
+                "afterOriginalNativeSettled":true,
+                "afterOriginalLeaseDrop":true,
+                "scheduledAfterOriginalIpcHandler":true,
+                "originalTerminalPhase":match phase { Phase::Cancelled => "cancelled", _ => "completed" },
+                "testInjectedNotExternalSseParser":true,
+                "lateChunkNativeSendSucceeded":late_chunk_sent,
+                "lateTerminalNativeSendSucceeded":late_terminal_sent,
+                "originalLm2fReleaseConfirmed":if production_lm2f {
+                    serde_json::Value::Bool(release_confirmed)
+                } else {serde_json::Value::Null},
+                "oldNativeRegistryAbsentAtInjection":old_registry_absent,
+                "releaseWaitBoundMs":if production_lm2f {10000} else {0},
+                "syntheticOnly":true,
+            });
+            let _ = writeln!(file, "{recorded}");
+            let _ = file.flush();
+            let _ = file.sync_all();
+        }
+    });
 }

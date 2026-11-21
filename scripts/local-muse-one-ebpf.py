@@ -53,6 +53,16 @@ MAX_PREDICATE_SAMPLES = 20
 MAX_PREDICATE_CANDIDATES = 16
 MAX_PREDICATE_RECORD = 32768
 FIXED_DIAGNOSTIC_BPFT_PATH = Path("/opt/clack/diagnostic-tools/bpftool-678d538")
+# The exact executable observed on the dedicated lab, not an arbitrary PATH
+# match or bpftrace's self-reported version. This source-reviewed version
+# compiles a matched kprobe/kretprobe pair as one KPROBE_SESSION attachment
+# when the kernel supports it; the exact owned link is proved below.
+PINNED_TRACER_PATH = Path("/usr/bin/bpftrace")
+PINNED_TRACER_SHA256 = "a2208280ef0f694e8f4d3f81fe100bc2d3e4668d745a3b8c6510bf0d5f0a240c"
+PINNED_TRACER_VERSION = b"bpftrace v0.27.0-872e7a56a\n"
+PINNED_LAB_KERNEL = "7.3.1-1-cachyos"
+PINNED_TRACER_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent",
+                     "LANG": "C", "LC_ALL": "C"}
 FIXED_DIAGNOSTIC_BPFT_PIN = Path("/opt/clack/diagnostic-tools/bpftool-678d538.pin.json")
 FIXED_DIAGNOSTIC_BPFT_SHA256 = "0e0059127c7c926fe1ee82a7804479415a19b73515b7aebc8bb59ce06de36fa0"
 FIXED_DIAGNOSTIC_BPFT_BUILD_ID = "7f530859f49ede16767f9f4eb8551a6ac85aa25d"
@@ -172,6 +182,196 @@ def pinned_diagnostic_file(path, digest=None):
         if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             raise ValueError("Diagnostic bpftool digest mismatch")
     return path
+
+
+def qualified_tracer():
+    """Fail closed on executable provenance before any kernel attachment."""
+    if platform.uname().release != PINNED_LAB_KERNEL:
+        raise ValueError("Unreviewed kernel release")
+    tracer = pinned_diagnostic_file(PINNED_TRACER_PATH, PINNED_TRACER_SHA256)
+    if not (tracer.stat().st_mode & stat.S_IXUSR):
+        raise ValueError("Pinned bpftrace is not executable")
+    result = subprocess.run(
+        [str(tracer), "--version"], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        timeout=2.0, env=PINNED_TRACER_ENV)
+    if result.returncode or result.stdout != PINNED_TRACER_VERSION or result.stderr:
+        raise ValueError("Pinned bpftrace version differs")
+    # In bpftrace 0.27 a paired kprobe+kretprobe is converted to
+    # BPF_TRACE_KPROBE_SESSION *only if* Feature.has_kprobe_session() is true.
+    # Ordinary kprobe_multi with retprobe=false does NOT certify this branch.
+    # --info queries that same feature detector in the same pinned binary,
+    # under the same root privileges, kernel and sanitized environment.
+    feature = subprocess.run(
+        [str(tracer), "--info"], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        timeout=5.0, env=PINNED_TRACER_ENV)
+    if feature.returncode or feature.stderr or not (0 < len(feature.stdout) <= 16384):
+        raise ValueError("Pinned bpftrace feature check unavailable")
+    for key in (b"kprobe_multi", b"kprobe_session"):
+        states = re.findall(rb"(?<![A-Za-z0-9_])" + key +
+                            rb":\s*(yes|no)(?![A-Za-z0-9_])", feature.stdout)
+        if states != [b"yes"]:
+            raise ValueError("Required kprobe session kernel feature unavailable")
+    # A version banner alone is never the identity check.
+    return pinned_diagnostic_file(PINNED_TRACER_PATH, PINNED_TRACER_SHA256)
+
+
+def tracer_process_identity(tracer_pid, tracer_path, probe_path, target_pid,
+                            verify_bytes=False):
+    """Verify the exact launched executable, argv, root UID and PID start time.
+
+    The /proc/PID/exe inode and *bytes* are independently checked against the
+    pinned on-disk binary. Command lines are compared privately, never logged.
+    All returned fields are content-free identity tokens for in-memory reuse.
+    """
+    if type(tracer_pid) is not int or tracer_pid <= 1 or \
+            type(target_pid) is not int or target_pid <= 1 or \
+            Path(tracer_path) != PINNED_TRACER_PATH:
+        raise ValueError("Tracer launch identity invalid")
+    proc = Path("/proc") / str(tracer_pid)
+    status = (proc / "status").read_text(encoding="ascii")
+    uids = re.search(r"^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$",
+                     status, re.M)
+    if uids is None or any(value != "0" for value in uids.groups()):
+        raise ValueError("Tracer must retain root identity")
+    stat_line = (proc / "stat").read_text(encoding="ascii")
+    tail = stat_line[stat_line.rfind(")") + 2:].split()
+    if len(tail) < 20 or not tail[19].isdigit() or int(tail[19]) <= 0:
+        raise ValueError("Invalid tracer PID birth identity")
+    argv = (proc / "cmdline").read_bytes().split(b"\0")
+    expected = [os.fsencode(str(tracer_path)), b"-B", b"line",
+                os.fsencode(str(probe_path)), str(target_pid).encode("ascii"),
+                b"11434", b""]
+    if argv != expected:
+        raise ValueError("Tracer command differs from controlled launch")
+    on_disk = PINNED_TRACER_PATH.stat()
+    exe = proc / "exe"
+    if os.readlink(exe) != str(PINNED_TRACER_PATH):
+        raise ValueError("Tracer executable path changed")
+    executable = exe.stat()
+    if (executable.st_dev, executable.st_ino) != (on_disk.st_dev, on_disk.st_ino):
+        raise ValueError("Tracer executable inode changed")
+    if executable.st_size <= 0 or executable.st_size > 32 * 1024 * 1024 or \
+            (verify_bytes and
+             hashlib.sha256(exe.read_bytes()).hexdigest() != PINNED_TRACER_SHA256):
+        raise ValueError("Tracer executable bytes differ")
+    verified_file(probe_path, PROBE_SHA256)
+    return (int(tail[19]), executable.st_dev, executable.st_ino)
+
+
+def owned_bpf_link_fds(tracer_pid, identity, tracer_path, probe_path, target_pid):
+    """Read kernel-backed BPF link fdinfo from the *verified* tracer PID.
+
+    Never infer ownership from process names, timing, or optional bpftool
+    pids[] rendering. Any malformed/disappearing BPF FD fails closed.
+    """
+    if identity is None or tracer_process_identity(
+            tracer_pid, tracer_path, probe_path, target_pid,
+            verify_bytes=True) != identity:
+        raise ValueError("Tracer identity changed before FD inspection")
+    proc = Path("/proc") / str(tracer_pid)
+    links = []
+    fds = sorted((proc / "fd").iterdir(), key=lambda f: f.name)
+    if len(fds) > 4096:
+        raise ValueError("Tracer FD inventory exceeds bound")
+    for fd in fds:
+        if not fd.name.isascii() or not fd.name.isdecimal():
+            raise ValueError("Unexpected tracer FD")
+        try:
+            target = os.readlink(fd)
+        except FileNotFoundError:
+            raise ValueError("Tracer FD changed during inspection")
+        # Kernel BPF link creation has TWO distinct anon-inode names:
+        # bpf_link_prime() uses anon_inode_getfile("bpf_link") while
+        # bpf_link_new_fd() uses anon_inode_getfd("bpf-link"). The actual
+        # kprobe_multi BPF_LINK_CREATE path uses the former. Missing the
+        # underscore spelling silently hid a valid owned link in the first
+        # live qualification (fresh program/link present; no owned FD join).
+        # Both accepted spellings STILL require exact kernel fdinfo IDs.
+        if target not in ("anon_inode:bpf_link", "anon_inode:[bpf_link]",
+                          "anon_inode:bpf-link", "anon_inode:[bpf-link]"):
+            continue
+        body = (proc / "fdinfo" / fd.name).read_bytes()
+        if len(body) > 8192:
+            raise ValueError("BPF link fdinfo exceeds bound")
+        fields = {}
+        # Linux's kprobe_multi show_fdinfo appends a non-keyed "cookie func"
+        # column header and per-address rows. Those are not stable,
+        # trustworthy attachment identity fields and MUST NOT be retained.
+        # Parse only exact kernel numeric identity/shape keys, independently
+        # of optional human-readable table rows.
+        required_keys = {"link_type", "link_id", "prog_id"}
+        numeric_shape_keys = {"kprobe_cnt", "missed"}
+        for line in body.decode("ascii").splitlines():
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            if key not in required_keys | numeric_shape_keys:
+                continue
+            if key in fields:
+                raise ValueError("Duplicate BPF link identity or shape key")
+            fields[key] = value.strip()
+        if not re.fullmatch(r"[1-9][0-9]*", fields.get("link_id", "")) or \
+                not re.fullmatch(r"[1-9][0-9]*", fields.get("prog_id", "")) or \
+                not re.fullmatch(r"[a-z_]+", fields.get("link_type", "")):
+            raise ValueError("Missing BPF link fdinfo kernel identity")
+        if fields["link_type"] == "kprobe_multi" and (
+                fields.get("kprobe_cnt") != "1" or fields.get("missed") != "0"):
+            raise ValueError("Invalid BPF kprobe_multi kernel count or missed events")
+        links.append((int(fields["link_id"]), int(fields["prog_id"]),
+                      fields["link_type"]))
+    if tracer_process_identity(tracer_pid, tracer_path, probe_path, target_pid) != identity:
+        raise ValueError("Tracer PID changed during FD inspection")
+    if len(links) != len(set(links)):
+        raise ValueError("Duplicate tracer BPF link FD")
+    return links
+
+
+def controlled_session_objects(before, live, before_links, live_links,
+                               tracer_pid, identity, tracer, probe, target_pid):
+    """Exact controlled-launch + kernel FD + fresh object admission proof.
+
+    The sole pinned probe asks for tcp_sendmsg entry+return, and pinned
+    bpftrace's supported kprobe_session lowering supplies that *subtype*.
+    Session subtype and target are NOT inferred from kprobe_multi/flags/count.
+    All kernel properties still come from the actual FD-joined link.
+    """
+    if identity is None or type(tracer_pid) is not int or tracer_pid <= 1 or \
+            type(target_pid) is not int or target_pid <= 1:
+        return set(), set()
+    fresh_progs = fresh_kprobe_ids(before, live)
+    # A separate return probe, another kprobe, or missing program is ambiguous.
+    if len(fresh_progs) != 1:
+        return set(), set()
+    program_id = next(iter(fresh_progs))
+    fresh_multi_links = {
+        link_id for link_id, row in live_links.items()
+        if link_id not in before_links and row.get("type") == "kprobe_multi"}
+    if len(fresh_multi_links) != 1:
+        return set(), set()
+    link_id = next(iter(fresh_multi_links))
+    row = live_links[link_id]
+    if row.get("prog_id") != program_id or row.get("retprobe") is not False or \
+            type(row.get("func_cnt")) is not int or row["func_cnt"] != 1 or \
+            type(row.get("missed")) is not int or row["missed"] != 0:
+        return set(), set()
+    # Explicitly conflicting symbolization is never ignored; empty/missing
+    # symbolization is allowed only because exact controlled input proves it.
+    funcs = row.get("funcs")
+    if funcs is not None and funcs != [] and funcs != [{"func": "tcp_sendmsg"}]:
+        return set(), set()
+    owners = row.get("pids")
+    if owners is not None and (not isinstance(owners, list) or
+            (owners and not any(isinstance(owner, dict) and
+                                owner.get("pid") == tracer_pid for owner in owners))):
+        return set(), set()
+    owned = owned_bpf_link_fds(tracer_pid, identity, tracer, probe, target_pid)
+    owned_multi = [(lid, prog) for lid, prog, kind in owned
+                   if kind == "kprobe_multi"]
+    if owned_multi != [(link_id, program_id)]:
+        return set(), set()
+    return fresh_progs, {link_id}
 
 
 def qualified_diagnostic_bpftool(pin_path=FIXED_DIAGNOSTIC_BPFT_PIN,
@@ -671,6 +871,12 @@ def new_kprobes(before, after):
             name == SESSION_PROG_NAME}
 
 
+def fresh_kprobe_ids(before, after):
+    """All fresh kprobe programs; labels are not authoritative identifiers."""
+    return {number for number, (kind, _) in after.items()
+            if number not in before and kind == "kprobe"}
+
+
 def new_separate_return_programs(before, after):
     """A separate return program is NOT evidence for a collapsed session."""
     return {number for number, (kind, name) in after.items()
@@ -1037,7 +1243,8 @@ def valid_prearm_meta(row, pid, port):
 
 
 def source_arm_evidence(stdout_bytes, stderr_bytes, pid, port, before, after,
-                        before_links, after_links, tracer_pid):
+                        before_links, after_links, tracer_pid,
+                        controlled_objects=None):
     """Positive pre-inference evidence: native notice + BEGIN + session link."""
     source_stdout, rest_stderr, notices, pending = classify_live_output(
         stdout_bytes, stderr_bytes)
@@ -1045,11 +1252,17 @@ def source_arm_evidence(stdout_bytes, stderr_bytes, pid, port, before, after,
     rows = source_stdout.splitlines()
     has_ready = bool(rows) and rows[0] == expected_ready and \
         all(valid_prearm_meta(row, pid, port) for row in rows[1:])
-    new_ids = new_kprobes(before, after)
-    session_links = session_link_ids(before_links, after_links, new_ids, tracer_pid)
+    if controlled_objects is None:
+        # Historical strict matcher, retained only for legacy offline fixtures
+        # and normalized diagnostic comparison. Production always supplies a
+        # fresh, verified controlled-launch/FD-joined proof.
+        new_ids = new_kprobes(before, after)
+        session_links = session_link_ids(before_links, after_links, new_ids, tracer_pid)
+    else:
+        new_ids, session_links = controlled_objects
     return (has_ready and not pending and not rest_stderr.strip() and
             notices == 1 and not new_separate_return_programs(before, after) and
-            len(session_links) == 1), len(new_ids)
+            len(new_ids) == 1 and len(session_links) == 1), len(new_ids)
 
 
 def numeric_arm_line(pid, port, programs, observed_loss=0):
@@ -1114,7 +1327,10 @@ def emit_content_free_audit(stdout, stderr, pid, programs_before, programs_after
         "WRONG_BEGIN_COUNT": other_ready,
         "END_COUNT": summary_count,
         "OTHER_STDOUT_ROWS": other_stdout,
-        "NEW_TARGET_PROGRAM_COUNT": len(new_kprobes(programs_before, programs_after)),
+        # This label certifies the single target only *after* controlled-launch
+        # ownership proof and the authenticated READY write actually succeed.
+        "NEW_TARGET_PROGRAM_COUNT": (len(fresh_kprobe_ids(
+            programs_before, programs_after)) if armed else 0),
         "NEW_SEPARATE_RETURN_PROGRAM_COUNT":
             len(new_separate_return_programs(programs_before, programs_after)),
         "NEW_VALID_SESSION_LINK_COUNT": session_link_count,
@@ -1154,7 +1370,8 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
     child = subprocess.Popen([str(tracer), "-B", "line", str(probe), str(pid), "11434"],
                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, start_new_session=True,
-                             preexec_fn=lambda: helper.child_pdeathsig(parent))
+                             preexec_fn=lambda: helper.child_pdeathsig(parent),
+                             env=PINNED_TRACER_ENV)
     stdout = bytearray()
     stderr = bytearray()
     selector = selectors.DefaultSelector()
@@ -1170,6 +1387,7 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
     signalled = False
     forced = False
     identity_ok = True
+    tracer_identity = None
     invalid_source = False
     inventory_error = "none"
     link_inventory_error = "none"
@@ -1213,6 +1431,13 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
                 last_identity = now
                 try:
                     identity_ok = identity_ok and helper.read_identity(pid, 11434) == identity
+                    live_tracer_identity = tracer_process_identity(
+                        child.pid, tracer, probe, pid,
+                        verify_bytes=(tracer_identity is None))
+                    if tracer_identity is None:
+                        tracer_identity = live_tracer_identity
+                    identity_ok = (identity_ok and
+                                   live_tracer_identity == tracer_identity)
                 except (OSError, ValueError, KeyError):
                     identity_ok = False
             if not armed and not signalled and now - last_inventory >= 1 and \
@@ -1229,17 +1454,29 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
                         inventory_audit.record_matcher(matcher_inventory_diagnostic(
                             baseline_programs, current_programs,
                             baseline_links, current_links, child.pid))
-                    session_links = session_link_ids(
+                    controlled_objects = controlled_session_objects(
+                        baseline_programs, current_programs,
                         baseline_links, current_links,
-                        new_kprobes(baseline_programs, current_programs), child.pid)
+                        child.pid, tracer_identity if identity_ok else None,
+                        tracer, probe, pid)
+                    controlled_programs, session_links = controlled_objects
                     session_link_count = len(session_links)
                     proof, count = source_arm_evidence(stdout, stderr, pid, 11434,
                                                        baseline_programs, current_programs,
-                                                       baseline_links, current_links, child.pid)
+                                                       baseline_links, current_links, child.pid,
+                                                       controlled_objects=controlled_objects)
                     if proof and identity_ok:
                         # The inventory call can consume two seconds; recheck
                         # service identity immediately before signaling READY.
-                        identity_ok = helper.read_identity(pid, 11434) == identity
+                        identity_ok = (helper.read_identity(pid, 11434) == identity and
+                                       tracer_process_identity(
+                                           child.pid, tracer, probe, pid,
+                                           verify_bytes=True) == tracer_identity and
+                                       controlled_session_objects(
+                                           baseline_programs, current_programs,
+                                           baseline_links, current_links, child.pid,
+                                           tracer_identity, tracer, probe, pid)
+                                       == controlled_objects)
                     if proof and identity_ok and child.poll() is None:
                         # The signal and monitor are independent channels;
                         # readiness is *prior* to any authorized inference.
@@ -1248,8 +1485,7 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
                                 pid, 11434, count, 0), min(deadline, now + 2))
                             armed = True
                             arm_attempted = True
-                            armed_program_ids = new_kprobes(baseline_programs,
-                                                           current_programs)
+                            armed_program_ids = controlled_programs
                             armed_link_ids = session_links
                             os.close(ready_fd)
                         except (OSError, ValueError, TimeoutError):
@@ -1267,9 +1503,11 @@ def run_capture(pid, duration, ready_fd, control_fd, helper, probe, tracer, bpft
                         bpftool, deadline - now, "live", inventory_audit,
                         tracer_state)
                     live_links = checked_links(deadline - now, "live")
-                    if not armed_program_ids.issubset(new_kprobes(baseline_programs, live)) or \
-                            not armed_link_ids.issubset(session_link_ids(
-                                baseline_links, live_links, armed_program_ids, child.pid)):
+                    live_objects = controlled_session_objects(
+                        baseline_programs, live, baseline_links, live_links,
+                        child.pid, tracer_identity if identity_ok else None,
+                        tracer, probe, pid)
+                    if live_objects != (armed_program_ids, armed_link_ids):
                         invalid_source = True
                 except (OSError, ValueError, subprocess.SubprocessError,
                         json.JSONDecodeError) as error:
@@ -1450,11 +1688,8 @@ def main(argv=None):
         helper = load_hardened_support(folder)
         helper.validate_scope(args.pid, 11434, args.seconds)
         probe = verified_file(folder / "local-muse-tcp.bt", PROBE_SHA256)
-        tracer_name = shutil.which("bpftrace")
         bpftool_name = shutil.which("bpftool") if not args.fixed_diagnostic_bpftool else None
-        if not tracer_name:
-            raise ValueError("Approved BPF tracer unavailable")
-        tracer = helper.trusted_root_file(tracer_name)
+        tracer = qualified_tracer()
         if args.seconds != MAX_SECONDS and not args.fixed_diagnostic_bpftool:
             raise ValueError("Short affected-host diagnostic requires pinned fixed bpftool")
         if args.fixed_diagnostic_bpftool:

@@ -269,7 +269,10 @@ export function DeploymentSuitabilityControl({
       // Ready observation appear fresh after the model metadata arrives.
       const statusRequestedAt = Date.now();
       const rawRuntime = await invoke<unknown>(
-        "managed_local_runtime_status",
+        "managed_local_runtime_status", {
+          deploymentId: exact.deployment.id,
+          deploymentIdentity: exact.identity,
+        },
       ).catch(() => null);
       const hardware =
         rawHardware.status === "fulfilled"

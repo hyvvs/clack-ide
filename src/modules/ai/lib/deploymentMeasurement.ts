@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { evidence, unknown, type EvidenceValue } from "./hardwareProfile";
 import {
+  appendNativeSafeHistory,
   deploymentQualificationScope,
   reconcileLocalComputeFabric,
   withLocalComputeFabric,
@@ -388,10 +389,31 @@ export function isCurrentLm6Run(
     JSON.stringify(run.scope) === JSON.stringify(scope);
 }
 
+/** Interpret native B03 ticketed rows consistently in both the LM6 panel and
+ * the read-only evidence explorer. Pending writes are never evidence. */
+export function parsePersistedLm6Run(raw: unknown): Lm6Run | null {
+    // The native B03 CAS stamps its existing measurement row with bounded
+    // operation evidence. A pending/version-zero effect is never a real LM6
+    // history entry. Keep the strict v1 measurement schema unchanged.
+    const candidate = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? raw as Record<string, unknown> : null;
+    const marker = candidate?.qualificationCas;
+    if (marker !== undefined && (!marker || typeof marker !== "object" ||
+        (marker as { phase?: unknown }).phase !== "acknowledged" ||
+        typeof (marker as { operationId?: unknown }).operationId !== "string" ||
+        typeof (marker as { nativeEpoch?: unknown }).nativeEpoch !== "string"))
+      return null;
+    const sanitized = candidate && marker !== undefined
+      ? Object.fromEntries(Object.entries(candidate).filter(([key]) => key !== "qualificationCas"))
+      : raw;
+    const parsed = lm6RunSchema.safeParse(sanitized);
+    return parsed.success ? parsed.data : null;
+}
+
 export function lm6History(fabric: LocalComputeFabric, deploymentId: string) {
   return (fabric.measurementRuns ?? []).flatMap(raw => {
-    const parsed = lm6RunSchema.safeParse(raw);
-    return parsed.success && parsed.data.scope.deploymentId === deploymentId ? [parsed.data] : [];
+    const parsed = parsePersistedLm6Run(raw);
+    return parsed?.scope.deploymentId === deploymentId ? [parsed] : [];
   }).sort((a, b) => b.endedAt - a.endedAt);
 }
 
@@ -448,7 +470,7 @@ export function appendLm6Run(
     ...state,
     fabric: {
       ...fabric,
-      measurementRuns: [...existing, run].slice(-48),
+      measurementRuns: appendNativeSafeHistory(existing, [run], 48),
     },
   });
 }

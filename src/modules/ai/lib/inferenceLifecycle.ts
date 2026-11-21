@@ -1,5 +1,9 @@
 import type { AdmissionObservation } from "@/modules/ai/lib/inferenceAdmission";
 import type { RunStopCause } from "@/modules/ai/lib/runStopProvenance";
+import {
+  cancelAllDeploymentQualificationBeforeDispatch,
+  cancelDeploymentQualificationBeforeDispatch,
+} from "@/modules/ai/lib/deploymentQualificationFlight";
 export type InferencePhase =
   | "queued"
   | "awaiting-admission"
@@ -128,6 +132,10 @@ export async function cancelSessionInference(
   sessionId: string,
   cause: RunStopCause = { source: "unknown", reason: "cancel-requested" },
 ): Promise<void> {
+  // A qualification can still be in admission/session/context preparation,
+  // before beginInference has registered its first native-capable attempt.
+  // Revoke that exact session's dispatch authority synchronously.
+  cancelDeploymentQualificationBeforeDispatch(sessionId);
   const owned = [...attempts.values()].filter(
     (a) => a.snapshot.scope?.sessionId === sessionId,
   );
@@ -141,6 +149,14 @@ export async function cancelSessionInference(
   await Promise.all(owned.map((a) => a.done));
 }
 export function abortInferencesForHostShutdown(): void {
+  cancelAllDeploymentQualificationBeforeDispatch();
+  // Ordinary native request cancellation below is not sufficient for an
+  // asynchronously preparing qualification with no registered request yet.
+  // The flight owner revokes its pre-dispatch authority as well.
+  for (const attempt of attempts.values()) {
+    const sessionId = attempt.snapshot.scope?.sessionId;
+    if (sessionId) cancelDeploymentQualificationBeforeDispatch(sessionId);
+  }
   for (const attempt of attempts.values()) {
     reportStop(attempt.snapshot.scope, {
       source: "host-shutdown", reason: "host-shutdown",

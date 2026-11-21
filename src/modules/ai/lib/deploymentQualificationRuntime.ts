@@ -23,19 +23,27 @@ import type { ManagedLocalNativeStatus } from "@/modules/ai/lib/managedLocalRunt
 import {
   MANAGED_QUALIFICATION_PROMPT, MANAGED_QUALIFICATION_EXPECTED,
   armDeploymentQualification, disarmDeploymentQualification,
+  peekDeploymentQualificationFlight, QualificationOperationDeadline,
   type QualificationFlightSnapshot,
 } from "@/modules/ai/lib/deploymentQualificationFlight";
+import { cancelSessionInference, sessionInference } from "@/modules/ai/lib/inferenceLifecycle";
 import {
   evaluateInstructionAdherence, instructionAdherenceReceipt,
 } from "@/modules/ai/lib/instructionAdherenceQualification";
 import { observedManagedFabric } from "@/modules/ai/lib/deploymentQualificationView";
-import { useChatStore } from "@/modules/ai/store/chatStore";
+import { chats, useChatStore } from "@/modules/ai/store/chatStore";
 import {
   getOrCreateChat, prepareSessionChat, sendMessageToSession,
 } from "@/modules/ai/store/chatRuntime";
 import { awaitSessionWrites, saveMessages } from "@/modules/ai/lib/sessions";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { updateSelfHostedProfiles } from "@/modules/settings/store";
+import { updateQualifiedSelfHostedProfiles } from "@/modules/settings/store";
+import {
+  beginNativeQualificationCas, cancelNativeQualificationCas,
+  withLm11QualificationCasAcceptanceOperation,
+  type NativeQualificationCasTicket,
+} from "@/modules/settings/selfHostedPersistence";
+import { lm11AcceptanceBarrier } from "@/modules/ai/lib/lm11AcceptanceBarrier";
 
 /** A single explicitly initiated new Chat under a real Clack system/persona.
  * No direct HTTP shortcut, model download, Agent tool, retry or continuation. */
@@ -237,10 +245,67 @@ export function appendManagedObservedQualification(
 
 let active = false;
 let admissionTask: Promise<BoundedQualificationResult> | null = null;
+// An interrupted native flight or ambiguous CAS cannot be retried to PASS
+// in this renderer before independent process/epoch and evidence recovery.
+// A historical unresolved A operation must never block an unrelated managed
+// B/C deployment's independent native/qualification authority. Keep a
+// per-selection tombstone (selectionId includes canonical deployment identity)
+// while retaining the existing stronger global Chat-only admissionTask flight.
+const uncertainPreviousQualifications = new Set<string>();
+/** SDK settlement is not the native Rust terminal event or quiescence.
+ * Observe the exact opened native ID after SDK settlement, then a bounded
+ * period with no registered native attempt. Never infer terminal from text. */
+export async function awaitNativeQualificationQuiescence(
+  sessionId: string, deadline: QualificationOperationDeadline,
+): Promise<void> {
+  if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1")
+    await lm11AcceptanceBarrier("during-quiescence", deadline, sessionId);
+  const until = performance.now() + Math.min(1_500, deadline.remainingMs());
+  let observedId: string | null = null;
+  while (performance.now() < until) {
+    deadline.assertOpen();
+    const snap = peekDeploymentQualificationFlight(sessionId);
+    if (!snap || snap.violations.length || snap.native.opens > 1 ||
+        snap.native.terminal === "cancelled")
+      throw new Error("Native qualification terminal or request identity unavailable");
+    if (snap.native.opens === 1 && snap.native.requestId &&
+        snap.native.terminal === "completed" && !sessionInference(sessionId)) {
+      // Terminal callbacks can arrive before a Rust native lease/registry
+      // actually drains. Ask that SAME native registry, rather than trusting
+      // a renderer-timer or SDK settlement to certify native quiescence.
+      const registryDrained = await deadline.within(() => invoke<boolean>(
+        "ai_http_request_quiescent", { requestId: snap.native.requestId }));
+      if (registryDrained === true) {
+        observedId = snap.native.requestId;
+        break;
+      }
+    }
+    await deadline.within(() => new Promise<void>(resolve => setTimeout(resolve, 25)));
+  }
+  if (!observedId) throw new Error("Native terminal/quiescence not acknowledged within bounded grace");
+  // A finite observation is not proof of eternal provider inactivity. It is
+  // nevertheless a separate native completion/registry-drain check.
+  await deadline.within(() => new Promise<void>(resolve => setTimeout(resolve, 50)));
+  const after = peekDeploymentQualificationFlight(sessionId);
+  if (!after || after.violations.length || after.native.opens !== 1 ||
+      after.native.requestId !== observedId || after.native.terminal !== "completed" ||
+      sessionInference(sessionId))
+    throw new Error("Native qualification was not quiescent after terminal acknowledgement");
+  const confirmed = await deadline.within(() => invoke<boolean>(
+    "ai_http_request_quiescent", { requestId: observedId }));
+  if (confirmed !== true)
+    throw new Error("Native registry still owned qualification request after terminal");
+  deadline.nativeAcknowledged();
+  deadline.nativeQuiescent();
+  if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1")
+    await lm11AcceptanceBarrier("quiescence-complete", deadline, sessionId);
+}
 /** One active qualification even during async native admission. */
 export function runManagedChatQualification(
   selectionId: string,
 ): Promise<BoundedQualificationResult> {
+  if (uncertainPreviousQualifications.has(selectionId))
+    return Promise.reject(new Error("Prior qualification native/evidence outcome is unresolved; no retry in this session"));
   if (admissionTask)
     return Promise.reject(new Error("Another bounded qualification is already preparing"));
   const task = executeManagedChatQualification(selectionId);
@@ -264,28 +329,36 @@ async function executeManagedChatQualification(
     throw new Error("The exact managed deployment is unavailable");
   const artifactDigest = selected.artifact.digest;
   if (!artifactDigest) throw new Error("Managed artifact digest unavailable");
-  const before = await invoke<ManagedLocalNativeStatus>("managed_local_runtime_status");
-  const native = observedManagedFabric(state, selectionId, before, Date.now());
-  if (!native?.observation) throw new Error("Exact managed native runtime is not Ready");
-  const route = await admittedManagedLocalRoute({
-    deploymentId: selected.deployment.id,
-    deploymentIdentity: selected.identity,
-    artifactDigest,
-    configurationRevision: selected.deployment.configurationRevision,
-  });
-  if (route.epoch !== before.epoch || route.processId !== before.processId)
-    throw new Error("Native runtime changed during qualification admission");
   active = true;
   const store = useChatStore.getState();
   const previousSessionId = store.activeSessionId;
   const previousModel = store.selectedModelId;
   let sessionId: string | null = null;
   let flight: QualificationFlightSnapshot | null = null;
+  let chatSent = false;
+  let casTicket: NativeQualificationCasTicket | null = null;
+  const budget = new QualificationOperationDeadline(120_000, () => {
+    if (casTicket)
+      void cancelNativeQualificationCas(casTicket).catch(() => undefined);
+    if (sessionId) {
+      // This revokes the existing inference lifecycle, including its
+      // pre-registration flight authority, without cancelling other sessions.
+      void cancelSessionInference(sessionId, {
+        source: "explicit-user", reason: "cancel-requested",
+      }).catch(() => undefined);
+      if (chatSent) void chats.get(sessionId)?.stop().catch(() => undefined);
+    }
+  });
   // A bounded, content-free failure phase can be surfaced after the Chat
   // session switch. Never put prompts, model output or native secrets here.
   let phase = "session-capture";
   try {
     sessionId = store.newSession();
+    // Arm BEFORE status, admission and session preparation await. A Stop
+    // during any of them revokes the same flight seen by final proxy dispatch.
+    armDeploymentQualification(sessionId, selectionId, "builtin:coder", {
+      operation: budget,
+    });
     const next = useChatStore.getState();
     if (!next.setSessionModelId(sessionId, selectionId, false) ||
         !next.setSessionAgentId(sessionId, "builtin:coder"))
@@ -295,13 +368,60 @@ async function executeManagedChatQualification(
         session.profile.agentId !== "builtin:coder" ||
         session.fallback?.mode && session.fallback.mode !== "never")
       throw new Error("LM2F test Chat is not in the required exact configuration");
-    await awaitSessionWrites(sessionId);
-    await prepareSessionChat(sessionId);
-    armDeploymentQualification(sessionId, selectionId, "builtin:coder");
+    phase = "native-status";
+    const before = await budget.within(() =>
+      invoke<ManagedLocalNativeStatus>("managed_local_runtime_status", {
+        deploymentId: selected.deployment.id,
+        deploymentIdentity: selected.identity,
+      }));
+    const native = observedManagedFabric(state, selectionId, before, Date.now());
+    if (!native?.observation) throw new Error("Exact managed native runtime is not Ready");
+    phase = "native-admission";
+    // Feature-only session ownership is bound before the REAL native route
+    // command. The acceptance Wry handler can hold its actual IPC result
+    // after native Ready/admission, before the original Promise settles.
+    if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1")
+      await lm11AcceptanceBarrier("before-native-admission", budget, sessionId!);
+    const route = await budget.within(() => admittedManagedLocalRoute({
+      deploymentId: selected.deployment.id,
+      deploymentIdentity: selected.identity,
+      artifactDigest,
+      configurationRevision: selected.deployment.configurationRevision,
+    }));
+    if (route.epoch !== before.epoch || route.processId !== before.processId)
+      throw new Error("Native runtime changed during qualification admission");
+    if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1")
+      await lm11AcceptanceBarrier("before-preparation", budget, sessionId!);
+    phase = "session-writes";
+    await budget.within(() => awaitSessionWrites(sessionId!));
+    phase = "session-prepare";
+    if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1") {
+      // The real preparation promise is already in flight while the
+      // acceptance-only hold is entered. A Stop must revoke the same
+      // original operation and prevent its late resolution from dispatching.
+      // Store a settled outcome to avoid an unhandled rejection on Stop.
+      const result = budget.within(() => prepareSessionChat(sessionId!)).then(
+        () => ({ ok: true as const }),
+        error => ({ ok: false as const, error }),
+      );
+      await lm11AcceptanceBarrier("during-preparation", budget, sessionId!);
+      const prepared = await result;
+      if (!prepared.ok) throw prepared.error;
+    } else {
+      await budget.within(() => prepareSessionChat(sessionId!));
+    }
     phase = "bounded-request";
     try {
-      await sendMessageToSession(sessionId, { text: MANAGED_QUALIFICATION_PROMPT });
+      budget.assertOpen();
+      chatSent = true;
+      await budget.within(() =>
+        sendMessageToSession(sessionId!, { text: MANAGED_QUALIFICATION_PROMPT }));
+      budget.sdkSettled();
+      phase = "native-quiescence";
+      await awaitNativeQualificationQuiescence(sessionId, budget);
     } finally {
+      // Keep the flight armed until the native completion boundary is
+      // observed, rather than disarming immediately after SDK settlement.
       flight = disarmDeploymentQualification(sessionId);
     }
     phase = "flight-observation";
@@ -312,21 +432,27 @@ async function executeManagedChatQualification(
       throw new Error("The qualification Chat selection or captured Agent changed");
     const messages = getOrCreateChat(sessionId).messages;
     // A detached bridge must not lose qualification evidence on exit.
-    await saveMessages(sessionId, messages);
-    await awaitSessionWrites(sessionId);
+    await budget.within(() => saveMessages(sessionId!, messages));
+    await budget.within(() => awaitSessionWrites(sessionId!));
     phase = "persisted-chat-evidence";
+    if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1")
+      await lm11AcceptanceBarrier("before-evidence-acceptance", budget, sessionId);
     const observed = inspectBoundedChat(
       messages, sessionId, final.profile.workspaceId, selectionId, flight,
     );
     if (!observed) throw new Error("No complete single-request Clack transport evidence; no qualification promoted");
     phase = "native-revalidation";
-    await assertCurrentManagedLocalRoute({
+    await budget.within(() => assertCurrentManagedLocalRoute({
       deploymentId: selected.deployment.id,
       deploymentIdentity: selected.identity,
       artifactDigest,
       configurationRevision: selected.deployment.configurationRevision,
-    }, route);
-    const after = await invoke<ManagedLocalNativeStatus>("managed_local_runtime_status");
+    }, route));
+    const after = await budget.within(() =>
+      invoke<ManagedLocalNativeStatus>("managed_local_runtime_status", {
+        deploymentId: selected.deployment.id,
+        deploymentIdentity: selected.identity,
+      }));
     if (after.epoch !== before.epoch || after.processId !== before.processId)
       throw new Error("Managed runtime changed after the qualifying Chat");
     const timestamp = Date.now();
@@ -336,13 +462,62 @@ async function executeManagedChatQualification(
     if (!fresh?.observation)
       throw new Error("Native Ready identity unavailable after the qualifying Chat");
     phase = "receipt-scoring";
-    const receipts = await boundedChatReceipts(fresh.fabric,
-      selected.deployment.id, fresh.observation, observed, flight, timestamp);
+    const receipts = await budget.within(() => boundedChatReceipts(fresh.fabric,
+      selected.deployment.id, fresh.observation!, observed, flight!, timestamp));
     phase = "cas-commit";
-    await updateSelfHostedProfiles(current =>
-      appendManagedObservedQualification(
-        current, selectionId, selected.identity, after, receipts, timestamp,
-      ));
+    budget.beginPersistence();
+    try {
+      casTicket = await budget.within(() => beginNativeQualificationCas({
+        kind: "lm2f", deploymentId: selected.deployment.id,
+        runtimeEpoch: after.epoch, processId: after.processId ?? null,
+        remainingMs: Math.floor(budget.remainingMs()),
+      }));
+      // The caller can expire between the native admission response and the
+      // next await; never proceed without a fresh operation-owned gate.
+      budget.assertOpen();
+      const ticket = casTicket;
+      const updateQualification = () => budget.within(() =>
+        updateQualifiedSelfHostedProfiles(current => {
+          // Recheck immediately before constructing the native CAS payload.
+          // Pending native evidence remains version-zero (inert) until the
+          // exact native process/epoch and current deadline acknowledge it.
+          budget.assertOpen();
+          return appendManagedObservedQualification(
+            current, selectionId, selected.identity, after, receipts, timestamp,
+          );
+        }, ticket, () => budget.assertOpen()));
+      if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1")
+        await withLm11QualificationCasAcceptanceOperation(budget, sessionId, updateQualification);
+      else await updateQualification();
+      // ACK/readback proves immutable historical disk truth, not that the
+      // original managed child still owns the CURRENT runtime epoch. A real
+      // A→B restart may happen while the original readback is awaiting IPC.
+      // Reuse the existing native PID/epoch/route authority before publishing
+      // current qualification; a durable A ACK is not rolled back or promoted
+      // as B's result. No new ticket, registry or deadline is created.
+      await budget.within(() => assertCurrentManagedLocalRoute({
+        deploymentId: selected.deployment.id,
+        deploymentIdentity: selected.identity,
+        artifactDigest,
+        configurationRevision: selected.deployment.configurationRevision,
+      }, route));
+      const committedOwner = await budget.within(() =>
+        invoke<ManagedLocalNativeStatus>("managed_local_runtime_status", {
+          deploymentId: selected.deployment.id,
+          deploymentIdentity: selected.identity,
+        }));
+      if (committedOwner.epoch !== after.epoch || committedOwner.processId !== after.processId)
+        throw new Error("Managed runtime changed before qualification could be published");
+      budget.persisted();
+    } catch (error) {
+      if (casTicket)
+        void cancelNativeQualificationCas(casTicket).catch(() => undefined);
+      if (error instanceof Error &&
+          error.message === "Self-hosted settings changed in another window. Try again.")
+        budget.rejectPersistence();
+      else budget.ambiguousPersistence();
+      throw error;
+    }
     return {
       sessionId, requestId: observed.requestId,
       deploymentId: selected.deployment.id,
@@ -354,6 +529,10 @@ async function executeManagedChatQualification(
       receiptCount: receipts.length,
     };
   } catch (error) {
+    budget.stop("cancelled");
+    if ((chatSent && !budget.state.nativeQuiescent) ||
+        budget.state.persistence === "ambiguous")
+      uncertainPreviousQualifications.add(selectionId);
     // A stage alone is enough to diagnose whether the native observation,
     // real stream capture or CAS commit failed, without leaking Chat content
     // or promoting partial evidence to a receipt.
@@ -361,6 +540,7 @@ async function executeManagedChatQualification(
     (failure as Error & { cause?: unknown }).cause = error;
     throw failure;
   } finally {
+    budget.finish();
     if (sessionId) disarmDeploymentQualification(sessionId);
     const current = useChatStore.getState();
     if (previousSessionId && current.sessions.some(s => s.id === previousSessionId))

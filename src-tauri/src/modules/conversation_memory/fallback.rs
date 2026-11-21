@@ -97,13 +97,11 @@ fn sanitized(mut value: Value) -> Value {
 }
 
 fn configuration(app: &tauri::AppHandle, model: &str, identity: &Value) -> Result<String> {
-    let store = app
-        .store("terax-settings.json")
+    let settings = crate::modules::self_hosted_profiles::authoritative_settings_snapshot(app)
         .map_err(|_| "fallback_settings_unavailable")?;
     let mut values = vec![identity.clone()];
     if let Some(profile) = identity["selfHosted"]["profileId"].as_str() {
-        let state = store
-            .get("selfHostedInference")
+        let state = settings.get("selfHostedInference")
             .ok_or("fallback_destination_missing")?;
         for (key, id) in [
             ("profiles", profile),
@@ -123,8 +121,7 @@ fn configuration(app: &tauri::AppHandle, model: &str, identity: &Value) -> Resul
         }
         values.push(state["defaults"].clone());
     } else if let Some(id) = model.strip_prefix("saved-provider:") {
-        let models = store
-            .get("savedProviderModels")
+        let models = settings.get("savedProviderModels")
             .ok_or("fallback_destination_missing")?;
         let value = models
             .as_array()
@@ -136,8 +133,7 @@ fn configuration(app: &tauri::AppHandle, model: &str, identity: &Value) -> Resul
             .ok_or("fallback_destination_missing")?;
         values.push(sanitized(value.clone()));
     } else if let Some(id) = identity["customEndpointId"].as_str() {
-        let endpoints = store
-            .get("customEndpoints")
+        let endpoints = settings.get("customEndpoints")
             .ok_or("fallback_destination_missing")?;
         let value = endpoints
             .as_array()
@@ -156,9 +152,8 @@ fn configuration(app: &tauri::AppHandle, model: &str, identity: &Value) -> Resul
         if let Some(prefix) = prefix {
             for suffix in ["BaseURL", "ModelId", "ContextLimit"] {
                 values.push(
-                    store
-                        .get(format!("{prefix}{suffix}"))
-                        .unwrap_or(Value::Null),
+                    settings.get(&format!("{prefix}{suffix}"))
+                        .cloned().unwrap_or(Value::Null),
                 );
             }
         }

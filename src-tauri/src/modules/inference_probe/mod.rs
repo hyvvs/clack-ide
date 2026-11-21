@@ -20,7 +20,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_store::StoreExt;
 use transport::{deadline, Transport, HANDSHAKE_TIMEOUT};
 
 pub struct ProbeState {
@@ -160,10 +159,7 @@ pub(super) fn credential_changed(app: &AppHandle, service: &str, account: &str) 
             cache.invalidate_account(account);
         }
     }
-    let Ok(store) = app.store("terax-settings.json") else {
-        return;
-    };
-    let Some(previous) = store.get(KEY) else {
+    let Ok(Some(previous)) = super::self_hosted_profiles::authoritative_settings_value(app, KEY) else {
         return;
     };
     let mut next = previous.clone();
@@ -181,7 +177,7 @@ pub(super) fn credential_changed(app: &AppHandle, service: &str, account: &str) 
     }
     if next != previous {
         next["revision"] = json!(previous["revision"].as_u64().unwrap_or(0) + 1);
-        let _ = save_state(app, &store, previous, next);
+        let _ = save_state(app, previous, next);
     }
 }
 
@@ -663,16 +659,12 @@ fn p_string<'a>(value: &'a Value, key: &str) -> &'a str {
 
 fn save_state(
     app: &AppHandle,
-    store: &tauri_plugin_store::Store<tauri::Wry>,
     previous: Value,
     next: Value,
 ) -> Result<(), ProbeError> {
-    crate::modules::self_hosted_profiles::validate(&next).map_err(|_| internal())?;
-    store.set(KEY, next.clone());
-    if store.save().is_err() {
-        store.set(KEY, previous);
-        return Err(internal());
-    }
+    crate::modules::self_hosted_profiles::save_other_self_hosted_under_lock(
+        app, &previous, next.clone(),
+    ).map_err(|_| internal())?;
     let _ = app.emit("terax://prefs-changed", json!({"key": KEY, "value": next}));
     Ok(())
 }
@@ -689,8 +681,8 @@ fn finish(app: &AppHandle, endpoint: &Endpoint, generation: u64, mut outcome: ca
         return;
     }
     let commit = || -> Result<(), ProbeError> {
-        let store = app.store("terax-settings.json").map_err(|_| internal())?;
-        let previous = store.get(KEY).ok_or_else(internal)?;
+        let previous = super::self_hosted_profiles::authoritative_settings_value(app, KEY)
+            .map_err(|_| internal())?.ok_or_else(internal)?;
         if configured(&previous, &endpoint.id)? != *endpoint {
             return Err(ProbeError::new(ErrorCode::Cancelled));
         }
@@ -733,7 +725,7 @@ fn finish(app: &AppHandle, endpoint: &Endpoint, generation: u64, mut outcome: ca
         if let Some(snapshot) = snapshot {
             let mut next = previous.clone();
             merge_evidence(&mut next, snapshot)?;
-            save_state(app, &store, previous, next)?;
+            save_state(app, previous, next)?;
         }
         Ok(())
     };
@@ -752,8 +744,9 @@ pub async fn self_hosted_probe_cache(
         .await
         .map_err(|_| ProbeError::new(ErrorCode::Unreachable))?;
     let _guard = WRITE_LOCK.lock().map_err(|_| internal())?;
-    let store = app.store("terax-settings.json").map_err(|_| internal())?;
-    let endpoint = configured(&store.get(KEY).unwrap_or(Value::Null), &options.endpoint_id)?;
+    let state = super::self_hosted_profiles::authoritative_settings_value(&app, KEY)
+        .map_err(|_| internal())?.unwrap_or(Value::Null);
+    let endpoint = configured(&state, &options.endpoint_id)?;
     transport::route_url(&endpoint, Route::CompatibleModels)?;
     let state = app.state::<ProbeState>();
     let cache = state.cache.lock().map_err(|_| internal())?;
@@ -788,8 +781,8 @@ pub async fn self_hosted_probe(
     }
     let (endpoint, begin, requested_context) = {
         let _guard = WRITE_LOCK.lock().map_err(|_| internal())?;
-        let store = app.store("terax-settings.json").map_err(|_| internal())?;
-        let value = store.get(KEY).unwrap_or(Value::Null);
+        let value = super::self_hosted_profiles::authoritative_settings_value(&app, KEY)
+            .map_err(|_| internal())?.unwrap_or(Value::Null);
         let endpoint = configured(&value, &options.endpoint_id)?;
         let requested_context = options.requested_context.or_else(|| {
             value["profiles"].as_array()?.iter().find(|p| {

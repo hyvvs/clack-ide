@@ -11,7 +11,7 @@ import {
   resolveModelDeployment,
   type DeploymentRuntimeObservation,
 } from "@/modules/ai/lib/localComputeFabric";
-import { isManagedLocalSelectionId } from "@/modules/ai/lib/managedLocalModels";
+import { isManagedLocalSelectionId, resolveManagedLocalSelection } from "@/modules/ai/lib/managedLocalModels";
 import type { ManagedLocalNativeStatus } from "@/modules/ai/lib/managedLocalRuntime";
 import { projectModelResourceProfile } from "@/modules/ai/lib/modelResourceProfile";
 import { resolveSelfHostedSelection, type SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
@@ -226,10 +226,15 @@ export function DeploymentMeasurementControl({ sessionId }: { sessionId: string 
     setNow(Date.now());
     setChecking(false);
     if (!selectionId || !isManagedLocalSelectionId(selectionId)) return;
+    const exact = resolveManagedLocalSelection(settings, selectionId);
+    if (exact.status === "missing" || exact.status === "not-managed") return;
     setChecking(true);
     // Native authenticated status is read-only; the runner is never invoked
     // during open/refresh, rendering or a provider/session selection change.
-    void invoke<unknown>("managed_local_runtime_status")
+    void invoke<unknown>("managed_local_runtime_status", {
+      deploymentId: exact.deployment.id,
+      deploymentIdentity: exact.identity,
+    })
       .then(raw => {
         if (token !== request.current ||
             usePreferencesStore.getState().selfHostedInference !== settings ||

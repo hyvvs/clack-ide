@@ -130,7 +130,10 @@ export function DeploymentQualificationLab({ sessionId }: { sessionId: string })
         observedNativeRead("managed_local_runtime_model_metadata", { digest }),
       ]);
       if (seq.current !== token) return;
-      const statusRaw = await observedNativeRead("managed_local_runtime_status");
+      const statusRaw = await observedNativeRead("managed_local_runtime_status", {
+        deploymentId: exact.deployment.id,
+        deploymentIdentity: exact.identity,
+      });
       const observedAt = Date.now();
       if (seq.current !== token || selectedForSession(sessionId) !== selectionId ||
           usePreferencesStore.getState().selfHostedInference !== settings ||
@@ -192,7 +195,13 @@ export function DeploymentQualificationLab({ sessionId }: { sessionId: string })
     void (async () => {
       // Separate request-time native preflight. No cached Ready state, changed
       // artifact, permissions, session or epoch can authorize a dispatch.
-      const statusRaw = await invoke<unknown>("managed_local_runtime_status");
+      const exact = resolveManagedLocalSelection(settings, selectionId);
+      if (exact.status === "missing" || exact.status === "not-managed")
+        throw new Error("Exact managed deployment unavailable before qualification dispatch");
+      const statusRaw = await invoke<unknown>("managed_local_runtime_status", {
+        deploymentId: exact.deployment.id,
+        deploymentIdentity: exact.identity,
+      });
       const checkedAt = Date.now();
       const checked = validStatus(statusRaw);
       if (checked?.state !== "Ready" || token !== seq.current ||

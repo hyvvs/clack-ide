@@ -21,6 +21,10 @@ import { z } from "zod";
 import { createOllamaModel } from "./ollamaModel";
 import { withProviderRetryTracking, type ProviderRecoveryObservation } from "./providerRetry";
 import { installOllamaParserFailureObserver } from "./ollamaParserFailureDiagnostics";
+import {
+  QualificationOperationDeadline, armDeploymentQualification,
+  disarmDeploymentQualification, qualificationDispatchAuthority,
+} from "./deploymentQualificationFlight";
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -445,6 +449,40 @@ describe("native inference attempt transport", () => {
     expect(await outcome).toMatchObject({ code: "cancelled" });
     expect(cancels()).toEqual([["ai_http_cancel", { requestId: "reserved", cancellationOrigin: "parent-signal" }]]);
     expect(sessionInference("a")).toBeNull();
+  });
+  it("LM11: Stop before native inference registration forbids late dispatch and cancels only the owned ID", async () => {
+    const opened = deferred<string>();
+    const nativeCancel = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command === "ai_http_open") return opened.promise as never;
+      if (command === "ai_http_cancel") return nativeCancel(args) as never;
+      throw new Error("Late native ai_http_stream must not be called");
+    });
+    const budget = new QualificationOperationDeadline(5_000);
+    armDeploymentQualification("lm11", "managed-fixture", "builtin:coder", { operation: budget });
+    const authority = qualificationDispatchAuthority("lm11")!;
+    const request = createProxyFetch({
+      scope: { ...scope("lm11"), isCurrent: authority }, selfHosted: true,
+    });
+    const outcome = request("http://localhost/v1/chat/completions").catch(error => error);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("ai_http_open"));
+    const stopped = cancelSessionInference("lm11");
+    expect(authority()).toBe(false);
+    opened.resolve("inference-999");
+    expect(await outcome).toMatchObject({ code: "cancelled" });
+    await stopped;
+    expect(nativeCancel).toHaveBeenCalledTimes(1);
+    expect(nativeCancel.mock.calls[0][0]).toMatchObject({
+      requestId: "inference-999",
+    });
+    expect(["session-stop", "parent-signal"]).toContain(
+      nativeCancel.mock.calls[0][0].cancellationOrigin,
+    );
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "ai_http_stream"))
+      .toHaveLength(0);
+    expect(sessionInference("lm11")).toBeNull();
+    disarmDeploymentQualification("lm11");
+    budget.finish();
   });
   it("pre-abort and superseded logical scopes cannot start another request", async () => {
     const abort = new AbortController();

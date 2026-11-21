@@ -68,13 +68,14 @@ describe("LM2F bounded request and parsed-stream observer", () => {
   });
 
   it("a normal, unarmed Chat cannot silently acquire qualification state", async () => {
-    await expect(observeDeploymentQualificationPrepared(session, {
+    const unarmed = "ordinary-not-previously-qualified-session";
+    await expect(observeDeploymentQualificationPrepared(unarmed, {
       modelId: model, messages, outputLimit: 128, activeTools: [],
     })).resolves.toBeUndefined();
-    observeDeploymentQualificationStream(session, {
+    observeDeploymentQualificationStream(unarmed, {
       type: "finish", finishReason: "stop",
     } as UIMessageChunk);
-    expect(disarmDeploymentQualification(session)).toBeNull();
-    expect(qualificationMaxOutputTokens(session)).toBeUndefined();
+    expect(disarmDeploymentQualification(unarmed)).toBeNull();
+    expect(qualificationMaxOutputTokens(unarmed)).toBeUndefined();
   });
 });

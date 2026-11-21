@@ -1553,6 +1553,13 @@ export async function runAgentStream(opts: RunAgentOptions) {
       modelId, messages: finalMessages, activeTools: exposure.names,
       outputLimit: actualOutputLimit,
     });
+    // LM2F/LM6 request preparation performs asynchronous digests. A stopped
+    // armed qualification must never escape its final pre-dispatch fence.
+    // Ordinary Agent/Chat cancellation is owned by its existing transport,
+    // which must continue to return structured cancelled stream evidence.
+    opts.abortSignal?.throwIfAborted();
+    if (!inferenceScope.isCurrent())
+      throw new Error("Qualification cancelled before inference dispatch");
   }
   return streamText({
     maxOutputTokens: actualOutputLimit,

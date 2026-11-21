@@ -190,7 +190,10 @@ export function DeploymentEvidenceExplorer({ sessionId }: { sessionId: string })
         observedNativeRead("managed_local_runtime_model_metadata", { digest }),
       ]);
       if (token !== request.current) return;
-      const rawStatus = await observedNativeRead("managed_local_runtime_status");
+      const rawStatus = await observedNativeRead("managed_local_runtime_status", {
+        deploymentId: exact.deployment.id,
+        deploymentIdentity: exact.identity,
+      });
       const observedAt = Date.now();
       if (token !== request.current ||
           selectedForSession(sessionId) !== selectionId ||

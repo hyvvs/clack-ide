@@ -1,0 +1,32 @@
+{
+  "acceptedPrivateBpftool": {
+    "buildId": "7f530859f49ede16767f9f4eb8551a6ac85aa25d",
+    "libbpfVersion": "1.9",
+    "path": "/opt/clack/diagnostic-tools/bpftool-678d538",
+    "provenancePinSha256": "215855a87f21ecd219cb642a392fa4cb8e716a58b9f1b811f4b8e91e876ff197",
+    "sha256": "0e0059127c7c926fe1ee82a7804479415a19b73515b7aebc8bb59ce06de36fa0",
+    "version": "7.8.1"
+  },
+  "narrowSudoersPath": "/etc/sudoers.d/90-clack-one-muse-root",
+  "newSha256": {
+    "local-muse-one-ebpf.py": "169c1ae8e6822f7e795cfadb8d624d5e03964d0f182cdf6c948aa012dc12a527",
+    "local-muse-one-root.sh": "b3da0a0de8e8c6c1648ef6ce9c9ecb14f642341468e8dfc567962667ad3f6f44",
+    "one-muse-narrow-root.py": "bdba04eb0952a2cd4c1e9f77f645be716b6ef220e124045d0e0f630ddee77260",
+    "one-muse-narrow-sudoers": "a9782c350e18c09a83bd543d3359ab13cc371aae945f28f39492db421cf49586"
+  },
+  "oldSha256": {
+    "local-muse-one-ebpf.py": "eed450245218a9cbf02bacdbe4d08c5dc071636e5ca61904aac5f7a4e72c24df",
+    "local-muse-one-root.sh": "69ad979c5f5cd73cdc3ba5e4e29bafea4dbd278055e27dc6028b2d36fd682137",
+    "local-muse-tcp-session.py": "d22c0994402744a6a978d4a8d53b140d9d6c0780a316e54f9d8c7c7c85e014cf",
+    "local-muse-tcp.bt": "e21b5348e78820b432cdaec9dbf30ffaf4b68a22034f54f960d9d9d152d649f0",
+    "one-muse-narrow-root.py": "551de3b1b2895b06f5bafd19b569fb41ab2170990bbb74a39d41014532ab223b",
+    "one-muse-narrow-sudoers": "5c009fffbfe7c2ebb5cf720a0cd31e44f46559477af0f1b5c0b6f7646e096268"
+  },
+  "rootWrapperPath": "/usr/local/libexec/clack-one-muse-root",
+  "schemaVersion": 1,
+  "unchangedSha256": {
+    "local-muse-tcp-session.py": "d22c0994402744a6a978d4a8d53b140d9d6c0780a316e54f9d8c7c7c85e014cf",
+    "local-muse-tcp.bt": "e21b5348e78820b432cdaec9dbf30ffaf4b68a22034f54f960d9d9d152d649f0"
+  },
+  "version": "private-bpftool-v2-20261112"
+}

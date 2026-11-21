@@ -15,7 +15,7 @@ import {
 } from "./localComputeFabric";
 import {
   isCurrentLm6Run,
-  lm6RunSchema,
+  parsePersistedLm6Run,
   type Lm6Attempt,
   type Lm6Failure,
   type Lm6Run,
@@ -259,9 +259,9 @@ export function buildDeploymentEvidenceHistory(
   });
 
   const matchingRuns = (fabric.measurementRuns ?? []).flatMap((raw, index) => {
-    const parsed = lm6RunSchema.safeParse(raw);
-    return parsed.success && parsed.data.scope.deploymentId === deploymentId
-      ? [{ run: parsed.data, index }] : [];
+    const parsed = parsePersistedLm6Run(raw);
+    return parsed?.scope.deploymentId === deploymentId
+      ? [{ run: parsed, index }] : [];
   });
   // Match the existing LM6 panel: the newest exact-current run wins, even if
   // another epoch/configuration wrote a newer historical run afterward.

@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: nativeReady.invoke }));
 
-import { installLocalDeliveryCapture, observeWebviewDelivery,
+import { installLocalDeliveryCapture, ONE_MUSE_CLACK_CAPTURE_LIMIT, observeWebviewDelivery,
   validateDeliveryRow } from "./localDeliveryObserver";
 
 const native = (boundary: string, sequence: number, bytes: number, extras = {}) => ({
@@ -131,6 +131,25 @@ describe("real production WebView delivery opt-in", () => {
     expect((await broken.stop())).toMatchObject({ deliveryFailed: true,
       collectorCoverage: "partial-or-unsealed" });
     expect(JSON.stringify(captured)).not.toContain("DO_NOT_PERSIST");
+  });
+
+  it("preserves native terminal after the old 8192-event cutoff without taking kernel journal slots", async () => {
+    expect(ONE_MUSE_CLACK_CAPTURE_LIMIT).toBeGreaterThan(8192);
+    expect(65536 - ONE_MUSE_CLACK_CAPTURE_LIMIT).toBeGreaterThanOrEqual(17000);
+    let persisted = 0;
+    let lastBoundary = "";
+    const capture = await installLocalDeliveryCapture(async row => {
+      persisted++;
+      lastBoundary = row.boundary;
+    }, ONE_MUSE_CLACK_CAPTURE_LIMIT);
+    for (let i = 1; i <= 8192; i++)
+      bridge.handler?.({ payload: native("native-body-read", i, 140) });
+    bridge.handler?.({ payload: native("native-terminal", 8193, 0) });
+    const result = await capture.stop();
+    expect(result).toMatchObject({ emitted: 8193, acknowledged: 8193,
+      overflow: 0, deliveryFailed: false, collectorCoverage: "collector-flushed" });
+    expect(persisted).toBe(8193);
+    expect(lastBoundary).toBe("native-terminal");
   });
 
   it("native bounded-queue loss never becomes a success receipt", async () => {

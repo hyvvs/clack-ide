@@ -6,8 +6,11 @@ export type ManagedLocalNativeStatus = {
   installed: boolean;
   state: "Not Installed" | "Stopped" | "Starting" | "Loading" | "Ready" | "Stopping" | "Failed";
   version: string;
+  runtimeId?: string;
   epoch: string;
   deploymentId?: string | null;
+  /** Content-free native SHA-256 of canonical Fabric deployment identity. */
+  deploymentIdentityHash?: `sha256:${string}` | null;
   modelDigest?: string | null;
   processId?: number | null;
   port?: number | null;

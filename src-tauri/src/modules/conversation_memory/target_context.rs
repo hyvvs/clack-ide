@@ -38,9 +38,9 @@ fn snapshot_integrity(snapshot: &Snapshot) -> Result<String> {
 }
 
 fn settings_hash(app: &tauri::AppHandle) -> Result<String> {
-    let settings = app
-        .store("terax-settings.json")
-        .map_err(|e| e.to_string())?;
+    // Hash ONE disk revision. Individually locked reads could otherwise
+    // splice two legitimate native CAS revisions into a fabricated digest.
+    let settings = crate::modules::self_hosted_profiles::authoritative_settings_snapshot(app)?;
     let values: Vec<_> = [
         "selfHostedInference",
         "savedProviderModels",

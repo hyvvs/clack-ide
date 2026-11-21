@@ -206,7 +206,7 @@ export async function runRealLocalProduct(config: Configuration) {
   assert(config.realProduct, "Missing real product phase");
   const phase = config.realProduct.phase;
   const modelId = config.realProduct.modelId ?? "qwen38-uncensored:latest";
-  assert(["qwen38-uncensored:latest", "qwen3-coder:30b", "devstral-small-2:24b"].includes(modelId) || [
+  assert(["qwen38-uncensored:latest", "qwen3-coder:30b", "qwen38-iq4xs:latest", "devstral-small-2:24b"].includes(modelId) || [
     "muse-glimmer:30b",
     "north-mini-code-1.0:q4_K_M",
     "nemotron-3.5-lightning:30b-a3b-q4_K_M",

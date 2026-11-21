@@ -213,6 +213,99 @@ class PredicateDiagnosticTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     parser(records)
 
+    def test_consumed_run_shape_is_not_a_readiness_proof(self):
+        """Represent the 13 active normalized samples, not their redacted names.
+
+        The indexed name is a source-supported *hypothesis*, not the literal
+        name retained by the real audit (which was classified OTHER).
+        No kernel, bpftool, bpftrace or root tool is executed here.
+        """
+        old_progs = {n: ("tracepoint", "old") for n in range(1, 46)}
+        live_progs = {**old_progs,
+                      157: ("kprobe", "kprobe_tcp_sendmsg_1"),
+                      155: ("raw_tracepoint", "other"),
+                      158: ("perf_event", "other"),
+                      159: ("raw_tracepoint", "other")}
+        old_links = {n: {"id": n, "type": "cgroup", "prog_id": 1}
+                     for n in range(1, 4)}
+        live_links = {**old_links,
+                      11: {"id": 11, "type": "kprobe_multi", "prog_id": 157,
+                           "retprobe": False, "func_cnt": 1, "missed": 0,
+                           "funcs": []},
+                      10: {"id": 10, "type": "perf_event", "prog_id": 158}}
+        report = self.inspect(programs=live_progs, links=live_links,
+                              baseline_programs=old_progs,
+                              baseline_links=old_links)
+        self.assertEqual(tuple(report[k] for k in (
+            "baselineProgramCount", "liveProgramCount", "freshProgramCount",
+            "baselineLinkCount", "liveLinkCount", "freshLinkCount")),
+            (45, 49, 4, 3, 5, 2))
+        self.assertFalse(report["programCandidatesTruncated"])
+        self.assertFalse(report["linkCandidatesTruncated"])
+        prog = next(row for row in report["programCandidates"] if row["id"] == 157)
+        link = next(row for row in report["linkCandidates"] if row["id"] == 11)
+        self.assertEqual(prog["typeClass"], "kprobe")
+        self.assertEqual(prog["nameClass"], "OTHER")
+        self.assertEqual(prog["predicates"]["name_exact"], "FAIL")
+        self.assertEqual(link["linkedProgramId"], 157)
+        self.assertEqual(link["typeClass"], "kprobe_multi")
+        self.assertEqual(link["funcsShape"], "LIST")
+        self.assertEqual(link["ownersShape"], "MISSING")
+        for key in ("fresh", "type_kprobe_multi", "retprobe_false",
+                    "func_cnt_one", "missed_zero", "funcs_list"):
+            self.assertEqual(link["predicates"][key], "PASS", key)
+        for key in ("funcs_one", "target_tcp_sendmsg", "pids_list",
+                    "owner_pid_present", "owner_pid_and_comm"):
+            self.assertEqual(link["predicates"][key], "FAIL", key)
+        self.assertEqual(report["targetProgramMatchCount"], 0)
+        self.assertEqual(report["validSessionLinkMatchCount"], 0)
+        self.assertFalse(collector.source_arm_evidence(
+            b"TCPREADY 1139 11434\n", b"Attached 4 probes\n", 1139,
+            11434, old_progs, live_progs, old_links, live_links, TRACER)[0])
+
+    def test_conditional_function_and_owner_metadata_fail_independently(self):
+        """Fixing a displayed name cannot replace target or ownership proof."""
+        for variation, bad in (
+            ({"funcs": []}, "target_tcp_sendmsg"),
+            ({"pids": None}, "pids_list"),
+            ({"funcs": [{"func": "not_tcp_sendmsg"}]}, "target_tcp_sendmsg"),
+            ({"pids": [{"pid": TRACER + 1, "comm": "bpftrace"}]},
+             "owner_pid_and_comm"),
+            ({"pids": [{"pid": TRACER, "comm": "not_bpftrace"}]},
+             "owner_pid_and_comm"),
+        ):
+            with self.subTest(variation=variation):
+                links = {**LINKS_BASE, 101: {**LINKS_LIVE[101], **variation}}
+                report = self.inspect(links=links)
+                candidate = report["linkCandidates"][0]
+                self.assertEqual(candidate["predicates"][bad], "FAIL")
+                self.assertEqual(report["validSessionLinkMatchCount"], 0)
+                self.assertFalse(collector.source_arm_evidence(
+                    b"TCPREADY 1139 11434\n", b"Attached 4 probes\n",
+                    1139, 11434, PROGRAMS_BASE, PROGRAMS_LIVE,
+                    LINKS_BASE, links, TRACER)[0])
+
+    def test_unrelated_and_ambiguous_programs_never_rescue_session(self):
+        unrelated = {**PROGRAMS_BASE, 93: ("kprobe", "kprobe_tcp_send_untrusted")}
+        links = {**LINKS_BASE, 101: LINKS_LIVE[101]}
+        self.assertEqual(self.inspect(programs=unrelated, links=links)[
+            "validSessionLinkMatchCount"], 0)
+
+        # An extra matching *program* is ambiguous even if only one link
+        # points at the first candidate; a single matching program is required.
+        ambiguous = {**PROGRAMS_LIVE, 94: ("kprobe", "kprobe_tcp_send")}
+        self.assertEqual(self.inspect(programs=ambiguous)[
+            "targetProgramMatchCount"], 2)
+        self.assertEqual(self.inspect(programs=ambiguous)[
+            "validSessionLinkMatchCount"], 0)
+        self.assertFalse(collector.source_arm_evidence(
+            b"TCPREADY 1139 11434\n", b"Attached 4 probes\n", 1139,
+            11434, PROGRAMS_BASE, ambiguous, LINKS_BASE, LINKS_LIVE, TRACER)[0])
+
+        # Stale identical-looking links cannot supply this session's proof.
+        self.assertEqual(self.inspect(baseline_links=LINKS_LIVE)[
+            "validSessionLinkMatchCount"], 0)
+
     def test_bounded_counts_and_candidate_selection(self):
         many = {**PROGRAMS_LIVE, **{
             i: ("kprobe", "SECRET_%d" % i) for i in range(200, 290)}}

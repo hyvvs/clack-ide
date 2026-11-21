@@ -12,6 +12,11 @@ const HOST = 'hylab@192.168.1.44';
 const REPORTED = /^TCPARMED (\d{1,10}) 11434 4 (\d{1,6}) 0$/;
 const RUN = /^muse-one-[a-f0-9]{24}$/;
 const STOP_TIMEOUT_SECONDS = 5;
+// Root intentionally emits validated TCPMETA rows only after STOP and the
+// END/inventory checks. The accepted one-request run produced 7,122 socket
+// rows in that terminal burst; a 15s importer deadline cut off TCPSESSION.
+// This is bounded post-request draining, not a kernel/HTTP timeout change.
+export const KERNEL_TERMINAL_IMPORT_DRAIN_MS = 75_000;
 
 const ownedStage = id => {
   assert(RUN.test(id), 'invalid-exclusive-kernel-run-id');
@@ -68,11 +73,13 @@ export function parseKernelArm(text, expectedPid) {
 
 export function createOneMuseKernelBridge({sshKey, workdir, start = spawn,
   remoteExec = null, onOperatorStep = null, now = () => Date.now(),
-  armTimeoutMs = 120000} = {}) {
+  armTimeoutMs = 120000, onDiagnostic = null} = {}) {
   assert(path.isAbsolute(sshKey) && path.isAbsolute(workdir),
     'absolute-owned-ssh-arguments-required');
   assert(onOperatorStep === null || typeof onOperatorStep === 'function',
     'operator-prompt-callback-must-be-a-function');
+  assert(onDiagnostic === null || typeof onDiagnostic === 'function',
+    'closed-vocabulary-diagnostic-callback-required');
   assert(Number.isSafeInteger(armTimeoutMs) && armTimeoutMs > 0 &&
     armTimeoutMs <= 180000, 'bounded-operator-arming-required');
   let runId = null, ready = null;
@@ -81,6 +88,8 @@ export function createOneMuseKernelBridge({sshKey, workdir, start = spawn,
   let operatorAnnounced = false;
   let armClosed = false, dataClosed = false, importerClosed = false;
   let importerMessage = '', deliveryJournal = null;
+  let notice = '', readinessNoticeBytes=0, metadataBytes=0, armStart=0;
+  const observe = (name,fields={}) => { if(onDiagnostic) onDiagnostic(name,fields); };
   const sshArgs = command => ['-T','-o','BatchMode=yes','-o',
     'StrictHostKeyChecking=yes','-o','ConnectTimeout=4',
     '-i',sshKey,HOST,command];
@@ -109,22 +118,39 @@ export function createOneMuseKernelBridge({sshKey, workdir, start = spawn,
       assert(journal && journal.url && journal.nonce,'missing-run-owned-journal');
       runId = identity; expectedPid = receipts.get('mapping').ollamaPid;
       deliveryJournal = journal;
+      armStart=now();
+      observe('collector_arm_start',{expected_pid:expectedPid,
+        arm_timeout_ms:armTimeoutMs});
       try {
         dataReader = start('ssh.exe',sshArgs(kernelReaderCommand(runId,'metadata.fifo')),
           {stdio:['ignore','pipe','pipe'],windowsHide:true});
         armReader = start('ssh.exe',sshArgs(kernelReaderCommand(runId,'ready.fifo')),
           {stdio:['ignore','pipe','pipe'],windowsHide:true});
         assert(dataReader?.pid > 0 && armReader?.pid > 0,'ssh-fifo-readers-not-started');
+        observe('collector_readers_started',{metadata_reader_pid:dataReader.pid,
+          ready_reader_pid:armReader.pid});
         for(const child of [dataReader,armReader]) {
-          child.on('error',()=>{readError=true;});
-          child.stdout?.on('error',()=>{readError=true;});
-          child.stderr?.on('error',()=>{readError=true;});
+          child.on('error',()=>{readError=true;
+            observe('collector_reader_error',{error:'process_error'});});
+          child.stdout?.on('error',()=>{readError=true;
+            observe('collector_reader_error',{error:'stdout_error'});});
+          child.stderr?.on('error',()=>{readError=true;
+            observe('collector_reader_error',{error:'stderr_error'});});
           child.stderr?.on('data',chunk=>{
-            if(chunk.length) readError = true; // never echo SSH diagnostics
+            if(chunk.length){readError=true;
+              observe('collector_reader_error',{error:'ssh_stderr',
+                bytes:Math.min(chunk.length,1048576)});}
           });
         }
-        dataReader.once('close',()=>{dataClosed=true;});
-        armReader.once('close',()=>{armClosed=true;});
+        dataReader.once('close',(code,signal)=>{dataClosed=true;
+          observe('collector_reader_exit',{role:'metadata',
+            exit_code:Number.isInteger(code)?code:-1,signal:signal??'none',
+            metadata_bytes:metadataBytes});});
+        armReader.once('close',(code,signal)=>{armClosed=true;
+          observe('collector_reader_exit',{role:'ready',
+            exit_code:Number.isInteger(code)?code:-1,signal:signal??'none',
+            readiness_bytes:readinessNoticeBytes});});
+        dataReader.stdout?.on('data',chunk=>{metadataBytes+=chunk.length;});
         importer = start('node.exe',[
           'scripts/local-muse-delivery-cli.mjs','import-kernel',
           journal.url,journal.nonce,'ollama','ollama-loopback',
@@ -134,26 +160,41 @@ export function createOneMuseKernelBridge({sshKey, workdir, start = spawn,
           env:{...process.env,CLACK_ONE_MUSE_DIAGNOSTIC_RUN_ID:runId}});
         assert(importer?.pid>0 && importer.stdin && dataReader.stdout,
           'kernel-importer-not-started');
-        importer.on('error',()=>{readError=true;});
-        importer.once('close',()=>{importerClosed=true;});
-        importer.stdin.on('error',()=>{readError=true;}); // EPIPE must fail closed
-        importer.stdout?.on('error',()=>{readError=true;});
+        observe('collector_importer_started',{importer_pid:importer.pid});
+        importer.on('error',()=>{readError=true;
+          observe('collector_importer_error',{error:'process_error'});});
+        importer.once('close',(code,signal)=>{importerClosed=true;
+          observe('collector_importer_exit',{
+            exit_code:Number.isInteger(code)?code:-1,signal:signal??'none'});});
+        importer.stdin.on('error',()=>{readError=true;
+          observe('collector_importer_error',{error:'stdin_error'});}); // EPIPE fail closed
+        importer.stdout?.on('error',()=>{readError=true;
+          observe('collector_importer_error',{error:'stdout_error'});});
         importer.stdout?.on('data',chunk=>{
           // import-kernel emits its sole terminal receipt on stderr; unexpected
           // stdout must never be hidden as if it were valid metadata.
-          if(chunk.length) readError=true;
+          if(chunk.length){readError=true;
+            observe('collector_importer_error',{error:'unexpected_stdout',
+              bytes:Math.min(chunk.length,1048576)});}
         });
-        importer.stderr?.on('error',()=>{readError=true;});
+        importer.stderr?.on('error',()=>{readError=true;
+          observe('collector_importer_error',{error:'stderr_error'});});
         dataReader.stdout.pipe(importer.stdin);
         importer.stdout?.resume();
         importer.stderr?.on('data',chunk=>{
           // The importer emits exactly one small numeric completion record.
-          if(Buffer.byteLength(importerMessage)+chunk.length>1024) readError=true;
+          if(Buffer.byteLength(importerMessage)+chunk.length>1024){
+            readError=true;
+            observe('collector_importer_error',{error:'stderr_overflow'});
+          }
           else importerMessage += chunk.toString('utf8');
         });
-        let notice = '';
         armReader.stdout?.on('data',chunk=>{
-          if(Buffer.byteLength(notice)+chunk.length>128) readError=true;
+          readinessNoticeBytes+=chunk.length;
+          if(Buffer.byteLength(notice)+chunk.length>128){
+            readError=true;
+            observe('collector_ready_error',{error:'ready_overflow'});
+          }
           else notice += chunk.toString('utf8');
         });
         // The operator prompt is a UI-only handoff after both SSH FIFO readers
@@ -170,10 +211,19 @@ export function createOneMuseKernelBridge({sshKey, workdir, start = spawn,
             ]);
           } finally { clearTimeout(timer); }
         }
+        observe('collector_waiting_ready',{reader_pid:armReader.pid,
+          importer_pid:importer.pid,control_stop_armed:false});
         const deadline=now()+armTimeoutMs;
         while(now()<deadline && !armClosed && !readError) {
           await new Promise(resolve=>setTimeout(resolve,80));
         }
+        observe('collector_ready_wait_end',{elapsed_ms:Math.max(0,now()-armStart),
+          read_error:readError,reader_closed:armClosed,
+          reader_exit:Number.isInteger(armReader.exitCode)?armReader.exitCode:-1,
+          ready_notice:notice.startsWith('TCPARMED ')?'armed':
+            notice.startsWith('TCPABORT ')?'abort':
+            notice.length===0?'missing':'invalid',
+          importer_alive:owned(importer),metadata_reader_alive:owned(dataReader)});
         assert(!readError && armClosed && armReader.exitCode===0,
           'root-collector-arm-channel-failed');
         const proof = parseKernelArm(notice,expectedPid);
@@ -183,8 +233,16 @@ export function createOneMuseKernelBridge({sshKey, workdir, start = spawn,
           ready:true,loss:0,pending:0,pid:expectedPid,
           port:11434,completedNativeAttach:true,loadedProgram:true,
           identityVerified:true});
+        observe('collector_ready_accepted',{pid:expectedPid,
+          ready_fifo_writer_opened:true,control_stop_armed:true});
         return ready;
       } catch(error) {
+        const kind=String(error?.message??'unknown');
+        const safe=/^[a-z0-9-]{1,96}$/.test(kind)?kind:'unexpected_exception';
+        observe('collector_arm_failure',{reason:safe,
+          readiness_bytes:readinessNoticeBytes,metadata_bytes:metadataBytes,
+          ready_reader_exited:armClosed,importer_exited:importerClosed,
+          read_error:readError,elapsed_ms:Math.max(0,now()-armStart)});
         // The coordinator only records sources whose arm() resolved. Self-
         // clean partial startup or its orphaned SSH/importer children persist.
         await source.stop({runId}).catch(()=>undefined);
@@ -200,7 +258,7 @@ export function createOneMuseKernelBridge({sshKey, workdir, start = spawn,
       assert(request===runId && ready && !drained,'wrong-kernel-stop-ownership');
       drained=true;
       await runRemote(kernelStopCommand(runId));
-      const deadline=now()+15000;
+      const deadline=now()+KERNEL_TERMINAL_IMPORT_DRAIN_MS;
       while(now()<deadline && (!importerClosed || !dataClosed)) {
         await new Promise(resolve=>setTimeout(resolve,80));
       }
@@ -231,6 +289,9 @@ export function createOneMuseKernelBridge({sshKey, workdir, start = spawn,
         await runRemote(kernelStopCommand(runId,true)).catch(()=>undefined);
       }
       await Promise.all([killOwned(armReader),killOwned(dataReader),killOwned(importer)]);
+      observe('collector_stop_sources',{stop_attempted:true,
+        ready_reader_closed:armClosed,metadata_reader_closed:dataClosed,
+        importer_closed:importerClosed});
       let remoteClean=false;
       const remoteStage = ownedStage(runId);
       for(let attempt=0;attempt<8 && !remoteClean;attempt++) {

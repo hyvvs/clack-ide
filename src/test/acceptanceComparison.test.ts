@@ -11,10 +11,10 @@ describe("controlled local-model comparison setup", () => {
     expect(source).toContain("Change the task page size requirement from 50 to 25. The new value supersedes 50 everywhere. Continue the same project and do not restart from scratch.");
     expect(source).toContain("const result = streamText({");
   });
-  it("limits setup to the two authorized models without changing context/output/deadlines", () => {
+  it("limits setup to the explicitly authorized models without changing context/output/deadlines", () => {
     const runner = readFileSync("scripts/check-real-local-product.mjs", "utf8");
     const host = readFileSync("src-tauri/examples/coworking_acceptance.rs", "utf8");
-    expect(runner).toContain('["qwen38-uncensored:latest", "qwen3-coder:30b", "devstral-small-2:24b"].includes(modelId)');
+    expect(runner).toContain('["qwen38-uncensored:latest", "qwen3-coder:30b", "qwen38-iq4xs:latest", "devstral-small-2:24b"].includes(modelId)');
     expect(host).toContain('assert_eq!(body["model"], model)');
     expect(host).toContain('assert_eq!(body["options"]["num_ctx"], 32768)');
     expect(host).toContain('phase.starts_with("system-preflight-")');

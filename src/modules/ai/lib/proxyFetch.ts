@@ -13,7 +13,7 @@ import type {
 import { ContextBudgetError } from "@/modules/ai/lib/contextBudget";
 import { associateNativeResponse } from "@/modules/ai/lib/ollamaParserFailureDiagnostics";
 import { observeWebviewDelivery } from "@/modules/ai/lib/localDeliveryObserver";
-import { observeDeploymentQualificationNative } from "@/modules/ai/lib/deploymentQualificationFlight";
+import { observeDeploymentQualificationNative, qualificationAcceptanceBoundary } from "@/modules/ai/lib/deploymentQualificationFlight";
 import { nativeDiagnosticSignalObserved, observeNativeDiagnostic, safeInferenceControls,
   type InferenceDiagnosticControls } from "@/modules/ai/lib/inferenceDiagnosticCorrelation";
 import type { createRequestPreflight } from "@/modules/ai/lib/requestPreflight";
@@ -176,9 +176,24 @@ async function proxyFetchImpl(
       if (nativeDiagnosticSignalObserved(signal))
         preparedControls = safeInferenceControls(parsed);
     }
-    if (aborted) throw new InferenceTransportError("cancelled");
+    if (aborted || (opts.scope && !opts.scope.isCurrent()))
+      throw new InferenceTransportError("cancelled");
+    if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1" &&
+        opts.scope?.sessionId)
+      await qualificationAcceptanceBoundary(opts.scope.sessionId, "before-ai-http-open");
     nativeId = await invoke<string>("ai_http_open");
     if (!nativeId) throw new InferenceTransportError("native-transport");
+    if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1") {
+      try {
+        await qualificationAcceptanceBoundary(opts.scope?.sessionId, "after-ai-http-open");
+      } catch (error) {
+        // A released or revoked post-open hold owns exactly one native ID.
+        // Register its cancellation before any possibility of HTTP dispatch.
+        cancel("scope-superseded");
+        await cancelPromise;
+        throw error;
+      }
+    }
     observeNativeDiagnostic(signal, "native-id-linked", nativeId);
     if (preparedControls)
       observeNativeDiagnostic(signal, "native-controls-prepared", nativeId, preparedControls);
@@ -207,7 +222,9 @@ async function proxyFetchImpl(
       let nativeRejection: NativeInvokeRejection | undefined;
       let deliverySequence = 0;
       const channel = new Channel<AiStreamEvent>();
-      channel.onmessage = (event) => {
+      let firstDeliveryHeld = false;
+      let pendingDelivery: Promise<void> = Promise.resolve();
+      const deliver = (event: AiStreamEvent) => {
         if (finished || terminal || event.requestId !== nativeId) return;
         if (event.kind === "settled") {
           if (event.phase === "completed" && !event.error) {
@@ -308,6 +325,27 @@ async function proxyFetchImpl(
             break;
         }
       };
+      channel.onmessage = event => {
+        // Preserve message order while a host-controlled acceptance barrier is
+        // held, including terminal after first output. Every queued callback
+        // rechecks the original scope and settled fence on delivery.
+        const stage = event.kind === "chunk" && event.bytes.length && !firstDeliveryHeld
+          ? "first-output" : event.kind === "settled" ? "terminal-delivery" : null;
+        if (stage && event.kind === "chunk") firstDeliveryHeld = true;
+        if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE !== "1" ||
+            !opts.scope?.sessionId) {
+          deliver(event);
+          return;
+        }
+        pendingDelivery = pendingDelivery.then(async () => {
+          if (finished || aborted || (opts.scope && !opts.scope.isCurrent())) return;
+          if (stage) await qualificationAcceptanceBoundary(opts.scope?.sessionId, stage);
+          if (finished || aborted || (opts.scope && !opts.scope.isCurrent())) return;
+          deliver(event);
+          if (stage === "first-output" && !finished && !aborted)
+            await qualificationAcceptanceBoundary(opts.scope?.sessionId, "during-streaming");
+        }).catch(() => cancel("scope-superseded"));
+      };
       const settle = (failure?: unknown) => {
         if (finished) return;
         finished = true;
@@ -344,10 +382,20 @@ async function proxyFetchImpl(
         } else
           reject(new InferenceTransportError("native-transport", nativeId));
       };
-      observeNativeDiagnostic(signal, "native-ipc-start", nativeId);
-      if (nativeId) observeDeploymentQualificationNative(opts.scope?.sessionId,
-        "request", nativeId, Date.now());
-      void invoke("ai_http_stream", {
+      // Absolute last JavaScript boundary before the native stream command:
+      // a session cancelled while status, body, admission or preflight awaits
+      // must never send a late inference. Cancel only our exact native ID.
+      const dispatchNative = (acceptanceInvalidAdmission = false) => {
+        if (finished || aborted || (opts.scope && !opts.scope.isCurrent())) {
+          cancel(aborted ? "parent-signal" : "scope-superseded");
+          void (cancelPromise ?? Promise.resolve()).finally(() =>
+            settle(new InferenceTransportError("cancelled", nativeId)));
+          return;
+        }
+        observeNativeDiagnostic(signal, "native-ipc-start", nativeId);
+        if (nativeId) observeDeploymentQualificationNative(opts.scope?.sessionId,
+          "request", nativeId, Date.now());
+        void invoke("ai_http_stream", {
         requestId: nativeId,
         url,
         method,
@@ -355,7 +403,15 @@ async function proxyFetchImpl(
         body,
         allowPrivateNetwork: opts.allowPrivateNetwork === true,
         timeoutPolicy: opts.selfHosted ? "self-hosted" : "legacy",
-        admission: opts.admission,
+        // Only the isolated feature-only Wry owner may authorize a ONE-SHOT
+        // invalid native admission envelope, after a genuine registered
+        // inference-N and before the ORIGINAL ai_http_stream handler. That
+        // production handler rejects capacity=0 itself. Ordinary builds
+        // always pass the original admission unchanged.
+        admission: acceptanceInvalidAdmission && (
+          import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1" ||
+          import.meta.env.VITE_CLACK_LM11_ADMISSION_FAULT === "1")
+          ? { ...opts.admission, capacity: 0 } : opts.admission,
         requirePreflight: Boolean(revalidate),
         ...(opts.scope?.fallbackToken ? { fallbackToken: opts.scope.fallbackToken } : {}),
         ...(opts.diagnosticRunId ? { diagnosticRunId: opts.diagnosticRunId } : {}),
@@ -365,12 +421,36 @@ async function proxyFetchImpl(
         () => {
           boundary("native-command-ack");
           nativeSettled = true;
-          if (terminal) settle();
-          else
-            deliveryTimer = setTimeout(
-              () => settle(new Error("Missing terminal event")),
-              5000,
-            );
+          const settleAfterChannelDelivery = () => {
+            if (finished) return;
+            if (terminal) settle();
+            else deliveryTimer = setTimeout(() => {
+              if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1" &&
+                  opts.scope?.sessionId) {
+                // The native command may ACK before the original Channel
+                // callback is queued. Re-evaluate that same queue at the
+                // *end* of the ordinary missing-terminal grace as well:
+                // the acceptance hold is not a missing native terminal.
+                void pendingDelivery.then(() => {
+                  if (finished) return;
+                  if (terminal) settle();
+                  else settle(new Error("Missing terminal event"));
+                }, () => cancel("scope-superseded"));
+              } else settle(new Error("Missing terminal event"));
+            }, 5000);
+          };
+          if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1" &&
+              opts.scope?.sessionId) {
+            // An actual native terminal may already be queued behind a held
+            // acceptance-only original Channel event. Its ordinary 5s
+            // missing-terminal diagnostic must not mistake *intentional
+            // delivery backpressure* for a missing native terminal. Await
+            // the existing event queue; the SAME qualification operation's
+            // unchanged 120s deadline remains authoritative throughout.
+            // Ordinary production builds compile out this acceptance branch.
+            void pendingDelivery.then(settleAfterChannelDelivery,
+              () => cancel("scope-superseded"));
+          } else settleAfterChannelDelivery();
         },
         async (error) => {
           // Invocation failure is not proof of a drained native request.
@@ -385,7 +465,39 @@ async function proxyFetchImpl(
           nativeSettled = true;
           settle(error);
         },
-      );
+        );
+      };
+      if ((import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1" ||
+           import.meta.env.VITE_CLACK_LM11_ADMISSION_FAULT === "1") && opts.scope?.sessionId) {
+        const acceptanceSessionId = opts.scope.sessionId;
+        void qualificationAcceptanceBoundary(acceptanceSessionId, "predispatch").then(
+          async () => {
+            // The same captured authority is rechecked in dispatchNative,
+            // immediately before ai_http_stream. No late barrier release can
+            // grant authority to a stopped or disarmed qualification.
+            let invalidAdmission = false;
+            if (import.meta.env.VITE_CLACK_LM11_ADMISSION_FAULT === "1") {
+              try {
+                invalidAdmission = await invoke<boolean>(
+                  "lm11_acceptance_original_request_admission_fault", {
+                    sessionId: acceptanceSessionId, requestId: nativeId,
+                  });
+              } catch {
+                cancel("scope-superseded");
+                void (cancelPromise ?? Promise.resolve()).finally(() =>
+                  settle(new InferenceTransportError("cancelled", nativeId)));
+                return;
+              }
+            }
+            dispatchNative(invalidAdmission);
+          },
+          () => {
+            cancel("scope-superseded");
+            void (cancelPromise ?? Promise.resolve()).finally(() =>
+              settle(new InferenceTransportError("cancelled", nativeId)));
+          },
+        );
+      } else dispatchNative();
     });
   } catch (error) {
     releaseRemote?.();

@@ -63,7 +63,10 @@ async function verifyManagedSwitchReady(
   prepared?: ManagedSwitchObservation,
 ): Promise<ManagedSwitchObservation> {
   try {
-    const status = await invoke<ManagedLocalNativeStatus>("managed_local_runtime_status");
+    const status = await invoke<ManagedLocalNativeStatus>("managed_local_runtime_status", {
+      deploymentId: deployment.deploymentId,
+      deploymentIdentity: deployment.deploymentIdentity,
+    });
     if (!status || status.installed !== true || status.state !== "Ready" ||
         status.deploymentId !== deployment.deploymentId ||
         status.modelDigest !== deployment.artifactDigest ||

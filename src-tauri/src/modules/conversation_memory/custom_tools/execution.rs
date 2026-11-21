@@ -501,10 +501,8 @@ fn policy(
     definition: &Definition,
     originals: &Originals,
 ) -> Result<String> {
-    let profiles = app
-        .store("terax-settings.json")
+    let profiles = crate::modules::self_hosted_profiles::authoritative_settings_value(app, "agentPermissionProfiles")
         .map_err(|_| "permission-denied")?
-        .get("agentPermissionProfiles")
         .unwrap_or(json!({}));
     let profile = &profiles[&access.agent];
     if profile["mode"] == "chat-only"

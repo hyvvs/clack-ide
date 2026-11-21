@@ -62,7 +62,11 @@ fn main() {
     let builder = if std::env::var("CLACK_ACCEPTANCE_RECEIVE_TRACE").as_deref() == Ok("1") {
         use std::io::Write;
         let phase = std::env::var("CLACK_REAL_PRODUCT_PHASE").expect("diagnostic phase");
-        assert!(phase.starts_with("stream-diagnostic-") || phase.starts_with("mission-a-") || phase.starts_with("system-preflight-"));
+        assert!(
+            phase.starts_with("stream-diagnostic-")
+                || phase.starts_with("mission-a-")
+                || phase.starts_with("system-preflight-")
+        );
         assert!(phase
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-'));
@@ -228,7 +232,7 @@ fn main() {
                             let body: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON body required");
                             let model = std::env::var("CLACK_ACCEPTANCE_MODEL")
                                 .unwrap_or_else(|_| "qwen38-uncensored:latest".into());
-                            assert!(matches!(model.as_str(), "qwen38-uncensored:latest" | "qwen3-coder:30b" | "devstral-small-2:24b") || matches!(model.as_str(),
+                            assert!(matches!(model.as_str(), "qwen38-uncensored:latest" | "qwen3-coder:30b" | "qwen38-iq4xs:latest" | "devstral-small-2:24b") || matches!(model.as_str(),
                                 "muse-glimmer:30b" |
                                 "north-mini-code-1.0:q4_K_M" |
                                 "nemotron-3.5-lightning:30b-a3b-q4_K_M" |

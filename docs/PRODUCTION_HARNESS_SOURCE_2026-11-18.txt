@@ -1,0 +1,1770 @@
+okay, beyond this im so tired of bullshit, are there any other things in the roadmap of implementations that are FUCKING OBVIOUS THAT SHOULD EXIST, like this, and are not being implemented? thigns that any other good quality ahrness would have?
+Yes. And I'm going to be quite blunt: GPU acceleration is not the only architectural omission I would be concerned about.
+
+Looking across everything you've shared about Clack, I see several other things that a serious, production-quality autonomous agent harness should have explicitly accounted for.
+
+Some are already partially implemented. Some are planned for AR or TF but haven't been delivered. Others aren't clearly represented in the roadmap at all.
+
+I don't want us to discover another obvious missing foundation six months from now.
+
+I've compared the reported implementation against current agent-harness architecture and security practices, including OpenAI's agent architecture, sandboxing, tracing and approval guidance, and MCP security recommendations. 
+
+OpenAI API
++3
+
+The architectural gaps I would investigate
+I'm ranking these by importance, not by how easy they are to implement.
+
+1. Universal compute infrastructure
+Confirmed roadmap gap
+We have already discussed this, but it deserves to be first.
+
+Clack needs:
+
+NVIDIA CUDA.
+
+AMD ROCm/HIP.
+
+Intel GPU acceleration.
+
+Apple Metal.
+
+Vulkan and other suitable cross-vendor backends.
+
+CPU execution.
+
+Hybrid CPU/GPU inference.
+
+Multiple GPUs.
+
+GPU memory allocation and scheduling.
+
+Hardware-aware runtime installation and verification.
+
+Actual utilization measurements.
+
+And crucially, a universal device abstraction rather than NVIDIA-specific assumptions.
+
+A model harness should use the hardware available to it.
+
+2. Proper isolated execution environments
+Major architecture requirement to verify
+This is a big one.
+
+When an agent executes code, runs terminal commands, installs dependencies or manipulates project files, where exactly does that execution happen?
+
+Clack needs a first-class execution environment architecture.
+
+Ideally:
+
+Clack trusted control plane
+
+Mission state · Permissions · Secrets · Policies · Approvals · Audit
+
+Isolated execution environment
+
+Workspace
+Scoped files and project access
+
+Terminal
+Commands and processes
+
+Dependencies
+Isolated packages
+
+Network
+Controlled egress
+
+The model can perform authorized work without receiving unrestricted access to Clack's trusted control plane.
+
+This should support:
+
+Filesystem boundaries.
+
+Network restrictions.
+
+Credential isolation.
+
+Process isolation.
+
+Resource limits.
+
+Environment snapshots.
+
+Workspace persistence.
+
+Cleanup and recovery.
+
+A particularly important distinction: the agent should never have direct access to Clack's master credentials or permission system just because it can execute code.
+
+OpenAI's newer sandbox architecture explicitly separates the harness control plane from the execution plane. 
+
+OpenAI API
++1
+
+3. A real Context Compiler
+Not yet delivered as a complete capability
+This is arguably one of the most important things for your vision.
+
+We've discussed AR's context management, but I want to make sure we don't underestimate it.
+
+Clack needs to intelligently determine what information each model call actually requires.
+
+Not dump the entire workspace, memory, task history and agent instructions into every request.
+
+It should compile context from:
+
+Current mission.
+
+Relevant requirements.
+
+Current task.
+
+Relevant files.
+
+Previous decisions.
+
+Relevant evidence.
+
+Outstanding constraints.
+
+Tool results.
+
+Recent conversation.
+
+Model-specific context limits.
+
+And it must know what to leave out.
+
+For example:
+
+Request
+
+Appropriate context
+
+Count to 40
+
+Almost nothing
+
+Explain a source file
+
+Relevant file and surrounding context
+
+Fix a bug
+
+Requirements, relevant code, tests
+
+Continue a 200-file project
+
+Mission state, current task, relevant decisions and evidence
+
+Resume interrupted Agent work
+
+Checkpoint, completed effects, pending work
+
+Your Qwen screenshots are an excellent regression example.
+
+A good Context Compiler should make a small model's job easier without removing information that is actually necessary.
+
+This is central to making smaller local models useful.
+
+4. Complete web research and browser capabilities
+TF partially implemented
+This is another existing gap.
+
+The reports establish that Clack has:
+
+Native MCP infrastructure.
+
+Capability discovery.
+
+Permission-controlled tools.
+
+Secure bounded HTTPS page retrieval.
+
+But the reports explicitly leave query-based web search and controlled browser interaction unfinished.
+
+We need:
+
+Research
+
+Actual web search.
+
+Multiple search providers.
+
+Query reformulation.
+
+Source ranking.
+
+Authoritative-source prioritization.
+
+Source citations.
+
+Contradiction detection.
+
+Search-to-conclusion workflows.
+
+Browser
+
+Controlled browser sessions.
+
+Page navigation.
+
+Authentication with user-approved sessions.
+
+Forms and interactive websites.
+
+Downloads and uploads.
+
+Screenshots and page inspection.
+
+Browser-session persistence where appropriate.
+
+Research security
+
+Treat retrieved pages as untrusted.
+
+Detect prompt injection.
+
+Never allow a webpage to grant itself new permissions.
+
+Preserve source provenance.
+
+Simply downloading a webpage is not equivalent to researching the internet.
+
+5. Complete observability, tracing and replay
+Partially implemented
+LM6 gave us valuable timing and request-correlation evidence.
+
+But I want a much more complete system.
+
+For every meaningful Agent run, Clack should be able to reconstruct:
+
+What the user requested.
+
+What mission and task were active.
+
+What context was assembled.
+
+Which model and exact deployment were selected.
+
+What the model received.
+
+Which tools were exposed.
+
+Which tools were called.
+
+Which permissions were checked.
+
+What happened during execution.
+
+Which effects completed.
+
+What the model returned.
+
+Why Clack considered the task complete or incomplete.
+
+Include:
+
+Token counts.
+
+Latency.
+
+Tool execution times.
+
+Resource consumption.
+
+Failures.
+
+Retries.
+
+Cancellation.
+
+Recovery.
+
+Model and runtime identity.
+
+Sensitive information must be redacted appropriately.
+
+If an agent does something stupid, we should be able to reconstruct exactly why.
+
+OpenAI's tracing architecture similarly treats generations, tool calls, handoffs and guardrails as parts of one trace. 
+
+OpenAI Agents SDK
++1
+
+6. Real approval and policy infrastructure
+Partially implemented
+Clack already has permission-controlled execution and effect records. That's good.
+
+But I want an explicit policy engine that governs every meaningful side effect.
+
+Examples:
+
+Action
+
+Expected behavior
+
+Read authorized project file
+
+Automatic
+
+Search public internet
+
+Automatic within policy
+
+Modify project source
+
+According to workspace permissions
+
+Install dependencies
+
+Policy-controlled
+
+Delete important files
+
+Approval required
+
+Change system configuration
+
+Explicit approval
+
+Access credentials
+
+Strictly scoped
+
+Deploy to production
+
+Explicit approval
+
+Approvals should be:
+
+Bound to exact actions and arguments.
+
+Time-limited.
+
+Revocable.
+
+Recorded.
+
+Rechecked at execution time.
+
+The agent should pause and resume the same run after approval, rather than starting an entirely new task.
+
+This is a standard safety pattern in current agent systems. 
+
+OpenAI API
++1
+
+7. Proper MCP and tool supply-chain security
+Foundation implemented; acceptance incomplete
+We already have a native MCP client and custom-tool infrastructure.
+
+But the mature version should also have:
+
+Per-server credentials.
+
+Credential vault integration.
+
+Scoped OAuth permissions.
+
+Tool-definition versioning.
+
+Cryptographic schema fingerprints.
+
+Tool-change detection.
+
+Server health monitoring.
+
+Tool execution auditing.
+
+Tool-output validation.
+
+Isolation between MCP servers.
+
+Revocation and recovery.
+
+A tool definition changing after approval should not silently retain its previous trust.
+
+This is particularly important because malicious or compromised tool descriptions can manipulate agents.
+
+OWASP specifically recommends least privilege, schema integrity, scoped credentials and human approval for sensitive MCP operations. 
+
+OWASP Cheat Sheet Series
++1
+
+8. Durable background execution and scheduling
+Not established in the supplied implementation reports
+Clack should be able to run tasks that take minutes, hours or days.
+
+Not just keep a chat request alive.
+
+It needs:
+
+Persistent job queues.
+
+Background Agent execution.
+
+Scheduled tasks.
+
+Heartbeats.
+
+Process supervision.
+
+Timeouts.
+
+Checkpoints.
+
+Pause/resume.
+
+Crash recovery.
+
+Concurrency limits.
+
+Resource quotas.
+
+Cancellation propagation.
+
+You should be able to close the chat window without losing an important mission.
+
+This is a fundamental part of AR's long-term direction.
+
+9. Workspace snapshots, checkpoints and rollback
+Needs explicit architectural coverage
+Before an agent performs substantial work, Clack should be able to establish a recoverable workspace state.
+
+Think:
+
+Git worktrees.
+
+Workspace snapshots.
+
+File-level change tracking.
+
+Checkpoints.
+
+Patch previews.
+
+Rollback.
+
+Conflict detection.
+
+Recovery after crashes.
+
+Preservation of completed work.
+
+An agent should not destroy three hours of successful work because its fourth task failed.
+
+This should integrate with the mission/effect ledger, not become an unrelated backup system.
+
+10. Automated evaluation and continuous regression
+Partially implemented; LM11–LM15 will advance it
+Clack already has substantial qualification and testing infrastructure.
+
+But we need an ongoing evaluation system for the entire harness, not just models.
+
+For example:
+
+Does the context compiler preserve requirements?
+
+Does a model select the correct tool?
+
+Does an MCP integration respect permissions?
+
+Can an Agent recover after interruption?
+
+Does compaction lose critical decisions?
+
+Can the same task be completed after an application restart?
+
+Does a new runtime version introduce regressions?
+
+Does a new model perform worse on established tasks?
+
+Every important regression should become a permanent fixture.
+
+Failed runs must remain visible.
+
+My actual assessment of Clack
+Here is how I would classify the current roadmap based on the reports you've supplied, rather than pretending I've freshly audited the repository.
+
+Local model management and qualification
+
+LM0–LM10
+
+Substantially implemented
+Vendor-neutral GPU execution
+
+Not complete
+
+Major missing capability
+Qualification Lab and candidate selection
+
+LM11–LM15
+
+Current planned work
+Tool, Research and MCP
+
+TF
+
+Foundation implemented; significant gaps
+Durable mission state and recovery
+
+AR0–AR15
+
+Planned, not yet delivered
+Context Compiler
+
+AR
+
+Not yet complete
+Sandboxed execution
+
+Unverified
+
+Must audit and establish
+End-to-end tracing and replay
+
+Partial
+
+Needs broader coverage
+Policy and approval infrastructure
+
+Partial
+
+Needs complete action-boundary audit
+Workspace rollback and snapshots
+
+Unverified
+
+Must audit and establish
+Notice something important: Clack already has a lot of sophisticated foundations. We should not throw them away or build duplicate systems.
+
+The problem is that we have been implementing individual capabilities without always enforcing the complete product architecture they must eventually fit into.
+
+What I would do differently from now on
+I would introduce a permanent cross-roadmap requirement:
+
+Clack Production Harness Architecture
+This isn't another collection of disconnected milestones. It is an architectural acceptance standard that LM, TF and AR must collectively satisfy.
+
+The nine mandatory pillars
+
+Universal compute and hardware orchestration.
+Secure, isolated execution environments.
+Durable missions, jobs and resumable state.
+Intelligent context compilation and memory.
+Complete research, browser and tool integrations.
+Centralized permissions, approvals and secrets.
+End-to-end observability, tracing and replay.
+Workspace snapshots, checkpoints and rollback.
+Continuous evaluation, reliability and regression testing.
+Every pillar needs:
+
+An architectural owner.
+
+A place in the existing roadmap.
+
+Explicit implementation requirements.
+
+Dependencies.
+
+Security requirements.
+
+Offline tests.
+
+Live acceptance criteria.
+
+A clear definition of done.
+
+No declaring something complete because a few unit tests passed.
+
+One more thing: what I would NOT do
+I would not immediately send Chat On Steroids a gigantic prompt telling it to implement all ten areas.
+
+That would be a disaster.
+
+Instead, when you give me its next progress report, I want to perform a full roadmap reconciliation and architecture gap audit.
+
+We will:
+
+Establish the actual repository and implementation state.
+
+Map every pillar to existing LM, TF and AR work.
+
+Identify duplicate functionality and missing dependencies.
+
+Integrate missing requirements into the correct existing milestones.
+
+Preserve completed commits and existing user changes.
+
+Produce one authoritative roadmap and implementation handoff.
+
+Tell Chat On Steroids exactly what to do next.
+
+My bottom line: I see at least eight significant areas beyond GPU acceleration that deserve explicit architectural treatment. Some are already partially underway, some belong to AR and TF, and some need verification before we can call them missing.
+
+I would rather spend time making Clack's architecture complete now than spend another six months discovering fundamental omissions one at a time.
+
+then adda ALL OF THIS AND WHEN I MEAN ALL I MEAN ALL STOP BEING FUCKING SLOPPY. TO THE ROADMAP AFTER I GIVE YOU CHATROIDS RESPONSE. AND STOP BEING SLOPY AS I SAID, WE NEED TO COVER EVERY BASE.
+Understood. And I agree: we need to stop discovering fundamental architectural requirements one at a time.
+
+I will treat this as a mandatory, comprehensive roadmap reconciliation — not another optional improvement list.
+
+When you give me Chat On Steroids' next response, I will incorporate EVERY requirement from the previous assessment, including all the sub-requirements, into Clack's existing roadmap.
+
+I will not simply append ten headings and call it done.
+
+What I will make sure is covered
+These are mandatory areas for the reconciliation:
+
+Area
+
+Requirements to preserve
+
+1. Universal compute
+
+NVIDIA, AMD, Intel, Apple, Vulkan, CPU, hybrid execution, multi-GPU, automatic hardware detection, memory management and backend selection
+
+2. Runtime management
+
+Installation, verification, updates, dependencies, isolation, model loading, unloading and recovery
+
+3. Execution sandbox
+
+Filesystem, processes, network, credentials, dependencies, resource limits and isolated workspaces
+
+4. Context Compiler
+
+Context selection, relevance, token budgeting, memory retrieval, compaction, summarization and model-specific optimization
+
+5. Research and browser
+
+Actual web search, source ranking, citations, browser automation, downloads, uploads and prompt-injection protection
+
+6. MCP and integrations
+
+Discovery, authorization, versioning, credentials, schema integrity, monitoring, isolation and revocation
+
+7. Security and permissions
+
+Central policy engine, least privilege, approval workflows, secrets management and auditable side effects
+
+8. Durable Agent execution
+
+Background jobs, scheduling, checkpoints, pause/resume, heartbeats, cancellation and crash recovery
+
+9. Memory and missions
+
+Durable mission state, decisions, evidence, relationships, retrieval and reliable cross-session continuity
+
+10. Observability
+
+Full request traces, model inputs, outputs, tool calls, execution records, resource measurements and replay
+
+11. Workspace protection
+
+Snapshots, Git worktrees, rollback, patch previews, conflict detection and recovery
+
+12. Evaluation
+
+Model benchmarks, task evaluations, regression suites, runtime compatibility, recovery tests and continuous qualification
+
+And I will examine additional foundational requirements rather than assuming these twelve categories exhaust everything.
+
+How I will prevent another incomplete roadmap
+I want five explicit deliverables from this reconciliation.
+
+1. Complete architecture inventory
+
+Every capability classified as:
+
+Implemented and accepted.
+
+Implemented but not live-verified.
+
+Partially implemented.
+
+Planned.
+
+Missing.
+
+Unverified.
+
+No confusing implementation with acceptance.
+
+2. Integration into the existing roadmap
+
+LM, TF, AR and their existing milestones remain the starting structure.
+
+We will not create competing registries, duplicate security systems, parallel memory systems or unnecessary architectural layers.
+
+If something belongs in an existing milestone, it goes there. If a genuinely new milestone is necessary, it gets one.
+
+3. Dependency mapping
+
+We will identify what must exist before something else can be implemented properly.
+
+For example, GPU orchestration must integrate with Compute Fabric, runtime adapters, deployment identity, hardware suitability and qualification. It cannot become a disconnected GPU feature.
+
+4. Explicit acceptance requirements
+
+Every significant capability gets:
+
+Functional requirements.
+
+Security requirements.
+
+Failure handling.
+
+Offline tests.
+
+Integration tests.
+
+Real-machine acceptance.
+
+Persistence and restart tests where applicable.
+
+Evidence requirements.
+
+Explicit completion criteria.
+
+5. One authoritative implementation handoff
+
+Chat On Steroids receives a coherent, prioritized set of instructions, not a collection of disconnected suggestions.
+
+One rule I particularly want enforced
+Mandatory roadmap rule
+No milestone may be declared complete if it leaves an essential dependency or production requirement silently unimplemented.
+
+A feature can be implemented but partially accepted. A hardware backend can be supported but untested. A tool can be discoverable but not authorized.
+
+Those distinctions must remain visible.
+
+And one last thing: I will preserve the existing accepted commits, completed milestones, historical evidence and unrelated working-tree changes. We are evolving the roadmap, not throwing away the work already accomplished.
+
+Wait until you give me Chat On Steroids' response. I won't prematurely issue implementation instructions.
+
+This time, the objective is to establish the complete architecture Clack needs to become the serious, general-purpose autonomous AI harness we're actually trying to build — and stop leaving obvious foundations until later.
+
+
+Pasted text(20261118-012417).txt
+Document
+I've reviewed the uploaded Chat On Steroids report. This is the next important roadmap checkpoint.
+
+LM11–LM15 are committed, but the Qualification Lab is deliberately not production-ready. The report records:
+
+Commit: 50fca4689692bc1e85f9ffd4ae644ff528cc056e
+
+1,183 tests passed.
+
+Live, read-only desktop acceptance passed.
+
+81 protected paths reportedly preserved.
+
+No push performed.
+
+Qualification execution remains disabled.
+
+There are two particularly important outstanding problems:
+
+The existing qualification executors cannot enforce a complete end-to-end wall-clock deadline.
+
+Cancellation before inference registration can still leave a possibility of later request dispatch.
+
+These must become explicit closure requirements, not forgotten limitations in a completed milestone.
+
+Now the important part: I would not tell the agent to simply continue with LM16.
+
+First, we need a complete architectural reconciliation, so LM16 and subsequent work are built on the correct foundations.
+
+The following is the handoff I recommend sending.
+
+CLACK — MASTER ROADMAP RECONCILIATION
+Comprehensive Production Harness Architecture Audit and Integration
+Priority: Mandatory — before starting the next implementation milestone.
+
+This is an architectural reconciliation task, not an authorization to begin implementing all the listed features.
+
+The objective is to make the existing Clack roadmap comprehensive, internally consistent, dependency-aware, and capable of producing a genuinely production-quality autonomous AI harness.
+
+We have already invested substantial work in LM, TF and AR. Preserve that work. Extend the existing architecture rather than creating parallel systems.
+
+1. First: establish the actual repository state
+The latest handoff reports:
+
+HEAD: 50fca4689692bc1e85f9ffd4ae644ff528cc056e
+
+LM11–LM15 locally committed.
+
+1,183 TypeScript tests passed.
+
+Production build passed.
+
+81 unrelated protected paths preserved.
+
+Original stashes preserved.
+
+No remote push.
+
+These are reported findings, not permission to assume the current checkout still matches them.
+
+Perform a read-only verification of:
+
+HEAD, branch and direct parent.
+
+Complete working-tree status, including expanded untracked paths.
+
+Git index.
+
+Original stash hashes.
+
+All accepted LM, TF and AR commits.
+
+Existing authoritative roadmap documents and trackers.
+
+Existing architecture specifications.
+
+Protected user changes and historical evidence.
+
+Existing task plan and outstanding blockers.
+
+Do not reset, clean, stash, amend, rebase, overwrite or push.
+
+Stop and report any unexplained discrepancy before modifying anything.
+
+2. Preserve the existing architecture
+The existing authoritative systems must remain the owners of their respective capabilities.
+
+In particular:
+
+Compute Fabric owns hosts, runtimes, artifacts and deployments.
+
+Runtime adapters own engine-specific behavior.
+
+LM qualification owns deployment-specific behavioral authorization.
+
+Hardware suitability owns resource estimates and measured hardware evidence.
+
+Tool Fabric owns tool discovery, capability metadata and execution integration.
+
+Existing permission and effect authorities own authorization and side-effect records.
+
+AR must own durable mission execution, memory and recovery without duplicating existing persistence authorities.
+
+Existing qualification and measurement ledgers remain authoritative for their respective evidence.
+
+Do not introduce duplicate model registries, tool registries, permission engines, memory databases or deployment identities.
+
+3. Mandatory architectural pillars
+Integrate ALL the following into the existing LM, TF and AR roadmap.
+
+A. Universal compute and GPU orchestration
+This is a mandatory foundational capability, not an optional enhancement.
+
+Support a vendor-neutral architecture for:
+
+NVIDIA CUDA.
+
+AMD ROCm/HIP where supported.
+
+Intel GPU acceleration.
+
+Apple Metal.
+
+Vulkan.
+
+CPU inference.
+
+Other viable platform-specific backends.
+
+Requirements:
+
+Automatic hardware and device discovery.
+
+Backend compatibility detection.
+
+Driver, toolkit and runtime compatibility checks.
+
+Hardware-specific runtime provisioning.
+
+Runtime and dependency integrity verification.
+
+CPU/GPU hybrid execution.
+
+Layer and tensor offloading.
+
+Multiple GPU devices.
+
+GPU memory allocation and scheduling.
+
+VRAM and system RAM monitoring.
+
+Device selection and workload placement.
+
+Concurrency and resource management.
+
+Backend-specific performance measurements.
+
+Runtime health and recovery.
+
+Explicit fallback and incompatibility explanations.
+
+Do not assume that a backend is supported simply because a vendor GPU is detected.
+
+Establish an actual OS × GPU vendor × backend × runtime support matrix.
+
+Integrate this with existing Compute Fabric, managed runtime, deployment identity, suitability, qualification and model-selection systems.
+
+A model must not be silently switched to another backend or execution configuration without appropriate identity and qualification handling.
+
+B. Complete managed runtime lifecycle
+Extend existing runtime management to cover:
+
+Installation and verification.
+
+Updates and rollback.
+
+Dependency management.
+
+Runtime provenance and signed artifacts.
+
+License and copyright preservation.
+
+Per-file dependency integrity.
+
+Private installation permissions.
+
+Runtime startup and readiness.
+
+Health monitoring.
+
+Process identity.
+
+Unloading and cleanup.
+
+Crash recovery.
+
+Restart and epoch invalidation.
+
+Concurrent deployments.
+
+Runtime isolation.
+
+Automatic resource release.
+
+The existing llama.cpp implementation is the beginning, not the complete universal runtime architecture.
+
+C. Secure execution sandbox
+Establish a proper separation between Clack's trusted control plane and agent execution environments.
+
+Requirements:
+
+Filesystem isolation.
+
+Process isolation.
+
+Network egress restrictions.
+
+Credential isolation.
+
+Dependency isolation.
+
+CPU, RAM and GPU resource limits.
+
+Workspace-specific permissions.
+
+Controlled terminal execution.
+
+Process supervision.
+
+Environment configuration.
+
+Ephemeral and persistent environments.
+
+Cleanup and recovery.
+
+Platform-specific security implementations.
+
+Evaluate appropriate Windows, Linux and macOS isolation mechanisms.
+
+Agents must never receive unrestricted access to Clack's master credentials, internal permission systems or trusted control-plane processes merely because they can execute commands.
+
+D. Context Compiler
+Develop a first-class context compilation architecture.
+
+It must intelligently assemble model inputs from:
+
+Current mission.
+
+Current task.
+
+Relevant requirements.
+
+Relevant workspace files.
+
+Previous decisions.
+
+Evidence and sources.
+
+Memory.
+
+Tool results.
+
+Outstanding constraints.
+
+Recent conversation.
+
+Recovery checkpoints.
+
+It must provide:
+
+Relevance ranking.
+
+Retrieval.
+
+Token budgeting.
+
+Model-specific context adaptation.
+
+Context prioritization.
+
+Compaction.
+
+Summarization.
+
+Deduplication.
+
+Context integrity.
+
+Missing-context detection.
+
+Resume-context reconstruction.
+
+Never blindly inject the entire workspace or mission history into every request.
+
+Context compilation must preserve critical requirements and decisions across compaction and recovery.
+
+E. Complete web research and browser automation
+Extend TF beyond its existing bounded HTTPS retrieval foundation.
+
+Implement a coherent research system covering:
+
+Search
+
+Real query-based web search.
+
+Multiple search providers.
+
+Query reformulation.
+
+Source ranking.
+
+Authoritative-source prioritization.
+
+Cross-source verification.
+
+Contradiction detection.
+
+Citation generation.
+
+Source provenance and timestamps.
+
+Browser
+
+Controlled browser sessions.
+
+Navigation.
+
+Page interaction.
+
+Forms.
+
+Downloads and uploads.
+
+Screenshots.
+
+Page inspection.
+
+User-approved authentication sessions.
+
+Session lifecycle and cleanup.
+
+Security
+
+Prompt-injection defenses.
+
+Untrusted-content boundaries.
+
+SSRF prevention.
+
+Private-network and metadata-address protection.
+
+Credential protection.
+
+Controlled redirects and downloads.
+
+Source integrity.
+
+A webpage must never grant itself permissions or override Clack's policies.
+
+F. Complete MCP and tool ecosystem
+Extend the existing native MCP client and Tool Fabric.
+
+Requirements:
+
+MCP server discovery and registration.
+
+Custom-tool management.
+
+Per-server authentication.
+
+Scoped OAuth and credentials.
+
+Schema validation.
+
+Schema fingerprints.
+
+Tool versioning.
+
+Tool-change detection.
+
+Server health monitoring.
+
+Tool availability and qualification.
+
+Output validation.
+
+Execution auditing.
+
+Permission enforcement.
+
+Revocation.
+
+Isolation between integrations.
+
+Credential rotation.
+
+Failure recovery.
+
+Tool provenance.
+
+A modified tool definition must not silently inherit previous approval.
+
+Tool discovery, authorization, execution and successful task completion must remain distinct states.
+
+G. Central policy, permissions and approvals
+Establish a coherent policy and approval architecture across Chat, Agent, terminal, browser, MCP and integrations.
+
+Requirements:
+
+Least-privilege access.
+
+Action-specific permissions.
+
+Exact action-and-argument-bound approvals.
+
+Expiration.
+
+Revocation.
+
+Execution-time authorization rechecks.
+
+Scoped credentials.
+
+Auditable decisions.
+
+Sensitive-operation confirmation.
+
+Approval suspension and resumption.
+
+Policy conflict resolution.
+
+Safe failure behavior.
+
+The system must distinguish reading, modifying, deleting, executing, installing, transmitting and publishing.
+
+An approval for one action must not become unrestricted approval for related actions.
+
+H. Durable background execution
+Clack must support work that continues beyond an individual Chat request.
+
+Requirements:
+
+Persistent task queues.
+
+Background jobs.
+
+Scheduling.
+
+Heartbeats.
+
+Process supervision.
+
+Execution deadlines.
+
+Checkpoints.
+
+Pause and resume.
+
+Cancellation propagation.
+
+Crash recovery.
+
+Concurrency limits.
+
+Resource quotas.
+
+Job ownership.
+
+Idempotency.
+
+Duplicate-dispatch prevention.
+
+Persistent execution state.
+
+Closing a chat window must not silently destroy an authorized background mission.
+
+I. Durable mission state and memory
+Integrate with AR.
+
+Requirements:
+
+Persistent mission identity.
+
+Task hierarchy.
+
+Decision history.
+
+Requirement tracking.
+
+Evidence relationships.
+
+Completed and pending work.
+
+Long-term memory.
+
+Retrieval.
+
+Memory provenance.
+
+Conflict resolution.
+
+Memory lifecycle.
+
+Cross-session continuity.
+
+Context reconstruction.
+
+Mission recovery.
+
+Memory must distinguish verified facts, assumptions, estimates, user instructions and historical information.
+
+J. Complete observability, tracing and replay
+Extend LM6's deployment measurements into an end-to-end trace across the entire harness.
+
+For each run, capture appropriate correlation between:
+
+User request.
+
+Mission and task.
+
+Compiled context.
+
+Model and exact deployment.
+
+Runtime and process identity.
+
+Request payload.
+
+Tool exposure.
+
+Tool calls.
+
+Permission decisions.
+
+Side effects.
+
+Model output.
+
+Terminal completion.
+
+Resource usage.
+
+Cancellation and recovery.
+
+Measure where authoritative:
+
+Token counts.
+
+First native bytes.
+
+First parsed frame.
+
+First meaningful output.
+
+Completion.
+
+Generation throughput.
+
+Tool latency.
+
+CPU and GPU utilization.
+
+Memory consumption.
+
+Errors and retries.
+
+Include privacy-aware redaction, retention and access controls.
+
+Provide safe diagnostic replay without automatically repeating irreversible effects.
+
+Never fabricate unavailable measurements.
+
+K. Workspace snapshots and rollback
+Provide recoverable execution environments.
+
+Requirements:
+
+Git worktrees.
+
+Workspace snapshots.
+
+File-level change tracking.
+
+Checkpoints.
+
+Diff and patch previews.
+
+Conflict detection.
+
+Rollback.
+
+Recovery after crashes.
+
+Preservation of unrelated user changes.
+
+Protection of existing commits and stashes.
+
+Safe resumption of partially completed tasks.
+
+The mission/effect ledger must remain consistent with workspace recovery.
+
+L. Continuous evaluation and qualification
+Build on LM11–LM15 and the existing qualification authorities.
+
+Evaluate separately:
+
+Chat.
+
+Instruction adherence.
+
+Coding.
+
+Structured output.
+
+Native tools.
+
+Long-context behavior.
+
+Reliability.
+
+Cancellation.
+
+Recovery.
+
+Multimodal capabilities.
+
+Agent eligibility.
+
+Add regression coverage for:
+
+Context compilation.
+
+Memory retrieval.
+
+Tool selection.
+
+MCP security.
+
+Permission enforcement.
+
+Prompt injection.
+
+Runtime compatibility.
+
+Restart persistence.
+
+Duplicate effects.
+
+Recovery and compaction.
+
+Maintain exact deployment identity and qualification scope.
+
+Immediate LM11–LM15 blocker
+The latest report identifies two critical issues:
+
+No enforceable end-to-end wall-clock deadline across admission, execution and persistence.
+
+Cancellation before inference registration can leave a later dispatch possible.
+
+The Qualification Lab Run action must remain disabled until these are resolved and independently tested.
+
+Do not bypass the existing safety boundary.
+
+4. Additional mandatory production-readiness audit
+Do not assume the twelve pillars above cover everything.
+
+Explicitly investigate and place the following into the roadmap where applicable:
+
+Reliability and resilience
+Circuit breakers.
+
+Backpressure.
+
+Bounded retries.
+
+Idempotent execution.
+
+Queue recovery.
+
+Network interruption handling.
+
+Provider outages.
+
+Resource exhaustion.
+
+Graceful degradation.
+
+Provider and model orchestration
+Multiple inference providers.
+
+Deployment routing.
+
+Model compatibility.
+
+Latency and resource-aware selection.
+
+Cost and usage budgets.
+
+Provider failure handling.
+
+Explicit fallback policies.
+
+Local, remote and hybrid deployments.
+
+Multimodal architecture
+Image understanding.
+
+Audio input and output.
+
+Speech transcription.
+
+Video understanding.
+
+Document and attachment processing.
+
+Modality-specific runtime and model qualification.
+
+Secure handling of uploaded content.
+
+Data governance
+Encryption.
+
+Secret storage.
+
+Data retention.
+
+Data deletion.
+
+Import and export.
+
+Backup and restore.
+
+Privacy boundaries.
+
+Audit-log protection.
+
+Sensitive-content redaction.
+
+Software supply-chain security
+Dependency provenance.
+
+SBOM.
+
+Signed releases.
+
+Reproducible builds.
+
+Runtime artifact verification.
+
+License compliance.
+
+Update integrity.
+
+Vulnerability management.
+
+Identity and collaboration
+User identity.
+
+Session ownership.
+
+Role-based access where collaboration is supported.
+
+Workspace ownership.
+
+Shared-resource authorization.
+
+Explicit decisions about multi-user and team support.
+
+Application lifecycle and release quality
+Installation and upgrades.
+
+Configuration migrations.
+
+Rollback.
+
+Diagnostics.
+
+Crash reporting.
+
+Supported OS matrix.
+
+Packaging and installer acceptance.
+
+Offline operation.
+
+Recovery after application restart.
+
+Extensibility and developer experience
+Stable internal/public APIs.
+
+Plugin interfaces.
+
+Integration contracts.
+
+Version compatibility.
+
+Developer documentation.
+
+Extension testing and certification.
+
+User experience
+Transparent task state.
+
+Progress and activity visibility.
+
+Notifications.
+
+Approval workflows.
+
+Cancellation controls.
+
+Error explanations.
+
+Accessibility.
+
+Keyboard navigation.
+
+Localization.
+
+For each, determine whether it is genuinely required for Clack's intended product scope, already covered, or should be explicitly deferred with a reason.
+
+Do not add features simply for checklist completion.
+
+5. Required roadmap traceability
+Produce one authoritative matrix covering every requirement and sub-requirement.
+
+Each entry must identify:
+
+Field	Required content
+Requirement	Specific capability
+Existing owner	Authoritative subsystem
+Roadmap owner	Existing or justified new milestone
+Dependencies	What must exist first
+Current status	Verified classification
+Existing implementation	Exact files/modules
+Offline evidence	Tests and builds
+Live evidence	Actual desktop/runtime acceptance
+Security	Threats and controls
+Failure handling	Expected safe behavior
+Acceptance	Explicit testable exit criteria
+Evidence	Where proof is stored
+Use these classifications consistently:
+
+Implemented and accepted.
+
+Implemented but not live-verified.
+
+Partially implemented.
+
+Planned.
+
+Missing.
+
+Unverified.
+
+Do not treat source-level tests as live acceptance.
+
+Do not promote historical evidence to current deployment authority.
+
+Do not mark capabilities complete because their UI exists.
+
+6. Dependency and implementation sequencing
+Build an explicit dependency graph.
+
+Identify foundational work that must precede dependent capabilities.
+
+In particular:
+
+GPU orchestration depends on Compute Fabric, hardware telemetry, runtime adapters and deployment qualification.
+
+Sandbox execution depends on policy, process supervision, resource controls and credential boundaries.
+
+Browser and MCP execution depend on Tool Fabric, policy enforcement, network restrictions and tracing.
+
+Context compilation depends on mission state, retrieval, memory and model-specific token accounting.
+
+Durable Agent execution depends on persistence, checkpoints, idempotency, cancellation and recovery.
+
+Qualification Lab execution depends on enforceable execution budgets and reliable terminal/cancellation evidence.
+
+Agent acceptance depends on all relevant model, tool, security and recovery qualifications.
+
+Preserve existing LM, TF and AR numbering wherever possible.
+
+Do not invent milestone numbers until the actual roadmap dependencies have been inspected.
+
+7. Mandatory definition of done
+No major production capability is complete based solely on passing unit tests.
+
+Require an appropriate combination of:
+
+Unit tests.
+
+Contract tests.
+
+Integration tests.
+
+Security tests.
+
+Failure-injection tests.
+
+Persistence tests.
+
+Restart tests.
+
+Real UI acceptance.
+
+Real runtime acceptance.
+
+Hardware-specific acceptance.
+
+Cross-platform acceptance where claimed.
+
+Performance measurements.
+
+Evidence preservation.
+
+Every unsupported platform or capability must remain explicitly identified.
+
+8. Required deliverables
+Update the existing authoritative roadmap and tracker, not merely create another standalone brainstorming document.
+
+Deliver:
+
+A. Architecture inventory
+
+Existing systems, responsibilities, dependencies and actual implementation state.
+
+B. Updated master roadmap
+
+All requirements integrated into the correct LM, TF and AR milestones.
+
+C. Complete traceability matrix
+
+Every requirement mapped to its implementation owner, evidence, dependencies and exit criteria.
+
+D. Architecture dependency graph
+
+Correct implementation order and blocking prerequisites.
+
+E. Gap and risk register
+
+Every missing, partial, unverified or unsafe area.
+
+F. Prioritized implementation sequence
+
+What must happen next, what can proceed in parallel, and what must remain blocked.
+
+G. Decision register
+
+Open architectural choices, tradeoffs and unresolved platform-support questions.
+
+H. Next implementation handoff
+
+One precise, actionable prompt for the next development task, with scope and preservation requirements.
+
+9. Preservation and execution restrictions
+This task authorizes roadmap and architecture-document reconciliation only.
+
+Do not:
+
+Implement product features.
+
+Modify production source code.
+
+Launch model inference.
+
+Download models.
+
+Install runtimes.
+
+Change GPU drivers or system configuration.
+
+Change Ollama or network configuration.
+
+Launch ForgeBoard.
+
+Modify historical evidence.
+
+Modify protected unrelated files.
+
+Push commits.
+
+Use the existing repository conventions.
+
+Stage only explicitly authorized roadmap-owned documents if committing is justified. Never stage the entire working tree.
+
+If the preservation baseline cannot be verified, stop and report the discrepancy.
+
+10. Final instruction
+The objective is not to make the roadmap longer.
+
+The objective is to make it COMPLETE.
+
+Every fundamental production requirement must have an owner, implementation plan, dependency, security model and acceptance criterion.
+
+No obvious capability may be left implicit.
+
+No completed milestone may conceal an essential unfinished dependency.
+
+No duplicate architecture may be introduced.
+
+No unknown may be represented as verified.
+
+Finish the reconciliation before recommending the next implementation milestone.
+
+What I want to enforce beyond that prompt
+There is one important distinction: this is a roadmap reconciliation, not permission to build every feature immediately.
+
+I want the agent to return an authoritative map first. Then we can prioritize implementation based on dependencies rather than chasing whatever feature looks exciting next.
+
+The report establishes LM11–LM15 as a committed but partial increment, not a completed production qualification system. 
+Pasted text(20261118-012417).txt
+ 
+Pasted text(20261118-012417).txt
+
+Repository status: I have not changed your repository, committed anything, or claimed to have delivered this prompt to Chat On Steroids. The actual repository state still needs verification against the uploaded report.
+
+Once the agent returns its reconciliation, we should review the traceability matrix and dependency graph before authorizing the next implementation task. That is how we avoid another GPU-sized omission.

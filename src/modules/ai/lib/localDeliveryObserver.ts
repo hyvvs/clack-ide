@@ -4,6 +4,13 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
 export const LOCAL_DELIVERY_EVENT = "clack-local-delivery";
+// One-Muse's full 8,192-token stream can produce multiple native/WebView
+// observations per chunk. The original 8,192-record diagnostic limit was
+// exhausted before stream termination in the accepted single-request run.
+// Reserve at least 17,536 of the 65,536 total journal slots for the separate
+// strict kernel importer, source receipts and final shutdown evidence.
+// This is an observation-only allowance, not an inference or retry budget.
+export const ONE_MUSE_CLACK_CAPTURE_LIMIT = 48_000;
 export const DELIVERY_BOUNDARIES = [
   "native-dispatch", "native-headers", "native-body-read",
   "native-semantic-progress", "native-ipc-forwarded", "native-ipc-rejected",

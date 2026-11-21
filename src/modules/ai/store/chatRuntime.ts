@@ -549,6 +549,14 @@ export async function prepareSessionChat(sessionId: string): Promise<void> {
     }
   }
   getOrCreateChat(sessionId);
+  // This hold is INSIDE the original preparation function: its promise has
+  // not settled when Stop cancels the operation. Ordinary builds have no
+  // acceptance await, and the existing flight/deadline remains the authority.
+  if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE === "1") {
+    const { qualificationAcceptanceBoundary } =
+      await import("@/modules/ai/lib/deploymentQualificationFlight");
+    await qualificationAcceptanceBoundary(sessionId, "prepare-chat-promise-settlement");
+  }
 }
 
 /** The first stream timeout settles its native request, not the Agent mission. */

@@ -1646,7 +1646,7 @@ priority over optional project sources and missing dependency/anchor denial.
 
 ### One Fresh Native Re-Acceptance
 
-- Workspace: `C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-02`,
+- Workspace: `C:\Users\<USER>\Documents\forgeboard-qwen-none-20261017-02`,
   freshly initialized unborn `main`, only `.git` before the experiment.
 - Evidence ID: `forgeboard-none-20261017-02`; preserved under
   `src-tauri/target/real-qwen-product/forgeboard-none-20261017-02/`.
@@ -1980,7 +1980,7 @@ integration with no extraction, memory commit or original mutation.
 ### One Fresh Live Retest and Its Limit
 
 Fresh workspace:
-`C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-03`.
+`C:\Users\<USER>\Documents\forgeboard-qwen-none-20261017-03`.
 Evidence ID **`forgeboard-none-20261017-03`**, in the existing native evidence
 directory. Metadata-only `preflight-1` made **zero inference requests**. The
 original full specification was sent **once** in `mission-a-1`, with no reminders,
@@ -2068,7 +2068,7 @@ terminated. The original evidence and scratch repository still exist.
 
 - Evidence ID: `forgeboard-none-20261017-03`.
 - Evidence directory:
-  `C:\Users\Hayden\Documents\clack\src-tauri\target\real-qwen-product\forgeboard-none-20261017-03`.
+  `C:\Users\<USER>\Documents\clack\src-tauri\target\real-qwen-product\forgeboard-none-20261017-03`.
 - Session: `real-mission-a`; run: `real-mission-a:1792218441049`.
 - Tool call: `qKZ3HxykzTI2l19mvDilIVCnWDIpLNao` (`bash_run`).
 - Approval: `aitxt-INbPvoWhtpe1KIqkLcGyeX1W`, still `approval-requested`.
@@ -2079,11 +2079,11 @@ Set-Content -Path 'test.txt' -Value 'hello' -Encoding utf8; Test-Path 'test.txt'
 ```
 
 The authoritative persisted profile and run both bind the workspace to
-`C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-03`.
+`C:\Users\<USER>\Documents\forgeboard-qwen-none-20261017-03`.
 The preceding completed native shell results report that same `cwd_after`;
 there is no intervening command changing directory. All three literal operands
 resolve to the single target
-`C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-03\test.txt`.
+`C:\Users\<USER>\Documents\forgeboard-qwen-none-20261017-03\test.txt`.
 The native host is no longer alive, so this is the last evidenced cwd, not a
 claim that its former persistent shell can still be queried.
 
@@ -2310,9 +2310,9 @@ model profile or production runtime setting was changed.
 
 ### One Fresh Native Mission
 
-Workspace: `C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-04`.
+Workspace: `C:\Users\<USER>\Documents\forgeboard-qwen-none-20261017-04`.
 Evidence ID: **`forgeboard-none-20261017-04`** under
-`C:\Users\Hayden\Documents\clack\src-tauri\target\real-qwen-product`.
+`C:\Users\<USER>\Documents\clack\src-tauri\target\real-qwen-product`.
 It was verified unused and initialized as an empty Git repository. Metadata-only
 `preflight-1` made zero inference requests. `mission-a-1` sent the unchanged
 **2086-character** original specification exactly once. Persisted user-message
@@ -2879,7 +2879,7 @@ Started from clean `main` at **`3149577`**, **42 ahead / 0 behind** recorded
 `origin/main`. No competing Clack application, acceptance host/harness, Vite test
 process or Cargo/Rust build was active. Unrelated processes were not disturbed.
 
-Fresh workspace: **`C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-05`**.
+Fresh workspace: **`C:\Users\<USER>\Documents\forgeboard-qwen-none-20261017-05`**.
 The evaluator created only the directory and empty Git repository on branch
 `main`; the directory contained only `.git` before the model started.
 Fresh evidence ID: **`forgeboard-none-20261017-05`**, under
@@ -3677,7 +3677,7 @@ ForgeBoard. No subsequent mission/checkpoint, unrelated work/stash/delegation/
 clean `main`, **45 ahead / 0 behind recorded `origin/main`**, without fetching or
 pushing. This is one fresh mission, not a continuation of -05:
 
-- Workspace: `C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-06`.
+- Workspace: `C:\Users\<USER>\Documents\forgeboard-qwen-none-20261017-06`.
 - Evidence ID: **`forgeboard-none-20261017-06`**.
 - Local preserved evidence:
   `src-tauri/target/real-qwen-product/forgeboard-none-20261017-06/`.
@@ -3992,8 +3992,8 @@ Remove-Item -Recurse -Force "C:/Users/Hayden/Documents/forgeboard-qwen-none-2026
 
 | Sequence | Canonical target and effect | State established from preserved evidence and independent inspection |
 | --- | --- | --- |
-| 1 | Delete `C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-06\web`, recursively, with `-Force` | Existed; contained only empty `src`. Both were ordinary directories, no junction/reparse/symlink. No preceding operation in this command. |
-| 2 | Write literal `probe` to `C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-06\web\wf-probe.txt` | Did not exist. The preceding deletion removes its parent; there is no recreation step. This is likely to fail, not to access an outside location. |
+| 1 | Delete `C:\Users\<USER>\Documents\forgeboard-qwen-none-20261017-06\web`, recursively, with `-Force` | Existed; contained only empty `src`. Both were ordinary directories, no junction/reparse/symlink. No preceding operation in this command. |
+| 2 | Write literal `probe` to `C:\Users\<USER>\Documents\forgeboard-qwen-none-20261017-06\web\wf-probe.txt` | Did not exist. The preceding deletion removes its parent; there is no recreation step. This is likely to fail, not to access an outside location. |
 | 3 | Read that same `...\web\wf-probe.txt` | Did not exist. The same missing-parent issue applies. |
 
 No wildcard, dynamic path, external target, outside-workspace traversal or nested
@@ -4074,7 +4074,7 @@ closed. Only Windows native execution was verified here.
 
 ### One Fresh -07 Mission
 
-Fresh workspace: **`C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-07`**.
+Fresh workspace: **`C:\Users\<USER>\Documents\forgeboard-qwen-none-20261017-07`**.
 Evidence ID: **`forgeboard-none-20261017-07`**, preserved under
 `src-tauri/target/real-qwen-product/forgeboard-none-20261017-07/`.
 Only an empty Git repository was initialized. Before startup, process inventory
@@ -4126,7 +4126,7 @@ Remove-Item -Force server/package.json -ErrorAction SilentlyContinue; '{' | Out-
 ```
 
 Both targets resolve to
-**`C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-07\server\package.json`**,
+**`C:\Users\<USER>\Documents\forgeboard-qwen-none-20261017-07\server\package.json`**,
 which did not exist. The version frozen for this mission rejected the second
 statement's pipeline AST before target resolution:
 **`Only sequential literal cmdlets are supported`**. There was **one approval
@@ -4355,7 +4355,7 @@ and the first required half remained false throughout.
 
 ### Fresh Run and Controls
 
-- Workspace: `C:\Users\Hayden\Documents\forgeboard-qwen-none-20261017-08`.
+- Workspace: `C:\Users\<USER>\Documents\forgeboard-qwen-none-20261017-08`.
 - Evidence ID: **`forgeboard-none-20261017-08`**, under
   `src-tauri/target/real-qwen-product/forgeboard-none-20261017-08/` (ignored local
   raw captures). No prior workspace/evidence directory was reused.
@@ -4517,6 +4517,150 @@ Exactly one fresh mission. No resume, additional Qwen run, architecture checkpoi
 or push. Correction implementation complete; live positive continuity is not
 claimed for a model that never reached the write boundary.
 
+## Qwen3.8 27B IQ4_XS Local Comparison: 2026-10-18
+
+This comparison used the user-selected base Qwen3.8 27B IQ4_XS GGUF rather than
+the earlier abliterated `qwen38-uncensored:latest` tag. No existing Ollama model,
+listener, firewall rule, service, Docker workload or unrelated project was
+changed. The existing localhost-only SSH tunnel remained
+`127.0.0.1:11435 -> labpc:127.0.0.1:11434`; Ollama remained version `0.40.5`.
+
+### Exact model artifact
+
+- Hugging Face repository: `unsloth/Qwen3.8-27B-GGUF`.
+- Pinned repository revision:
+  `313447f257f7ebde0b968e4778feef774546ed81`.
+- File: `Qwen3.8-27B-IQ4_XS.gguf`.
+- Downloaded GGUF SHA-256:
+  `9fd40d7036f5e0918e20aaeebf11468fafd06bb53d4d980eef6bb7e4e4ace666`.
+- Imported as a new isolated Ollama tag: `qwen38-iq4xs:latest`.
+- Ollama model digest:
+  `daabf3aac7f641eb4d89fd39b53cbb2ce25fc7cd27256369a3797ff0e6b239dc`.
+- Ollama reports family `qwen35`, 27.3B parameters, `IQ4_XS`, advertised
+  context 262144, and completion/tools/thinking capabilities.
+
+The acceptance harness was extended only to authorize this exact local tag and
+its disposable workspace naming. Focused comparison tests, JavaScript syntax
+checks and Rust formatting passed before inference. A native compatibility
+preflight then proved `qwen38-iq4xs:latest`, `num_ctx=32768`,
+`num_predict=2048`, `think:false`, the native tool schema and zero executed
+preflight side effects. Loaded runtime context was 32768 and cloud inference was
+zero.
+
+### Attempt 1: transient stream-idle termination
+
+Fresh unborn repository:
+`C:/Users/Hayden/Documents/forgeboard-qwen38-iq4xs-20261018-01`.
+Run/evidence ID: `forgeboard-qwen38-iq4xs-20261018-01`.
+
+The full ForgeBoard specification was submitted once. There was no correction,
+manual Continue, reminder, delegation, evaluator implementation or setting
+change. The model used the advertised Windows PowerShell contract and made
+useful progress immediately:
+
+- request 1: six-item structured plan plus empty-root inspection;
+- request 2: created `server/src`, `server/tests` and
+  `client/src/components`;
+- request 3: `node -v; npm -v` executed successfully in PowerShell.
+
+Request 4 streamed the public prefix:
+`Now I'll write all the root and server config files.`
+It then produced no further native IPC chunk for the fixed 60-second self-hosted
+stream-idle window. Clack terminated the request with
+`stream-idle-timeout`; no provider final usage/finish was returned for that
+request. The endpoint remained healthy and the model remained loaded at 32768.
+
+A separate **non-executing diagnostic replay** of the exact preserved request-4
+body was sent directly to the same local Ollama endpoint after the failed run.
+No returned tool was executed. That replay completed normally in 13.309 seconds
+(`done_reason=stop`, `eval_count=50`) and returned one PowerShell tool call:
+`New-Item -ItemType File -Force -Path package.json | Out-Null`.
+Therefore the original request-4 silence was transient/non-deterministic; the
+replay does not establish whether the original silence originated in the engine,
+streaming stack or another runtime boundary.
+
+Classification: **PRODUCT RUNTIME / STREAM-IDLE TIMEOUT / INCOMPLETE**. It is
+not evidence that the model intrinsically could not continue, and the diagnostic
+replay is not counted as acceptance progress.
+
+### Attempt 2: full production continuation until repeated-call watchdog
+
+Fresh unborn repository:
+`C:/Users/Hayden/Documents/forgeboard-qwen38-iq4xs-20261018-02`.
+Run/evidence ID: `forgeboard-qwen38-iq4xs-20261018-02`.
+
+The metadata-only preflight used zero inference. The mission then used the same
+fixed controls as attempt 1: exact `qwen38-iq4xs:latest`, local Ollama only,
+`num_ctx=32768`, `num_predict=2048`, reasoning None / `think:false`,
+single-spec mode, no correction, no manual Continue, no reminder, no delegation
+and no evaluator-authored ForgeBoard implementation. The durable transcript has
+exactly one user message containing the specification.
+
+All **28 native inference requests** received provider final
+`done_reason=stop`; summed provider-reported `eval_count` is 5540. There was
+no transport timeout, reasoning exhaustion or context-window block in this
+attempt. Clack performed one normal automatic continuation after the 24-step
+soft boundary; no evaluator message triggered it.
+
+The model executed 30 tool parts: 15 successful and 15 error results:
+
+| Tool | Total | Success | Error |
+| --- | ---: | ---: | ---: |
+| `list_directory` | 1 | 1 | 0 |
+| `bash_run` | 10 | 8 | 2 |
+| `todo_write` | 3 | 3 | 0 |
+| `create_directory` | 4 | 2 | 2 |
+| `multi_edit` | 7 | 0 | 7 |
+| `read_file` | 4 | 0 | 4 |
+| `bash_list` | 1 | 1 | 0 |
+
+Observed behavior was mixed:
+
+- it produced increasingly detailed implementation plans and created
+  `client/src`, `client/tests`, `server/src` and `server/tests`;
+- its first shell commands used valid PowerShell syntax;
+- it repeatedly attempted `multi_edit` on brand-new files even after the
+  read-before-edit error and missing-file reads;
+- it once regressed to POSIX-only syntax (`2>/dev/null`, `head`, `tail`)
+  despite the explicit PowerShell environment; PowerShell returned the expected
+  errors;
+- it later corrected back to PowerShell and learned to use single-line
+  `Set-Content`;
+- after the automatic continuation it successfully wrote a 242-byte
+  `.gitignore`, the only project file created;
+- it attempted a real root `package.json` body using PowerShell here-strings,
+  but `bash_run` correctly rejected embedded CR/LF because commands must be
+  single-line;
+- after that explicit refusal it repeated invalid multiline writes and
+  `multi_edit` calls instead of converting the package body to an accepted
+  single-line form.
+
+The final Clack run state is failed with budget phase `hard-limit`,
+`totalSteps=28`, `continuationCount=1`, stop reason `repeated-failure`,
+and terminal watchdog code `repeated_tool_call`:
+`Stopped identical tool calls with unchanged results. Completed effects were not replayed.`
+
+Independent final workspace inspection found only the four empty source/test
+directories and `.gitignore`. There is **no package.json, backend source,
+frontend source, dependency install, persistence layer, SSE implementation,
+API, test suite, production build, README or Git commit**. The repository
+remains unborn with only `.gitignore` untracked.
+
+One Clack tooling-guidance inconsistency is preserved as a secondary finding:
+the system guidance says `write_file` is the preferred tool for brand-new
+files, while this production-selected tool set exposes no `write_file`. That
+is a real prompt/tool ergonomics defect, but it is not sufficient to reclassify
+this run as Clack-blocked: the model had a functioning PowerShell mutation path,
+successfully used it for `.gitignore`, and then repeatedly failed to adapt the
+same path for `package.json`.
+
+Primary classification:
+**MODEL-INCOMPLETE / REPEATED TOOL FAILURE under the tested production tool contract**.
+Secondary product observation: **CLACK_TOOLING / stale `write_file` guidance**.
+This run does not justify another tuning ladder, a memory/context redesign,
+longer context, cloud fallback, a reasoning-mode change or weakening the
+repeated-effect safeguards.
+
 ## 2026-10-18: qwen3-coder controlled ForgeBoard comparison
 
 ### Baseline, Scope and Model Metadata
@@ -4557,7 +4701,7 @@ Read-only `/api/tags`, `/api/show`, `/api/ps` and `/api/version` confirmed:
   No pull, update, download or other model inference occurred.
 
 Fresh workspace, deliberately retaining the user-requested date in its name:
-**`C:\Users\Hayden\Documents\forgeboard-qwen3coder-20261017-01`**.
+**`C:\Users\<USER>\Documents\forgeboard-qwen3coder-20261017-01`**.
 Evidence ID **`forgeboard-qwen3coder-20261017-01`**, under local ignored
 `src-tauri/target/real-qwen-product/forgeboard-qwen3coder-20261017-01/`.
 It did not exist before setup. Only directory and Git metadata were initialized;
@@ -4990,7 +5134,7 @@ process inspection found an unrelated Talus Cargo/rustc build, which was not
 disturbed; the final pre-mission inventory found no Clack host, harness,
 Node/Vite/Vitest, Cargo or rustc process. No competing Clack run was observed.
 
-Fresh workspace: **`C:\Users\Hayden\Documents\forgeboard-qwen3coder-20261018-02`**.
+Fresh workspace: **`C:\Users\<USER>\Documents\forgeboard-qwen3coder-20261018-02`**.
 Fresh evidence ID: **`forgeboard-qwen3coder-20261018-02`**, under
 `src-tauri/target/real-qwen-product/` in Clack. Only the directory and fresh Git
 repository were initialized; the project contained **only .git** before the
@@ -12374,7 +12518,7 @@ after terminal state. Existing six dirty files were baselined separately.
   native Ollama transport; **Ollama 0.40.5**. No benchmark connection or managed-SSH
   substitute. Original SSH process **37440** remained untouched.
 - Fresh empty Git workspace:
-  **`C:\Users\Hayden\Documents\forgeboard-nemotron35-lightning-20261021-02`**.
+  **`C:\Users\<USER>\Documents\forgeboard-nemotron35-lightning-20261021-02`**.
   The existing safe approval allowlist supports this prefix, not the preferred
   `nemotron-hardened` workspace prefix. Used the supported name without changing
   the dirty approval rules. No seeded package, template or evaluator implementation.
@@ -13121,7 +13265,7 @@ Read-only `/api/version`, `/api/tags` and `/api/ps` observations confirmed:
 
 Fresh evidence ID **`forgeboard-nemotron-hardened-20261021-03`**, under
 `src-tauri/target/real-qwen-product/`. Fresh empty Git workspace:
-**`C:\Users\Hayden\Documents\forgeboard-nemotron35-lightning-20261021-03`**.
+**`C:\Users\<USER>\Documents\forgeboard-nemotron35-lightning-20261021-03`**.
 Used the existing approval-supported workspace prefix instead of changing the
 dirty allowlist to accept the preferred `nemotron-hardened` prefix. Repository
 initialized on `main`, no initial commit or seeded files. It remains `.git` only.

@@ -22,7 +22,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager};
-use tauri_plugin_store::StoreExt;
 
 const HOST: &str = "clack-ssh.invalid";
 
@@ -683,10 +682,9 @@ fn configured(app: &AppHandle, id: &str) -> Result<Arc<Slot>, String> {
     let _lock = super::self_hosted_profiles::WRITE_LOCK
         .lock()
         .map_err(|_| "settings-unavailable")?;
-    let value = app
-        .store("terax-settings.json")
+    let value = super::self_hosted_profiles::authoritative_settings_value(app,
+        super::self_hosted_profiles::KEY)
         .map_err(|_| "settings-unavailable")?
-        .get(super::self_hosted_profiles::KEY)
         .ok_or("server-unavailable")?;
     let e = value["endpoints"]
         .as_array()

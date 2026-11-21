@@ -18,5 +18,6 @@ pub mod pty;
 pub mod remote_ssh;
 pub mod secrets;
 pub mod self_hosted_profiles;
+mod self_hosted_atomic_file;
 pub mod shell;
 pub mod workspace;

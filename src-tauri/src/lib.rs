@@ -140,6 +140,16 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .setup(|_app| {
+            // The authoritative terax-settings.json is owned solely by the
+            // native atomic settings/CAS layer. NEVER load a second
+            // tauri-plugin-store cache for that same filename: Store's app
+            // Exit hook saves even a disable_auto_save cache and can
+            // overwrite a newer CAS commit or corruption/recovery artifact.
+            // The plugin remains installed for OTHER Store-owned files;
+            // frontend settings use the existing native IPC read/write.
+            modules::self_hosted_profiles::self_hosted_profiles_startup_storage_check(
+                _app.handle()
+            ).map_err(std::io::Error::other)?;
             // Trusted-process opt-in only. No IPC command to enable a recorder,
             // no model, network, or timeout changes. The bounded nonblocking
             // queue prevents slow diagnostic consumers from blocking reqwest.
@@ -387,6 +397,14 @@ pub fn run() {
             modules::remote_ssh::remote_ssh_status,
             modules::self_hosted_profiles::self_hosted_profiles_compare_and_swap,
             modules::self_hosted_profiles::self_hosted_profiles_snapshot,
+            modules::self_hosted_profiles::self_hosted_settings_entries,
+            modules::self_hosted_profiles::self_hosted_settings_set,
+            modules::self_hosted_profiles::self_hosted_settings_set_many,
+            modules::self_hosted_profiles::self_hosted_profiles_qualification_begin,
+            modules::self_hosted_profiles::self_hosted_profiles_qualification_prepare,
+            modules::self_hosted_profiles::self_hosted_profiles_qualification_acknowledge,
+            modules::self_hosted_profiles::self_hosted_profiles_qualification_cancel,
+            modules::self_hosted_profiles::self_hosted_profiles_qualification_reconcile,
             modules::managed_local_runtime::managed_local_runtime_status,
             modules::hardware_profile::local_hardware_observation,
             modules::managed_local_runtime::managed_local_runtime_model_metadata,
@@ -406,6 +424,7 @@ pub fn run() {
             net::ai_http_request,
             net::research::research_fetch_page,
             net::inference::ai_http_open,
+            net::inference::ai_http_request_quiescent,
             net::inference::ai_http_cancel,
             net::inference::ai_http_preflight,
             net::inference::ai_http_stream,

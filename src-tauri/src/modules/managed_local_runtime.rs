@@ -7,16 +7,16 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::{HashMap, HashSet},
     fs::{self, File},
     io::{self, Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager};
-use tauri_plugin_store::StoreExt;
 
 pub const ENGINE: &str = "clack-managed-llama.cpp";
 pub const ENGINE_VERSION: &str = "b12248";
@@ -692,11 +692,8 @@ fn current_binding(
     deployment_id: &str,
     identity: &str,
 ) -> Result<BoundDeployment, String> {
-    let settings = app
-        .store("terax-settings.json")
-        .map_err(|_| "Managed deployment settings unavailable")?;
-    let state = settings
-        .get("selfHostedInference")
+    let state = super::self_hosted_profiles::authoritative_settings_value(app, "selfHostedInference")
+        .map_err(|_| "Managed deployment settings unavailable")?
         .ok_or("Managed deployment is not registered in native settings")?;
     validate_binding(&state, deployment_id, identity)
 }
@@ -734,8 +731,15 @@ pub(crate) fn validate_managed_model_switch(
 struct RuntimeOwner {
     child: Option<Child>,
     secret_file: Option<tempfile::NamedTempFile>,
+    // Kept for the lifetime of this exact process, including its startup
+    // health phase. A stopped/crashed owner releases only its own port claim.
+    port_reservation: Option<PortReservation>,
     #[cfg(windows)]
     job: Option<crate::modules::pty::job::PtyJob>,
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    acceptance_root: Option<PathBuf>,
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    acceptance: bool,
     state: &'static str,
     epoch: String,
     started_at: Option<Instant>,
@@ -752,8 +756,13 @@ impl Default for RuntimeOwner {
         Self {
             child: None,
             secret_file: None,
+            port_reservation: None,
             #[cfg(windows)]
             job: None,
+            #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+            acceptance_root: None,
+            #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+            acceptance: false,
             state: "Stopped",
             epoch: random_hex().unwrap_or_default(),
             started_at: None,
@@ -767,9 +776,509 @@ impl Default for RuntimeOwner {
     }
 }
 
-static OWNER: OnceLock<Mutex<RuntimeOwner>> = OnceLock::new();
-fn owner() -> &'static Mutex<RuntimeOwner> {
-    OWNER.get_or_init(|| Mutex::new(RuntimeOwner::default()))
+// A deployment's canonical ID includes its artifact and execution configuration;
+// its native-validated identity additionally binds the registered host/runtime
+// revision. Never use a renderer-supplied endpoint, model alias or bearer as a key.
+type RuntimeKey = (String, String);
+const MAX_MANAGED_OWNER_SLOTS: usize = 64;
+const MAX_LIVE_MANAGED_CHILDREN: usize = 8;
+
+#[derive(Default)]
+struct RuntimeRegistryEntries {
+    owners: HashMap<RuntimeKey, Arc<Mutex<RuntimeOwner>>>,
+    // Short-lived launch reservations live in this SAME owner registry. They
+    // prevent simultaneous launches from exceeding the native child bound.
+    starting: HashSet<RuntimeKey>,
+    reserved_ports: HashSet<u16>,
+}
+
+struct RuntimeRegistry {
+    entries: Mutex<RuntimeRegistryEntries>,
+    closing: AtomicBool,
+    idle_epoch: String,
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    pending_synthetic_key: Mutex<Option<String>>,
+}
+
+static OWNER_REGISTRY: OnceLock<RuntimeRegistry> = OnceLock::new();
+fn registry() -> &'static RuntimeRegistry {
+    OWNER_REGISTRY.get_or_init(|| RuntimeRegistry {
+        entries: Mutex::new(RuntimeRegistryEntries::default()),
+        closing: AtomicBool::new(false),
+        idle_epoch: random_hex().unwrap_or_default(),
+        #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+        pending_synthetic_key: Mutex::new(None),
+    })
+}
+
+fn runtime_key(binding: &BoundDeployment) -> RuntimeKey {
+    (binding.id.clone(), binding.identity.clone())
+}
+
+fn get_or_insert_owner(key: RuntimeKey) -> Result<Arc<Mutex<RuntimeOwner>>, String> {
+    let registry = registry();
+    let mut entries = registry.entries.lock().map_err(|_| "Managed owner registry unavailable")?;
+    if registry.closing.load(Ordering::Acquire) {
+        return Err("Managed runtime host is shutting down".into());
+    }
+    get_or_insert_owner_in(&mut entries, key)
+}
+
+fn get_or_insert_owner_in(
+    entries: &mut RuntimeRegistryEntries, key: RuntimeKey,
+) -> Result<Arc<Mutex<RuntimeOwner>>, String> {
+    if let Some(existing) = entries.owners.get(&key) {
+        return Ok(existing.clone());
+    }
+    if entries.owners.len() >= MAX_MANAGED_OWNER_SLOTS {
+        return Err("Managed runtime owner slot limit reached".into());
+    }
+    let owner = Arc::new(Mutex::new(RuntimeOwner::default()));
+    entries.owners.insert(key, owner.clone());
+    Ok(owner)
+}
+
+/// A selector is either an exact pair or entirely absent. Legacy unscoped
+/// callers remain valid only while the native registry is unambiguous.
+fn select_owner(
+    deployment_id: Option<&str>, deployment_identity: Option<&str>,
+) -> Result<Option<Arc<Mutex<RuntimeOwner>>>, String> {
+    let entries = registry().entries.lock().map_err(|_| "Managed owner registry unavailable")?;
+    select_owner_from_entries(&entries, deployment_id, deployment_identity)
+}
+
+fn select_owner_from_entries(
+    entries: &RuntimeRegistryEntries,
+    deployment_id: Option<&str>, deployment_identity: Option<&str>,
+) -> Result<Option<Arc<Mutex<RuntimeOwner>>>, String> {
+    match (deployment_id, deployment_identity) {
+        (Some(id), Some(identity)) if !id.is_empty() && !identity.is_empty() =>
+            Ok(entries.owners.get(&(id.to_owned(), identity.to_owned())).cloned()),
+        (None, None) if entries.owners.is_empty() => Ok(None),
+        (None, None) if entries.owners.len() == 1 => Ok(entries.owners.values().next().cloned()),
+        // Stopped entries remain a historical native identity. A lone live
+        // process among several keys NEVER gives an unscoped Stop authority.
+        (None, None) => Err("Managed runtime requires an exact deployment selector".into()),
+        _ => Err("Managed runtime selector requires both deployment ID and identity".into()),
+    }
+}
+
+fn owners_for_deployment(id: &str) -> Result<Vec<Arc<Mutex<RuntimeOwner>>>, String> {
+    let entries = registry().entries.lock().map_err(|_| "Managed owner registry unavailable")?;
+    Ok(entries.owners.iter().filter(|(key, _)| key.0 == id)
+        .map(|(_, slot)| slot.clone()).collect())
+}
+
+struct StartReservation(RuntimeKey);
+impl Drop for StartReservation {
+    fn drop(&mut self) {
+        if let Ok(mut entries) = registry().entries.lock() {
+            entries.starting.remove(&self.0);
+        }
+    }
+}
+
+/// Admit one additional process under this exact key, counting all already
+/// owned children and pending launches. A registry lock is retained only for
+/// these short checks and the reservation insertion; never for the launch.
+fn reserve_child_start(key: &RuntimeKey) -> Result<StartReservation, String> {
+    let registry = registry();
+    let mut entries = registry.entries.lock().map_err(|_| "Managed owner registry unavailable")?;
+    if registry.closing.load(Ordering::Acquire) {
+        return Err("Managed runtime host is shutting down".into());
+    }
+    check_child_start_capacity(&entries, key)?;
+    entries.starting.insert(key.clone());
+    Ok(StartReservation(key.clone()))
+}
+
+fn check_child_start_capacity(
+    entries: &RuntimeRegistryEntries, key: &RuntimeKey,
+) -> Result<(), String> {
+    if entries.starting.contains(key) {
+        return Err("Exact managed deployment is already starting".into());
+    }
+    let own = entries.owners.get(key)
+        .ok_or("Managed runtime owner must be registered before launch")?;
+    let current = own.try_lock().map_err(|_| "Exact managed runtime lifecycle is busy")?;
+    if current.child.is_some() {
+        return Err("Exact managed runtime already owns a child".into());
+    }
+    drop(current);
+    let mut others_live = 0;
+    for (other_key, other_slot) in &entries.owners {
+        if other_key == key { continue; }
+        let starting = entries.starting.contains(other_key);
+        let other = other_slot.try_lock()
+            .map_err(|_| "Concurrent managed runtime lifecycle is busy")?;
+        let live = starting || other.child.is_some();
+        if live && other_key.0 == key.0 {
+            return Err("Stop the prior identity of this managed deployment first".into());
+        }
+        if live { others_live += 1; }
+    }
+    if others_live >= MAX_LIVE_MANAGED_CHILDREN {
+        return Err("Managed runtime concurrent child limit reached".into());
+    }
+    Ok(())
+}
+
+/// The native registry, rather than a disposable TcpListener, owns the port
+/// claim from selection until process stop/crash. This prevents two native
+/// launches from selecting the same released ephemeral localhost port.
+struct PortReservation(u16);
+impl Drop for PortReservation {
+    fn drop(&mut self) {
+        if let Ok(mut entries) = registry().entries.lock() {
+            entries.reserved_ports.remove(&self.0);
+        }
+    }
+}
+
+fn claim_port(entries: &mut RuntimeRegistryEntries, port: u16) -> bool {
+    port != 0 && entries.reserved_ports.insert(port)
+}
+
+fn reserve_port(port: u16) -> Result<PortReservation, String> {
+    let registry = registry();
+    let mut entries = registry.entries.lock().map_err(|_| "Managed port registry unavailable")?;
+    if registry.closing.load(Ordering::Acquire) || !claim_port(&mut entries, port) {
+        return Err("Managed runtime loopback port is already reserved or unavailable".into());
+    }
+    Ok(PortReservation(port))
+}
+
+fn reserve_fresh_loopback_port() -> Result<(u16, PortReservation), String> {
+    // Native siblings can race the ephemeral OS allocator after another
+    // owner dropped its bind probe; retry only bounded candidate selections.
+    for _ in 0..16 {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .map_err(|_| "Could not allocate local runtime transport")?;
+        let port = listener.local_addr()
+            .map_err(|_| "Could not read local runtime port")?.port();
+        let claimed = reserve_port(port);
+        drop(listener);
+        if let Ok(reservation) = claimed { return Ok((port, reservation)); }
+        if registry().closing.load(Ordering::Acquire) {
+            return Err("Managed runtime host is shutting down".into());
+        }
+    }
+    Err("Managed runtime could not claim a distinct loopback port".into())
+}
+
+/// The authenticated WebView acceptance runner can own only this fixed root
+/// or an immediate child of its cases/ directory. Reparse/symlink escapes
+/// cannot make an arbitrary AppData directory a qualification authority.
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+pub fn acceptance_is_owned_webview_root(root: &Path) -> bool {
+    let Ok(manifest) = Path::new(env!("CARGO_MANIFEST_DIR")).canonicalize() else {
+        return false;
+    };
+    let fixed = manifest.join("target/lm11-b01-b03-authenticated-webview-20261119");
+    let (Ok(actual_fixed), Ok(candidate)) = (fixed.canonicalize(), root.canonicalize()) else {
+        return false;
+    };
+    // The named fixed root itself must not redirect through a junction.
+    if actual_fixed != fixed || !candidate.is_dir()
+        || fs::symlink_metadata(root).is_ok_and(|meta| meta.file_type().is_symlink())
+    {
+        return false;
+    }
+    acceptance_is_direct_owned_webview_root(&fixed, &candidate)
+}
+
+/// Compare already-canonical paths. Keeping this small predicate separate
+/// makes sibling and nested-case denial testable without filesystem effects.
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+fn acceptance_is_direct_owned_webview_root(fixed: &Path, candidate: &Path) -> bool {
+    candidate == fixed || candidate.parent() == Some(fixed.join("cases").as_path())
+}
+
+/// Verify BOTH Tauri native storage roots, including the final data/
+/// directory. The comparison deliberately does not trust the process
+/// environment, a JavaScript request, or a path merely sharing a prefix.
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+fn acceptance_app_data_is_owned(app: &AppHandle, root: &Path) -> bool {
+    if !acceptance_is_owned_webview_root(root) {
+        return false;
+    }
+    let Ok(expected) = root.join("data").canonicalize() else {
+        return false;
+    };
+    let Ok(data) = app.path().app_data_dir() else {
+        return false;
+    };
+    let Ok(local_data) = app.path().app_local_data_dir() else {
+        return false;
+    };
+    let (Ok(actual), Ok(actual_local)) =
+        (data.canonicalize(), local_data.canonicalize()) else {
+        return false;
+    };
+    let Ok(store) = tauri_plugin_store::resolve_store_path(app, "terax-settings.json") else {
+        return false;
+    };
+    let Some(store_parent) = store.parent() else {
+        return false;
+    };
+    let Ok(store_parent) = store_parent.canonicalize() else {
+        return false;
+    };
+    expected.parent() == Some(root) && actual == expected && expected.is_dir()
+        && actual_local.starts_with(root) && actual_local != root
+        && actual_local.is_dir()
+        && store_parent == expected
+        && store.file_name() == Some(std::ffi::OsStr::new("terax-settings.json"))
+}
+
+/// Only an explicitly bound native child of the isolated acceptance host may
+/// stand in for an installed engine. Normal hosts keep verified_engine().
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+fn acceptance_synthetic_installed(app: &AppHandle, current: &RuntimeOwner) -> bool {
+    current.acceptance && current.acceptance_root.as_ref().is_some_and(|root| {
+        current.child.is_some() && acceptance_app_data_is_owned(app, root)
+    })
+}
+
+/// Generate the synthetic server's bearer secret in native code, before its
+/// child is spawned. The caller supplies it to that child and returns it when
+/// binding the exact process. The native owner admits that one issued secret,
+/// rather than merely accepting an arbitrary 64-character hexadecimal key.
+/// There is no WebView/IPC credential minting API.
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+pub fn acceptance_new_synthetic_key() -> Result<String, String> {
+    let key = random_hex()?;
+    if registry().closing.load(Ordering::Acquire) {
+        return Err("Managed runtime host is shutting down".into());
+    }
+    // The one pending test-only native secret is a sequential admission
+    // handshake, not a live-runtime singleton. Already bound A/B/C children
+    // retain their own independently rotated bearer keys and epochs.
+    let mut pending = registry().pending_synthetic_key.lock()
+        .map_err(|_| "Synthetic key admission unavailable")?;
+    if pending.is_some() { return Err("A synthetic native key is already pending".into()); }
+    *pending = Some(key.clone());
+    Ok(key)
+}
+
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+fn acceptance_valid_synthetic_route(port: u16, key: &str, alias: &str, digest: &str) -> bool {
+    let Some(digest) = digest.strip_prefix("sha256:").filter(|hex| valid_hex(hex)) else {
+        return false;
+    };
+    port != 0 && valid_hex(key) && alias == format!("clack-{}", &digest[..16])
+}
+
+/// Binding a child and a bearer token is NOT an authenticated Ready
+/// observation. Only managed_local_runtime_status may promote to Ready after
+/// the real /health and bearer /v1/models checks succeed.
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+fn acceptance_unverified_owner_state() -> &'static str {
+    "Starting"
+}
+
+/// Bind an actual child PID and loopback server to the existing production
+/// owner, using the canonical deployment from this app's isolated Store.
+/// The ordinary status and route commands still perform real authenticated
+/// GET /health and bearer GET /v1/models before exposing any inference route.
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+pub fn acceptance_bind_synthetic_child(
+    app: &AppHandle,
+    root: &Path,
+    child: Child,
+    port: u16,
+    key: String,
+    alias: String,
+    deployment_id: &str,
+    identity: &str,
+) -> Result<(String, u32), String> {
+    let mut incoming = Some(child);
+    let result: Result<(String, u32), String> = (|| {
+        let canonical_root = root.canonicalize()
+            .map_err(|_| "Authenticated acceptance root is missing")?;
+        if !acceptance_app_data_is_owned(app, &canonical_root) {
+            return Err("Synthetic managed owner requires exact isolated AppData".into());
+        }
+        let binding = current_binding(app, deployment_id, identity)?;
+        if !acceptance_valid_synthetic_route(port, &key, &alias, &binding.digest) {
+            return Err("Synthetic runtime port, secret or model alias is invalid".into());
+        }
+        let process_id = incoming.as_ref().expect("Owned child not consumed").id();
+        if incoming.as_mut().expect("Owned child not consumed").try_wait()
+            .map_err(|_| "Synthetic child process status unavailable")?.is_some()
+        {
+            return Err("Synthetic child exited before binding".into());
+        }
+        let epoch = random_hex()?;
+        let binding_key = runtime_key(&binding);
+        let slot = get_or_insert_owner(binding_key.clone())?;
+        let _reservation = reserve_child_start(&binding_key)?;
+        let mut current = slot.lock().map_err(|_| "Managed owner unavailable")?;
+        reap_crash(&mut current);
+        if current.child.is_some() {
+            return Err("Managed runtime already owns a child".into());
+        }
+        let mut pending = registry().pending_synthetic_key.lock()
+            .map_err(|_| "Synthetic key admission unavailable")?;
+        if pending.as_deref() != Some(key.as_str()) {
+            return Err("Synthetic runtime secret was not issued by this native owner".into());
+        }
+        let reserved_port = reserve_port(port)?;
+        let job = crate::modules::pty::job::PtyJob::create_for(process_id)
+            .map_err(|_| "Synthetic child could not join a parent-owned Windows job")?;
+        *pending = None;
+        current.logs = Arc::new(Mutex::new(Vec::new()));
+        let child = incoming.as_mut().expect("Owned child not consumed");
+        if let Some(stdout) = child.stdout.take() {
+            drain_bounded(stdout, current.logs.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            drain_bounded(stderr, current.logs.clone());
+        }
+        current.child = incoming.take();
+        current.secret_file = None;
+        current.port_reservation = Some(reserved_port);
+        current.job = Some(job);
+        current.acceptance_root = Some(canonical_root);
+        current.acceptance = true;
+        current.state = acceptance_unverified_owner_state();
+        current.epoch = epoch.clone();
+        current.started_at = Some(Instant::now());
+        current.deployment = Some(binding);
+        current.port = Some(port);
+        current.key = Some(key.clone());
+        current.alias = Some(alias);
+        current.error = None;
+        Ok((epoch, process_id))
+    })();
+    // std::process::Child does not kill on Drop. A rejected binding must not
+    // strand the harness's already spawned, untrusted synthetic service.
+    if result.is_err() {
+        if let Ok(mut pending) = registry().pending_synthetic_key.lock() {
+            if pending.as_deref() == Some(key.as_str()) { *pending = None; }
+        }
+        if let Some(mut child) = incoming {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    result
+}
+
+/// Rotate only the isolated synthetic native owner's epoch to reproduce
+/// stale-route/stale-CAS behavior; the child stays alive and must re-auth.
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+pub fn acceptance_rotate_synthetic_epoch(
+    app: &AppHandle, root: &Path,
+) -> Result<String, String> {
+    let canonical_root = root.canonicalize()
+        .map_err(|_| "Authenticated acceptance root is missing")?;
+    if !acceptance_app_data_is_owned(app, &canonical_root) {
+        return Err("Synthetic epoch rotation requires exact isolated AppData".into());
+    }
+    let slot = select_owner(None, None)?
+        .ok_or("No bound synthetic managed owner to rotate")?;
+    let mut current = slot.lock().map_err(|_| "Managed owner unavailable")?;
+    reap_crash(&mut current);
+    if !current.acceptance || current.acceptance_root.as_ref() != Some(&canonical_root)
+        || current.child.is_none() || current.state != "Ready"
+    {
+        return Err("No bound synthetic managed owner to rotate".into());
+    }
+    roll_epoch(&mut current);
+    Ok(current.epoch.clone())
+}
+
+/// The feature host may stop only its exact case-owned synthetic deployment.
+/// This leaves sibling B/C children, their credentials, epochs and routes live.
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+pub fn acceptance_stop_synthetic_child(
+    app: &AppHandle, root: &Path, deployment_id: &str, identity: &str,
+) -> Result<(), String> {
+    let canonical_root = root.canonicalize()
+        .map_err(|_| "Authenticated acceptance root is missing")?;
+    if !acceptance_app_data_is_owned(app, &canonical_root) {
+        return Err("Synthetic stop requires exact isolated AppData".into());
+    }
+    let slot = select_owner(Some(deployment_id), Some(identity))?
+        .ok_or("No exact native synthetic deployment to stop")?;
+    let mut current = slot.lock().map_err(|_| "Managed owner unavailable")?;
+    if !current.acceptance || current.acceptance_root.as_ref() != Some(&canonical_root)
+        || current.deployment.as_ref().is_none_or(|binding|
+            binding.id != deployment_id || binding.identity != identity)
+        || current.child.is_none()
+    {
+        return Err("Synthetic stop does not own this exact native child".into());
+    }
+    forget_process(&mut current, "Stopped", None);
+    Ok(())
+}
+
+/// The acceptance feature can affect only the one specifically authorized
+/// root, or one direct per-case directory under its cases/ subdirectory.
+/// Canonicalization also rejects symlinks/reparse points escaping that root.
+#[cfg(all(windows, feature = "lm11-b03-acceptance-harness"))]
+pub fn acceptance_is_owned_scenario_root(root: &Path) -> bool {
+    let fixed = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/lm11-b03-native-acceptance-20261119-real-host");
+    let (Ok(fixed), Ok(candidate)) = (fixed.canonicalize(), root.canonicalize())
+        else { return false };
+    candidate == fixed || candidate.parent() == Some(fixed.join("cases").as_path())
+}
+
+/// Acceptance-only synthetic Ready owner with a REAL benign child OS PID.
+/// The production qualification admission and pre-replace process/epoch
+/// checks remain unchanged. No model executable, port or inference is used.
+#[cfg(all(windows, feature = "lm11-b03-acceptance-harness"))]
+pub fn acceptance_bind_benign_child(
+    root: &Path, deployment_id: &str,
+) -> Result<(String, u32), String> {
+    let expected = std::fs::canonicalize(root)
+        .map_err(|_| "Acceptance root must already exist")?;
+    if !acceptance_is_owned_scenario_root(&expected) {
+        return Err("Refusing to seed managed runtime outside owned acceptance root".into());
+    }
+    let exe = std::env::current_exe().map_err(|_| "Acceptance binary unavailable")?;
+    let child = Command::new(exe).arg("--b03-benign-child")
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn().map_err(|_| "Could not launch acceptance-only idle child")?;
+    let pid = child.id();
+    let mut incoming = Some(child);
+    let result = (|| {
+        let identity = "b03-isolated-fake-owner";
+        let slot = get_or_insert_owner((deployment_id.to_string(), identity.into()))?;
+        let mut current = slot.lock().map_err(|_| "Managed owner unavailable")?;
+        if current.child.is_some() {
+            return Err("Already have an acceptance managed child".into());
+        }
+        // A failed entropy source must never strand an already-spawned child
+        // in the registry without a usable epoch or recovery identity.
+        let epoch = random_hex()?;
+        current.child = incoming.take();
+        current.state = "Ready";
+        current.epoch = epoch.clone();
+        current.deployment = Some(BoundDeployment {
+            id: deployment_id.to_string(), identity: identity.into(),
+            digest: "no-model-ever-loaded".into(), context: 1,
+        });
+        Ok((epoch, pid))
+    })();
+    if result.is_err() {
+        if let Some(mut child) = incoming { let _ = child.kill(); let _ = child.wait(); }
+    }
+    result
+}
+
+#[cfg(all(windows, feature = "lm11-b03-acceptance-harness"))]
+pub fn acceptance_rotate_benign_epoch() -> Result<String, String> {
+    let slot = select_owner(None, None)?
+        .ok_or("No acceptance process to fence")?;
+    let mut current = slot.lock().map_err(|_| "Managed owner unavailable")?;
+    if current.child.is_none() || current.state != "Ready" {
+        return Err("No acceptance process to fence".into());
+    }
+    roll_epoch(&mut current);
+    Ok(current.epoch.clone())
 }
 fn random_hex() -> Result<String, String> {
     let mut random = [0u8; 32];
@@ -791,6 +1300,12 @@ fn forget_process(owner: &mut RuntimeOwner, state: &'static str, error: Option<S
         owner.job = None;
     } // KILL_ON_JOB_CLOSE also reaps any descendant process.
     owner.secret_file = None; // Delete the private ephemeral API-key file.
+    owner.port_reservation = None;
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    {
+        owner.acceptance_root = None;
+        owner.acceptance = false;
+    }
     owner.state = state;
     owner.deployment = None;
     owner.port = None;
@@ -813,6 +1328,51 @@ fn reap_crash(owner: &mut RuntimeOwner) {
             Some("Managed runtime exited or crashed".into()),
         );
     }
+}
+
+/// Read-only LM11 native persistence fence. This never probes, installs or
+/// starts the runtime. The process epoch rotates on crash/start and restart.
+pub(super) fn qualification_runtime_is_current(
+    deployment_id: &str, runtime_epoch: &str, process_id: u32,
+) -> bool {
+    let Ok(slots) = owners_for_deployment(deployment_id) else { return false };
+    for slot in slots {
+        let Ok(mut current) = slot.lock() else { return false };
+        reap_crash(&mut current);
+        if current.state == "Ready"
+            && current.epoch == runtime_epoch
+            && current.child.as_ref().map(Child::id) == Some(process_id)
+            && current.deployment.as_ref().is_some_and(|d| d.id == deployment_id)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// The existing RuntimeOwner is the epoch authority. Hold its lock across
+/// the ONE physical replacement syscall: start/stop/crash epoch mutation
+/// cannot interleave after validation but before the irreversible boundary.
+/// No process launch, external probe, or second operation registry.
+pub(super) fn with_current_qualification_runtime<T>(
+    deployment_id: &str, runtime_epoch: &str, process_id: u32,
+    commit: impl FnOnce() -> T,
+) -> Option<T> {
+    let slots = owners_for_deployment(deployment_id).ok()?;
+    for slot in slots {
+        let mut current = slot.lock().ok()?;
+        reap_crash(&mut current);
+        if current.state == "Ready"
+            && current.epoch == runtime_epoch
+            && current.child.as_ref().map(Child::id) == Some(process_id)
+            && current.deployment.as_ref().is_some_and(|d| d.id == deployment_id)
+        {
+            // An A stop/epoch change must acquire this same per-key mutex;
+            // sibling B/C can progress while A's actual replace is fenced.
+            return Some(commit());
+        }
+    }
+    None
 }
 fn drain_bounded<R: Read + Send + 'static>(mut stream: R, output: Arc<Mutex<Vec<u8>>>) {
     std::thread::spawn(move || {
@@ -837,9 +1397,11 @@ fn drain_bounded<R: Read + Send + 'static>(mut stream: R, output: Arc<Mutex<Vec<
 pub struct ManagedRuntimeStatus {
     installed: bool,
     state: &'static str,
+    runtime_id: &'static str,
     version: &'static str,
     epoch: String,
     deployment_id: Option<String>,
+    deployment_identity_hash: Option<String>,
     model_digest: Option<String>,
     process_id: Option<u32>,
     port: Option<u16>,
@@ -853,14 +1415,36 @@ fn snapshot(owner: &RuntimeOwner, installed: bool) -> ManagedRuntimeStatus {
         } else {
             owner.state
         },
+        runtime_id: ENGINE,
         version: ENGINE_VERSION,
         epoch: owner.epoch.clone(),
         deployment_id: owner.deployment.as_ref().map(|d| d.id.clone()),
+        deployment_identity_hash: owner.deployment.as_ref()
+            .map(|d| format!("sha256:{:x}", Sha256::digest(d.identity.as_bytes()))),
         model_digest: owner.deployment.as_ref().map(|d| d.digest.clone()),
         process_id: owner.child.as_ref().map(Child::id),
         port: owner.port,
         error: owner.error.clone(),
     }
+}
+
+fn idle_snapshot(installed: bool) -> ManagedRuntimeStatus {
+    ManagedRuntimeStatus {
+        installed, state: if installed { "Stopped" } else { "Not Installed" },
+        runtime_id: ENGINE, version: ENGINE_VERSION,
+        epoch: registry().idle_epoch.clone(), deployment_id: None,
+        deployment_identity_hash: None, model_digest: None,
+        process_id: None, port: None, error: None,
+    }
+}
+
+fn idle_snapshot_for(binding: &BoundDeployment, installed: bool) -> ManagedRuntimeStatus {
+    let mut status = idle_snapshot(installed);
+    status.deployment_id = Some(binding.id.clone());
+    status.deployment_identity_hash =
+        Some(format!("sha256:{:x}", Sha256::digest(binding.identity.as_bytes())));
+    status.model_digest = Some(binding.digest.clone());
+    status
 }
 
 async fn authenticated_ready(port: u16, key: &str, alias: &str) -> Result<Option<bool>, String> {
@@ -908,11 +1492,35 @@ async fn authenticated_ready(port: u16, key: &str, alias: &str) -> Result<Option
 }
 
 #[tauri::command]
-pub async fn managed_local_runtime_status(app: AppHandle) -> Result<ManagedRuntimeStatus, String> {
-    let installed = verified_engine(&app).is_ok();
+pub async fn managed_local_runtime_status(
+    app: AppHandle,
+    deployment_id: Option<String>, deployment_identity: Option<String>,
+) -> Result<ManagedRuntimeStatus, String> {
+    let requested = match (deployment_id.as_deref(), deployment_identity.as_deref()) {
+        (Some(id), Some(identity)) => {
+            // A scoped status must be for a registered, native-canonical
+            // deployment, never an arbitrary renderer-named slot. Observing
+            // 65 distinct registered models must not allocate 65 owner slots.
+            Some(current_binding(&app, id, identity)?)
+        }
+        (None, None) => None,
+        _ => return Err("Managed runtime status requires an exact selector pair".into()),
+    };
+    let slot = select_owner(deployment_id.as_deref(), deployment_identity.as_deref())?;
+    let approved_installed = verified_engine(&app).is_ok();
+    let Some(slot) = slot else {
+        return Ok(match requested.as_ref() {
+            Some(binding) => idle_snapshot_for(binding, approved_installed),
+            None => idle_snapshot(approved_installed),
+        });
+    };
     let health = {
-        let mut owner = owner().lock().map_err(|_| "Runtime state poisoned")?;
+        let mut owner = slot.lock().map_err(|_| "Runtime state poisoned")?;
         reap_crash(&mut owner);
+        #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+        let installed = approved_installed || acceptance_synthetic_installed(&app, &owner);
+        #[cfg(not(all(windows, feature = "lm11-authenticated-webview-acceptance")))]
+        let installed = approved_installed;
         if !installed && owner.child.is_some() {
             forget_process(
                 &mut owner,
@@ -932,7 +1540,7 @@ pub async fn managed_local_runtime_status(app: AppHandle) -> Result<ManagedRunti
     };
     if let Some((port, key, alias, epoch)) = health {
         let probe = authenticated_ready(port, &key, &alias).await;
-        let mut owner = owner().lock().map_err(|_| "Runtime state poisoned")?;
+        let mut owner = slot.lock().map_err(|_| "Runtime state poisoned")?;
         reap_crash(&mut owner);
         if owner.epoch == epoch && owner.child.is_some() {
             match probe {
@@ -958,9 +1566,17 @@ pub async fn managed_local_runtime_status(app: AppHandle) -> Result<ManagedRunti
                 _ => owner.state = "Starting",
             }
         }
+        #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+        let installed = approved_installed || acceptance_synthetic_installed(&app, &owner);
+        #[cfg(not(all(windows, feature = "lm11-authenticated-webview-acceptance")))]
+        let installed = approved_installed;
         return Ok(snapshot(&owner, installed));
     }
-    let owner = owner().lock().map_err(|_| "Runtime state poisoned")?;
+    let owner = slot.lock().map_err(|_| "Runtime state poisoned")?;
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    let installed = approved_installed || acceptance_synthetic_installed(&app, &owner);
+    #[cfg(not(all(windows, feature = "lm11-authenticated-webview-acceptance")))]
+    let installed = approved_installed;
     Ok(snapshot(&owner, installed))
 }
 
@@ -976,26 +1592,32 @@ pub fn managed_local_runtime_start(
     if sha256_file(&model)? != binding.digest.trim_start_matches("sha256:") {
         return Err("Imported GGUF file is missing or was modified".into());
     }
-    let mut owner = owner().lock().map_err(|_| "Runtime state poisoned")?;
+    let key = runtime_key(&binding);
+    let slot = get_or_insert_owner(key.clone())?;
+    {
+        let mut current = slot.lock().map_err(|_| "Runtime state poisoned")?;
+        reap_crash(&mut current);
+        if current.child.is_some() {
+            if current.deployment.as_ref().is_some_and(|existing|
+                existing.id == binding.id && existing.identity == binding.identity) {
+                return Ok(snapshot(&current, true));
+            }
+            return Err("Exact managed runtime owner changed during start".into());
+        }
+    }
+    let _reservation = reserve_child_start(&key)?;
+    let mut owner = slot.lock().map_err(|_| "Runtime state poisoned")?;
+    if registry().closing.load(Ordering::Acquire) {
+        return Err("Managed runtime host is shutting down".into());
+    }
     reap_crash(&mut owner);
     if owner.child.is_some() {
-        if owner.deployment.as_ref().is_some_and(|existing| {
-            existing.id == binding.id && existing.identity == binding.identity
-        }) {
-            return Ok(snapshot(&owner, true));
-        }
-        return Err("Stop the current managed deployment before loading another".into());
+        return Err("Exact managed deployment started under another reservation".into());
     }
     let random_key = random_hex()?;
     let epoch = random_hex()?;
     let alias = format!("clack-{}", &binding.digest[7..23]);
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|_| "Could not allocate local runtime transport")?;
-    let port = listener
-        .local_addr()
-        .map_err(|_| "Could not read local runtime port")?
-        .port();
-    drop(listener);
+    let (port, reserved_port) = reserve_fresh_loopback_port()?;
     let mut command = Command::new(binary);
     // Never inject parent process secrets, credentials, proxies or untrusted
     // LLAMA_ARG_* defaults into the engine process. CPU-only release bundles
@@ -1092,6 +1714,7 @@ pub fn managed_local_runtime_start(
     }
     owner.child = Some(child);
     owner.secret_file = Some(secret_file);
+    owner.port_reservation = Some(reserved_port);
     #[cfg(windows)]
     {
         owner.job = Some(managed_job);
@@ -1108,9 +1731,21 @@ pub fn managed_local_runtime_start(
 }
 
 #[tauri::command]
-pub fn managed_local_runtime_stop(app: AppHandle) -> Result<ManagedRuntimeStatus, String> {
+pub fn managed_local_runtime_stop(
+    app: AppHandle,
+    deployment_id: Option<String>, deployment_identity: Option<String>,
+) -> Result<ManagedRuntimeStatus, String> {
     let installed = verified_engine(&app).is_ok();
-    let mut owner = owner().lock().map_err(|_| "Runtime state poisoned")?;
+    let slot = select_owner(deployment_id.as_deref(), deployment_identity.as_deref())?;
+    let Some(slot) = slot else {
+        // Stop is idempotent when no native deployment has ever been owned.
+        // An exact unknown selector is different: do not silently target another.
+        if deployment_id.is_some() {
+            return Err("Exact managed deployment is not owned by this native process".into());
+        }
+        return Ok(idle_snapshot(installed));
+    };
+    let mut owner = slot.lock().map_err(|_| "Runtime state poisoned")?;
     owner.state = "Stopping";
     forget_process(&mut owner, "Stopped", None);
     Ok(snapshot(&owner, installed))
@@ -1136,19 +1771,26 @@ pub async fn managed_local_runtime_route(
     let current = current_binding(&app, &deployment_id, &deployment_identity)?;
     // Re-observe authenticated health on every routing admission, not simply
     // the state left behind by an earlier UI poll.
-    let witnessed = managed_local_runtime_status(app.clone()).await?;
+    let witnessed = managed_local_runtime_status(
+        app.clone(), Some(deployment_id.clone()), Some(deployment_identity.clone()),
+    ).await?;
     if witnessed.state != "Ready" {
         return Err("Managed runtime has no current authenticated Ready observation".into());
     }
-    let mut owner = owner().lock().map_err(|_| "Runtime state poisoned")?;
+    let slot = select_owner(Some(&deployment_id), Some(&deployment_identity))?
+        .ok_or("Exact managed deployment has no native process owner")?;
+    let mut owner = slot.lock().map_err(|_| "Runtime state poisoned")?;
     reap_crash(&mut owner);
-    if owner.state != "Ready"
+    if registry().closing.load(Ordering::Acquire)
+        || owner.state != "Ready"
         || owner.deployment.as_ref().is_none_or(|loaded| {
             loaded.id != current.id
                 || loaded.identity != current.identity
                 || loaded.digest != current.digest
         })
         || owner.epoch.is_empty()
+        || witnessed.epoch != owner.epoch
+        || witnessed.process_id != owner.child.as_ref().map(Child::id)
         || epoch.as_ref().is_some_and(|e| *e != owner.epoch)
     {
         return Err("Exact managed deployment is not ready; no Ollama fallback".into());
@@ -1170,8 +1812,20 @@ pub async fn managed_local_runtime_route(
 }
 
 pub fn shutdown() {
-    if let Ok(mut owner) = owner().lock() {
+    let registry = registry();
+    registry.closing.store(true, Ordering::Release);
+    // Snapshot only Arc handles under the map lock; process kill/wait and job
+    // teardown hold each deployment's own lock and never block sibling lookup.
+    let slots = registry.entries.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .owners.values().cloned().collect::<Vec<_>>();
+    for slot in slots {
+        let mut owner = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         forget_process(&mut owner, "Stopped", None);
+    }
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    if let Ok(mut pending) = registry.pending_synthetic_key.lock() {
+        *pending = None;
     }
 }
 
@@ -1299,6 +1953,141 @@ mod tests {
         assert!(active.child.is_none());
     }
 
+    fn bound_for_owner(id: &str, identity: &str) -> BoundDeployment {
+        BoundDeployment {
+            id: id.into(), identity: identity.into(),
+            digest: format!("sha256:{}", "a".repeat(64)), context: 4096,
+        }
+    }
+
+    #[test]
+    fn keyed_registry_reuses_only_the_exact_native_identity_and_bounds_slots() {
+        let mut entries = RuntimeRegistryEntries::default();
+        let a = ("deployment-A".into(), "identity-A".into());
+        let a2 = ("deployment-A".into(), "identity-A2".into());
+        let b = ("deployment-B".into(), "identity-B".into());
+        let first = get_or_insert_owner_in(&mut entries, a.clone()).unwrap();
+        let repeated = get_or_insert_owner_in(&mut entries, a).unwrap();
+        let changed = get_or_insert_owner_in(&mut entries, a2).unwrap();
+        let sibling = get_or_insert_owner_in(&mut entries, b).unwrap();
+        assert!(Arc::ptr_eq(&first, &repeated));
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert!(!Arc::ptr_eq(&first, &sibling));
+        assert_eq!(entries.owners.len(), 3);
+        for n in 3..MAX_MANAGED_OWNER_SLOTS {
+            get_or_insert_owner_in(&mut entries, (format!("d-{n}"), format!("i-{n}")))
+                .unwrap();
+        }
+        assert_eq!(entries.owners.len(), MAX_MANAGED_OWNER_SLOTS);
+        assert!(get_or_insert_owner_in(&mut entries, ("extra".into(), "exact".into())).is_err());
+    }
+
+    #[test]
+    fn scoped_status_lookup_is_pure_and_unscoped_ambiguity_fails_closed() {
+        let mut entries = RuntimeRegistryEntries::default();
+        for n in 0..70 {
+            assert!(select_owner_from_entries(&entries,
+                Some(&format!("deployment-{n}")), Some("valid-identity"))
+                .unwrap().is_none());
+        }
+        assert!(entries.owners.is_empty()); // Reading 70 registered owners allocates ZERO slots.
+        assert!(select_owner_from_entries(&entries, None, None).unwrap().is_none());
+        let key_a = ("deployment-A".into(), "identity-A".into());
+        let key_b = ("deployment-B".into(), "identity-B".into());
+        let a = get_or_insert_owner_in(&mut entries, key_a.clone()).unwrap();
+        assert!(Arc::ptr_eq(&select_owner_from_entries(&entries,None,None)
+            .unwrap().unwrap(), &a));
+        get_or_insert_owner_in(&mut entries, key_b).unwrap();
+        assert!(select_owner_from_entries(&entries,None,None).is_err());
+        assert!(select_owner_from_entries(&entries,Some("deployment-A"),None).is_err());
+        assert!(select_owner_from_entries(&entries,None,Some("identity-A")).is_err());
+        assert!(select_owner_from_entries(&entries,Some("deployment-A"),Some("identity-wrong"))
+            .unwrap().is_none());
+        assert!(Arc::ptr_eq(&select_owner_from_entries(&entries,
+            Some(&key_a.0),Some(&key_a.1)).unwrap().unwrap(),&a));
+    }
+
+    #[test]
+    fn launch_reservations_deny_same_deployment_old_identity_but_allow_siblings() {
+        let mut entries = RuntimeRegistryEntries::default();
+        let a = ("deployment-A".into(), "revision-1".into());
+        let a2 = ("deployment-A".into(), "revision-2".into());
+        let b = ("deployment-B".into(), "revision-1".into());
+        let c = ("deployment-C".into(), "revision-1".into());
+        for key in [&a, &a2, &b, &c] {
+            get_or_insert_owner_in(&mut entries, key.clone()).unwrap();
+        }
+        entries.starting.insert(a.clone());
+        assert!(check_child_start_capacity(&entries,&a).is_err());
+        assert!(check_child_start_capacity(&entries,&a2).is_err());
+        assert!(check_child_start_capacity(&entries,&b).is_ok());
+        assert!(check_child_start_capacity(&entries,&c).is_ok());
+        entries.starting.insert(b.clone());
+        entries.starting.insert(c.clone());
+        assert!(check_child_start_capacity(&entries,&a2).is_err());
+        entries.starting.remove(&a);
+        assert!(check_child_start_capacity(&entries,&a2).is_ok());
+        for n in 0..(MAX_LIVE_MANAGED_CHILDREN-2) {
+            let key = (format!("extra-{n}"), format!("identity-{n}"));
+            get_or_insert_owner_in(&mut entries,key.clone()).unwrap();
+            entries.starting.insert(key);
+        }
+        assert!(check_child_start_capacity(&entries,&a2).is_err());
+    }
+
+    #[test]
+    fn loopback_ports_are_uniquely_reserved_and_reusable_after_owner_release() {
+        let mut entries = RuntimeRegistryEntries::default();
+        assert!(!claim_port(&mut entries,0));
+        assert!(claim_port(&mut entries,61001));
+        assert!(!claim_port(&mut entries,61001));
+        assert!(claim_port(&mut entries,61002));
+        assert_eq!(entries.reserved_ports.len(),2);
+        assert!(entries.reserved_ports.remove(&61001));
+        assert!(claim_port(&mut entries,61001));
+        assert_eq!(entries.reserved_ports.len(),2);
+    }
+
+    #[test]
+    fn stopping_one_owner_rotates_only_its_epoch_and_forgets_only_its_credential() {
+        let mut a = RuntimeOwner::default();
+        let mut b = RuntimeOwner::default();
+        let mut c = RuntimeOwner::default();
+        for (owner,id) in [(&mut a,"A"),(&mut b,"B"),(&mut c,"C")] {
+            owner.deployment = Some(bound_for_owner(id,"identity-1"));
+            owner.epoch = format!("epoch-{id}");
+            owner.key = Some(format!("secret-{id}"));
+            owner.port = Some(61001);
+            owner.state = "Ready";
+        }
+        forget_process(&mut a,"Stopped",None);
+        assert_eq!(a.state,"Stopped");
+        assert!(a.deployment.is_none() && a.key.is_none() && a.port.is_none());
+        assert_ne!(a.epoch,"epoch-A");
+        assert_eq!(b.epoch,"epoch-B");
+        assert_eq!(c.epoch,"epoch-C");
+        assert_eq!(b.key.as_deref(),Some("secret-B"));
+        assert_eq!(c.key.as_deref(),Some("secret-C"));
+        assert_eq!(b.deployment.as_ref().map(|x| x.id.as_str()),Some("B"));
+        assert_eq!(c.deployment.as_ref().map(|x| x.id.as_str()),Some("C"));
+    }
+
+    #[test]
+    fn scoped_status_exposes_identity_digest_but_no_bearer_or_secret_path() {
+        let binding=bound_for_owner("deployment-A","revision-2");
+        let status=idle_snapshot_for(&binding,true);
+        let serialized=serde_json::to_value(&status).unwrap();
+        assert_eq!(serialized["runtimeId"],ENGINE);
+        assert_eq!(serialized["deploymentId"],"deployment-A");
+        assert_eq!(serialized["modelDigest"],binding.digest);
+        assert_eq!(serialized["deploymentIdentityHash"],
+            format!("sha256:{:x}",Sha256::digest(b"revision-2")));
+        assert_eq!(serialized["state"],"Stopped");
+        assert!(serialized.get("apiKey").is_none());
+        assert!(serialized.get("credentialFingerprint").is_none());
+        assert!(serialized.get("secretFile").is_none());
+    }
+
     #[test]
     fn managed_identity_is_host_runtime_artifact_and_material_scoped() {
         let digest = format!("sha256:{}", "a".repeat(64));
@@ -1355,6 +2144,63 @@ mod tests {
         }
         assert!(!valid_hex("untrusted"));
         assert!(valid_hex(&"a".repeat(64)));
+    }
+
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    #[test]
+    fn authenticated_webview_acceptance_root_is_exact_or_one_direct_case() {
+        let fixed = Path::new(r"C:\clack\target\lm11-b01-b03-authenticated-webview-20261119");
+        assert!(acceptance_is_direct_owned_webview_root(fixed, fixed));
+        assert!(acceptance_is_direct_owned_webview_root(
+            fixed, &fixed.join("cases").join("case-one")
+        ));
+        for outside in [
+            fixed.join("cases"),
+            fixed.join("cases").join("case-one").join("nested"),
+            fixed.join("sibling"),
+            fixed.with_file_name("lm11-b01-b03-authenticated-webview-20261119-sibling"),
+            fixed.join("cases").join("..").join("escaped"),
+        ] {
+            assert!(!acceptance_is_direct_owned_webview_root(fixed, &outside));
+        }
+    }
+
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    #[test]
+    fn authenticated_webview_synthetic_route_requires_bearer_and_digest_alias() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let key = "b".repeat(64);
+        let alias = format!("clack-{}", "a".repeat(16));
+        assert!(acceptance_valid_synthetic_route(1420, &key, &alias, &digest));
+        assert!(!acceptance_valid_synthetic_route(0, &key, &alias, &digest));
+        assert!(!acceptance_valid_synthetic_route(1420, "not-a-secret", &alias, &digest));
+        assert!(!acceptance_valid_synthetic_route(1420, &"B".repeat(64), &alias, &digest));
+        assert!(!acceptance_valid_synthetic_route(1420, &key, "clack-forged", &digest));
+        assert!(!acceptance_valid_synthetic_route(1420, &key, &alias, "sha256:wrong"));
+    }
+
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    #[test]
+    fn authenticated_webview_bind_remains_unverified_until_health() {
+        let mut active = RuntimeOwner::default();
+        active.state = acceptance_unverified_owner_state();
+        assert_eq!(snapshot(&active, true).state, "Starting");
+        assert_ne!(active.state, "Ready");
+    }
+
+    #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+    #[test]
+    fn authenticated_webview_owner_defaults_closed_and_forget_clears_authority() {
+        let mut active = RuntimeOwner::default();
+        assert!(!active.acceptance);
+        assert!(active.acceptance_root.is_none());
+        active.acceptance = true;
+        active.acceptance_root = Some(PathBuf::from(r"C:\synthetic-only"));
+        active.state = "Ready";
+        forget_process(&mut active, "Stopped", None);
+        assert!(!active.acceptance);
+        assert!(active.acceptance_root.is_none());
+        assert_eq!(active.state, "Stopped");
     }
 
     #[cfg(windows)]

@@ -1,4 +1,5 @@
 import type { ModelMessage, UIMessageChunk } from "ai";
+import { lm11AcceptanceBarrier, type Lm11AcceptanceStage } from "./lm11AcceptanceBarrier";
 
 /** One explicit, short Chat qualification uses Clack's real Agent request
  * construction and parsed UI stream. No raw prompts or output are persisted
@@ -29,6 +30,13 @@ export type QualificationFlightSnapshot = {
   finishes: number;
   metadataCount: number;
   violations: string[];
+  /** Native request correlation is distinct from the AI SDK's settled Chat.
+   * A native terminal event alone is NOT proof of transport quiescence or CAS. */
+  native: {
+    opens: number;
+    requestId: string | null;
+    terminal: "completed" | "cancelled" | null;
+  };
   measurement?: {
     startedAt: number;
     preparedAt: number | null;
@@ -57,9 +65,121 @@ type LiveFlight = {
   startedAt: number;
   expectedPrompt: string;
   snapshot: QualificationFlightSnapshot;
+  dispatchOpen: boolean;
+  snapshotConsumed: boolean;
+  cancelChallenge: boolean;
+  operation?: QualificationOperationDeadline;
 };
 
+// Closed flights remain as same-session no-dispatch tombstones. In particular,
+// Chat.sendMessage can reject before its queued transport callback has begun.
+// Removing its flight on disarm would let that delayed callback become an
+// ordinary unbounded Chat. Re-arming a fresh explicit operation replaces only
+// its own prior tombstone; captured old closures retain their revoked flight.
 const flights = new Map<string, LiveFlight>();
+
+/** Per-invocation LM11 safety budget, not a second request/receipt registry.
+ * The only clock for admission -> native quiescence -> CAS acknowledgement is
+ * monotonic. Races bound the caller, while every deferred continuation and
+ * final native dispatch MUST also check this same revoked authority. */
+export class QualificationOperationDeadline {
+  private readonly start = performance.now();
+  private readonly end: number;
+  private readonly timer: ReturnType<typeof setTimeout>;
+  private readonly aborter = new AbortController();
+  private stopReason: "cancelled" | "deadline" | "shutdown" | null = null;
+  private persistence: "not-started" | "pending" | "acknowledged" | "rejected" | "ambiguous" = "not-started";
+  private sdk = false;
+  private native = false;
+  private quiet = false;
+  private finished = false;
+
+  constructor(maxMs: number, private readonly onStop?: () => void) {
+    if (!Number.isSafeInteger(maxMs) || maxMs < 1 || maxMs > 300_000)
+      throw new Error("Invalid bounded qualification aggregate wall deadline");
+    this.end = this.start + maxMs;
+    this.timer = setTimeout(() => this.stop("deadline"), maxMs);
+  }
+
+  get signal(): AbortSignal { return this.aborter.signal; }
+  get state() {
+    return {
+      terminal: this.stopReason,
+      sdkSettled: this.sdk,
+      nativeAcknowledged: this.native,
+      nativeQuiescent: this.quiet,
+      persistence: this.persistence,
+    } as const;
+  }
+  remainingMs(): number { return Math.max(0, this.end - performance.now()); }
+  isOpen(): boolean {
+    if (!this.stopReason && this.remainingMs() <= 0) this.stop("deadline");
+    return !this.finished && this.stopReason === null;
+  }
+  assertOpen(): void {
+    if (!this.isOpen()) throw new Error(
+      this.stopReason === "deadline" ? "Qualification aggregate wall deadline exceeded"
+        : "Qualification operation cancelled before further effects",
+    );
+  }
+  stop(reason: "cancelled" | "deadline" | "shutdown"): void {
+    if (this.stopReason) return;
+    this.stopReason = reason;
+    if (this.persistence === "pending") this.persistence = "ambiguous";
+    this.aborter.abort();
+    try { this.onStop?.(); } catch { /* terminal authority cannot be revoked by observer failure */ }
+    clearTimeout(this.timer);
+  }
+  /** Do not confuse a timeout race with cancellation of an uncancellable IPC.
+   * Post-await checks prevent a late response from advancing to the NEXT step. */
+  async within<T>(work: () => Promise<T>): Promise<T> {
+    this.assertOpen();
+    return new Promise<T>((resolve, reject) => {
+      const aborted = () => reject(new Error("Qualification operation deadline or cancellation"));
+      this.signal.addEventListener("abort", aborted, { once: true });
+      Promise.resolve().then(() => { this.assertOpen(); return work(); }).then(
+        value => {
+          this.signal.removeEventListener("abort", aborted);
+          try { this.assertOpen(); resolve(value); } catch (error) { reject(error); }
+        },
+        error => { this.signal.removeEventListener("abort", aborted); reject(error); },
+      );
+    });
+  }
+  sdkSettled(): void { this.assertOpen(); this.sdk = true; }
+  nativeAcknowledged(): void { this.assertOpen(); this.native = true; }
+  nativeQuiescent(): void {
+    this.assertOpen();
+    if (!this.sdk || !this.native) throw new Error("SDK/native settlement not independently proven");
+    this.quiet = true;
+  }
+  beginPersistence(): void {
+    this.assertOpen();
+    if (!this.quiet || this.persistence !== "not-started")
+      throw new Error("Qualification has no native-quiescent single CAS authority");
+    this.persistence = "pending";
+  }
+  persisted(): void {
+    this.assertOpen();
+    if (this.persistence !== "pending") throw new Error("No acknowledged qualification CAS");
+    this.persistence = "acknowledged";
+  }
+  ambiguousPersistence(): void {
+    if (this.persistence === "pending") this.persistence = "ambiguous";
+  }
+  /** A definite compare-and-swap conflict is different from a lost reply or
+   * an already-started native save with unknown acknowledgement. Neither
+   * constitutes a qualifying persistence success. */
+  rejectPersistence(): void {
+    if (this.persistence === "pending") this.persistence = "rejected";
+  }
+  finish(): void {
+    // Any deferred continuation retaining this object remains revoked after
+    // the invoking LM2F/LM6 runner has completed or failed.
+    this.finished = true;
+    clearTimeout(this.timer);
+  }
+}
 
 async function digest(text: string): Promise<`sha256:${string}`> {
   const value = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -71,17 +191,23 @@ export function armDeploymentQualification(
   sessionId: string,
   modelId: string,
   personaId: string,
-  opts?: { expectedPrompt?: string; measure?: boolean },
+  opts?: { expectedPrompt?: string; measure?: boolean;
+    operation?: QualificationOperationDeadline; cancelChallenge?: boolean },
 ): void {
-  if (flights.size || !sessionId || !modelId || personaId !== "builtin:coder")
+  if ([...flights.values()].some(f => !f.snapshotConsumed) ||
+      !sessionId || !modelId || personaId !== "builtin:coder")
     throw new Error("Another bounded qualification is active or the persona is not Chat-only Coder");
   flights.set(sessionId, {
     sessionId, modelId, personaId, startedAt: Date.now(),
     expectedPrompt: opts?.expectedPrompt ?? MANAGED_QUALIFICATION_PROMPT,
+    dispatchOpen: true, cancelChallenge: opts?.cancelChallenge === true,
+    snapshotConsumed: false,
+    operation: opts?.operation,
     snapshot: {
       prepared: 0, systemContextDigest: null, modelMessagesDigest: null,
       textStarts: 0, textDeltas: 0, textEnds: 0, textChars: 0,
       finishes: 0, metadataCount: 0, violations: [],
+      native: { opens: 0, requestId: null, terminal: null },
       ...(opts?.measure ? { measurement: {
         startedAt: Date.now(), preparedAt: null, requestStartAt: null,
         providerAdmittedAt: null, connectionStartAt: null, providerConnectedAt: null,
@@ -97,17 +223,76 @@ export function armDeploymentQualification(
 }
 export function disarmDeploymentQualification(sessionId: string): QualificationFlightSnapshot | null {
   const flight = flights.get(sessionId);
-  if (!flight) return null;
-  flights.delete(sessionId);
+  if (!flight || flight.snapshotConsumed) return null;
+  flight.dispatchOpen = false;
+  flight.snapshotConsumed = true;
+  // The tombstone must outlive any delayed request-preparation continuation.
   return structuredClone(flight.snapshot);
 }
+/** Capture this closure BEFORE any asynchronous Chat/Agent preparation. Even
+ * after disarm the captured flight stays revoked; an old prepared callback
+ * cannot become an ordinary, unarmed inference. */
+export function qualificationDispatchAuthority(
+  sessionId: string | undefined,
+): (() => boolean) | undefined {
+  const flight = sessionId ? flights.get(sessionId) : undefined;
+  if (!flight) return undefined;
+  return () => flight.dispatchOpen && (flight.operation?.isOpen() ?? true);
+}
+/** Capture the same qualification operation as the already-captured dispatch
+ * authority. Non-qualification and LM6 flights cannot arm LM11 barriers. */
+export function qualificationAcceptanceOperation(
+  sessionId: string | undefined,
+): QualificationOperationDeadline | undefined {
+  const flight = sessionId ? flights.get(sessionId) : undefined;
+  return flight && !flight.snapshot.measurement ? flight.operation : undefined;
+}
+
+export async function qualificationAcceptanceBoundary(
+  sessionId: string | undefined, stage: Lm11AcceptanceStage,
+): Promise<void> {
+  const operation = qualificationAcceptanceOperation(sessionId);
+  if (!operation || !sessionId) return;
+  if (import.meta.env.VITE_CLACK_LM11_ACCEPTANCE !== "1") return;
+  await lm11AcceptanceBarrier(stage, operation, sessionId);
+  operation.assertOpen();
+  if (!qualificationDispatchAuthority(sessionId)?.())
+    throw new Error("Qualification revoked at acceptance boundary");
+}
+/** Called by the existing inference cancellation authority, including when
+ * no native inference ID has yet been registered. */
+export function cancelDeploymentQualificationBeforeDispatch(sessionId: string): void {
+  const flight = flights.get(sessionId);
+  if (!flight) return;
+  // The original flight is intentionally disarmed after native quiescence,
+  // BEFORE the same qualification's evidence evaluation and B03 CAS.
+  // Disarming request dispatch must not lose its still-live operation's Stop
+  // authority. In particular, a user Stop at B03 ACK/readback cannot promote
+  // a previously cancelled caller to PASS. Finished/tombstoned operations
+  // stay inert, and this does not create any second qualification authority.
+  if (!flight.snapshotConsumed) flight.dispatchOpen = false;
+  if (!flight.cancelChallenge && flight.operation?.isOpen())
+    flight.operation.stop("cancelled");
+}
+export function cancelAllDeploymentQualificationBeforeDispatch(): void {
+  for (const sessionId of flights.keys()) {
+    const flight = flights.get(sessionId);
+    // A challenge's intentional cancellation is not a host-shutdown grant.
+    if (flight?.operation?.isOpen()) flight.operation.stop("shutdown");
+    if (flight && !flight.snapshotConsumed) flight.dispatchOpen = false;
+  }
+}
+export function peekDeploymentQualificationFlight(sessionId: string): QualificationFlightSnapshot | null {
+  return flights.get(sessionId)?.snapshot ?? null;
+}
 export function hasActiveDeploymentQualification(sessionId: string | undefined): boolean {
-  return !!sessionId && flights.has(sessionId);
+  return !!sessionId && flights.get(sessionId)?.dispatchOpen === true;
 }
 /** Optional standardized streaming-usage request, only for a deliberately
  * armed LM6 flight; ordinary Clack Chats and LM2F stay unchanged. */
 export function hasActiveLm6Measurement(sessionId: string | undefined): boolean {
-  return !!sessionId && !!flights.get(sessionId)?.snapshot.measurement;
+  return !!sessionId && flights.get(sessionId)?.dispatchOpen === true &&
+    !!flights.get(sessionId)?.snapshot.measurement;
 }
 export function qualificationMaxOutputTokens(sessionId: string | undefined): number | undefined {
   return hasActiveDeploymentQualification(sessionId) ? MANAGED_QUALIFICATION_MAX_OUTPUT : undefined;
@@ -119,6 +304,8 @@ export async function observeDeploymentQualificationPrepared(
 ): Promise<void> {
   const flight = sessionId ? flights.get(sessionId) : null;
   if (!flight) return;
+  if (!flight.dispatchOpen || (flight.operation && !flight.operation.isOpen()))
+    throw new Error("Qualification stopped during request preparation; dispatch forbidden");
   const s = flight.snapshot;
   if (s.measurement) s.measurement.preparedAt ??= Date.now();
   s.prepared++;
@@ -141,9 +328,15 @@ export async function observeDeploymentQualificationPrepared(
   if (!systemText.includes("ACTIVE AGENT: Coder"))
     s.violations.push("actual-system-persona-differs");
   s.systemContextDigest = await digest(systemText);
+  if (!flight.dispatchOpen || (flight.operation && !flight.operation.isOpen()))
+    throw new Error("Qualification stopped during system-context digest; dispatch forbidden");
   s.modelMessagesDigest = await digest(JSON.stringify(value.messages));
+  if (!flight.dispatchOpen || (flight.operation && !flight.operation.isOpen()))
+    throw new Error("Qualification stopped during request digest; dispatch forbidden");
   if (s.violations.length)
     throw new Error("Bounded qualification request did not match its no-tools, exact-context contract");
+  if (!s.measurement)
+    await qualificationAcceptanceBoundary(sessionId, "preparation-complete");
 }
 
 export function observeDeploymentQualificationStream(
@@ -152,6 +345,15 @@ export function observeDeploymentQualificationStream(
 ): void {
   const flight = sessionId ? flights.get(sessionId) : null;
   if (!flight) return;
+  if (!flight.dispatchOpen) {
+    // A cancelled flight still observes negative/no-continuation evidence.
+    // Silencing its observer here would make the LM6 finite quiescence check
+    // falsely PASS when text or terminal events arrive after cancellation.
+    if (chunk.type === "text-delta" || chunk.type === "text-start" ||
+        chunk.type === "text-end" || chunk.type === "finish")
+      flight.snapshot.violations.push("stream-event-after-flight-revocation");
+    return;
+  }
   const s = flight.snapshot;
   switch (chunk.type) {
     case "text-start": s.textStarts++; break;
@@ -179,6 +381,20 @@ export function observeDeploymentQualificationNative(
   admittedAt?: number | null,
 ): void {
   const flight = sessionId ? flights.get(sessionId) : undefined;
+  if (flight && stage === "request") {
+    flight.snapshot.native.opens++;
+    flight.snapshot.native.requestId ??= requestId;
+    if (!flight.dispatchOpen || (flight.operation && !flight.operation.isOpen()) ||
+        flight.snapshot.native.opens !== 1 ||
+        flight.snapshot.native.requestId !== requestId)
+      flight.snapshot.violations.push("native-dispatch-without-single-open-authority");
+  } else if (flight && flight.snapshot.native.requestId === requestId &&
+      flight.snapshot.native.opens === 1) {
+    if (stage === "terminal" && !flight.dispatchOpen)
+      flight.snapshot.violations.push("native-completed-after-cancellation");
+    if (stage === "terminal") flight.snapshot.native.terminal = "completed";
+    if (stage === "cancelled") flight.snapshot.native.terminal = "cancelled";
+  }
   const m = flight?.snapshot.measurement;
   if (!m || !requestId || requestId.length > 256 || !Number.isSafeInteger(at)) return;
   if (stage === "request") {

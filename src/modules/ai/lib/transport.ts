@@ -35,6 +35,7 @@ import { readSelfHostedSnapshot } from "@/modules/ai/lib/selfHostedCapabilities"
 import type { InferenceScope } from "@/modules/ai/lib/inferenceLifecycle";
 import {
   hasActiveDeploymentQualification,
+  qualificationDispatchAuthority,
   observeDeploymentQualificationPrepared,
   observeDeploymentQualificationStream,
   qualificationMaxOutputTokens,
@@ -219,7 +220,16 @@ export function createContextAwareTransport(deps: Deps) {
     if (agentRequestFailureRecovery && !deps.canDispatchAgentRequestRecovery?.())
       throw new Error("Agent provider recovery has no committed same-run checkpoint and allowance.");
     const recovery = requestBody?.clackRecovery === true || agentRequestFailureRecovery;
-    const scope = deps.getInferenceScope?.();
+    // Pin the existing LM2F/LM6 flight's single-use dispatch authority before
+    // the first async retrieval/compaction await. A later disarm/cancel cannot
+    // turn a delayed preparation into an unqualified ordinary Chat.
+    const originalScope = deps.getInferenceScope?.();
+    const qualificationAuthority = originalScope?.sessionId
+      ? qualificationDispatchAuthority(originalScope.sessionId) : undefined;
+    const scope = originalScope && qualificationAuthority
+      ? { ...originalScope, isCurrent: () =>
+          originalScope.isCurrent() && qualificationAuthority() }
+      : originalScope;
     if (agentRequestFailureRecovery) {
       if (!scope?.runId || claimedAgentRequestRecoveryRunId === scope.runId)
         throw new Error("The one Agent provider recovery segment has already been claimed or has no owner.");

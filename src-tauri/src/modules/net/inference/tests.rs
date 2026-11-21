@@ -6,6 +6,17 @@ use std::{
 };
 
 #[test]
+fn lm11_native_quiescence_requires_actual_original_registry_lease_drop() {
+    let native=InferenceState::default();
+    let original=native.open("main").unwrap();
+    assert!(native.completion(&original).is_some(),"reserved original ID is still owned");
+    let lease=native.start("main",&original).unwrap();
+    assert!(native.completion(&original).is_some(),"completed SDK text cannot drop Rust lease");
+    drop(lease);
+    assert!(native.completion(&original).is_none(),"only actual native lease drop drains the ID");
+}
+
+#[test]
 fn one_muse_permit_is_sha256_bound_and_never_permits_missing_or_foreign_tokens() {
     let permit = "d".repeat(64);
     let expected = format!("{:x}", Sha256::digest(permit.as_bytes()));

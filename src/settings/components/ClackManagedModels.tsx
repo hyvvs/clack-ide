@@ -39,6 +39,8 @@ export function ClackManagedModels() {
   const state = usePreferencesStore(s => s.selfHostedInference);
   const registered = useMemo(() => managedLocalModelInfos(state), [state]);
   const [runtime, setRuntime] = useState<ManagedLocalNativeStatus | null>(null);
+  const [runtimeBySelection, setRuntimeBySelection] =
+    useState<Record<string, ManagedLocalNativeStatus | null>>({});
   const [modelPresence, setModelPresence] = useState<Record<string, boolean>>({});
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [inspection, setInspection] = useState<InspectedGguf | null>(null);
@@ -49,11 +51,33 @@ export function ClackManagedModels() {
 
   const refresh = async () => {
     try {
-      const value = await invoke<ManagedLocalNativeStatus>("managed_local_runtime_status");
-      setRuntime(value);
+      if (registered.length === 0) {
+        // Preserve old no-deployment installation UX. Only this truly empty
+        // case may issue unscoped native status, which cannot select A/B/C.
+        const value = await invoke<ManagedLocalNativeStatus>("managed_local_runtime_status");
+        setRuntime(value);
+        setRuntimeBySelection({});
+        return;
+      }
+      const observations = await Promise.all(registered.map(async info => {
+        const found = resolveManagedLocalSelection(state, info.id);
+        if (found.status !== "available" && found.status !== "unavailable")
+          return [info.id, null] as const;
+        const value = await invoke<ManagedLocalNativeStatus>("managed_local_runtime_status", {
+          deploymentId: found.deployment.id,
+          deploymentIdentity: found.identity,
+        }).catch(() => null);
+        return [info.id, value] as const;
+      }));
+      const statuses = Object.fromEntries(observations);
+      setRuntimeBySelection(statuses);
+      // A single registered deployment retains its historical header/status.
+      // With multiple registered deployments there is no implicit first one.
+      setRuntime(registered.length === 1 ? statuses[registered[0].id] : null);
     } catch {
       // No native adapter is not an installed engine.
       setRuntime(null);
+      setRuntimeBySelection({});
     }
   };
   useEffect(() => {
@@ -61,7 +85,7 @@ export function ClackManagedModels() {
     // Do not continuously SHA-256 a release binary while Settings is idle.
     const timer = setInterval(() => { void refresh(); }, 5_000);
     return () => clearInterval(timer);
-  }, []);
+  }, [registered, state]);
   useEffect(() => {
     let active = true;
     const check = async () => {
@@ -177,18 +201,29 @@ export function ClackManagedModels() {
     finally { setBusy(false); }
   }
 
-  async function stop() {
+  async function stop(selectionId: string) {
+    const found = resolveManagedLocalSelection(state, selectionId);
+    if (found.status !== "available" && found.status !== "unavailable") {
+      setError("Cannot stop an unregistered or changed managed deployment.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
-      await invoke("managed_local_runtime_stop");
-      setMessage("Managed inference process stopped. Registered models and evidence were preserved.");
+      await invoke("managed_local_runtime_stop", {
+        deploymentId: found.deployment.id,
+        deploymentIdentity: found.identity,
+      });
+      setMessage("The selected managed deployment stopped. Other deployments, registered models and evidence were preserved.");
       await refresh();
     } catch (cause) { setError(safeError(cause)); }
     finally { setBusy(false); }
   }
 
-  const installed = runtime?.installed === true;
+  const installed = runtime?.installed === true ||
+    Object.values(runtimeBySelection).some(value => value?.installed === true);
+  const liveCount = Object.values(runtimeBySelection)
+    .filter(value => value?.processId && value.state === "Ready").length;
   return (
     <section aria-label="Clack Managed local models" className="rounded-lg border border-border/70 p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
@@ -199,7 +234,10 @@ export function ClackManagedModels() {
           </p>
         </div>
         <span className="text-xs text-muted-foreground" role="status">
-          {runtime?.state ?? "Unavailable"} {runtime?.installed ? `· ${runtime.version}` : ""}
+          {registered.length > 1
+            ? `${liveCount} Ready of ${registered.length} managed deployments`
+            : runtime?.state ?? "Unavailable"}
+          {installed ? ` · ${runtime?.version ?? "b12248"}` : ""}
         </span>
       </div>
       {installed && runtime?.epoch && (
@@ -222,11 +260,6 @@ export function ClackManagedModels() {
         <Button size="sm" variant="outline" onClick={() => void installBundle()} disabled={busy || installed}>
           Install approved runtime ZIP
         </Button>
-        {runtime?.processId && (
-          <Button size="sm" variant="outline" onClick={() => void stop()} disabled={busy}>
-            Stop runtime
-          </Button>
-        )}
       </div>
       {inspection && (
         <div className="rounded-md border border-border/70 p-3 space-y-2" aria-label="GGUF inspection">
@@ -261,8 +294,9 @@ export function ClackManagedModels() {
       {registered.map(model => {
         const found = resolveManagedLocalSelection(state, model.id);
         if (found.status !== "available" && found.status !== "unavailable") return null;
-        const loaded = runtime?.deploymentId === found.deployment.id &&
-          runtime?.modelDigest === found.artifact.digest;
+        const owner = runtimeBySelection[model.id] ?? null;
+        const loaded = owner?.deploymentId === found.deployment.id &&
+          owner?.modelDigest === found.artifact.digest;
         const fileMissing = modelPresence[found.artifact.digest!] === false;
         return (
           <div key={model.id} className="flex items-center justify-between gap-3 border-t border-border/60 pt-3">
@@ -273,14 +307,21 @@ export function ClackManagedModels() {
                   ? `CPU · ${JSON.parse(found.deployment.configurationIdentity).context} context`
                   : "CPU"} · {found.artifact.digest?.slice(7, 19)} ·
                 {" "}{fileMissing ? "Model file missing" :
-                  loaded ? runtime?.state : installed ? "Stopped / unverified" : "Runtime not installed"}
+                  loaded ? owner?.state : installed ? "Stopped / unverified" : "Runtime not installed"}
               </p>
             </div>
-            <Button size="sm" variant="outline" disabled={busy || !installed || fileMissing ||
-              (Boolean(runtime?.processId) && !loaded)}
-              onClick={() => void start(model.id)}>
-              {loaded ? "Load status" : "Start"}
-            </Button>
+            <div className="flex shrink-0 gap-2">
+              <Button size="sm" variant="outline" disabled={busy || !installed || fileMissing}
+                onClick={() => void start(model.id)}>
+                {loaded ? "Load status" : "Start"}
+              </Button>
+              {loaded && owner?.processId ? (
+                <Button size="sm" variant="outline" disabled={busy}
+                  onClick={() => void stop(model.id)}>
+                  Stop
+                </Button>
+              ) : null}
+            </div>
           </div>
         );
       })}

@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+import { invoke } from "@tauri-apps/api/core";
 import type { UIMessage } from "ai";
 import { attachManagedLocalGguf, resolveManagedLocalSelection } from "./managedLocalModels";
 import { emptySelfHostedState, readSelfHostedState } from "./selfHostedProfiles";
@@ -6,10 +8,15 @@ import { observedManagedFabric } from "./deploymentQualificationView";
 import {
   MANAGED_QUALIFICATION_EXPECTED,
   MANAGED_QUALIFICATION_PROMPT,
+  QualificationOperationDeadline,
+  armDeploymentQualification,
+  disarmDeploymentQualification,
+  observeDeploymentQualificationNative,
   type QualificationFlightSnapshot,
 } from "./deploymentQualificationFlight";
 import {
   appendManagedObservedQualification,
+  awaitNativeQualificationQuiescence,
   boundedChatReceipts,
   inspectBoundedChat,
 } from "./deploymentQualificationRuntime";
@@ -42,6 +49,7 @@ function flight(text = MANAGED_QUALIFICATION_EXPECTED): QualificationFlightSnaps
     prepared: 1, systemContextDigest: hash, modelMessagesDigest: hash,
     textStarts: 1, textDeltas: 2, textEnds: 1, textChars: text.length,
     finishes: 1, metadataCount: 1, violations: [],
+    native: { opens: 1, requestId: "inference-1", terminal: "completed" },
   };
 }
 
@@ -244,5 +252,73 @@ describe("LM2F bounded Clack Chat qualification: actual stream evidence", () => 
     expect(() => appendManagedObservedQualification(
       denied, v.selectionId, v.resolved.identity, v.native, receipts, at,
     )).toThrow();
+  });
+});
+
+describe("LM11 B03 independent native terminal/quiescence observation (offline)", () => {
+  beforeEach(() => {
+    // Model the SAME read-only native registry authority, never a separate
+    // renderer boolean. A default positive test requires two native reads.
+    vi.mocked(invoke).mockReset().mockResolvedValue(true);
+  });
+  it("requires one exact native terminal and stable drained session before CAS may start", async () => {
+    const sessionId = "lm11-native-quiescence";
+    const budget = new QualificationOperationDeadline(2_000);
+    try {
+      armDeploymentQualification(sessionId, "managed-scope", "builtin:coder", { operation: budget });
+      observeDeploymentQualificationNative(sessionId, "request", "inference-31");
+      observeDeploymentQualificationNative(sessionId, "terminal", "inference-31");
+      budget.sdkSettled();
+      expect(budget.state.nativeAcknowledged).toBe(false);
+      await awaitNativeQualificationQuiescence(sessionId, budget);
+      expect(budget.state).toMatchObject({
+        sdkSettled: true, nativeAcknowledged: true, nativeQuiescent: true,
+        persistence: "not-started",
+      });
+      budget.beginPersistence();
+      expect(budget.state.persistence).toBe("pending");
+    } finally {
+      disarmDeploymentQualification(sessionId);
+      budget.finish();
+    }
+  });
+
+  it("native cancellation cannot be promoted into completed quiescence or a receipt", async () => {
+    const sessionId = "lm11-native-cancelled";
+    const budget = new QualificationOperationDeadline(2_000);
+    try {
+      armDeploymentQualification(sessionId, "managed-scope", "builtin:coder", { operation: budget });
+      observeDeploymentQualificationNative(sessionId, "request", "inference-32");
+      observeDeploymentQualificationNative(sessionId, "cancelled", "inference-32");
+      budget.sdkSettled();
+      await expect(awaitNativeQualificationQuiescence(sessionId, budget))
+        .rejects.toThrow(/terminal|identity/);
+      expect(() => budget.beginPersistence()).toThrow(/quiescent/);
+    } finally {
+      disarmDeploymentQualification(sessionId);
+      budget.finish();
+    }
+  });
+  it("a late native registry lease denies receipt promotion even after SDK and Channel complete", async () => {
+    const sessionId = "lm11-native-unresolved-registry";
+    const budget = new QualificationOperationDeadline(2_000);
+    // The first actual native check passes; the second catches an unresolved
+    // lease. Neither a terminal event nor the 50ms observation grants PASS.
+    vi.mocked(invoke).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    try {
+      armDeploymentQualification(sessionId, "managed-scope", "builtin:coder", { operation:budget });
+      observeDeploymentQualificationNative(sessionId, "request", "inference-37");
+      observeDeploymentQualificationNative(sessionId, "terminal", "inference-37");
+      budget.sdkSettled();
+      await expect(awaitNativeQualificationQuiescence(sessionId,budget))
+        .rejects.toThrow(/Native registry still owned/);
+      expect(budget.state.nativeQuiescent).toBe(false);
+      expect(() => budget.beginPersistence()).toThrow(/quiescent/);
+      expect(vi.mocked(invoke).mock.calls.map(([command])=>command))
+        .toEqual(["ai_http_request_quiescent","ai_http_request_quiescent"]);
+    } finally {
+      disarmDeploymentQualification(sessionId);
+      budget.finish();
+    }
   });
 });

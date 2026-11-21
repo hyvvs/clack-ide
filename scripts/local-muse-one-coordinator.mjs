@@ -47,6 +47,9 @@ export async function runFutureOneMuseCoordinator({
     'forgeboardmuse-20261109-01','mission-evidence-manifest.json'),
   viteFactory = null,
   logger = report,
+  operatorStep = null,
+  kernelDiagnostic = null,
+  requestTrigger = null,
   maxIdleMs = 300_000,
   maxTotalMs = 1_800_000,
 } = {}) {
@@ -55,6 +58,12 @@ export async function runFutureOneMuseCoordinator({
   assert(Number.isSafeInteger(maxIdleMs)&&maxIdleMs>=1000&&maxIdleMs<=1_800_000 &&
     Number.isSafeInteger(maxTotalMs)&&maxTotalMs>=maxIdleMs&&maxTotalMs<=1_800_000,
   'bounded-future-run-required');
+  assert(operatorStep === null || typeof operatorStep === 'function',
+    'coordinated-operator-callback-required');
+  assert(kernelDiagnostic === null || typeof kernelDiagnostic === 'function',
+    'bounded-kernel-startup-diagnostic-required');
+  assert(requestTrigger === null || typeof requestTrigger === 'function',
+    'coordinated-single-dispatch-trigger-required');
   // A missing binary aborts before opening a tunnel, staging BPF or starting
   // an evidence server. Building the binary is an OFFLINE prerequisite.
   assert((await stat(binary)).isFile(), 'reviewed-diagnostic-host-not-built');
@@ -91,7 +100,8 @@ export async function runFutureOneMuseCoordinator({
     const host = createOneMuseHostSources({manifestPath,sshKey});
     const kernel = createOneMuseKernelBridge({sshKey,workdir:repo,
       armTimeoutMs:180_000,
-      onOperatorStep:({runId:operatorRun,pid})=>{
+      onDiagnostic:kernelDiagnostic,
+      onOperatorStep:operatorStep ?? (({runId:operatorRun,pid})=>{
         assert(operatorRun===runId && Number.isSafeInteger(pid)&&pid>1,
           'operator-step-identity-failed');
         logger('OPERATOR_KERNEL_PID',String(pid));
@@ -99,7 +109,7 @@ export async function runFutureOneMuseCoordinator({
         process.stdout.write(
           'FUTURE_OPERATOR_COMMAND=powershell.exe -NoProfile -ExecutionPolicy Bypass '+
           `-File .\\scripts\\Run-OneMuseKernelOperator.ps1 -RunId ${runId} -ExpectedPid ${pid}\n`);
-      }});
+      })});
     app = createOneMuseAppHost({broker,binary,webviewUrl:url});
     const sources={...host.sources,kernel,...app.sources};
     assert(ONE_SESSION_GATES.filter(g=>g!=='journal').every(
@@ -120,7 +130,16 @@ export async function runFutureOneMuseCoordinator({
     }
     ready=true;
     logger('INFERENCE_ADMISSION','READY_FOR_ONE_INFERENCE');
-    logger('AUTOMATIC_INFERENCE','DISABLED');
+    logger('AUTOMATIC_INFERENCE',requestTrigger ? 'ONE_AUTHORIZED_TRIGGER' : 'DISABLED');
+    // An explicitly injected operator trigger only invokes the existing
+    // one-use WebView button. It cannot issue HTTP or call a second model.
+    // The native one-shot permit and nine-gate claim are still mandatory.
+    if (requestTrigger) {
+      const triggered=await requestTrigger(Object.freeze({
+        runId,appPid:app.getPid()}));
+      assert(triggered === true,'single-production-webview-trigger-not-verified');
+      logger('ONE_WEBVIEW_TRIGGER','INVOKED_ONCE');
+    }
     // Only an explicit future button click can call the broker claim route.
     // A timeout or signal consumes no request and never seals evidence.
     const deadline = Date.now()+maxTotalMs;

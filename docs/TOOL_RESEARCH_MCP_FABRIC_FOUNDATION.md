@@ -1,5 +1,19 @@
 # Tool, Research & MCP Fabric — foundation and acceptance boundary
 
+## Current roadmap obligations — 18 November 2026
+
+The [master reconciliation](COS_FULL_PLATFORM_AUDIT_2026-10-22.md#master-roadmap-reconciliation--18-november-2026) incorporates every source requirement through [contracts C/E/F/G/J/R/X](PRODUCTION_HARNESS_RECONCILIATION_2026-11-18.md) and the [full traceability matrix](PRODUCTION_HARNESS_TRACEABILITY_2026-11-18.md). This foundation remains partial, with its original implementation/evidence below preserved.
+
+- TF research/P8/P9 must add actual multi-provider query search, reformulation, source ranking/authoritative prioritization, cross-source verification/contradictions and provenance/timestamped citations; controlled browser navigation/forms/approved authentication/download/upload/screenshots/inspection, session persistence where appropriate and cleanup. Bounded HTTPS fetch is not completion.
+- Existing native MCP/T1/T2/T3c/F1/P5/P6/P10 must cover per-server auth/vault/scoped OAuth/rotation, schema validation/fingerprint/version/change trust, availability/health/output validation/provenance/audit/isolation/revocation/recovery. Changed tool definitions cannot inherit prior approval. Local stdio remains unsupported until the secure process host is independently accepted.
+- Existing permissions/effect authority remains canonical across all tools. Exact action/arguments/revision/session/workspace, expiry/revocation/execution-time recheck and same-run approval resume are mandatory. TF13 unified effect authority remains an explicit gap; do not create another receipt store to hide it.
+- Sandbox/credential/control-plane and network/SSRF/private/metadata/redirect/download/prompt-injection boundaries precede browser/MCP acceptance. Retrieved text cannot grant permissions or promote itself into trusted mission memory. Research budgets must become restart-durable without duplicate dispatch/effect replay.
+- End-to-end trace, bounded cancellation/deadlines, failure/reconnect/revocation/restart and independently verified sourced/task outcomes are required offline/integration/security/live gates. Unsupported OSes/protocols and unavailable proof remain explicit.
+
+Retain the **governing handoff's explicit TF0–TF25 definitions** (see [the canonical 26-row table](PRODUCTION_HARNESS_RECONCILIATION_2026-11-18.md#governing-handoff-milestone-definitions--tf0tf25-and-ar0ar15) and [H-series requirements](PRODUCTION_HARNESS_TRACEABILITY_2026-11-18.md#governing-master-handoff--requirementsubrequirement-traceability)). Earlier repository-only D01 source-gap language is superseded: the **definitions are known**, but complete per-milestone implementation/acceptance evidence is not. TF0/TF1 extend existing `capabilityIndex.ts`/native custom tools; TF13 and AR4 share the existing effect receipts. Maintain existing P5/P6/P8/P9/P10/P12 ownership and fail-closed gaps. No numbered TF milestone is certified complete or authorized for new implementation by this document.
+
+---
+
 Status: incremental TF foundation on top of the LM2B/LM2C compute fabric.
 This document is a current implementation map, **not** TF0–TF25 sign-off.
 
