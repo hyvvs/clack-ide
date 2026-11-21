@@ -15,6 +15,7 @@ vi.mock("../lib/sessions", async (importOriginal) => {
   return {
     ...original,
     loadMessages: vi.fn().mockResolvedValue(null),
+    loadAll: vi.fn(),
     saveActiveId: vi.fn().mockResolvedValue(undefined),
     saveSessionsList: vi.fn().mockResolvedValue(undefined),
   };
@@ -30,7 +31,10 @@ vi.mock("../lib/todos", async (importOriginal) => {
   };
 });
 
-import { createConversationProfile, type SessionMeta } from "../lib/sessions";
+import { createConversationProfile, loadAll, saveSessionsList, type SessionMeta } from "../lib/sessions";
+import { attachManagedLocalGguf } from "../lib/managedLocalModels";
+import { emptySelfHostedState } from "../lib/selfHostedProfiles";
+import { resolveModelTransportIdentity } from "../lib/savedProviderModels";
 import {
   createSavedProviderModel,
   savedProviderModelSelectionId,
@@ -42,6 +46,7 @@ import { chats, seedMessages, useChatStore } from "./chatStore";
 const originalChatState = useChatStore.getState();
 const originalAgentId = useAgentsStore.getState().activeId;
 const originalSavedModels = usePreferencesStore.getState().savedProviderModels;
+const originalSelfHosted = usePreferencesStore.getState().selfHostedInference;
 const ROOT = "C:/Work/Clack";
 
 function session(id: string, agentId: string, modelId: string): SessionMeta {
@@ -85,6 +90,7 @@ afterEach(() => {
   seedMessages.clear();
   useAgentsStore.setState({ activeId: originalAgentId });
   usePreferencesStore.setState({ savedProviderModels: originalSavedModels });
+  usePreferencesStore.setState({ selfHostedInference: originalSelfHosted });
   useChatStore.setState({
     sessionsHydrated: originalChatState.sessionsHydrated,
     sessions: originalChatState.sessions,
@@ -95,6 +101,41 @@ afterEach(() => {
 });
 
 describe("conversation-owned profiles", () => {
+  it("persists, reopens and switches away from only the exact managed deployment in the active chat", async () => {
+    const managed = attachManagedLocalGguf(emptySelfHostedState(), {
+      digest: `sha256:${"c".repeat(64)}`,
+      displayName: "Qwen2.5-0.5B-Instruct",
+      material: { version: 1, context: 2048, gpu: 0, tool: false, grammar: false },
+    });
+    usePreferencesStore.setState({ selfHostedInference: managed.state });
+    const selection = managed.selectionId;
+    expect(useChatStore.getState().setSessionModelId("chat-a", selection, false)).toBe(true);
+    const committed = structuredClone(useChatStore.getState().sessions);
+    expect(committed[0].profile?.modelId).toBe(selection);
+    expect(committed[1].profile?.modelId).toBe("claude-sonnet-4-6");
+    expect(vi.mocked(saveSessionsList)).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ id: "chat-a", profile: expect.objectContaining({ modelId: selection }) }),
+    ]));
+    const reloaded = structuredClone(committed);
+    reloaded[0].title = "New chat"; // real hydration reuses the persisted placeholder
+    vi.mocked(loadAll).mockResolvedValueOnce({
+      sessions: reloaded, activeId: "chat-a", attachmentContentIds: [],
+    });
+    useChatStore.setState({
+      sessionsHydrated: false, sessions: [], activeSessionId: null, selectedModelId: "gpt-5.4-mini",
+    });
+    await useChatStore.getState().hydrateSessions();
+    expect(useChatStore.getState().activeSessionId).toBe("chat-a");
+    expect(useChatStore.getState().selectedModelId).toBe(selection);
+    expect(resolveModelTransportIdentity(selection, usePreferencesStore.getState()).managedLocal?.deploymentId)
+      .toBe(managed.state.fabric!.deployments[0].id);
+    expect(useChatStore.getState().sessions.find(item => item.id === "chat-b")?.profile?.modelId)
+      .toBe("claude-sonnet-4-6");
+    expect(useChatStore.getState().setSessionModelId("chat-a", "gpt-5.4-mini", false)).toBe(true);
+    expect(useChatStore.getState().selectedModelId).toBe("gpt-5.4-mini");
+    expect(useChatStore.getState().sessions.find(item => item.id === "chat-b")?.profile?.modelId)
+      .toBe("claude-sonnet-4-6");
+  });
   it("restores each chat's agent and model independently", async () => {
     useChatStore.getState().switchSession("chat-b");
     await vi.waitFor(() => {

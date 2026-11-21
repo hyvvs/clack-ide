@@ -50,6 +50,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { useModelSelectionLock } from "@/modules/ai/hooks/useModelSelectionLock";
 import { useModelSwitch } from "@/modules/ai/hooks/useModelSwitch";
 import { EffortControl } from "@/modules/ai/components/EffortControl";
@@ -328,6 +329,38 @@ export function modelPickerHostAvailability(
     : selfHostedPickerStatus(selectionId, state);
 }
 
+/** A managed picker click must either advance to the existing per-chat switch
+ * admission or yield a visible rejection. This is only a fresh native UX
+ * preflight; the model-switch owner still verifies the exact route and epoch. */
+export async function recheckManagedPickerSelection(
+  selectionId: string,
+  state: SelfHostedState,
+  readStatus: typeof queryManagedPickerRuntimeStatus = queryManagedPickerRuntimeStatus,
+  readPresence: typeof queryManagedModelFilePresence = queryManagedModelFilePresence,
+): Promise<
+  | { ok: true; observed: ManagedPickerRuntimeStatus; digest: string }
+  | { ok: false; reason: string }
+> {
+  const selected = resolveManagedLocalSelection(state, selectionId);
+  if (selected.status !== "available" && selected.status !== "unavailable")
+    return { ok: false, reason: "The exact managed deployment identity changed or is missing." };
+  const digest = selected.artifact.digest!;
+  try {
+    const [observed, present] = await Promise.all([
+      readStatus(selected.deployment.id, selected.identity),
+      readPresence(digest),
+    ]);
+    // Missing/changed/native-stopped observations may never be promoted to a
+    // runnable selection from a persisted label or another runtime's Ready.
+    const availability = modelPickerHostAvailability(selectionId, state, observed, { [digest]: present });
+    if (!observed || availability?.disabled !== false)
+      return { ok: false, reason: `Cannot select this managed deployment: ${availability?.label ?? "native readiness unavailable"}.` };
+    return { ok: true, observed, digest };
+  } catch {
+    return { ok: false, reason: "Cannot verify the exact managed runtime and GGUF. Nothing was switched." };
+  }
+}
+
 type PickerDeployment = { deployment: ModelDeployment; model: ModelInfo };
 type PickerArtifact = { artifact: ModelArtifact; deployments: PickerDeployment[] };
 type PickerRuntime = {
@@ -497,6 +530,9 @@ export function ModelDropdown({
   const modelSwitch = useModelSwitch(targetId, sessionId === undefined);
   const resetSwitch = modelSwitch.reset;
   const [open, setOpen] = useState(false);
+  const managedPickerPending = useRef(false);
+  const [checkingManagedPicker, setCheckingManagedPicker] = useState(false);
+  const [managedPickerError, setManagedPickerError] = useState<string | null>(null);
   useSelfHostedInventory(open);
   const selfHosted = usePreferencesStore((s) => s.selfHostedInference);
   const managedModels = useMemo(() => savedManagedLocalModelInfos(selfHosted), [selfHosted]);
@@ -555,6 +591,9 @@ export function ModelDropdown({
       (locked && !modelSwitch.checking) ||
       previousTargetId.current !== targetId
     ) {
+      managedPickerPending.current = false;
+      setCheckingManagedPicker(false);
+      setManagedPickerError(null);
       setOpen(false);
       resetSwitch();
     }
@@ -568,16 +607,21 @@ export function ModelDropdown({
   );
   const apiKeys = useChatStore((s) => s.apiKeys);
   useChatStore((s) => s.customEndpointKeys);
-  const setSelected = async (modelId: string) => {
-    if (locked) return;
-    if (
+  const setSelected = async (modelId: string): Promise<boolean> => {
+    if (locked) return false;
+    const accepted =
       modelId === selected ||
       (await modelSwitch.request(
         modelId,
         allModels.find((model) => model.id === modelId)?.label,
-      ))
-    )
-      setOpen(false);
+      ));
+    if (accepted) setOpen(false);
+    return accepted;
+  };
+  const rejectManagedPicker = (reason: string) => {
+    setManagedPickerError(reason);
+    setOpen(true);
+    toast.warning(reason);
   };
   const favoriteIds = usePreferencesStore((s) => s.favoriteModelIds);
   const recentIds = usePreferencesStore((s) => s.recentModelIds);
@@ -754,18 +798,27 @@ export function ModelDropdown({
         if (isManagedLocalSelectionId(m.id)) {
           // A visible Ready status can turn stale before the click. Recheck
           // native state before entering the ordinary model-switch admission.
-          const selection = resolveManagedLocalSelection(selfHosted, m.id);
-          if (selection.status !== "available" && selection.status !== "unavailable") return;
-          const digest = selection.artifact.digest!;
-          void Promise.all([
-            queryManagedPickerRuntimeStatus(selection.deployment.id, selection.identity),
-            queryManagedModelFilePresence(digest),
-          ]).then(([observed, present]) => {
-            setManagedRuntimeStatuses(current => ({ ...current, [m.id]: observed }));
-            setManagedFilePresence(current => ({ ...current, [digest]: present }));
-            if (!modelPickerHostAvailability(m.id, selfHosted, observed, { [digest]: present })?.disabled)
-              void setSelected(m.id);
-          });
+          if (managedPickerPending.current) return;
+          managedPickerPending.current = true;
+          setCheckingManagedPicker(true);
+          setManagedPickerError(null);
+          void recheckManagedPickerSelection(m.id, selfHosted)
+            .then(async (result) => {
+              if (!result.ok) {
+                rejectManagedPicker(result.reason);
+                return;
+              }
+              setManagedRuntimeStatuses(current => ({ ...current, [m.id]: result.observed }));
+              setManagedFilePresence(current => ({ ...current, [result.digest]: true }));
+              // The original conversation-scoped model-switch admission still
+              // owns the mutation, persistence, route and failure/consent UI.
+              await setSelected(m.id);
+            })
+            .catch(() => rejectManagedPicker("Could not verify or select the exact managed deployment. Nothing was switched."))
+            .finally(() => {
+              managedPickerPending.current = false;
+              setCheckingManagedPicker(false);
+            });
           return;
         }
         if (m.id.startsWith("self-hosted:")
@@ -784,7 +837,11 @@ export function ModelDropdown({
     <DropdownMenu
       open={open && (!locked || modelSwitch.checking)}
       onOpenChange={(next) => {
+        // Radix can deliver a dismissal while native status/route admission is
+        // pending. Aborting here used to discard the click without a verdict.
+        if (!next && managedPickerPending.current) return;
         if (!next) resetSwitch();
+        if (next) setManagedPickerError(null);
         setOpen(next && (!locked || modelSwitch.checking));
       }}
     >
@@ -864,6 +921,17 @@ export function ModelDropdown({
               }}
             >
               Cancel
+            </Button>
+          </div>
+        ) : checkingManagedPicker ? (
+          <p role="status" className="p-4 text-xs text-muted-foreground">
+            Verifying the selected Clack-managed deployment and native Ready identity…
+          </p>
+        ) : managedPickerError ? (
+          <div role="alert" className="space-y-2 p-4 text-xs">
+            <p>Cannot switch managed deployment: {managedPickerError}</p>
+            <Button size="sm" variant="outline" onClick={() => setManagedPickerError(null)}>
+              Choose another model
             </Button>
           </div>
         ) : modelSwitch.review || modelSwitch.failure ? (

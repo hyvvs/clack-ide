@@ -33,6 +33,7 @@ import {
   savedProviderModelSelectionId,
 } from "../lib/savedProviderModels";
 import { attachManagedLocalGguf } from "../lib/managedLocalModels";
+import { resolveModelTransportIdentity } from "../lib/savedProviderModels";
 import { createSelfHostedEndpoint, emptySelfHostedState } from "../lib/selfHostedProfiles";
 import { saveSelfHostedModel, selfHostedSelectionId } from "../lib/selfHostedModels";
 import { chats, seedMessages, useChatStore } from "./chatStore";
@@ -532,6 +533,27 @@ describe("managed GGUF model-switch native Ready commit revalidation", () => {
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "managed_local_runtime_status")).toHaveLength(2);
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "managed_local_runtime_model_present")).toHaveLength(2);
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "managed_local_runtime_route").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("binds the existing active chat to the exact managed deployment without a cloud key, preserving other chats", async () => {
+    const { first } = fixture();
+    seedMessages.set("chat-a", []);
+    vi.mocked(buildRuntimeTools).mockResolvedValue({});
+    useChatStore.setState({
+      activeSessionId: "chat-a",
+      apiKeys: { ...EMPTY_PROVIDER_KEYS },
+    });
+    const previousOther = useChatStore.getState().sessions[1];
+    const prepared = await prepareModelSwitch("chat-a", first.selectionId, true);
+    expect(prepared.assessment.status, prepared.assessment.reasons.join("; ")).toBe("compatible");
+    expect(await prepared.commit()).toEqual({ ok: true });
+    const state = useChatStore.getState();
+    expect(state.sessions[0].profile?.modelId).toBe(first.selectionId);
+    expect(state.selectedModelId).toBe(first.selectionId);
+    expect(state.sessions[1]).toBe(previousOther);
+    expect(resolveModelTransportIdentity(first.selectionId, usePreferencesStore.getState()).managedLocal?.deploymentId)
+      .toBe(first.state.fabric!.deployments[0].id);
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "target_context_commit")).toBe(true);
   });
 
   it.each(["Stopped", "Loading", "Failed", "Not Installed"])(
