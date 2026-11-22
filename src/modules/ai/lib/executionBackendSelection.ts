@@ -19,7 +19,7 @@ import {
   MANAGED_LOCAL_RUNTIME_TYPE,
   managedLocalMaterialSchema,
 } from "./managedLocalModels";
-import type { ManagedLocalNativeStatus } from "./managedLocalRuntime";
+import type { ManagedCudaVariantStatus, ManagedLocalNativeStatus } from "./managedLocalRuntime";
 
 const PINNED_MANIFEST = "pinned-b12248-cpu-runtime-manifest";
 const pinned = (runtime: LocalRuntime) =>
@@ -32,6 +32,7 @@ const pinned = (runtime: LocalRuntime) =>
 export function runtimeBackendVariants(
   runtime: LocalRuntime,
   installed?: Pick<ManagedLocalNativeStatus, "installed" | "version"> | null,
+  cudaVariant?: Pick<ManagedCudaVariantStatus,"installed"|"version"|"engineArchiveSha256"> | null,
 ): RuntimeBackendVariant[] {
   if (!pinned(runtime)) return runtime.backendVariants ?? [];
   const installation: BackendState = !installed ? "UNKNOWN" :
@@ -40,14 +41,20 @@ export function runtimeBackendVariants(
   return KNOWN_EXECUTION_BACKENDS.map(backend => ({
     id: `${MANAGED_LLAMA_ENGINE_VERSION}/${backend}`,
     backend,
-    support: backend === "cpu" ? "AVAILABLE" : "UNSUPPORTED",
-    installation: backend === "cpu" ? installation :
-      installation === "AVAILABLE" ? "INSTALLED_NOT_USABLE" : installation,
+    support: backend === "cpu" || backend === "cuda" ? "AVAILABLE" : "UNSUPPORTED",
+    installation: backend === "cpu" ? installation : backend === "cuda"
+      ? (!cudaVariant ? "UNKNOWN" : cudaVariant.version !== MANAGED_LLAMA_ENGINE_VERSION
+        ? "INSTALLED_NOT_USABLE" : cudaVariant.installed ? "AVAILABLE" : "UNAVAILABLE")
+      : "UNAVAILABLE",
     runtimeVersion: MANAGED_LLAMA_ENGINE_VERSION,
-    source: PINNED_MANIFEST,
+    source: backend === "cuda" ? "official-b12248-windows-x64-cuda13.5-pinned-release-manifest" : PINNED_MANIFEST,
     trust: "VERIFIED",
-    ...(backend === "cpu" ? { supportedArtifactFormats: ["gguf" as const] } : {}),
-    ...(backend !== "cpu" ? { limitations: ["Pinned engine binary is CPU-only"] } : {}),
+    ...(backend === "cpu" || backend === "cuda" ? { supportedArtifactFormats: ["gguf" as const] } : {}),
+    // b12248 CPU and CUDA releases may share a small llama-server executable
+    // stub. CUDA *build* identity therefore anchors the separately pinned
+    // CUDA engine archive, never the exe SHA as proof of backend provenance.
+    ...(backend === "cuda" && cudaVariant?.installed ? {buildDigest: cudaVariant.engineArchiveSha256} : {}),
+    ...(backend !== "cpu" && backend !== "cuda" ? { limitations: ["No managed executable implementation for this backend"] } : {}),
   }));
 }
 
@@ -91,6 +98,7 @@ export type BackendSelectionInput = {
   artifact: ModelArtifact;
   hardware: HardwareProfile;
   installedRuntime?: Pick<ManagedLocalNativeStatus, "installed" | "version"> | null;
+  cudaVariant?: Pick<ManagedCudaVariantStatus,"installed"|"version"|"engineArchiveSha256"> | null;
   requested?: RequestedExecution | null;
   /** Measured/verified capacity requirement; not a made-up memory estimate. */
   requiredHostBytes?: number;
@@ -113,9 +121,19 @@ export function observedActualExecution(
   if (!parsed.success || parsed.data.runtimeEpoch !== status.epoch ||
       parsed.data.observedAt > now || now - parsed.data.observedAt > 30_000) return null;
   // Currently only the verified CPU launcher has an owner-backed observation.
-  if (!pinned(runtime) || parsed.data.backend !== "cpu" ||
-      parsed.data.gpuLayers !== 0 || parsed.data.runtimeVariantId !== "b12248/cpu" ||
-      parsed.data.source !== "native-verified-managed-cpu-launch") return null;
+  if (!pinned(runtime) || parsed.data.backend !== (status.selectedBackend ?? "cpu")) return null;
+  if (parsed.data.backend === "cuda") {
+    if (deployment.requestedExecution?.backend !== "cuda" ||
+        parsed.data.gpuLayers < 1 || parsed.data.runtimeVariantId !== "b12248/cuda" ||
+        parsed.data.source !== "native-verified-cuda-init-and-layer-offload" ||
+        parsed.data.deviceIds.length !== 1 ||
+        parsed.data.deviceIds[0] !== deployment.requestedExecution.deviceIds[0]) return null;
+  } else if (parsed.data.backend === "cpu") {
+    if (parsed.data.gpuLayers !== 0 || parsed.data.runtimeVariantId !== "b12248/cpu" ||
+        parsed.data.source !== "native-verified-managed-cpu-launch" ||
+        (deployment.requestedExecution?.backend === "cuda" &&
+         (!status.fallbackUsed || !status.fallbackAuthorized))) return null;
+  } else return null;
   return parsed.data;
 }
 
@@ -143,7 +161,7 @@ export function selectDeploymentExecution(input: BackendSelectionInput): Executi
   if (requested.contextLength !== undefined && artifact.declaredContext !== undefined &&
       requested.contextLength > artifact.declaredContext)
     return reject(["Requested context exceeds model-declared context limit"]);
-  const variants = runtimeBackendVariants(runtime, input.installedRuntime);
+  const variants = runtimeBackendVariants(runtime, input.installedRuntime, input.cudaVariant);
   const evaluate = (backend: string): { selected: SelectedExecution | null; reason: string } => {
     const support = variants.find(v => v.backend === backend);
     if (!support) return {selected: null, reason: `${backend}: runtime backend support UNKNOWN`};
@@ -175,7 +193,9 @@ export function selectDeploymentExecution(input: BackendSelectionInput): Executi
       if (available < hostNeed) return {selected: null, reason: `${backend}: insufficient available host RAM`};
     }
     if (backend !== "cpu") {
-      const need = Math.max(input.requiredDeviceBytes ?? 0, requested.minAvailableDeviceBytes ?? 0);
+      const requiredEstimate = artifact.size === undefined ? 0 : artifact.size +
+        Math.max(512 * 1024 ** 2, (requested.contextLength ?? 2048) * 64 * 1024);
+      const need = Math.max(input.requiredDeviceBytes ?? 0, requested.minAvailableDeviceBytes ?? 0,requiredEstimate);
       if (need > 0 && device.availableMemoryBytes === undefined)
         return {selected: null, reason: `${backend}: available device memory UNKNOWN`};
       if (need > 0 && device.availableMemoryBytes !== undefined &&

@@ -26,6 +26,9 @@ lm11-b03-acceptance-harness = []
 # Isolated real-WebView LM11 IPC acceptance with an authenticated synthetic
 # child; no production engine/model bypass outside its fixed owned AppData.
 lm11-authenticated-webview-acceptance = []
+## Isolated real NVIDIA CUDA native acceptance log introspection; NEVER enabled
+## in production builds or exposed through Tauri invoke permissions.
+managed-cuda-native-acceptance = []
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }

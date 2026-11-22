@@ -352,6 +352,23 @@ mod windows_telemetry {
             .unwrap_or_default()
     }
 
+    pub(super) fn process_vram_bytes(pid: u32) -> Option<u64> {
+        let system = system_directory()?;
+        let response = bounded_system_command(system.join("nvidia-smi.exe"), &[
+            "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits",
+        ])?;
+        let mut exact = response.lines().filter_map(|line| {
+            let (process, mib) = line.split_once(',')?;
+            (process.trim().parse::<u32>().ok()? == pid).then(|| {
+                mib.trim().parse::<u64>().ok()
+                    .filter(|bytes| *bytes <= 4 * 1024 * 1024)
+                    .and_then(|mib| mib.checked_mul(1024 * 1024))
+            }).flatten()
+        });
+        let first = exact.next()?;
+        (exact.next().is_none()).then_some(first)
+    }
+
     fn vendor_name(pnp: &str) -> Option<&'static str> {
         let pnp = pnp.to_ascii_uppercase();
         if pnp.contains("VEN_10DE") {
@@ -678,6 +695,39 @@ pub fn local_hardware_observation() -> LocalHardwareObservation {
         gpu_inventory_complete,
     }
 }
+
+/// Admission uses the SAME LM3–LM5 native host observation as the UI. An OS
+/// display adapter alone is never CUDA execution support. The source UUID is
+/// stable across enumeration order and is the only selectable GPU identity.
+pub fn cuda_device_for_request(device_id: &str) -> Result<NativeGpuObservation, String> {
+    let uuid = device_id.strip_prefix("clack-this-pc:accelerator:")
+        .ok_or("CUDA request must name a canonical host-scoped GPU device")?;
+    if !uuid.starts_with("GPU-") || uuid.len() > 96 {
+        return Err("CUDA GPU UUID is invalid".into());
+    }
+    let found: Vec<_> = local_hardware_observation().gpus.into_iter().filter(|gpu| {
+        gpu.device_id.as_ref().is_some_and(|id| id.value == uuid)
+    }).collect();
+    if found.len() != 1 {
+        return Err("Requested NVIDIA CUDA device is absent or ambiguous".into());
+    }
+    let gpu = found.into_iter().next().unwrap();
+    if gpu.vendor.as_ref().is_none_or(|vendor| vendor.value != "NVIDIA") ||
+       gpu.cuda_hardware_capable.as_ref().is_none_or(|cap| !cap.value) ||
+       gpu.compute_architecture.is_none() {
+        return Err("Requested NVIDIA device has no verified CUDA compute capability".into());
+    }
+    Ok(gpu)
+}
+
+/// Supplemental WDDM-safe process telemetry: failure/"N/A" is UNKNOWN, never
+/// synthesized from whole-GPU memory. Shares bounded System32 vendor probe.
+#[cfg(windows)]
+pub fn cuda_process_vram_bytes(pid: u32) -> Option<u64> {
+    windows_telemetry::process_vram_bytes(pid)
+}
+#[cfg(not(windows))]
+pub fn cuda_process_vram_bytes(_pid: u32) -> Option<u64> { None }
 
 #[cfg(test)]
 mod tests {

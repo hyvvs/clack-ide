@@ -6,11 +6,14 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { updateSelfHostedProfiles } from "@/modules/settings/store";
 import {
   attachManagedLocalGguf,
+  attachManagedCudaVariant,
   managedLocalModelInfos,
   resolveManagedLocalSelection,
+  MANAGED_LOCAL_HOST_ID,
   type ManagedLocalMaterial,
 } from "@/modules/ai/lib/managedLocalModels";
-import type { ManagedLocalNativeStatus } from "@/modules/ai/lib/managedLocalRuntime";
+import type { ManagedCudaVariantStatus, ManagedLocalNativeStatus } from "@/modules/ai/lib/managedLocalRuntime";
+import {nativeHardwareObservationSchema,type NativeHardwareObservation} from "@/modules/ai/lib/hardwareProfile";
 
 type InspectedGguf = {
   digest: string;
@@ -39,6 +42,11 @@ export function ClackManagedModels() {
   const state = usePreferencesStore(s => s.selfHostedInference);
   const registered = useMemo(() => managedLocalModelInfos(state), [state]);
   const [runtime, setRuntime] = useState<ManagedLocalNativeStatus | null>(null);
+  const [cudaVariant, setCudaVariant] = useState<ManagedCudaVariantStatus | null>(null);
+  const [hardware, setHardware] = useState<NativeHardwareObservation | null>(null);
+  const [cudaDeviceId, setCudaDeviceId] = useState("");
+  const [cudaLayers, setCudaLayers] = useState(40);
+  const [cudaFallback, setCudaFallback] = useState<"disabled"|"allow-compatible">("disabled");
   const [runtimeBySelection, setRuntimeBySelection] =
     useState<Record<string, ManagedLocalNativeStatus | null>>({});
   const [modelPresence, setModelPresence] = useState<Record<string, boolean>>({});
@@ -51,6 +59,13 @@ export function ClackManagedModels() {
 
   const refresh = async () => {
     try {
+      const [rawCuda,rawHost] = await Promise.all([
+        invoke<ManagedCudaVariantStatus>("managed_local_runtime_cuda_variant_status").catch(()=>null),
+        invoke<unknown>("local_hardware_observation").catch(()=>null),
+      ]);
+      setCudaVariant(rawCuda?.runtimeVariantId==="b12248/cuda"?rawCuda:null);
+      const parsed=nativeHardwareObservationSchema.safeParse(rawHost);
+      setHardware(parsed.success?parsed.data:null);
       if (registered.length === 0) {
         // Preserve old no-deployment installation UX. Only this truly empty
         // case may issue unscoped native status, which cannot select A/B/C.
@@ -182,6 +197,38 @@ export function ClackManagedModels() {
     finally { setBusy(false); }
   }
 
+  async function installCudaBundle() {
+    setError("");setMessage("");
+    const engine = await open({multiple:false,directory:false,
+      filters:[{name:"Official llama.cpp b12248 Windows x64 CUDA 13.5 engine ZIP",extensions:["zip"]}]});
+    if (!engine || typeof engine!=="string") return;
+    const libraries = await open({multiple:false,directory:false,
+      filters:[{name:"Official b12248 CUDA 13.5 cuBLAS/cudart dependency ZIP",extensions:["zip"]}]});
+    if (!libraries || typeof libraries!=="string") return;
+    setBusy(true);
+    try {
+      await invoke("managed_local_runtime_install_cuda_bundles",{
+        engineZipPath:engine,cudaDllZipPath:libraries,
+      });
+      setMessage("Verified official CUDA 13.5 engine and dependency manifests were installed under b12248/cuda. CPU engine was preserved.");
+      await refresh();
+    }catch(cause){setError(safeError(cause));}
+    finally{setBusy(false);}
+  }
+
+  async function addCudaDeployment(selectionId:string, deviceId:string) {
+    if(busy)return;
+    setBusy(true);setError("");
+    try {
+      await updateSelfHostedProfiles(current=>attachManagedCudaVariant(current,selectionId,{
+        deviceId,gpuLayers:cudaLayers,fallback:cudaFallback,
+      }).state);
+      setMessage("Separate CUDA deployment registered. Its backend and GPU layers are part of its canonical identity; existing CPU Qwen remains unchanged.");
+      await refresh();
+    }catch(cause){setError(safeError(cause));}
+    finally{setBusy(false);}
+  }
+
   async function start(selectionId: string) {
     const resolved = resolveManagedLocalSelection(state, selectionId);
     if (resolved.status !== "available" && resolved.status !== "unavailable") {
@@ -191,11 +238,13 @@ export function ClackManagedModels() {
     setBusy(true);
     setError("");
     try {
-      await invoke("managed_local_runtime_start", {
+      const started=await invoke<ManagedLocalNativeStatus>("managed_local_runtime_start", {
         deploymentId: resolved.deployment.id,
         deploymentIdentity: resolved.identity,
       });
-      setMessage("Starting the selected GGUF deployment. Readiness is checked by Clack's native process owner.");
+      setMessage(started.fallbackUsed
+        ? `Authorized CUDA→CPU fallback: ${started.fallbackReason ?? "CUDA admission was rejected"}. Native CPU execution must still become Ready.`
+        : `Starting ${started.selectedBackend?.toUpperCase() ?? "managed"} GGUF deployment. Native health and backend/offload proof must become Ready.`);
       await refresh();
     } catch (cause) { setError(safeError(cause)); }
     finally { setBusy(false); }
@@ -224,6 +273,14 @@ export function ClackManagedModels() {
     Object.values(runtimeBySelection).some(value => value?.installed === true);
   const liveCount = Object.values(runtimeBySelection)
     .filter(value => value?.processId && value.state === "Ready").length;
+  const cudaDevices=(hardware?.gpus??[]).filter(gpu=>
+    gpu.vendor?.value==="NVIDIA" && gpu.cudaHardwareCapable?.value===true &&
+    gpu.deviceId?.value?.startsWith("GPU-"))
+    .flatMap(gpu=>gpu.deviceId?.value ? [{
+      id:`${MANAGED_LOCAL_HOST_ID}:accelerator:${gpu.deviceId.value}`,
+      label:gpu.model?.value??"NVIDIA GPU",free:gpu.availableVramBytes?.value??null,
+    }] : []);
+  const chosenCudaDevice=cudaDevices.find(d=>d.id===cudaDeviceId)??cudaDevices[0];
   return (
     <section aria-label="Clack Managed local models" className="rounded-lg border border-border/70 p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
@@ -261,6 +318,36 @@ export function ClackManagedModels() {
           Install approved runtime ZIP
         </Button>
       </div>
+      <section className="space-y-2 border-t border-border/60 pt-3 text-xs" aria-label="Managed CUDA runtime variant">
+        <p className="font-medium">llama.cpp b12248 / CUDA 13.5 · {cudaVariant?.installed ? "Verified installed" : "Not installed or unverified"}</p>
+        <p className="text-muted-foreground">
+          CUDA bundle: {cudaVariant?.source??"Native status unavailable"}
+          {cudaVariant?.installed ? ` · Engine release SHA-256 ${cudaVariant.engineArchiveSha256.slice(0,16)}… · CUDA DLL release SHA-256 ${cudaVariant.dependencyArchiveSha256.slice(0,16)}…` :
+            cudaVariant?.error ? ` · ${cudaVariant.error}` : ""}
+        </p>
+        <p>Devices: {cudaDevices.length?cudaDevices.map(d=>`${d.label} (${d.free===null?"free VRAM unknown":`${Math.round(d.free/1024**2)} MiB free`})`).join(" · "):"No verified CUDA device (UNKNOWN or unavailable)"}</p>
+        <Button size="sm" variant="outline" onClick={()=>void installCudaBundle()} disabled={busy||cudaVariant?.installed===true}>
+          Install verified CUDA engine + DLL ZIPs
+        </Button>
+        <p className="text-muted-foreground">Use official b12248 Windows x64 CUDA 13.5 engine and cudart ZIPs; hashes are pinned in Clack. This does not overwrite or replace the CPU runtime.</p>
+        {cudaDevices.length>0 && (
+          <div className="flex flex-wrap gap-2 items-center">
+            <label>GPU <select aria-label="Managed CUDA device" value={chosenCudaDevice?.id??""}
+              onChange={e=>setCudaDeviceId(e.target.value)} className="rounded border border-border bg-background px-1 py-0.5">
+              {cudaDevices.map(d=><option key={d.id} value={d.id}>{d.label} · {d.id.slice(-12)}</option>)}
+            </select></label>
+            <label>GPU layers <select aria-label="Managed CUDA layers" value={cudaLayers} onChange={e=>setCudaLayers(Number(e.target.value))}
+              className="rounded border border-border bg-background px-1 py-0.5">
+              {[10,20,40,99].map(n=><option key={n} value={n}>{n}</option>)}
+            </select></label>
+            <label>Fallback <select aria-label="Managed CUDA fallback policy" value={cudaFallback}
+              onChange={e=>setCudaFallback(e.target.value as "disabled"|"allow-compatible")}
+              className="rounded border border-border bg-background px-1 py-0.5">
+              <option value="disabled">Disabled</option><option value="allow-compatible">Allow explicit CPU</option>
+            </select></label>
+          </div>
+        )}
+      </section>
       {inspection && (
         <div className="rounded-md border border-border/70 p-3 space-y-2" aria-label="GGUF inspection">
           <p className="text-xs font-medium">{inspection.displayName}</p>
@@ -298,19 +385,36 @@ export function ClackManagedModels() {
         const loaded = owner?.deploymentId === found.deployment.id &&
           owner?.modelDigest === found.artifact.digest;
         const fileMissing = modelPresence[found.artifact.digest!] === false;
+        const isCuda=found.deployment.variantId==="b12248/cuda";
         return (
           <div key={model.id} className="flex items-center justify-between gap-3 border-t border-border/60 pt-3">
             <div className="min-w-0">
               <p className="truncate text-xs font-medium">{model.label}</p>
               <p className="text-[11px] text-muted-foreground">
-                {found.deployment.configurationIdentity
-                  ? `CPU · ${JSON.parse(found.deployment.configurationIdentity).context} context`
-                  : "CPU"} · {found.artifact.digest?.slice(7, 19)} ·
+                {isCuda?`CUDA · ${found.deployment.requestedExecution?.gpuLayers} GPU layers`
+                  :"CPU · 0 GPU layers"}
+                {" · "}{found.deployment.configurationIdentity
+                  ? `${JSON.parse(found.deployment.configurationIdentity).context} context` : "Context unknown"} · {found.artifact.digest?.slice(7, 19)} ·
                 {" "}{fileMissing ? "Model file missing" :
                   loaded ? owner?.state : installed ? "Stopped / unverified" : "Runtime not installed"}
               </p>
+              {loaded && owner?.state==="Ready" && (
+                <p className="text-[11px] text-muted-foreground">
+                  Actual: {owner.actualExecution
+                    ? `${owner.actualExecution.backend.toUpperCase()} / ${owner.actualExecution.gpuLayers} GPU layers`
+                    :"Not verified"}
+                  {owner.fallbackUsed?` · Authorized fallback: ${owner.fallbackReason??"unknown"}`:""}
+                  {owner.selectedDeviceId?` · ${owner.selectedDeviceId}`:""}
+                </p>
+              )}
             </div>
             <div className="flex shrink-0 gap-2">
+              {!isCuda&&chosenCudaDevice&&(
+                <Button size="sm" variant="outline" disabled={busy}
+                  onClick={()=>void addCudaDeployment(model.id,chosenCudaDevice.id)}>
+                  Add CUDA variant
+                </Button>
+              )}
               <Button size="sm" variant="outline" disabled={busy || !installed || fileMissing}
                 onClick={() => void start(model.id)}>
                 {loaded ? "Load status" : "Start"}

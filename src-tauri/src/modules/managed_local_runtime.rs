@@ -22,12 +22,16 @@ pub const ENGINE: &str = "clack-managed-llama.cpp";
 pub const ENGINE_VERSION: &str = "b12248";
 const MAX_ARTIFACT_SIZE: u64 = 512 * 1024 * 1024 * 1024;
 const MAX_BUNDLE_SIZE: u64 = 4 * 1024 * 1024 * 1024;
-const MAX_LOG_BYTES: usize = 16 * 1024;
+const MAX_LOG_BYTES: usize = 512 * 1024;
 const START_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[cfg(windows)]
 mod cpu_payload {
     include!("managed_llama_cpu_b12248_manifest.rs");
+}
+#[cfg(windows)]
+mod cuda_payload {
+    include!("managed_llama_cuda_b12248_manifest.rs");
 }
 #[cfg(windows)]
 mod windows_acl {
@@ -99,6 +103,12 @@ fn engine_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(private_root(app)?.join("engine").join(ENGINE_VERSION))
 }
 
+/// The already-pinned CPU payload remains in engine/b12248 untouched. The
+/// independently verified CUDA DLL/engine release is a sibling *variant*.
+fn cuda_engine_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(engine_dir(app)?.join("cuda"))
+}
+
 fn model_path(app: &AppHandle, digest: &str) -> Result<PathBuf, String> {
     let hex = digest
         .strip_prefix("sha256:")
@@ -136,6 +146,166 @@ fn verified_engine(app: &AppHandle) -> Result<PathBuf, String> {
         verify_payload_dir(&engine_dir(app)?)?;
     }
     Ok(path)
+}
+
+#[cfg(windows)]
+fn verified_cuda_engine(app: &AppHandle) -> Result<PathBuf, String> {
+    let directory = cuda_engine_dir(app)?;
+    for path in [private_root(app)?, engine_dir(app)?.parent().unwrap().to_path_buf(),
+        engine_dir(app)?, directory.clone()] {
+        windows_acl::check_private_acl(&path)?;
+    }
+    verify_payload_dir_expected(&directory, cuda_payload::ALL_FILES)?;
+    let system32 = windows_acl::system_directory()?;
+    if !system32.join("nvcuda.dll").is_file() {
+        return Err("NVIDIA driver CUDA library is unavailable in Windows System32".into());
+    }
+    // This complete SHA-verified snapshot is safe to reuse for read-only
+    // status of the same running application. Every future start verifies
+    // all files again rather than relying on the status cache.
+    cuda_status_cache().lock().ok().map(|mut map|map.insert(directory.clone(),Instant::now()));
+    Ok(directory.join(EXECUTABLE))
+}
+#[cfg(not(windows))]
+fn verified_cuda_engine(_app: &AppHandle) -> Result<PathBuf, String> {
+    Err("Managed CUDA release is not supported on this platform".into())
+}
+
+#[cfg(windows)]
+fn validate_cuda_release_archive(path: &Path, expected: &str) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| "Approved CUDA ZIP is missing")?;
+    if !metadata.is_file() || windows_acl::is_reparse(&metadata) ||
+        metadata.len() > 1024 * 1024 * 1024 ||
+        path.extension().and_then(|v| v.to_str()) != Some("zip") ||
+        sha256_file(path)? != expected {
+        return Err("CUDA archive does not match its pinned official llama.cpp release SHA-256".into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn extract_cuda_release_archive(
+    path: &Path, stage: &Path, expected: &[(&str, u64, &str)],
+) -> Result<(), String> {
+    let mut archive = zip::ZipArchive::new(source_file(path)?)
+        .map_err(|_| "Approved CUDA archive could not be opened")?;
+    if archive.len() != expected.len() || archive.len() > 128 {
+        return Err("CUDA archive does not contain its exact pinned file manifest".into());
+    }
+    let mut names = HashSet::new();
+    let mut total = 0u64;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|_| "CUDA archive entry unreadable")?;
+        let enclosed = entry.enclosed_name().ok_or("Unsafe CUDA ZIP entry")?;
+        let filename = entry.name().to_string();
+        if enclosed.components().count() != 1 ||
+            filename != enclosed.to_string_lossy() ||
+            !names.insert(filename.to_ascii_lowercase()) ||
+            entry.is_dir() || entry.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
+            return Err("Unsafe, duplicate or non-file CUDA archive entry".into());
+        }
+        let approved = expected.iter().find(|(name, _, _)| *name == filename)
+            .ok_or("Unapproved CUDA dependency in archive")?;
+        if entry.size() != approved.1 {
+            return Err("CUDA dependency size differs from pinned release".into());
+        }
+        total = total.checked_add(entry.size()).filter(|n| *n <= MAX_BUNDLE_SIZE)
+            .ok_or("CUDA release exceeds bounded installation size")?;
+        let dest = stage.join(&filename);
+        let mut out = File::create(&dest).map_err(|_| "Could not extract approved CUDA file")?;
+        io::copy(&mut entry, &mut out).map_err(|_| "CUDA extraction failed")?;
+        out.sync_all().map_err(|_| "CUDA dependency sync failed")?;
+        if sha256_file(&dest)? != approved.2 {
+            return Err(format!("CUDA release file failed pinned identity: {filename}"));
+        }
+    }
+    if names.len() != expected.len() {
+        return Err("CUDA release manifest incomplete".into());
+    }
+    Ok(())
+}
+
+/// User-triggered, two-archive official CUDA 13.5 provisioning under the SAME
+/// native managed runtime owner. No PATH search, unverified sidecar, or CPU
+/// runtime overwrite. Atomic private stage→rename only after all 56 files pass.
+#[tauri::command]
+pub fn managed_local_runtime_install_cuda_bundles(
+    app: AppHandle, engine_zip_path: String, cuda_dll_zip_path: String,
+) -> Result<(), String> {
+    #[cfg(not(windows))]
+    { let _ = (app, engine_zip_path, cuda_dll_zip_path); return Err("CUDA provisioning is Windows x64 only".into()); }
+    #[cfg(windows)]
+    {
+        if std::env::consts::ARCH != "x86_64" {
+            return Err("Pinned CUDA runtime is Windows x64 only".into());
+        }
+        validate_cuda_release_archive(Path::new(&engine_zip_path), cuda_payload::ENGINE_ARCHIVE_SHA256)?;
+        validate_cuda_release_archive(Path::new(&cuda_dll_zip_path), cuda_payload::CUDA_DLLS_ARCHIVE_SHA256)?;
+        let destination = cuda_engine_dir(&app)?;
+        if destination.exists() {
+            verified_cuda_engine(&app)?;
+            return Ok(());
+        }
+        let parent = engine_dir(&app)?;
+        fs::create_dir_all(&parent).map_err(|_| "Managed CUDA parent unavailable")?;
+        for path in [private_root(&app)?, parent.parent().unwrap().to_path_buf(), parent.clone()] {
+            windows_acl::apply_private_acl(&path)?;
+        }
+        let stage = tempfile::tempdir_in(&parent).map_err(|_| "CUDA staging unavailable")?;
+        windows_acl::apply_private_acl(stage.path())?;
+        extract_cuda_release_archive(Path::new(&engine_zip_path), stage.path(), cuda_payload::ENGINE_FILES)?;
+        extract_cuda_release_archive(Path::new(&cuda_dll_zip_path), stage.path(), cuda_payload::CUDA_DLLS_FILES)?;
+        verify_payload_dir_expected(stage.path(), cuda_payload::ALL_FILES)?;
+        windows_acl::check_private_acl(stage.path())?;
+        fs::rename(stage.path(), &destination)
+            .map_err(|_| "CUDA install collision; existing managed engine preserved")?;
+        verified_cuda_engine(&app)?;
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedCudaVariantStatus {
+    pub installed: bool,
+    runtime_variant_id: &'static str,
+    backend: &'static str,
+    version: &'static str,
+    platform: &'static str,
+    source: &'static str,
+    pub engine_archive_sha256: &'static str,
+    pub dependency_archive_sha256: &'static str,
+    pub executable_sha256: &'static str,
+    license: &'static str,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub fn managed_local_runtime_cuda_variant_status(app: AppHandle) -> ManagedCudaVariantStatus {
+    #[cfg(windows)]
+    let engine_sha = cuda_payload::ENGINE_FILES.iter().find(|(name, _, _)| *name == EXECUTABLE)
+        .map(|(_, _, sha)| *sha).unwrap_or("");
+    #[cfg(not(windows))]
+    let engine_sha = "";
+    // Display/read-only status may reuse a recently verified private bundle.
+    // The native start path always revalidates every file independently.
+    let observation = if verified_cuda_engine_status(&app) {
+        cuda_engine_dir(&app).map(|dir|dir.join(EXECUTABLE))
+    } else {
+        verified_cuda_engine(&app)
+    };
+    ManagedCudaVariantStatus {
+        installed: observation.is_ok(), runtime_variant_id: "b12248/cuda",
+        backend: "cuda", version: ENGINE_VERSION, platform: "windows-x64-cuda13.5",
+        source: "github.com/ggml-org/llama.cpp/releases/tag/b12248",
+        #[cfg(windows)] engine_archive_sha256: cuda_payload::ENGINE_ARCHIVE_SHA256,
+        #[cfg(not(windows))] engine_archive_sha256: "",
+        #[cfg(windows)] dependency_archive_sha256: cuda_payload::CUDA_DLLS_ARCHIVE_SHA256,
+        #[cfg(not(windows))] dependency_archive_sha256: "",
+        executable_sha256: engine_sha,
+        license: "MIT llama.cpp; NVIDIA CUDA redistributable libraries carry NVIDIA licensing",
+        error: observation.err(),
+    }
 }
 
 /// Verify all and only the files from the in-binary, upstream-attested
@@ -576,6 +746,11 @@ struct BoundDeployment {
     identity: String,
     digest: String,
     context: u64,
+    /// Exact request bound to persisted ModelDeployment, not IPC flags.
+    requested_backend: &'static str,
+    device_id: Option<String>,
+    gpu_layers: u32,
+    cpu_fallback_allowed: bool,
 }
 
 /// Native side independently checks the current native-CAS fabric. A WebView
@@ -593,13 +768,7 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
         return Err(invalid());
     }
     let deployment = rows[0];
-    // Slice 1 introduces canonical requested execution, but this pinned native
-    // launcher still supports *only* legacy CPU material. A new CUDA request
-    // must be rejected rather than running the fixed --n-gpu-layers 0 command
-    // under an old seven-element identity or silently using CPU fallback.
-    if deployment.get("requestedExecution").is_some() {
-        return Err(invalid());
-    }
+    let cuda = deployment["variantId"] == "b12248/cuda";
     let runtime_id = &deployment["runtimeId"];
     let host_id = &deployment["hostId"];
     if runtime_id != ENGINE || host_id != "clack-this-pc" || deployment["profileId"].is_string() {
@@ -651,12 +820,9 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
         .ok_or_else(invalid)?;
     let config: Value = serde_json::from_str(material).map_err(|_| invalid())?;
     let object = config.as_object().ok_or_else(invalid)?;
-    if object.len() != 5
-        || config["version"] != 1
-        || config["tool"] != false
-        || config["grammar"] != false
-        || config["gpu"] != 0
-    {
+    if config["tool"] != false || config["grammar"] != false ||
+       (cuda && (object.len() != 4 || config["version"] != 2)) ||
+       (!cuda && (object.len() != 5 || config["version"] != 1 || config["gpu"] != 0)) {
         return Err(invalid());
     }
     let context = config["context"]
@@ -665,15 +831,48 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
         .ok_or_else(invalid)?;
     // Match the TypeScript managedLocalConfigurationIdentity key order exactly.
     // JSON-object equivalence alone must not create two behavioral identities.
-    let canonical =
-        format!(r#"{{"version":1,"context":{context},"gpu":0,"tool":false,"grammar":false}}"#);
-    if material != canonical
-        || deployment["runtimeModelName"] != format!("managed-gguf:{digest}")
-        || deployment["id"] != json!(["managed-gguf", digest, canonical]).to_string()
-    {
+    let canonical = if cuda {
+        format!(r#"{{"version":2,"context":{context},"tool":false,"grammar":false}}"#)
+    } else {
+        format!(r#"{{"version":1,"context":{context},"gpu":0,"tool":false,"grammar":false}}"#)
+    };
+    if material != canonical || deployment["runtimeModelName"] != format!("managed-gguf:{digest}") {
         return Err(invalid());
     }
-    let expected = json!([
+    let (requested_backend, device_id, gpu_layers, cpu_fallback_allowed, requested_json) = if cuda {
+        let request = &deployment["requestedExecution"];
+        let device_ids = request["deviceIds"].as_array().ok_or_else(invalid)?;
+        let device = device_ids.first().and_then(Value::as_str).ok_or_else(invalid)?;
+        let layers = request["gpuLayers"].as_u64().filter(|n| (1..=999).contains(n)).ok_or_else(invalid)?;
+        let policy = request["fallback"]["policy"].as_str().ok_or_else(invalid)?;
+        if request.as_object().is_none_or(|fields| fields.len() != 5) ||
+           request["backend"] != "cuda" || device_ids.len() != 1 ||
+           request["contextLength"] != context ||
+           request["fallback"].as_object().is_none_or(|fields| fields.len() != 1) ||
+           !matches!(policy,"disabled" | "allow-compatible") ||
+           !device.starts_with("clack-this-pc:accelerator:GPU-") ||
+           device.len() > 160 || device.strip_prefix("clack-this-pc:accelerator:GPU-")
+               .is_none_or(|id| !id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')) {
+            return Err(invalid());
+        }
+        let gpu_layers = layers as u32;
+        if deployment["id"] != json!(["managed-gguf-cuda", digest, canonical, layers, device, policy]).to_string() {
+            return Err(invalid());
+        }
+        // Zod outputs the schema-defined field order; serde_json map values
+        // are alphabetically sorted. Reconstruct exact canonical JS identity.
+        let request_json = format!(
+            r#"{{"backend":"cuda","deviceIds":[{}],"gpuLayers":{layers},"contextLength":{context},"fallback":{{"policy":"{policy}"}}}}"#,
+            json!(device));
+        ("cuda", Some(device.to_owned()), gpu_layers, policy == "allow-compatible", Some(request_json))
+    } else {
+        if deployment.get("requestedExecution").is_some() || deployment["variantId"].is_string() ||
+           deployment["id"] != json!(["managed-gguf", digest, canonical]).to_string() {
+            return Err(invalid());
+        }
+        ("cpu", None, 0, false, None)
+    };
+    let original = json!([
         deployment["hostId"],
         deployment["runtimeId"],
         deployment["artifactId"],
@@ -683,6 +882,9 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
         deployment["configurationIdentity"]
     ])
     .to_string();
+    let expected = if let Some(request_json) = requested_json {
+        format!("{},{}]", &original[..original.len()-1],request_json)
+    } else { original };
     if expected != identity {
         return Err(invalid());
     }
@@ -691,6 +893,10 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
         identity: identity.to_owned(),
         digest: digest.to_owned(),
         context,
+        requested_backend,
+        device_id,
+        gpu_layers,
+        cpu_fallback_allowed,
     })
 }
 
@@ -756,6 +962,14 @@ struct RuntimeOwner {
     alias: Option<String>,
     error: Option<String>,
     logs: Arc<Mutex<Vec<u8>>>,
+    selected_backend: &'static str,
+    selected_device_id: Option<String>,
+    selected_gpu_layers: u32,
+    cuda_offloaded_layers: Option<u32>,
+    cuda_model: Option<String>,
+    gpu_free_before_bytes: Option<u64>,
+    gpu_free_after_bytes: Option<u64>,
+    fallback_reason: Option<String>,
 }
 
 impl Default for RuntimeOwner {
@@ -779,6 +993,10 @@ impl Default for RuntimeOwner {
             alias: None,
             error: None,
             logs: Arc::new(Mutex::new(Vec::new())),
+            selected_backend: "cpu", selected_device_id: None,
+            selected_gpu_layers: 0, cuda_offloaded_layers: None,
+            cuda_model: None, gpu_free_before_bytes: None,
+            gpu_free_after_bytes: None, fallback_reason: None,
         }
     }
 }
@@ -1267,6 +1485,7 @@ pub fn acceptance_bind_benign_child(
         current.deployment = Some(BoundDeployment {
             id: deployment_id.to_string(), identity: identity.into(),
             digest: "no-model-ever-loaded".into(), context: 1,
+            requested_backend:"cpu",device_id:None,gpu_layers:0,cpu_fallback_allowed:false,
         });
         Ok((epoch, pid))
     })();
@@ -1320,6 +1539,20 @@ fn forget_process(owner: &mut RuntimeOwner, state: &'static str, error: Option<S
     owner.alias = None;
     owner.started_at = None;
     owner.error = error;
+    // A failed CUDA owner must remain labeled CUDA until the next start/stop.
+    // Otherwise a crash on a host with only the CUDA variant installed turns
+    // into a misleading "Not Installed" CPU status and loses the real reason.
+    // The child/secret/port/epoch are ALWAYS reaped and invalidated above.
+    if state != "Failed" {
+        owner.selected_backend = "cpu";
+        owner.selected_device_id = None;
+        owner.selected_gpu_layers = 0;
+        owner.cuda_model = None;
+        owner.gpu_free_before_bytes = None;
+        owner.fallback_reason = None;
+    }
+    owner.cuda_offloaded_layers = None;
+    owner.gpu_free_after_bytes = None;
     roll_epoch(owner);
 }
 fn reap_crash(owner: &mut RuntimeOwner) {
@@ -1399,13 +1632,141 @@ fn drain_bounded<R: Read + Send + 'static>(mut stream: R, output: Arc<Mutex<Vec<
     });
 }
 
+/// Exact native startup evidence: the CUDA backend must initialize and the
+/// model loader must report *positive* offloaded layers on the selected GPU.
+/// A CLI flag or CUDA-capable display adapter alone never counts as execution.
+fn observed_cuda_offload(logs: &[u8], model: &str) -> Option<u32> {
+    let output = String::from_utf8_lossy(logs);
+    // Upstream b12248 emits its device/backend evidence at informational log
+    // verbosity, with `llama_prepare_model_devices` and `load_tensors` names.
+    // It does NOT reliably emit a `ggml_cuda_init` marker. Require all three
+    // independent statements: the exact selected NVIDIA model, positive CUDA0
+    // model-buffer allocation, and positive offloaded model layers.
+    let selected = output.lines().any(|line|
+        line.contains("llama_prepare_model_devices: using device CUDA0") &&
+        line.contains(model));
+    let gpu_allocated=output.lines().any(|line| {
+        let Some((_,bytes))=line.split_once("CUDA0 model buffer size =") else {return false};
+        bytes.trim().split_whitespace().next().and_then(|number|number.parse::<f64>().ok())
+            .is_some_and(|amount|amount.is_finite()&&amount>0.0)
+    });
+    if !selected || !gpu_allocated {
+        return None;
+    }
+    output.lines().filter_map(|line| {
+        let (_, after) = line.split_once("offloaded ")?;
+        if !after.contains(" layers to GPU") { return None; }
+        let fraction = after.split_whitespace().next()?;
+        let (used, total) = fraction.split_once('/')?;
+        let layers = used.parse::<u32>().ok()?;
+        let possible = total.parse::<u32>().ok()?;
+        (layers > 0 && layers <= possible && possible <= 1000).then_some(layers)
+    }).last()
+}
+
+fn verified_selected_engine(app: &AppHandle, backend: &str) -> bool {
+    match backend {
+        "cuda" => verified_cuda_engine_status(app),
+        "cpu" => verified_engine(app).is_ok(),
+        _ => false,
+    }
+}
+
+/// Conservative initial CUDA memory admission. Available memory is independent
+/// of total device capacity; absence of either is UNKNOWN and must reject.
+/// The model file + context + runtime headroom is a lower-bound estimate, not
+/// a promise that GPU allocation or quantized KV buffers will fit at launch.
+fn cuda_memory_admission(
+    model_bytes:u64, context:u64, total:Option<u64>, free:Option<u64>,
+) -> Result<u64,String> {
+    let total=total.ok_or("CUDA total VRAM is UNKNOWN")?;
+    let free=free.ok_or("CUDA available VRAM is UNKNOWN")?;
+    if free>total {return Err("CUDA free VRAM exceeds total: invalid device observation".into());}
+    let estimate=model_bytes.checked_add(context.checked_mul(64*1024)
+        .ok_or("CUDA context memory estimate overflow")?)
+        .and_then(|size|size.checked_add(512*1024*1024))
+        .ok_or("CUDA memory estimate overflow")?;
+    if estimate>total || estimate>free {
+        return Err(format!("Insufficient measured CUDA VRAM: estimated at least {} MiB including model and runtime headroom; {} MiB free of {} MiB",
+            estimate/(1024*1024),free/(1024*1024),total/(1024*1024)));
+    }
+    Ok(estimate)
+}
+
+/// A rejected CUDA admission can select only a separately verified managed
+/// CPU variant and only when the persisted deployment explicitly allows it.
+/// The reason is retained for the native requested-vs-actual status record.
+fn authorized_cuda_cpu_fallback(
+    allowed: bool,
+    cuda_reason: String,
+    verify_cpu: impl FnOnce() -> Result<PathBuf, String>,
+) -> Result<(PathBuf, String), String> {
+    if !allowed {
+        return Err(format!(
+            "CUDA execution rejected; fallback disabled: {cuda_reason}"
+        ));
+    }
+    let binary = verify_cpu().map_err(|cpu_error| {
+        format!(
+            "CUDA rejected ({cuda_reason}); authorized CPU fallback is unavailable: {cpu_error}"
+        )
+    })?;
+    Ok((binary, cuda_reason))
+}
+
+/// Hot status/route polling never launches a new executable. Cache a strictly
+/// positive full-file verification for a short period; every CUDA *start*
+/// independently reruns the exact 56-file SHA-256 manifest validation. This
+/// avoids rehashing ~700 MiB on every 750ms health tick while preserving the
+/// fail-closed pre-exec integrity gate and native owned-process epoch fence.
+#[cfg(windows)]
+fn cuda_status_cache()->&'static Mutex<HashMap<PathBuf,Instant>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf,Instant>>> = OnceLock::new();
+    CACHE.get_or_init(||Mutex::new(HashMap::new()))
+}
+#[cfg(windows)]
+fn verified_cuda_engine_status(app: &AppHandle) -> bool {
+    let Ok(path) = cuda_engine_dir(app) else { return false };
+    let store = cuda_status_cache();
+    if store.lock().ok().is_some_and(|map|map.get(&path)
+        .is_some_and(|time|time.elapsed() < Duration::from_secs(180))) {
+        return true;
+    }
+    let okay = verified_cuda_engine(app).is_ok();
+    if let Ok(mut map) = store.lock() {
+        if okay {map.insert(path,Instant::now());}
+        else {map.remove(&path);}
+    }
+    okay
+}
+#[cfg(not(windows))]
+fn verified_cuda_engine_status(_app:&AppHandle)->bool {false}
+
+#[cfg(feature="managed-cuda-native-acceptance")]
+pub fn managed_cuda_acceptance_log_summary(deployment_id:&str, identity:&str)->Vec<String> {
+    let Ok(Some(slot))=select_owner(Some(deployment_id),Some(identity)) else {return vec![]};
+    let Ok(owner)=slot.lock() else {return vec![]};
+    let Ok(bytes)=owner.logs.lock() else {return vec![]};
+    let log=String::from_utf8_lossy(&bytes);
+    log.lines().filter(|line| {
+        let l=line.to_ascii_lowercase();
+        (l.contains("cuda")||l.contains("offload")||l.contains("gpu")||
+         l.contains("ggml")||l.contains("error")||l.contains("failed")||
+         l.contains("invalid")||l.contains("unknown")||l.contains("load")||
+         l.contains("option")) &&
+            !l.contains("key") && !l.contains("secret") && !l.contains("password") &&
+            !l.contains("token") && !l.contains("\\") && !l.contains(".gguf") &&
+            !l.contains("/users/")
+    }).take(80).map(|line|line.chars().take(256).collect()).collect()
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedActualExecution {
-    backend: &'static str,
-    device_ids: Vec<String>,
-    gpu_layers: u32,
-    runtime_variant_id: &'static str,
+    pub backend: &'static str,
+    pub device_ids: Vec<String>,
+    pub gpu_layers: u32,
+    pub runtime_variant_id: &'static str,
     runtime_epoch: String,
     source: &'static str,
     context_length: u64,
@@ -1415,20 +1776,31 @@ pub struct ManagedActualExecution {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedRuntimeStatus {
-    installed: bool,
-    state: &'static str,
+    pub installed: bool,
+    pub state: &'static str,
     runtime_id: &'static str,
     version: &'static str,
-    epoch: String,
+    pub epoch: String,
     deployment_id: Option<String>,
     deployment_identity_hash: Option<String>,
     model_digest: Option<String>,
-    process_id: Option<u32>,
+    pub process_id: Option<u32>,
     port: Option<u16>,
-    error: Option<String>,
+    pub error: Option<String>,
     /// Only native-owned, authenticated Ready with a verified pinned launcher
     /// establishes actual CPU execution; a backend request never does.
-    actual_execution: Option<ManagedActualExecution>,
+    pub actual_execution: Option<ManagedActualExecution>,
+    requested_backend: Option<&'static str>,
+    pub selected_backend: Option<&'static str>,
+    requested_gpu_layers: Option<u32>,
+    selected_gpu_layers: Option<u32>,
+    selected_device_id: Option<String>,
+    pub fallback_used: bool,
+    fallback_authorized: bool,
+    fallback_reason: Option<String>,
+    pub gpu_free_before_bytes: Option<u64>,
+    pub gpu_free_after_bytes: Option<u64>,
+    pub cuda_process_vram_bytes: Option<u64>,
 }
 fn snapshot(owner: &RuntimeOwner, installed: bool) -> ManagedRuntimeStatus {
     ManagedRuntimeStatus {
@@ -1451,12 +1823,20 @@ fn snapshot(owner: &RuntimeOwner, installed: bool) -> ManagedRuntimeStatus {
         actual_execution: owner.deployment.as_ref().and_then(|binding| {
             (installed && owner.state == "Ready" && owner.child.is_some()).then(|| {
                 ManagedActualExecution {
-                    backend: "cpu",
-                    device_ids: vec!["clack-this-pc:cpu:0".to_owned()],
-                    gpu_layers: 0,
-                    runtime_variant_id: "b12248/cpu",
+                    backend: owner.selected_backend,
+                    device_ids: if owner.selected_backend == "cuda" {
+                        owner.selected_device_id.clone().into_iter().collect()
+                    } else { vec!["clack-this-pc:cpu:0".to_owned()] },
+                    gpu_layers: if owner.selected_backend == "cuda" {
+                        owner.cuda_offloaded_layers.unwrap_or(0)
+                    } else { 0 },
+                    runtime_variant_id: if owner.selected_backend == "cuda" {
+                        "b12248/cuda"
+                    } else { "b12248/cpu" },
                     runtime_epoch: owner.epoch.clone(),
-                    source: "native-verified-managed-cpu-launch",
+                    source: if owner.selected_backend == "cuda" {
+                        "native-verified-cuda-init-and-layer-offload"
+                    } else { "native-verified-managed-cpu-launch" },
                     context_length: binding.context,
                     observed_at: SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -1464,8 +1844,25 @@ fn snapshot(owner: &RuntimeOwner, installed: bool) -> ManagedRuntimeStatus {
                         .as_millis()
                         .min(u64::MAX as u128) as u64,
                 }
-            })
+            }).filter(|_| owner.selected_backend != "cuda" || owner.cuda_offloaded_layers.is_some())
         }),
+        requested_backend: owner.deployment.as_ref().map(|d|d.requested_backend),
+        selected_backend: (owner.deployment.is_some() || owner.state=="Failed")
+            .then_some(owner.selected_backend),
+        requested_gpu_layers: owner.deployment.as_ref().map(|d|d.gpu_layers),
+        selected_gpu_layers: (owner.deployment.is_some() || owner.state=="Failed")
+            .then_some(owner.selected_gpu_layers),
+        selected_device_id: owner.selected_device_id.clone(),
+        fallback_used: owner.deployment.is_some() && owner.fallback_reason.is_some(),
+        fallback_authorized: owner.deployment.as_ref().is_some_and(|d|d.cpu_fallback_allowed)
+            && owner.fallback_reason.is_some(),
+        fallback_reason: owner.fallback_reason.clone(),
+        gpu_free_before_bytes: owner.gpu_free_before_bytes,
+        gpu_free_after_bytes: owner.gpu_free_after_bytes,
+        cuda_process_vram_bytes: if installed && owner.state == "Ready" && owner.selected_backend == "cuda" {
+            owner.child.as_ref().and_then(|child|
+                crate::modules::hardware_profile::cuda_process_vram_bytes(child.id()))
+        } else { None },
     }
 }
 
@@ -1477,6 +1874,10 @@ fn idle_snapshot(installed: bool) -> ManagedRuntimeStatus {
         deployment_identity_hash: None, model_digest: None,
         process_id: None, port: None, error: None,
         actual_execution: None,
+        requested_backend: None, selected_backend: None,
+        requested_gpu_layers: None,selected_gpu_layers: None,selected_device_id: None,
+        fallback_used: false,fallback_authorized: false,fallback_reason: None,
+        gpu_free_before_bytes: None,gpu_free_after_bytes:None,cuda_process_vram_bytes:None,
     }
 }
 
@@ -1549,7 +1950,13 @@ pub async fn managed_local_runtime_status(
         _ => return Err("Managed runtime status requires an exact selector pair".into()),
     };
     let slot = select_owner(deployment_id.as_deref(), deployment_identity.as_deref())?;
-    let approved_installed = verified_engine(&app).is_ok();
+    let approved_installed = match requested.as_ref() {
+        Some(binding) if binding.requested_backend == "cuda" =>
+            verified_cuda_engine_status(&app) ||
+            (binding.cpu_fallback_allowed && verified_engine(&app).is_ok()),
+        Some(_) => verified_engine(&app).is_ok(),
+        None => verified_engine(&app).is_ok() || verified_cuda_engine_status(&app),
+    };
     let Some(slot) = slot else {
         return Ok(match requested.as_ref() {
             Some(binding) => idle_snapshot_for(binding, approved_installed),
@@ -1560,9 +1967,12 @@ pub async fn managed_local_runtime_status(
         let mut owner = slot.lock().map_err(|_| "Runtime state poisoned")?;
         reap_crash(&mut owner);
         #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
-        let installed = approved_installed || acceptance_synthetic_installed(&app, &owner);
+        let installed = (owner.child.is_none() && owner.state != "Failed" && approved_installed)
+            || verified_selected_engine(&app, owner.selected_backend)
+            || acceptance_synthetic_installed(&app, &owner);
         #[cfg(not(all(windows, feature = "lm11-authenticated-webview-acceptance")))]
-        let installed = approved_installed;
+        let installed = (owner.child.is_none() && owner.state != "Failed" && approved_installed)
+            || verified_selected_engine(&app, owner.selected_backend);
         if !installed && owner.child.is_some() {
             forget_process(
                 &mut owner,
@@ -1586,6 +1996,20 @@ pub async fn managed_local_runtime_status(
         reap_crash(&mut owner);
         if owner.epoch == epoch && owner.child.is_some() {
             match probe {
+                Ok(Some(true)) if owner.selected_backend == "cuda" => {
+                    let proof = owner.logs.lock().ok().and_then(|logs|
+                        observed_cuda_offload(&logs, owner.cuda_model.as_deref().unwrap_or("")));
+                    if let Some(layers) = proof {
+                        owner.cuda_offloaded_layers = Some(layers);
+                        owner.gpu_free_after_bytes = owner.selected_device_id.as_deref()
+                            .and_then(|id| crate::modules::hardware_profile::cuda_device_for_request(id).ok())
+                            .and_then(|gpu| gpu.available_vram_bytes.map(|free| free.value));
+                        owner.state = "Ready";
+                    } else if owner.started_at.is_some_and(|t| t.elapsed() > START_TIMEOUT) {
+                        forget_process(&mut owner, "Failed", Some(
+                            "CUDA runtime became healthy but NVIDIA initialization/positive GPU layer offload was not verified".into()));
+                    } else { owner.state = "Loading"; }
+                }
                 Ok(Some(true)) => owner.state = "Ready",
                 Ok(Some(false)) => owner.state = "Loading",
                 _ if owner.state == "Ready" => {
@@ -1609,16 +2033,20 @@ pub async fn managed_local_runtime_status(
             }
         }
         #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
-        let installed = approved_installed || acceptance_synthetic_installed(&app, &owner);
+        let installed = verified_selected_engine(&app, owner.selected_backend)
+            || acceptance_synthetic_installed(&app, &owner);
         #[cfg(not(all(windows, feature = "lm11-authenticated-webview-acceptance")))]
-        let installed = approved_installed;
+        let installed = verified_selected_engine(&app, owner.selected_backend);
         return Ok(snapshot(&owner, installed));
     }
     let owner = slot.lock().map_err(|_| "Runtime state poisoned")?;
     #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
-    let installed = approved_installed || acceptance_synthetic_installed(&app, &owner);
+    let installed = (owner.child.is_none() && owner.state != "Failed" && approved_installed)
+        || verified_selected_engine(&app, owner.selected_backend)
+        || acceptance_synthetic_installed(&app, &owner);
     #[cfg(not(all(windows, feature = "lm11-authenticated-webview-acceptance")))]
-    let installed = approved_installed;
+    let installed = (owner.child.is_none() && owner.state != "Failed" && approved_installed)
+        || verified_selected_engine(&app, owner.selected_backend);
     Ok(snapshot(&owner, installed))
 }
 
@@ -1629,11 +2057,48 @@ pub fn managed_local_runtime_start(
     deployment_identity: String,
 ) -> Result<ManagedRuntimeStatus, String> {
     let binding = current_binding(&app, &deployment_id, &deployment_identity)?;
-    let binary = verified_engine(&app)?;
     let model = model_path(&app, &binding.digest)?;
     if sha256_file(&model)? != binding.digest.trim_start_matches("sha256:") {
         return Err("Imported GGUF file is missing or was modified".into());
     }
+    let mut selected_backend = "cpu";
+    let mut selected_device = None;
+    let mut gpu_free_before = None;
+    let mut cuda_model = None;
+    let mut fallback_reason = None;
+    let mut gpu_layers = 0;
+    let binary = if binding.requested_backend == "cuda" {
+        let admission = (|| -> Result<(PathBuf, String, String, u64), String> {
+            let device_id = binding.device_id.as_deref().ok_or("CUDA request has no exact device")?;
+            let gpu = crate::modules::hardware_profile::cuda_device_for_request(device_id)?;
+            let total = gpu.total_vram_bytes.as_ref().map(|v|v.value);
+            let free = gpu.available_vram_bytes.as_ref().map(|v|v.value);
+            let model_bytes = fs::metadata(&model).map_err(|_| "Model metadata unavailable")?.len();
+            cuda_memory_admission(model_bytes,binding.context,total,free)?;
+            let free=free.ok_or("CUDA available VRAM is UNKNOWN")?;
+            let model_name = gpu.model.map(|value|value.value)
+                .ok_or("Selected NVIDIA GPU model identity is UNKNOWN")?;
+            let binary = verified_cuda_engine(&app)?;
+            Ok((binary, device_id.to_owned(), model_name, free))
+        })();
+        match admission {
+            Ok((cuda_binary, device, model, free)) => {
+                selected_backend = "cuda";
+                selected_device = Some(device);
+                gpu_free_before = Some(free);
+                cuda_model = Some(model);
+                gpu_layers = binding.gpu_layers;
+                cuda_binary
+            }
+            Err(reason) => {
+                let (cpu_binary, rejected_reason) = authorized_cuda_cpu_fallback(
+                    binding.cpu_fallback_allowed, reason, || verified_engine(&app),
+                )?;
+                fallback_reason = Some(rejected_reason);
+                cpu_binary
+            }
+        }
+    } else { verified_engine(&app)? };
     let key = runtime_key(&binding);
     let slot = get_or_insert_owner(key.clone())?;
     {
@@ -1642,7 +2107,7 @@ pub fn managed_local_runtime_start(
         if current.child.is_some() {
             if current.deployment.as_ref().is_some_and(|existing|
                 existing.id == binding.id && existing.identity == binding.identity) {
-                return Ok(snapshot(&current, true));
+                return Ok(snapshot(&current, verified_selected_engine(&app,current.selected_backend)));
             }
             return Err("Exact managed runtime owner changed during start".into());
         }
@@ -1662,8 +2127,8 @@ pub fn managed_local_runtime_start(
     let (port, reserved_port) = reserve_fresh_loopback_port()?;
     let mut command = Command::new(binary);
     // Never inject parent process secrets, credentials, proxies or untrusted
-    // LLAMA_ARG_* defaults into the engine process. CPU-only release bundles
-    // must have their own trusted dependencies next to the executable.
+    // LLAMA_ARG_* defaults into the engine process. Both release variants
+    // have their full verified dependencies alongside the executable.
     command.env_clear();
     #[cfg(windows)]
     {
@@ -1675,6 +2140,14 @@ pub fn managed_local_runtime_start(
         command.env("SystemRoot", windir);
         command.env("WINDIR", windir);
         command.env("PATH", &system32);
+        if selected_backend == "cuda" {
+            let uuid = selected_device.as_deref().and_then(|id|
+                id.strip_prefix("clack-this-pc:accelerator:"))
+                .ok_or("CUDA device UUID is invalid")?;
+            // NVIDIA's official CUDA UUID selector scopes the runtime to the
+            // one verified GPU; llama.cpp then observes it as CUDA0.
+            command.env("CUDA_VISIBLE_DEVICES", uuid);
+        }
     }
     let secret_dir = private_root(&app)?.join("run");
     fs::create_dir_all(&secret_dir)
@@ -1697,7 +2170,7 @@ pub fn managed_local_runtime_start(
             .map_err(|_| "Could not protect runtime credential")?;
     }
     command
-        .current_dir(engine_dir(&app)?)
+        .current_dir(if selected_backend == "cuda" {cuda_engine_dir(&app)?} else {engine_dir(&app)?})
         .arg("--model")
         .arg(&model)
         .arg("--host")
@@ -1707,17 +2180,27 @@ pub fn managed_local_runtime_start(
         .arg("--ctx-size")
         .arg(binding.context.to_string())
         .arg("--n-gpu-layers")
-        .arg("0")
+        .arg(gpu_layers.to_string())
         .arg("--alias")
         .arg(&alias)
         .arg("--api-key-file")
         .arg(secret_file.path())
         .arg("--offline")
         .arg("--no-webui")
-        .arg("--log-disable")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if selected_backend == "cpu" {
+        command.arg("--log-disable");
+    }
+    if selected_backend == "cuda" {
+        // b12248 defaults can suppress LLAMA_LOG_INFO model/offload records.
+        // Set the upstream-documented informational/debug threshold so Ready
+        // can be grounded in the native `offloaded N/N layers to GPU` record.
+        // The stdout/stderr capture is still bounded and never sent to the UI.
+        command.arg("--device").arg("CUDA0")
+            .arg("--log-verbosity").arg("4");
+    }
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::process::CommandExt;
@@ -1769,6 +2252,14 @@ pub fn managed_local_runtime_start(
     owner.key = Some(random_key);
     owner.alias = Some(alias);
     owner.error = None;
+    owner.selected_backend = selected_backend;
+    owner.selected_device_id = selected_device;
+    owner.selected_gpu_layers = gpu_layers;
+    owner.cuda_offloaded_layers = None;
+    owner.cuda_model = cuda_model;
+    owner.gpu_free_before_bytes = gpu_free_before;
+    owner.gpu_free_after_bytes = None;
+    owner.fallback_reason = fallback_reason;
     Ok(snapshot(&owner, true))
 }
 
@@ -1777,7 +2268,6 @@ pub fn managed_local_runtime_stop(
     app: AppHandle,
     deployment_id: Option<String>, deployment_identity: Option<String>,
 ) -> Result<ManagedRuntimeStatus, String> {
-    let installed = verified_engine(&app).is_ok();
     let slot = select_owner(deployment_id.as_deref(), deployment_identity.as_deref())?;
     let Some(slot) = slot else {
         // Stop is idempotent when no native deployment has ever been owned.
@@ -1785,9 +2275,14 @@ pub fn managed_local_runtime_stop(
         if deployment_id.is_some() {
             return Err("Exact managed deployment is not owned by this native process".into());
         }
-        return Ok(idle_snapshot(installed));
+        return Ok(idle_snapshot(verified_engine(&app).is_ok() ||
+            verified_cuda_engine_status(&app)));
     };
     let mut owner = slot.lock().map_err(|_| "Runtime state poisoned")?;
+    // Stop reports the installed *selected variant*, not whether the legacy
+    // CPU payload happens to exist. CUDA-only hosts must not claim that a
+    // correctly stopped, reaped CUDA child is "Not Installed" CPU.
+    let installed = verified_selected_engine(&app,owner.selected_backend);
     owner.state = "Stopping";
     forget_process(&mut owner, "Stopped", None);
     Ok(snapshot(&owner, installed))
@@ -1796,11 +2291,11 @@ pub fn managed_local_runtime_stop(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedRuntimeRoute {
-    base_url: String,
-    api_key: String,
-    epoch: String,
-    model_alias: String,
-    process_id: u32,
+    pub base_url: String,
+    pub api_key: String,
+    pub epoch: String,
+    pub model_alias: String,
+    pub process_id: u32,
 }
 
 #[tauri::command]
@@ -1818,6 +2313,11 @@ pub async fn managed_local_runtime_route(
     ).await?;
     if witnessed.state != "Ready" {
         return Err("Managed runtime has no current authenticated Ready observation".into());
+    }
+    if witnessed.actual_execution.as_ref().is_none_or(|actual|
+        actual.backend != witnessed.selected_backend.unwrap_or("unknown") ||
+        (actual.backend == "cuda" && actual.gpu_layers == 0)) {
+        return Err("Managed runtime has no verified actual CPU/CUDA backend execution evidence".into());
     }
     let slot = select_owner(Some(&deployment_id), Some(&deployment_identity))?
         .ok_or("Exact managed deployment has no native process owner")?;
@@ -1983,6 +2483,7 @@ mod tests {
             identity: "bound".into(),
             digest: format!("sha256:{}", "a".repeat(64)),
             context: 4096,
+            requested_backend:"cpu",device_id:None,gpu_layers:0,cpu_fallback_allowed:false,
         });
         forget_process(&mut active, "Stopped", None);
         assert_eq!(active.state, "Stopped");
@@ -1999,6 +2500,7 @@ mod tests {
         BoundDeployment {
             id: id.into(), identity: identity.into(),
             digest: format!("sha256:{}", "a".repeat(64)), context: 4096,
+            requested_backend:"cpu",device_id:None,gpu_layers:0,cpu_fallback_allowed:false,
         }
     }
 
@@ -2186,6 +2688,124 @@ mod tests {
         });
         assert!(validate_binding(&altered, &deployment_id, &identity).is_err(),
             "The CPU-only native launcher must reject explicit backend requests");
+    }
+
+    #[test]
+    fn cuda_v2_identity_is_native_exact_and_legacy_cpu_remains_unchanged() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let artifact = json!(["digest", digest]).to_string();
+        let device = "clack-this-pc:accelerator:GPU-30ab48fd-809d-dc7d-c437-6ad626ece81a";
+        let config = r#"{"version":2,"context":2048,"tool":false,"grammar":false}"#;
+        let id = json!(["managed-gguf-cuda",digest,config,40,device,"disabled"]).to_string();
+        let request = json!({"backend":"cuda","deviceIds":[device],"gpuLayers":40,
+            "contextLength":2048,"fallback":{"policy":"disabled"}});
+        let deployment = json!({"id":id,"hostId":"clack-this-pc","runtimeId":ENGINE,
+            "artifactId":artifact,"runtimeModelName":format!("managed-gguf:{digest}"),
+            "configurationRevision":1,"configurationIdentity":config,
+            "variantId":"b12248/cuda","requestedExecution":request});
+        let state = json!({"fabric":{"version":1,
+            "hosts":[{"id":"clack-this-pc","enabled":true,"location":"local","runtimeIds":[ENGINE]}],
+            "runtimes":[{"id":ENGINE,"hostId":"clack-this-pc","type":ENGINE,
+                "enabled":true,"configurationRevision":1,"version":ENGINE_VERSION}],
+            "artifacts":[{"id":artifact,"format":"gguf","digest":digest}],
+            "deployments":[deployment]}});
+        // The eighth JSON-array entry follows TypeScript's *schema* field order
+        // (not serde_json's object-key order).
+        let request_canonical = format!(
+            r#"{{"backend":"cuda","deviceIds":[{}],"gpuLayers":40,"contextLength":2048,"fallback":{{"policy":"disabled"}}}}"#,
+            json!(device));
+        let identity = format!("{},{}]", &json!(["clack-this-pc",ENGINE,artifact,
+            format!("managed-gguf:{digest}"),1,"b12248/cuda",config]).to_string()[..]
+            .trim_end_matches(']'),request_canonical);
+        let binding = validate_binding(&state,&id,&identity).expect("canonical CUDA deployment");
+        assert_eq!(binding.requested_backend,"cuda");
+        assert_eq!(binding.device_id.as_deref(),Some(device));
+        assert_eq!(binding.gpu_layers,40);
+        assert!(!binding.cpu_fallback_allowed);
+        let mut altered=state.clone();
+        altered["fabric"]["deployments"][0]["requestedExecution"]["gpuLayers"]=json!(0);
+        assert!(validate_binding(&altered,&id,&identity).is_err());
+        let mut altered=state.clone();
+        altered["fabric"]["deployments"][0]["requestedExecution"]["fallback"]["policy"]=json!("allow-compatible");
+        assert!(validate_binding(&altered,&id,&identity).is_err());
+        let mut altered=state.clone();
+        altered["fabric"]["deployments"][0]["requestedExecution"]["deviceIds"]=json!(["GPU-arbitrary"]);
+        assert!(validate_binding(&altered,&id,&identity).is_err());
+        assert!(validate_binding(&state,&id,"fabricated-cuda-identity").is_err());
+    }
+
+    #[test]
+    fn cuda_ready_requires_native_init_selected_gpu_and_positive_offload_proof() {
+        let log = b"llama_prepare_model_devices: using device CUDA0 (NVIDIA GeForce RTX 5070 Ti) (0000:01:00.0) - 15037 MiB free\nload_tensors: offloaded 25/25 layers to GPU\nload_tensors: CUDA0 model buffer size =   373.73 MiB\n";
+        assert_eq!(observed_cuda_offload(log,"NVIDIA GeForce RTX 5070 Ti"),Some(25));
+        assert_eq!(observed_cuda_offload(log,"different GPU"),None);
+        assert_eq!(observed_cuda_offload(b"llama_model_load: offloaded 25/25 layers to GPU", "RTX"),None);
+        let zero=b"llama_prepare_model_devices: using device CUDA0 (RTX)\nload_tensors: offloaded 0/25 layers to GPU\nload_tensors: CUDA0 model buffer size = 300 MiB\n";
+        assert_eq!(observed_cuda_offload(zero,"RTX"),None);
+        let excess=b"llama_prepare_model_devices: using device CUDA0 (RTX)\nload_tensors: offloaded 999/25 layers to GPU\nload_tensors: CUDA0 model buffer size = 300 MiB\n";
+        assert_eq!(observed_cuda_offload(excess,"RTX"),None);
+        let no_gpu_bytes=b"llama_prepare_model_devices: using device CUDA0 (RTX)\nload_tensors: offloaded 25/25 layers to GPU\nload_tensors: CUDA0 model buffer size = 0.00 MiB\n";
+        assert_eq!(observed_cuda_offload(no_gpu_bytes,"RTX"),None);
+        let idle = snapshot(&RuntimeOwner::default(), true);
+        assert!(idle.actual_execution.is_none());
+    }
+
+    #[test]
+    fn cuda_memory_admission_rejects_unknown_insufficient_and_impossible_claims() {
+        const MIB:u64=1024*1024;
+        assert!(cuda_memory_admission(500*MIB,2048,None,Some(14000*MIB)).unwrap_err().contains("total VRAM is UNKNOWN"));
+        assert!(cuda_memory_admission(500*MIB,2048,Some(16303*MIB),None).unwrap_err().contains("available VRAM is UNKNOWN"));
+        assert!(cuda_memory_admission(500*MIB,2048,Some(16303*MIB),Some(50*MIB)).unwrap_err().contains("Insufficient"));
+        assert!(cuda_memory_admission(500*MIB,2048,Some(100*MIB),Some(100*MIB)).unwrap_err().contains("Insufficient"));
+        assert!(cuda_memory_admission(500*MIB,2048,Some(16303*MIB),Some(16500*MIB)).unwrap_err().contains("exceeds total"));
+        assert!(cuda_memory_admission(u64::MAX,2048,Some(16303*MIB),Some(14000*MIB)).unwrap_err().contains("overflow"));
+        assert!(cuda_memory_admission(491400032,2048,Some(16303*MIB),Some(12000*MIB)).is_ok());
+    }
+
+    #[test]
+    fn cuda_fallback_disabled_never_probes_cpu_and_allowed_requires_verified_managed_cpu() {
+        let rejected = authorized_cuda_cpu_fallback(false, "CUDA dependency missing".into(), || {
+            panic!("CPU verification must never run when fallback is disabled");
+        }).unwrap_err();
+        assert!(rejected.contains("fallback disabled"));
+        assert!(rejected.contains("CUDA dependency missing"));
+
+        let missing = authorized_cuda_cpu_fallback(true, "Insufficient CUDA VRAM".into(), || {
+            Err("Pinned managed CPU executable is unavailable".into())
+        }).unwrap_err();
+        assert!(missing.contains("authorized CPU fallback is unavailable"));
+        assert!(missing.contains("Insufficient CUDA VRAM"));
+
+        let owned_binary = PathBuf::from("private-managed-cpu/llama-server.exe");
+        let (selected, reason) = authorized_cuda_cpu_fallback(true, "CUDA device unavailable".into(), || {
+            Ok(owned_binary.clone())
+        }).expect("explicit policy and verified managed CPU permit fallback");
+        assert_eq!(selected, owned_binary);
+        assert_eq!(reason, "CUDA device unavailable");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cuda_payload_verification_rejects_missing_modified_and_extra_dependency() {
+        let root = tempfile::tempdir().expect("private scratch runtime");
+        let expected = [
+            ("llama-server.exe", 4u64, format!("{:x}", Sha256::digest(b"main"))),
+            ("ggml-cuda.dll", 4u64, format!("{:x}", Sha256::digest(b"cuda"))),
+        ];
+        let manifest: Vec<(&str,u64,&str)> = expected.iter()
+            .map(|(name,bytes,digest)|(*name,*bytes,digest.as_str())).collect();
+        fs::write(root.path().join("llama-server.exe"),b"main").unwrap();
+        assert!(verify_payload_dir_expected(root.path(),&manifest)
+            .unwrap_err().contains("incomplete"));
+        fs::write(root.path().join("ggml-cuda.dll"),b"cuda").unwrap();
+        assert!(verify_payload_dir_expected(root.path(),&manifest).is_ok());
+        fs::write(root.path().join("ggml-cuda.dll"),b"evil").unwrap();
+        assert!(verify_payload_dir_expected(root.path(),&manifest)
+            .unwrap_err().contains("failed pinned identity"));
+        fs::write(root.path().join("ggml-cuda.dll"),b"cuda").unwrap();
+        fs::write(root.path().join("unexpected.dll"),b"other").unwrap();
+        assert!(verify_payload_dir_expected(root.path(),&manifest)
+            .unwrap_err().contains("Unexpected file"));
     }
 
     #[test]
