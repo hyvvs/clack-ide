@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { ModelInfo } from "@/modules/ai/config";
 import {
   deploymentIdentity,
+  executionPolicyIdentity,
   localComputeFabricSchema,
   requestedExecutionSchema,
   reconcileLocalComputeFabric,
@@ -69,6 +70,27 @@ export function managedCudaDeploymentId(
     managedCudaConfigurationIdentity(context),gpuLayers,cudaDeviceId.parse(deviceId),policy]);
 }
 
+/** Opt-in v3 configuration. Retains the exact v1 CPU and v2 CUDA identities. */
+const managedExecutionPolicyMaterialSchema = z.object({
+  version: z.literal(3), context: z.number().int().min(512).max(131_072),
+  tool: z.literal(false), grammar: z.literal(false),
+}).strict();
+export function managedExecutionPolicyConfigurationIdentity(context: number): string {
+  const material = managedExecutionPolicyMaterialSchema.parse({
+    version: 3, context, tool: false, grammar: false,
+  });
+  return JSON.stringify(material);
+}
+export function managedExecutionPolicyDeploymentId(
+  digest: string, context: number, requested: RequestedExecution,
+): string {
+  const parsed = requestedExecutionSchema.parse(requested);
+  if (!parsed.candidates?.length || parsed.contextLength !== context)
+    throw new Error("Managed v3 requires matching context and explicit ordered candidates");
+  return JSON.stringify(["managed-gguf-policy-v3",ggufDigest.parse(digest),
+    managedExecutionPolicyConfigurationIdentity(context),parsed]);
+}
+
 /** Registers a distinct model deployment under the EXISTING host, runtime and
  * content-addressed artifact. No process runs, no legacy record is modified. */
 export function attachManagedCudaVariant(
@@ -106,6 +128,40 @@ export function attachManagedCudaVariant(
     ...fabric,deployments:prior?fabric.deployments:[...fabric.deployments,cuda],
   })});
   return {state:next,selectionId:managedLocalSelectionId(cuda)};
+}
+
+/** Persist an independent, exact v3 execution policy under the same artifact.
+ * Switching policy creates a new selection/qualification identity. Neither
+ * source deployment nor any existing native receipt is overwritten. */
+export function attachManagedExecutionPolicyVariant(
+  state: SelfHostedState, sourceSelectionId: string, request: RequestedExecution,
+): {state: SelfHostedState; selectionId: string} {
+  const source = resolveManagedLocalSelection(state, sourceSelectionId);
+  if (source.status !== "available" && source.status !== "unavailable")
+    throw new Error("Managed v3 requires an existing verified GGUF registration");
+  const {artifact, runtime, host, deployment} = source;
+  if (runtime.id !== MANAGED_LOCAL_RUNTIME_ID || host.id !== MANAGED_LOCAL_HOST_ID || !artifact.digest)
+    throw new Error("Invalid managed execution policy ownership");
+  const requested = requestedExecutionSchema.parse(request);
+  if (!requested.candidates?.length || requested.contextLength === undefined)
+    throw new Error("Managed v3 requires exact candidates and context length");
+  const configurationIdentity = managedExecutionPolicyConfigurationIdentity(requested.contextLength);
+  const variant: ModelDeployment = {
+    id: managedExecutionPolicyDeploymentId(artifact.digest,requested.contextLength,requested),
+    hostId:host.id,runtimeId:runtime.id,artifactId:artifact.id,
+    runtimeModelName:deployment.runtimeModelName,
+    configurationRevision:runtime.configurationRevision,
+    configurationIdentity,requestedExecution:requested,
+  };
+  const fabric = managedLocalFabric(state);
+  const prior = fabric.deployments.find(row => row.id === variant.id);
+  if (prior && (fabric.deployments.filter(row => row.id === variant.id).length !== 1 ||
+      deploymentIdentity(prior) !== deploymentIdentity(variant)))
+    throw new Error("Conflicting persisted managed v3 deployment identity");
+  const next=withLocalComputeFabric({...state,fabric:localComputeFabricSchema.parse({
+    ...fabric,deployments:prior?fabric.deployments:[...fabric.deployments,variant],
+  })});
+  return {state:next,selectionId:managedLocalSelectionId(variant)};
 }
 export type AttachManagedLocalGguf = {
   digest: string;
@@ -214,6 +270,14 @@ function managedLocalAttachment(fabric: LocalComputeFabric, deployment: ModelDep
        deployment.configurationIdentity!==managedCudaConfigurationIdentity(parsed.data.context)||
        deployment.id!==managedCudaDeploymentId(artifact.digest,parsed.data.context,
          layers,requested.data.deviceIds[0],requested.data.fallback.policy))return;
+  } else if (deployment.variantId === undefined && (material as {version?: unknown})?.version === 3) {
+    const parsed = managedExecutionPolicyMaterialSchema.safeParse(material);
+    const requested = requestedExecutionSchema.safeParse(deployment.requestedExecution);
+    if (!parsed.success || !requested.success || !requested.data.candidates?.length ||
+        requested.data.contextLength !== parsed.data.context ||
+        deployment.configurationIdentity !== managedExecutionPolicyConfigurationIdentity(parsed.data.context) ||
+        deployment.id !== managedExecutionPolicyDeploymentId(artifact.digest,parsed.data.context,requested.data) ||
+        executionPolicyIdentity(requested.data) !== JSON.stringify(deployment.requestedExecution)) return;
   } else {
     const parsed = managedLocalMaterialSchema.safeParse(material);
     if (!parsed.success || deployment.requestedExecution!==undefined || deployment.variantId!==undefined ||

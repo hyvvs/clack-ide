@@ -3,6 +3,7 @@ import {
   actualExecutionSchema,
   computeDeviceSchema,
   deploymentIdentity,
+  executionPolicyIdentity,
   localComputeFabricSchema,
   requestedExecutionSchema,
   type RequestedExecution,
@@ -21,7 +22,8 @@ import {
   projectHardwareProfile,
   type NativeHardwareObservation,
 } from "./hardwareProfile";
-import { attachManagedLocalGguf, MANAGED_LLAMA_ENGINE_VERSION } from "./managedLocalModels";
+import { attachManagedLocalGguf, managedExecutionPolicyConfigurationIdentity,
+  managedExecutionPolicyDeploymentId, MANAGED_LLAMA_ENGINE_VERSION } from "./managedLocalModels";
 import type { ManagedLocalNativeStatus } from "./managedLocalRuntime";
 import { emptySelfHostedState } from "./selfHostedProfiles";
 
@@ -34,6 +36,246 @@ const gpu = (id = "GPU-5070-ti") => ({
   availableVramBytes: value(13_399 * 1024 ** 2),
   driverVersion: value("616.92"), computeArchitecture: value("CUDA compute capability 12.0"),
   cudaHardwareCapable: value(true),
+});
+
+describe("Slice 4 persisted execution policy and native receipt fences", () => {
+  const pinnedCuda = (deviceId = "clack-this-pc:accelerator:GPU-5070-ti") => ({
+    backend: "cuda", deviceIds: [deviceId], gpuLayers: 40,
+    runtimeVariantId: "b12248/cuda",
+  });
+  const pinnedCpu = () => ({
+    backend: "cpu", deviceIds: ["clack-this-pc:cpu:0"], gpuLayers: 0,
+    runtimeVariantId: "b12248/cpu",
+  });
+  const policy = (candidates: RequestedExecution["candidates"],
+    budget?: RequestedExecution["memoryBudget"]): RequestedExecution => requestedExecutionSchema.parse({
+    backend: candidates![0].backend, deviceIds: candidates![0].deviceIds,
+    gpuLayers: candidates![0].gpuLayers, contextLength: 2048,
+    fallback: candidates!.length > 1 ? {
+      policy: "explicit-order", order: candidates!.slice(1).map(candidate => candidate.backend),
+    } : {policy: "disabled"},
+    candidates, ...(budget ? {memoryBudget:budget} : {}),
+  });
+
+  it("preserves duplicate backends and exact candidate order without replacing pinned devices", () => {
+    const fixture = orchestrationFixture({...hardware(),gpus: [
+      {...gpu("GPU-A"),availableVramBytes:value(1 * GiB)},gpu("GPU-B"),
+    ]});
+    const candidates = [
+      {backend:"cuda",deviceIds:["clack-this-pc:accelerator:GPU-A"],gpuLayers:40,
+        runtimeVariantId:"test/cuda"},
+      {backend:"cuda",deviceIds:["clack-this-pc:accelerator:GPU-B"],gpuLayers:40,
+        runtimeVariantId:"test/cuda"},
+      {backend:"cpu",deviceIds:["clack-this-pc:cpu:0"],gpuLayers:0,
+        runtimeVariantId:"test/cpu"},
+    ];
+    const requested = policy(candidates);
+    const deployment = {...fixture.deployment,requestedExecution:requested,variantId:undefined};
+    const chosen = fixture.choose(requested,{deployment,requiredDeviceBytes:2 * GiB});
+    expect(chosen.policy).toBe("persisted-candidates-v3");
+    expect(chosen.candidates.map(candidate => candidate.backend)).toEqual(["cuda","cuda","cpu"]);
+    expect(chosen.candidates.map(candidate => candidate.state)).toEqual(["rejected","eligible","eligible"]);
+    expect(chosen.selected).toMatchObject({candidateIndex:1,backend:"cuda",
+      deviceIds:["clack-this-pc:accelerator:GPU-B"]});
+    expect(chosen.fallbackUsed).toBe(true);
+    expect(fixture.choose(requested,{deployment,hardware:projectHardwareProfile(
+      fixture.host,fixture.runtime,{...hardware(),gpus:[gpu("GPU-B"),
+        {...gpu("GPU-A"),availableVramBytes:value(1 * GiB)}]},at),
+      requiredDeviceBytes:2 * GiB}).selected).toEqual(chosen.selected);
+  });
+
+  it("records future backends but never executes unknown, unsupported or multi-device requests", () => {
+    const fixture = orchestrationFixture();
+    const future = policy([
+      {backend:"future-npu",deviceIds:["npu-1"],gpuLayers:12},
+      {...pinnedCpu(),runtimeVariantId:"test/cpu"},
+    ]);
+    const fallback = fixture.choose(future,{deployment:{...fixture.deployment,
+      variantId:undefined,requestedExecution:future}});
+    expect(fallback.candidates.map(candidate => candidate.backend)).toEqual(["future-npu","cpu"]);
+    expect(fallback).toMatchObject({state:"fallback",selected:{backend:"cpu",candidateIndex:1},
+      fallbackUsed:true});
+    const unsupported = policy([{backend:"future-npu",deviceIds:["npu-1"],gpuLayers:12}]);
+    expect(fixture.choose(unsupported,{deployment:{...fixture.deployment,variantId:undefined,
+      requestedExecution:unsupported}}).state).toBe("rejected");
+    const multi = policy([{backend:"cuda",deviceIds:["a","b"],gpuLayers:40}]);
+    expect(fixture.choose({...multi,deviceStrategy:{kind:"multi",primaryDeviceId:"a",splitStrategy:"rows"}},
+      {deployment:{...fixture.deployment,variantId:undefined,requestedExecution:{
+        ...multi,deviceStrategy:{kind:"multi",primaryDeviceId:"a",splitStrategy:"rows"}}}})
+      .reasons).toContain("Multi-device execution is not implemented");
+  });
+
+  it("requires exact trusted variant and build digest rather than accepting persisted trust claims", () => {
+    const verified = {...verifiedVariant("cuda","pinned/cuda"),buildDigest:"a".repeat(64)};
+    const fixture = orchestrationFixture(hardware(),[verifiedVariant("cpu"),verified]);
+    const requested = policy([{...pinnedCuda(),runtimeVariantId:"pinned/cuda",
+      runtimeBuildDigest:`sha256:${"a".repeat(64)}`}]);
+    const deployment = {...fixture.deployment,variantId:undefined,requestedExecution:requested};
+    expect(fixture.choose(requested,{deployment}).selected?.runtimeVariantId).toBe("pinned/cuda");
+    const mismatched = policy([{...requested.candidates![0],runtimeBuildDigest:`sha256:${"b".repeat(64)}`}]);
+    expect(fixture.choose(mismatched,{deployment:{...deployment,requestedExecution:mismatched}})
+      .reasons.join(" ")).toContain("candidate runtime build digest mismatch");
+    expect(fixture.choose(requested,{deployment,runtime:{...fixture.runtime,
+      backendVariants:[{...verified,trust:"UNQUALIFIED"}]}}).reasons.join(" "))
+      .toContain("runtime build trust UNQUALIFIED");
+  });
+
+  it("matches the official pinned CPU b12248 archive, and fails closed on a changed digest or unverified installation", () => {
+    const fixture = setup(false);
+    const official =
+      "sha256:bb306bfd390f8782c0acaba490505d12f07392791b48f1dd039387a5bacf1181";
+    expect(runtimeBackendVariants(fixture.runtime,installed).find(variant => variant.backend === "cpu"))
+      .toMatchObject({
+        id:"b12248/cpu",support:"AVAILABLE",installation:"AVAILABLE",trust:"VERIFIED",
+        source:"pinned-b12248-cpu-runtime-manifest",buildDigest:official,
+      });
+    const requested = policy([{...pinnedCpu(),runtimeBuildDigest:official}]);
+    const deployment = {...fixture.deployment,requestedExecution:requested,
+      id:managedExecutionPolicyDeploymentId(fixture.artifact.digest!,2048,requested),
+      configurationIdentity:managedExecutionPolicyConfigurationIdentity(2048)};
+    const input = {host:fixture.host,runtime:fixture.runtime,deployment,
+      artifact:fixture.artifact,hardware:fixture.profile,requested,installedRuntime:installed};
+    expect(selectDeploymentExecution(input)).toMatchObject({
+      state:"selected",selected:{backend:"cpu",runtimeVariantId:"b12248/cpu",candidateIndex:0},
+      fallbackUsed:false,actual:null,
+    });
+    const mismatched = policy([{...pinnedCpu(),runtimeBuildDigest:`sha256:${"f".repeat(64)}`}]);
+    expect(selectDeploymentExecution({...input,requested:mismatched,
+      deployment:{...deployment,requestedExecution:mismatched}}).reasons.join(" "))
+      .toContain("candidate runtime build digest mismatch");
+    expect(selectDeploymentExecution({...input,installedRuntime:null}).reasons.join(" "))
+      .toContain("runtime installation UNKNOWN");
+    expect(selectDeploymentExecution({...input,installedRuntime:{installed:true,version:"other-build"}})
+      .reasons.join(" ")).toContain("runtime installation INSTALLED_NOT_USABLE");
+  });
+
+  it("normalizes the independently verified CUDA archive to the same sha256-prefixed build identity", () => {
+    const fixture = setup();
+    const rawCudaArchive = "ae0a1e064a94db82f3352c843ffa96eb190254fefafc29ce0213798c549a2799";
+    const requested = policy([{...pinnedCuda(),runtimeBuildDigest:`sha256:${rawCudaArchive}`}]);
+    const deployment = {...fixture.deployment,requestedExecution:requested,variantId:undefined};
+    const variant = {installed:true,version:MANAGED_LLAMA_ENGINE_VERSION,
+      engineArchiveSha256:rawCudaArchive};
+    expect(runtimeBackendVariants(fixture.runtime,installed,variant).find(row => row.backend === "cuda")?.buildDigest)
+      .toBe(`sha256:${rawCudaArchive}`);
+    const input = {host:fixture.host,runtime:fixture.runtime,deployment,
+      artifact:fixture.artifact,hardware:fixture.profile,requested,installedRuntime:installed,
+      cudaVariant:variant};
+    expect(selectDeploymentExecution(input).selected).toMatchObject({
+      backend:"cuda",runtimeVariantId:"b12248/cuda",candidateIndex:0,
+    });
+    expect(selectDeploymentExecution({...input,cudaVariant:{...variant,
+      engineArchiveSha256:"malformed"}}).reasons.join(" "))
+      .toContain("candidate runtime build digest mismatch");
+  });
+
+  it("enforces evidence-backed maximum and reserved memory, with no invented estimates", () => {
+    const fixture = orchestrationFixture();
+    const requested = policy([{...pinnedCuda(),runtimeVariantId:"test/cuda"}],{
+      maxDeviceBytes:4 * GiB,maxHostBytes:8 * GiB,
+      reserveDeviceBytes:2 * GiB,reserveHostBytes:4 * GiB,
+    });
+    const deployment = {...fixture.deployment,variantId:undefined,requestedExecution:requested};
+    expect(fixture.choose(requested,{deployment}).reasons)
+      .toContain("Host memory requirement UNKNOWN for maximum budget");
+    expect(fixture.choose(requested,{deployment,requiredHostBytes:9 * GiB,
+      requiredDeviceBytes:3 * GiB}).reasons)
+      .toContain("Host memory requirement exceeds maximum budget");
+    expect(fixture.choose(requested,{deployment,requiredHostBytes:6 * GiB,
+      requiredDeviceBytes:5 * GiB}).reasons.join(" "))
+      .toContain("device memory requirement exceeds maximum budget");
+    const selected = fixture.choose(requested,{deployment,requiredHostBytes:6 * GiB,
+      requiredDeviceBytes:3 * GiB});
+    expect(selected.selected).toMatchObject({backend:"cuda",candidateIndex:0});
+    const constrained = fixture.choose(requested,{deployment,requiredHostBytes:6 * GiB,
+      requiredDeviceBytes:3 * GiB,hardware:projectHardwareProfile(fixture.host,fixture.runtime,
+        {...hardware(),gpus:[{...gpu(),availableVramBytes:value(4 * GiB)}]},at)});
+    expect(constrained.reasons.join(" ")).toContain("insufficient available device memory");
+  });
+
+  it("promotes only a matching native v3 receipt fenced to exact policy, candidate, PID and epoch", () => {
+    const fixture = setup();
+    const requested = policy([pinnedCpu()]);
+    const deployment = {...fixture.deployment,
+      id:managedExecutionPolicyDeploymentId(fixture.artifact.digest!,2048,requested),
+      configurationIdentity:managedExecutionPolicyConfigurationIdentity(2048),
+      requestedExecution:requested,
+    };
+    const actual = {
+      backend:"cpu",deviceIds:["clack-this-pc:cpu:0"],gpuLayers:0,
+      runtimeVariantId:"b12248/cpu",runtimeEpoch:installed.epoch,
+      contextLength:2048,
+      source:"native-verified-managed-cpu-launch",observedAt:at-100,
+      executionReceipt: {version:3 as const,deploymentId:deployment.id,
+        deploymentIdentity:deploymentIdentity(deployment),
+        policyIdentity:executionPolicyIdentity(requested),selectedCandidateIndex:0,
+        processId:101,fallbackUsed:false,fallbackAuthorized:false},
+    };
+    const native: ManagedLocalNativeStatus = {...installed,state:"Ready",deploymentId:deployment.id,
+      processId:101,selectedBackend:"cpu",fallbackUsed:false,fallbackAuthorized:false,
+      actualExecution:actual};
+    expect(observedActualExecution(fixture.runtime,deployment,native,at)).toEqual(actual);
+    for (const bad of [
+      {...actual,executionReceipt:{...actual.executionReceipt,policyIdentity:"other-policy"}},
+      {...actual,executionReceipt:{...actual.executionReceipt,processId:102}},
+      {...actual,executionReceipt:{...actual.executionReceipt,selectedCandidateIndex:1}},
+      {...actual,executionReceipt:{...actual.executionReceipt,deploymentIdentity:"other-deployment"}},
+      {...actual,executionReceipt:{...actual.executionReceipt,fallbackAuthorized:true}},
+    ]) expect(observedActualExecution(fixture.runtime,deployment,{...native,actualExecution:bad},at))
+      .toBeNull();
+    expect(observedActualExecution(fixture.runtime,deployment,{...native,actualExecution:{
+      ...actual,executionReceipt:undefined}},at)).toBeNull();
+    expect(observedActualExecution(fixture.runtime,deployment,{...native,epoch:"restarted"},at))
+      .toBeNull();
+    expect(selectDeploymentExecution({...fixture,deployment,hardware:fixture.profile,
+      requested:{...requested,contextLength:8192},nativeExecution:native,now:at}).reasons)
+      .toContain("Requested policy differs from persisted deployment identity");
+  });
+
+  it("accepts native-verified CUDA 25/25 offload under a persisted 40-layer cap, not zero or over-cap", () => {
+    const fixture = setup();
+    const archiveSha = "ae0a1e064a94db82f3352c843ffa96eb190254fefafc29ce0213798c549a2799";
+    const requested = policy([{...pinnedCuda(),runtimeBuildDigest:`sha256:${archiveSha}`}]);
+    const deployment = {...fixture.deployment,
+      id:managedExecutionPolicyDeploymentId(fixture.artifact.digest!,2048,requested),
+      configurationIdentity:managedExecutionPolicyConfigurationIdentity(2048),
+      requestedExecution:requested,
+    };
+    const actual = {
+      backend:"cuda",deviceIds:["clack-this-pc:accelerator:GPU-5070-ti"],
+      gpuLayers:25,runtimeVariantId:"b12248/cuda",runtimeEpoch:installed.epoch,
+      contextLength:2048,source:"native-verified-cuda-init-and-layer-offload",observedAt:at-100,
+      executionReceipt:{version:3 as const,deploymentId:deployment.id,
+        deploymentIdentity:deploymentIdentity(deployment),policyIdentity:executionPolicyIdentity(requested),
+        selectedCandidateIndex:0,processId:101,fallbackUsed:false,fallbackAuthorized:false,
+        runtimeBuildDigest:`sha256:${archiveSha}`},
+    };
+    const native:ManagedLocalNativeStatus = {...installed,state:"Ready",deploymentId:deployment.id,
+      processId:101,selectedBackend:"cuda",requestedGpuLayers:40,selectedGpuLayers:40,
+      fallbackUsed:false,fallbackAuthorized:false,actualExecution:actual};
+    expect(observedActualExecution(fixture.runtime,deployment,native,at)).toEqual(actual);
+    const chosen = selectDeploymentExecution({host:fixture.host,runtime:fixture.runtime,
+      artifact:fixture.artifact,deployment,hardware:fixture.profile,requested,
+      installedRuntime:installed,cudaVariant:{installed:true,
+        version:MANAGED_LLAMA_ENGINE_VERSION,engineArchiveSha256:archiveSha},
+      nativeExecution:native,now:at});
+    expect(chosen).toMatchObject({
+      state:"selected",selected:{backend:"cuda",gpuLayers:40,candidateIndex:0},
+      actual:{backend:"cuda",gpuLayers:25},
+    });
+    for (const layers of [0,41])
+      expect(observedActualExecution(fixture.runtime,deployment,{...native,
+        actualExecution:{...actual,gpuLayers:layers}},at)).toBeNull();
+    // The layer-cap fix does not relax the rest of the native receipt fence.
+    expect(observedActualExecution(fixture.runtime,deployment,{...native,
+      actualExecution:{...actual,deviceIds:["clack-this-pc:accelerator:other-gpu"]}},at))
+      .toBeNull();
+    expect(observedActualExecution(fixture.runtime,deployment,{...native,
+      actualExecution:{...actual,executionReceipt:{...actual.executionReceipt,
+        runtimeBuildDigest:`sha256:${"f".repeat(64)}`}}},at)).toBeNull();
+    expect(observedActualExecution(fixture.runtime,deployment,{...native,
+      actualExecution:{...actual,runtimeVariantId:"b12248/cpu"}},at)).toBeNull();
+  });
 });
 const hardware = (withGpu = true): NativeHardwareObservation => ({
   os: "windows", architecture: "x86_64", observedAt: at - 100,

@@ -88,6 +88,33 @@ export const executionFallbackSchema = z.object({
   if (value.policy === "explicit-order" && !value.order?.length)
     ctx.addIssue({code: "custom", message: "Explicit-order fallback requires an ordered list"});
 });
+const memoryBytes = z.number().int().nonnegative().safe();
+/** Exact user-authored candidate sequence. Unknown backends and multiple
+ * devices remain representable, but require a separately implemented launcher. */
+export const persistedExecutionCandidateSchema = z.object({
+  backend: executionBackendKindSchema,
+  deviceIds: z.array(name).max(16),
+  gpuLayers: z.number().int().nonnegative().max(1_000_000).optional(),
+  runtimeVariantId: name.optional(),
+  runtimeBuildDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+}).strict().superRefine((candidate, ctx) => {
+  if (new Set(candidate.deviceIds).size !== candidate.deviceIds.length)
+    ctx.addIssue({code: "custom", message: "Duplicate exact device identities"});
+  if (candidate.backend === "cpu" && (candidate.gpuLayers ?? 0) !== 0)
+    ctx.addIssue({code: "custom", message: "CPU candidate cannot offload GPU layers"});
+});
+export type PersistedExecutionCandidate = z.infer<typeof persistedExecutionCandidateSchema>;
+export const executionMemoryBudgetSchema = z.object({
+  maxDeviceBytes: memoryBytes.optional(),
+  maxHostBytes: memoryBytes.optional(),
+  reserveDeviceBytes: memoryBytes.optional(),
+  reserveHostBytes: memoryBytes.optional(),
+}).strict();
+export const executionDeviceStrategySchema = z.object({
+  kind: z.enum(["single", "multi"]),
+  primaryDeviceId: name.optional(),
+  splitStrategy: z.enum(["none", "layers", "rows"]).optional(),
+}).strict();
 export const requestedExecutionSchema = z.object({
   backend: executionBackendKindSchema,
   deviceIds: z.array(name).max(16).default([]),
@@ -97,7 +124,40 @@ export const requestedExecutionSchema = z.object({
   minAvailableDeviceBytes: z.number().int().nonnegative().safe().optional(),
   minAvailableHostBytes: z.number().int().nonnegative().safe().optional(),
   fallback: executionFallbackSchema.default({policy: "disabled"}),
-}).strict();
+  // Additive v3 fields are ordered AFTER every historic request field. V2
+  // identity serialization and native canonical reconstruction stay unchanged.
+  candidates: z.array(persistedExecutionCandidateSchema).min(1).max(16).optional(),
+  memoryBudget: executionMemoryBudgetSchema.optional(),
+  deviceStrategy: executionDeviceStrategySchema.optional(),
+}).strict().superRefine((request, ctx) => {
+  if (!request.candidates) {
+    if (request.memoryBudget || request.deviceStrategy)
+      ctx.addIssue({code: "custom", message: "Explicit candidates required for execution policy"});
+    return;
+  }
+  const [first] = request.candidates;
+  if (first.backend !== request.backend ||
+      JSON.stringify(first.deviceIds) !== JSON.stringify(request.deviceIds) ||
+      (first.gpuLayers !== undefined && first.gpuLayers !== request.gpuLayers))
+    ctx.addIssue({code: "custom", message: "First candidate must match requested execution"});
+  const others = request.candidates.slice(1).map(candidate => candidate.backend);
+  if (request.fallback.policy === "disabled" &&
+      (others.length || request.fallback.order !== undefined))
+    ctx.addIssue({code: "custom", message: "Disabled fallback permits one candidate only"});
+  if (request.fallback.policy === "explicit-order" &&
+      JSON.stringify(others) !== JSON.stringify(request.fallback.order))
+    ctx.addIssue({code: "custom", message: "Fallback order must match exact candidate sequence"});
+  if (request.fallback.policy === "allow-compatible" &&
+      (request.backend !== "cuda" || others.length !== 1 || others[0] !== "cpu" ||
+        request.fallback.order !== undefined))
+    ctx.addIssue({code: "custom", message: "Compatible fallback requires an exact CUDA then CPU sequence"});
+  if (request.deviceStrategy?.primaryDeviceId &&
+      !first.deviceIds.includes(request.deviceStrategy.primaryDeviceId))
+    ctx.addIssue({code: "custom", message: "Primary device must belong to the first candidate"});
+  if (request.deviceStrategy?.kind === "single" &&
+      request.candidates.some(candidate => candidate.deviceIds.length > 1))
+    ctx.addIssue({code: "custom", message: "Single-device strategy cannot list multiple devices"});
+});
 export type RequestedExecution = z.infer<typeof requestedExecutionSchema>;
 /** Observed native launch, never inferred from a placement or preference. */
 export const actualExecutionSchema = z.object({
@@ -106,6 +166,22 @@ export const actualExecutionSchema = z.object({
   runtimeVariantId: name, runtimeEpoch: name, source: small,
   contextLength: z.number().int().positive().max(8_388_608).optional(),
   observedAt: z.number().int().nonnegative().safe(),
+  /** Native-authored proof for a v3 policy. Unproven placement is never
+   * promoted by a renderer-selected candidate or a persisted trust label. */
+  executionReceipt: z.object({
+    version: z.literal(3),
+    deploymentId: longIdentity,
+    deploymentIdentity: longIdentity,
+    policyIdentity: longIdentity,
+    selectedCandidateIndex: z.number().int().nonnegative().max(15),
+    processId: z.number().int().positive().safe(),
+    runtimeBuildDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+    fallbackUsed: z.boolean(),
+    fallbackAuthorized: z.boolean(),
+    /** Available capacity before launch, NOT bytes consumed by the child. */
+    measuredHostBytes: memoryBytes.optional(),
+    measuredDeviceBytes: memoryBytes.optional(),
+  }).strict().optional(),
 }).strict();
 export type ActualExecution = z.infer<typeof actualExecutionSchema>;
 export const computeHostSchema = z.object({
@@ -557,6 +633,10 @@ export function deploymentIdentity(
   // participate in a new deployment's identity.
   return JSON.stringify(deployment.requestedExecution
     ? [...base, requestedExecutionSchema.parse(deployment.requestedExecution)] : base);
+}
+/** Canonical request bytes for persisted v3 identity and native attestation. */
+export function executionPolicyIdentity(request: RequestedExecution): string {
+  return JSON.stringify(requestedExecutionSchema.parse(request));
 }
 function unique<T extends { id: string }>(rows: T[]): T[] {
   return [...new Map(rows.map(row => [row.id, row])).values()];

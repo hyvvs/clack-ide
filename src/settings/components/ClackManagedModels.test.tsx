@@ -1,6 +1,18 @@
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const policyControl = vi.hoisted(() => ({
+  save: null as (() => void) | null,
+}));
+vi.mock("@/components/ui/button", () => ({
+  Button: ({ children, disabled, onClick }: {
+    children: ReactNode; disabled?: boolean; onClick?: () => void;
+  }) => {
+    if (children === "Save new policy variant") policyControl.save = onClick ?? null;
+    return <button type="button" disabled={disabled} onClick={onClick}>{children}</button>;
+  },
+}));
 vi.mock("@/modules/settings/preferences", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/modules/settings/preferences")>();
   return {
@@ -14,10 +26,18 @@ vi.mock("@/modules/settings/preferences", async (importOriginal) => {
 });
 
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { attachManagedLocalGguf, attachManagedCudaVariant } from "@/modules/ai/lib/managedLocalModels";
-import { emptySelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
+import { attachManagedLocalGguf, attachManagedCudaVariant, managedLocalModelInfos, resolveManagedLocalSelection } from "@/modules/ai/lib/managedLocalModels";
+import { emptySelfHostedState, type SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import type { ManagedLocalNativeStatus } from "@/modules/ai/lib/managedLocalRuntime";
-import { ClackManagedModels, DEFAULT_MANAGED_GGUF_MATERIAL, ManagedExecutionReadout } from "./ClackManagedModels";
+import {
+  buildManagedExecutionPolicyRequest,
+  ClackManagedModels,
+  DEFAULT_MANAGED_GGUF_MATERIAL,
+  initialManagedExecutionPolicyDraft,
+  ManagedExecutionPolicyEditor,
+  ManagedExecutionReadout,
+  saveManagedExecutionPolicyVariant,
+} from "./ClackManagedModels";
 
 const original = usePreferencesStore.getState().selfHostedInference;
 afterEach(() => usePreferencesStore.setState({ selfHostedInference: original }));
@@ -139,5 +159,172 @@ describe("Clack Managed local model production settings", () => {
     expect(html).toContain("CPU recovery pending; no Ready proof yet");
     expect(html).toContain("Failure category: ready-timeout");
     expect(html).not.toContain("native execution verified");
+  });
+});
+
+describe("Slice 4 execution policy settings controls and CAS registration", () => {
+  const digest = `sha256:${"8".repeat(64)}`;
+  const deviceId = "clack-this-pc:accelerator:GPU-30ab48fd-809d-dc7d-c437-6ad626ece81a";
+  const devices = [{ id: deviceId, label: "NVIDIA fixture", free: 8 * 1024 ** 3 }];
+
+  const fixture = () => attachManagedLocalGguf(emptySelfHostedState(), {
+    digest, displayName: "Immutable CPU source", material: {
+      version: 1, context: 2048, gpu: 0, tool: false, grammar: false,
+    },
+  });
+
+  it("renders progressive controls without importing, starting or claiming native placement", () => {
+    const { state, selectionId } = fixture();
+    usePreferencesStore.setState({ selfHostedInference: state });
+    const settings = renderToStaticMarkup(<ClackManagedModels />);
+    expect(settings).toContain("Create execution policy variant");
+    expect(settings).toContain("Save new policy variant");
+    expect(settings).toContain("Advanced · CPU, context and memory budgets");
+    expect(settings).not.toContain("Ready · native execution verified");
+    const editor = renderToStaticMarkup(<ManagedExecutionPolicyEditor
+      sourceSelectionId={selectionId} request={null} contextLength={2048}
+      devices={devices} disabled={false} onSave={async () => undefined} />);
+    expect(editor).toContain('aria-label="Policy preferred backend"');
+    expect(editor).toContain('aria-label="Policy fallback order"');
+    expect(editor).toContain('aria-label="Policy CPU threads"');
+    expect(editor).toContain('aria-label="Policy Context tokens"');
+    expect(editor).toContain('aria-label="Policy Maximum host RAM (MiB)"');
+    expect(editor).toContain('aria-label="Policy Maximum device VRAM (MiB)"');
+    expect(editor).toContain('value="cpu" selected=""');
+  });
+
+  it("wires the Save control to a validated request for the exact source selection", async () => {
+    const { selectionId } = fixture();
+    const onSave = vi.fn(async () => undefined);
+    policyControl.save = null;
+    renderToStaticMarkup(<ManagedExecutionPolicyEditor
+      sourceSelectionId={selectionId} request={null} contextLength={2048}
+      devices={devices} disabled={false} onSave={onSave} />);
+    const submit = policyControl.save as unknown as () => void;
+    expect(submit).toBeTypeOf("function");
+    submit();
+    await vi.waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    const [source, requested] = onSave.mock.calls[0] as unknown as [string, ReturnType<typeof buildManagedExecutionPolicyRequest>];
+    expect(source).toBe(selectionId);
+    expect(requested.candidates?.map(candidate => candidate.backend)).toEqual(["cpu"]);
+    expect(requested.fallback.policy).toBe("disabled");
+  });
+
+  it("creates an exact CPU-only v3 policy with no implicit CUDA or budgets", () => {
+    const draft = initialManagedExecutionPolicyDraft(null, 2048, devices);
+    const requested = buildManagedExecutionPolicyRequest(draft);
+    expect(requested).toMatchObject({
+      backend: "cpu",
+      deviceIds: ["clack-this-pc:cpu:0"],
+      gpuLayers: 0,
+      contextLength: 2048,
+      fallback: { policy: "disabled" },
+      deviceStrategy: { kind: "single", primaryDeviceId: "clack-this-pc:cpu:0" },
+      candidates: [{ backend: "cpu", deviceIds: ["clack-this-pc:cpu:0"],
+        gpuLayers: 0, runtimeVariantId: "b12248/cpu" }],
+    });
+    expect(requested.memoryBudget).toBeUndefined();
+    expect(requested.cpuThreads).toBeUndefined();
+  });
+
+  it("does not offer a CPU primary device as a CUDA choice after switching policy", () => {
+    const cpu = buildManagedExecutionPolicyRequest({
+      ...initialManagedExecutionPolicyDraft(null, 2048, devices),
+      preferredBackend: "cpu",
+    });
+    expect(cpu.deviceStrategy?.primaryDeviceId).toBe("clack-this-pc:cpu:0");
+    const switched = initialManagedExecutionPolicyDraft(cpu, 2048, devices);
+    expect(switched.cudaDeviceId).toBe(deviceId);
+    const cuda = buildManagedExecutionPolicyRequest({
+      ...switched, preferredBackend: "cuda", gpuLayers: "20",
+    });
+    expect(cuda.deviceIds).toEqual([deviceId]);
+    expect(cuda.candidates?.[0]).toMatchObject({
+      backend: "cuda", deviceIds: [deviceId], gpuLayers: 20,
+    });
+  });
+
+  it("honors preferred CUDA device, explicit CPU fallback, offload and advanced limits", () => {
+    const request = buildManagedExecutionPolicyRequest({
+      ...initialManagedExecutionPolicyDraft(null, 2048, devices),
+      preferredBackend: "cuda", cudaDeviceId: deviceId,
+      allowFallback: true, gpuLayers: "40", contextLength: "8192",
+      cpuThreads: "6", maxHostMiB: "8192", maxDeviceMiB: "6144",
+      reserveHostMiB: "512", reserveDeviceMiB: "256",
+    });
+    expect(request).toMatchObject({
+      backend: "cuda", deviceIds: [deviceId], gpuLayers: 40,
+      cpuThreads: 6, contextLength: 8192,
+      fallback: { policy: "explicit-order", order: ["cpu"] },
+      candidates: [
+        { backend: "cuda", deviceIds: [deviceId], gpuLayers: 40, runtimeVariantId: "b12248/cuda" },
+        { backend: "cpu", deviceIds: ["clack-this-pc:cpu:0"], gpuLayers: 0, runtimeVariantId: "b12248/cpu" },
+      ],
+      memoryBudget: {
+        maxHostBytes: 8192 * 1024 ** 2, maxDeviceBytes: 6144 * 1024 ** 2,
+        reserveHostBytes: 512 * 1024 ** 2, reserveDeviceBytes: 256 * 1024 ** 2,
+      },
+      deviceStrategy: { kind: "single", primaryDeviceId: deviceId },
+    });
+    const reversed = buildManagedExecutionPolicyRequest({
+      ...initialManagedExecutionPolicyDraft(null, 2048, devices),
+      preferredBackend: "cpu", allowFallback: true,
+    });
+    expect(reversed.candidates?.map(candidate => candidate.backend)).toEqual(["cpu", "cuda"]);
+    expect(reversed.fallback).toEqual({ policy: "explicit-order", order: ["cuda"] });
+    expect(reversed.deviceStrategy?.primaryDeviceId).toBe("clack-this-pc:cpu:0");
+  });
+
+  it("rejects missing GPU, invalid context, invalid offload and fractional memory before CAS", () => {
+    const draft = initialManagedExecutionPolicyDraft(null, 2048, []);
+    expect(() => buildManagedExecutionPolicyRequest({
+      ...draft, preferredBackend: "cuda",
+    })).toThrow("Select a discovered NVIDIA GPU");
+    expect(() => buildManagedExecutionPolicyRequest({
+      ...draft, contextLength: "0",
+    })).toThrow("Context must be");
+    expect(() => buildManagedExecutionPolicyRequest({
+      ...draft, preferredBackend: "cuda", cudaDeviceId: deviceId, gpuLayers: "0",
+    })).toThrow("GPU layers must be");
+    expect(() => buildManagedExecutionPolicyRequest({
+      ...draft, maxHostMiB: "1.5",
+    })).toThrow("Host RAM budget");
+    expect(() => buildManagedExecutionPolicyRequest({
+      ...draft, cpuThreads: "65537",
+    })).toThrow("CPU threads must be");
+  });
+
+  it("persists new immutable v3 deployment selection through one CAS update, preserving historical CPU and CUDA", async () => {
+    const cpu = fixture();
+    const cuda = attachManagedCudaVariant(cpu.state, cpu.selectionId, {
+      deviceId, gpuLayers: 40, fallback: "disabled",
+    });
+    const originalDeploymentIds = cuda.state.fabric?.deployments.map(row => row.id);
+    const request = buildManagedExecutionPolicyRequest({
+      ...initialManagedExecutionPolicyDraft(null, 2048, devices),
+      preferredBackend: "cuda", cudaDeviceId: deviceId, allowFallback: true,
+    });
+    let persisted: SelfHostedState = cuda.state;
+    let commits = 0;
+    const cas = async (update: (current: SelfHostedState) => SelfHostedState) => {
+      commits++;
+      persisted = update(persisted);
+      return persisted;
+    };
+    const selectionId = await saveManagedExecutionPolicyVariant(cpu.selectionId, request, cas);
+    expect(commits).toBe(1);
+    expect(selectionId).not.toBe(cpu.selectionId);
+    expect(selectionId).not.toBe(cuda.selectionId);
+    expect(persisted.fabric?.deployments.map(row => row.id).slice(0, 2)).toEqual(originalDeploymentIds);
+    expect(resolveManagedLocalSelection(persisted, cpu.selectionId).status).not.toBe("missing");
+    expect(resolveManagedLocalSelection(persisted, cuda.selectionId).status).not.toBe("missing");
+    const saved = resolveManagedLocalSelection(persisted, selectionId);
+    expect(saved.status).not.toBe("missing");
+    if (saved.status === "missing" || saved.status === "not-managed") throw Error("Missing saved selection");
+    expect(saved.deployment.configurationIdentity).toContain('"version":3');
+    expect(saved.deployment.requestedExecution).toEqual(request);
+    expect(managedLocalModelInfos(persisted).map(model => model.id)).toContain(selectionId);
+    expect(await saveManagedExecutionPolicyVariant(cpu.selectionId, request, cas)).toBe(selectionId);
+    expect(persisted.fabric?.deployments).toHaveLength(3);
   });
 });

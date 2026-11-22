@@ -12,15 +12,21 @@ import {
   runtimeCapabilityAllows,
   withLocalComputeFabric,
   deploymentIdentity,
+  executionPolicyIdentity,
+  localComputeFabricSchema,
+  requestedExecutionSchema,
 } from "@/modules/ai/lib/localComputeFabric";
 import {
   attachManagedLocalGguf,
+  attachManagedExecutionPolicyVariant,
   createManagedDeployment,
   isManagedLocalSelectionId,
   managedLocalArtifactId,
   managedLocalChatDeclared,
   managedLocalConfigurationIdentity,
   managedLocalDeploymentId,
+  managedExecutionPolicyConfigurationIdentity,
+  managedExecutionPolicyDeploymentId,
   managedLocalModelInfos,
   managedLocalSelectionId,
   managedLocalSelectionStatus,
@@ -337,5 +343,102 @@ describe("LM2D conceptual managed GGUF identity and selection", () => {
       expect(managedLocalModelInfos(corrupted)).toEqual([]);
       expect(() => add(corrupted)).toThrow(/Ambiguous managed fabric identity/);
     }
+  });
+});
+
+describe("Slice 4 canonical managed v3 deployment policy", () => {
+  const cpuDevice = "clack-this-pc:cpu:0";
+  const gpuDevice = "clack-this-pc:accelerator:GPU-aaaaaaaaaaaa";
+  const cpuPolicy = () => requestedExecutionSchema.parse({
+    backend: "cpu", deviceIds: [cpuDevice], gpuLayers: 0, contextLength: 4096,
+    fallback: {policy: "disabled"},
+    candidates: [{backend: "cpu", deviceIds: [cpuDevice], gpuLayers: 0,
+      runtimeVariantId: "b12248/cpu"}],
+    deviceStrategy: {kind: "single", primaryDeviceId: cpuDevice},
+  });
+  const cudaPolicy = (withCpuFallback = false) => requestedExecutionSchema.parse({
+    backend: "cuda", deviceIds: [gpuDevice], gpuLayers: 40, contextLength: 4096,
+    fallback: withCpuFallback ? {policy: "explicit-order", order: ["cpu"]} : {policy: "disabled"},
+    candidates: [{backend: "cuda", deviceIds: [gpuDevice], gpuLayers: 40,
+      runtimeVariantId: "b12248/cuda"},
+      ...(withCpuFallback ? [{backend: "cpu", deviceIds: [cpuDevice], gpuLayers: 0,
+        runtimeVariantId: "b12248/cpu"}] : [])],
+  });
+
+  it("migrates an existing v1 selection to an independently persisted, canonical v3 CPU policy", () => {
+    const legacy = add();
+    const policy = cpuPolicy();
+    const attached = attachManagedExecutionPolicyVariant(legacy.state, legacy.selectionId, policy);
+    const parsed = localComputeFabricSchema.parse(JSON.parse(JSON.stringify(attached.state.fabric)));
+    const saved = parsed.deployments[1];
+    expect(saved.id).toBe(managedExecutionPolicyDeploymentId(digest,4096,policy));
+    expect(saved.configurationIdentity).toBe(managedExecutionPolicyConfigurationIdentity(4096));
+    expect(saved.requestedExecution).toEqual(policy);
+    expect(JSON.parse(saved.id)).toEqual(["managed-gguf-policy-v3",digest,
+      saved.configurationIdentity,policy]);
+    expect(JSON.parse(deploymentIdentity(saved)).at(-1)).toEqual(policy);
+    expect(executionPolicyIdentity(policy)).toBe(JSON.stringify(policy));
+    expect(resolveManagedLocalSelection({...attached.state,fabric:parsed},attached.selectionId).status)
+      .toBe("unavailable");
+    expect(resolveManagedLocalSelection(attached.state,legacy.selectionId).status).toBe("unavailable");
+    expect(attached.state.fabric!.deployments[0]).toEqual(legacy.state.fabric!.deployments[0]);
+    const repeat = attachManagedExecutionPolicyVariant(attached.state,legacy.selectionId,policy);
+    expect(repeat.selectionId).toBe(attached.selectionId);
+    expect(repeat.state.fabric!.deployments).toHaveLength(2);
+    expect(managedLocalModelInfos(repeat.state)).toHaveLength(2);
+  });
+
+  it("keeps CUDA-only and CUDA→CPU deployments separate from each other and the legacy selection", () => {
+    const legacy = add();
+    const cuda = attachManagedExecutionPolicyVariant(legacy.state,legacy.selectionId,cudaPolicy());
+    const switched = attachManagedExecutionPolicyVariant(cuda.state,cuda.selectionId,cudaPolicy(true));
+    expect(new Set(switched.state.fabric!.deployments.map(row => row.id)).size).toBe(3);
+    expect(switched.selectionId).not.toBe(cuda.selectionId);
+    expect(resolveManagedLocalSelection(switched.state,legacy.selectionId).status).toBe("unavailable");
+    expect(resolveManagedLocalSelection(switched.state,cuda.selectionId).status).toBe("unavailable");
+    expect(resolveManagedLocalSelection(switched.state,switched.selectionId).status).toBe("unavailable");
+    const modified = structuredClone(switched.state);
+    modified.fabric!.deployments[2].requestedExecution!.candidates![0].deviceIds[0] = cpuDevice;
+    expect(resolveManagedLocalSelection(modified,switched.selectionId).status).toBe("missing");
+    expect(switched.state.fabric!.qualificationReceipts).toBeUndefined();
+  });
+
+  it("persists future backends and ordered multi-device intentions without claiming their execution", () => {
+    const legacy = add();
+    const policy = requestedExecutionSchema.parse({
+      backend: "future-npu", deviceIds: ["NPU-Z", "NPU-A"], gpuLayers: 10,
+      contextLength: 4096,
+      fallback: {policy: "explicit-order",order: ["cuda", "future-npu", "cpu"]},
+      candidates: [
+        {backend: "future-npu", deviceIds: ["NPU-Z", "NPU-A"],gpuLayers: 10},
+        {backend: "cuda",deviceIds: [gpuDevice],gpuLayers: 40},
+        {backend: "future-npu",deviceIds: ["NPU-A"],gpuLayers: 10},
+        {backend: "cpu",deviceIds: [cpuDevice],gpuLayers: 0},
+      ],
+      deviceStrategy: {kind: "multi",primaryDeviceId:"NPU-Z",splitStrategy:"rows"},
+    });
+    const attached = attachManagedExecutionPolicyVariant(legacy.state,legacy.selectionId,policy);
+    expect(attached.state.fabric!.deployments[1].requestedExecution?.candidates?.map(c => c.backend))
+      .toEqual(["future-npu", "cuda", "future-npu", "cpu"]);
+    expect(attached.state.fabric!.deployments[1].requestedExecution?.candidates?.[0].deviceIds)
+      .toEqual(["NPU-Z", "NPU-A"]);
+    expect(resolveManagedLocalSelection(attached.state,attached.selectionId).status).toBe("unavailable");
+  });
+
+  it("rejects conflicting fallback definitions, duplicate devices, invalid trust pins and drifted context", () => {
+    const legacy = add();
+    expect(() => requestedExecutionSchema.parse({
+      ...cudaPolicy(true),fallback:{policy:"disabled"},
+    })).toThrow();
+    expect(() => requestedExecutionSchema.parse({
+      ...cpuPolicy(),candidates:[{backend:"cpu",deviceIds:[cpuDevice,cpuDevice]}],
+    })).toThrow();
+    expect(() => requestedExecutionSchema.parse({
+      ...cudaPolicy(),candidates:[{...cudaPolicy().candidates![0],runtimeBuildDigest:"unverified"}],
+    })).toThrow();
+    expect(() => attachManagedExecutionPolicyVariant(legacy.state,legacy.selectionId,
+      {...cpuPolicy(),contextLength: 131073})).toThrow();
+    expect(() => attachManagedExecutionPolicyVariant(legacy.state,legacy.selectionId,
+      {...cpuPolicy(),contextLength:undefined})).toThrow();
   });
 });

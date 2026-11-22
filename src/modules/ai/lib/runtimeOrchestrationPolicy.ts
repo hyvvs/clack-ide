@@ -1,11 +1,12 @@
 import type { HardwareProfile } from "./hardwareProfile";
-import { KNOWN_EXECUTION_BACKENDS } from "./localComputeFabric";
+import { KNOWN_EXECUTION_BACKENDS, requestedExecutionSchema } from "./localComputeFabric";
 import type {
   ComputeDevice,
   ComputeHost,
   LocalRuntime,
   ModelArtifact,
   ModelDeployment,
+  PersistedExecutionCandidate,
   RequestedExecution,
   RuntimeBackendVariant,
 } from "./localComputeFabric";
@@ -17,6 +18,7 @@ export type RuntimeOrchestrationPolicy =
   | "prefer-cuda-then-cpu"
   | "explicit-order"
   | "exact-backend"
+  | "persisted-candidates-v3"
   | null;
 
 export type OrchestrationPlacement = {
@@ -24,6 +26,8 @@ export type OrchestrationPlacement = {
   deviceIds: string[];
   gpuLayers: number;
   runtimeVariantId: string;
+  /** Exact persisted sequence index; only present for v3 placements. */
+  candidateIndex?: number;
 };
 
 export type BackendCandidate = {
@@ -102,7 +106,14 @@ export function evaluateExecutionCandidates(input: CandidateEvaluationInput): Ca
   });
   if (!requested)
     return reject(["No canonical backend request or recognized legacy configuration"]);
-  const {policy, order} = backendOrder(requested);
+  const parsed = requestedExecutionSchema.safeParse(requested);
+  if (!parsed.success)
+    return reject(["Invalid persisted execution request"]);
+  const explicit = requested.candidates;
+  const {policy, order} = explicit
+    ? {policy: "persisted-candidates-v3" as const,
+      order: explicit.map(candidate => candidate.backend)}
+    : backendOrder(requested);
   if (runtime.id !== deployment.runtimeId || hardware.runtimeId !== runtime.id ||
       hardware.hostId !== deployment.hostId || runtime.hostId !== deployment.hostId ||
       host.id !== deployment.hostId || !host.runtimeIds.includes(runtime.id))
@@ -120,8 +131,28 @@ export function evaluateExecutionCandidates(input: CandidateEvaluationInput): Ca
     bytes !== undefined && (!Number.isSafeInteger(bytes) || bytes < 0)))
     return reject(["Memory requirements must be nonnegative safe integer byte counts"], policy);
 
+  const budget = requested.memoryBudget;
   const hostNeed = Math.max(input.requiredHostBytes ?? 0, requested.minAvailableHostBytes ?? 0);
   const deviceNeed = Math.max(input.requiredDeviceBytes ?? 0, requested.minAvailableDeviceBytes ?? 0);
+  const hostReserve = budget?.reserveHostBytes ?? 0;
+  const deviceReserve = budget?.reserveDeviceBytes ?? 0;
+  if (budget?.maxHostBytes !== undefined && input.requiredHostBytes === undefined)
+    return reject(["Host memory requirement UNKNOWN for maximum budget"], policy);
+  if (budget?.maxHostBytes !== undefined && input.requiredHostBytes !== undefined &&
+      input.requiredHostBytes > budget.maxHostBytes)
+    return reject(["Host memory requirement exceeds maximum budget"], policy);
+  if (hostReserve > 0 && input.requiredHostBytes === undefined)
+    return reject(["Host memory requirement UNKNOWN for reserved memory"], policy);
+  if (!Number.isSafeInteger(hostNeed + hostReserve) ||
+      !Number.isSafeInteger(deviceNeed + deviceReserve))
+    return reject(["Memory requirements exceed safe integer byte range"], policy);
+  if (explicit && (requested.deviceStrategy?.kind === "multi" ||
+      (requested.deviceStrategy?.splitStrategy &&
+        requested.deviceStrategy.splitStrategy !== "none")))
+    return reject(["Multi-device execution is not implemented"], policy,
+      explicit.map((candidate,index) => ({backend:candidate.backend,
+        role:index===0?"requested":"fallback",state:"rejected",selected:null,
+        inspectedVariantIds:[],reasons:["Multi-device execution is not implemented"]})));
   const allIds = new Set<string>();
   const ambiguousIds = new Set<string>();
   for (const variant of input.variants) {
@@ -129,6 +160,7 @@ export function evaluateExecutionCandidates(input: CandidateEvaluationInput): Ca
     allIds.add(variant.id);
   }
   const candidates = order.map((backend, index): BackendCandidate => {
+    const configuredCandidate: PersistedExecutionCandidate | undefined = explicit?.[index];
     const role = index === 0 ? "requested" : "fallback";
     const inspectedVariantIds: string[] = [];
     const reasons: string[] = [];
@@ -146,12 +178,29 @@ export function evaluateExecutionCandidates(input: CandidateEvaluationInput): Ca
           : ": execution backend not implemented"));
       return rejected();
     }
-    if (backend === "cpu" && role === "requested" && (requested.gpuLayers ?? 0) > 0) {
+    const layers = configuredCandidate?.gpuLayers ??
+      (!explicit ? (backend === "cpu" && role === "fallback" ? 0 : (requested.gpuLayers ?? 0))
+        : role === "requested" ? (requested.gpuLayers ?? 0) : backend === "cpu" ? 0 : undefined);
+    if (backend === "cpu" && (layers ?? 0) > 0) {
       reasons.push("CPU request cannot offload positive GPU layers");
       return rejected();
     }
-    if (backend === "cuda" && (requested.gpuLayers ?? 0) === 0) {
+    if (backend === "cuda" && (layers === undefined || layers === 0)) {
       reasons.push("cuda: positive GPU offload layers are required for CUDA placement");
+      return rejected();
+    }
+    if (backend === "cuda" && budget?.maxDeviceBytes !== undefined &&
+        input.requiredDeviceBytes === undefined) {
+      reasons.push("cuda: device memory requirement UNKNOWN for maximum budget");
+      return rejected();
+    }
+    if (backend === "cuda" && budget?.maxDeviceBytes !== undefined &&
+        input.requiredDeviceBytes !== undefined && input.requiredDeviceBytes > budget.maxDeviceBytes) {
+      reasons.push("cuda: device memory requirement exceeds maximum budget");
+      return rejected();
+    }
+    if (backend === "cuda" && deviceReserve > 0 && input.requiredDeviceBytes === undefined) {
+      reasons.push("cuda: device memory requirement UNKNOWN for reserved memory");
       return rejected();
     }
     const supports = input.variants.filter(variant => variant.backend === backend).sort(compareId);
@@ -165,7 +214,12 @@ export function evaluateExecutionCandidates(input: CandidateEvaluationInput): Ca
     ).sort(compareId);
     // A requested device pin is an exact identity constraint of the primary
     // backend. Fallback changes backend and therefore does not reuse that pin.
-    const pinnedIds = role === "requested" ? requested.deviceIds : [];
+    const pinnedIds = configuredCandidate?.deviceIds ??
+      (role === "requested" ? requested.deviceIds : []);
+    if (configuredCandidate && pinnedIds.length !== 1) {
+      reasons.push(`${backend}: exact v3 single-device identity required; multi-device execution is not implemented`);
+      return rejected();
+    }
     if (pinnedIds.length > 1 || new Set(pinnedIds).size !== pinnedIds.length) {
       reasons.push(`${backend}: multi-device placement is not implemented`);
       return rejected();
@@ -181,6 +235,20 @@ export function evaluateExecutionCandidates(input: CandidateEvaluationInput): Ca
       const prefix = `${backend}: `;
       if (ambiguousIds.has(variant.id)) {
         reasons.push(`${prefix}ambiguous runtime variant identity ${variant.id}`);
+        continue;
+      }
+      if (configuredCandidate?.runtimeVariantId &&
+          configuredCandidate.runtimeVariantId !== variant.id) {
+        reasons.push(`${prefix}candidate runtime variant identity mismatch ${variant.id}`);
+        continue;
+      }
+      const observedDigest = variant.buildDigest?.startsWith("sha256:")
+        ? variant.buildDigest
+        : variant.buildDigest && /^[a-f0-9]{64}$/.test(variant.buildDigest)
+          ? `sha256:${variant.buildDigest}` : null;
+      if (configuredCandidate?.runtimeBuildDigest &&
+          configuredCandidate.runtimeBuildDigest !== observedDigest) {
+        reasons.push(`${prefix}candidate runtime build digest mismatch ${variant.id}`);
         continue;
       }
       if (role === "requested" && deployment.variantId &&
@@ -215,7 +283,8 @@ export function evaluateExecutionCandidates(input: CandidateEvaluationInput): Ca
         continue;
       }
       for (const device of configured) {
-        const problem = evaluateDevice(backend, device, input.hardware, hostNeed, deviceNeed);
+        const problem = evaluateDevice(backend, device, input.hardware,
+          hostNeed + hostReserve, deviceNeed + deviceReserve);
         if (problem) {
           reasons.push(`${prefix + problem} (${device.id})`);
           continue;
@@ -225,8 +294,9 @@ export function evaluateExecutionCandidates(input: CandidateEvaluationInput): Ca
           inspectedVariantIds,
           selected: {
             backend, deviceIds: [device.id],
-            gpuLayers: backend === "cpu" ? 0 : (requested.gpuLayers ?? 0),
+            gpuLayers: backend === "cpu" ? 0 : (layers ?? 0),
             runtimeVariantId: variant.id,
+            ...(explicit ? {candidateIndex: index} : {}),
           },
         };
       }

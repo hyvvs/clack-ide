@@ -59,14 +59,17 @@ describe("managed b12248/CUDA native-bound variant",()=>{
   it("separates physically installed CPU and independently verified native CUDA variant",()=>{
     const runtime=localComputeFabricSchema.parse(created().state.fabric).runtimes[0];
     const cpu={installed:true,version:"b12248"};
-    const notInstalled={installed:false,version:"b12248",engineArchiveSha256:"cuda-engine-archive-hash"};
+    const notInstalled={installed:false,version:"b12248",
+      engineArchiveSha256:"ae0a1e064a94db82f3352c843ffa96eb190254fefafc29ce0213798c549a2799"};
     const unknown=runtimeBackendVariants(runtime,cpu);
     expect(unknown.find(v=>v.backend==="cuda")?.installation).toBe("UNKNOWN");
     expect(runtimeBackendVariants(runtime,cpu,notInstalled).find(v=>v.backend==="cuda")?.installation).toBe("UNAVAILABLE");
     expect(runtimeBackendVariants(runtime,cpu,{...notInstalled,installed:true}).find(v=>v.backend==="cuda"))
-      .toMatchObject({support:"AVAILABLE",installation:"AVAILABLE",buildDigest:"cuda-engine-archive-hash"});
+      .toMatchObject({support:"AVAILABLE",installation:"AVAILABLE",
+        buildDigest:"sha256:ae0a1e064a94db82f3352c843ffa96eb190254fefafc29ce0213798c549a2799"});
     expect(runtimeBackendVariants(runtime,cpu,notInstalled).find(v=>v.backend==="cpu"))
-      .toMatchObject({support:"AVAILABLE",installation:"AVAILABLE"});
+      .toMatchObject({support:"AVAILABLE",installation:"AVAILABLE",
+        buildDigest:"sha256:bb306bfd390f8782c0acaba490505d12f07392791b48f1dd039387a5bacf1181"});
   });
   it("accepts native CUDA actual only when same deployment/device, real offload, fresh epoch",()=>{
     const cpu=created();
