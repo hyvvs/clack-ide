@@ -1,8 +1,8 @@
 # TF Slice 4 — interactive WebView network-security gate (BLOCKED)
 
-**Date:** 2026-11-22  
-**PR:** #46, `tf/browser-computer-use` (keep **Draft**, do not merge)  
-**Starting commit:** `565ad91a192170c07a585901e6a93b815cba43b0`  
+- **Date:** 2026-11-22
+- **PR:** #46, `tf/browser-computer-use` (keep **Draft**, do not merge)
+- **Starting commit:** `565ad91a192170c07a585901e6a93b815cba43b0`
 **Starting protected main:** `dddab1b9c4f035362c754c5111a39e3c209178a4`
 
 ## Decision: STOP before enabling remote rendered-page execution
