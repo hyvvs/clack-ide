@@ -307,6 +307,35 @@ describe("truthful activity", () => {
     );
     expect(result[0].detail).toContain("[Protected path]");
   });
+  it("projects native TF receipts into existing activity without replay, output or secret disclosure",()=>{
+    const m=message([{
+      type:"tool-bounded_command",toolCallId:"tf-call",state:"output-available",
+      input:{action:"write_marker",args:["config","--local","token=private"]},
+      output:{ok:true,effectReceipt:{
+        toolId:"tf.bounded_command.v1",requestId:"native-request-id",
+        actor:"builtin:coder",policyDecision:"native_allowlisted",
+        approvalId:"approval:request",sandbox:"unsupported",
+        isolation:"unsupported_filesystem_network_isolation",
+        affectedResources:["C:/work/example/.git/config"],pid:27701,
+        terminal:"completed",sideEffect:"write_reported_success",
+        uncertainty:"not_independently_verified",autoRetry:false,
+        stdoutSha256:"a".repeat(64),
+        stdout:"Bearer most-private-secret-value",
+        stderr:"token=not-for-recording",
+      }},
+    }]);
+    const result=events(m);
+    const tf=result.find(event=>event.source==="Native TF effect receipt (historical)");
+    expect(tf).toBeDefined();
+    expect(tf?.label).toContain("write_reported_success");
+    expect(tf?.detail).toContain("No automatic replay");
+    expect(tf?.detail).toContain("not_independently_verified");
+    expect(tf?.detail).toContain("unsupported_filesystem_network_isolation");
+    expect(tf?.toolCallId).toBe("tf-call");
+    expect(JSON.stringify(result)).not.toContain("most-private-secret-value");
+    expect(JSON.stringify(result)).not.toContain("not-for-recording");
+    expect(JSON.stringify(result)).not.toContain("token=private");
+  });
   it("bounds detail while leaving source transcript intact", () => {
     const m = message([{ type: "reasoning", text: "x".repeat(50000) }]);
     expect(events(m)[0].detail?.length).toBeLessThanOrEqual(4000);

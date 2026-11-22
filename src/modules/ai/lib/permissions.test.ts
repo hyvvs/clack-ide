@@ -4,6 +4,10 @@ import type { ToolContext } from "@/modules/ai/tools/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyAgentPermissionPolicy,
+  recordTfApprovedToolCall,
+  consumeTfApprovedToolCall,
+  clearChatPermissions,
+  resolveCurrentToolFabricDecision,
   clearAllChatPermissionsForTests,
   grantChatPermission,
   isStrictPermissionRequest,
@@ -14,6 +18,7 @@ import {
   type AgentPermissionProfile,
   type AgentPermissionProfiles,
 } from "@/modules/ai/lib/permissions";
+import {builtinToolSecurity} from "@/modules/ai/lib/toolFabricPolicy";
 import {
   acquireWorkspaceWriteLease,
   clearWorkspaceWriteLeasesForTests,
@@ -80,6 +85,62 @@ describe("agent permission resolver", () => {
     expect(decision("chat-only", "todo_write", { todos: [] }).outcome).toBe(
       "deny",
     );
+  });
+
+  it("production TF registry gate keeps Full Access scoped and unknown effects blocked",()=>{
+    usePreferencesStore.setState({agentPermissionProfiles:{
+      "builtin:coder":profile("full-access")}});
+    const ctx=context();
+    expect(resolveCurrentToolFabricDecision("read_file",{path:"/work/a/safe.ts"},ctx,
+      builtinToolSecurity("read_file")!).decision).toBe("ALLOW");
+    expect(resolveCurrentToolFabricDecision("read_file",{path:"/work/elsewhere/key"},ctx,
+      builtinToolSecurity("read_file")!)).toMatchObject({decision:"DENY",
+        reasonCode:"filesystem-outside-workspace"});
+    expect(resolveCurrentToolFabricDecision("unregistered_thing",{path:"/work/a"},ctx))
+      .toMatchObject({decision:"UNKNOWN",reasonCode:"tool-provenance-unknown"});
+    expect(resolveCurrentToolFabricDecision("bounded_command",{action:"write_marker",
+      cwd:"/work/a",executable:"git.exe",args:["config","--local"]},ctx,
+      builtinToolSecurity("bounded_command")!).decision).toBe("REQUIRE_APPROVAL");
+  });
+
+  it("requires one physical-UI-recorded, exact-scoped, consumed native TF write approval",async()=>{
+    usePreferencesStore.setState({agentPermissionProfiles:{
+      "builtin:coder":profile("full-access")}});
+    const ctx=context();
+    const input={action:"write_marker",cwd:"/work/a",executable:"C:/Git/git.exe",
+      args:["config","--local","tf.command.marker","approved"]};
+    const execute=vi.fn(async(_input:unknown,_options:unknown)=>({ok:true}));
+    const tools=applyAgentPermissionPolicy({bounded_command:{execute,
+      needsApproval:(_input:unknown,_options:unknown)=>true}},ctx,
+      name=>builtinToolSecurity(name)??undefined);
+    const opts={toolCallId:"call-approved-1",messages:[]};
+    expect(await tools.bounded_command.needsApproval(input,opts)).toBe(true);
+    await expect(tools.bounded_command.execute(input,opts)).resolves.toMatchObject({
+      code:"tf_exact_approval_required",effectState:"NoEffect"});
+    expect(execute).not.toHaveBeenCalled();
+    expect(recordTfApprovedToolCall({toolName:"bounded_command",
+      toolCallId:opts.toolCallId,sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",parameters:input})).toBe(true);
+    await expect(tools.bounded_command.execute(input,opts)).resolves.toEqual({ok:true});
+    expect(execute).toHaveBeenCalledOnce();
+    await expect(tools.bounded_command.execute(input,opts)).resolves.toMatchObject({
+      code:"tf_exact_approval_required"});
+    expect(execute).toHaveBeenCalledOnce();
+    const second="call-approved-2";
+    expect(recordTfApprovedToolCall({toolName:"bounded_command",
+      toolCallId:second,sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",parameters:input})).toBe(true);
+    expect(consumeTfApprovedToolCall({toolCallId:second,sessionId:"chat-a",
+      agentId:"builtin:reviewer",workspaceRoot:"/work/a",parameters:input})).toBe(false);
+    expect(consumeTfApprovedToolCall({toolCallId:second,sessionId:"chat-a",
+      agentId:"builtin:coder",workspaceRoot:"/work/a",parameters:input})).toBe(false);
+    const third="call-approved-3";
+    expect(recordTfApprovedToolCall({toolName:"bounded_command",
+      toolCallId:third,sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",parameters:input})).toBe(true);
+    clearChatPermissions("chat-a");
+    expect(consumeTfApprovedToolCall({toolCallId:third,sessionId:"chat-a",
+      agentId:"builtin:coder",workspaceRoot:"/work/a",parameters:input})).toBe(false);
   });
 
   it("uses the existing approval policy in Ask mode", () => {
