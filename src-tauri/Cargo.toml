@@ -30,7 +30,7 @@ lm11-authenticated-webview-acceptance = []
 ## in production builds or exposed through Tauri invoke permissions.
 managed-cuda-native-acceptance = []
 # Standalone Windows WebView2 acceptance host. Never part of normal Clack.
-tf-browser-isolation-acceptance = []
+tf-browser-isolation-acceptance = ["dep:webview2-com", "dep:windows", "dep:base64"]
 
 [[bin]]
 name = "clack-browser-host"
@@ -94,6 +94,9 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSUserDefaults"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+base64 = { version = "=0.22.1", optional = true }
+webview2-com = { version = "=0.38.2", optional = true }
+windows = { version = "=0.61.3", optional = true, features = ["Win32_System_Com", "Win32_UI_Shell"] }
 keyring = { version = "3.6", default-features = false, features = [
 	"windows-native",
 ] }

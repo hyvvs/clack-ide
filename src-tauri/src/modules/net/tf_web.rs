@@ -132,6 +132,16 @@ pub struct TfWebReceipt {
     pub dns_evidence: Vec<TfWebDnsEvidence>,
 }
 
+/// Opaque binary bytes for a browser resource. This deliberately reuses the
+/// same TF3 prepared-token, DNS/IP/redirect, timeout and receipt executor as
+/// text GET; it is not a second HTTP or network policy implementation.
+/// Not exported as a Tauri command or model-facing tool.
+#[derive(Debug)]
+pub struct TfBrowserResource {
+    pub receipt: TfWebReceipt,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TfWebProviderStatus {
@@ -147,6 +157,7 @@ pub struct TfWebProviderStatus {
 struct Pending {
     request_id: String,
     request: TfWebRequest,
+    policy: NetworkPolicy,
     root: PathBuf,
     target: Option<Url>,
     expires: Instant,
@@ -263,7 +274,9 @@ fn sensitive_key(key: &str) -> bool {
             || k.starts_with(&format!("{s}-"))
     })
 }
-fn normalize_url(raw: &str) -> Result<Url, String> {
+fn normalize_url_policy(raw: &str, policy: NetworkPolicy) -> Result<Url, String> {
+    #[cfg(not(any(test, feature = "tf-browser-isolation-acceptance")))]
+    let _ = policy;
     if raw.len() > MAX_URL
         || raw.trim() != raw
         || raw.bytes().any(|b| b.is_ascii_control() || b == b'\\')
@@ -301,7 +314,16 @@ fn normalize_url(raw: &str) -> Result<Url, String> {
         return Err("credential-query-denied".into());
     }
     let default_port = if url.scheme() == "https" { 443 } else { 80 };
-    if !cfg!(test) && url.port().is_some_and(|p| p != default_port) {
+    // The only nonstandard-port exception in an acceptance binary is the
+    // compile-time test fixture's loopback listener. It does not broaden the
+    // normal TF3 public network policy or any production model-facing tool.
+    #[cfg(any(test, feature = "tf-browser-isolation-acceptance"))]
+    let fixture_port = matches!(policy, NetworkPolicy::FixtureLoopback)
+        && url.scheme() == "http"
+        && url.host_str() == Some("127.0.0.1");
+    #[cfg(not(any(test, feature = "tf-browser-isolation-acceptance")))]
+    let fixture_port = false;
+    if !cfg!(test) && !fixture_port && url.port().is_some_and(|p| p != default_port) {
         return Err("nonstandard-port-denied".into());
     }
     if url.port() == Some(default_port) {
@@ -310,7 +332,10 @@ fn normalize_url(raw: &str) -> Result<Url, String> {
     url.set_fragment(None);
     Ok(url)
 }
-fn validate(req: &TfWebRequest) -> Result<(), String> {
+fn normalize_url(raw: &str) -> Result<Url, String> {
+    normalize_url_policy(raw, NetworkPolicy::Public)
+}
+fn validate_policy(req: &TfWebRequest, policy: NetworkPolicy) -> Result<(), String> {
     if req.timeout_ms == Some(0)
         || req.timeout_ms.unwrap_or(MAX_TIMEOUT) > MAX_TIMEOUT
         || req.max_bytes == Some(0)
@@ -340,7 +365,7 @@ fn validate(req: &TfWebRequest) -> Result<(), String> {
                 return Err("exactly-one-url-or-search-result-required".into());
             }
             if let Some(url) = &req.url {
-                normalize_url(url)?;
+                normalize_url_policy(url, policy)?;
             }
             if let Some(id) = &req.search_result_id {
                 if id.len() != 48 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -359,12 +384,13 @@ fn reap(entries: &mut Entries) {
         !times.is_empty()
     });
 }
-pub fn prepare(
+fn prepare_policy(
     req: TfWebRequest,
     registry: &WorkspaceRegistry,
     state: &TfWebState,
+    policy: NetworkPolicy,
 ) -> Result<TfWebPrepared, String> {
-    validate(&req)?;
+    validate_policy(&req, policy)?;
     let root = scope(&req, registry)?;
     let mut entries = state
         .entries
@@ -390,7 +416,7 @@ pub fn prepare(
         TfWebOperation::WebSearch => None,
         _ => {
             if let Some(raw) = &req.url {
-                Some(normalize_url(raw)?)
+                Some(normalize_url_policy(raw, policy)?)
             } else {
                 let id = req.search_result_id.as_deref().ok_or("missing-result-id")?;
                 let result = entries.results.get(id).ok_or("search-result-expired")?;
@@ -419,6 +445,7 @@ pub fn prepare(
         Pending {
             request_id,
             request: req,
+            policy,
             root,
             target,
             expires: Instant::now() + TOKEN_TTL,
@@ -426,6 +453,38 @@ pub fn prepare(
         },
     );
     Ok(prepared)
+}
+pub fn prepare(
+    req: TfWebRequest,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+) -> Result<TfWebPrepared, String> {
+    prepare_policy(req, registry, state, NetworkPolicy::Public)
+}
+
+/// Native acceptance fixture only: the caller must own the exact loopback
+/// destination, session and workspace. This is neither a Tauri command nor a
+/// permission to fetch arbitrary private destinations.
+#[cfg(feature = "tf-browser-isolation-acceptance")]
+pub fn prepare_browser_fixture(
+    req: TfWebRequest,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    exact_listener_port: u16,
+) -> Result<TfWebPrepared, String> {
+    let raw = req.url.as_deref().ok_or("fixture-url-required")?;
+    let url = Url::parse(raw).map_err(|_| "fixture-url-invalid")?;
+    if req.operation != TfWebOperation::HttpGet
+        || req.search_result_id.is_some()
+        || req.query.is_some()
+        || url.scheme() != "http"
+        || url.host_str() != Some("127.0.0.1")
+        || url.port() != Some(exact_listener_port)
+        || exact_listener_port == 0
+    {
+        return Err("fixture-exact-origin-denied".into());
+    }
+    prepare_policy(req, registry, state, NetworkPolicy::FixtureLoopback)
 }
 /// Headless acceptance helper only; never exported as a Tauri IPC.
 pub fn approve_headless(token: &str, state: &TfWebState) -> Result<(), String> {
@@ -508,6 +567,14 @@ fn consume(
     registry: &WorkspaceRegistry,
     state: &TfWebState,
 ) -> Result<(Pending, watch::Receiver<bool>), String> {
+    consume_policy(token, registry, state, NetworkPolicy::Public)
+}
+fn consume_policy(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    expected_policy: NetworkPolicy,
+) -> Result<(Pending, watch::Receiver<bool>), String> {
     let mut entries = state
         .entries
         .lock()
@@ -517,6 +584,11 @@ fn consume(
         .pending
         .remove(token)
         .ok_or("unknown-or-consumed-token")?;
+    if p.policy != expected_policy {
+        // A public-only token must never be reinterpreted as fixture-loopback
+        // authorization (or the reverse), even by a native caller.
+        return Err("network-policy-mismatch".into());
+    }
     if p.expires <= Instant::now() {
         return Err("expired-token".into());
     }
@@ -527,9 +599,9 @@ fn consume(
     if root != p.root {
         return Err("workspace-root-changed".into());
     }
-    validate(&p.request)?;
+    validate_policy(&p.request, p.policy)?;
     if let Some(ref raw) = p.request.url {
-        if Some(normalize_url(raw)?) != p.target {
+        if Some(normalize_url_policy(raw, p.policy)?) != p.target {
             return Err("network-target-changed".into());
         }
     }
@@ -660,19 +732,20 @@ pub fn tf_web_cancel(token: String, state: tauri::State<'_, TfWebState>) -> Resu
     cancel(&token, &state)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum NetworkPolicy {
     Public,
     /// Compiled only for local ephemeral fixture tests; never an IPC parameter.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "tf-browser-isolation-acceptance"))]
     FixtureLoopback,
 }
 fn allowed_ip(ip: IpAddr, policy: NetworkPolicy) -> bool {
-    #[cfg(test)]
-    if matches!(policy, NetworkPolicy::FixtureLoopback)
-        && ip == IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
-    {
-        return true;
+    #[cfg(any(test, feature = "tf-browser-isolation-acceptance"))]
+    if matches!(policy, NetworkPolicy::FixtureLoopback) {
+        // The special acceptance path must never follow a fixture-controlled
+        // redirect to a real public service, a different loopback spelling,
+        // or any private/metadata address. It is not a generic public fetch.
+        return ip == IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
     }
     let _ = policy;
     if ip_kind(ip) != IpKind::Public {
@@ -740,6 +813,27 @@ fn text_type(value: &str) -> bool {
         )
         || kind.ends_with("+json")
         || kind.ends_with("+xml")
+}
+fn browser_resource_content_type(value: &str) -> bool {
+    let kind = value.split(';').next().unwrap_or("").trim();
+    text_type(value)
+        || matches!(
+            kind,
+            "application/javascript"
+                | "application/x-javascript"
+                | "image/png"
+                | "image/jpeg"
+                | "image/gif"
+                | "image/webp"
+                | "image/avif"
+                | "font/woff"
+                | "font/woff2"
+                | "application/font-woff"
+                | "application/font-woff2"
+                | "application/vnd.ms-fontobject"
+                | "font/ttf"
+                | "font/otf"
+        )
 }
 fn safe_text(value: &str, cap: usize) -> String {
     value
@@ -830,6 +924,7 @@ async fn network_fetch(
     state: &TfWebState,
     policy: NetworkPolicy,
     attempted: &mut bool,
+    mut browser_bytes: Option<&mut Vec<u8>>,
 ) -> Result<(), Failure> {
     let search = p.request.operation == TfWebOperation::WebSearch;
     let mut url = if search {
@@ -866,7 +961,8 @@ async fn network_fetch(
     let max_bytes = p.request.max_bytes.unwrap_or(MAX_BODY);
     let mut hops = 0u8;
     loop {
-        let url_checked = normalize_url(url.as_str()).map_err(|_| Failure("url-policy-denied"))?;
+        let url_checked =
+            normalize_url_policy(url.as_str(), policy).map_err(|_| Failure("url-policy-denied"))?;
         let host = url_checked
             .host_str()
             .ok_or(Failure("missing-host"))?
@@ -929,7 +1025,11 @@ async fn network_fetch(
             .header(ACCEPT_ENCODING, "identity")
             .header(
                 ACCEPT,
-                "text/html,text/plain,application/json,application/xhtml+xml,application/xml",
+                if browser_bytes.is_some() {
+                    "text/html,text/css,application/javascript,image/png,image/jpeg,image/webp,font/woff2,*/*"
+                } else {
+                    "text/html,text/plain,application/json,application/xhtml+xml,application/xml"
+                },
             );
         if search {
             let key = credential.ok_or(Failure("provider-unconfigured"))?;
@@ -949,6 +1049,18 @@ async fn network_fetch(
         let mut response = bounded(request.send(), deadline, cancel)
             .await?
             .map_err(|e| {
+                #[cfg(feature = "tf-browser-isolation-acceptance")]
+                if policy == NetworkPolicy::FixtureLoopback {
+                    // This diagnostic applies only to the fixed, controlled
+                    // loopback fixture. No general URLs or credentials logged.
+                    eprintln!(
+                        "tf3-browser-fixture-transport: connect={} request={} body={} timeout={} error={e}",
+                        e.is_connect(),
+                        e.is_request(),
+                        e.is_body(),
+                        e.is_timeout()
+                    );
+                }
                 if e.is_timeout() {
                     Failure("timeout")
                 } else {
@@ -996,8 +1108,8 @@ async fn network_fetch(
             let next = url_checked
                 .join(raw_location)
                 .map_err(|_| Failure("redirect-target-invalid"))?;
-            let next =
-                normalize_url(next.as_str()).map_err(|_| Failure("redirect-target-denied"))?;
+            let next = normalize_url_policy(next.as_str(), policy)
+                .map_err(|_| Failure("redirect-target-denied"))?;
             if url_checked.scheme() == "https" && next.scheme() != "https" {
                 return Err(Failure("redirect-https-downgrade-denied"));
             }
@@ -1023,7 +1135,10 @@ async fn network_fetch(
             receipt.uncertainty = "http-status-observed-peer-ip-not-attested";
             return Ok(());
         }
-        if !text_type(&kind) {
+        if browser_bytes.is_some() && !browser_resource_content_type(&kind) {
+            return Err(Failure("browser-content-type-denied"));
+        }
+        if browser_bytes.is_none() && !text_type(&kind) {
             return Err(Failure("nontext-content-type-denied"));
         }
         let mut bytes = Vec::new();
@@ -1052,6 +1167,26 @@ async fn network_fetch(
                 break;
             }
             // Probe for a next byte when exactly at cap. EOF means not truncated.
+        }
+        if let Some(output) = browser_bytes.as_deref_mut() {
+            // A truncated JS/image/font/document is unsafe to represent as a
+            // successful resource. The response fails rather than returning
+            // a misleading partial body or allowing a WebView2 fallback.
+            if receipt.truncated {
+                return Err(Failure("browser-response-limit-exceeded"));
+            }
+            output.extend_from_slice(&bytes);
+            receipt.bytes_retained = bytes.len();
+            receipt.content_sha256 = Some(format!("{:x}", Sha256::digest(&bytes)));
+            receipt.body = None;
+            receipt.reason_code = if (200..300).contains(&response.status().as_u16()) {
+                "ok"
+            } else {
+                "http-status-non-success"
+            };
+            receipt.terminal = "completed";
+            receipt.uncertainty = "http-response-observed-peer-ip-not-attested";
+            return Ok(());
         }
         let valid = match std::str::from_utf8(&bytes) {
             Ok(_) => bytes.len(),
@@ -1088,14 +1223,15 @@ async fn network_fetch(
         return Ok(());
     }
 }
-async fn execute_policy(
+async fn execute_policy_with_output(
     token: &str,
     registry: &WorkspaceRegistry,
     state: &TfWebState,
     credential: Option<String>,
     policy: NetworkPolicy,
+    browser_bytes: Option<&mut Vec<u8>>,
 ) -> Result<TfWebReceipt, String> {
-    let (p, mut rx) = consume(token, registry, state)?;
+    let (p, mut rx) = consume_policy(token, registry, state, policy)?;
     let mut receipt = receipt_for(&p);
     let mut attempted = false;
     let result = network_fetch(
@@ -1106,6 +1242,7 @@ async fn execute_policy(
         state,
         policy,
         &mut attempted,
+        browser_bytes,
     )
     .await;
     if let Err(Failure(reason)) = result {
@@ -1131,6 +1268,57 @@ async fn execute_policy(
     receipt.ended_at = now_ms();
     complete(token, state);
     Ok(receipt)
+}
+async fn execute_policy(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    credential: Option<String>,
+    policy: NetworkPolicy,
+) -> Result<TfWebReceipt, String> {
+    execute_policy_with_output(token, registry, state, credential, policy, None).await
+}
+
+/// Bounded binary GET through the existing public-only TF3 policy. Request
+/// preparation and authorization are owned by the same TF3 state as text GET.
+pub async fn execute_browser_resource(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+) -> Result<TfBrowserResource, String> {
+    let mut bytes = Vec::new();
+    let receipt = execute_policy_with_output(
+        token,
+        registry,
+        state,
+        None,
+        NetworkPolicy::Public,
+        Some(&mut bytes),
+    )
+    .await?;
+    Ok(TfBrowserResource { receipt, bytes })
+}
+
+/// Acceptance-only private loopback fixture mode. This stays behind the
+/// non-default native browser isolation feature and retains TF3 executor,
+/// credentials-none, redirects, policy, quota, deadline and receipt behavior.
+#[cfg(feature = "tf-browser-isolation-acceptance")]
+pub async fn execute_browser_fixture(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+) -> Result<TfBrowserResource, String> {
+    let mut bytes = Vec::new();
+    let receipt = execute_policy_with_output(
+        token,
+        registry,
+        state,
+        None,
+        NetworkPolicy::FixtureLoopback,
+        Some(&mut bytes),
+    )
+    .await?;
+    Ok(TfBrowserResource { receipt, bytes })
 }
 /// Public headless native acceptance entry; fixture-network opt-in never exposed.
 pub async fn execute(
@@ -1328,6 +1516,66 @@ mod tests {
         assert!(provider_status_for_secret(Ok(Some("mock-key".into()))).configured);
     }
     #[test]
+    fn prepared_network_policy_is_bound_to_one_use_token_and_rechecked_at_consumption() {
+        let (dir, registry, state) = setup();
+        let public = prepare(
+            fixture(dir.path(), "https://example.org/".into()),
+            &registry,
+            &state,
+        )
+        .unwrap();
+        assert_eq!(
+            consume_policy(
+                &public.token,
+                &registry,
+                &state,
+                NetworkPolicy::FixtureLoopback
+            )
+            .err()
+            .as_deref(),
+            Some("network-policy-mismatch")
+        );
+        assert!(consume(&public.token, &registry, &state).is_err());
+
+        let fixture_prepared = prepare_policy(
+            fixture(dir.path(), "http://127.0.0.1:35043/resource".into()),
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .unwrap();
+        assert_eq!(
+            consume(&fixture_prepared.token, &registry, &state).err().as_deref(),
+            Some("network-policy-mismatch")
+        );
+        assert!(consume_policy(
+            &fixture_prepared.token,
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback
+        )
+        .is_err());
+
+        // A genuine fixture token retains the fixture normalization at the
+        // authoritative execution-time recheck; it is not reinterpreted as a
+        // public-origin request by the generic TF3 consume operation.
+        let fixture = prepare_policy(
+            fixture(dir.path(), "http://127.0.0.1:35043/resource".into()),
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .unwrap();
+        assert!(consume_policy(
+            &fixture.token,
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback
+        )
+        .is_ok());
+        complete(&fixture.token, &state);
+    }
+    #[test]
     fn actor_session_root_request_budget_is_bounded_before_network_dispatch() {
         let (dir, registry, state) = setup();
         let req = fixture(dir.path(), "https://example.org/".into());
@@ -1362,7 +1610,9 @@ mod tests {
             Duration::ZERO);
         let mut req = fixture(dir.path(), url);
         req.max_bytes = Some(5);
-        let token = prepare(req, &registry, &state).unwrap().token;
+        let token = prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback)
+            .unwrap()
+            .token;
         let receipt = execute_policy(
             &token,
             &registry,
@@ -1385,12 +1635,156 @@ mod tests {
         assert!(!receipt.dns_evidence[0].socket_ip_observed);
     }
     #[tokio::test]
+    async fn browser_binary_get_reuses_tf3_token_scope_and_never_promotes_truncation() {
+        let (dir, registry, state) = setup();
+        // Binary resources must not relax the public-only URL/DNS/IP policy.
+        let denied_token = prepare(
+            fixture(dir.path(), "http://127.0.0.1:12345/image.png".into()),
+            &registry,
+            &state,
+        )
+        .unwrap()
+        .token;
+        let denied = execute_browser_resource(&denied_token, &registry, &state)
+            .await
+            .unwrap();
+        assert_eq!(denied.receipt.terminal, "denied");
+        assert_eq!(denied.receipt.reason_code, "dns-private-or-reserved-denied");
+        assert!(denied.bytes.is_empty());
+        assert!(execute_browser_resource(&denied_token, &registry, &state)
+            .await
+            .is_err()); // one-use TF3 token
+
+        let image = b"\x89PNG\r\n\x1a\n\x00\x01";
+        let mut reply = b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 10\r\nConnection: close\r\n\r\n".to_vec();
+        reply.extend_from_slice(image);
+        let (url, server) = serve(Box::leak(reply.into_boxed_slice()), Duration::ZERO);
+        let token = prepare_policy(
+            fixture(dir.path(), url),
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .unwrap()
+        .token;
+        let mut bytes = Vec::new();
+        let receipt = execute_policy_with_output(
+            &token,
+            &registry,
+            &state,
+            None,
+            NetworkPolicy::FixtureLoopback,
+            Some(&mut bytes),
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(receipt.terminal, "completed");
+        assert_eq!(receipt.bytes_retained, image.len());
+        assert_eq!(receipt.content_type.as_deref(), Some("image/png"));
+        assert_eq!(bytes, image);
+        assert_eq!(
+            receipt.content_sha256,
+            Some(format!("{:x}", Sha256::digest(image)))
+        );
+        assert!(receipt.body.is_none()); // never stringify arbitrary binary
+
+        let (url, server) = serve(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123456789",
+            Duration::ZERO,
+        );
+        let mut req = fixture(dir.path(), url);
+        req.max_bytes = Some(4);
+        let token = prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback)
+            .unwrap()
+            .token;
+        let mut partial = Vec::new();
+        let receipt = execute_policy_with_output(
+            &token,
+            &registry,
+            &state,
+            None,
+            NetworkPolicy::FixtureLoopback,
+            Some(&mut partial),
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(receipt.terminal, "denied");
+        assert_eq!(receipt.reason_code, "browser-response-limit-exceeded");
+        assert!(receipt.truncated);
+        assert!(
+            partial.is_empty(),
+            "never return a successful truncated script"
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_binary_get_blocks_opaque_types_and_private_redirects() {
+        let (dir, registry, state) = setup();
+        let (url, server) = serve(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 1\r\nConnection: close\r\n\r\nX",
+            Duration::ZERO,
+        );
+        let token = prepare_policy(
+            fixture(dir.path(), url),
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .unwrap()
+        .token;
+        let mut bytes = Vec::new();
+        let receipt = execute_policy_with_output(
+            &token,
+            &registry,
+            &state,
+            None,
+            NetworkPolicy::FixtureLoopback,
+            Some(&mut bytes),
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(receipt.reason_code, "browser-content-type-denied");
+        assert_eq!(receipt.terminal, "denied");
+        assert!(bytes.is_empty());
+
+        let (url, server) = serve(
+            b"HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            Duration::ZERO,
+        );
+        let token = prepare_policy(
+            fixture(dir.path(), url),
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .unwrap()
+        .token;
+        let mut body = Vec::new();
+        let receipt = execute_policy_with_output(
+            &token,
+            &registry,
+            &state,
+            None,
+            NetworkPolicy::FixtureLoopback,
+            Some(&mut body),
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(receipt.reason_code, "dns-private-or-reserved-denied");
+        assert_eq!(receipt.redirect_chain.len(), 1);
+        assert!(body.is_empty());
+    }
+    #[tokio::test]
     async fn redirect_to_metadata_is_denied_without_second_connection() {
         let (dir, registry, state) = setup();
         let (url, server) = serve(
             b"HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             Duration::ZERO);
-        let p = prepare(fixture(dir.path(), url), &registry, &state).unwrap();
+        let p = prepare_policy(fixture(dir.path(), url), &registry, &state, NetworkPolicy::FixtureLoopback).unwrap();
         let receipt = execute_policy(
             &p.token,
             &registry,
@@ -1444,7 +1838,7 @@ mod tests {
         });
         let mut req = fixture(dir.path(), url);
         req.max_redirects = Some(1);
-        let p = prepare(req, &registry, &state).unwrap();
+        let p = prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback).unwrap();
         let receipt = execute_policy(
             &p.token,
             &registry,
@@ -1477,7 +1871,7 @@ mod tests {
             Duration::ZERO);
         let mut req = request(dir.path(), TfWebOperation::HttpHead);
         req.url = Some(url);
-        let p = prepare(req, &registry, &state).unwrap();
+        let p = prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback).unwrap();
         let receipt = execute_policy(
             &p.token,
             &registry,
@@ -1494,7 +1888,7 @@ mod tests {
         let (url, server) = serve(
             b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
             Duration::ZERO);
-        let p = prepare(fixture(dir.path(), url), &registry, &state).unwrap();
+        let p = prepare_policy(fixture(dir.path(), url), &registry, &state, NetworkPolicy::FixtureLoopback).unwrap();
         let receipt = execute_policy(
             &p.token,
             &registry,
@@ -1518,7 +1912,7 @@ mod tests {
         );
         let mut req = fixture(dir.path(), url);
         req.timeout_ms = Some(30);
-        let token = prepare(req, &registry, &state).unwrap().token;
+        let token = prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback).unwrap().token;
         let receipt = execute_policy(
             &token,
             &registry,
@@ -1534,7 +1928,7 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok",
             Duration::from_millis(150),
         );
-        let token = prepare(fixture(dir.path(), url), &registry, &state)
+        let token = prepare_policy(fixture(dir.path(), url), &registry, &state, NetworkPolicy::FixtureLoopback)
             .unwrap()
             .token;
         let registry = Arc::new(registry);
@@ -1566,6 +1960,7 @@ mod tests {
         let p = Pending {
             request_id: nonce().unwrap(),
             request: request(dir.path(), TfWebOperation::WebSearch),
+            policy: NetworkPolicy::Public,
             root: std::fs::canonicalize(dir.path()).unwrap(),
             target: None,
             expires: Instant::now() + TOKEN_TTL,
