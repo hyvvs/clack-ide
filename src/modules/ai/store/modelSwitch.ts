@@ -8,6 +8,7 @@ import {
   type ManagedLocalRouteIdentity,
 } from "@/modules/ai/lib/managedLocalRuntime";
 import { observedManagedExecutionIdentity } from "@/modules/ai/lib/managedExecutionEvidence";
+import { assessManagedComputeRoute } from "@/modules/ai/lib/computeExecutionRouting";
 import { resolveManagedLocalSelection } from "@/modules/ai/lib/managedLocalModels";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -101,6 +102,20 @@ async function verifyManagedSwitchReady(
         (prepared?.executionIdentity &&
           prepared.executionIdentity !== exact.stableExecutionIdentity)))
       throw new ManagedSwitchNotReadyError();
+    if (isV3) {
+      // The existing model switch consumes the same compute-facing routing
+      // contract as prospective Agent routing: a native Ready receipt alone
+      // cannot revive a disabled Fabric owner or unsupported backend. Chat is
+      // still usable without Agent qualifications; Agent trust is never inferred.
+      const capability=assessManagedComputeRoute({
+        state:state!,selectionId:selectionId!,native:status,now:Date.now(),
+      });
+      if (!capability.runtime.ready || !capability.backend.backendAvailable ||
+          capability.routeFor==="unavailable" ||
+          capability.placement.execution?.stableExecutionIdentity !==
+            exact!.stableExecutionIdentity)
+        throw new ManagedSwitchNotReadyError();
+    }
     return { epoch: status.epoch, processId: status.processId!,
       ...(exact ? {executionIdentity:exact.stableExecutionIdentity} : {}) };
   } catch {
