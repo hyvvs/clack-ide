@@ -107,6 +107,25 @@ async function select(
   });
 }
 describe("relevance and bounded fallback", () => {
+  it("exposes destructive native tools only for matching tasks, not ambient coding prompts", async () => {
+    const candidates: ToolSet = Object.fromEntries(
+      ["tf_fs_read", "tf_fs_write", "tf_fs_delete", "tf_repo_read", "tf_repo_write", "tf_build_run"]
+        .map((name) => [name, tool({
+          description: `${name.replace(/_/g, " ")} operation for files repository build and tests`,
+          inputSchema: jsonSchema({type:"object",properties:{}}),
+        })]),
+    );
+    const schemas = await serializedToolSchemas(candidates);
+    const coding = selectToolSchemas({schemas,query:"Implement a file patch and run focused tests"});
+    expect(coding.names).not.toContain("tf_fs_delete");
+    expect(coding.names).not.toContain("tf_repo_write");
+    expect(selectToolSchemas({schemas,query:"Delete the obsolete temp file"}).names)
+      .toContain("tf_fs_delete");
+    expect(selectToolSchemas({schemas,query:"Stage the selected Git file"}).names)
+      .toContain("tf_repo_write");
+    expect(selectToolSchemas({schemas,query:"Inspect source code",mandatory:["tf_repo_write"]}).names)
+      .toContain("tf_repo_write");
+  });
   it("ambiguous ties at the optional cap remain bounded rather than dumping all schemas", async () => {
     const candidates: ToolSet = {};
     for (let i = 0; i < 20; i++)

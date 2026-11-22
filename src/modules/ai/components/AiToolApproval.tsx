@@ -17,6 +17,7 @@ import {
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 import { BUILTIN_AGENTS } from "@/modules/ai/lib/agents";
+import { workspacePathsEqual } from "@/modules/workspace";
 import {
   ArrowDown01Icon,
   Cancel01Icon,
@@ -54,10 +55,23 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     create_directory: { label: "Create directory", icon: FolderAddIcon },
     bash_run: { label: "Run shell command", icon: TerminalIcon },
     bounded_command: { label: "Run bounded workspace command", icon: TerminalIcon },
+    tf_fs_read: { label: "Read workspace resource", icon: ToolsIcon },
+    tf_fs_write: { label: "Modify workspace file", icon: FileEditIcon },
+    tf_fs_delete: { label: "Delete workspace file", icon: FileEditIcon },
+    tf_repo_read: { label: "Inspect repository", icon: ToolsIcon },
+    tf_repo_write: { label: "Change repository state", icon: FileEditIcon },
+    tf_build_run: { label: "Run structured build or test", icon: TerminalIcon },
     bash_background: { label: "Spawn background process", icon: TerminalIcon },
     request_peer_task: { label: "Start peer agent task", icon: ToolsIcon },
     cancel_peer_task: { label: "Cancel peer agent task", icon: ToolsIcon },
   };
+
+const NATIVE_TF_EFFECTFUL_TOOLS = new Set([
+  "tf_fs_write",
+  "tf_fs_delete",
+  "tf_repo_write",
+  "tf_build_run",
+]);
 
 function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
   const meta = TOOL_META[toolName];
@@ -68,25 +82,23 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
   const customAgents = useAgentsStore((s) => s.customAgents);
   const ownerAgentId = owner?.run?.agentId ?? owner?.profile?.agentId;
   const ownerAgent = [...BUILTIN_AGENTS, ...customAgents].find((agent) => agent.id === ownerAgentId)?.name ?? "Agent unavailable";
-  const live = useChatStore((s) => s.live);
   const permissionContext: PermissionContext = {
     getCwd: () => {
-      const session = useChatStore
-        .getState()
-        .sessions.find((item) => item.id === sessionId);
-      return (
-        session?.run?.workspaceRoot ??
-        session?.profile?.workspaceRoot ??
-        live.getCwd()
-      );
+      const current = useChatStore.getState();
+      const session = current.sessions.find((item) => item.id === sessionId);
+      const run = session?.run?.state === "running" ? session.run : undefined;
+      const workspaceRoot = run?.checkoutRoot ?? run?.workspaceRoot ??
+        session?.profile?.workspaceRoot ?? null;
+      return workspacePathsEqual(current.live.getWorkspaceRoot(), workspaceRoot)
+        ? current.live.getCwd() : workspaceRoot;
     },
     getWorkspaceRoot: () => {
       const session = useChatStore
         .getState()
         .sessions.find((item) => item.id === sessionId);
-      return (
-        session?.run?.workspaceRoot ?? session?.profile?.workspaceRoot ?? null
-      );
+      const run = session?.run?.state === "running" ? session.run : undefined;
+      return run?.checkoutRoot ?? run?.workspaceRoot ??
+        session?.profile?.workspaceRoot ?? null;
     },
     getSessionId: () => sessionId,
     getAgentId: () => {
@@ -104,6 +116,7 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
   const strict = isStrictPermissionRequest(toolName, input);
   const canPersist =
     toolName !== "bounded_command" &&
+    !NATIVE_TF_EFFECTFUL_TOOLS.has(toolName) &&
     category !== null &&
     canPersistPermission(toolName, input, permissionContext);
 
@@ -157,6 +170,21 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
             </dl>
           </details>
         ) : null}
+        {NATIVE_TF_EFFECTFUL_TOOLS.has(toolName) ? (
+          <details className="mt-2 rounded-md border border-[color:var(--clack-border-subtle)] px-2 py-1.5 text-[10.5px] text-[var(--clack-text-2)]">
+            <summary className="cursor-pointer font-medium">Native operation, scope and effect details</summary>
+            <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 [overflow-wrap:anywhere]">
+              <dt>Operation</dt><dd>{typeof input.operation === "string" ? input.operation : "Unclassified · deny"}</dd>
+              <dt>Requested path</dt><dd>{typeof input.path === "string" ? input.path : "Operation-specific repository or workspace target"}</dd>
+              {typeof input.destination === "string" ? <><dt>Destination</dt><dd>{input.destination}</dd></> : null}
+              <dt>Effect</dt><dd>{toolName === "tf_fs_delete" ? "Destructive workspace deletion" : toolName === "tf_repo_write" ? "Repository state mutation" : toolName === "tf_build_run" ? "Process execution; generated file effects may occur" : "Workspace file creation or modification"}</dd>
+              <dt>Reversibility</dt><dd>{toolName === "tf_fs_delete" ? "Destructive · recovery not guaranteed" : "Operation dependent; no automatic replay after uncertain effects"}</dd>
+              <dt>Credentials</dt><dd>No credential plaintext accepted from the model</dd>
+              <dt>Sandbox</dt><dd>Native path/command scope and execution limits; filesystem and network OS isolation remain unsupported</dd>
+              <dt>Approval</dt><dd>Exact request once; native user confirmation is also required, with no chat/workspace-wide grant</dd>
+            </dl>
+          </details>
+        ) : null}
         <p className="mt-2 text-[11px] text-[var(--clack-text-2)]">Allow once approves only this action. Broader permissions are separate.</p>
       </div>
 
@@ -174,11 +202,12 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
           size="sm"
           variant="default"
           onClick={() => {
-            if(toolName==="bounded_command" &&
+            if((toolName==="bounded_command" || NATIVE_TF_EFFECTFUL_TOOLS.has(toolName)) &&
               !recordTfApprovedToolCall({
                 toolCallId:part.toolCallId,sessionId,
                 agentId:permissionContext.getAgentId(),
                 workspaceRoot:permissionContext.getWorkspaceRoot(),
+                cwd:permissionContext.getCwd(),
                 toolName,parameters:input,
               })){
               onRespond(false);
@@ -242,6 +271,25 @@ function PreviewBlock({
   toolName: string;
   input: Record<string, unknown>;
 }) {
+  if (toolName.startsWith("tf_")) {
+    const operation = typeof input.operation === "string" ? input.operation : "Unknown · deny";
+    const path = typeof input.path === "string" ? input.path : null;
+    const destination = typeof input.destination === "string" ? input.destination : null;
+    const directory = typeof input.cwd === "string" ? input.cwd : null;
+    const paths = Array.isArray(input.paths) ? input.paths.filter((value) => typeof value === "string") : [];
+    const contentLength = typeof input.content === "string" ? new TextEncoder().encode(input.content).length : null;
+    return (
+      <div className="space-y-1 rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] p-2 font-mono text-[10.5px] [overflow-wrap:anywhere]">
+        <p>Native operation: {operation}</p>
+        {path ? <p>Source/target: {path}</p> : null}
+        {destination ? <p>Destination: {destination}</p> : null}
+        {paths.length ? <p>Explicit paths: {paths.length} (details in the operation receipt)</p> : null}
+        {directory ? <p>Working directory: {directory}</p> : null}
+        {contentLength !== null ? <p>Proposed content: {contentLength} UTF-8 bytes (content withheld here)</p> : null}
+        <p>Native execution independently checks this request; preview is not authorization.</p>
+      </div>
+    );
+  }
   if (toolName === "bounded_command") {
     return (
       <div className="space-y-1 rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] p-2 font-mono text-[10.5px] [overflow-wrap:anywhere]">

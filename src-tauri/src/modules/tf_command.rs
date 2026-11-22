@@ -438,36 +438,36 @@ fn run_native(
 }
 
 #[cfg(windows)]
-fn run_owned_command(
+pub(crate) struct BoundedProcessResult {
+    pub terminal: &'static str,
+    pub pid: Option<u32>,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+}
+
+/// Shared, owned Windows process primitive for TF1 and typed TF2 adapters.
+/// This owns descendants using the existing PtyJob infrastructure; it does
+/// not confer filesystem or network isolation on the child.
+#[cfg(windows)]
+pub(crate) fn run_bounded_process(
     mut command: std::process::Command,
-    action: TfCommandAction,
-    cwd: &Path,
-    request_id: &str,
-    actor: &str,
-    approved: bool,
     cancelled: Arc<AtomicBool>,
     deadline: Duration,
-) -> Result<TfCommandReceipt, String> {
+) -> Result<BoundedProcessResult, String> {
     use std::thread;
-    let started_at = epoch_ms();
     if cancelled.load(Ordering::Acquire) {
-        return Ok(receipt(
-            action,
-            cwd,
-            request_id,
-            actor,
-            approved,
-            started_at,
-            "cancelled_before_spawn",
-            "none",
-            "none",
-            None,
-            None,
-            String::new(),
-            String::new(),
-            false,
-            false,
-        ));
+        return Ok(BoundedProcessResult {
+            terminal: "cancelled_before_spawn",
+            pid: None,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        });
     }
     let mut child = command
         .spawn()
@@ -478,23 +478,15 @@ fn run_owned_command(
         Err(_) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Ok(receipt(
-                action,
-                cwd,
-                request_id,
-                actor,
-                approved,
-                started_at,
-                "ownership_failed",
-                "unknown",
-                "unknown",
-                Some(pid),
-                None,
-                String::new(),
-                String::new(),
-                false,
-                false,
-            ));
+            return Ok(BoundedProcessResult {
+                terminal: "ownership_failed",
+                pid: Some(pid),
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+            });
         }
     };
     let stdout = child.stdout.take().ok_or("Command stdout unavailable")?;
@@ -502,39 +494,62 @@ fn run_owned_command(
     let out = thread::spawn(move || read_capped(stdout));
     let err = thread::spawn(move || read_capped(stderr));
     let started = Instant::now();
-    let mut outcome = "completed";
-    let mut code = None;
+    let mut terminal = "completed";
+    let mut exit_code = None;
     loop {
         if cancelled.load(Ordering::Acquire) {
-            outcome = "cancelled";
+            terminal = "cancelled";
             break;
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                code = status.code();
+                exit_code = status.code();
                 break;
             }
             Ok(None) => {}
             Err(_) => {
-                outcome = "wait_failed";
+                terminal = "wait_failed";
                 break;
             }
         }
         if started.elapsed() >= deadline {
-            outcome = "timed_out";
+            terminal = "timed_out";
             break;
         }
         thread::sleep(Duration::from_millis(10));
     }
-    // Close the owned job to kill descendants even when the immediate Git process exits.
     drop(job);
-    if code.is_none() {
+    if exit_code.is_none() {
         let _ = child.kill();
     }
     let _ = child.wait();
-    let (stdout, out_truncated) = out.join().unwrap_or((String::new(), true));
-    let (stderr, err_truncated) = err.join().unwrap_or((String::new(), true));
-    let (effect, uncertainty) = match (action, outcome, code) {
+    let (stdout, stdout_truncated) = out.join().unwrap_or((String::new(), true));
+    let (stderr, stderr_truncated) = err.join().unwrap_or((String::new(), true));
+    Ok(BoundedProcessResult {
+        terminal,
+        pid: Some(pid),
+        exit_code,
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
+    })
+}
+
+#[cfg(windows)]
+fn run_owned_command(
+    command: std::process::Command,
+    action: TfCommandAction,
+    cwd: &Path,
+    request_id: &str,
+    actor: &str,
+    approved: bool,
+    cancelled: Arc<AtomicBool>,
+    deadline: Duration,
+) -> Result<TfCommandReceipt, String> {
+    let started_at = epoch_ms();
+    let result = run_bounded_process(command, cancelled, deadline)?;
+    let (effect, uncertainty) = match (action, result.terminal, result.exit_code) {
         (_, "cancelled_before_spawn", _) => ("none", "none"),
         (TfCommandAction::ReadStatus, "completed", Some(0)) => ("read_only", "none"),
         (TfCommandAction::ReadStatus, _, _) => ("read_only", "execution_incomplete"),
@@ -550,15 +565,15 @@ fn run_owned_command(
         actor,
         approved,
         started_at,
-        outcome,
+        result.terminal,
         effect,
         uncertainty,
-        Some(pid),
-        code,
-        stdout,
-        stderr,
-        out_truncated,
-        err_truncated,
+        result.pid,
+        result.exit_code,
+        result.stdout,
+        result.stderr,
+        result.stdout_truncated,
+        result.stderr_truncated,
     ))
 }
 

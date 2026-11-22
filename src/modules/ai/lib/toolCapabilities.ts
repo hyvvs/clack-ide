@@ -16,6 +16,12 @@ const descriptions: Record<string, [string, string]> = {
   edit: ["Files", "Edit project files"],
   multi_edit: ["Files", "Edit several parts of a file"],
   create_directory: ["Files", "Create folders"],
+  tf_fs_read: ["Files", "Read, inspect, list and search scoped workspace resources natively"],
+  tf_fs_write: ["Files", "Create, replace, patch, rename and create directories with native approval"],
+  tf_fs_delete: ["Files", "Delete a scoped file after explicit native approval"],
+  tf_repo_read: ["Repository", "Inspect Git status, diffs, history, branch and refs with structured operations"],
+  tf_repo_write: ["Repository", "Stage, unstage or change branches under native operation approval"],
+  tf_build_run: ["Build and test", "Run a trusted, bounded TypeScript or Rust build/test adapter"],
   bash_run: ["Terminal", "Run commands"],
   bash_background: ["Terminal", "Start background commands"],
   bash_logs: ["Terminal", "Read command output"],
@@ -62,6 +68,10 @@ export function capabilityGroups(
         "create_directory",
         "bash_run",
         "bash_background",
+        "tf_fs_write",
+        "tf_fs_delete",
+        "tf_repo_write",
+        "tf_build_run",
       ].includes(tool.name);
     const state: CapabilityState =
       model === "unsupported"

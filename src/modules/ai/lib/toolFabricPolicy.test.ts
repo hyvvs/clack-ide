@@ -46,6 +46,38 @@ describe("TF1 security policy: registry, scopes, approval and no inferred trust"
       requestedEffects:["unknown"],scopes:[read],
     }))).toMatchObject({decision:"UNKNOWN",reasonCode:"effect-unclassified"});
   });
+  it("registers six stable native-operation tool identities with truthful static effect ceilings",()=>{
+    const names=["tf_fs_read","tf_fs_write","tf_fs_delete","tf_repo_read",
+      "tf_repo_write","tf_build_run"];
+    for(const name of names){
+      const tool=builtinToolSecurity(name);
+      expect(tool).toMatchObject({name,provenance:"clack-builtin",
+        available:true,revision:"builtin"});
+      expect(builtinToolSecurity(name)).toEqual(tool);
+    }
+    expect(builtinToolSecurity("tf_fs_read")?.effects).toEqual(["read-only"]);
+    expect(builtinToolSecurity("tf_repo_read")?.effects).toEqual(["read-only"]);
+    expect(builtinToolSecurity("tf_fs_write")?.requiresApproval).toBe(true);
+    expect(builtinToolSecurity("tf_fs_delete")?.requiresApproval).toBe(true);
+    expect(builtinToolSecurity("tf_repo_write")?.requiresApproval).toBe(true);
+    expect(builtinToolSecurity("tf_build_run")?.requiresApproval).toBe(true);
+    expect(evaluateToolFabricPolicy(request("tf_fs_read",{scopes:[read]}))
+      .decision).toBe("ALLOW");
+    expect(evaluateToolFabricPolicy(request("tf_repo_read",{
+      scopes:[command]})).decision).toBe("ALLOW");
+    expect(evaluateToolFabricPolicy(request("tf_fs_write",{
+      requestedEffects:["local-destructive-write"],scopes:[file],
+      permissionMode:"full-access"})).decision).toBe("REQUIRE_APPROVAL");
+    expect(evaluateToolFabricPolicy(request("tf_fs_delete",{
+      scopes:[{...file,operations:["delete"]}],
+      permissionMode:"full-access"})).decision).toBe("REQUIRE_APPROVAL");
+    expect(evaluateToolFabricPolicy(request("tf_repo_write",{
+      requestedEffects:["local-reversible-write"],scopes:[command,file],
+      permissionMode:"full-access"})).decision).toBe("REQUIRE_APPROVAL");
+    expect(evaluateToolFabricPolicy(request("tf_build_run",{
+      scopes:[command,file],permissionMode:"full-access"}))
+      .decision).toBe("REQUIRE_APPROVAL");
+  });
 
   it("allows scoped workspace read, not an escaping or missing read target",()=>{
     expect(evaluateToolFabricPolicy(request("read_file",{scopes:[read]})))

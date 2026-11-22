@@ -336,6 +336,73 @@ describe("truthful activity", () => {
     expect(JSON.stringify(result)).not.toContain("not-for-recording");
     expect(JSON.stringify(result)).not.toContain("token=private");
   });
+  it("projects native TF filesystem effects with verified hashes but no file content, arguments or secrets",()=>{
+    const m=message([{
+      type:"tool-tf_fs_write",toolCallId:"tf-file-call",state:"output-available",
+      input:{operation:"file_patch",path:"C:/work/example/src/file.ts",
+        content:"PRIVATE FILE BODY IN MODEL INPUT"},
+      output:{ok:true,effectReceipt:{
+        toolId:"tf.operation.v1",requestId:"native-fs-request",
+        actor:"builtin:coder",operation:"file_patch",
+        policyDecision:"native_allowlisted",approvalId:"approval:once",
+        sandbox:"unsupported",isolation:"unsupported_filesystem_network_isolation",
+        requestedResources:["C:/work/example/src/file.ts"],
+        affectedResources:["C:/work/example/src/file.ts"],
+        terminal:"completed",effectState:"Observed",
+        uncertainty:"none",retry:"UNSAFE_RETRY",
+        beforeExists:true,afterExists:true,
+        beforeSha256:"a".repeat(64),afterSha256:"b".repeat(64),
+        stdoutSha256:"c".repeat(64),stdout:"VERY_PRIVATE_FILE_CONTENT",
+        stderr:"credential:private-not-for-tracing",
+        args:["token=private-value"],autoRetry:false,
+        commandAdapter:"native_filesystem",commandCwd:"C:/work/example",
+        startedAt:1795323600000,endedAt:1795323600100,
+      }},
+    }]);
+    const result=events(m);
+    const tf=result.find(event=>event.source==="Native TF effect receipt (historical)");
+    expect(tf).toBeDefined();
+    expect(tf?.label).toContain("Observed");
+    expect(tf?.detail).toContain("Operation: file_patch");
+    expect(tf?.detail).toContain("Before SHA-256:");
+    expect(tf?.detail).toContain("After SHA-256:");
+    expect(tf?.detail).toContain("Requested resources:");
+    expect(tf?.detail).toContain("Existed before: yes");
+    expect(tf?.detail).toContain("No automatic replay");
+    expect(tf?.detail).toContain("Trusted adapter: native_filesystem");
+    expect(tf?.detail).toContain("Started:");
+    expect(tf?.detail).toContain("Ended:");
+    expect(tf?.toolCallId).toBe("tf-file-call");
+    for(const secret of ["PRIVATE FILE BODY", "VERY_PRIVATE_FILE_CONTENT",
+      "credential:private-not-for-tracing","token=private-value"])
+      expect(JSON.stringify(result)).not.toContain(secret);
+  });
+  it("projects native Git ref and staged-path evidence without exposing command arguments",()=>{
+    const result=events(message([{
+      type:"tool-tf_repo_write",toolCallId:"tf-repo-call",state:"output-available",
+      input:{operation:"repo_switch_branch",refName:"feature"},
+      output:{ok:true,effectReceipt:{
+        toolId:"tf.operation.v1",requestId:"ref-change",actor:"builtin:coder",
+        operation:"repo_switch_branch",terminal:"completed",effectState:"Observed",
+        sandbox:"unsupported",isolation:"unsupported_filesystem_network_isolation",
+        retry:"UNSAFE_RETRY",autoRetry:false,uncertainty:"none",
+        commandAdapter:"pinned_git",commandCwd:"C:/work/example",
+        argv:["--token=never-trace-me"],
+        beforeHead:"a".repeat(40),afterHead:"b".repeat(40),
+        beforeBranch:"main",afterBranch:"feature",
+        beforeStagedPaths:["C:/work/example/src/a.ts"],
+        afterStagedPaths:[],
+      }},
+    }]));
+    const detail=result.find(event=>event.source==="Native TF effect receipt (historical)")?.detail;
+    expect(detail).toContain("Trusted adapter: pinned_git");
+    expect(detail).toContain("HEAD before:");
+    expect(detail).toContain("HEAD after:");
+    expect(detail).toContain("Branch before: main");
+    expect(detail).toContain("Branch after: feature");
+    expect(detail).toContain("Staged before:");
+    expect(JSON.stringify(result)).not.toContain("never-trace-me");
+  });
   it("bounds detail while leaving source transcript intact", () => {
     const m = message([{ type: "reasoning", text: "x".repeat(50000) }]);
     expect(events(m)[0].detail?.length).toBeLessThanOrEqual(4000);
