@@ -227,6 +227,23 @@ describe("Slice 4 execution policy settings controls and CAS registration", () =
     expect(requested.cpuThreads).toBeUndefined();
   });
 
+  it("does not offer a CPU primary device as a CUDA choice after switching policy", () => {
+    const cpu = buildManagedExecutionPolicyRequest({
+      ...initialManagedExecutionPolicyDraft(null, 2048, devices),
+      preferredBackend: "cpu",
+    });
+    expect(cpu.deviceStrategy?.primaryDeviceId).toBe("clack-this-pc:cpu:0");
+    const switched = initialManagedExecutionPolicyDraft(cpu, 2048, devices);
+    expect(switched.cudaDeviceId).toBe(deviceId);
+    const cuda = buildManagedExecutionPolicyRequest({
+      ...switched, preferredBackend: "cuda", gpuLayers: "20",
+    });
+    expect(cuda.deviceIds).toEqual([deviceId]);
+    expect(cuda.candidates?.[0]).toMatchObject({
+      backend: "cuda", deviceIds: [deviceId], gpuLayers: 20,
+    });
+  });
+
   it("honors preferred CUDA device, explicit CPU fallback, offload and advanced limits", () => {
     const request = buildManagedExecutionPolicyRequest({
       ...initialManagedExecutionPolicyDraft(null, 2048, devices),

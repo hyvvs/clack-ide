@@ -64,8 +64,14 @@ export function initialManagedExecutionPolicyDraft(
   const preferredBackend = MANAGED_POLICY_BACKENDS.find(backend =>
     backend === (candidate?.backend ?? request?.backend)) ?? "cpu";
   const cuda = request?.candidates?.find(row => row.backend === "cuda");
-  const previousDevice = cuda?.deviceIds[0] ?? request?.deviceIds.find(id => id.includes(":accelerator:")) ??
-    request?.deviceStrategy?.primaryDeviceId;
+  // The primary device of a CPU-only policy is a CPU identity. Never reuse
+  // it as a CUDA device when the user switches the preferred backend.
+  // Preserve only an explicit prior accelerator pin; otherwise select the
+  // first currently observed NVIDIA GPU.
+  const previousDevice = cuda?.deviceIds.find(id => id.includes(":accelerator:")) ??
+    request?.deviceIds.find(id => id.includes(":accelerator:")) ??
+    (request?.deviceStrategy?.primaryDeviceId?.includes(":accelerator:")
+      ? request.deviceStrategy.primaryDeviceId : undefined);
   const budget = request?.memoryBudget;
   const toMiB = (bytes?: number) => bytes === undefined ? "" : String(bytes / (1024 ** 2));
   return {
