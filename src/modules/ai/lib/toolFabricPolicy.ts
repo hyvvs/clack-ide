@@ -13,11 +13,31 @@ export type ToolSideEffect =
   | "external-side-effect" | "credential-use" | "privileged-system-effect"
   | "unknown";
 export type ToolDecision = "ALLOW" | "DENY" | "REQUIRE_APPROVAL" | "UNSUPPORTED" | "UNKNOWN";
+/** Network resources are identity-bearing policy scopes, not string-only URLs.
+ * DNS evidence is resolved again by the native executor for every hop. */
+export type ToolNetworkMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
+export type ToolNetworkScope = {
+  kind: "network";
+  protocol: "http" | "https" | "tcp";
+  host: string;
+  port: number;
+  operation: "read" | "write";
+  path?: string;
+  method?: ToolNetworkMethod;
+  queryPresent?: boolean;
+  resolvedAddresses?: readonly string[];
+  resolution?: "native-pending" | "resolved" | "unknown";
+  tls?: "required" | "not-applicable" | "unknown";
+  credentialReference?: string | null;
+  maxBytes?: number;
+  maxRedirects?: number;
+  timeoutMs?: number;
+};
 export type ToolScope =
   | {kind:"filesystem"; workspaceRoot:string; path:string; operations:readonly ("read"|"write"|"create"|"delete")[]}
   | {kind:"command"; executable:string; args:readonly string[]; cwd:string; envNames:readonly string[]; timeoutMs:number}
-  | {kind:"network"; protocol:"http"|"https"|"tcp"; host:string; port:number; operation:"read"|"write"}
-  | {kind:"credential"; reference:string; provider:string; toolId:string; destination:string; operation:string; state:"valid"|"expired"|"revoked"|"unknown"};
+  | ToolNetworkScope
+  | {kind:"credential"; reference:string; provider:string; toolId:string; destination:string; operation:string; state:"valid"|"expired"|"revoked"|"unknown"|"native-verified-at-dispatch"};
 
 export type ToolSandboxControl = "process-tree"|"timeout"|"environment-filter"|
   "filesystem-isolation"|"network-isolation"|"readonly-mounts"|
@@ -148,6 +168,9 @@ const BUILTIN_SECURITY:Readonly<Record<string,BuiltinDeclaration>> = {
   tf_repo_read:builtin("native-repository",["read-only"],["command"]),
   tf_repo_write:builtin("native-repository",["local-reversible-write","local-destructive-write"],["command","filesystem"],true),
   tf_build_run:builtin("native-build",["process-execution","local-reversible-write"],["command","filesystem"],true),
+  tf_http_fetch:builtin("native-network",["network-read"],["network"],true),
+  tf_http_head:builtin("native-network",["network-read"],["network"],true),
+  tf_web_search:{...builtin("native-search",["network-read","credential-use"],["network","credential"],true),requiresCredentials:true},
   fetch_web_page:builtin("network",["network-read"],["network"],true),
   compare_web_sources:builtin("network",["network-read"],["network"],true),
   run_subagent:builtin("agent",["external-side-effect"],[],true),
@@ -310,9 +333,39 @@ export function evaluateToolFabricPolicy(input:ToolSecurityRequest):ToolPolicyRe
            !Number.isSafeInteger(scope.port) || scope.port<1 || scope.port>65535 ||
            (scope.operation==="write" && !effects.includes("network-write")))
           return result("DENY","network-destination-not-scoped");
+        if(scope.protocol!=="http" && scope.protocol!=="https" && scope.protocol!=="tcp")
+          return result("DENY","network-scheme-unsupported");
+        if(scope.resolution==="unknown")return result("UNKNOWN","network-resolution-unknown");
+        if(scope.resolution==="native-pending" &&
+           !["tf_http_fetch","tf_http_head","tf_web_search"].includes(tool.name))
+          return result("UNKNOWN","network-native-resolver-not-bound");
+        if(scope.resolution==="resolved" &&
+           (!scope.resolvedAddresses?.length ||
+            scope.resolvedAddresses.some(address=>!address || /[^0-9a-fA-F:.]/.test(address))))
+          return result("UNKNOWN","network-address-evidence-invalid");
+        if(scope.path!==undefined && (!scope.path.startsWith("/") || scope.path.length>2048 ||
+           /[\u0000-\u001f]/.test(scope.path)))
+          return result("DENY","network-path-invalid");
+        if(scope.maxBytes!==undefined &&
+           (!Number.isSafeInteger(scope.maxBytes)||scope.maxBytes<1||scope.maxBytes>65536))
+          return result("DENY","network-byte-budget-invalid");
+        if(scope.maxRedirects!==undefined &&
+           (!Number.isSafeInteger(scope.maxRedirects)||scope.maxRedirects<0||scope.maxRedirects>5))
+          return result("DENY","network-redirect-budget-invalid");
+        if(scope.timeoutMs!==undefined &&
+           (!Number.isSafeInteger(scope.timeoutMs)||scope.timeoutMs<1||scope.timeoutMs>15000))
+          return result("DENY","network-time-budget-invalid");
+        if(scope.method && !["GET","HEAD"].includes(scope.method))
+          return result("UNSUPPORTED","network-write-method-not-enabled");
+        if(scope.operation==="write")
+          return result("UNSUPPORTED","network-write-not-enabled");
       }else if(scope.kind==="credential"){
         if(scope.state==="unknown")return result("UNKNOWN","credential-state-unknown");
         if(scope.state==="expired"||scope.state==="revoked")return result("DENY","credential-not-active");
+        if(scope.state==="native-verified-at-dispatch" &&
+          (tool.name!=="tf_web_search" || scope.provider!=="brave_web" ||
+           scope.reference!=="credential:brave-web-search"))
+          return result("UNKNOWN","credential-native-verification-unavailable");
         if(!/^credential:[A-Za-z0-9._-]{1,128}$/.test(scope.reference) || scope.toolId!==tool.id || !scope.provider ||
            !scope.destination || !scope.operation)
           return result("DENY","credential-scope-mismatch");
@@ -350,4 +403,16 @@ export function toolRetryDecision(terminal:"completed"|"nonzero"|"denied"|"spawn
   if(terminal==="denied" && effect==="none")return "safe";
   if(terminal==="unknown" || effect==="unknown")return "unknown";
   return terminal==="completed" && effect==="none"?"safe":"unsafe";
+}
+
+/** HTTP metadata reads are conditionally replayable; quota-consuming searches
+ * are not automatically replayed, and future network writes never replay on
+ * an uncertain terminal. The actual native receipt remains authoritative. */
+export function networkRetryClass(method:ToolNetworkMethod | "SEARCH",
+  terminal:"completed"|"denied"|"timeout"|"cancelled"|"unknown",
+  effect:"NoEffect"|"Unknown"): "SAFE_RETRY"|"CONDITIONAL_RETRY"|"UNSAFE_RETRY"|"UNKNOWN" {
+  if(terminal==="unknown" || effect==="Unknown")return "UNKNOWN";
+  if(method==="SEARCH")return "CONDITIONAL_RETRY";
+  if(method!=="GET" && method!=="HEAD")return "UNSAFE_RETRY";
+  return terminal==="completed"||terminal==="denied"?"SAFE_RETRY":"CONDITIONAL_RETRY";
 }

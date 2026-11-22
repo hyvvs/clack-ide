@@ -2,6 +2,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import { isTfOperationTool, tfOperationEffectful, validateTfOperationInput } from
   "@/modules/ai/tools/tfOperations";
+import { isTfWebTool, validateTfWebInput } from "@/modules/ai/tools/tfWeb";
 import {
   setAgentWorkspacePermissions,
   type AgentWorkspacePermission,
@@ -91,7 +92,7 @@ export const PERMISSION_CATEGORY_LABELS: Record<PermissionCategory, string> = {
   "create-files": "Create directories",
   "run-commands": "Run terminal commands",
   "delegate-runs": "Start another agent run",
-  "research-network": "Fetch public web pages",
+  "research-network": "Search and fetch public web sources",
 };
 
 export const PERMISSION_CATEGORIES = Object.keys(
@@ -101,6 +102,9 @@ export const PERMISSION_CATEGORIES = Object.keys(
 const TOOL_CATEGORIES: Readonly<Record<string, PermissionCategory>> = {
   fetch_web_page: "research-network",
   compare_web_sources: "research-network",
+  tf_http_fetch: "research-network",
+  tf_http_head: "research-network",
+  tf_web_search: "research-network",
   write_file: "write-files",
   edit: "write-files",
   multi_edit: "write-files",
@@ -165,6 +169,10 @@ function sha256Identity(value:string):string {
   return h.map(n=>n.toString(16).padStart(8,"0")).join("");
 }
 function exactTfInputIdentity(toolName:string,input:Record<string,unknown>):string|null {
+  if(isTfWebTool(toolName)){
+    if(!validateTfWebInput(toolName,input))return null;
+    return sha256Identity(canonicalJson([toolName,input]));
+  }
   if(isTfOperationTool(toolName)){
     if(!validateTfOperationInput(toolName,input))return null;
     return sha256Identity(canonicalJson([toolName,input]));
@@ -181,7 +189,7 @@ export function recordTfApprovedToolCall(input:{toolCallId:string;sessionId:stri
   agentId:string;workspaceRoot:string|null;toolName:string;
   parameters:Record<string,unknown>;cwd?:string|null},now=Date.now()):boolean {
   if((input.toolName!=="bounded_command" &&
-      !tfOperationEffectful(input.toolName)) || !input.toolCallId ||
+      !tfOperationEffectful(input.toolName) && !isTfWebTool(input.toolName)) || !input.toolCallId ||
       input.toolCallId.length>256 || !input.sessionId || !input.agentId ||
       !input.workspaceRoot || !Number.isSafeInteger(now))return false;
   const identity=exactTfInputIdentity(input.toolName,input.parameters);
@@ -330,7 +338,7 @@ export function canPersistPermission(
 ): boolean {
   // Exact native effects cannot be promoted into chat/workspace permission;
   // even Full Access must produce a fresh SDK Allow once proof.
-  if(tfOperationEffectful(toolName) || toolName==="bounded_command")return false;
+  if(tfOperationEffectful(toolName) || isTfWebTool(toolName) || toolName==="bounded_command")return false;
   if (isStrictPermissionRequest(toolName, input)) return false;
   const category = permissionCategoryForTool(toolName);
   // Network destinations are chosen per invocation. Neither chat nor a
@@ -519,6 +527,14 @@ const tfOperationSandbox:ToolSandboxPolicy={
     "resource-limits","credential-injection","child-process-limits"],
   status:"unsupported",
 };
+/** DNS pinning and hop reauthorization run in native TF3. None of those
+ * controls is equivalent to an OS-level network namespace. */
+const tfWebSandbox:ToolSandboxPolicy={
+  identity:"tf-native-web-v1",required:[],enforced:[],
+  unsupported:["process-tree","filesystem-isolation","network-isolation",
+    "readonly-mounts","resource-limits","child-process-limits"],
+  status:"unsupported",
+};
 
 function absoluteScopePath(value:unknown,base:string|null):string|null {
   if(typeof value!=="string" || !value.trim())return null;
@@ -555,6 +571,7 @@ export function resolveCurrentToolFabricDecision(
     }
   }
   const nativeOp=isTfOperationTool(toolName);
+  const nativeWeb=isTfWebTool(toolName);
   if(nativeOp && phase==="execution"){
     if(!validateTfOperationInput(toolName,input))
       return {decision:"DENY",reasonCode:"tf-operation-invalid-input",
@@ -567,7 +584,61 @@ export function resolveCurrentToolFabricDecision(
       effects=operation==="repo_stage"||operation==="repo_unstage"
         ? ["local-reversible-write"] : ["local-destructive-write"];
   }
+  if(nativeWeb && phase==="execution"){
+    if(!validateTfWebInput(toolName,input))
+      return {decision:"DENY",reasonCode:"tf-web-invalid-input",
+        policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+    effects=toolName==="tf_web_search"
+      ? ["network-read","credential-use"] : ["network-read"];
+  }
   if(phase==="execution"){
+    if(nativeWeb){
+      const op=input.operation;
+      const method=op==="http_head"?"HEAD":"GET";
+      let uri:URL;
+      if(toolName==="tf_web_search"){
+        // Only the native provider adapter owns this fixed destination.
+        uri=new URL("https://api.search.brave.com/res/v1/web/search");
+      }else if(typeof input.searchResultId==="string"){
+        // Symbolic scope: the native token table supplies and reauthorizes
+        // the exact result URL. This is NOT a DNS or page-origin assertion.
+        uri=new URL("https://native-bound-search-result.invalid/");
+      }else{
+        try{uri=new URL(String(input.url??""));}
+        catch{
+          return {decision:"DENY",reasonCode:"tf-web-url-invalid",
+            policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+        }
+      }
+      if((uri.protocol!=="https:"&&uri.protocol!=="http:") ||
+        !!uri.username || !!uri.password || !uri.hostname)
+        return {decision:"DENY",reasonCode:"tf-web-url-unsupported",
+          policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+      const host=uri.hostname.toLowerCase();
+      if(host==="localhost" || host.endsWith(".localhost") ||
+        host.endsWith(".local") || host.endsWith(".internal") ||
+        host==="metadata" || host==="metadata.google.internal")
+        return {decision:"DENY",reasonCode:"tf-web-local-host-denied",
+          policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+      scopes.push({kind:"network",protocol:uri.protocol.slice(0,-1) as "http"|"https",
+        host,port:uri.port?Number(uri.port):uri.protocol==="https:"?443:80,
+        path:uri.pathname,queryPresent:uri.search.length>0,method,
+        operation:"read",resolution:"native-pending",
+        tls:uri.protocol==="https:"?"required":"not-applicable",
+        credentialReference:toolName==="tf_web_search"
+          ?"credential:brave-web-search":null,
+        maxBytes:typeof input.maxBytes==="number"?input.maxBytes:65536,
+        maxRedirects:typeof input.maxRedirects==="number"?input.maxRedirects:5,
+        timeoutMs:typeof input.timeoutMs==="number"?input.timeoutMs:15000});
+      if(toolName==="tf_web_search"){
+        // The store's *actual* key state is verified only at native dispatch.
+        // This references an exact trusted provider/origin, not a renderer key.
+        scopes.push({kind:"credential",reference:"credential:brave-web-search",
+          provider:"brave_web",toolId:security.id,
+          destination:"https://api.search.brave.com:443",
+          operation:"GET",state:"native-verified-at-dispatch"});
+      }
+    }
     if(nativeOp){
       const operation=input.operation as string;
       const addFile=(value:unknown,ops:("read"|"write"|"create"|"delete")[])=>{
@@ -648,7 +719,7 @@ export function resolveCurrentToolFabricDecision(
             typeof input.timeout_secs==="number"?input.timeout_secs*1000:30_000});
       }
     }
-    if(security.resources.includes("network")){
+    if(!nativeWeb && security.resources.includes("network")){
       const urls=typeof input.url==="string"?[input.url]:
         Array.isArray(input.urls)?input.urls:[];
       const malformed=urls.length===0 || urls.some(url=>typeof url!=="string" ||
@@ -682,11 +753,11 @@ export function resolveCurrentToolFabricDecision(
       `tf-preflight:${ctx.getSessionId()??"none"}:${toolName}`,
     actor:{agentId,sessionId:ctx.getSessionId(),workspaceId:root?workspacePermissionKey(root):null,
       workspaceRoot:root},tool:effectiveTool,operation:toolName,
-    requestedEffects:effects,resourceIdentity:nativeOp
+    requestedEffects:effects,resourceIdentity:nativeOp||nativeWeb
       ? `tf-operation:${exactTfInputIdentity(toolName,input)??"missing"}`
       : JSON.stringify([toolName,input.path??null,input.cwd??null,
         input.url??null,input.executable??null,input.args??null]).slice(0,2048),
-    scopes,sandbox:nativeOp?tfOperationSandbox:
+    scopes,sandbox:nativeWeb?tfWebSandbox:nativeOp?tfOperationSandbox:
       toolName==="bounded_command" ? {...tfWindowSandbox,configuration:{
       workspaceRoot:root,mounts:[],tempDirectory:null,
       environment:{forwardedNames:[],inheritParent:false},
@@ -754,6 +825,10 @@ export function applyAgentPermissionPolicy<
     };
     if (originalExecute) {
       next.execute = async (input, options) => {
+        if(isTfWebTool(toolName) && ctx.getMutationMode?.()==="read-only")
+          return {error:"Network research is not available to a read-only delegated task.",
+            code:"tf_web_read_only_run_denied",effectState:"NoEffect",
+            retry:"no_auto_retry"};
         const registered=lookupRegistrySecurity?.(toolName);
         const decision = resolveCurrentAgentPermission(
           toolName,
@@ -785,7 +860,7 @@ export function applyAgentPermissionPolicy<
         if(lookupRegistrySecurity &&
           ((toolName==="bounded_command" &&
             (input as {action?:unknown}|null)?.action==="write_marker") ||
-           tfOperationEffectful(toolName))){
+           tfOperationEffectful(toolName) || isTfWebTool(toolName))){
           const toolCallId=options && typeof options==="object" &&
             "toolCallId" in options && typeof options.toolCallId==="string"
             ? options.toolCallId : "";

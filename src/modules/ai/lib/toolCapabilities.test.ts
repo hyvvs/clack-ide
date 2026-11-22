@@ -35,4 +35,17 @@ describe("Tool Fabric native capability UI grouping", () => {
     expect(groups.flatMap((group) => group.entries).every((item) => item.state === "Unsupported by this model"))
       .toBe(true);
   });
+  it("shows native web research separately, with no Chat Only or read-only task bypass", () => {
+    const network = [
+      {name:"tf_web_search",decision:"prompt"},
+      {name:"tf_http_fetch",decision:"prompt"},
+      {name:"tf_http_head",decision:"deny"},
+    ];
+    const shown = capabilityGroups(network,"supported");
+    expect(shown.find(group=>group.category==="Web research")?.entries.map(row=>row.state))
+      .toEqual(["Ask before use","Ask before use","Not allowed"]);
+    const restricted=capabilityGroups(network,"supported",true);
+    expect(restricted.flatMap(group=>group.entries).every(row=>row.state==="Not allowed"))
+      .toBe(true);
+  });
 });

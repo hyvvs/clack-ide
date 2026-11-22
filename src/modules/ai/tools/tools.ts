@@ -12,6 +12,7 @@ import { buildEvidenceTools } from "@/modules/ai/tools/evidence";
 import { buildResearchTools } from "@/modules/ai/tools/research";
 import { buildBoundedCommandTools } from "@/modules/ai/tools/boundedCommand";
 import { buildTfOperationTools } from "@/modules/ai/tools/tfOperations";
+import { buildTfWebTools } from "@/modules/ai/tools/tfWeb";
 import { applyAgentPermissionPolicy } from "@/modules/ai/lib/permissions";
 import { capabilityIndexFromTools } from "@/modules/ai/lib/capabilityIndex";
 import { identifyTool, toolRevisionIdentity } from "@/modules/ai/lib/toolExposure";
@@ -45,6 +46,7 @@ export function buildTools(ctx: import("./context").ToolContext) {
     ...buildShellTools(ctx),
     ...buildBoundedCommandTools(ctx),
     ...buildTfOperationTools(ctx),
+    ...buildTfWebTools(ctx),
     ...buildSubagentTools(ctx),
     ...buildTerminalTools(ctx),
     ...buildTodoTools(ctx),

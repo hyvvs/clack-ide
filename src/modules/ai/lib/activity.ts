@@ -214,6 +214,19 @@ function safePath(value: unknown): string {
     ? activityText(value, 1100)
     : "[Protected path]";
 }
+/** Untrusted query strings can contain session tokens or personal data. The
+ * activity feed shows a normalized origin/path and query presence only; full
+ * native receipts retain structurally validated evidence when necessary. */
+function safeNetworkUrl(value:unknown):string {
+  if(typeof value!=="string" || value.length>4096)return "";
+  try{
+    const url=new URL(value);
+    if(!["http:","https:"].includes(url.protocol) || url.username || url.password)
+      return "[Untrusted URL withheld]";
+    const path=url.pathname.slice(0,260);
+    return activityText(`${url.origin}${path}${url.search?"?… [query withheld]":""}`,360);
+  }catch{return "[Invalid URL withheld]";}
+}
 
 export function messageActivity(
   message: UIMessage,
@@ -364,14 +377,15 @@ export function messageActivity(
           owner: base.owner,
           toolCallId,
         });
-      // Native TF commands and scoped filesystem/repository/build operations
+      // Native TF commands, filesystem/repository/build and web operations
       // return receipts in the existing persisted SDK tool output. Project
       // ONLY bounded, content-free evidence: never duplicate output, file
-      // contents, argv, environment, credentials or execution tokens here.
+      // contents, web body, snippets, argv, environment or secrets here.
       const tf = object(output?.effectReceipt);
       const tfOperation = tf?.toolId === "tf.operation.v1";
-      const tfEffect = tfOperation ? tf?.effectState : tf?.sideEffect;
-      if ((tf?.toolId === "tf.bounded_command.v1" || tfOperation) &&
+      const tfWeb = tf?.toolId === "tf.web_operation.v1";
+      const tfEffect = tfOperation || tfWeb ? tf?.effectState : tf?.sideEffect;
+      if ((tf?.toolId === "tf.bounded_command.v1" || tfOperation || tfWeb) &&
           typeof tf.requestId === "string" &&
           typeof tf.terminal === "string" &&
           typeof tfEffect === "string") {
@@ -400,6 +414,71 @@ export function messageActivity(
           `Request: ${safe(tf.requestId)}`,
           `Actor: ${safe(tf.actor)}`,
           ...(tfOperation ? [`Operation: ${safe(tf.operation)}`] : []),
+          ...(tfWeb ? [`Network operation: ${safe(tf.operation)}`] : []),
+          ...(tfWeb && typeof tf.requestedUrl==="string"
+            ? [`Requested URL: ${safeNetworkUrl(tf.requestedUrl)}`] : []),
+          ...(tfWeb && typeof tf.finalUrl==="string"
+            ? [`Final URL: ${safeNetworkUrl(tf.finalUrl)}`] : []),
+          ...(tfWeb && typeof tf.searchQuery==="string"
+            ? [`Search: ${safe(tf.searchQuery)}`] : []),
+          ...(tfWeb && tf.operation==="web_search" && typeof input?.query==="string"
+            ? [`Search query: ${activityText(input.query, 160)}`] : []),
+          ...(tfWeb && typeof tf.statusCode==="number" &&
+            Number.isInteger(tf.statusCode) && tf.statusCode>=100 && tf.statusCode<=599
+            ? [`HTTP status: ${tf.statusCode}`] : []),
+          ...(tfWeb && typeof tf.contentType==="string"
+            ? [`Content type: ${safe(tf.contentType)}`] : []),
+          ...(tfWeb && typeof tf.tlsState==="string" &&
+            ["unknown","https_transport_observed","cleartext_http"].includes(tf.tlsState)
+            ? [`TLS transport: ${tf.tlsState==="https_transport_observed"
+              ?"HTTPS response observed; peer IP not attested":tf.tlsState==="cleartext_http"
+                ?"HTTP (unencrypted)":"Not observed"}`] : []),
+          ...(tfWeb && typeof tf.bytesReceived==="number" &&
+            Number.isSafeInteger(tf.bytesReceived) && tf.bytesReceived>=0
+            ? [`Bytes received: ${tf.bytesReceived}`] : []),
+          ...(tfWeb && typeof tf.bytesRetained==="number" &&
+            Number.isSafeInteger(tf.bytesRetained) && tf.bytesRetained>=0
+            ? [`Bytes retained: ${tf.bytesRetained}`] : []),
+          ...(tfWeb && typeof tf.truncated==="boolean"
+            ? [`Truncated: ${tf.truncated?"yes":"no"}`] : []),
+          ...(tfWeb && sha(tf.contentSha256)
+            ? [`Content SHA-256: ${sha(tf.contentSha256)}`] : []),
+          ...(tfWeb && typeof tf.credentialReference==="string" &&
+            /^credential:[A-Za-z0-9._-]{1,128}$/.test(tf.credentialReference)
+            ? [`Credential reference: ${tf.credentialReference} (value withheld)`] : []),
+          ...(tfWeb && typeof tf.credentialUsed==="boolean"
+            ? [`Credential used: ${tf.credentialUsed?"yes":"no"}`] : []),
+          ...(tfWeb && Array.isArray(tf.redirectChain)
+            ? [`Redirect transitions: ${Math.min(5,tf.redirectChain.length)}`,
+                ...tf.redirectChain.slice(0,5).map((hop,index)=>{
+                  const h=object(hop);
+                  const destination=safeNetworkUrl(typeof hop==="string"?hop:
+                    h?.to??h?.url??h?.destination);
+                  return `Redirect ${index+1}: ${destination||"destination withheld"}`;
+                })] : []),
+          ...(tfWeb && Array.isArray(tf.dnsEvidence)
+            ? [`DNS checks: ${Math.min(6,tf.dnsEvidence.length)}`,
+                ...tf.dnsEvidence.slice(0,6).map(hop=>{
+                  const h=object(hop);
+                  const host=safe(h?.host);
+                  const count=Array.isArray(h?.addresses)?h.addresses.length:0;
+                  const ips=Array.isArray(h?.addresses)
+                    ? h.addresses.slice(0,8).filter((value):value is string=>
+                      typeof value==="string" && value.length<=64 &&
+                      /^[0-9a-fA-F:.]+$/.test(value)).join(", ") : "";
+                  const classification=safe(h?.classification);
+                  return `DNS: ${host} · ${classification} · ${count} addresses${ips?` [${ips}]`:""} (socket peer unverified)`;
+                })] : []),
+          ...(tfWeb && Array.isArray(tf.searchResults)
+            ? [`Search results: ${Math.min(20,tf.searchResults.length)} (metadata only, pages not fetched)`] : []),
+          ...(tfWeb && typeof tf.searchResultCount==="number" &&
+            Number.isSafeInteger(tf.searchResultCount) && tf.searchResultCount>=0 &&
+            tf.searchResultCount<=20
+            ? [`Search results: ${tf.searchResultCount} (metadata only, pages not fetched)`] : []),
+          ...(tfWeb && typeof tf.searchSource==="string"
+            ? [`Search provenance: ${safe(tf.searchSource)} (unverified listing; content fetched separately)`]
+            : tfWeb && object(tf.searchSource)
+              ? [`Search provenance: ${safe(object(tf.searchSource)?.provider)} (unverified listing; content fetched separately)`] : []),
           ...(commandAdapter ? [`Trusted adapter: ${commandAdapter}`] : []),
           ...(commandAdapter && typeof tf.commandCwd === "string"
             ? [`Command directory: ${safePath(tf.commandCwd)}`] : []),

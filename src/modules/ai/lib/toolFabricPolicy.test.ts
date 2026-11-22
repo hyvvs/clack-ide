@@ -1,6 +1,6 @@
 import { describe,expect,it } from "vitest";
 import {
-  builtinToolSecurity, evaluateToolFabricPolicy, toolRetryDecision,
+  builtinToolSecurity, evaluateToolFabricPolicy, toolRetryDecision, networkRetryClass,
   unknownToolSecurity, type ToolActor, type ToolApprovalGrant,
   type ToolRegistrySecurity, type ToolScope, type ToolSecurityRequest,
 } from "./toolFabricPolicy";
@@ -209,6 +209,58 @@ describe("TF1 security policy: registry, scopes, approval and no inferred trust"
       .decision).toBe("DENY");
     expect(evaluateToolFabricPolicy({...input,scopes:[{...net,operation:"write"}]})
       .reasonCode).toBe("network-destination-not-scoped");
+  });
+  it("models native web host/method/port/budget/DNS transitions structurally",()=>{
+    const resource:ToolScope={kind:"network",protocol:"https",host:"docs.example.org",
+      port:443,path:"/manual",queryPresent:true,method:"GET",operation:"read",
+      resolution:"native-pending",tls:"required",maxBytes:65536,
+      maxRedirects:5,timeoutMs:15000};
+    const input=request("tf_http_fetch",{scopes:[resource]});
+    expect(evaluateToolFabricPolicy(input)).toMatchObject({decision:"REQUIRE_APPROVAL",
+      reasonCode:"explicit-approval-required"});
+    for(const change of [
+      {resolution:"unknown" as const},
+      {resolution:"resolved" as const,resolvedAddresses:[]},
+    ])expect(evaluateToolFabricPolicy({...input,scopes:[{...resource,...change}]})
+      .decision).toBe("UNKNOWN");
+    expect(evaluateToolFabricPolicy({...input,scopes:[{...resource,
+      method:"POST"}]})).toMatchObject({decision:"UNSUPPORTED",
+        reasonCode:"network-write-method-not-enabled"});
+    expect(evaluateToolFabricPolicy({...input,scopes:[{...resource,
+      maxBytes:65537}]}).reasonCode).toBe("network-byte-budget-invalid");
+    expect(evaluateToolFabricPolicy({...input,scopes:[{...resource,
+      maxRedirects:6}]}).reasonCode).toBe("network-redirect-budget-invalid");
+    expect(evaluateToolFabricPolicy({...input,scopes:[{...resource,
+      timeoutMs:15001}]}).reasonCode).toBe("network-time-budget-invalid");
+    expect(evaluateToolFabricPolicy({...input,scopes:[{...resource,
+      operation:"write"}]}).reasonCode).toBe("network-destination-not-scoped");
+    expect(evaluateToolFabricPolicy({...input,permissionMode:"chat-only"})
+      .reasonCode).toBe("agent-chat-only");
+  });
+  it("scopes Brave search credential to a single native provider/origin",()=>{
+    const tool=builtinToolSecurity("tf_web_search")!;
+    const network:ToolScope={kind:"network",protocol:"https",
+      host:"api.search.brave.com",port:443,method:"GET",
+      operation:"read",path:"/res/v1/web/search",resolution:"native-pending"};
+    const credential:ToolScope={kind:"credential",
+      reference:"credential:brave-web-search",provider:"brave_web",
+      destination:"https://api.search.brave.com:443",operation:"GET",
+      toolId:tool.id,state:"native-verified-at-dispatch"};
+    const input=request("tf_web_search",{scopes:[network,credential]});
+    expect(evaluateToolFabricPolicy(input)).toMatchObject({decision:"REQUIRE_APPROVAL",
+      approval:{credentialReferences:["credential:brave-web-search"]}});
+    expect(evaluateToolFabricPolicy({...input,scopes:[network,{...credential,
+      provider:"other"}]}).reasonCode).toBe("credential-native-verification-unavailable");
+    expect(evaluateToolFabricPolicy({...input,scopes:[network,{...credential,
+      state:"revoked"}]}).reasonCode).toBe("credential-not-active");
+    expect(evaluateToolFabricPolicy({...input,scopes:[network,{...credential,
+      state:"unknown"}]}).reasonCode).toBe("credential-state-unknown");
+    expect(evaluateToolFabricPolicy({...input,scopes:[network]}).reasonCode)
+      .toBe("resource-scope-missing");
+    expect(networkRetryClass("SEARCH","completed","NoEffect")).toBe("CONDITIONAL_RETRY");
+    expect(networkRetryClass("GET","completed","NoEffect")).toBe("SAFE_RETRY");
+    expect(networkRetryClass("POST","timeout","Unknown")).toBe("UNKNOWN");
+    expect(networkRetryClass("POST","completed","NoEffect")).toBe("UNSAFE_RETRY");
   });
 
   it("uses references only; no expired, revoked, cross-tool or unobserved credential grant",()=>{

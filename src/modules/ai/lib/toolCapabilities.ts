@@ -7,6 +7,9 @@ export type CapabilityState =
 const descriptions: Record<string, [string, string]> = {
   fetch_web_page: ["Research", "Retrieve a public HTTPS page with source evidence"],
   compare_web_sources: ["Research", "Retrieve and compare sourced web pages"],
+  tf_web_search: ["Web research", "Search through a configured, credential-scoped native provider"],
+  tf_http_fetch: ["Web research", "Fetch bounded public HTTP/HTTPS content with redirect and DNS evidence"],
+  tf_http_head: ["Web research", "Inspect public HTTP/HTTPS response metadata without downloading content"],
   discover_capabilities: ["Research", "Find available, authorized capabilities"],
   read_file: ["Files", "Read project files"],
   list_directory: ["Files", "Browse project folders"],
@@ -72,6 +75,9 @@ export function capabilityGroups(
         "tf_fs_delete",
         "tf_repo_write",
         "tf_build_run",
+        "tf_http_fetch",
+        "tf_http_head",
+        "tf_web_search",
       ].includes(tool.name);
     const state: CapabilityState =
       model === "unsupported"

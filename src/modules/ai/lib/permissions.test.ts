@@ -244,6 +244,83 @@ describe("agent permission resolver", () => {
       workspaceRoot:"/work/a",parameters:{...inputs.tf_fs_write,
         arbitrary:"cannot-grant"}})).toBe(false);
   });
+  it("TF3 native network operations require exact one-use proof and never accept broadened grants",async()=>{
+    usePreferencesStore.setState({agentPermissionProfiles:{
+      "builtin:coder":profile("full-access")}});
+    const ctx=context();
+    const operations:Record<string,Record<string,unknown>>={
+      tf_http_fetch:{url:"https://docs.example.org/guide",maxBytes:4096},
+      tf_http_head:{url:"https://docs.example.org/guide"},
+      tf_web_search:{query:"tool fabric documentation"},
+    };
+    const execute=vi.fn(async()=>({ok:true}));
+    const guarded=applyAgentPermissionPolicy(Object.fromEntries(
+      Object.keys(operations).map(name=>[name,{execute,needsApproval:true}])),
+      ctx,name=>builtinToolSecurity(name)??undefined) as unknown as Record<string,{
+        execute:(input:unknown,options:unknown)=>Promise<unknown>;
+        needsApproval:(input:unknown,options:unknown)=>Promise<boolean>;
+      }>;
+    for(const [name,input] of Object.entries(operations)){
+      const options={toolCallId:`network-once-${name}`};
+      const policy=resolveCurrentToolFabricDecision(name,input,ctx,
+        builtinToolSecurity(name)!);
+      expect(policy).toMatchObject({decision:"REQUIRE_APPROVAL",
+        reasonCode:"explicit-approval-required"});
+      expect(canPersistPermission(name,input,ctx)).toBe(false);
+      expect(await guarded[name].needsApproval(input,options)).toBe(true);
+      expect(await guarded[name].execute(input,options)).toMatchObject({
+        code:"tf_exact_approval_required",effectState:"NoEffect"});
+      expect(execute).not.toHaveBeenCalledWith(input,options);
+      expect(recordTfApprovedToolCall({toolName:name,toolCallId:options.toolCallId,
+        sessionId:"chat-a",agentId:"builtin:coder",
+        workspaceRoot:"/work/a",cwd:"/work/a",parameters:input})).toBe(true);
+      expect(await guarded[name].execute(input,options)).toEqual({ok:true});
+      expect(await guarded[name].execute(input,options)).toMatchObject({
+        code:"tf_exact_approval_required"});
+    }
+    expect(execute).toHaveBeenCalledTimes(3);
+    const target=operations.tf_http_fetch;
+    expect(recordTfApprovedToolCall({toolName:"tf_http_fetch",
+      toolCallId:"cross-origin",sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",parameters:target})).toBe(true);
+    expect(consumeTfApprovedToolCall({toolName:"tf_http_fetch",
+      toolCallId:"cross-origin",sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",parameters:{
+        url:"https://elsewhere.example.org/guide",maxBytes:4096}})).toBe(false);
+    expect(recordTfApprovedToolCall({toolName:"tf_web_search",
+      toolCallId:"fake-header",sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",parameters:{query:"safe research",
+        authorization:"Bearer should-not-reach-native"}})).toBe(false);
+    for(const name of Object.keys(operations)){
+      expect(resolveCurrentToolFabricDecision(name,operations[name],ctx,
+        builtinToolSecurity(name)!,"execution").decision).toBe("REQUIRE_APPROVAL");
+      usePreferencesStore.setState({agentPermissionProfiles:{
+        "builtin:coder":profile("chat-only")}});
+      expect(resolveCurrentToolFabricDecision(name,operations[name],ctx,
+        builtinToolSecurity(name)!,"execution").reasonCode).toBe("agent-chat-only");
+      usePreferencesStore.setState({agentPermissionProfiles:{
+        "builtin:coder":profile("full-access")}});
+    }
+    expect(resolveCurrentToolFabricDecision("tf_http_fetch",
+      {url:"https://docs.example.org/guide",arbitraryHeader:"x"},ctx,
+      builtinToolSecurity("tf_http_fetch")!).reasonCode).toBe("tf-web-invalid-input");
+  });
+  it("does not allow a read-only delegated task to execute network/quota operations",async()=>{
+    const ctx={...context(),getMutationMode:()=> "read-only" as const};
+    const execute=vi.fn(async(_input:unknown,_options:unknown)=>({ok:true}));
+    const tools=applyAgentPermissionPolicy({
+      tf_http_fetch:{execute},tf_web_search:{execute},
+    },ctx,name=>builtinToolSecurity(name)??undefined);
+    expect(await tools.tf_http_fetch.execute({
+      url:"https://docs.example.org/guide",
+    },{toolCallId:"read-only-network"})).toMatchObject({
+      code:"tf_web_read_only_run_denied",effectState:"NoEffect"});
+    expect(await tools.tf_web_search.execute({
+      query:"latest news",
+    },{toolCallId:"read-only-search"})).toMatchObject({
+      code:"tf_web_read_only_run_denied",effectState:"NoEffect"});
+    expect(execute).not.toHaveBeenCalled();
+  });
 
   it("uses the existing approval policy in Ask mode", () => {
     expect(decision("ask", "read_file", { path: "README.md" }).outcome).toBe(

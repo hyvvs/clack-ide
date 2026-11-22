@@ -403,6 +403,39 @@ describe("truthful activity", () => {
     expect(detail).toContain("Staged before:");
     expect(JSON.stringify(result)).not.toContain("never-trace-me");
   });
+  it("projects TF3 web receipts with safe provenance, hop and budget evidence, never source text or authorization",()=>{
+    const result=events(message([{
+      type:"tool-tf_http_fetch",toolCallId:"tf-web-call",state:"output-available",
+      input:{operation:"http_get",url:"https://docs.example.org/readme?access_token=SECRET_QUERY"},
+      output:{ok:true,effectReceipt:{
+        toolId:"tf.web_operation.v1",requestId:"web-native-1",actor:"builtin:coder",
+        operation:"http_get",terminal:"completed",effectState:"NoEffect",
+        requestedUrl:"https://docs.example.org/readme?access_token=SECRET_QUERY",
+        finalUrl:"https://cdn.example.org/article?foo=PRIVATE_QUERY",
+        redirectChain:[{to:"https://cdn.example.org/article?foo=PRIVATE_QUERY",status:302}],
+        dnsEvidence:[{host:"docs.example.org",addresses:["93.184.215.14"],
+          classification:"public",pinning:"pinned",socketIpObserved:false}],
+        statusCode:200,contentType:"text/html",bytesReceived:65537,
+        bytesRetained:65536,truncated:true,contentSha256:"a".repeat(64),
+        credentialReference:"credential:brave-web-search",credentialUsed:false,
+        policyDecision:"ALLOW",reasonCode:"public-address",retry:"SAFE_RETRY",
+        autoRetry:false,uncertainty:"none",isolation:"unsupported_filesystem_network_isolation",
+        body:"HTML_PRIVATE_BODY",stdout:"PRIVATE_RESPONSE_BODY",
+        authorization:"Bearer SECRET_HEADER",
+      }},
+    }]));
+    const detail=result.find(event=>event.source==="Native TF effect receipt (historical)")?.detail;
+    expect(detail).toContain("Network operation: http_get");
+    expect(detail).toContain("Requested URL: https://docs.example.org/readme?… [query withheld]");
+    expect(detail).toContain("Redirect transitions: 1");
+    expect(detail).toContain("DNS checks: 1");
+    expect(detail).toContain("Bytes retained: 65536");
+    expect(detail).toContain("Truncated: yes");
+    expect(detail).toContain("Credential used: no");
+    for(const value of ["SECRET_QUERY","PRIVATE_QUERY","SECRET_HEADER",
+      "HTML_PRIVATE_BODY","PRIVATE_RESPONSE_BODY"])
+      expect(JSON.stringify(result)).not.toContain(value);
+  });
   it("bounds detail while leaving source transcript intact", () => {
     const m = message([{ type: "reasoning", text: "x".repeat(50000) }]);
     expect(events(m)[0].detail?.length).toBeLessThanOrEqual(4000);
