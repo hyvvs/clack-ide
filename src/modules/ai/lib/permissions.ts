@@ -10,6 +10,11 @@ import {
 } from "@/modules/workspace";
 import type { ToolContext } from "@/modules/ai/tools/context";
 import {
+  builtinToolSecurity, evaluateToolFabricPolicy, unknownToolSecurity,
+  type ToolRegistrySecurity, type ToolSandboxPolicy, type ToolScope,
+  type ToolPolicyResult, type ToolSideEffect,
+} from "./toolFabricPolicy";
+import {
   acquireWorkspaceWriteLease,
   currentWorkspaceWriteLease,
 } from "./workspaceWriteLease";
@@ -49,6 +54,7 @@ export type AgentPermissionDecision = {
     | "chat-grant"
     | "workspace-grant"
     | "agent-profile"
+    | "tf-security-policy"
     | "strict-action"
     | "default-policy";
   category: PermissionCategory | null;
@@ -98,6 +104,7 @@ const TOOL_CATEGORIES: Readonly<Record<string, PermissionCategory>> = {
   multi_edit: "write-files",
   create_directory: "create-files",
   bash_run: "run-commands",
+  bounded_command: "run-commands",
   bash_background: "run-commands",
   request_peer_task: "delegate-runs",
   cancel_peer_task: "delegate-runs",
@@ -106,6 +113,53 @@ const TOOL_CATEGORIES: Readonly<Record<string, PermissionCategory>> = {
 };
 
 const chatGrants = new Map<string, Set<PermissionCategory>>();
+/** Ephemeral SDK approval bridge for the first native TF execution vertical.
+ * The existing approval UI writes this ONLY on the human Allow once action;
+ * a model tool call cannot synthesize an approved SDK continuation. An
+ * independently compromised same-origin renderer still cannot be used as a
+ * cryptographic proof of human intent; native controls remain authoritative. */
+type TfOnceApproval = {sessionId:string;agentId:string;workspaceRoot:string;
+  inputIdentity:string;expiresAt:number};
+const tfOnceApprovals=new Map<string,TfOnceApproval>();
+const TF_ONCE_APPROVAL_LIMIT=256;
+const TF_ONCE_APPROVAL_WINDOW_MS=60_000;
+function exactTfInputIdentity(input:Record<string,unknown>):string|null {
+  if((input.action!=="read_status"&&input.action!=="write_marker") ||
+      typeof input.cwd!=="string" || typeof input.executable!=="string" ||
+      !Array.isArray(input.args) || input.args.length>12 ||
+      !input.args.every(arg=>typeof arg==="string"&&arg.length<=512))return null;
+  return JSON.stringify([input.action,input.executable,input.args,input.cwd]);
+}
+export function recordTfApprovedToolCall(input:{toolCallId:string;sessionId:string;
+  agentId:string;workspaceRoot:string|null;toolName:string;
+  parameters:Record<string,unknown>},now=Date.now()):boolean {
+  if(input.toolName!=="bounded_command" || !input.toolCallId ||
+      input.toolCallId.length>256 || !input.sessionId || !input.agentId ||
+      !input.workspaceRoot || !Number.isSafeInteger(now))return false;
+  const identity=exactTfInputIdentity(input.parameters);
+  if(!identity)return false;
+  for(const [key,proof] of tfOnceApprovals)
+    if(proof.expiresAt<=now)tfOnceApprovals.delete(key);
+  if(tfOnceApprovals.size>=TF_ONCE_APPROVAL_LIMIT ||
+      tfOnceApprovals.has(input.toolCallId))return false;
+  tfOnceApprovals.set(input.toolCallId,{sessionId:input.sessionId,
+    agentId:input.agentId,workspaceRoot:input.workspaceRoot,
+    inputIdentity:identity,expiresAt:now+TF_ONCE_APPROVAL_WINDOW_MS});
+  return true;
+}
+export function consumeTfApprovedToolCall(input:{toolCallId:string;sessionId:string;
+  agentId:string;workspaceRoot:string|null;parameters:Record<string,unknown>},
+  now=Date.now()):boolean {
+  if(!input.toolCallId)return false;
+  const approval=tfOnceApprovals.get(input.toolCallId);
+  // Consume even on mismatch so the same approval cannot be adjusted and
+  // replayed against a different process/actor/target.
+  tfOnceApprovals.delete(input.toolCallId);
+  return !!approval && approval.expiresAt>now &&
+    approval.sessionId===input.sessionId && approval.agentId===input.agentId &&
+    approval.workspaceRoot===input.workspaceRoot &&
+    approval.inputIdentity===exactTfInputIdentity(input.parameters);
+}
 
 /** Read-only snapshot for same-run recovery authority comparison. */
 export function chatPermissionGrantSnapshot(sessionId: string, agentId: string): PermissionCategory[] {
@@ -265,10 +319,13 @@ export function clearChatPermissions(sessionId: string): void {
   for (const key of chatGrants.keys()) {
     if (key.startsWith(prefix)) chatGrants.delete(key);
   }
+  for (const [call,approval] of tfOnceApprovals)
+    if(approval.sessionId===sessionId)tfOnceApprovals.delete(call);
 }
 
 export function clearAllChatPermissionsForTests(): void {
   chatGrants.clear();
+  tfOnceApprovals.clear();
 }
 
 export function resolveAgentPermission(input: {
@@ -348,10 +405,13 @@ export function resolveCurrentAgentPermission(
   toolName: string,
   input: Record<string, unknown>,
   ctx: PermissionContext,
+  registrySecurity?: ToolRegistrySecurity,
+  phase:"exposure"|"execution" = Object.keys(input).length ? "execution" : "exposure",
+  requestId?:string,
 ): AgentPermissionDecision {
   const agentId = ctx.getAgentId();
   const preferences = usePreferencesStore.getState();
-  return resolveAgentPermission({
+  const existing = resolveAgentPermission({
     agentId,
     sessionId: ctx.getSessionId(),
     toolName,
@@ -362,6 +422,150 @@ export function resolveCurrentAgentPermission(
       DEFAULT_AGENT_PERMISSION_PROFILE,
     workspaceRules: preferences.agentWorkspacePermissions,
   });
+  if(existing.outcome==="deny")return existing;
+  // Compatibility for existing pre-registry callers and bounded offline
+  // catalog fixtures. The production buildTools path supplies its live
+  // registry descriptor on every SDK approval/execution invocation; it never
+  // enters this branch. Keep the old pure permission API for B01/B02 users.
+  if(!registrySecurity)return existing;
+  const security = resolveCurrentToolFabricDecision(toolName,input,ctx,
+    registrySecurity,phase,requestId);
+  if(security.decision==="DENY" || security.decision==="UNKNOWN" ||
+     security.decision==="UNSUPPORTED")
+    return {outcome:"deny",source:"tf-security-policy",category:existing.category};
+  if(security.decision==="REQUIRE_APPROVAL" || existing.outcome==="prompt")
+    return {outcome:"prompt",source:"tf-security-policy",category:existing.category};
+  return existing;
+}
+
+const tfWindowSandbox:ToolSandboxPolicy={
+  identity:"tf-windows-process-contract-v1",
+  required:[],
+  enforced:["process-tree","timeout","environment-filter"],
+  unsupported:["filesystem-isolation","network-isolation","readonly-mounts",
+    "resource-limits","credential-injection","child-process-limits"],
+  status:"partially-enforced",
+};
+const legacySandbox:ToolSandboxPolicy={
+  identity:"legacy-executor-platform-controls-not-verified",
+  required:[],enforced:[],
+  unsupported:["process-tree","timeout","environment-filter",
+    "filesystem-isolation","network-isolation","readonly-mounts",
+    "resource-limits","credential-injection","child-process-limits"],
+  status:"unsupported",
+};
+
+function absoluteScopePath(value:unknown,base:string|null):string|null {
+  if(typeof value!=="string" || !value.trim())return null;
+  if(value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value))return value;
+  return base ? `${base.replace(/[\\/]$/,"")}/${value}` : null;
+}
+
+/** One central tool authorization preview used by registry exposure and every
+ * SDK execute wrapper. Native command/T1/T2 owners still reauthorize actual
+ * resources and credentials; this UI evaluation cannot create OS authority. */
+export function resolveCurrentToolFabricDecision(
+  toolName:string,input:Record<string,unknown>,ctx:PermissionContext,
+  registered?:ToolRegistrySecurity,phase:"exposure"|"execution"="execution",
+  requestId?:string,
+):ToolPolicyResult {
+  const prefs=usePreferencesStore.getState();
+  const agentId=ctx.getAgentId();
+  const root=ctx.getWorkspaceRoot();
+  const security=registered ?? builtinToolSecurity(toolName) ??
+    unknownToolSecurity(toolName,`unregistered:${toolName}`,"unknown");
+  const cwd=ctx.getCwd()??root;
+  const scopes:ToolScope[]=[];
+  let effects:readonly ToolSideEffect[]=security.effects;
+  let effectiveTool=security;
+  if(toolName==="bounded_command"){
+    if(input.action==="read_status"){
+      effects=["read-only"];
+      effectiveTool={...security,requiresApproval:false};
+    }else if(input.action==="write_marker"){
+      effects=["process-execution","local-reversible-write"];
+      effectiveTool={...security,requiresApproval:true};
+    }else if(phase==="execution"){
+      effects=["unknown"];
+    }
+  }
+  if(phase==="execution"){
+    if(security.resources.includes("filesystem")){
+      const candidate=absoluteScopePath(input.path??input.root??
+        (toolName==="grep"||toolName==="glob"?root:null),cwd);
+      if(candidate && root)
+        scopes.push({kind:"filesystem",workspaceRoot:root,path:candidate,
+          operations:effects.includes("read-only")?["read"]:
+            toolName==="create_directory"?["create"]:["write","delete"]});
+      // A multi-edit tool might affect many independent paths. Every target
+      // must be checked, not merely the first file path.
+      if(Array.isArray(input.edits))for(const edit of input.edits){
+        if(!edit || typeof edit!=="object")continue;
+        const path=absoluteScopePath((edit as {path?:unknown}).path,cwd);
+        if(path && root)scopes.push({kind:"filesystem",workspaceRoot:root,
+          path,operations:["write"]});
+      }
+    }
+    if(security.resources.includes("command")){
+      const directory=typeof input.cwd==="string"?input.cwd:cwd;
+      if(directory){
+        const structured=toolName==="bounded_command";
+        scopes.push({kind:"command",executable:structured &&
+          typeof input.executable==="string"?input.executable:
+            structured?"":"legacy-shell-command",
+          args:structured && Array.isArray(input.args)?input.args.filter(
+            (arg):arg is string=>typeof arg==="string"):
+            typeof input.command==="string"?[input.command]:[],cwd:directory,
+          envNames:[],timeoutMs:structured?5_000:
+            typeof input.timeout_secs==="number"?input.timeout_secs*1000:30_000});
+      }
+    }
+    if(security.resources.includes("network")){
+      const urls=typeof input.url==="string"?[input.url]:
+        Array.isArray(input.urls)?input.urls:[];
+      const malformed=urls.length===0 || urls.some(url=>typeof url!=="string" ||
+        !/^https?:\/\//i.test(url));
+      if(!malformed)for(const address of urls){
+        try{
+          const uri=new URL(address as string);
+          if((uri.protocol==="http:"||uri.protocol==="https:") &&
+             !uri.username && !uri.password && !uri.hash)
+            scopes.push({kind:"network",protocol:uri.protocol.slice(0,-1) as "http"|"https",
+              host:uri.hostname,port:uri.port?Number(uri.port):uri.protocol==="https:"?443:80,
+              operation:"read"});
+        }catch{/* Malformed destination cannot acquire a native network route. */}
+      }
+      // Every requested network URL must acquire an independently scoped
+      // destination. Never authorize all three from a single safe first URL.
+      if(malformed || scopes.filter(scope=>scope.kind==="network").length!==urls.length)
+        return {decision:"DENY",reasonCode:"network-destination-not-scoped",
+          policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+    }
+  }
+  const profile=prefs.agentPermissionProfiles[agentId]??DEFAULT_AGENT_PERMISSION_PROFILE;
+  // Existing chat/workspace grants still control ordinary permission modes.
+  // Their broad category scope is intentionally NOT elevated into exact TF
+  // effect/credential/target grants; native execution retains final authority.
+  const decision=evaluateToolFabricPolicy({phase,
+    // Only SDK's actual toolCallId is eligible to bind an effectful approval.
+    // Preview IDs are intentionally non-authoritative and never inserted as
+    // grants; a later call must present an exact once-scoped UI proof.
+    requestId:requestId&&requestId.length<=256?requestId:
+      `tf-preflight:${ctx.getSessionId()??"none"}:${toolName}`,
+    actor:{agentId,sessionId:ctx.getSessionId(),workspaceId:root?workspacePermissionKey(root):null,
+      workspaceRoot:root},tool:effectiveTool,operation:toolName,
+    requestedEffects:effects,resourceIdentity:JSON.stringify([
+      toolName,input.path??null,input.cwd??null,input.url??null,input.executable??null,input.args??null]).slice(0,2048),
+    scopes,sandbox:toolName==="bounded_command" ? {...tfWindowSandbox,configuration:{
+      workspaceRoot:root,mounts:[],tempDirectory:null,
+      environment:{forwardedNames:[],inheritParent:false},
+      network:{mode:"unsupported",destinations:[]},
+      credentials:{mode:"none",references:[]},
+      process:{maxChildren:null,killTreeOnCancel:true,
+        maxRuntimeMs:5000,maxMemoryBytes:null,maxCpuMs:null},
+    }} : legacySandbox,permissionMode:profile.mode,
+    allowedWorkspaceRoot:root, maxDurationMs:300_000});
+  return decision;
 }
 
 export function requiresToolApproval(
@@ -394,7 +598,8 @@ type RuntimeTool = {
 
 export function applyAgentPermissionPolicy<
   TTools extends object,
->(tools: TTools, ctx: ToolContext): TTools {
+>(tools: TTools, ctx: ToolContext,
+  lookupRegistrySecurity?: (name:string)=>ToolRegistrySecurity|undefined): TTools {
   const wrapped = {} as TTools;
   for (const [toolName, definition] of Object.entries(
     tools as Record<string, RuntimeTool>,
@@ -402,26 +607,61 @@ export function applyAgentPermissionPolicy<
     const originalExecute = definition.execute;
     const next: RuntimeTool = {
       ...definition,
-      needsApproval: (input) =>
+      needsApproval: async (input, options) =>
         resolveCurrentAgentPermission(
           toolName,
           (input ?? {}) as Record<string, unknown>,
           ctx,
-        ).outcome === "prompt",
+          lookupRegistrySecurity?.(toolName),
+          Object.keys((input??{}) as Record<string,unknown>).length?"execution":"exposure",
+          options && typeof options==="object" && "toolCallId" in options &&
+            typeof options.toolCallId==="string"?options.toolCallId:undefined,
+        ).outcome === "prompt" ||
+        (typeof definition.needsApproval === "function"
+          ? await definition.needsApproval(input,options)
+          : definition.needsApproval === true),
     };
     if (originalExecute) {
       next.execute = async (input, options) => {
+        const registered=lookupRegistrySecurity?.(toolName);
         const decision = resolveCurrentAgentPermission(
           toolName,
           (input ?? {}) as Record<string, unknown>,
           ctx,
+          registered,
+          "execution",
+          options && typeof options==="object" && "toolCallId" in options &&
+            typeof options.toolCallId==="string"?options.toolCallId:undefined,
         );
         if (decision.outcome === "deny") {
+          const security=registered ? resolveCurrentToolFabricDecision(toolName,
+            (input??{}) as Record<string,unknown>,ctx,registered,"execution",
+            options && typeof options==="object" && "toolCallId" in options &&
+              typeof options.toolCallId==="string"?options.toolCallId:undefined) : null;
           return {
-            error: `Tool '${toolName}' is blocked by the active agent's Chat Only permission profile.`,
+            error:decision.source==="chat-only"
+              ? `Tool '${toolName}' is blocked by the active agent's Chat Only permission profile.`
+              : `Tool '${toolName}' was denied by the effective permission, resource or security policy.`,
             code: "agent_permission_denied",
             permissionSource: decision.source,
+            ...(security?{
+              policyDecision:security.decision,
+              policyReasonCode:security.reasonCode,
+              policyVersion:security.policyVersion,
+            }:{}),
           };
+        }
+        if(lookupRegistrySecurity && toolName==="bounded_command" &&
+           (input as {action?:unknown}|null)?.action==="write_marker"){
+          const toolCallId=options && typeof options==="object" &&
+            "toolCallId" in options && typeof options.toolCallId==="string"
+            ? options.toolCallId : "";
+          if(!consumeTfApprovedToolCall({toolCallId,
+            sessionId:ctx.getSessionId()??"",agentId:ctx.getAgentId(),
+            workspaceRoot:ctx.getWorkspaceRoot(),
+            parameters:(input??{}) as Record<string,unknown>}))
+            return {error:"This exact native command requires an unexpired Allow once approval from the current chat.",
+              code:"tf_exact_approval_required",effectState:"NoEffect",retry:"no_auto_retry"};
         }
         if (
           ctx.getMutationMode?.() === "isolated-worktree" &&

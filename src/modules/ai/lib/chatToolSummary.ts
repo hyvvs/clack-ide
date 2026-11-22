@@ -3,7 +3,7 @@ import {
   definitionEligibility,
 } from "@/modules/ai/lib/customTools";
 import { mcpClient } from "@/modules/ai/lib/mcpConnections";
-import { resolveCurrentAgentPermission } from "@/modules/ai/lib/permissions";
+import { resolveCurrentAgentPermission, resolveCurrentToolFabricDecision } from "@/modules/ai/lib/permissions";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { awaitSessionWrites } from "@/modules/ai/lib/sessions";
 import { capabilityIndexFromTools } from "@/modules/ai/lib/capabilityIndex";
@@ -24,13 +24,23 @@ export async function loadChatToolSummary(sessionId: string) {
   const workspaceId = toolContext.getWorkspaceId?.() ?? "";
   const currentTools = buildTools(toolContext);
   const indexed = capabilityIndexFromTools(currentTools);
-  const builtin = Object.keys(currentTools).map((name) => ({
-    name,
-    decision: resolveCurrentAgentPermission(name, {}, toolContext).outcome,
-    semanticCapability: indexed.callable(name)?.fabric.semanticCapability ?? name,
-    effectClass: indexed.callable(name)?.fabric.effectClass ?? "unknown",
-    permissionClass: indexed.callable(name)?.fabric.permissionClass ?? "sensitive",
-  }));
+  const builtin = Object.keys(currentTools).map((name) => {
+    const record=indexed.callable(name);
+    const policy=resolveCurrentToolFabricDecision(name,{},toolContext,
+      record?.security,"exposure");
+    return {
+      name,
+      decision: resolveCurrentAgentPermission(name, {}, toolContext,
+        record?.security,"exposure").outcome,
+      semanticCapability: record?.fabric.semanticCapability ?? name,
+      effectClass: record?.fabric.effectClass ?? "unknown",
+      permissionClass: record?.fabric.permissionClass ?? "sensitive",
+      policyDecision:policy.decision,
+      policyReason:policy.reasonCode,
+      effects:record?.security.effects ?? ["unknown"],
+      provenance:record?.security.provenance ?? "unknown",
+    };
+  });
   const [registry, connections] = await Promise.allSettled([
     customToolsClient(sessionId).loadEligible(),
     mcpClient(sessionId).load(),

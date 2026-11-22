@@ -10,6 +10,7 @@ import {
   canPersistPermission,
   grantScopedPermission,
   isStrictPermissionRequest,
+  recordTfApprovedToolCall,
   permissionCategoryForTool,
   type PermissionContext,
 } from "@/modules/ai/lib/permissions";
@@ -52,6 +53,7 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     multi_edit: { label: "Edit file (batch)", icon: Edit02Icon },
     create_directory: { label: "Create directory", icon: FolderAddIcon },
     bash_run: { label: "Run shell command", icon: TerminalIcon },
+    bounded_command: { label: "Run bounded workspace command", icon: TerminalIcon },
     bash_background: { label: "Spawn background process", icon: TerminalIcon },
     request_peer_task: { label: "Start peer agent task", icon: ToolsIcon },
     cancel_peer_task: { label: "Cancel peer agent task", icon: ToolsIcon },
@@ -101,6 +103,7 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
   const category = permissionCategoryForTool(toolName);
   const strict = isStrictPermissionRequest(toolName, input);
   const canPersist =
+    toolName !== "bounded_command" &&
     category !== null &&
     canPersistPermission(toolName, input, permissionContext);
 
@@ -141,6 +144,19 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
           {typeof input.path === "string" && <p>{input.path}</p>}
         </details>
         <PreviewBlock toolName={toolName} input={input} />
+        {toolName === "bounded_command" ? (
+          <details className="mt-2 rounded-md border border-[color:var(--clack-border-subtle)] px-2 py-1.5 text-[10.5px] text-[var(--clack-text-2)]">
+            <summary className="cursor-pointer font-medium">Native policy, effects and sandbox details</summary>
+            <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 [overflow-wrap:anywhere]">
+              <dt>Effect</dt><dd>{input.action === "read_status" ? "Read-only process execution" : "Local workspace write · approval required"}</dd>
+              <dt>Target</dt><dd>{typeof input.cwd === "string" ? input.cwd : "Unspecified · deny"}</dd>
+              <dt>Credentials</dt><dd>No plaintext credentials accepted from the model</dd>
+              <dt>Sandbox</dt><dd>Native executable/argument admission, filtered environment, bounded owned Windows process tree; filesystem and network OS isolation are not implemented</dd>
+              <dt>Reversibility</dt><dd>{input.action === "read_status" ? "No requested workspace modification" : "Controlled local marker; manual undo available"}</dd>
+              <dt>Approval</dt><dd>Once, for this exact request only; no session/workspace broadening</dd>
+            </dl>
+          </details>
+        ) : null}
         <p className="mt-2 text-[11px] text-[var(--clack-text-2)]">Allow once approves only this action. Broader permissions are separate.</p>
       </div>
 
@@ -157,7 +173,19 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
         <Button
           size="sm"
           variant="default"
-          onClick={() => respondToApprovalChoice("once", onRespond)}
+          onClick={() => {
+            if(toolName==="bounded_command" &&
+              !recordTfApprovedToolCall({
+                toolCallId:part.toolCallId,sessionId,
+                agentId:permissionContext.getAgentId(),
+                workspaceRoot:permissionContext.getWorkspaceRoot(),
+                toolName,parameters:input,
+              })){
+              onRespond(false);
+              return;
+            }
+            respondToApprovalChoice("once", onRespond);
+          }}
           className="h-7 gap-1.5 text-[11px]"
         >
           <HugeiconsIcon icon={Tick02Icon} size={12} strokeWidth={2} />
@@ -214,6 +242,16 @@ function PreviewBlock({
   toolName: string;
   input: Record<string, unknown>;
 }) {
+  if (toolName === "bounded_command") {
+    return (
+      <div className="space-y-1 rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] p-2 font-mono text-[10.5px] [overflow-wrap:anywhere]">
+        <p>Action: {typeof input.action === "string" ? input.action : "Unknown"}</p>
+        <p>Executable: {typeof input.executable === "string" ? input.executable.split(/[\\/]/).pop() : "Unknown"}</p>
+        <p>Arguments: {Array.isArray(input.args) ? `${input.args.length} (verified by exact native allowlist)` : "Unknown · deny"}</p>
+        <p>Directory: {typeof input.cwd === "string" ? input.cwd : "Unknown · deny"}</p>
+      </div>
+    );
+  }
   if (toolName === "bash_run" || toolName === "bash_background") {
     const cwd = typeof input.cwd === "string" ? input.cwd : null;
     return (

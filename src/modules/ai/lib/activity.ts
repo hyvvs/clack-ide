@@ -364,6 +364,42 @@ export function messageActivity(
           owner: base.owner,
           toolCallId,
         });
+      // TF's opt-in native command returns its structured effect receipt in
+      // the existing persisted SDK tool output. Project ONLY bounded,
+      // content-free fields into ActivityTimeline; never persist another
+      // trace database or copy command output, argv, environment or tokens.
+      const tf = object(output?.effectReceipt);
+      if (tf?.toolId === "tf.bounded_command.v1" &&
+          typeof tf.requestId === "string" &&
+          typeof tf.terminal === "string" &&
+          typeof tf.sideEffect === "string") {
+        const safe = (value:unknown) => activityText(value,160) || "Unknown";
+        const pid = typeof tf.pid === "number" && Number.isSafeInteger(tf.pid) && tf.pid>0
+          ? String(tf.pid) : "Unknown";
+        const paths = Array.isArray(tf.affectedResources) ? tf.affectedResources
+          .slice(0,4).map(path=>safePath(path)).filter(Boolean) : [];
+        const detail=[
+          `Request: ${safe(tf.requestId)}`,
+          `Actor: ${safe(tf.actor)}`,
+          `Policy: ${safe(tf.policyDecision)}`,
+          `Approval: ${safe(tf.approvalId)}`,
+          `Sandbox: ${safe(tf.sandbox)} (${safe(tf.isolation)})`,
+          `Process: ${pid}`,
+          `Terminal: ${safe(tf.terminal)}`,
+          `Effect: ${safe(tf.sideEffect)}`,
+          `Uncertainty: ${safe(tf.uncertainty)}`,
+          `Retry: ${tf.autoRetry === false ? "No automatic replay" : "Unknown · no authority asserted"}`,
+          ...(paths.length ? [`Affected resources: ${paths.join(", ")}`] : []),
+          ...(typeof tf.stdoutSha256 === "string" && /^[0-9a-f]{64}$/.test(tf.stdoutSha256)
+            ? [`Output SHA-256: ${tf.stdoutSha256}`] : []),
+        ].join("\n");
+        add({
+          id:`${base.id}:tf-effect`,kind:"runtime",
+          label:`${tool}: native ${safe(tf.terminal)} · effect ${safe(tf.sideEffect)}`,
+          detail,owner:base.owner,toolCallId,
+          source:"Native TF effect receipt (historical)",
+        });
+      }
     }
   });
   for (const [order, r] of (record?.receipts ?? []).entries())

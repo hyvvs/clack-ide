@@ -20,4 +20,5 @@ pub mod secrets;
 pub mod self_hosted_profiles;
 mod self_hosted_atomic_file;
 pub mod shell;
+pub mod tf_command;
 pub mod workspace;

@@ -141,6 +141,11 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                               ? " - Ask before use"
                               : ""}
                           </p>
+                          {item.name === "bounded_command" && (
+                            <p className="text-[10.5px] text-muted-foreground">
+                              Native-only Git command · writes require Allow once · Windows filesystem/network isolation unsupported
+                            </p>
+                          )}
                         </li>
                       ))}
                     </ul>
@@ -210,6 +215,11 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                   {count} permission-eligible candidates; runtime and request
                   checks still apply.
                 </p>
+                <p className="text-muted-foreground">
+                  TF policy decisions shown here are pre-exposure assessments,
+                  not execution grants. Native launchers independently recheck
+                  workspace, process, approval and resource authority.
+                </p>
                 <ul>
                   {summary.builtin.map((item) => (
                     <li key={item.name}>
@@ -219,7 +229,9 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                         : item.decision === "prompt"
                           ? "Approval required"
                           : "Permission allows"}{" "}
-                      ({item.semanticCapability}; {item.permissionClass}; effect {item.effectClass})
+                      ({item.semanticCapability}; {item.permissionClass}; effect {item.effectClass};
+                      {" "}TF {item.policyDecision} / {item.policyReason};
+                      {" "}{item.effects.join(", ")}; {item.provenance})
                     </li>
                   ))}
                 </ul>

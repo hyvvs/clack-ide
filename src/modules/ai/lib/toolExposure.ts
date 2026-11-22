@@ -18,7 +18,7 @@ import { handoffObjective } from "@/modules/ai/lib/peerHistory";
 import { referencedFiles } from "@/modules/ai/lib/scopedEvidence";
 import { operationCapabilities, resolveToolObjective, type ToolCapability, type ToolObjective } from "@/modules/ai/lib/toolObjective";
 import { getTodos } from "@/modules/ai/store/todoStore";
-import { providerCapabilityCandidates } from "@/modules/ai/lib/capabilityIndex";
+import { capabilityIndexFromTools, providerCapabilityCandidates } from "@/modules/ai/lib/capabilityIndex";
 
 export const EXPOSURE_POLICY = "tf-exposure-v6";
 export const EXPOSURE_LIMITS = {
@@ -358,15 +358,26 @@ export async function prepareToolExposure(
       usePreferencesStore.getState().agentWorkspacePermissions,
     ]);
   const capturedAuthorization = authorization();
+  const registry=capabilityIndexFromTools(tools);
   const eligible = Object.fromEntries(
     Object.entries(tools).filter(
-      ([name]) =>
-        resolveCurrentAgentPermission(name, {}, input.context).outcome !==
+      ([name]) => {
+        const descriptor=registry.callable(name)?.security;
+        // A dynamic candidate may be visible to F1 for stable tool-call
+        // continuation even when the descriptor has no authenticated native
+        // provenance (older conversation tool schemas and offline fixtures).
+        // Exposure does not create runnable authority: all production tools
+        // are independently wrapped through the live registry and the native
+        // executor rejects unknown/mismatched tools at invocation.
+        return resolveCurrentAgentPermission(name, {}, input.context,
+          descriptor?.provenance === "unknown" ? undefined : descriptor,
+          "exposure").outcome !==
           "deny" &&
         !(
           input.context.getMutationMode?.() === "read-only" &&
           requiresWorkspaceWriteLease(name)
-        ),
+        );
+      },
     ),
   );
   const mandatory = [

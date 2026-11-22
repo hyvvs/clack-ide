@@ -2,6 +2,8 @@ import { asSchema, type ToolSet } from "ai";
 import { toolRevisionIdentity } from "@/modules/ai/lib/toolExposure";
 import { ContextBudgetError } from "@/modules/ai/lib/contextBudget";
 import type { CapturedToolVersion, ToolBinding, ToolDefinition, ToolRegistryView } from "@/modules/ai/lib/customTools";
+import { builtinToolSecurity, unknownToolSecurity,
+  type ToolRegistrySecurity, type ToolSideEffect } from "@/modules/ai/lib/toolFabricPolicy";
 
 // Discovery is not authorization. Only the original AI SDK/Tauri/Rust tool can execute.
 export const CAPABILITY_INDEX_LIMITS = {
@@ -58,6 +60,9 @@ export type CapabilityContract = {
   result: { outputSchema: unknown; description: string; supportedFormats: readonly string[] };
   discovery: { summary: string; terms: readonly string[] };
   fabric: ToolFabricMetadata;
+  /** TF's canonical conservative security metadata in the EXISTING registry.
+   * Catalog visibility never grants an execution token or user approval. */
+  security: ToolRegistrySecurity;
 };
 export type CapabilitySearch = {
   query?: string;
@@ -68,7 +73,7 @@ export type CapabilitySearch = {
   limit?: number;
   offset?: number;
 };
-export type CapabilitySeed = Omit<CapabilityContract, "id" | "qualifiedName" | "discovery" | "fabric"> & { fabric?: ToolFabricMetadata };
+export type CapabilitySeed = Omit<CapabilityContract, "id" | "qualifiedName" | "discovery" | "fabric" | "security"> & { fabric?: ToolFabricMetadata; security?: ToolRegistrySecurity };
 export type CompactCapability = Pick<CapabilityContract,
   "id" | "callableName" | "nativeName" | "displayName" | "source" |
   "sourceOwner" | "origin" | "available" | "enabled" | "revision"> & {
@@ -136,6 +141,31 @@ const key = (source: string, owner: string, name: string, workspace: string | nu
   // JSON tuples, unlike separator concatenation, cannot collide on reserved characters.
   JSON.stringify([source, workspace, owner, name]);
 
+function securityForSeed(seed:CapabilitySeed,id:string):ToolRegistrySecurity {
+  // Never accept untrusted provider/user-supplied `security` as an executable
+  // grant, even when the descriptor advertises clack-builtin provenance.
+  // Resolve only the known builtin table or an authenticated native T1/T2
+  // route carrying its exact captured immutable revision.
+  if(seed.source==="builtin"){
+    const trusted=builtinToolSecurity(seed.callableName);
+    return trusted ? {...trusted,id,revision:seed.revision,
+      available:seed.enabled&&seed.available} :
+      unknownToolSecurity(seed.callableName,id,seed.revision);
+  }
+  // Native T1/T2 approved registrations own their own credential and effect
+  // admission. Descriptions/permission hints from MCP are not authority. The
+  // generic upper bound is always effectful and requires approval; its actual
+  // receiver is still checked again by the existing native executor.
+  if(seed.route.kind==="native-custom" && seed.enabled && seed.available){
+    const effects:ToolSideEffect[]=["external-side-effect"];
+    return {id,revision:seed.revision,name:seed.callableName,
+      provider:seed.sourceOwner,category:"native-custom",effects,
+      resources:[],requiresApproval:true,requiresCredentials:false,
+      requiresSandbox:[],available:true,provenance:"native-verified"};
+  }
+  return unknownToolSecurity(seed.callableName,id,seed.revision);
+}
+
 export class CapabilityIndex {
   private readonly byId = new Map<string, CapabilityContract>();
   private readonly byName = new Map<string, CapabilityContract | null>();
@@ -149,6 +179,7 @@ export class CapabilityIndex {
       const contract: CapabilityContract = {
         ...seed, id, qualifiedName: id,
         fabric: normalizedFabric(seed),
+        security: securityForSeed(seed,id),
         discovery: { summary, terms: terms(`${seed.displayName} ${seed.nativeName} ${summary}`) },
       };
       this.byId.set(id, contract);
