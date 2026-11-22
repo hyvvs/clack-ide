@@ -186,17 +186,33 @@ function pathWithin(root:string,path:string):boolean {
   if(!root || !path || /[\u0000-\u001f]/.test(root+path))return false;
   const parse=(value:string)=>{
     const text=value.replace(/\\/g,"/");
-    const absolute=/^[a-zA-Z]:\//.test(text)||text.startsWith("/");
-    if(!absolute)return null;
-    const drive=/^[a-zA-Z]:/.test(text)?text.slice(0,2).toLowerCase():"";
-    const components=text.slice(drive?2:0).split("/").filter(Boolean);
-    if(components.some(part=>part===".."))return null;
-    const out=components.filter(part=>part!==".").join("/");
-    return drive+"/"+out.toLowerCase();
+    // Keep drive-relative and UNC/device paths out of this portable preflight.
+    if(text.startsWith("//"))return null;
+    const drive=/^[a-zA-Z]:\//.test(text)?text.slice(0,2).toLowerCase():"";
+    if(!drive && !text.startsWith("/"))return null;
+    const tail=text.slice(drive?3:1);
+    if(drive && tail.startsWith("/"))return null;
+    return {drive,components:tail.split("/").filter(part=>part&&part!==".")
+      .map(part=>part.toLowerCase())};
   };
-  const base=parse(root)?.replace(/\/$/,"");
+  const base=parse(root);
   const target=parse(path);
-  return !!base && !!target && (target===base || target.startsWith(`${base}/`));
+  if(!base || !target || base.drive!==target.drive ||
+     base.components.includes(".."))return false;
+  const walked:string[]=[];
+  for(const part of target.components){
+    if(part===".."){
+      // A safe parent step must stay below the *initial* authorized root;
+      // leaving and later re-entering that root never restores authority.
+      if(walked.length<=base.components.length)return false;
+      walked.pop();
+    }else{
+      walked.push(part);
+      if(walked.length<=base.components.length &&
+         walked[walked.length-1]!==base.components[walked.length-1])return false;
+    }
+  }
+  return walked.length>=base.components.length;
 }
 
 function sameGrant(grant:ToolApprovalGrant,input:ToolSecurityRequest,effect:ToolSideEffect,now:number):boolean {

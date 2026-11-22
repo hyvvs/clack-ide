@@ -2,19 +2,32 @@
 //! no renderer-controlled binary, argument vector, environment or write authorization.
 //! This is process ownership and command narrowing, NOT a filesystem/network sandbox.
 
-use crate::modules::workspace::{authorize_spawn_cwd, WorkspaceEnv, WorkspaceRegistry};
+use crate::modules::workspace::WorkspaceRegistry;
+#[cfg(windows)]
+use crate::modules::workspace::{authorize_spawn_cwd, WorkspaceEnv};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::sync::LazyLock;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
+use tokio::sync::Semaphore;
 
+#[cfg(windows)]
 const TOKEN_LIFETIME: Duration = Duration::from_secs(60);
+#[cfg(any(windows, test))]
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(any(windows, test))]
 const OUTPUT_CAP: usize = 8192;
 #[cfg(windows)]
 const GIT_EXE: &str = r"C:\Program Files\Git\cmd\git.exe";
+#[cfg(windows)]
+static APPROVAL_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(4)));
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -79,6 +92,7 @@ pub struct TfCommandReceipt {
     pub isolation: &'static str,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 struct Pending {
     request_id: String,
     actor: String,
@@ -95,12 +109,14 @@ pub struct TfCommandState {
     active: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
+#[cfg(any(windows, test))]
 fn token() -> Result<String, String> {
     let mut bytes = [0u8; 24];
     getrandom::fill(&mut bytes).map_err(|_| "Secure token generation failed".to_string())?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+#[cfg(windows)]
 fn authorize_scope(
     registry: &WorkspaceRegistry,
     cwd: &str,
@@ -132,6 +148,14 @@ fn authorize_scope(
     let canonical_git = std::fs::canonicalize(&git).map_err(|_| "Invalid Git metadata")?;
     if canonical_git != git {
         return Err("Git metadata path must be canonical".into());
+    }
+    // Git honors .git/commondir even when .git itself is a real directory.
+    // Its common configuration then lives outside this checked .git/config.
+    // Reject these linked-repository metadata layouts before any command.
+    match std::fs::symlink_metadata(canonical_git.join("commondir")) {
+        Ok(_) => return Err("Git common directory redirection is unsupported".into()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("Git common directory metadata is inaccessible".into()),
     }
     // `git config --local` writes .git/config, not just the working tree.
     // Reject reparse-point/symlink redirections of that individual file:
@@ -189,7 +213,10 @@ pub fn prepare(
     state: &TfCommandState,
 ) -> Result<TfPrepared, String> {
     #[cfg(not(windows))]
-    return Err("UNSUPPORTED: bounded native command requires Windows Job Objects".into());
+    {
+        let _ = (request, registry, state);
+        return Err("UNSUPPORTED: bounded native command requires Windows Job Objects".into());
+    }
     #[cfg(windows)]
     {
         validate_command(&request)?;
@@ -273,53 +300,71 @@ pub fn cancel(token: &str, state: &TfCommandState) -> Result<bool, String> {
     Ok(false)
 }
 
+#[cfg(windows)]
+fn activate_command(
+    token: &str,
+    state: &TfCommandState,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<Pending, String> {
+    // Cancellation takes pending before active. Holding pending until the
+    // active insertion is complete makes the handoff atomic for both paths.
+    let mut pending_map = state
+        .pending
+        .lock()
+        .map_err(|_| "Command state unavailable")?;
+    let item = pending_map
+        .remove(token)
+        .ok_or("Unknown or consumed command token")?;
+    if item.expires <= Instant::now() {
+        return Err("Command token expired".into());
+    }
+    if !item.approved {
+        return Err("Write requires explicit approval".into());
+    }
+    state
+        .active
+        .lock()
+        .map_err(|_| "Command state unavailable")?
+        .insert(token.to_string(), cancelled.clone());
+    Ok(item)
+}
+
 pub fn execute(
     token: &str,
     registry: &WorkspaceRegistry,
     state: &TfCommandState,
 ) -> Result<TfCommandReceipt, String> {
     #[cfg(not(windows))]
-    return Err("UNSUPPORTED: bounded native command requires Windows Job Objects".into());
+    {
+        let _ = (token, registry, state);
+        return Err("UNSUPPORTED: bounded native command requires Windows Job Objects".into());
+    }
     #[cfg(windows)]
     {
-        let pending = state
-            .pending
-            .lock()
-            .map_err(|_| "Command state unavailable")?
-            .remove(token)
-            .ok_or("Unknown or consumed command token")?;
-        if pending.expires <= Instant::now() {
-            return Err("Command token expired".into());
-        }
-        if !pending.approved {
-            return Err("Write requires explicit approval".into());
-        }
-        // Validate again at the effect boundary to narrow workspace/cwd TOCTOU.
-        let (canonical, canonical_root) = authorize_scope(
-            registry,
-            pending.cwd.to_str().ok_or("Invalid cwd encoding")?,
-            pending
-                .workspace_root
-                .to_str()
-                .ok_or("Invalid workspace root encoding")?,
-        )?;
-        if canonical != pending.cwd || canonical_root != pending.workspace_root {
-            return Err("Workspace identity changed".into());
-        }
         let cancelled = Arc::new(AtomicBool::new(false));
-        state
-            .active
-            .lock()
-            .map_err(|_| "Command state unavailable")?
-            .insert(token.to_string(), cancelled.clone());
-        let receipt = run_native(
-            pending.action,
-            &canonical,
-            &pending.request_id,
-            &pending.actor,
-            pending.approved && is_write(pending.action),
-            cancelled,
-        );
+        let pending = activate_command(token, state, &cancelled)?;
+        let receipt = (|| {
+            // Validate again at the effect boundary to narrow workspace/cwd TOCTOU.
+            let (canonical, canonical_root) = authorize_scope(
+                registry,
+                pending.cwd.to_str().ok_or("Invalid cwd encoding")?,
+                pending
+                    .workspace_root
+                    .to_str()
+                    .ok_or("Invalid workspace root encoding")?,
+            )?;
+            if canonical != pending.cwd || canonical_root != pending.workspace_root {
+                return Err("Workspace identity changed".into());
+            }
+            run_native(
+                pending.action,
+                &canonical,
+                &pending.request_id,
+                &pending.actor,
+                pending.approved && is_write(pending.action),
+                cancelled,
+            )
+        })();
         state
             .active
             .lock()
@@ -601,11 +646,101 @@ pub fn tf_command_prepare(
 }
 
 #[tauri::command]
-pub fn tf_command_approve(
-    token: String,
-    state: tauri::State<'_, TfCommandState>,
-) -> Result<(), String> {
-    approve(&token, &state)
+pub async fn tf_command_approve(token: String, app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        let _ = (token, app);
+        return Err("UNSUPPORTED: bounded native command requires Windows Job Objects".into());
+    }
+    #[cfg(windows)]
+    {
+        use tauri::Manager;
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+
+        let state = app.state::<TfCommandState>();
+        let (request_id, actor, cwd, root) = {
+            let pending = state
+                .pending
+                .lock()
+                .map_err(|_| "Command state unavailable")?;
+            let item = pending
+                .get(&token)
+                .ok_or("Unknown or consumed command token")?;
+            if item.expires <= Instant::now() {
+                return Err("Command approval expired".into());
+            }
+            if !is_write(item.action) || item.approved {
+                return Err("Command does not have an unapproved write".into());
+            }
+            (
+                item.request_id.clone(),
+                item.actor.clone(),
+                item.cwd.clone(),
+                item.workspace_root.clone(),
+            )
+        };
+        let description = format!(
+            "Clack native command approval\n\nRequest: {request_id}\nActor label: {actor}\nPinned executable: {GIT_EXE}\nAction: git config --local tf.command.marker approved\nSelected workspace: {}\nWorking directory: {}\nAffected file: {}\n\nThis operation changes Git repository configuration. Filesystem and network isolation are unsupported. Allow this exact write once?",
+            root.display(),
+            cwd.display(),
+            cwd.join(".git/config").display(),
+        );
+        let approval_slot = APPROVAL_SLOTS
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "Native command approval capacity exhausted")?;
+        let dialog_app = app.clone();
+        let shown = tokio::task::spawn_blocking(move || {
+            let _slot = approval_slot;
+            dialog_app
+                .dialog()
+                .message(description)
+                .title("Clack native command write approval")
+                .buttons(MessageDialogButtons::OkCancel)
+                .blocking_show()
+        });
+        let consent = tokio::time::timeout(TOKEN_LIFETIME, shown)
+            .await
+            .map_err(|_| "Command approval expired")?
+            .map_err(|_| "Native approval dialog unavailable")?;
+        if !consent {
+            let _ = cancel(&token, &state);
+            return Err("Native command write denied by user".into());
+        }
+        // The dialog is not a lease: re-check the native path and exact
+        // pending request after the user responds, before granting authority.
+        let registry = app.state::<WorkspaceRegistry>();
+        let (canonical, canonical_root) = authorize_scope(
+            &registry,
+            cwd.to_str().ok_or("Invalid cwd encoding")?,
+            root.to_str().ok_or("Invalid workspace root encoding")?,
+        )?;
+        if canonical != cwd || canonical_root != root {
+            return Err("Workspace identity changed".into());
+        }
+        let mut pending = state
+            .pending
+            .lock()
+            .map_err(|_| "Command state unavailable")?;
+        let item = pending
+            .get_mut(&token)
+            .ok_or("Unknown or consumed command token")?;
+        if item.expires <= Instant::now() {
+            pending.remove(&token);
+            return Err("Command approval expired".into());
+        }
+        if !is_write(item.action)
+            || item.approved
+            || item.request_id != request_id
+            || item.actor != actor
+            || item.cwd != cwd
+            || item.workspace_root != root
+        {
+            return Err("Command approval target changed".into());
+        }
+        item.approved = true;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -799,6 +934,13 @@ mod tests {
         assert!(
             authorize_scope(&registry, &repo.to_string_lossy(), &repo.to_string_lossy()).is_ok()
         );
+        // Git's commondir file redirects the local config even when .git and
+        // its config file themselves are ordinary, canonical paths.
+        std::fs::write(repo.join(".git/commondir"), "../outside/.git\n").unwrap();
+        let invalid = authorize_scope(&registry, &repo.to_string_lossy(), &repo.to_string_lossy());
+        assert!(invalid
+            .unwrap_err()
+            .contains("common directory redirection"));
     }
 
     #[cfg(windows)]
@@ -828,6 +970,53 @@ mod tests {
         let err = execute(&id, &registry, &state).unwrap_err();
         assert!(err.contains("outside selected workspace root"), "{err}");
         assert!(execute(&id, &registry, &state).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cancellation_cannot_be_lost_during_pending_to_active_handoff() {
+        let state = Arc::new(TfCommandState::default());
+        let id = token().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        state.pending.lock().unwrap().insert(
+            id.clone(),
+            Pending {
+                request_id: token().unwrap(),
+                actor: "test".into(),
+                action: TfCommandAction::ReadStatus,
+                cwd: cwd.clone(),
+                workspace_root: cwd,
+                expires: Instant::now() + Duration::from_secs(10),
+                approved: true,
+            },
+        );
+
+        // Hold the active lock until execute has consumed pending and is
+        // blocked at the second lock. A cancellation begun at that precise
+        // point must observe the new active entry after the handoff.
+        let active_guard = state.active.lock().unwrap();
+        let execute_state = state.clone();
+        let execute_id = id.clone();
+        let flag = Arc::new(AtomicBool::new(false));
+        let worker_flag = flag.clone();
+        let begin =
+            std::thread::spawn(move || activate_command(&execute_id, &execute_state, &worker_flag));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if state.pending.try_lock().is_err() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "handoff was never entered");
+            std::thread::yield_now();
+        }
+        let cancel_state = state.clone();
+        let cancel_id = id.clone();
+        let canceller = std::thread::spawn(move || cancel(&cancel_id, &cancel_state));
+        drop(active_guard);
+        begin.join().unwrap().unwrap();
+        assert!(canceller.join().unwrap().unwrap());
+        assert!(flag.load(Ordering::Acquire));
+        state.active.lock().unwrap().remove(&id);
     }
 
     #[cfg(windows)]

@@ -57,6 +57,35 @@ describe("TF1 security policy: registry, scopes, approval and no inferred trust"
       expect(evaluateToolFabricPolicy(request("read_file",{scopes:[{...read,path}]}))
         .reasonCode).toBe("filesystem-outside-workspace");
   });
+  it("accepts parent-relative paths only while every step stays inside the initial root",()=>{
+    for(const path of ["C:/work/a/src/../hello.ts",
+      "C:\\work\\a\\src\\..\\hello.ts",
+      "C:/work/a/src/deep/../../hello.ts",
+      "C:/work/a/src/./../hello.ts"])
+      expect(evaluateToolFabricPolicy(request("read_file",{scopes:[{...read,path}]}))
+        .decision).toBe("ALLOW");
+    for(const path of ["C:/work/a/../secret", "C:/work/a/../a/hello.ts",
+      "C:/work/a/src/../../a/hello.ts", "C:/work/a2/../a/hello.ts",
+      "D:/work/a/src/../hello.ts", "//server/share/work/a/hello.ts"])
+      expect(evaluateToolFabricPolicy(request("read_file",{scopes:[{...read,path}]}))
+        .reasonCode).toBe("filesystem-outside-workspace");
+    for(const workspaceRoot of ["C:/work/a/../a", "C:work/a",
+      "//server/share/work/a"])
+      expect(evaluateToolFabricPolicy(request("read_file",{scopes:[{
+        ...read,workspaceRoot}]})).reasonCode).toBe("filesystem-outside-workspace");
+    expect(evaluateToolFabricPolicy(request("read_file",{
+      allowedWorkspaceRoot:"C:/work/../work/a",scopes:[read],
+    })).reasonCode).toBe("filesystem-outside-workspace");
+  });
+  it("applies the same within-root parent-step boundary to command working directories",()=>{
+    const tool={...builtinToolSecurity("bounded_command")!,requiresApproval:false};
+    const scoped=(cwd:string)=>evaluateToolFabricPolicy(request("bounded_command",{
+      tool,requestedEffects:["read-only"],scopes:[{...command,cwd}],
+    }));
+    expect(scoped("C:/work/a/src/../src").decision).toBe("ALLOW");
+    expect(scoped("C:/work/a/../a").reasonCode).toBe("command-scope-invalid");
+    expect(scoped("C:/work/a/src/../../a").reasonCode).toBe("command-scope-invalid");
+  });
 
   it("requires approval for writes and respects once/request/agent/revision/target/expiry",()=>{
     const input=request("write_file",{scopes:[file]});
