@@ -107,6 +107,25 @@ async function select(
   });
 }
 describe("relevance and bounded fallback", () => {
+  it("native web tools require explicit web intent and hide unconfigured search providers", async()=>{
+    const candidates:ToolSet=Object.fromEntries(
+      ["tf_http_fetch","tf_http_head","tf_web_search","read_file"].map(name=>[
+        name,tool({description:`${name} native network internet public source operation`,
+          inputSchema:jsonSchema({type:"object",properties:{}})}),
+      ]));
+    const schemas=await serializedToolSchemas(candidates);
+    const local=selectToolSchemas({schemas,query:"Search the workspace source code and edit tests"});
+    expect(local.names).not.toContain("tf_http_fetch");
+    expect(local.names).not.toContain("tf_http_head");
+    expect(local.names).not.toContain("tf_web_search");
+    const online=selectToolSchemas({schemas,query:"Search the public web for current news and fetch a linked article"});
+    expect(online.names).toContain("tf_web_search");
+    expect(online.names).toContain("tf_http_fetch");
+    const actual=await select("Search public web for current research",{mandatory:[]},candidates);
+    expect(actual.names).not.toContain("tf_web_search");
+    // Search intent alone need not expose a fetch executor; only an
+    // available provider and an actual fetch task can admit it.
+  });
   it("exposes destructive native tools only for matching tasks, not ambient coding prompts", async () => {
     const candidates: ToolSet = Object.fromEntries(
       ["tf_fs_read", "tf_fs_write", "tf_fs_delete", "tf_repo_read", "tf_repo_write", "tf_build_run"]

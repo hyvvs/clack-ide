@@ -17,6 +17,9 @@ const operations: Readonly<Record<string, readonly ToolCapability[]>> = {
   tf_repo_read: ["read"],
   tf_repo_write: ["modify"],
   tf_build_run: ["command"],
+  tf_http_fetch: ["read"],
+  tf_http_head: ["read"],
+  tf_web_search: ["read"],
   request_peer_task: ["peer"],
   communicate_peer_task: ["peer"],
 };

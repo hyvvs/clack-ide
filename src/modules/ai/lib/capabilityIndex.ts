@@ -88,6 +88,8 @@ const semanticNames: Readonly<Record<string, string>> = {
   tf_fs_read: "read_file", tf_fs_write: "write_file",
   tf_fs_delete: "delete_file", tf_repo_read: "inspect_repository",
   tf_repo_write: "modify_repository", tf_build_run: "execute_build",
+  tf_http_fetch: "fetch_web_page", tf_http_head: "inspect_web_resource",
+  tf_web_search: "search_web",
   bash_run: "execute_command", bash_background: "execute_command",
   bash_list: "inspect_command", bash_logs: "inspect_command", bash_kill: "terminate_command",
   fetch_web_page: "fetch_web_page", discover_capabilities: "discover_capabilities",
@@ -98,7 +100,7 @@ const readOperations = new Set([
   "read_file", "list_directory", "grep", "glob", "bash_list", "bash_logs",
   "request_conversation_evidence", "discover_capabilities", "fetch_web_page",
   "compare_web_sources",
-  "tf_fs_read", "tf_repo_read",
+  "tf_fs_read", "tf_repo_read", "tf_http_fetch", "tf_http_head", "tf_web_search",
 ]);
 const workspaceOperations = new Set([
   "write_file", "edit", "multi_edit", "create_directory",
@@ -111,13 +113,14 @@ function normalizedFabric(c: CapabilitySeed): ToolFabricMetadata {
   const knownRead = c.source === "builtin" && readOperations.has(name);
   const knownWorkspace = c.source === "builtin" && workspaceOperations.has(name);
   const network = c.hints.openWorld ||
-    name === "fetch_web_page" || name === "compare_web_sources";
+    name === "fetch_web_page" || name === "compare_web_sources" ||
+    name === "tf_http_fetch" || name === "tf_http_head" || name === "tf_web_search";
   const external = c.source === "remote-mcp" || c.source === "integration" ||
     c.source === "local-mcp";
   // An MCP description/permission string is untrusted metadata. Even an
   // apparent GET/read tool cannot downgrade an unknown remote side effect.
   const permissionClass: ToolPermissionClass =
-    knownRead ? "read-only" : knownWorkspace ? "workspace-effect" :
+    network ? "external-effect" : knownRead ? "read-only" : knownWorkspace ? "workspace-effect" :
     external || network ? "external-effect" : "sensitive";
   // An HTTP GET does not intentionally mutate Clack state, but the remote
   // service may log, bill or trigger actions. Its external effect is unknown.
@@ -243,7 +246,9 @@ function hints(name: string, permissions: readonly string[], binding?: ToolBindi
     read, write,
     destructive: ["bash_run", "bash_kill", "bash_background", "tf_fs_delete", "tf_repo_write", "tf_build_run"].includes(name) ||
       permissions.includes("run-commands"),
-    openWorld: binding?.kind === "http" || binding?.kind === "mcp" || permissions.includes("network"),
+    openWorld: binding?.kind === "http" || binding?.kind === "mcp" ||
+      ["tf_http_fetch","tf_http_head","tf_web_search"].includes(name) ||
+      permissions.includes("network"),
   };
 }
 export function capabilityIndexFromTools(tools: ToolSet): CapabilityIndex {

@@ -19,6 +19,7 @@ import { referencedFiles } from "@/modules/ai/lib/scopedEvidence";
 import { operationCapabilities, resolveToolObjective, type ToolCapability, type ToolObjective } from "@/modules/ai/lib/toolObjective";
 import { getTodos } from "@/modules/ai/store/todoStore";
 import { capabilityIndexFromTools, providerCapabilityCandidates } from "@/modules/ai/lib/capabilityIndex";
+import { isTfWebSearchProviderAvailable, refreshTfWebSearchProviderStatus } from "@/modules/ai/lib/webSearchAdapters";
 
 export const EXPOSURE_POLICY = "tf-exposure-v6";
 export const EXPOSURE_LIMITS = {
@@ -160,6 +161,10 @@ function taskRequestsSensitiveNativeTool(name: string, query: string): boolean {
     return /\b(delete|remove|erase|discard)\b/i.test(query);
   if (name === "tf_repo_write")
     return /\b(stage|unstage|staging|unstaging|checkout)\b|\b(git\s+(add|restore|switch)|create\s+branch|switch\s+branch|new\s+branch)\b/i.test(query);
+  if(name==="tf_web_search")
+    return /\b(web|internet|online|public|search engine|research|look up|lookup|browse|news|website|websites)\b/i.test(query);
+  if(name==="tf_http_fetch" || name==="tf_http_head")
+    return /\b(web|http|https|url|uri|internet|online|fetch|research|website|page|article|browse|link|news)\b/i.test(query);
   return true;
 }
 export function selectToolSchemas(input: {
@@ -359,6 +364,12 @@ export async function prepareToolExposure(
     objectiveMessages?: readonly UIMessage[];
   },
 ) {
+  // Discover provider status from the native credential authority, not from a
+  // renderer preference or advertised schema. An unavailable search provider
+  // is not included in the next model-step tool catalog.
+  const researchQuery=input.query ?? exposureQuery(input.messages);
+  if(tools.tf_web_search && taskRequestsSensitiveNativeTool("tf_web_search",researchQuery))
+    await refreshTfWebSearchProviderStatus();
   const authorization = () =>
     JSON.stringify([
       input.context.getSessionId(),
@@ -371,10 +382,21 @@ export async function prepareToolExposure(
       usePreferencesStore.getState().agentWorkspacePermissions,
     ]);
   const capturedAuthorization = authorization();
+  const mandatory = [
+    ...new Set([
+      ...requiredToolNames(input.messages),
+      ...requiredUiToolNames(input.uiMessages ?? []),
+      ...(input.mandatory ?? []),
+    ]),
+  ].sort(compare);
   const registry=capabilityIndexFromTools(tools);
   const eligible = Object.fromEntries(
     Object.entries(tools).filter(
       ([name]) => {
+        if(name==="tf_web_search" && !isTfWebSearchProviderAvailable())return false;
+        if(["tf_web_search","tf_http_fetch","tf_http_head"].includes(name) &&
+          !mandatory.includes(name) &&
+          !taskRequestsSensitiveNativeTool(name,researchQuery))return false;
         const descriptor=registry.callable(name)?.security;
         // A dynamic candidate may be visible to F1 for stable tool-call
         // continuation even when the descriptor has no authenticated native
@@ -388,18 +410,12 @@ export async function prepareToolExposure(
           "deny" &&
         !(
           input.context.getMutationMode?.() === "read-only" &&
-          requiresWorkspaceWriteLease(name)
+          (requiresWorkspaceWriteLease(name) ||
+            ["tf_http_fetch","tf_http_head","tf_web_search"].includes(name))
         );
       },
     ),
   );
-  const mandatory = [
-    ...new Set([
-      ...requiredToolNames(input.messages),
-      ...requiredUiToolNames(input.uiMessages ?? []),
-      ...(input.mandatory ?? []),
-    ]),
-  ].sort(compare);
   // Discover/index independently of the provider's F1 schema ceiling; only
   // bounded, selected candidates incur JSON-schema serialization.
   const permitted = providerCapabilityCandidates(eligible, {

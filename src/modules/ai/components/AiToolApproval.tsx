@@ -61,6 +61,9 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     tf_repo_read: { label: "Inspect repository", icon: ToolsIcon },
     tf_repo_write: { label: "Change repository state", icon: FileEditIcon },
     tf_build_run: { label: "Run structured build or test", icon: TerminalIcon },
+    tf_http_fetch: { label: "Fetch public web content", icon: ToolsIcon },
+    tf_http_head: { label: "Inspect HTTP resource", icon: ToolsIcon },
+    tf_web_search: { label: "Search public web", icon: ToolsIcon },
     bash_background: { label: "Spawn background process", icon: TerminalIcon },
     request_peer_task: { label: "Start peer agent task", icon: ToolsIcon },
     cancel_peer_task: { label: "Cancel peer agent task", icon: ToolsIcon },
@@ -72,6 +75,18 @@ const NATIVE_TF_EFFECTFUL_TOOLS = new Set([
   "tf_repo_write",
   "tf_build_run",
 ]);
+const NATIVE_TF_WEB_TOOLS = new Set(["tf_http_fetch","tf_http_head","tf_web_search"]);
+/** Query strings can contain secret tokens, even when rejected at native
+ * admission. Show only the normalized origin and pathname in approvals. */
+function previewNetworkDestination(raw:unknown):string {
+  if(typeof raw!=="string" || raw.length>2048)return "Native-validated destination only";
+  try {
+    const url=new URL(raw);
+    if(!["http:","https:"].includes(url.protocol) || url.username || url.password)
+      return "Unsupported or credential-bearing URL · deny";
+    return `${url.origin}${url.pathname.slice(0,240)}${url.search?"?… (query withheld)":""}`;
+  }catch{return "Invalid URL · deny";}
+}
 
 function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
   const meta = TOOL_META[toolName];
@@ -117,6 +132,7 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
   const canPersist =
     toolName !== "bounded_command" &&
     !NATIVE_TF_EFFECTFUL_TOOLS.has(toolName) &&
+    !NATIVE_TF_WEB_TOOLS.has(toolName) &&
     category !== null &&
     canPersistPermission(toolName, input, permissionContext);
 
@@ -185,6 +201,23 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
             </dl>
           </details>
         ) : null}
+        {NATIVE_TF_WEB_TOOLS.has(toolName) ? (
+          <details className="mt-2 rounded-md border border-[color:var(--clack-border-subtle)] px-2 py-1.5 text-[10.5px] text-[var(--clack-text-2)]">
+            <summary className="cursor-pointer font-medium">Network scope, budgets and provider evidence</summary>
+            <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 [overflow-wrap:anywhere]">
+              <dt>Operation</dt><dd>{toolName === "tf_web_search" ? "Brave Web Search (discovery metadata, not page verification)" : toolName === "tf_http_head" ? "HTTP HEAD — metadata only" : "HTTP GET — bounded textual content"}</dd>
+              <dt>Requested destination</dt><dd>{toolName === "tf_web_search" ? "https://api.search.brave.com (native-fixed)" : typeof input.searchResultId === "string" ? "Selected prior search result · origin verified in native" : previewNetworkDestination(input.url)}</dd>
+              {toolName==="tf_web_search" && typeof input.query==="string" ? <><dt>Query</dt><dd>{input.query.slice(0,256)}</dd></> : null}
+              <dt>Network effect</dt><dd>Public network read; remote logging, quotas and billing may occur</dd>
+              <dt>Budget</dt><dd>{typeof input.timeoutMs==="number"?input.timeoutMs:15000}ms timeout · {typeof input.maxBytes==="number"?input.maxBytes:65536} maximum retained bytes · {typeof input.maxRedirects==="number"?input.maxRedirects:5} redirect limit</dd>
+              <dt>DNS/redirect</dt><dd>Native per-hop IP checks and pinned DNS resolution; private/metadata destinations denied by default</dd>
+              <dt>Credential</dt><dd>{toolName==="tf_web_search" ? "Existing store reference credential:brave-web-search; only fixed Brave origin, never exposed to model" : "No model-provided authentication headers"}</dd>
+              <dt>Approval</dt><dd>Exact request Allow once. Credentialed search also requires OS-native confirmation</dd>
+              <dt>Isolation</dt><dd>No OS-level network or filesystem sandbox; peer socket IP not independently attested</dd>
+              <dt>Evidence</dt><dd>Native URL, DNS, redirect, status, hash and truncation receipts; fetched content remains untrusted</dd>
+            </dl>
+          </details>
+        ) : null}
         <p className="mt-2 text-[11px] text-[var(--clack-text-2)]">Allow once approves only this action. Broader permissions are separate.</p>
       </div>
 
@@ -202,7 +235,7 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
           size="sm"
           variant="default"
           onClick={() => {
-            if((toolName==="bounded_command" || NATIVE_TF_EFFECTFUL_TOOLS.has(toolName)) &&
+            if((toolName==="bounded_command" || NATIVE_TF_EFFECTFUL_TOOLS.has(toolName) || NATIVE_TF_WEB_TOOLS.has(toolName)) &&
               !recordTfApprovedToolCall({
                 toolCallId:part.toolCallId,sessionId,
                 agentId:permissionContext.getAgentId(),
@@ -271,6 +304,17 @@ function PreviewBlock({
   toolName: string;
   input: Record<string, unknown>;
 }) {
+  if(NATIVE_TF_WEB_TOOLS.has(toolName)){
+    return (
+      <div className="space-y-1 rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] p-2 font-mono text-[10.5px] [overflow-wrap:anywhere]">
+        <p>Network operation: {toolName==="tf_web_search"?"web_search":toolName==="tf_http_head"?"http_head":"http_get"}</p>
+        {toolName==="tf_web_search"
+          ? <p>Configured provider: Brave Web Search (native credential reference)</p>
+          : <p>Destination: {typeof input.searchResultId==="string"?"Prior search result ID (native-scoped)":previewNetworkDestination(input.url)}</p>}
+        <p>All targets are reauthorized by native DNS and redirect policy; this preview grants no network access.</p>
+      </div>
+    );
+  }
   if (toolName.startsWith("tf_")) {
     const operation = typeof input.operation === "string" ? input.operation : "Unknown · deny";
     const path = typeof input.path === "string" ? input.path : null;

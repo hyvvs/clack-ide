@@ -17,6 +17,7 @@ import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { loadChatToolSummary } from "@/modules/ai/lib/chatToolSummary";
 import { chatConnectionSummary } from "@/modules/ai/lib/chatConnectionSummary";
 import { capabilityGroups } from "@/modules/ai/lib/toolCapabilities";
+import { refreshTfWebSearchProviderStatus, type WebSearchProviderStatus } from "@/modules/ai/lib/webSearchAdapters";
 
 export function ChatToolsControl({ sessionId }: { sessionId: string }) {
   const [open, setOpen] = useState(false);
@@ -24,6 +25,7 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
     ReturnType<typeof loadChatToolSummary>
   > | null>(null);
   const [error, setError] = useState("");
+  const [webProvider, setWebProvider] = useState<WebSearchProviderStatus|null>(null);
   const session = useChatStore((s) =>
     s.sessions.find((item) => item.id === sessionId),
   );
@@ -39,6 +41,7 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     setSummary(null);
     setError("");
+    setWebProvider(null);
     if (!open) return;
     let live = true;
     let sequence = 0;
@@ -64,6 +67,11 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
         return () => {};
       }),
     ];
+    void refreshTfWebSearchProviderStatus().then(status=>{
+      if(live)setWebProvider(status);
+    }).catch(()=>{
+      if(live)setWebProvider(null);
+    });
     return () => {
       live = false;
       for (const listener of pending)
@@ -114,10 +122,17 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                 permissions, workspace and model.
               </p>
               <p className="text-muted-foreground">
-                Research retrieves public HTTPS pages only, with source
-                receipts. Search providers and MCP integrations require
-                separate configuration. Web access never grants private-network
-                or account access.
+                Web research includes bounded public HTTP/HTTPS retrieval,
+                with native DNS, redirect and source evidence. Credentialed
+                Brave Search requires separate configuration and exact approval.
+                Private-network access is denied by normal web policy.
+              </p>
+              <p className="text-[11px] text-muted-foreground" role="status">
+                Search provider: {webProvider?.available
+                  ? "Brave Web Search configured and natively available"
+                  : webProvider?.reason
+                    ? `Unavailable (${webProvider.reason}) — configure a Brave key using the existing secure credential store`
+                    : "Checking native provider availability"}
               </p>
               {capabilityGroups(summary.builtin, support, summary.readOnly).map(
                 (group) => (
@@ -153,6 +168,14 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                                 ? " · exact Allow once and native confirmation for effects"
                                 : " · read policy applies"}
                               {" · "}filesystem/network OS isolation unsupported
+                            </p>
+                          ) : null}
+                          {["tf_http_fetch","tf_http_head","tf_web_search"].includes(item.name) ? (
+                            <p className="text-[10.5px] text-muted-foreground">
+                              Native bounded web research · per-target policy, DNS/redirect
+                              checks and one-use approval
+                              {item.name==="tf_web_search" ? " · Brave key from existing secret store and native confirmation required" : " · untrusted HTTP source evidence"}
+                              {" · "}OS-level network isolation unsupported
                             </p>
                           ) : null}
                         </li>
