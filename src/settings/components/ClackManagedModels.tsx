@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { updateSelfHostedProfiles } from "@/modules/settings/store";
 import {
   attachManagedLocalGguf,
   attachManagedCudaVariant,
+  attachManagedExecutionPolicyVariant,
   managedLocalModelInfos,
   resolveManagedLocalSelection,
   MANAGED_LOCAL_HOST_ID,
@@ -15,7 +16,8 @@ import {
 import type { ManagedCudaVariantStatus, ManagedLocalNativeStatus } from "@/modules/ai/lib/managedLocalRuntime";
 import {nativeHardwareObservationSchema,type NativeHardwareObservation} from "@/modules/ai/lib/hardwareProfile";
 import { deploymentRequestedExecution, observedActualExecution } from "@/modules/ai/lib/executionBackendSelection";
-import type { ActualExecution, RequestedExecution } from "@/modules/ai/lib/localComputeFabric";
+import { requestedExecutionSchema, type ActualExecution, type RequestedExecution } from "@/modules/ai/lib/localComputeFabric";
+import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 
 type InspectedGguf = {
   digest: string;
@@ -32,6 +34,269 @@ type InspectedGguf = {
 export const DEFAULT_MANAGED_GGUF_MATERIAL: ManagedLocalMaterial = {
   version: 1, context: 4096, gpu: 0, tool: false, grammar: false,
 };
+
+type ManagedPolicyBackend = "cpu" | "cuda";
+type ManagedPolicyDevice = { id: string; label: string; free: number | null };
+
+export type ManagedExecutionPolicyDraft = {
+  preferredBackend: ManagedPolicyBackend;
+  cudaDeviceId: string;
+  allowFallback: boolean;
+  gpuLayers: string;
+  cpuThreads: string;
+  contextLength: string;
+  maxHostMiB: string;
+  maxDeviceMiB: string;
+  reserveHostMiB: string;
+  reserveDeviceMiB: string;
+};
+
+const MANAGED_POLICY_BACKENDS = ["cpu", "cuda"] as const;
+
+/** The two native managed implementations are CPU and CUDA. Other Fabric
+ * backend names remain representable in the domain, but cannot execute here. */
+export function initialManagedExecutionPolicyDraft(
+  request: RequestedExecution | null,
+  defaultContext: number,
+  devices: ManagedPolicyDevice[],
+): ManagedExecutionPolicyDraft {
+  const candidate = request?.candidates?.[0];
+  const preferredBackend = MANAGED_POLICY_BACKENDS.find(backend =>
+    backend === (candidate?.backend ?? request?.backend)) ?? "cpu";
+  const cuda = request?.candidates?.find(row => row.backend === "cuda");
+  const previousDevice = cuda?.deviceIds[0] ?? request?.deviceIds.find(id => id.includes(":accelerator:")) ??
+    request?.deviceStrategy?.primaryDeviceId;
+  const budget = request?.memoryBudget;
+  const toMiB = (bytes?: number) => bytes === undefined ? "" : String(bytes / (1024 ** 2));
+  return {
+    preferredBackend,
+    cudaDeviceId: previousDevice ?? devices[0]?.id ?? "",
+    allowFallback: (request?.candidates?.length ?? 0) > 1 ||
+      (preferredBackend === "cuda" && request?.fallback.policy === "allow-compatible"),
+    gpuLayers: String(cuda?.gpuLayers ?? (preferredBackend === "cuda" ? request?.gpuLayers : undefined) ?? 40),
+    cpuThreads: request?.cpuThreads === undefined ? "" : String(request.cpuThreads),
+    contextLength: String(request?.contextLength ?? defaultContext),
+    maxHostMiB: toMiB(budget?.maxHostBytes),
+    maxDeviceMiB: toMiB(budget?.maxDeviceBytes),
+    reserveHostMiB: toMiB(budget?.reserveHostBytes),
+    reserveDeviceMiB: toMiB(budget?.reserveDeviceBytes),
+  };
+}
+
+function positiveInteger(input: string, label: string, min: number, max: number): number {
+  const value = Number(input);
+  if (!input.trim() || !Number.isSafeInteger(value) || value < min || value > max)
+    throw new Error(`${label} must be a whole number from ${min} to ${max}.`);
+  return value;
+}
+
+function optionalInteger(input: string, label: string, max: number): number | undefined {
+  return input.trim() ? positiveInteger(input, label, 1, max) : undefined;
+}
+
+function budgetMiB(input: string, label: string, allowZero: boolean): number | undefined {
+  if (!input.trim()) return undefined;
+  const value = Number(input);
+  const bytes = value * (1024 ** 2);
+  if (!Number.isInteger(value) || !Number.isSafeInteger(bytes) ||
+      value < (allowZero ? 0 : 1) || value > 8_589_934_591)
+    throw new Error(`${label} must be a nonnegative whole MiB value within safe limits.`);
+  return bytes;
+}
+
+/** Builds an exact, validated persisted request; this is policy intent, never
+ * a native Ready claim or permission to execute another backend. */
+export function buildManagedExecutionPolicyRequest(draft: ManagedExecutionPolicyDraft): RequestedExecution {
+  const contextLength = positiveInteger(draft.contextLength, "Context", 512, 131_072);
+  const cpuThreads = optionalInteger(draft.cpuThreads, "CPU threads", 65_536);
+  const hasCuda = draft.preferredBackend === "cuda" || draft.allowFallback;
+  const gpuLayers = hasCuda ? positiveInteger(draft.gpuLayers, "GPU layers", 1, 999) : 0;
+  if (hasCuda && !/^clack-this-pc:accelerator:GPU-[0-9a-fA-F-]{12,96}$/.test(draft.cudaDeviceId))
+    throw new Error("Select a discovered NVIDIA GPU for the CUDA candidate.");
+  const order: ManagedPolicyBackend[] = [draft.preferredBackend];
+  if (draft.allowFallback) order.push(draft.preferredBackend === "cuda" ? "cpu" : "cuda");
+  const candidates = order.map(backend => ({
+    backend,
+    deviceIds: backend === "cuda" ? [draft.cudaDeviceId] : ["clack-this-pc:cpu:0"],
+    gpuLayers: backend === "cuda" ? gpuLayers : 0,
+    runtimeVariantId: backend === "cuda" ? "b12248/cuda" : "b12248/cpu",
+  }));
+  const maxHostBytes = budgetMiB(draft.maxHostMiB, "Host RAM budget", false);
+  const maxDeviceBytes = budgetMiB(draft.maxDeviceMiB, "GPU VRAM budget", false);
+  const reserveHostBytes = budgetMiB(draft.reserveHostMiB, "Host RAM reserve", true);
+  const reserveDeviceBytes = budgetMiB(draft.reserveDeviceMiB, "GPU VRAM reserve", true);
+  const hasBudget = [maxHostBytes, maxDeviceBytes, reserveHostBytes, reserveDeviceBytes]
+    .some(value => value !== undefined);
+  return requestedExecutionSchema.parse({
+    backend: draft.preferredBackend,
+    deviceIds: draft.preferredBackend === "cuda" ? [draft.cudaDeviceId] : ["clack-this-pc:cpu:0"],
+    gpuLayers: draft.preferredBackend === "cuda" ? gpuLayers : 0,
+    ...(cpuThreads !== undefined ? { cpuThreads } : {}),
+    contextLength,
+    fallback: draft.allowFallback
+      ? { policy: "explicit-order", order: order.slice(1) }
+      : { policy: "disabled" },
+    candidates,
+    deviceStrategy: {
+      kind: "single",
+      primaryDeviceId: draft.preferredBackend === "cuda" ? draft.cudaDeviceId : "clack-this-pc:cpu:0",
+    },
+    ...(hasBudget ? { memoryBudget: {
+      ...(maxHostBytes !== undefined ? { maxHostBytes } : {}),
+      ...(maxDeviceBytes !== undefined ? { maxDeviceBytes } : {}),
+      ...(reserveHostBytes !== undefined ? { reserveHostBytes } : {}),
+      ...(reserveDeviceBytes !== undefined ? { reserveDeviceBytes } : {}),
+    } } : {}),
+  });
+}
+
+/** CAS may replay the updater on a conflict. Keep its transition pure and
+ * validate the exact returned selection only after the write completes. */
+export async function saveManagedExecutionPolicyVariant(
+  sourceSelectionId: string,
+  requested: RequestedExecution,
+  update: typeof updateSelfHostedProfiles = updateSelfHostedProfiles,
+): Promise<string> {
+  let selectionId = "";
+  const persisted = await update((current: SelfHostedState) => {
+    const result = attachManagedExecutionPolicyVariant(current, sourceSelectionId, requested);
+    selectionId = result.selectionId;
+    return result.state;
+  });
+  const resolved = resolveManagedLocalSelection(persisted, selectionId);
+  if (resolved.status !== "available" && resolved.status !== "unavailable")
+    throw new Error("The saved policy selection could not be verified in persisted settings.");
+  return selectionId;
+}
+
+export function ManagedExecutionPolicyEditor({
+  sourceSelectionId, request, contextLength, devices, disabled, onSave,
+}: {
+  sourceSelectionId: string;
+  request: RequestedExecution | null;
+  contextLength: number;
+  devices: ManagedPolicyDevice[];
+  disabled: boolean;
+  onSave: (sourceSelectionId: string, request: RequestedExecution) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(() =>
+    initialManagedExecutionPolicyDraft(request, contextLength, devices));
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const hasCuda = draft.preferredBackend === "cuda" || draft.allowFallback;
+  // The native device observation arrives after the Settings page renders.
+  // Resolve a newly observed default without silently editing persisted intent.
+  const effectiveCudaDeviceId = draft.cudaDeviceId || devices[0]?.id || "";
+  const selectedDeviceKnown = devices.some(device => device.id === effectiveCudaDeviceId);
+  const change = <K extends keyof ManagedExecutionPolicyDraft>(key: K, value: ManagedExecutionPolicyDraft[K]) => {
+    setSaved(false);
+    setDraft(previous => ({ ...previous, [key]: value }));
+  };
+  const fieldClass = "w-full min-w-0 rounded border border-border bg-background px-2 py-1 text-xs";
+  const save = async () => {
+    if (disabled || saving) return;
+    setError("");
+    setSaved(false);
+    let requested: RequestedExecution;
+    try { requested = buildManagedExecutionPolicyRequest({
+      ...draft, cudaDeviceId: effectiveCudaDeviceId,
+    }); }
+    catch (cause) { setError(safeError(cause)); return; }
+    setSaving(true);
+    try {
+      await onSave(sourceSelectionId, requested);
+      setSaved(true);
+    }
+    catch (cause) { setError(safeError(cause)); }
+    finally { setSaving(false); }
+  };
+  return (
+    <details className="rounded-md border border-border/60 px-3 py-2 text-xs">
+      <summary className="cursor-pointer font-medium">Create execution policy variant</summary>
+      <div className="space-y-2 pt-3">
+        <p className="text-muted-foreground">
+          Save a separate exact deployment with its own model selection. Existing deployments and qualification evidence stay intact.
+        </p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="space-y-1"><span className="block">Preferred backend</span>
+            <select aria-label="Policy preferred backend" className={fieldClass}
+              value={draft.preferredBackend} disabled={disabled || saving}
+              onChange={event => change("preferredBackend", event.target.value as ManagedPolicyBackend)}>
+              <option value="cpu">CPU · managed b12248</option>
+              <option value="cuda">CUDA · managed b12248</option>
+            </select>
+          </label>
+          <label className="space-y-1"><span className="block">Fallback order</span>
+            <select aria-label="Policy fallback order" className={fieldClass}
+              value={draft.allowFallback ? "other" : "disabled"} disabled={disabled || saving}
+              onChange={event => change("allowFallback", event.target.value === "other")}>
+              <option value="disabled">None · exact backend only</option>
+              <option value="other">Try {draft.preferredBackend === "cuda" ? "CPU after CUDA" : "CUDA after CPU"}</option>
+            </select>
+          </label>
+        </div>
+        <p className="text-muted-foreground">
+          Candidate order: {draft.preferredBackend.toUpperCase()}
+          {draft.allowFallback ? ` → ${draft.preferredBackend === "cuda" ? "CPU" : "CUDA"}` : " only"}.
+          Fallback is explicitly authorized by this policy; actual execution still requires native proof.
+        </p>
+        {hasCuda && <div className="grid gap-2 sm:grid-cols-2">
+          <label className="space-y-1"><span className="block">Preferred CUDA device</span>
+            <select aria-label="Policy CUDA device" className={fieldClass}
+              value={effectiveCudaDeviceId} disabled={disabled || saving || (!devices.length && !effectiveCudaDeviceId)}
+              onChange={event => change("cudaDeviceId", event.target.value)}>
+              {!effectiveCudaDeviceId && <option value="">No verified GPU detected</option>}
+              {!selectedDeviceKnown && effectiveCudaDeviceId && <option value={effectiveCudaDeviceId}>Previously selected · not currently observed</option>}
+              {devices.map(device => <option key={device.id} value={device.id}>
+                {device.label} · {device.free === null ? "free VRAM unknown" : `${Math.round(device.free / 1024 ** 2)} MiB free`}
+              </option>)}
+            </select>
+          </label>
+          <label className="space-y-1"><span className="block">GPU offload layers</span>
+            <input aria-label="Policy GPU layers" className={fieldClass} type="number" min={1} max={999}
+              value={draft.gpuLayers} disabled={disabled || saving}
+              onChange={event => change("gpuLayers", event.target.value)} />
+          </label>
+        </div>}
+        {hasCuda && !effectiveCudaDeviceId && <p role="status" className="text-muted-foreground">
+          CUDA policy requires an observed NVIDIA GPU. Refresh native hardware status before saving.
+        </p>}
+        <details className="space-y-2 border-t border-border/60 pt-2">
+          <summary className="cursor-pointer font-medium">Advanced · CPU, context and memory budgets</summary>
+          <div className="grid gap-2 pt-2 sm:grid-cols-2">
+            {([
+              ["cpuThreads", "CPU threads", "1", "65536"],
+              ["contextLength", "Context tokens", "512", "131072"],
+              ["maxHostMiB", "Maximum host RAM (MiB)", "1", ""],
+              ["maxDeviceMiB", "Maximum device VRAM (MiB)", "1", ""],
+              ["reserveHostMiB", "Reserve host RAM (MiB)", "0", ""],
+              ["reserveDeviceMiB", "Reserve device VRAM (MiB)", "0", ""],
+            ] as const).map(([key, label, min, max]) =>
+              <label key={key} className="space-y-1"><span className="block">{label}</span>
+                <input aria-label={`Policy ${label}`} className={fieldClass} type="number"
+                  min={min} max={max || undefined} step="1" placeholder={key === "contextLength" ? undefined : "Automatic"}
+                  value={draft[key]} disabled={disabled || saving}
+                  onChange={event => change(key, event.target.value)} />
+              </label>)}
+          </div>
+          <p className="text-muted-foreground">Empty budgets and CPU threads leave native defaults unchanged. Limits are admission policy, not verified capacity.</p>
+        </details>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="outline" disabled={disabled || saving || (hasCuda && !effectiveCudaDeviceId)}
+            onClick={() => void save()}>
+            {saving ? "Saving policy…" : "Save new policy variant"}
+          </Button>
+          <span className="text-muted-foreground">Registration only · no model launch</span>
+        </div>
+        {error && <p role="alert" className="text-destructive">{error}</p>}
+        {saved && <p role="status" className="text-muted-foreground">
+          Policy variant saved with a new exact selection. Choose it in the model picker to use it.
+        </p>}
+      </div>
+    </details>
+  );
+}
 
 function safeError(error: unknown): string {
   const message = typeof error === "string"
@@ -81,6 +346,15 @@ export function ManagedExecutionReadout({
         <summary className="cursor-pointer text-foreground">Device, fallback and recovery details</summary>
         <div className="space-y-1 break-all pl-2">
           <p>Requested device: {request?.deviceIds.length ? request.deviceIds.join(", ") : "Unspecified"}</p>
+          {request?.candidates?.length ? <p>Saved candidate order: {request.candidates.map(
+            candidate => `${candidate.backend.toUpperCase()} / ${candidate.runtimeVariantId ?? "variant unspecified"}`,
+          ).join(" → ")}</p> : null}
+          {request?.cpuThreads !== undefined && <p>Requested CPU threads: {request.cpuThreads}</p>}
+          {request?.contextLength !== undefined && <p>Requested context: {request.contextLength.toLocaleString()} tokens</p>}
+          {request?.memoryBudget && <p>Requested memory budgets: host {request.memoryBudget.maxHostBytes === undefined
+            ? "native default" : `${Math.round(request.memoryBudget.maxHostBytes / 1024 ** 2)} MiB`}
+            {" · "}device {request.memoryBudget.maxDeviceBytes === undefined
+              ? "native default" : `${Math.round(request.memoryBudget.maxDeviceBytes / 1024 ** 2)} MiB`}</p>}
           <p>Selected device: {owner?.selectedDeviceId ?? "Not reported"}</p>
           <p>Actual device: {actual?.deviceIds.length ? actual.deviceIds.join(", ") : "Not verified"}</p>
           <p>Runtime variant: {actual?.runtimeVariantId ?? "Not verified"}</p>
@@ -95,6 +369,20 @@ export function ManagedExecutionReadout({
                 ? "Recovery failed; manual action required"
                 : "None reported"}</p>
           {owner?.failureKind && <p>Failure category: {owner.failureKind}</p>}
+          {owner?.candidateEvaluations?.length ? (
+            <div className="space-y-1" role="group" aria-label="Native persisted policy candidate evaluations">
+              <p className="font-medium text-foreground">Native candidate admission (ordered)</p>
+              {owner.candidateEvaluations.map(candidate => (
+                <p key={`${candidate.policyPosition}:${candidate.backend}`} className="min-w-0 break-words">
+                  #{candidate.policyPosition + 1} {candidate.backend.toUpperCase()}
+                  {candidate.runtimeVariantId ? ` · ${candidate.runtimeVariantId}` : ""}
+                  {` · ${candidate.state} · manifest ${candidate.verified ? "verified" : "unverified"}`}
+                  {` · memory ${candidate.memoryAdmissible ? "admitted" : "not admitted"}`}
+                  {candidate.reasons.length ? ` · ${candidate.reasons.join("; ")}` : ""}
+                </p>
+              ))}
+            </div>
+          ) : null}
           {owner?.inferenceRouteIssued && <p>Inference route was issued; startup recovery is no longer eligible.</p>}
           {owner?.error && <p role="alert">Native error: {owner.error}</p>}
           <p>Recovery: {fileMissing ? "Restore the imported model file."
@@ -131,7 +419,7 @@ export function ClackManagedModels() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try {
       const [rawCuda,rawHost] = await Promise.all([
         invoke<ManagedCudaVariantStatus>("managed_local_runtime_cuda_variant_status").catch(()=>null),
@@ -168,20 +456,21 @@ export function ClackManagedModels() {
       setRuntime(null);
       setRuntimeBySelection({});
     }
-  };
+  }, [registered, state]);
   useEffect(() => {
     void refresh();
     // Do not continuously SHA-256 a release binary while Settings is idle.
     const timer = setInterval(() => { void refresh(); }, 5_000);
     return () => clearInterval(timer);
-  }, [registered, state]);
+  }, [refresh]);
   useEffect(() => {
     let active = true;
     const check = async () => {
       const presence = await Promise.all(registered.map(async info => {
         const found = resolveManagedLocalSelection(state, info.id);
         if (found.status !== "available" && found.status !== "unavailable") return null;
-        const digest = found.artifact.digest!;
+        const digest = found.artifact.digest;
+        if (!digest) return null;
         const present = await invoke<boolean>("managed_local_runtime_model_present", { digest })
           .catch(() => false);
         return [digest, present] as const;
@@ -303,6 +592,23 @@ export function ClackManagedModels() {
     finally{setBusy(false);}
   }
 
+  async function addPolicyDeployment(selectionId: string, requested: RequestedExecution) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await saveManagedExecutionPolicyVariant(selectionId, requested);
+      const order = requested.candidates?.map(candidate => candidate.backend.toUpperCase()).join(" → ");
+      setMessage(`New exact execution policy saved (${order ?? requested.backend.toUpperCase()}, ${requested.contextLength ?? "unknown"} context). Choose it from the model picker; native readiness and Agent qualification remain separate.`);
+      await refresh();
+    } catch (cause) {
+      setError(safeError(cause));
+      throw cause;
+    }
+    finally { setBusy(false); }
+  }
+
   async function start(selectionId: string) {
     const resolved = resolveManagedLocalSelection(state, selectionId);
     if (resolved.status !== "available" && resolved.status !== "unavailable") {
@@ -372,7 +678,7 @@ export function ClackManagedModels() {
         </span>
       </div>
       {installed && runtime?.epoch && (
-        <p aria-label="Managed runtime process identity" className="break-all font-mono text-[10px] text-muted-foreground">
+        <p role="status" aria-label="Managed runtime process identity" className="break-all font-mono text-[10px] text-muted-foreground">
           Runtime epoch {runtime.epoch}
           {runtime.processId ? ` · Native PID ${runtime.processId}` : ""}
           {runtime.port ? ` · 127.0.0.1:${runtime.port}` : ""}
@@ -423,7 +729,7 @@ export function ClackManagedModels() {
         )}
       </section>
       {inspection && (
-        <div className="rounded-md border border-border/70 p-3 space-y-2" aria-label="GGUF inspection">
+        <section className="rounded-md border border-border/70 p-3 space-y-2" aria-label="GGUF inspection">
           <p className="text-xs font-medium">{inspection.displayName}</p>
           <p className="text-xs text-muted-foreground">
             GGUF v{inspection.formatVersion} · {(inspection.size / 1024 ** 3).toFixed(2)} GiB
@@ -449,7 +755,7 @@ export function ClackManagedModels() {
           <Button size="sm" onClick={() => void importModel()} disabled={busy}>
             Import &amp; register
           </Button>
-        </div>
+        </section>
       )}
       {registered.length === 0 && <p className="text-xs text-muted-foreground">No managed GGUF deployments registered.</p>}
       {registered.map(model => {
@@ -458,9 +764,12 @@ export function ClackManagedModels() {
         const owner = runtimeBySelection[model.id] ?? null;
         const loaded = owner?.deploymentId === found.deployment.id &&
           owner?.modelDigest === found.artifact.digest;
-        const fileMissing = modelPresence[found.artifact.digest!] === false;
-        const isCuda=found.deployment.variantId==="b12248/cuda";
+        const fileMissing = found.artifact.digest !== undefined &&
+          modelPresence[found.artifact.digest] === false;
         const requested = deploymentRequestedExecution(found.deployment, found.runtime);
+        const isPolicy = !!requested?.candidates?.length;
+        const isCuda = requested?.backend === "cuda";
+        const isLegacyCpu = !isCuda && !found.deployment.requestedExecution;
         const actual = loaded ? observedActualExecution(found.runtime, found.deployment, owner) : null;
         return (
           <div key={model.id} className="space-y-2 border-t border-border/60 pt-3">
@@ -468,7 +777,8 @@ export function ClackManagedModels() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-xs font-medium">{model.label}</p>
                 <p className="text-[11px] text-muted-foreground">
-                  {isCuda?`CUDA · ${found.deployment.requestedExecution?.gpuLayers} GPU layers`
+                  {isPolicy ? "Policy variant · " : ""}
+                  {isCuda?`CUDA · ${requested?.gpuLayers} GPU layers`
                     :"CPU · 0 GPU layers"}
                   {" · "}{found.deployment.configurationIdentity
                     ? `${JSON.parse(found.deployment.configurationIdentity).context} context` : "Context unknown"} · {found.artifact.digest?.slice(7, 19)} ·
@@ -477,7 +787,7 @@ export function ClackManagedModels() {
                 </p>
               </div>
               <div className="flex shrink-0 gap-2">
-                {!isCuda&&chosenCudaDevice&&(
+                {isLegacyCpu&&chosenCudaDevice&&(
                   <Button size="sm" variant="outline" disabled={busy}
                     onClick={()=>void addCudaDeployment(model.id,chosenCudaDevice.id)}>
                     Add CUDA variant
@@ -497,6 +807,11 @@ export function ClackManagedModels() {
             </div>
             <ManagedExecutionReadout request={requested} native={owner} actual={actual}
               loaded={loaded} installed={installed} fileMissing={fileMissing} />
+            <ManagedExecutionPolicyEditor key={model.id} sourceSelectionId={model.id}
+              request={requested}
+              contextLength={requested?.contextLength ?? 4096}
+              devices={cudaDevices} disabled={busy}
+              onSave={addPolicyDeployment} />
           </div>
         );
       })}

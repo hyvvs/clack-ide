@@ -3,7 +3,7 @@
 //! A release must embed the approved b12248 archive AND executable SHA-256.
 //! Missing release pins mean Not Installed rather than executable-by-name trust.
 use getrandom::fill;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -753,6 +753,111 @@ pub fn managed_local_runtime_install_bundle(app: AppHandle, path: String) -> Res
     Ok(())
 }
 
+/// The persisted requestedExecution object is the one authoritative launch
+/// policy. Serde field order mirrors the Fabric/Zod schema so native identity
+/// validation matches the exact JSON.stringify identity of v3 deployments.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all="camelCase", deny_unknown_fields)]
+struct PersistedFallback {
+    policy: String,
+    #[serde(skip_serializing_if="Option::is_none")]
+    order: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all="camelCase", deny_unknown_fields)]
+struct PersistedCandidate {
+    backend: String,
+    device_ids: Vec<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    gpu_layers: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    runtime_variant_id: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    runtime_build_digest: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all="camelCase", deny_unknown_fields)]
+struct PersistedMemoryBudget {
+    #[serde(skip_serializing_if="Option::is_none")]
+    max_device_bytes: Option<u64>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    max_host_bytes: Option<u64>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    reserve_device_bytes: Option<u64>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    reserve_host_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all="camelCase", deny_unknown_fields)]
+struct PersistedDeviceStrategy {
+    kind: String,
+    #[serde(skip_serializing_if="Option::is_none")]
+    primary_device_id: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    split_strategy: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all="camelCase", deny_unknown_fields)]
+struct PersistedExecutionPolicy {
+    backend: String,
+    device_ids: Vec<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    gpu_layers: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    cpu_threads: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    context_length: Option<u64>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    min_available_device_bytes: Option<u64>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    min_available_host_bytes: Option<u64>,
+    fallback: PersistedFallback,
+    #[serde(skip_serializing_if="Option::is_none")]
+    candidates: Option<Vec<PersistedCandidate>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    memory_budget: Option<PersistedMemoryBudget>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    device_strategy: Option<PersistedDeviceStrategy>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeCandidateEvidence {
+    policy_position: usize,
+    backend: String,
+    device_ids: Vec<String>,
+    runtime_variant_id: Option<String>,
+    installed: bool,
+    verified: bool,
+    healthy: Option<bool>,
+    memory_admissible: bool,
+    trust_state: &'static str,
+    qualification_state: &'static str,
+    state: &'static str,
+    reasons: Vec<String>,
+    estimated_required_bytes: Option<u64>,
+    observed_available_bytes: Option<u64>,
+}
+
+struct NativeLaunchPlan {
+    binary: PathBuf,
+    backend: &'static str,
+    device: Option<String>,
+    gpu_layers: u32,
+    cuda_model: Option<String>,
+    gpu_free: Option<u64>,
+    gpu_estimate: Option<u64>,
+    host_free: Option<u64>,
+    host_estimate: Option<u64>,
+    reason: Option<String>,
+    selected_index: usize,
+    candidates: Vec<NativeCandidateEvidence>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BoundDeployment {
     id: String,
@@ -760,10 +865,89 @@ struct BoundDeployment {
     digest: String,
     context: u64,
     /// Exact request bound to persisted ModelDeployment, not IPC flags.
-    requested_backend: &'static str,
+    requested_backend: String,
     device_id: Option<String>,
     gpu_layers: u32,
     cpu_fallback_allowed: bool,
+    persisted_policy: Option<PersistedExecutionPolicy>,
+}
+
+fn valid_policy_backend(value: &str) -> bool {
+    value.len() <= 64 && value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn valid_pinned_cuda_id(value: &str) -> bool {
+    value.strip_prefix("clack-this-pc:accelerator:GPU-")
+        .is_some_and(|suffix| !suffix.is_empty() && value.len() <= 160 &&
+            suffix.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
+}
+
+fn parse_v3_policy(value: &Value, context: u64) -> Result<PersistedExecutionPolicy,String> {
+    let invalid = || "Invalid persisted managed execution policy".to_owned();
+    let request: PersistedExecutionPolicy =
+        serde_json::from_value(value.clone()).map_err(|_| invalid())?;
+    let candidates = request.candidates.as_ref()
+        .filter(|candidates| !candidates.is_empty() && candidates.len() <= 16)
+        .ok_or_else(invalid)?;
+    if !valid_policy_backend(&request.backend) || request.context_length != Some(context) ||
+        request.device_ids.len() > 16 ||
+        request.gpu_layers.is_some_and(|n| n > 1_000_000) ||
+        request.cpu_threads.is_some_and(|n| n == 0 || n > 65_536) ||
+        [request.min_available_device_bytes,request.min_available_host_bytes]
+            .into_iter().flatten().any(|n| n > 9_007_199_254_740_991) {
+        return Err(invalid());
+    }
+    let first=&candidates[0];
+    if first.backend != request.backend || first.device_ids != request.device_ids ||
+        first.gpu_layers.is_some_and(|layers| Some(layers) != request.gpu_layers) {
+        return Err("Persisted first candidate differs from requested execution".into());
+    }
+    let remaining: Vec<_> = candidates.iter().skip(1).map(|c|c.backend.clone()).collect();
+    match request.fallback.policy.as_str() {
+        "disabled" if candidates.len()==1 && request.fallback.order.is_none() => {},
+        "allow-compatible" if candidates.len()==2 && first.backend=="cuda" &&
+            remaining==["cpu"] && request.fallback.order.is_none() => {},
+        "explicit-order" if candidates.len()>1 &&
+            request.fallback.order.as_ref()==Some(&remaining) => {},
+        _ => return Err("Persisted backend ordering and fallback authorization disagree".into()),
+    }
+    for candidate in candidates {
+        if !valid_policy_backend(&candidate.backend) || candidate.device_ids.len()>16 ||
+            candidate.device_ids.iter().any(|id| id.is_empty() || id.len()>2048) ||
+            candidate.device_ids.iter().collect::<HashSet<_>>().len()!=candidate.device_ids.len() ||
+            candidate.gpu_layers.is_some_and(|n|n>1_000_000) ||
+            candidate.runtime_variant_id.as_ref().is_some_and(|id|id.is_empty() || id.len()>2048) ||
+            candidate.runtime_build_digest.as_ref().is_some_and(|sha|
+                !sha.strip_prefix("sha256:").is_some_and(valid_hex)) {
+            return Err(invalid());
+        }
+        if candidate.backend=="cuda" &&
+            candidate.device_ids.iter().any(|id|!valid_pinned_cuda_id(id)) {
+            return Err("CUDA candidate lacks durable NVIDIA UUID identity".into());
+        }
+    }
+    if let Some(budget)=request.memory_budget.as_ref() {
+        if [budget.max_device_bytes,budget.max_host_bytes,budget.reserve_device_bytes,
+            budget.reserve_host_bytes].into_iter().flatten()
+            .any(|n|n>9_007_199_254_740_991) {
+            return Err("Persisted memory budget exceeds safe integer bounds".into());
+        }
+    }
+    if let Some(strategy)=request.device_strategy.as_ref() {
+        if !matches!(strategy.kind.as_str(),"single"|"multi") ||
+           strategy.primary_device_id.as_ref().is_some_and(|id|id.is_empty() || id.len()>2048) ||
+           strategy.split_strategy.as_ref().is_some_and(|split|
+               !matches!(split.as_str(),"none"|"layers"|"rows")) {
+            return Err("Unrecognized persisted multi-device strategy".into());
+        }
+        if let Some(primary)=strategy.primary_device_id.as_ref() {
+            if !request.device_ids.contains(primary) {
+                return Err("Persisted primary device is not in the ordered device set".into());
+            }
+        }
+    }
+    Ok(request)
 }
 
 /// Native side independently checks the current native-CAS fabric. A WebView
@@ -833,9 +1017,11 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
         .ok_or_else(invalid)?;
     let config: Value = serde_json::from_str(material).map_err(|_| invalid())?;
     let object = config.as_object().ok_or_else(invalid)?;
+    let v3 = config["version"] == 3;
     if config["tool"] != false || config["grammar"] != false ||
-       (cuda && (object.len() != 4 || config["version"] != 2)) ||
-       (!cuda && (object.len() != 5 || config["version"] != 1 || config["gpu"] != 0)) {
+       (v3 && (object.len() != 4 || deployment["variantId"].is_string())) ||
+       (!v3 && cuda && (object.len() != 4 || config["version"] != 2)) ||
+       (!v3 && !cuda && (object.len() != 5 || config["version"] != 1 || config["gpu"] != 0)) {
         return Err(invalid());
     }
     let context = config["context"]
@@ -844,7 +1030,9 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
         .ok_or_else(invalid)?;
     // Match the TypeScript managedLocalConfigurationIdentity key order exactly.
     // JSON-object equivalence alone must not create two behavioral identities.
-    let canonical = if cuda {
+    let canonical = if v3 {
+        format!(r#"{{"version":3,"context":{context},"tool":false,"grammar":false}}"#)
+    } else if cuda {
         format!(r#"{{"version":2,"context":{context},"tool":false,"grammar":false}}"#)
     } else {
         format!(r#"{{"version":1,"context":{context},"gpu":0,"tool":false,"grammar":false}}"#)
@@ -852,7 +1040,25 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
     if material != canonical || deployment["runtimeModelName"] != format!("managed-gguf:{digest}") {
         return Err(invalid());
     }
-    let (requested_backend, device_id, gpu_layers, cpu_fallback_allowed, requested_json) = if cuda {
+    let mut persisted_policy = None;
+    let (requested_backend, device_id, gpu_layers, cpu_fallback_allowed, requested_json) = if v3 {
+        let request=parse_v3_policy(&deployment["requestedExecution"],context)?;
+        let normalized=serde_json::to_string(&request).map_err(|_|invalid())?;
+        let first=request.candidates.as_ref().and_then(|c|c.first()).ok_or_else(invalid)?;
+        let layers=request.gpu_layers.unwrap_or(0);
+        let cpu_allowed=request.fallback.policy!="disabled" &&
+            request.candidates.as_ref().is_some_and(|candidates|candidates.iter()
+                .skip(1).any(|candidate|candidate.backend=="cpu"));
+        let deployment_prefix=json!(["managed-gguf-policy-v3",digest,canonical]).to_string();
+        let expected_id=format!("{},{}]",deployment_prefix.trim_end_matches(']'),normalized);
+        if deployment["id"]!=expected_id {
+            return Err("Persisted execution policy does not match exact deployment ID".into());
+        }
+        let result=(request.backend.clone(),first.device_ids.first().cloned(),layers,cpu_allowed,
+            Some(normalized));
+        persisted_policy=Some(request);
+        result
+    } else if cuda {
         let request = &deployment["requestedExecution"];
         let device_ids = request["deviceIds"].as_array().ok_or_else(invalid)?;
         let device = device_ids.first().and_then(Value::as_str).ok_or_else(invalid)?;
@@ -877,13 +1083,13 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
         let request_json = format!(
             r#"{{"backend":"cuda","deviceIds":[{}],"gpuLayers":{layers},"contextLength":{context},"fallback":{{"policy":"{policy}"}}}}"#,
             json!(device));
-        ("cuda", Some(device.to_owned()), gpu_layers, policy == "allow-compatible", Some(request_json))
+        ("cuda".to_owned(), Some(device.to_owned()), gpu_layers, policy == "allow-compatible", Some(request_json))
     } else {
         if deployment.get("requestedExecution").is_some() || deployment["variantId"].is_string() ||
            deployment["id"] != json!(["managed-gguf", digest, canonical]).to_string() {
             return Err(invalid());
         }
-        ("cpu", None, 0, false, None)
+        ("cpu".to_owned(), None, 0, false, None)
     };
     let original = json!([
         deployment["hostId"],
@@ -910,6 +1116,7 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
         device_id,
         gpu_layers,
         cpu_fallback_allowed,
+        persisted_policy,
     })
 }
 
@@ -984,6 +1191,10 @@ struct RuntimeOwner {
     gpu_free_before_bytes: Option<u64>,
     gpu_free_after_bytes: Option<u64>,
     gpu_estimated_required_bytes: Option<u64>,
+    measured_host_available_bytes: Option<u64>,
+    estimated_host_required_bytes: Option<u64>,
+    selected_candidate_index: Option<usize>,
+    candidate_evaluations: Vec<NativeCandidateEvidence>,
     fallback_reason: Option<String>,
     /// A failed CUDA startup may be retried ONLY before the first route grant.
     /// This ticket lives in the existing per-deployment process owner, not a
@@ -999,6 +1210,7 @@ struct StartupRecoveryTicket {
     invalidated_epoch: String,
     cuda_failure_reason: String,
     failure_kind: &'static str,
+    failed_candidate_index: Option<usize>,
 }
 
 impl Default for RuntimeOwner {
@@ -1027,6 +1239,8 @@ impl Default for RuntimeOwner {
             selected_gpu_layers: 0, cuda_offloaded_layers: None,
             cuda_model: None, gpu_free_before_bytes: None,
             gpu_free_after_bytes: None, gpu_estimated_required_bytes: None,
+            measured_host_available_bytes: None, estimated_host_required_bytes: None,
+            selected_candidate_index: None,candidate_evaluations: Vec::new(),
             fallback_reason: None,
             pending_cpu_recovery: None, inference_route_issued: false,
             failure_kind: None,
@@ -1059,6 +1273,10 @@ struct RuntimeRegistry {
 }
 
 static OWNER_REGISTRY: OnceLock<RuntimeRegistry> = OnceLock::new();
+// One narrow transition fence over the EXISTING owner registry, not a second
+// scheduler. Switching an artifact between immutable v3 policy identities
+// retires the previous v3 child and its route before starting the replacement.
+static POLICY_SWITCH_FENCE: Mutex<()> = Mutex::new(());
 fn registry() -> &'static RuntimeRegistry {
     OWNER_REGISTRY.get_or_init(|| RuntimeRegistry {
         entries: Mutex::new(RuntimeRegistryEntries::default()),
@@ -1071,6 +1289,26 @@ fn registry() -> &'static RuntimeRegistry {
 
 fn runtime_key(binding: &BoundDeployment) -> RuntimeKey {
     (binding.id.clone(), binding.identity.clone())
+}
+
+fn retire_prior_persisted_policy_owner(binding:&BoundDeployment) -> Result<(),String> {
+    if binding.persisted_policy.is_none(){return Ok(());}
+    let targets={
+        let entries=registry().entries.lock().map_err(|_|"Managed owner registry unavailable")?;
+        entries.owners.iter()
+            .filter(|(key,_)| key.0!=binding.id || key.1!=binding.identity)
+            .map(|(key,slot)|(key.clone(),slot.clone())).collect::<Vec<_>>()
+    };
+    for (_key,slot) in targets {
+        let mut owner=slot.lock().map_err(|_|"Prior managed policy owner is busy")?;
+        if owner.deployment.as_ref().is_some_and(|old|
+            old.digest==binding.digest && old.persisted_policy.is_some()) {
+            // The same artifact survives; old process, credential, PID, epoch
+            // and route do not. Legacy CPU/CUDA owners are never changed here.
+            forget_process(&mut owner,"Stopped",None);
+        }
+    }
+    Ok(())
 }
 
 fn get_or_insert_owner(key: RuntimeKey) -> Result<Arc<Mutex<RuntimeOwner>>, String> {
@@ -1519,7 +1757,8 @@ pub fn acceptance_bind_benign_child(
         current.deployment = Some(BoundDeployment {
             id: deployment_id.to_string(), identity: identity.into(),
             digest: "no-model-ever-loaded".into(), context: 1,
-            requested_backend:"cpu",device_id:None,gpu_layers:0,cpu_fallback_allowed:false,
+            requested_backend:"cpu".into(),device_id:None,gpu_layers:0,cpu_fallback_allowed:false,
+            persisted_policy:None,
         });
         Ok((epoch, pid))
     })();
@@ -1576,6 +1815,10 @@ fn forget_process(owner: &mut RuntimeOwner, state: &'static str, error: Option<S
     owner.pending_cpu_recovery = None;
     owner.inference_route_issued = false;
     owner.failure_kind = None;
+    owner.candidate_evaluations.clear();
+    owner.selected_candidate_index=None;
+    owner.measured_host_available_bytes=None;
+    owner.estimated_host_required_bytes=None;
     // A failed CUDA owner must remain labeled CUDA until the next start/stop.
     // Otherwise a crash on a host with only the CUDA variant installed turns
     // into a misleading "Not Installed" CPU status and loses the real reason.
@@ -1624,17 +1867,23 @@ fn can_fallback_after_spawn(
 fn fail_or_stage_cuda_recovery(owner: &mut RuntimeOwner, reason: String, timed_out: bool) {
     let failure_kind = owner.logs.lock().ok().map(|logs|
         classify_startup_failure(&logs, timed_out)).unwrap_or("startup-failed");
-    let eligible = owner.child.is_some() && can_fallback_after_spawn(
+    let can_recover_cpu=owner.deployment.as_ref().is_some_and(|binding|
+        binding.persisted_policy.as_ref().is_none_or(|policy|
+            policy.candidates.as_ref().is_some_and(|candidates|
+                candidates.iter().skip(owner.selected_candidate_index.unwrap_or(0)+1)
+                    .any(|candidate|candidate.backend=="cpu"))));
+    let eligible = owner.child.is_some() && can_recover_cpu && can_fallback_after_spawn(
         owner.selected_backend,owner.state,owner.inference_route_issued,
         owner.deployment.as_ref().is_some_and(|binding|binding.cpu_fallback_allowed));
     let former = if eligible { owner.deployment.clone() } else { None };
+    let failed_candidate_index=owner.selected_candidate_index;
     forget_process(owner, if eligible {"Recovering"} else {"Failed"},
         Some(reason.clone()));
     owner.failure_kind = Some(failure_kind);
     if let Some(binding) = former {
         owner.pending_cpu_recovery = Some(StartupRecoveryTicket {
             binding, invalidated_epoch: owner.epoch.clone(),
-            cuda_failure_reason: reason, failure_kind,
+            cuda_failure_reason: reason, failure_kind,failed_candidate_index,
         });
     }
 }
@@ -1809,6 +2058,188 @@ fn verified_admissible_fallback_cpu(
     verified_engine(app)
 }
 
+fn estimated_cpu_working_bytes(model_bytes:u64,context:u64)->Result<u64,String> {
+    model_bytes.checked_add(context.checked_mul(16*1024)
+        .ok_or("CPU context memory estimate overflow")?)
+        .and_then(|n|n.checked_add(256*1024*1024))
+        .ok_or_else(||"CPU memory estimate overflow".into())
+}
+
+/// V3 policy evaluation uses the persisted, order-preserving candidate list.
+/// This is a deterministic prelaunch admission over real local observations,
+/// NOT a source of actual execution evidence. Unsupported future adapters
+/// remain visible as rejected entries, never as executable launch choices.
+fn resolve_persisted_launch(
+    app:&AppHandle, binding:&BoundDeployment, model_bytes:u64,
+    block_count:Option<u64>, resume_after:Option<usize>,
+) -> Result<NativeLaunchPlan,String> {
+    let policy=binding.persisted_policy.as_ref()
+        .ok_or("Persisted execution policy is absent")?;
+    let ordered=policy.candidates.as_ref().ok_or("Persisted candidate order absent")?;
+    let memory=crate::modules::hardware_profile::local_hardware_observation();
+    let free_host=memory.available_ram_bytes;
+    let host_estimate=estimated_cpu_working_bytes(model_bytes,binding.context)?;
+    let budget=policy.memory_budget.as_ref();
+    let mut evaluations=Vec::with_capacity(ordered.len());
+    let mut prior_rejections=Vec::new();
+    let mut chosen:Option<NativeLaunchPlan>=None;
+    for (index,candidate) in ordered.iter().enumerate() {
+        let is_skipped=chosen.is_some() || resume_after.is_some_and(|start|index<=start);
+        let variant=match candidate.backend.as_str(){
+            "cpu"=>Some("b12248/cpu"),"cuda"=>Some("b12248/cuda"),_=>None};
+        let mut entry=NativeCandidateEvidence {
+            policy_position:index,backend:candidate.backend.clone(),
+            device_ids:candidate.device_ids.clone(),
+            runtime_variant_id:variant.map(str::to_owned),
+            installed:false,verified:false,healthy:None,memory_admissible:false,
+            trust_state:"UNKNOWN",qualification_state:"UNQUALIFIED",
+            state:"rejected",reasons:Vec::new(),estimated_required_bytes:None,
+            observed_available_bytes:None,
+        };
+        if is_skipped {
+            entry.state="not-evaluated";
+            entry.reasons.push(if chosen.is_some() {
+                "Earlier ordered candidate admitted; no second child will launch".into()
+            } else {
+                "Earlier candidate is ineligible for post-spawn recovery".into()
+            });
+            evaluations.push(entry);
+            continue;
+        }
+        let reject=|message:&str,entry:&mut NativeCandidateEvidence| {
+            entry.reasons.push(message.to_owned());
+        };
+        if resume_after.is_some() && candidate.backend!="cpu" {
+            reject("Post-spawn CUDA recovery permits only a later CPU candidate", &mut entry);
+        } else if variant.is_none() {
+            reject("Execution backend is not implemented on this host", &mut entry);
+        } else if policy.device_strategy.as_ref().is_some_and(|strategy|
+                strategy.kind=="multi" || strategy.split_strategy.as_deref()
+                    .is_some_and(|split|split!="none")) ||
+            candidate.device_ids.len()!=1 ||
+            (candidate.backend=="cuda" && !valid_pinned_cuda_id(&candidate.device_ids[0])) ||
+            (candidate.backend=="cpu" && candidate.device_ids[0]!="clack-this-pc:cpu:0") {
+            reject("MULTI_GPU_EXECUTION_UNSUPPORTED or requested device identity invalid", &mut entry);
+        } else if candidate.runtime_variant_id.as_deref()
+            .is_some_and(|pin|Some(pin)!=variant) {
+            reject("Pinned runtime variant does not match candidate backend", &mut entry);
+        } else {
+            let backend=candidate.backend.as_str();
+            let expected_digest=match backend {
+                "cpu"=>approved_digest("archive").map(str::to_owned),
+                "cuda"=>{
+                    #[cfg(windows)]
+                    {Ok(cuda_payload::ENGINE_ARCHIVE_SHA256.to_owned())}
+                    #[cfg(not(windows))]
+                    {Err("CUDA is unsupported on this host".into())}
+                },
+                _=>Err("Unknown executable backend".into()),
+            };
+            if candidate.runtime_build_digest.as_ref().is_some_and(|pin|
+                expected_digest.as_ref().is_ok_and(|expected|pin!=&format!("sha256:{expected}"))) {
+                reject("Pinned runtime archive digest differs from verified release", &mut entry);
+            } else if let Err(error)=expected_digest {
+                entry.reasons.push(error);
+            } else {
+                entry.installed=match backend {
+                    "cpu"=>engine_dir(app).is_ok_and(|dir|dir.join(EXECUTABLE).is_file()),
+                    "cuda"=>cuda_engine_dir(app).is_ok_and(|dir|dir.join(EXECUTABLE).is_file()),
+                    _=>false,
+                };
+                let verified=if backend=="cuda"{verified_cuda_engine(app)}
+                    else {verified_engine(app)};
+                match verified {
+                    Err(error)=>entry.reasons.push(format!("Runtime manifest verification failed: {error}")),
+                    Ok(binary)=>{
+                        entry.verified=true;
+                        entry.trust_state="VERIFIED";
+                        if free_host.is_none(){
+                            reject("Available host RAM measurement UNKNOWN", &mut entry);
+                        } else {
+                            let free=free_host.unwrap_or(0);
+                            let required_host_min=host_estimate.max(policy.min_available_host_bytes.unwrap_or(0));
+                            if budget.and_then(|b|b.max_host_bytes)
+                                .is_some_and(|limit|host_estimate>limit) {
+                                reject("Estimated host RAM requirement exceeds hard policy budget", &mut entry);
+                            } else if free.saturating_sub(budget.and_then(|b|b.reserve_host_bytes)
+                                .unwrap_or(0))<required_host_min {
+                                reject("Insufficient measured host RAM after policy reserve", &mut entry);
+                            } else if backend=="cpu"{
+                                entry.estimated_required_bytes=Some(host_estimate);
+                                entry.observed_available_bytes=Some(free);
+                                entry.memory_admissible=true;
+                                entry.state="admitted";
+                                chosen=Some(NativeLaunchPlan {
+                                    binary,backend:"cpu",device:None,gpu_layers:0,
+                                    cuda_model:None,gpu_free:None,gpu_estimate:None,
+                                    host_free:Some(free),host_estimate:Some(host_estimate),
+                                    reason:None,selected_index:index,candidates:Vec::new(),
+                                });
+                            } else {
+                                let layers=candidate.gpu_layers.or(policy.gpu_layers).unwrap_or(0);
+                                let gpu=crate::modules::hardware_profile::cuda_device_for_request(
+                                    &candidate.device_ids[0]);
+                                match gpu {
+                                    Err(error)=>entry.reasons.push(format!("CUDA device unavailable: {error}")),
+                                    Ok(gpu)=>{
+                                        let total=gpu.total_vram_bytes.as_ref().map(|v|v.value);
+                                        let available=gpu.available_vram_bytes.as_ref().map(|v|v.value);
+                                        entry.observed_available_bytes=available;
+                                        match cuda_memory_admission(model_bytes,binding.context,layers,
+                                            block_count,total,available) {
+                                            Err(error)=>entry.reasons.push(error),
+                                            Ok(estimate)=>{
+                                                entry.estimated_required_bytes=Some(estimate);
+                                                let free=available.unwrap_or(0);
+                                                let require=estimate.max(policy.min_available_device_bytes.unwrap_or(0));
+                                                if budget.and_then(|b|b.max_device_bytes)
+                                                    .is_some_and(|limit|estimate>limit) {
+                                                    reject("Estimated VRAM requirement exceeds hard policy device budget",&mut entry);
+                                                } else if free.saturating_sub(budget.and_then(|b|b.reserve_device_bytes)
+                                                    .unwrap_or(0))<require {
+                                                    reject("Insufficient measured VRAM after policy reserve",&mut entry);
+                                                } else if let Some(model)=gpu.model.map(|v|v.value) {
+                                                    entry.memory_admissible=true;
+                                                    entry.state="admitted";
+                                                    chosen=Some(NativeLaunchPlan {
+                                                        binary,backend:"cuda",
+                                                        device:Some(candidate.device_ids[0].clone()),gpu_layers:layers,
+                                                        cuda_model:Some(model),gpu_free:Some(free),
+                                                        gpu_estimate:Some(estimate),
+                                                        host_free:Some(free_host.unwrap_or(0)),
+                                                        host_estimate:Some(host_estimate),reason:None,
+                                                        selected_index:index,candidates:Vec::new(),
+                                                    });
+                                                } else {
+                                                    reject("NVIDIA device model identity UNKNOWN",&mut entry);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if entry.state=="rejected" {
+            prior_rejections.push(format!("#{} {}: {}",index,candidate.backend,
+                entry.reasons.join("; ")));
+        }
+        evaluations.push(entry);
+    }
+    let mut selected=chosen.ok_or_else(||format!(
+        "Persisted execution candidates rejected: {}",prior_rejections.join(" | ")))?;
+    if selected.selected_index>0 {
+        selected.reason=Some(format!(
+            "Persisted ordered fallback admitted candidate #{}: {}",
+            selected.selected_index,prior_rejections.join(" | ")));
+    }
+    selected.candidates=evaluations;
+    Ok(selected)
+}
+
 /// A rejected CUDA admission can select only a separately verified managed
 /// CPU variant and only when the persisted deployment explicitly allows it.
 /// The reason is retained for the native requested-vs-actual status record.
@@ -1878,6 +2309,25 @@ pub fn managed_cuda_acceptance_log_summary(deployment_id:&str, identity:&str)->V
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ManagedExecutionReceipt {
+    version: u8,
+    deployment_id: String,
+    deployment_identity: String,
+    policy_identity: String,
+    selected_candidate_index: usize,
+    process_id: u32,
+    #[serde(skip_serializing_if="Option::is_none")]
+    runtime_build_digest: Option<String>,
+    fallback_used: bool,
+    fallback_authorized: bool,
+    #[serde(skip_serializing_if="Option::is_none")]
+    measured_host_bytes: Option<u64>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    measured_device_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ManagedActualExecution {
     pub backend: &'static str,
     pub device_ids: Vec<String>,
@@ -1887,6 +2337,8 @@ pub struct ManagedActualExecution {
     source: &'static str,
     context_length: u64,
     observed_at: u64,
+    #[serde(skip_serializing_if="Option::is_none")]
+    execution_receipt: Option<ManagedExecutionReceipt>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1906,7 +2358,7 @@ pub struct ManagedRuntimeStatus {
     /// Only native-owned, authenticated Ready with a verified pinned launcher
     /// establishes actual CPU execution; a backend request never does.
     pub actual_execution: Option<ManagedActualExecution>,
-    requested_backend: Option<&'static str>,
+    requested_backend: Option<String>,
     pub selected_backend: Option<&'static str>,
     requested_gpu_layers: Option<u32>,
     selected_gpu_layers: Option<u32>,
@@ -1921,6 +2373,11 @@ pub struct ManagedRuntimeStatus {
     pub recovery_state: &'static str,
     pub failure_kind: Option<&'static str>,
     pub inference_route_issued: bool,
+    #[serde(skip_serializing_if="Option::is_none")]
+    requested_execution: Option<PersistedExecutionPolicy>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub selected_candidate_index: Option<usize>,
+    candidate_evaluations: Vec<NativeCandidateEvidence>,
 }
 fn snapshot(owner: &RuntimeOwner, installed: bool) -> ManagedRuntimeStatus {
     ManagedRuntimeStatus {
@@ -1963,10 +2420,37 @@ fn snapshot(owner: &RuntimeOwner, installed: bool) -> ManagedRuntimeStatus {
                         .unwrap_or_default()
                         .as_millis()
                         .min(u64::MAX as u128) as u64,
+                    execution_receipt: binding.persisted_policy.as_ref().and_then(|policy|{
+                        let index=owner.selected_candidate_index?;
+                        let pid=owner.child.as_ref()?.id();
+                        let policy_json=serde_json::to_string(policy).ok()?;
+                        let build_sha=match owner.selected_backend {
+                            "cpu"=>approved_digest("archive").ok().map(str::to_owned),
+                            "cuda"=>{
+                                #[cfg(windows)]
+                                {Some(cuda_payload::ENGINE_ARCHIVE_SHA256.to_owned())}
+                                #[cfg(not(windows))]
+                                {None}
+                            },
+                            _=>None,
+                        };
+                        Some(ManagedExecutionReceipt{
+                            version:3,deployment_id:binding.id.clone(),
+                            deployment_identity:binding.identity.clone(),
+                            policy_identity:policy_json,selected_candidate_index:index,
+                            process_id:pid,
+                            runtime_build_digest:build_sha.map(|sha|format!("sha256:{sha}")),
+                            fallback_used:owner.fallback_reason.is_some(),
+                            fallback_authorized:owner.fallback_reason.is_some() &&
+                                policy.fallback.policy!="disabled",
+                            measured_host_bytes:owner.measured_host_available_bytes,
+                            measured_device_bytes:owner.gpu_free_before_bytes,
+                        })
+                    }),
                 }
             }).filter(|_| owner.selected_backend != "cuda" || owner.cuda_offloaded_layers.is_some())
         }),
-        requested_backend: owner.deployment.as_ref().map(|d|d.requested_backend),
+        requested_backend: owner.deployment.as_ref().map(|d|d.requested_backend.clone()),
         selected_backend: (owner.deployment.is_some() || owner.state=="Failed")
             .then_some(owner.selected_backend),
         requested_gpu_layers: owner.deployment.as_ref().map(|d|d.gpu_layers),
@@ -1974,8 +2458,9 @@ fn snapshot(owner: &RuntimeOwner, installed: bool) -> ManagedRuntimeStatus {
             .then_some(owner.selected_gpu_layers),
         selected_device_id: owner.selected_device_id.clone(),
         fallback_used: owner.deployment.is_some() && owner.fallback_reason.is_some(),
-        fallback_authorized: owner.deployment.as_ref().is_some_and(|d|d.cpu_fallback_allowed)
-            && owner.fallback_reason.is_some(),
+        fallback_authorized: owner.deployment.as_ref().is_some_and(|d|
+            d.persisted_policy.as_ref().is_some_and(|policy|policy.fallback.policy!="disabled")
+                || d.cpu_fallback_allowed) && owner.fallback_reason.is_some(),
         fallback_reason: owner.fallback_reason.clone(),
         gpu_free_before_bytes: owner.gpu_free_before_bytes,
         gpu_free_after_bytes: owner.gpu_free_after_bytes,
@@ -1989,6 +2474,14 @@ fn snapshot(owner: &RuntimeOwner, installed: bool) -> ManagedRuntimeStatus {
             else if owner.state == "Failed" {"failed"} else {"none"},
         failure_kind: owner.failure_kind,
         inference_route_issued: owner.inference_route_issued,
+        requested_execution: owner.deployment.as_ref().and_then(|d|d.persisted_policy.clone()),
+        selected_candidate_index: owner.selected_candidate_index,
+        candidate_evaluations: owner.candidate_evaluations.iter().cloned().map(|mut candidate|{
+            if owner.state=="Ready" && owner.selected_candidate_index==Some(candidate.policy_position) {
+                candidate.healthy=Some(true);
+            }
+            candidate
+        }).collect(),
     }
 }
 
@@ -2006,6 +2499,7 @@ fn idle_snapshot(installed: bool) -> ManagedRuntimeStatus {
         gpu_free_before_bytes: None,gpu_free_after_bytes:None,cuda_process_vram_bytes:None,
         gpu_estimated_required_bytes: None,
         recovery_state: "none", failure_kind: None, inference_route_issued: false,
+        requested_execution: None,selected_candidate_index:None,candidate_evaluations:Vec::new(),
     }
 }
 
@@ -2236,6 +2730,9 @@ fn start_bound_runtime(
     app: AppHandle, binding:BoundDeployment,
     recovery: Option<StartupRecoveryTicket>,
 ) -> Result<ManagedRuntimeStatus,String> {
+    let _switch_guard=if binding.persisted_policy.is_some() {
+        Some(POLICY_SWITCH_FENCE.lock().map_err(|_|"Native policy transition unavailable")?)
+    } else {None};
     let model = model_path(&app, &binding.digest)?;
     let inspected = inspect(&model)?;
     if inspected.digest != binding.digest {
@@ -2248,7 +2745,38 @@ fn start_bound_runtime(
     let mut fallback_reason = None;
     let mut gpu_layers = 0;
     let mut gpu_estimated_required = None;
-    let binary = if let Some(ticket) = recovery.as_ref() {
+    let mut candidate_evaluations=Vec::new();
+    let mut selected_candidate_index=None;
+    let mut measured_host_available=None;
+    let mut estimated_host_required=None;
+    let binary = if binding.persisted_policy.is_some() {
+        if let Some(ticket)=recovery.as_ref() {
+            if ticket.binding != binding || !binding.cpu_fallback_allowed ||
+                ticket.failed_candidate_index.is_none() {
+                return Err("Persisted post-spawn recovery identity or ordering mismatch".into());
+            }
+        }
+        let plan=resolve_persisted_launch(&app,&binding,inspected.size,inspected.block_count,
+            recovery.as_ref().and_then(|ticket|ticket.failed_candidate_index))?;
+        if recovery.is_some() && plan.backend!="cpu" {
+            return Err("Post-spawn recovery must independently launch verified CPU".into());
+        }
+        selected_backend=plan.backend;
+        selected_device=plan.device;
+        gpu_layers=plan.gpu_layers;
+        cuda_model=plan.cuda_model;
+        gpu_free_before=plan.gpu_free;
+        gpu_estimated_required=plan.gpu_estimate;
+        measured_host_available=plan.host_free;
+        estimated_host_required=plan.host_estimate;
+        selected_candidate_index=Some(plan.selected_index);
+        candidate_evaluations=plan.candidates;
+        fallback_reason=if let Some(ticket)=recovery.as_ref() {
+            Some(format!("CUDA post-spawn {}: {}",ticket.failure_kind,
+                ticket.cuda_failure_reason))
+        } else {plan.reason};
+        plan.binary
+    } else if let Some(ticket) = recovery.as_ref() {
         if ticket.binding != binding || !binding.cpu_fallback_allowed ||
             binding.requested_backend != "cuda" {
             return Err("Native post-spawn CPU recovery policy or identity mismatch".into());
@@ -2293,6 +2821,9 @@ fn start_bound_runtime(
             }
         }
     } else { verified_engine(&app)? };
+    if recovery.is_none() {
+        retire_prior_persisted_policy_owner(&binding)?;
+    }
     let key = runtime_key(&binding);
     let slot = get_or_insert_owner(key.clone())?;
     {
@@ -2390,6 +2921,11 @@ fn start_bound_runtime(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Consume the same persisted v3 CPU thread preference admitted above.
+    // Legacy v1/v2 launches retain their upstream defaults.
+    if let Some(threads) = binding.persisted_policy.as_ref().and_then(|p|p.cpu_threads) {
+        command.arg("--threads").arg(threads.to_string());
+    }
     if selected_backend == "cpu" {
         command.arg("--log-disable");
     }
@@ -2460,6 +2996,10 @@ fn start_bound_runtime(
     owner.gpu_free_before_bytes = gpu_free_before;
     owner.gpu_free_after_bytes = None;
     owner.gpu_estimated_required_bytes = gpu_estimated_required;
+    owner.measured_host_available_bytes=measured_host_available;
+    owner.estimated_host_required_bytes=estimated_host_required;
+    owner.selected_candidate_index=selected_candidate_index;
+    owner.candidate_evaluations=candidate_evaluations;
     owner.fallback_reason = fallback_reason;
     owner.failure_kind = recovery.as_ref().map(|ticket|ticket.failure_kind);
     owner.pending_cpu_recovery = None;
@@ -2703,7 +3243,8 @@ mod tests {
             identity: "bound".into(),
             digest: format!("sha256:{}", "a".repeat(64)),
             context: 4096,
-            requested_backend:"cpu",device_id:None,gpu_layers:0,cpu_fallback_allowed:false,
+            requested_backend:"cpu".into(),device_id:None,gpu_layers:0,cpu_fallback_allowed:false,
+            persisted_policy:None,
         });
         forget_process(&mut active, "Stopped", None);
         assert_eq!(active.state, "Stopped");
@@ -2720,7 +3261,8 @@ mod tests {
         BoundDeployment {
             id: id.into(), identity: identity.into(),
             digest: format!("sha256:{}", "a".repeat(64)), context: 4096,
-            requested_backend:"cpu",device_id:None,gpu_layers:0,cpu_fallback_allowed:false,
+            requested_backend:"cpu".into(),device_id:None,gpu_layers:0,cpu_fallback_allowed:false,
+            persisted_policy:None,
         }
     }
 
@@ -2955,6 +3497,128 @@ mod tests {
     }
 
     #[test]
+    fn persisted_v3_policy_identity_and_backend_order_are_native_authoritative() {
+        let digest=format!("sha256:{}","a".repeat(64));
+        let artifact=json!(["digest",digest]).to_string();
+        let device="clack-this-pc:accelerator:GPU-30ab48fd-809d-dc7d-c437-6ad626ece81a";
+        let config=r#"{"version":3,"context":2048,"tool":false,"grammar":false}"#;
+        let request_json=format!(r#"{{"backend":"cuda","deviceIds":[{}],"gpuLayers":40,"contextLength":2048,"fallback":{{"policy":"explicit-order","order":["cpu"]}},"candidates":[{{"backend":"cuda","deviceIds":[{}],"gpuLayers":40,"runtimeVariantId":"b12248/cuda"}},{{"backend":"cpu","deviceIds":["clack-this-pc:cpu:0"],"gpuLayers":0,"runtimeVariantId":"b12248/cpu"}}],"memoryBudget":{{"maxDeviceBytes":8589934592,"maxHostBytes":8589934592,"reserveDeviceBytes":134217728,"reserveHostBytes":134217728}},"deviceStrategy":{{"kind":"single","primaryDeviceId":{},"splitStrategy":"none"}}}}"#,
+            json!(device),json!(device),json!(device));
+        let request:Value=serde_json::from_str(&request_json).unwrap();
+        let parsed=parse_v3_policy(&request,2048).unwrap();
+        assert_eq!(serde_json::to_string(&parsed).unwrap(),request_json,
+            "Native serde order must equal canonical Fabric JSON.stringify");
+        assert_eq!(parsed.candidates.as_ref().unwrap().iter()
+            .map(|c|c.backend.as_str()).collect::<Vec<_>>(),vec!["cuda","cpu"]);
+        let id=format!("{},{}]",json!(["managed-gguf-policy-v3",digest,config])
+            .to_string().trim_end_matches(']'),request_json);
+        let identity=format!("{},{}]",json!(["clack-this-pc",ENGINE,artifact,
+            format!("managed-gguf:{digest}"),1,Value::Null,config])
+            .to_string().trim_end_matches(']'),request_json);
+        let deployment=json!({"id":id,"hostId":"clack-this-pc","runtimeId":ENGINE,
+            "artifactId":artifact,"runtimeModelName":format!("managed-gguf:{digest}"),
+            "configurationRevision":1,"configurationIdentity":config,
+            "requestedExecution":request});
+        let state=json!({"fabric":{"version":1,
+            "hosts":[{"id":"clack-this-pc","enabled":true,"location":"local","runtimeIds":[ENGINE]}],
+            "runtimes":[{"id":ENGINE,"hostId":"clack-this-pc","type":ENGINE,
+                "enabled":true,"configurationRevision":1,"version":ENGINE_VERSION}],
+            "artifacts":[{"id":artifact,"format":"gguf","digest":digest}],
+            "deployments":[deployment]}});
+        let binding=validate_binding(&state,&id,&identity).unwrap();
+        assert_eq!(binding.requested_backend,"cuda");
+        assert!(binding.cpu_fallback_allowed);
+        assert!(binding.persisted_policy.is_some());
+        let mut swapped=state.clone();
+        swapped["fabric"]["deployments"][0]["requestedExecution"]["candidates"][0]["backend"]=json!("cpu");
+        assert!(validate_binding(&swapped,&id,&identity).is_err());
+        let mut changed_budget=state.clone();
+        changed_budget["fabric"]["deployments"][0]["requestedExecution"]["memoryBudget"]["maxDeviceBytes"]=json!(1);
+        assert!(validate_binding(&changed_budget,&id,&identity).is_err(),
+            "Policy changes must produce a fresh deployment identity");
+        assert!(validate_binding(&state,&id,"old-cuda-policy-identity").is_err());
+    }
+
+    #[test]
+    fn persisted_unknown_backends_and_same_vendor_multi_device_are_representable_not_executable() {
+        let device_a="clack-this-pc:accelerator:GPU-30ab48fd-809d-dc7d-c437-6ad626ece81a";
+        let device_b="clack-this-pc:accelerator:GPU-18c1cf52-2ec1-4a2a-a011-77ddccaa99ee";
+        let request=json!({"backend":"vulkan","deviceIds":[device_a,device_b],
+            "gpuLayers":20,"contextLength":2048,
+            "fallback":{"policy":"explicit-order","order":["cuda","cpu"]},
+            "candidates":[
+                {"backend":"vulkan","deviceIds":[device_a,device_b],"gpuLayers":20},
+                {"backend":"cuda","deviceIds":[device_b],"gpuLayers":20,"runtimeVariantId":"b12248/cuda"},
+                {"backend":"cpu","deviceIds":["clack-this-pc:cpu:0"],"gpuLayers":0}
+            ],"deviceStrategy":{"kind":"multi","primaryDeviceId":device_a,"splitStrategy":"layers"}});
+        let parsed=parse_v3_policy(&request,2048).unwrap();
+        assert_eq!(parsed.candidates.as_ref().unwrap()[0].device_ids,
+            vec![device_a,device_b]);
+        assert_eq!(parsed.candidates.as_ref().unwrap()[1].device_ids,vec![device_b]);
+        assert_eq!(parsed.device_strategy.as_ref().unwrap().kind,"multi");
+        let mut duplicated=request.clone();
+        duplicated["candidates"][0]["deviceIds"]=json!([device_a,device_a]);
+        assert!(parse_v3_policy(&duplicated,2048).is_err());
+        let mut incorrect_order=request.clone();
+        incorrect_order["fallback"]["order"]=json!(["cpu","cuda"]);
+        assert!(parse_v3_policy(&incorrect_order,2048).is_err());
+        let mut invented_context=request.clone();
+        invented_context["contextLength"]=json!(4096);
+        assert!(parse_v3_policy(&invented_context,2048).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn policy_switch_retires_real_previous_v3_child_without_touching_artifact() {
+        let policy=parse_v3_policy(&json!({
+            "backend":"cpu","deviceIds":["clack-this-pc:cpu:0"],"gpuLayers":0,
+            "contextLength":2048,"fallback":{"policy":"disabled"},
+            "candidates":[{"backend":"cpu","deviceIds":["clack-this-pc:cpu:0"],"gpuLayers":0}]
+        }),2048).unwrap();
+        let digest=format!("sha256:{}","b".repeat(64));
+        let old_key=("slice4-policy-fence-old".to_owned(),"old-policy-identity".to_owned());
+        let old=get_or_insert_owner(old_key.clone()).unwrap();
+        let child=Command::new("powershell.exe").args(["-NoProfile","-Command"])
+            .arg("Start-Sleep -Seconds 45")
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .spawn().expect("real owned child");
+        let pid=child.id();
+        {
+            let mut owner=old.lock().unwrap();
+            owner.child=Some(child);
+            owner.state="Ready";
+            owner.epoch="stale-before-policy-switch".into();
+            owner.port=Some(59334);
+            owner.key=Some("ephemeral".into());
+            owner.deployment=Some(BoundDeployment {
+                id:old_key.0.clone(),identity:old_key.1.clone(),digest:digest.clone(),
+                context:2048,requested_backend:"cpu".into(),device_id:None,
+                gpu_layers:0,cpu_fallback_allowed:false,persisted_policy:Some(policy.clone()),
+            });
+        }
+        let next=BoundDeployment {
+            id:"slice4-policy-fence-next".into(),identity:"new-policy-identity".into(),
+            digest:digest.clone(),context:2048,requested_backend:"cpu".into(),
+            device_id:None,gpu_layers:0,cpu_fallback_allowed:false,
+            persisted_policy:Some(policy),
+        };
+        retire_prior_persisted_policy_owner(&next).unwrap();
+        {
+            let owner=old.lock().unwrap();
+            assert!(owner.child.is_none());
+            assert!(owner.deployment.is_none());
+            assert!(owner.key.is_none());
+            assert!(owner.port.is_none());
+            assert_ne!(owner.epoch,"stale-before-policy-switch");
+        }
+        let process=Command::new("powershell.exe").args(["-NoProfile","-Command"])
+            .arg(format!("if(Get-Process -Id {pid} -ErrorAction SilentlyContinue){{exit 9}}"))
+            .status().unwrap();
+        assert!(process.success(),"previous actual child must have been reaped");
+        registry().entries.lock().unwrap().owners.remove(&old_key);
+    }
+
+    #[test]
     fn cuda_ready_requires_native_init_selected_gpu_and_positive_offload_proof() {
         let log = b"llama_prepare_model_devices: using device CUDA0 (NVIDIA GeForce RTX 5070 Ti) (0000:01:00.0) - 15037 MiB free\nload_tensors: offloaded 25/25 layers to GPU\nload_tensors: CUDA0 model buffer size =   373.73 MiB\n";
         assert_eq!(observed_cuda_offload(log,"NVIDIA GeForce RTX 5070 Ti"),Some(25));
@@ -3052,8 +3716,8 @@ mod tests {
         owner.deployment=Some(BoundDeployment {
             id:"owned-cuda".into(),identity:"exact-canonical-binding".into(),
             digest:format!("sha256:{}","a".repeat(64)),context:2048,
-            requested_backend:"cuda",device_id:Some("GPU-test".into()),
-            gpu_layers:40,cpu_fallback_allowed:true,
+            requested_backend:"cuda".into(),device_id:Some("GPU-test".into()),
+            gpu_layers:40,cpu_fallback_allowed:true,persisted_policy:None,
         });
         fail_or_stage_cuda_recovery(&mut owner,"real CUDA child was reaped".into(),false);
         assert_eq!(owner.state,"Recovering");

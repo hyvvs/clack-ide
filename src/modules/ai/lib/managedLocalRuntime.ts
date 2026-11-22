@@ -1,8 +1,27 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
-import type { ActualExecution } from "@/modules/ai/lib/localComputeFabric";
+import type { ActualExecution, RequestedExecution } from "@/modules/ai/lib/localComputeFabric";
 
 export type ManagedLocalRouteIdentity = NonNullable<ModelTransportIdentity["managedLocal"]>;
+/** Read-only native candidate admission. UNKNOWN health is null until Ready.
+ * observedAvailableBytes describes free capacity, not model consumption;
+ * estimatedRequiredBytes is deliberately an estimate, not measured usage. */
+export type ManagedNativeCandidateEvidence = {
+  policyPosition: number;
+  backend: string;
+  deviceIds: string[];
+  runtimeVariantId?: string | null;
+  installed: boolean;
+  verified: boolean;
+  healthy: boolean | null;
+  memoryAdmissible: boolean;
+  trustState: string;
+  qualificationState: string;
+  state: "rejected" | "admitted" | "not-evaluated";
+  reasons: string[];
+  estimatedRequiredBytes?: number | null;
+  observedAvailableBytes?: number | null;
+};
 export type ManagedLocalNativeStatus = {
   installed: boolean;
   state: "Not Installed" | "Stopped" | "Starting" | "Loading" | "Recovering" | "Ready" | "Stopping" | "Failed";
@@ -36,6 +55,11 @@ export type ManagedLocalNativeStatus = {
   failureKind?: "child-exited-before-ready" | "ready-timeout" | "dependency-load-failure" | "port-collision" | "startup-failed" | "cpu-recovery-failed" | null;
   /** Conservative first inference-dispatch barrier: bearer route already issued. */
   inferenceRouteIssued?: boolean;
+  /** Native-selected index into the exact persisted candidate order. */
+  selectedCandidateIndex?: number | null;
+  /** Authoritative native readback; never a second persisted policy authority. */
+  requestedExecution?: RequestedExecution | null;
+  candidateEvaluations?: ManagedNativeCandidateEvidence[];
 };
 export type ManagedCudaVariantStatus = {
   installed: boolean;
