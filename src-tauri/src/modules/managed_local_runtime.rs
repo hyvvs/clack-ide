@@ -330,6 +330,19 @@ fn verify_payload_dir_expected(
         let entry = entry.map_err(|_| "Runtime payload entry unreadable")?;
         let name = entry.file_name();
         let name = name.to_str().ok_or("Runtime payload name is not Unicode")?;
+        // The CPU b12248 root also owns the independently verified CUDA
+        // variant subtree. It is not part of the CPU ZIP file manifest.
+        if expected_files.len() == cpu_payload::FILES.len()
+            && dir.file_name().is_some_and(|part| part == ENGINE_VERSION)
+            && name == "cuda"
+        {
+            let metadata = fs::symlink_metadata(entry.path())
+                .map_err(|_| "CUDA variant directory metadata unavailable")?;
+            if !metadata.is_dir() || windows_acl::is_reparse(&metadata) {
+                return Err("CUDA variant path is not a regular private directory".into());
+            }
+            continue;
+        }
         let expected = expected_files
             .iter()
             .find(|(filename, _, _)| *filename == name)
@@ -740,7 +753,7 @@ pub fn managed_local_runtime_install_bundle(app: AppHandle, path: String) -> Res
     Ok(())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct BoundDeployment {
     id: String,
     identity: String,
@@ -958,6 +971,7 @@ struct RuntimeOwner {
     started_at: Option<Instant>,
     deployment: Option<BoundDeployment>,
     port: Option<u16>,
+    last_port: Option<u16>,
     key: Option<String>,
     alias: Option<String>,
     error: Option<String>,
@@ -969,7 +983,22 @@ struct RuntimeOwner {
     cuda_model: Option<String>,
     gpu_free_before_bytes: Option<u64>,
     gpu_free_after_bytes: Option<u64>,
+    gpu_estimated_required_bytes: Option<u64>,
     fallback_reason: Option<String>,
+    /// A failed CUDA startup may be retried ONLY before the first route grant.
+    /// This ticket lives in the existing per-deployment process owner, not a
+    /// second scheduler. Stop/epoch rotation cancels it.
+    pending_cpu_recovery: Option<StartupRecoveryTicket>,
+    inference_route_issued: bool,
+    failure_kind: Option<&'static str>,
+}
+
+#[derive(Clone, Debug)]
+struct StartupRecoveryTicket {
+    binding: BoundDeployment,
+    invalidated_epoch: String,
+    cuda_failure_reason: String,
+    failure_kind: &'static str,
 }
 
 impl Default for RuntimeOwner {
@@ -989,6 +1018,7 @@ impl Default for RuntimeOwner {
             started_at: None,
             deployment: None,
             port: None,
+            last_port: None,
             key: None,
             alias: None,
             error: None,
@@ -996,7 +1026,10 @@ impl Default for RuntimeOwner {
             selected_backend: "cpu", selected_device_id: None,
             selected_gpu_layers: 0, cuda_offloaded_layers: None,
             cuda_model: None, gpu_free_before_bytes: None,
-            gpu_free_after_bytes: None, fallback_reason: None,
+            gpu_free_after_bytes: None, gpu_estimated_required_bytes: None,
+            fallback_reason: None,
+            pending_cpu_recovery: None, inference_route_issued: false,
+            failure_kind: None,
         }
     }
 }
@@ -1173,7 +1206,7 @@ fn reserve_port(port: u16) -> Result<PortReservation, String> {
     Ok(PortReservation(port))
 }
 
-fn reserve_fresh_loopback_port() -> Result<(u16, PortReservation), String> {
+fn reserve_fresh_loopback_port(exclude:Option<u16>) -> Result<(u16, PortReservation), String> {
     // Native siblings can race the ephemeral OS allocator after another
     // owner dropped its bind probe; retry only bounded candidate selections.
     for _ in 0..16 {
@@ -1181,6 +1214,7 @@ fn reserve_fresh_loopback_port() -> Result<(u16, PortReservation), String> {
             .map_err(|_| "Could not allocate local runtime transport")?;
         let port = listener.local_addr()
             .map_err(|_| "Could not read local runtime port")?.port();
+        if exclude == Some(port) { continue; }
         let claimed = reserve_port(port);
         drop(listener);
         if let Ok(reservation) = claimed { return Ok((port, reservation)); }
@@ -1534,16 +1568,19 @@ fn forget_process(owner: &mut RuntimeOwner, state: &'static str, error: Option<S
     }
     owner.state = state;
     owner.deployment = None;
-    owner.port = None;
+    owner.last_port = owner.port.take().or(owner.last_port);
     owner.key = None;
     owner.alias = None;
     owner.started_at = None;
     owner.error = error;
+    owner.pending_cpu_recovery = None;
+    owner.inference_route_issued = false;
+    owner.failure_kind = None;
     // A failed CUDA owner must remain labeled CUDA until the next start/stop.
     // Otherwise a crash on a host with only the CUDA variant installed turns
     // into a misleading "Not Installed" CPU status and loses the real reason.
     // The child/secret/port/epoch are ALWAYS reaped and invalidated above.
-    if state != "Failed" {
+    if state != "Failed" && state != "Recovering" {
         owner.selected_backend = "cpu";
         owner.selected_device_id = None;
         owner.selected_gpu_layers = 0;
@@ -1553,7 +1590,53 @@ fn forget_process(owner: &mut RuntimeOwner, state: &'static str, error: Option<S
     }
     owner.cuda_offloaded_layers = None;
     owner.gpu_free_after_bytes = None;
+    owner.gpu_estimated_required_bytes = None;
     roll_epoch(owner);
+}
+
+/// Classify startup failure from real owned-child observations. The diagnostic
+/// is bounded and contains neither command-line credentials nor model paths.
+fn classify_startup_failure(logs: &[u8], timed_out: bool) -> &'static str {
+    let log = String::from_utf8_lossy(logs).to_ascii_lowercase();
+    if log.contains("address already in use") || log.contains("bind failed") ||
+        log.contains("failed to bind") {
+        "port-collision"
+    } else if log.contains("failed to load") || log.contains("dll not found") ||
+        log.contains("could not load") || log.contains("loadlibrary") ||
+        log.contains("cublas64") {
+        "dependency-load-failure"
+    } else if timed_out {
+        "ready-timeout"
+    } else {
+        "child-exited-before-ready"
+    }
+}
+
+fn can_fallback_after_spawn(
+    backend:&str, state:&str, route_issued:bool, policy_allows_cpu:bool,
+) -> bool {
+    backend == "cuda" && matches!(state,"Starting"|"Loading") &&
+        !route_issued && policy_allows_cpu
+}
+
+/// Retire and reap the failed CUDA child BEFORE issuing any alternate launch
+/// reservation. No CPU retry after Ready, any route grant, or a CPU failure.
+fn fail_or_stage_cuda_recovery(owner: &mut RuntimeOwner, reason: String, timed_out: bool) {
+    let failure_kind = owner.logs.lock().ok().map(|logs|
+        classify_startup_failure(&logs, timed_out)).unwrap_or("startup-failed");
+    let eligible = owner.child.is_some() && can_fallback_after_spawn(
+        owner.selected_backend,owner.state,owner.inference_route_issued,
+        owner.deployment.as_ref().is_some_and(|binding|binding.cpu_fallback_allowed));
+    let former = if eligible { owner.deployment.clone() } else { None };
+    forget_process(owner, if eligible {"Recovering"} else {"Failed"},
+        Some(reason.clone()));
+    owner.failure_kind = Some(failure_kind);
+    if let Some(binding) = former {
+        owner.pending_cpu_recovery = Some(StartupRecoveryTicket {
+            binding, invalidated_epoch: owner.epoch.clone(),
+            cuda_failure_reason: reason, failure_kind,
+        });
+    }
 }
 fn reap_crash(owner: &mut RuntimeOwner) {
     if owner.child.as_mut().is_some_and(|child| {
@@ -1562,11 +1645,8 @@ fn reap_crash(owner: &mut RuntimeOwner) {
             .map(|status| status.is_some())
             .unwrap_or(true)
     }) {
-        forget_process(
-            owner,
-            "Failed",
-            Some("Managed runtime exited or crashed".into()),
-        );
+        fail_or_stage_cuda_recovery(owner,
+            "Managed runtime child exited before authenticated readiness or lost health".into(),false);
     }
 }
 
@@ -1677,20 +1757,56 @@ fn verified_selected_engine(app: &AppHandle, backend: &str) -> bool {
 /// The model file + context + runtime headroom is a lower-bound estimate, not
 /// a promise that GPU allocation or quantized KV buffers will fit at launch.
 fn cuda_memory_admission(
-    model_bytes:u64, context:u64, total:Option<u64>, free:Option<u64>,
+    model_bytes:u64, context:u64, requested_layers:u32,
+    observed_transformer_blocks:Option<u64>,
+    total:Option<u64>, free:Option<u64>,
 ) -> Result<u64,String> {
+    if requested_layers == 0 {
+        return Err("CUDA requires positive requested GPU-offload layers".into());
+    }
     let total=total.ok_or("CUDA total VRAM is UNKNOWN")?;
     let free=free.ok_or("CUDA available VRAM is UNKNOWN")?;
     if free>total {return Err("CUDA free VRAM exceeds total: invalid device observation".into());}
-    let estimate=model_bytes.checked_add(context.checked_mul(64*1024)
+    // Approximate a lower-bound *offloaded* model portion from inspected
+    // GGUF tensor-block geometry; if unknown, conservatively use the entire
+    // model. This is an admission heuristic, NOT a promised CUDA allocation.
+    let model_part=if let Some(total_blocks)=observed_transformer_blocks
+        .filter(|blocks|*blocks>0&&*blocks<1_000_000) {
+        let total_layers=total_blocks+1;
+        let requested=(requested_layers as u64).min(total_layers);
+        ((model_bytes as u128)*(requested as u128)/(total_layers as u128))
+            .min(model_bytes as u128) as u64
+    } else { model_bytes };
+    let estimate=model_part.checked_add(context.checked_mul(64*1024)
         .ok_or("CUDA context memory estimate overflow")?)
         .and_then(|size|size.checked_add(512*1024*1024))
         .ok_or("CUDA memory estimate overflow")?;
     if estimate>total || estimate>free {
-        return Err(format!("Insufficient measured CUDA VRAM: estimated at least {} MiB including model and runtime headroom; {} MiB free of {} MiB",
-            estimate/(1024*1024),free/(1024*1024),total/(1024*1024)));
+        return Err(format!("Insufficient measured CUDA VRAM: approximate admission estimate at least {} MiB ({} requested GPU layers, model/context/runtime headroom); {} MiB free of {} MiB",
+            estimate/(1024*1024),requested_layers,free/(1024*1024),total/(1024*1024)));
     }
     Ok(estimate)
+}
+
+/// CPU fallback is also admitted against measured free system RAM. Legacy
+/// pinned CPU-only launches retain their original admission behavior; this
+/// check is stricter only for an explicit accelerated→CPU fallback.
+fn verified_admissible_fallback_cpu(
+    app:&AppHandle, model_bytes:u64, context:u64,
+) -> Result<PathBuf,String> {
+    let memory=crate::modules::hardware_profile::local_hardware_observation();
+    let free=memory.available_ram_bytes.ok_or(
+        "CPU fallback memory admission UNKNOWN: host free RAM is not measured")?;
+    let estimated=model_bytes.checked_add(context.checked_mul(16*1024)
+        .ok_or("CPU context memory estimate overflow")?)
+        .and_then(|n|n.checked_add(256*1024*1024))
+        .ok_or("CPU memory estimate overflow")?;
+    if free<estimated {
+        return Err(format!(
+            "CPU fallback insufficient RAM: approximate {} MiB required; {} MiB free",
+            estimated/(1024*1024),free/(1024*1024)));
+    }
+    verified_engine(app)
 }
 
 /// A rejected CUDA admission can select only a separately verified managed
@@ -1785,7 +1901,7 @@ pub struct ManagedRuntimeStatus {
     deployment_identity_hash: Option<String>,
     model_digest: Option<String>,
     pub process_id: Option<u32>,
-    port: Option<u16>,
+    pub port: Option<u16>,
     pub error: Option<String>,
     /// Only native-owned, authenticated Ready with a verified pinned launcher
     /// establishes actual CPU execution; a backend request never does.
@@ -1796,11 +1912,15 @@ pub struct ManagedRuntimeStatus {
     selected_gpu_layers: Option<u32>,
     selected_device_id: Option<String>,
     pub fallback_used: bool,
-    fallback_authorized: bool,
-    fallback_reason: Option<String>,
+    pub fallback_authorized: bool,
+    pub fallback_reason: Option<String>,
     pub gpu_free_before_bytes: Option<u64>,
     pub gpu_free_after_bytes: Option<u64>,
     pub cuda_process_vram_bytes: Option<u64>,
+    pub gpu_estimated_required_bytes: Option<u64>,
+    pub recovery_state: &'static str,
+    pub failure_kind: Option<&'static str>,
+    pub inference_route_issued: bool,
 }
 fn snapshot(owner: &RuntimeOwner, installed: bool) -> ManagedRuntimeStatus {
     ManagedRuntimeStatus {
@@ -1859,10 +1979,16 @@ fn snapshot(owner: &RuntimeOwner, installed: bool) -> ManagedRuntimeStatus {
         fallback_reason: owner.fallback_reason.clone(),
         gpu_free_before_bytes: owner.gpu_free_before_bytes,
         gpu_free_after_bytes: owner.gpu_free_after_bytes,
+        gpu_estimated_required_bytes: owner.gpu_estimated_required_bytes,
         cuda_process_vram_bytes: if installed && owner.state == "Ready" && owner.selected_backend == "cuda" {
             owner.child.as_ref().and_then(|child|
                 crate::modules::hardware_profile::cuda_process_vram_bytes(child.id()))
         } else { None },
+        recovery_state: if owner.pending_cpu_recovery.is_some() {"pending-cpu-recovery"}
+            else if owner.fallback_reason.is_some() {"cpu-fallback-launched"}
+            else if owner.state == "Failed" {"failed"} else {"none"},
+        failure_kind: owner.failure_kind,
+        inference_route_issued: owner.inference_route_issued,
     }
 }
 
@@ -1878,6 +2004,8 @@ fn idle_snapshot(installed: bool) -> ManagedRuntimeStatus {
         requested_gpu_layers: None,selected_gpu_layers: None,selected_device_id: None,
         fallback_used: false,fallback_authorized: false,fallback_reason: None,
         gpu_free_before_bytes: None,gpu_free_after_bytes:None,cuda_process_vram_bytes:None,
+        gpu_estimated_required_bytes: None,
+        recovery_state: "none", failure_kind: None, inference_route_issued: false,
     }
 }
 
@@ -1934,8 +2062,7 @@ async fn authenticated_ready(port: u16, key: &str, alias: &str) -> Result<Option
     })))
 }
 
-#[tauri::command]
-pub async fn managed_local_runtime_status(
+async fn managed_local_runtime_status_observe(
     app: AppHandle,
     deployment_id: Option<String>, deployment_identity: Option<String>,
 ) -> Result<ManagedRuntimeStatus, String> {
@@ -2006,28 +2133,22 @@ pub async fn managed_local_runtime_status(
                             .and_then(|gpu| gpu.available_vram_bytes.map(|free| free.value));
                         owner.state = "Ready";
                     } else if owner.started_at.is_some_and(|t| t.elapsed() > START_TIMEOUT) {
-                        forget_process(&mut owner, "Failed", Some(
-                            "CUDA runtime became healthy but NVIDIA initialization/positive GPU layer offload was not verified".into()));
+                        fail_or_stage_cuda_recovery(&mut owner,
+                            "CUDA runtime became healthy but NVIDIA initialization/positive GPU layer offload was not verified".into(),true);
                     } else { owner.state = "Loading"; }
                 }
                 Ok(Some(true)) => owner.state = "Ready",
                 Ok(Some(false)) => owner.state = "Loading",
                 _ if owner.state == "Ready" => {
-                    forget_process(
-                        &mut owner,
-                        "Failed",
-                        Some("Managed runtime lost authenticated health".into()),
-                    );
+                    fail_or_stage_cuda_recovery(&mut owner,
+                        "Managed runtime lost authenticated health".into(),false);
                 }
                 _ if owner
                     .started_at
                     .is_some_and(|time| time.elapsed() > START_TIMEOUT) =>
                 {
-                    forget_process(
-                        &mut owner,
-                        "Failed",
-                        Some("Managed runtime startup/metadata timeout".into()),
-                    )
+                    fail_or_stage_cuda_recovery(&mut owner,
+                        "Managed runtime startup/metadata timeout".into(),true)
                 }
                 _ => owner.state = "Starting",
             }
@@ -2050,6 +2171,57 @@ pub async fn managed_local_runtime_status(
     Ok(snapshot(&owner, installed))
 }
 
+/// One health observation may retire a real failed CUDA child, invalidate its
+/// route/credential/epoch and then launch a verified CPU variant. The existing
+/// native owner registry is the sole process authority for both attempts.
+#[tauri::command]
+pub async fn managed_local_runtime_status(
+    app: AppHandle,
+    deployment_id: Option<String>, deployment_identity: Option<String>,
+) -> Result<ManagedRuntimeStatus, String> {
+    let initial = managed_local_runtime_status_observe(
+        app.clone(),deployment_id.clone(),deployment_identity.clone()).await?;
+    if initial.state != "Recovering" { return Ok(initial); }
+    let (Some(id), Some(identity)) = (deployment_id.as_deref(),deployment_identity.as_deref()) else {
+        // Unscoped legacy status never chooses a recovery target implicitly.
+        return Ok(initial);
+    };
+    if let Err(error) = recover_failed_cuda_startup(app.clone(),id,identity) {
+        // Do not retain the recovery ticket after a failed CPU attempt. Manual
+        // retry must use a fresh, explicit native start, never spin on polling.
+        if let Ok(Some(slot)) = select_owner(Some(id),Some(identity)) {
+            if let Ok(mut owner) = slot.lock() {
+                if owner.pending_cpu_recovery.is_some() && owner.child.is_none() {
+                    forget_process(&mut owner,"Failed",Some(format!(
+                        "CUDA startup recovery failed closed: {error}")));
+                    owner.failure_kind = Some("cpu-recovery-failed");
+                }
+            }
+        }
+    }
+    managed_local_runtime_status_observe(app,deployment_id,deployment_identity).await
+}
+
+fn recover_failed_cuda_startup(
+    app:AppHandle, deployment_id:&str, identity:&str,
+) -> Result<(),String> {
+    let slot=select_owner(Some(deployment_id),Some(identity))?
+        .ok_or("Native CUDA recovery owner missing")?;
+    let ticket = {
+        let owner=slot.lock().map_err(|_|"Native recovery owner poisoned")?;
+        if owner.state != "Recovering" || owner.child.is_some() {
+            return Err("CUDA recovery was cancelled or altered".into());
+        }
+        owner.pending_cpu_recovery.clone().ok_or("No native CPU recovery ticket")?
+    };
+    let current=current_binding(&app,deployment_id,identity)?;
+    if current != ticket.binding {
+        return Err("Managed deployment changed after CUDA startup failure".into());
+    }
+    start_bound_runtime(app,current,Some(ticket))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn managed_local_runtime_start(
     app: AppHandle,
@@ -2057,8 +2229,16 @@ pub fn managed_local_runtime_start(
     deployment_identity: String,
 ) -> Result<ManagedRuntimeStatus, String> {
     let binding = current_binding(&app, &deployment_id, &deployment_identity)?;
+    start_bound_runtime(app,binding,None)
+}
+
+fn start_bound_runtime(
+    app: AppHandle, binding:BoundDeployment,
+    recovery: Option<StartupRecoveryTicket>,
+) -> Result<ManagedRuntimeStatus,String> {
     let model = model_path(&app, &binding.digest)?;
-    if sha256_file(&model)? != binding.digest.trim_start_matches("sha256:") {
+    let inspected = inspect(&model)?;
+    if inspected.digest != binding.digest {
         return Err("Imported GGUF file is missing or was modified".into());
     }
     let mut selected_backend = "cpu";
@@ -2067,32 +2247,46 @@ pub fn managed_local_runtime_start(
     let mut cuda_model = None;
     let mut fallback_reason = None;
     let mut gpu_layers = 0;
-    let binary = if binding.requested_backend == "cuda" {
-        let admission = (|| -> Result<(PathBuf, String, String, u64), String> {
+    let mut gpu_estimated_required = None;
+    let binary = if let Some(ticket) = recovery.as_ref() {
+        if ticket.binding != binding || !binding.cpu_fallback_allowed ||
+            binding.requested_backend != "cuda" {
+            return Err("Native post-spawn CPU recovery policy or identity mismatch".into());
+        }
+        let (cpu_binary,rejected_reason)=authorized_cuda_cpu_fallback(
+            binding.cpu_fallback_allowed, ticket.cuda_failure_reason.clone(),
+            || verified_admissible_fallback_cpu(&app,inspected.size,binding.context))?;
+        fallback_reason=Some(format!(
+            "CUDA post-spawn {}: {rejected_reason}",ticket.failure_kind));
+        cpu_binary
+    } else if binding.requested_backend == "cuda" {
+        let admission = (|| -> Result<(PathBuf, String, String, u64, u64), String> {
             let device_id = binding.device_id.as_deref().ok_or("CUDA request has no exact device")?;
             let gpu = crate::modules::hardware_profile::cuda_device_for_request(device_id)?;
             let total = gpu.total_vram_bytes.as_ref().map(|v|v.value);
             let free = gpu.available_vram_bytes.as_ref().map(|v|v.value);
-            let model_bytes = fs::metadata(&model).map_err(|_| "Model metadata unavailable")?.len();
-            cuda_memory_admission(model_bytes,binding.context,total,free)?;
+            let estimated = cuda_memory_admission(inspected.size,binding.context,
+                binding.gpu_layers,inspected.block_count,total,free)?;
             let free=free.ok_or("CUDA available VRAM is UNKNOWN")?;
             let model_name = gpu.model.map(|value|value.value)
                 .ok_or("Selected NVIDIA GPU model identity is UNKNOWN")?;
             let binary = verified_cuda_engine(&app)?;
-            Ok((binary, device_id.to_owned(), model_name, free))
+            Ok((binary, device_id.to_owned(), model_name, free, estimated))
         })();
         match admission {
-            Ok((cuda_binary, device, model, free)) => {
+            Ok((cuda_binary, device, model, free, estimated)) => {
                 selected_backend = "cuda";
                 selected_device = Some(device);
                 gpu_free_before = Some(free);
                 cuda_model = Some(model);
                 gpu_layers = binding.gpu_layers;
+                gpu_estimated_required = Some(estimated);
                 cuda_binary
             }
             Err(reason) => {
                 let (cpu_binary, rejected_reason) = authorized_cuda_cpu_fallback(
-                    binding.cpu_fallback_allowed, reason, || verified_engine(&app),
+                    binding.cpu_fallback_allowed, reason,
+                    || verified_admissible_fallback_cpu(&app,inspected.size,binding.context),
                 )?;
                 fallback_reason = Some(rejected_reason);
                 cpu_binary
@@ -2104,6 +2298,9 @@ pub fn managed_local_runtime_start(
     {
         let mut current = slot.lock().map_err(|_| "Runtime state poisoned")?;
         reap_crash(&mut current);
+        if !recovery_matches_owner(&current,recovery.as_ref()) {
+            return Err("Managed recovery epoch changed or pending CUDA recovery must complete first".into());
+        }
         if current.child.is_some() {
             if current.deployment.as_ref().is_some_and(|existing|
                 existing.id == binding.id && existing.identity == binding.identity) {
@@ -2118,13 +2315,16 @@ pub fn managed_local_runtime_start(
         return Err("Managed runtime host is shutting down".into());
     }
     reap_crash(&mut owner);
+    if !recovery_matches_owner(&owner,recovery.as_ref()) {
+        return Err("Managed recovery was cancelled by stop/start or a newer epoch".into());
+    }
     if owner.child.is_some() {
         return Err("Exact managed deployment started under another reservation".into());
     }
     let random_key = random_hex()?;
     let epoch = random_hex()?;
     let alias = format!("clack-{}", &binding.digest[7..23]);
-    let (port, reserved_port) = reserve_fresh_loopback_port()?;
+    let (port, reserved_port) = reserve_fresh_loopback_port(owner.last_port)?;
     let mut command = Command::new(binary);
     // Never inject parent process secrets, credentials, proxies or untrusted
     // LLAMA_ARG_* defaults into the engine process. Both release variants
@@ -2259,8 +2459,23 @@ pub fn managed_local_runtime_start(
     owner.cuda_model = cuda_model;
     owner.gpu_free_before_bytes = gpu_free_before;
     owner.gpu_free_after_bytes = None;
+    owner.gpu_estimated_required_bytes = gpu_estimated_required;
     owner.fallback_reason = fallback_reason;
+    owner.failure_kind = recovery.as_ref().map(|ticket|ticket.failure_kind);
+    owner.pending_cpu_recovery = None;
+    owner.inference_route_issued = false;
     Ok(snapshot(&owner, true))
+}
+
+fn recovery_matches_owner(owner:&RuntimeOwner, ticket:Option<&StartupRecoveryTicket>)->bool {
+    match ticket {
+        Some(ticket) => owner.state == "Recovering" && owner.child.is_none() &&
+            owner.epoch == ticket.invalidated_epoch &&
+            owner.pending_cpu_recovery.as_ref().is_some_and(|pending|
+                pending.invalidated_epoch == ticket.invalidated_epoch &&
+                pending.binding == ticket.binding),
+        None => owner.pending_cpu_recovery.is_none() && owner.state != "Recovering",
+    }
 }
 
 #[tauri::command]
@@ -2337,6 +2552,11 @@ pub async fn managed_local_runtime_route(
     {
         return Err("Exact managed deployment is not ready; no Ollama fallback".into());
     }
+    // The renderer receives the authenticated transport authority after this
+    // point. It can dispatch bytes without another native callback; therefore
+    // route issuance is the conservative irreversible dispatch barrier. Never
+    // auto-replay or transparently fail over once it has happened.
+    owner.inference_route_issued = true;
     Ok(ManagedRuntimeRoute {
         base_url: format!(
             "http://127.0.0.1:{}/v1",
@@ -2753,13 +2973,20 @@ mod tests {
     #[test]
     fn cuda_memory_admission_rejects_unknown_insufficient_and_impossible_claims() {
         const MIB:u64=1024*1024;
-        assert!(cuda_memory_admission(500*MIB,2048,None,Some(14000*MIB)).unwrap_err().contains("total VRAM is UNKNOWN"));
-        assert!(cuda_memory_admission(500*MIB,2048,Some(16303*MIB),None).unwrap_err().contains("available VRAM is UNKNOWN"));
-        assert!(cuda_memory_admission(500*MIB,2048,Some(16303*MIB),Some(50*MIB)).unwrap_err().contains("Insufficient"));
-        assert!(cuda_memory_admission(500*MIB,2048,Some(100*MIB),Some(100*MIB)).unwrap_err().contains("Insufficient"));
-        assert!(cuda_memory_admission(500*MIB,2048,Some(16303*MIB),Some(16500*MIB)).unwrap_err().contains("exceeds total"));
-        assert!(cuda_memory_admission(u64::MAX,2048,Some(16303*MIB),Some(14000*MIB)).unwrap_err().contains("overflow"));
-        assert!(cuda_memory_admission(491400032,2048,Some(16303*MIB),Some(12000*MIB)).is_ok());
+        assert!(cuda_memory_admission(500*MIB,2048,40,Some(25),None,Some(14000*MIB)).unwrap_err().contains("total VRAM is UNKNOWN"));
+        assert!(cuda_memory_admission(500*MIB,2048,40,Some(25),Some(16303*MIB),None).unwrap_err().contains("available VRAM is UNKNOWN"));
+        assert!(cuda_memory_admission(500*MIB,2048,40,Some(25),Some(16303*MIB),Some(50*MIB)).unwrap_err().contains("Insufficient"));
+        assert!(cuda_memory_admission(500*MIB,2048,40,Some(25),Some(100*MIB),Some(100*MIB)).unwrap_err().contains("Insufficient"));
+        assert!(cuda_memory_admission(500*MIB,2048,40,Some(25),Some(16303*MIB),Some(16500*MIB)).unwrap_err().contains("exceeds total"));
+        assert!(cuda_memory_admission(u64::MAX,2048,40,None,Some(16303*MIB),Some(14000*MIB)).unwrap_err().contains("overflow"));
+        assert!(cuda_memory_admission(491400032,2048,40,Some(25),Some(16303*MIB),Some(12000*MIB)).is_ok());
+        let partial=cuda_memory_admission(800*MIB,2048,4,Some(32),
+            Some(16303*MIB),Some(12000*MIB)).unwrap();
+        let full=cuda_memory_admission(800*MIB,2048,33,Some(32),
+            Some(16303*MIB),Some(12000*MIB)).unwrap();
+        assert!(partial<full,"Requested layers and inspected block count must influence estimates");
+        assert!(cuda_memory_admission(100*MIB,2048,0,None,
+            Some(16303*MIB),Some(12000*MIB)).is_err());
     }
 
     #[test]
@@ -2782,6 +3009,72 @@ mod tests {
         }).expect("explicit policy and verified managed CPU permit fallback");
         assert_eq!(selected, owned_binary);
         assert_eq!(reason, "CUDA device unavailable");
+    }
+
+    #[test]
+    fn postspawn_policy_denies_ready_cpu_and_route_issued_replays() {
+        assert!(can_fallback_after_spawn("cuda","Starting",false,true));
+        assert!(can_fallback_after_spawn("cuda","Loading",false,true));
+        for (backend,state,issued,allowed) in [
+            ("cuda","Starting",false,false),
+            ("cuda","Ready",false,true),
+            ("cuda","Failed",false,true),
+            ("cuda","Loading",true,true),
+            ("cpu","Starting",false,true),
+        ] {
+            assert!(!can_fallback_after_spawn(backend,state,issued,allowed),
+                "Never retry a dispatched/Ready request or an unauthorized backend");
+        }
+        assert_eq!(classify_startup_failure(b"failed to bind address already in use",false),"port-collision");
+        assert_eq!(classify_startup_failure(b"LoadLibrary error: cublas64 missing",false),"dependency-load-failure");
+        assert_eq!(classify_startup_failure(b"Loading tensor data",true),"ready-timeout");
+        assert_eq!(classify_startup_failure(b"child died",false),"child-exited-before-ready");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn real_owned_child_cleanup_rotates_epoch_and_cancels_stale_recovery_ticket() {
+        // A genuine OS child, not a fabricated process id or an assigned
+        // fallback result. Actual CUDA→CPU inference is tested separately by
+        // the isolated native Tauri acceptance application.
+        let child=Command::new("powershell.exe")
+            .args(["-NoProfile","-NonInteractive","-Command","Start-Sleep -Seconds 15"])
+            .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let pid=child.id();
+        let mut owner=RuntimeOwner::default();
+        let old_epoch=owner.epoch.clone();
+        owner.child=Some(child);
+        owner.state="Starting";
+        owner.selected_backend="cuda";
+        owner.port=Some(49151);
+        owner.key=Some("ephemeral-native-key".into());
+        owner.alias=Some("clack-test".into());
+        owner.deployment=Some(BoundDeployment {
+            id:"owned-cuda".into(),identity:"exact-canonical-binding".into(),
+            digest:format!("sha256:{}","a".repeat(64)),context:2048,
+            requested_backend:"cuda",device_id:Some("GPU-test".into()),
+            gpu_layers:40,cpu_fallback_allowed:true,
+        });
+        fail_or_stage_cuda_recovery(&mut owner,"real CUDA child was reaped".into(),false);
+        assert_eq!(owner.state,"Recovering");
+        assert!(owner.child.is_none());
+        assert!(owner.key.is_none());
+        assert!(owner.port.is_none());
+        assert_eq!(owner.last_port,Some(49151));
+        assert_ne!(owner.epoch,old_epoch);
+        assert!(owner.pending_cpu_recovery.is_some());
+        let ticket=owner.pending_cpu_recovery.clone().unwrap();
+        assert!(recovery_matches_owner(&owner,Some(&ticket)));
+        assert!(!recovery_matches_owner(&owner,None));
+        let process=Command::new("powershell.exe").args(["-NoProfile","-Command"])
+            .arg(format!("if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 3 }}"))
+            .status().unwrap();
+        assert!(process.success(),"OS-reaped child must no longer exist");
+        forget_process(&mut owner,"Stopped",None);
+        assert!(owner.pending_cpu_recovery.is_none());
+        assert_ne!(owner.epoch,ticket.invalidated_epoch);
+        assert!(!recovery_matches_owner(&owner,Some(&ticket)),
+            "Explicit stop must cancel any pending CPU recovery");
     }
 
     #[cfg(windows)]

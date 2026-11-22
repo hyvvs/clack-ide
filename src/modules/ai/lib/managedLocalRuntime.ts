@@ -5,7 +5,7 @@ import type { ActualExecution } from "@/modules/ai/lib/localComputeFabric";
 export type ManagedLocalRouteIdentity = NonNullable<ModelTransportIdentity["managedLocal"]>;
 export type ManagedLocalNativeStatus = {
   installed: boolean;
-  state: "Not Installed" | "Stopped" | "Starting" | "Loading" | "Ready" | "Stopping" | "Failed";
+  state: "Not Installed" | "Stopped" | "Starting" | "Loading" | "Recovering" | "Ready" | "Stopping" | "Failed";
   version: string;
   runtimeId?: string;
   epoch: string;
@@ -29,6 +29,13 @@ export type ManagedLocalNativeStatus = {
   gpuFreeBeforeBytes?: number | null;
   gpuFreeAfterBytes?: number | null;
   cudaProcessVramBytes?: number | null;
+  /** Admission estimate, not a measured GPU allocation. */
+  gpuEstimatedRequiredBytes?: number | null;
+  /** Native owned-child recovery; never inferred from a renderer request. */
+  recoveryState?: "none" | "pending-cpu-recovery" | "cpu-fallback-launched" | "failed";
+  failureKind?: "child-exited-before-ready" | "ready-timeout" | "dependency-load-failure" | "port-collision" | "startup-failed" | "cpu-recovery-failed" | null;
+  /** Conservative first inference-dispatch barrier: bearer route already issued. */
+  inferenceRouteIssued?: boolean;
 };
 export type ManagedCudaVariantStatus = {
   installed: boolean;

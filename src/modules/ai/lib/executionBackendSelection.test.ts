@@ -6,12 +6,14 @@ import {
   localComputeFabricSchema,
   requestedExecutionSchema,
   type RequestedExecution,
+  type RuntimeBackendVariant,
 } from "./localComputeFabric";
 import {
   deploymentRequestedExecution,
   observedActualExecution,
   runtimeBackendVariants,
   selectDeploymentExecution,
+  type BackendSelectionInput,
 } from "./executionBackendSelection";
 import {
   nativeHardwareObservationSchema,
@@ -235,5 +237,258 @@ describe("Universal Compute Foundation — native-bound CPU/CUDA admission", () 
     observedComputeHost(ctx.host,ctx.profile);
     expect(JSON.stringify(ctx.fabric)).toBe(before);
     expect(localComputeFabricSchema.parse(ctx.fabric).qualificationReceipts).toEqual(ctx.fabric.qualificationReceipts);
+  });
+});
+
+const verifiedVariant = (backend: string, id = `test/${backend}`): RuntimeBackendVariant => ({
+  id, backend, support: "AVAILABLE", installation: "AVAILABLE",
+  source: "test-verified-install", trust: "VERIFIED", runtimeVersion: MANAGED_LLAMA_ENGINE_VERSION,
+  supportedArtifactFormats: ["gguf"],
+});
+
+function orchestrationFixture(
+  native: NativeHardwareObservation | null = hardware(),
+  variants: RuntimeBackendVariant[] = [verifiedVariant("cpu"), verifiedVariant("cuda")],
+) {
+  const ctx = setup();
+  const runtime = {
+    ...ctx.runtime, id: "orchestration-test-runtime", type: "orchestration-test",
+    backendVariants: variants,
+  };
+  const host = {...ctx.host, runtimeIds: [...ctx.host.runtimeIds, runtime.id]};
+  const deployment = {...ctx.deployment, runtimeId: runtime.id};
+  const profile = projectHardwareProfile(host, runtime, native, at);
+  const base = {host, runtime, deployment, artifact: ctx.artifact, hardware: profile};
+  return {
+    ...base,
+    choose: (requested: RequestedExecution, override: Partial<BackendSelectionInput> = {}) =>
+      selectDeploymentExecution({...base, requested, ...override}),
+  };
+}
+
+const request = (
+  backend: string, policy: RequestedExecution["fallback"]["policy"] = "disabled",
+  order?: string[], options: Partial<RequestedExecution> = {},
+): RequestedExecution => requestedExecutionSchema.parse({
+  backend, gpuLayers: backend === "cpu" ? 0 : 40,
+  contextLength: 2048,
+  fallback: policy === "explicit-order" ? {policy, order} : {policy},
+  ...options,
+});
+
+describe("deterministic orchestration candidate evaluation", () => {
+  it("CPU-only policy selects CPU even with a verified CUDA build and GPU", () => {
+    const result = orchestrationFixture().choose(request("cpu"));
+    expect(result).toMatchObject({
+      policy: "cpu-only", state: "selected", requested: {backend: "cpu"},
+      selected: {backend: "cpu", deviceIds: ["clack-this-pc:cpu:0"],
+        gpuLayers: 0, runtimeVariantId: "test/cpu"},
+      fallbackUsed: false, fallbackAuthorized: false, actual: null,
+    });
+    expect(result.candidates.map(candidate => candidate.backend)).toEqual(["cpu"]);
+  });
+
+  it("exact CUDA chooses the pinned GPU and build without implicit CPU fallback", () => {
+    const fixture = orchestrationFixture();
+    const id = fixture.hardware.devices[1].id;
+    const result = fixture.choose(request("cuda", "disabled", undefined, {deviceIds: [id]}));
+    expect(result).toMatchObject({
+      policy: "exact-cuda", state: "selected",
+      selected: {backend: "cuda", gpuLayers: 40,
+        deviceIds: [id], runtimeVariantId: "test/cuda"},
+      actual: null,
+    });
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({role: "requested", state: "eligible"});
+  });
+
+  it("prefer CUDA then CPU chooses the first admissible candidate deterministically", () => {
+    const result = orchestrationFixture().choose(request("cuda", "allow-compatible"));
+    expect(result.policy).toBe("prefer-cuda-then-cpu");
+    expect(result.selected?.backend).toBe("cuda");
+    expect(result.fallbackUsed).toBe(false);
+    expect(result.candidates.map(candidate => [candidate.backend, candidate.state]))
+      .toEqual([["cuda", "eligible"], ["cpu", "eligible"]]);
+    expect(result.requested?.backend).toBe("cuda");
+    expect(result.actual).toBeNull();
+  });
+
+  it("prefer CUDA then CPU records authorization only when CPU is actually chosen", () => {
+    const ctx = orchestrationFixture(hardware(), [
+      verifiedVariant("cpu"),
+      {...verifiedVariant("cuda"), installation: "UNAVAILABLE"},
+    ]);
+    const result = ctx.choose(request("cuda", "allow-compatible"));
+    expect(result).toMatchObject({
+      state: "fallback", policy: "prefer-cuda-then-cpu",
+      requested: {backend: "cuda"}, selected: {backend: "cpu", gpuLayers: 0},
+      fallbackUsed: true, fallbackAuthorized: true, actual: null,
+    });
+    expect(result.reasons).toContain("cuda: runtime installation UNAVAILABLE");
+    expect(result.reasons.join(" ")).toContain("cuda → cpu authorized by allow-compatible");
+    expect(ctx.choose(request("cuda")).state).toBe("rejected");
+  });
+
+  it("explicit order evaluates only user-listed backends and skips unimplemented adapters", () => {
+    const result = orchestrationFixture().choose(
+      request("vulkan", "explicit-order", ["rocm", "cuda", "cpu"]),
+    );
+    expect(result.policy).toBe("explicit-order");
+    expect(result.requested?.backend).toBe("vulkan");
+    expect(result.selected).toMatchObject({backend: "cuda", runtimeVariantId: "test/cuda"});
+    expect(result.state).toBe("fallback");
+    expect(result.candidates.map(candidate => candidate.backend))
+      .toEqual(["vulkan", "rocm", "cuda", "cpu"]);
+    expect(result.candidates.slice(0, 2).map(candidate => candidate.state))
+      .toEqual(["rejected", "rejected"]);
+    expect(result.reasons.join(" ")).toContain("rocm: fallback execution not implemented");
+    expect(result.reasons.join(" ")).toContain("vulkan → cuda authorized by explicit-order");
+  });
+
+  it("unknown future and declared unsupported backends cannot become runnable by being named", () => {
+    const custom = verifiedVariant("future-npu");
+    const ctx = orchestrationFixture(hardware(), [verifiedVariant("cpu"), custom]);
+    const result = ctx.choose(request("future-npu", "explicit-order", ["rocm"]));
+    expect(result).toMatchObject({state: "rejected", selected: null, actual: null});
+    expect(result.reasons.join(" ")).toContain("future-npu: execution backend not implemented");
+    expect(result.reasons.join(" ")).toContain("rocm: fallback execution not implemented");
+    expect(orchestrationFixture().choose(request("future-npu")).reasons.join(" "))
+      .toContain("future-npu: runtime backend support UNKNOWN");
+  });
+
+  it("device ordering does not affect the chosen accelerator identity", () => {
+    const a = gpu("GPU-A"), b = gpu("GPU-B");
+    const first = orchestrationFixture({...hardware(), gpus: [b, a]});
+    const second = orchestrationFixture({...hardware(), gpus: [a, b]});
+    expect(first.choose(request("cuda")).selected).toEqual(second.choose(request("cuda")).selected);
+    expect(first.choose(request("cuda")).selected?.deviceIds)
+      .toEqual(["clack-this-pc:accelerator:GPU-A"]);
+  });
+
+  it("tries the next verified device when earlier one lacks VRAM without inventing a memory estimate", () => {
+    const a = {...gpu("GPU-A"), availableVramBytes: value(1 * GiB)};
+    const b = {...gpu("GPU-B"), availableVramBytes: value(10 * GiB)};
+    const ctx = orchestrationFixture({...hardware(), gpus: [b, a]});
+    const result = ctx.choose(request("cuda"), {requiredDeviceBytes: 2 * GiB});
+    expect(result.selected?.deviceIds).toEqual(["clack-this-pc:accelerator:GPU-B"]);
+    expect(ctx.choose(request("cuda"), {requiredDeviceBytes: 12 * GiB}).reasons.join(" "))
+      .toContain("cuda: insufficient available device memory");
+    const partialOffload = ctx.choose(request("cuda"), {
+      artifact: {...ctx.artifact, size: 20 * GiB},
+    });
+    expect(partialOffload.state).toBe("selected");
+  });
+
+  it("a pinned device identity may not be replaced silently with another GPU", () => {
+    const ctx = orchestrationFixture();
+    const result = ctx.choose(request("cuda", "disabled", undefined, {deviceIds: ["unseen-GPU"]}));
+    expect(result).toMatchObject({state: "rejected", selected: null, actual: null});
+    expect(result.reasons).toContain("cuda: requested device identity unavailable");
+    const tooMany = ctx.choose(request("cuda", "disabled", undefined, {
+      deviceIds: [ctx.hardware.devices[1].id, "another-GPU"],
+    }));
+    expect(tooMany.reasons.join(" ")).toContain("multi-device placement is not implemented");
+  });
+
+  it("unknown VRAM fails closed, including when no minimum was supplied", () => {
+    const ctx = orchestrationFixture({...hardware(), gpus: [
+      {...gpu(), availableVramBytes: null},
+    ]});
+    expect(ctx.choose(request("cuda")).reasons.join(" "))
+      .toContain("cuda: available device memory UNKNOWN");
+    expect(ctx.choose(request("cuda", "allow-compatible"))).toMatchObject({
+      state: "fallback", selected: {backend: "cpu"}, actual: null,
+    });
+    const empty = orchestrationFixture({...hardware(), gpus: [
+      {...gpu(), availableVramBytes: value(0)},
+    ]});
+    expect(empty.choose(request("cuda")).reasons.join(" "))
+      .toContain("insufficient available device memory");
+  });
+
+  it("measured host memory constraints apply independently to both CPU and CUDA", () => {
+    const ctx = orchestrationFixture();
+    expect(ctx.choose(request("cpu", "disabled", undefined, {
+      minAvailableHostBytes: 31 * GiB,
+    })).reasons.join(" ")).toContain("insufficient available host RAM");
+    const unknownMemory = {
+      ...ctx.hardware,
+      memory: {
+        ...ctx.hardware.memory,
+        availableRamBytes: {...ctx.hardware.memory.availableRamBytes,
+          value: null, provenance: "Unknown" as const},
+      },
+    };
+    expect(ctx.choose(request("cuda", "allow-compatible", undefined, {
+      minAvailableHostBytes: 1,
+    }), {hardware: unknownMemory})).toMatchObject({
+      state: "rejected", selected: null, actual: null,
+    });
+  });
+
+  it("unqualified builds and duplicate variant identities cannot borrow another build's trust", () => {
+    const valid = verifiedVariant("cuda", "cuda/z");
+    const ctx = orchestrationFixture(hardware(), [
+      {...verifiedVariant("cuda", "cuda/a"), trust: "UNQUALIFIED"}, valid,
+    ]);
+    expect(ctx.choose(request("cuda")).selected?.runtimeVariantId).toBe("cuda/z");
+    const duplicated = orchestrationFixture(hardware(), [valid, {...valid}]);
+    expect(duplicated.choose(request("cuda")).reasons.join(" "))
+      .toContain("ambiguous runtime variant identity cuda/z");
+    const crossBackend = orchestrationFixture(hardware(), [
+      verifiedVariant("cpu", "shared/build"), verifiedVariant("cuda", "shared/build"),
+    ]);
+    expect(crossBackend.choose(request("cuda")).reasons.join(" "))
+      .toContain("ambiguous runtime variant identity shared/build");
+    const wrongVersion = orchestrationFixture(hardware(), [
+      {...valid, runtimeVersion: "another-binary-version"},
+    ]);
+    expect(wrongVersion.choose(request("cuda")).reasons.join(" "))
+      .toContain("runtime build version does not match runtime identity");
+  });
+
+  it("deployment variant identity is exact for its primary backend even when fallback is authorized", () => {
+    const ctx = orchestrationFixture();
+    const result = ctx.choose(request("cuda", "allow-compatible"), {
+      deployment: {...ctx.deployment, variantId: "pinned/other-cuda-build"},
+    });
+    expect(result).toMatchObject({
+      state: "fallback", requested: {backend: "cuda"},
+      selected: {backend: "cpu", runtimeVariantId: "test/cpu"},
+      actual: null,
+    });
+    expect(result.reasons.join(" ")).toContain("requested runtime variant identity mismatch");
+    expect(ctx.choose(request("cuda"), {
+      deployment: {...ctx.deployment, variantId: "pinned/other-cuda-build"},
+    }).state).toBe("rejected");
+    expect(ctx.choose(request("cpu"), {
+      deployment: {...ctx.deployment, configurationRevision: ctx.runtime.configurationRevision + 1},
+    }).reasons).toContain("Runtime/deployment configuration revision mismatch");
+  });
+
+  it("rejects CUDA with zero offloaded layers and never promotes selected to actual", () => {
+    const ctx = orchestrationFixture();
+    expect(ctx.choose(request("cuda", "disabled", undefined, {gpuLayers: 0}))
+      .reasons.join(" ")).toContain("positive GPU offload layers");
+    const chosen = ctx.choose(request("cuda"), {nativeExecution: {
+      ...installed, state: "Ready", deploymentId: ctx.deployment.id,
+      actualExecution: {
+        backend: "cuda", deviceIds: [ctx.hardware.devices[1].id], gpuLayers: 40,
+        runtimeVariantId: "test/cuda", runtimeEpoch: installed.epoch ?? "",
+        observedAt: at - 100, source: "synthetic-hint",
+      },
+    }});
+    expect(chosen.state).toBe("selected");
+    expect(chosen.actual).toBeNull();
+  });
+
+  it("malformed byte requirements fail closed rather than disabling memory checks", () => {
+    const ctx = orchestrationFixture();
+    for (const requiredDeviceBytes of [-1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+      expect(ctx.choose(request("cuda"), {requiredDeviceBytes})).toMatchObject({
+        state: "rejected", selected: null, actual: null,
+        reasons: ["Memory requirements must be nonnegative safe integer byte counts"],
+      });
+    }
   });
 });
