@@ -4,7 +4,6 @@ import {
   requestedExecutionSchema,
   type ActualExecution,
   type BackendState,
-  type ComputeDevice,
   type ComputeHost,
   type LocalRuntime,
   type ModelArtifact,
@@ -12,6 +11,16 @@ import {
   type RequestedExecution,
   type RuntimeBackendVariant,
 } from "./localComputeFabric";
+import {
+  evaluateExecutionCandidates,
+  type CandidateEvaluation,
+  type OrchestrationPlacement,
+} from "./runtimeOrchestrationPolicy";
+export { evaluateExecutionCandidates } from "./runtimeOrchestrationPolicy";
+export type {
+  BackendCandidate,
+  RuntimeOrchestrationPolicy,
+} from "./runtimeOrchestrationPolicy";
 import type { HardwareProfile } from "./hardwareProfile";
 import {
   MANAGED_LLAMA_ENGINE_VERSION,
@@ -75,20 +84,9 @@ export function deploymentRequestedExecution(
   } catch { return null; }
 }
 
-export type SelectedExecution = {
-  backend: string;
-  deviceIds: string[];
-  gpuLayers: number;
-  runtimeVariantId: string;
-};
-export type ExecutionSelection = {
-  state: "selected" | "fallback" | "rejected";
-  requested: RequestedExecution | null;
-  selected: SelectedExecution | null;
-  fallbackUsed: boolean;
-  fallbackAuthorized: boolean;
-  reasons: string[];
-  /** This is ONLY populated by independently verified native launch evidence. */
+export type SelectedExecution = OrchestrationPlacement;
+export type ExecutionSelection = CandidateEvaluation & {
+  /** ONLY independently verified native launch evidence. A selected plan is not actual. */
   actual: ActualExecution | null;
 };
 export type BackendSelectionInput = {
@@ -141,98 +139,14 @@ export function observedActualExecution(
  * ModelArtifact → ModelDeployment authority. This decides a plan, NOT proof
  * that any model or backend was actually launched. */
 export function selectDeploymentExecution(input: BackendSelectionInput): ExecutionSelection {
-  const {host, runtime, deployment, hardware, artifact} = input;
   const requested = input.requested === undefined
-    ? deploymentRequestedExecution(deployment, runtime) : input.requested;
-  const actual = observedActualExecution(runtime, deployment, input.nativeExecution, input.now);
-  const reject = (reasons: string[]): ExecutionSelection => ({
-    state: "rejected", requested: requested ?? null, selected: null,
-    fallbackUsed: false, fallbackAuthorized: false, reasons, actual,
+    ? deploymentRequestedExecution(input.deployment, input.runtime) : input.requested;
+  const plan = evaluateExecutionCandidates({
+    ...input, requested: requested ?? null,
+    variants: runtimeBackendVariants(input.runtime, input.installedRuntime, input.cudaVariant),
   });
-  if (!requested) return reject(["No canonical backend request or recognized legacy configuration"]);
-  if (runtime.id !== deployment.runtimeId || hardware.runtimeId !== runtime.id ||
-      hardware.hostId !== deployment.hostId || runtime.hostId !== deployment.hostId ||
-      host.id !== deployment.hostId || !host.runtimeIds.includes(runtime.id))
-    return reject(["Compute Fabric host/runtime/deployment identity mismatch"]);
-  if (!host.enabled || !runtime.enabled)
-    return reject(["Host or runtime is disabled; no backend admission permitted"]);
-  if (artifact.id !== deployment.artifactId)
-    return reject(["Compute Fabric artifact/deployment identity mismatch"]);
-  if (requested.contextLength !== undefined && artifact.declaredContext !== undefined &&
-      requested.contextLength > artifact.declaredContext)
-    return reject(["Requested context exceeds model-declared context limit"]);
-  const variants = runtimeBackendVariants(runtime, input.installedRuntime, input.cudaVariant);
-  const evaluate = (backend: string): { selected: SelectedExecution | null; reason: string } => {
-    const support = variants.find(v => v.backend === backend);
-    if (!support) return {selected: null, reason: `${backend}: runtime backend support UNKNOWN`};
-    if (support.support !== "AVAILABLE")
-      return {selected: null, reason: `${backend}: runtime build support ${support.support}`};
-    if (support.installation !== "AVAILABLE")
-      return {selected: null, reason: `${backend}: runtime installation ${support.installation}`};
-    if (support.trust !== "VERIFIED")
-      return {selected: null, reason: `${backend}: runtime build trust ${support.trust}`};
-    if (!support.supportedArtifactFormats?.includes(artifact.format))
-      return {selected: null, reason: `${backend}: artifact format ${artifact.format} compatibility UNKNOWN or unsupported`};
-    const candidates = hardware.devices.filter(d => d.hostId === deployment.hostId &&
-      d.backendKinds.includes(backend)).sort((a, b) => a.id.localeCompare(b.id));
-    if (backend === "cuda" && (requested.gpuLayers ?? 0) === 0)
-      return {selected: null, reason: "cuda: positive GPU offload layers are required for CUDA placement"};
-    const constrainDevices = backend === requested.backend && requested.deviceIds.length > 0;
-    const configured = constrainDevices
-      ? candidates.filter(d => requested.deviceIds.includes(d.id)) : candidates;
-    if (constrainDevices && configured.length !== requested.deviceIds.length)
-      return {selected: null, reason: `${backend}: requested device identity unavailable`};
-    const device: ComputeDevice | undefined = configured.find(d => d.availability === "AVAILABLE" &&
-      d.trust === "VERIFIED");
-    if (!device) return {selected: null, reason: `${backend}: host device ${hardware.backendAvailability[backend as keyof typeof hardware.backendAvailability] ?? "UNKNOWN"}`};
-    const hostNeed = Math.max(input.requiredHostBytes ?? 0, requested.minAvailableHostBytes ?? 0);
-    if (hostNeed > 0) {
-      const available = hardware.memory.availableRamBytes.value;
-      if (available === null || hardware.memory.availableRamBytes.provenance !== "Measured")
-        return {selected: null, reason: `${backend}: available host RAM UNKNOWN`};
-      if (available < hostNeed) return {selected: null, reason: `${backend}: insufficient available host RAM`};
-    }
-    if (backend !== "cpu") {
-      const requiredEstimate = artifact.size === undefined ? 0 : artifact.size +
-        Math.max(512 * 1024 ** 2, (requested.contextLength ?? 2048) * 64 * 1024);
-      const need = Math.max(input.requiredDeviceBytes ?? 0, requested.minAvailableDeviceBytes ?? 0,requiredEstimate);
-      if (need > 0 && device.availableMemoryBytes === undefined)
-        return {selected: null, reason: `${backend}: available device memory UNKNOWN`};
-      if (need > 0 && device.availableMemoryBytes !== undefined &&
-          device.availableMemoryBytes < need)
-        return {selected: null, reason: `${backend}: insufficient available device memory`};
-    }
-    if (backend === "cpu" && requested.backend === "cpu" && (requested.gpuLayers ?? 0) > 0)
-      return {selected: null, reason: "CPU request cannot offload positive GPU layers"};
-    return {selected: {
-      backend, deviceIds: [device.id],
-      gpuLayers: backend === "cpu" ? 0 : (requested.gpuLayers ?? 0),
-      runtimeVariantId: support.id,
-    }, reason: ""};
+  return {
+    ...plan,
+    actual: observedActualExecution(input.runtime, input.deployment, input.nativeExecution, input.now),
   };
-  const primary = evaluate(requested.backend);
-  if (primary.selected) return {
-    state: "selected", requested, selected: primary.selected,
-    fallbackUsed: false, fallbackAuthorized: false, reasons: [], actual,
-  };
-  const fallback = requested.fallback;
-  const order = fallback.policy === "allow-compatible" ? ["cpu"] :
-    fallback.policy === "explicit-order" ? fallback.order ?? [] : [];
-  const reasons = [primary.reason];
-  for (const backend of order) {
-    if (backend === requested.backend) continue;
-    // The first slice implements actual alternate placement only on CPU.
-    if (backend !== "cpu") {
-      reasons.push(`${backend}: fallback execution not implemented in this slice`);
-      continue;
-    }
-    const evaluated = evaluate(backend);
-    if (evaluated.selected) return {
-      state: "fallback", requested, selected: evaluated.selected,
-      fallbackUsed: true, fallbackAuthorized: true,
-      reasons: [...reasons, `${requested.backend} → cpu authorized by ${fallback.policy}`], actual,
-    };
-    reasons.push(evaluated.reason);
-  }
-  return reject(reasons);
 }

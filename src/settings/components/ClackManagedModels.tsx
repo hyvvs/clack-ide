@@ -14,6 +14,8 @@ import {
 } from "@/modules/ai/lib/managedLocalModels";
 import type { ManagedCudaVariantStatus, ManagedLocalNativeStatus } from "@/modules/ai/lib/managedLocalRuntime";
 import {nativeHardwareObservationSchema,type NativeHardwareObservation} from "@/modules/ai/lib/hardwareProfile";
+import { deploymentRequestedExecution, observedActualExecution } from "@/modules/ai/lib/executionBackendSelection";
+import type { ActualExecution, RequestedExecution } from "@/modules/ai/lib/localComputeFabric";
 
 type InspectedGguf = {
   digest: string;
@@ -36,6 +38,78 @@ function safeError(error: unknown): string {
     ? error : error instanceof Error ? error.message : "";
   return message && message.length < 350
     ? message : "The managed local runtime operation failed. No external model was selected.";
+}
+
+/** Saved placement, native choice and verified execution have different authority. */
+export function ManagedExecutionReadout({
+  request, native, actual, loaded, installed, fileMissing,
+}: {
+  request: RequestedExecution | null;
+  native: ManagedLocalNativeStatus | null;
+  actual: ActualExecution | null;
+  loaded: boolean;
+  installed: boolean;
+  fileMissing: boolean;
+}) {
+  const owner = loaded ? native : null;
+  const selected = owner?.selectedBackend
+    ? `${owner.selectedBackend.toUpperCase()} · ${owner.selectedGpuLayers ?? "unknown"} GPU layers${owner.selectedDeviceId ? ` · ${owner.selectedDeviceId}` : ""}`
+    : "No matching native selection";
+  const readiness = fileMissing ? "Model file missing · restore the imported GGUF before starting"
+    : !installed ? "Runtime not installed"
+    : !native ? "Native status unavailable · refresh to check"
+    : !loaded ? "Stopped · no matching native launch"
+    : owner?.state === "Ready" ? actual
+      ? "Ready · native execution verified (Chat only; Agent qualification separate)"
+      : "Native Ready · execution proof unavailable"
+    : owner?.state === "Recovering" ? "Recovering · native CPU fallback has not become Ready"
+    : owner?.state === "Failed" ? "Failed · check native error before retrying Start"
+    : `${owner?.state ?? "Unknown"} · awaiting current native Ready and execution proof`;
+  return (
+    <section className="space-y-1 text-[11px] text-muted-foreground" aria-label="Managed requested selected actual execution">
+      <div className="grid gap-1 sm:grid-cols-3">
+        <p className="min-w-0 break-words"><strong className="text-foreground">Requested:</strong>{" "}
+          {request ? `${request.backend.toUpperCase()} · ${request.gpuLayers ?? "unknown"} GPU layers · ${request.fallback.policy} fallback` : "Unknown"}
+        </p>
+        <p className="min-w-0 break-words"><strong className="text-foreground">Selected:</strong> {selected}</p>
+        <p className="min-w-0 break-words"><strong className="text-foreground">Actual:</strong>{" "}
+          {actual ? `${actual.backend.toUpperCase()} · ${actual.gpuLayers} GPU layers · ${actual.runtimeVariantId}` : "Not verified"}
+        </p>
+      </div>
+      <p><strong className="text-foreground">Readiness:</strong> {readiness}</p>
+      <details className="space-y-1">
+        <summary className="cursor-pointer text-foreground">Device, fallback and recovery details</summary>
+        <div className="space-y-1 break-all pl-2">
+          <p>Requested device: {request?.deviceIds.length ? request.deviceIds.join(", ") : "Unspecified"}</p>
+          <p>Selected device: {owner?.selectedDeviceId ?? "Not reported"}</p>
+          <p>Actual device: {actual?.deviceIds.length ? actual.deviceIds.join(", ") : "Not verified"}</p>
+          <p>Runtime variant: {actual?.runtimeVariantId ?? "Not verified"}</p>
+          <p>Native fallback: {owner?.fallbackUsed
+            ? `${owner.fallbackAuthorized ? "Authorized" : "Not authorized"} · ${owner.fallbackReason ?? "Reason unavailable"}`
+            : "None reported"}</p>
+          <p>Native recovery: {owner?.recoveryState === "pending-cpu-recovery"
+            ? "CPU recovery pending; no Ready proof yet"
+            : owner?.recoveryState === "cpu-fallback-launched"
+              ? "CPU fallback launched; awaiting verified Ready"
+              : owner?.recoveryState === "failed"
+                ? "Recovery failed; manual action required"
+                : "None reported"}</p>
+          {owner?.failureKind && <p>Failure category: {owner.failureKind}</p>}
+          {owner?.inferenceRouteIssued && <p>Inference route was issued; startup recovery is no longer eligible.</p>}
+          {owner?.error && <p role="alert">Native error: {owner.error}</p>}
+          <p>Recovery: {fileMissing ? "Restore the imported model file."
+            : !installed ? "Install the approved runtime."
+            : owner?.state === "Recovering" ? "Native startup recovery is in progress. Await current Ready or Failed status."
+            : owner?.state === "Failed" ? "Review the native failure, then retry Start. Existing registration is preserved."
+            : owner?.state === "Starting" || owner?.state === "Loading"
+              ? "Wait for a matching native Ready observation."
+              : owner?.state === "Ready" && !actual
+                ? "Refresh native status; do not treat an unverified launch as ready for Agent work."
+                : "Start or refresh this exact deployment to obtain current native proof."}</p>
+        </div>
+      </details>
+    </section>
+  );
 }
 
 export function ClackManagedModels() {
@@ -386,46 +460,43 @@ export function ClackManagedModels() {
           owner?.modelDigest === found.artifact.digest;
         const fileMissing = modelPresence[found.artifact.digest!] === false;
         const isCuda=found.deployment.variantId==="b12248/cuda";
+        const requested = deploymentRequestedExecution(found.deployment, found.runtime);
+        const actual = loaded ? observedActualExecution(found.runtime, found.deployment, owner) : null;
         return (
-          <div key={model.id} className="flex items-center justify-between gap-3 border-t border-border/60 pt-3">
-            <div className="min-w-0">
-              <p className="truncate text-xs font-medium">{model.label}</p>
-              <p className="text-[11px] text-muted-foreground">
-                {isCuda?`CUDA · ${found.deployment.requestedExecution?.gpuLayers} GPU layers`
-                  :"CPU · 0 GPU layers"}
-                {" · "}{found.deployment.configurationIdentity
-                  ? `${JSON.parse(found.deployment.configurationIdentity).context} context` : "Context unknown"} · {found.artifact.digest?.slice(7, 19)} ·
-                {" "}{fileMissing ? "Model file missing" :
-                  loaded ? owner?.state : installed ? "Stopped / unverified" : "Runtime not installed"}
-              </p>
-              {loaded && owner?.state==="Ready" && (
+          <div key={model.id} className="space-y-2 border-t border-border/60 pt-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-medium">{model.label}</p>
                 <p className="text-[11px] text-muted-foreground">
-                  Actual: {owner.actualExecution
-                    ? `${owner.actualExecution.backend.toUpperCase()} / ${owner.actualExecution.gpuLayers} GPU layers`
-                    :"Not verified"}
-                  {owner.fallbackUsed?` · Authorized fallback: ${owner.fallbackReason??"unknown"}`:""}
-                  {owner.selectedDeviceId?` · ${owner.selectedDeviceId}`:""}
+                  {isCuda?`CUDA · ${found.deployment.requestedExecution?.gpuLayers} GPU layers`
+                    :"CPU · 0 GPU layers"}
+                  {" · "}{found.deployment.configurationIdentity
+                    ? `${JSON.parse(found.deployment.configurationIdentity).context} context` : "Context unknown"} · {found.artifact.digest?.slice(7, 19)} ·
+                  {" "}{fileMissing ? "Model file missing" :
+                    loaded ? owner?.state : installed ? "Stopped / unverified" : "Runtime not installed"}
                 </p>
-              )}
-            </div>
-            <div className="flex shrink-0 gap-2">
-              {!isCuda&&chosenCudaDevice&&(
-                <Button size="sm" variant="outline" disabled={busy}
-                  onClick={()=>void addCudaDeployment(model.id,chosenCudaDevice.id)}>
-                  Add CUDA variant
+              </div>
+              <div className="flex shrink-0 gap-2">
+                {!isCuda&&chosenCudaDevice&&(
+                  <Button size="sm" variant="outline" disabled={busy}
+                    onClick={()=>void addCudaDeployment(model.id,chosenCudaDevice.id)}>
+                    Add CUDA variant
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" disabled={busy || !installed || fileMissing}
+                  onClick={() => void start(model.id)}>
+                  {loaded ? "Load status" : "Start"}
                 </Button>
-              )}
-              <Button size="sm" variant="outline" disabled={busy || !installed || fileMissing}
-                onClick={() => void start(model.id)}>
-                {loaded ? "Load status" : "Start"}
-              </Button>
-              {loaded && owner?.processId ? (
-                <Button size="sm" variant="outline" disabled={busy}
-                  onClick={() => void stop(model.id)}>
-                  Stop
-                </Button>
-              ) : null}
+                {loaded && owner?.processId ? (
+                  <Button size="sm" variant="outline" disabled={busy}
+                    onClick={() => void stop(model.id)}>
+                    Stop
+                  </Button>
+                ) : null}
+              </div>
             </div>
+            <ManagedExecutionReadout request={requested} native={owner} actual={actual}
+              loaded={loaded} installed={installed} fileMissing={fileMissing} />
           </div>
         );
       })}

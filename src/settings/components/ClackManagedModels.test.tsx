@@ -16,7 +16,8 @@ vi.mock("@/modules/settings/preferences", async (importOriginal) => {
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { attachManagedLocalGguf, attachManagedCudaVariant } from "@/modules/ai/lib/managedLocalModels";
 import { emptySelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
-import { ClackManagedModels, DEFAULT_MANAGED_GGUF_MATERIAL } from "./ClackManagedModels";
+import type { ManagedLocalNativeStatus } from "@/modules/ai/lib/managedLocalRuntime";
+import { ClackManagedModels, DEFAULT_MANAGED_GGUF_MATERIAL, ManagedExecutionReadout } from "./ClackManagedModels";
 
 const original = usePreferencesStore.getState().selfHostedInference;
 afterEach(() => usePreferencesStore.setState({ selfHostedInference: original }));
@@ -67,5 +68,76 @@ describe("Clack Managed local model production settings", () => {
     expect(html).toContain("Managed CUDA runtime variant");
     expect(html).not.toContain("CUDA Ready");
     expect(html).not.toContain("Selected and ready");
+  });
+
+  it("distinguishes saved CUDA intent from a missing native placement, even when a runtime is installed", () => {
+    const html = renderToStaticMarkup(<ManagedExecutionReadout
+      request={{backend:"cuda",gpuLayers:40,deviceIds:["clack-this-pc:accelerator:GPU-explicit"],
+        fallback:{policy:"disabled"}}}
+      native={{installed:true,state:"Stopped",version:"b12248",epoch:""}}
+      actual={null} loaded={false} installed fileMissing={false}
+    />);
+    expect(html).toContain("Requested:");
+    expect(html).toContain("CUDA · 40 GPU layers · disabled fallback");
+    expect(html).toContain("Selected:");
+    expect(html).toContain("No matching native selection");
+    expect(html).toContain("Actual:");
+    expect(html).toContain("Not verified");
+    expect(html).toContain("Stopped · no matching native launch");
+    expect(html).toContain("<details");
+    expect(html).toContain("GPU-explicit");
+  });
+
+  it("shows native fallback and recovery as separate evidence from Ready and actual offload", () => {
+    const native: ManagedLocalNativeStatus = {
+      installed:true,state:"Ready",version:"b12248",epoch:"current-epoch",
+      requestedBackend:"cuda",selectedBackend:"cpu",selectedGpuLayers:0,
+      fallbackUsed:true,fallbackAuthorized:true,
+      fallbackReason:"CUDA device out of memory",
+    };
+    const request = {backend:"cuda" as const,gpuLayers:40,deviceIds:["device-1"],
+      fallback:{policy:"allow-compatible" as const}};
+    const unverified = renderToStaticMarkup(<ManagedExecutionReadout
+      request={request} native={native} actual={null} loaded installed fileMissing={false}
+    />);
+    expect(unverified).toContain("Native Ready · execution proof unavailable");
+    expect(unverified).not.toContain("native execution verified");
+    expect(unverified).toContain("Authorized · CUDA device out of memory");
+    const verified = renderToStaticMarkup(<ManagedExecutionReadout
+      request={request} native={native} loaded installed fileMissing={false}
+      actual={{backend:"cpu",deviceIds:["cpu-0"],gpuLayers:0,runtimeVariantId:"b12248/cpu",
+        runtimeEpoch:"current-epoch",source:"native-verified-managed-cpu-launch",observedAt:1}}
+    />);
+    expect(verified).toContain("Ready · native execution verified");
+    expect(verified).toContain("b12248/cpu");
+    expect(verified).toContain("Agent qualification separate");
+  });
+
+  it("keeps failure actionable without claiming readiness or an automatic recovery", () => {
+    const html = renderToStaticMarkup(<ManagedExecutionReadout
+      request={null} actual={null} loaded installed fileMissing={false}
+      native={{installed:true,state:"Failed",version:"b12248",epoch:"",
+        deploymentId:"broken",error:"Native launch rejected"}}
+    />);
+    expect(html).toContain("Failed · check native error");
+    expect(html).toContain("Native error: Native launch rejected");
+    expect(html).toContain("Review the native failure, then retry Start");
+    expect(html).not.toContain("native execution verified");
+  });
+
+  it("distinguishes native in-progress recovery from an eligible but unverified CPU fallback", () => {
+    const html = renderToStaticMarkup(<ManagedExecutionReadout
+      request={{backend:"cuda",deviceIds:["device-1"],gpuLayers:40,
+        fallback:{policy:"allow-compatible"}}}
+      loaded installed fileMissing={false} actual={null}
+      native={{installed:true,state:"Recovering",version:"b12248",epoch:"recovery-epoch",
+        requestedBackend:"cuda",selectedBackend:"cpu",selectedGpuLayers:0,
+        recoveryState:"pending-cpu-recovery",failureKind:"ready-timeout",
+        fallbackUsed:true,fallbackAuthorized:true}}
+    />);
+    expect(html).toContain("Recovering · native CPU fallback has not become Ready");
+    expect(html).toContain("CPU recovery pending; no Ready proof yet");
+    expect(html).toContain("Failure category: ready-timeout");
+    expect(html).not.toContain("native execution verified");
   });
 });

@@ -20,6 +20,7 @@ import {
   deploymentRequestedExecution,
   runtimeBackendVariants,
   selectDeploymentExecution,
+  type ExecutionSelection,
 } from "@/modules/ai/lib/executionBackendSelection";
 import {
   type EvidenceValue,
@@ -34,6 +35,7 @@ import {
   type LocalComputeFabric,
   reconcileLocalComputeFabric,
   resolveModelDeployment,
+  type RequestedExecution,
 } from "@/modules/ai/lib/localComputeFabric";
 import {
   isManagedLocalSelectionId,
@@ -78,6 +80,7 @@ function nativeRuntimeStatus(value: unknown): ManagedLocalNativeStatus | null {
       "Ready",
       "Stopping",
       "Failed",
+      "Recovering",
     ].includes(String(status.state)) ||
     typeof status.version !== "string" ||
     typeof status.epoch !== "string" ||
@@ -92,7 +95,13 @@ function nativeRuntimeStatus(value: unknown): ManagedLocalNativeStatus | null {
         status[key] !== undefined &&
         status[key] !== null &&
         (!Number.isSafeInteger(status[key]) || (status[key] as number) < 1),
-    )
+    ) ||
+    (status.recoveryState !== undefined &&
+      !["none", "pending-cpu-recovery", "cpu-fallback-launched", "failed"].includes(String(status.recoveryState))) ||
+    (status.failureKind !== undefined && status.failureKind !== null &&
+      !["child-exited-before-ready", "ready-timeout", "dependency-load-failure",
+        "port-collision", "startup-failed", "cpu-recovery-failed"].includes(String(status.failureKind))) ||
+    (status.inferenceRouteIssued !== undefined && typeof status.inferenceRouteIssued !== "boolean")
   )
     return null;
   return status as ManagedLocalNativeStatus;
@@ -140,6 +149,103 @@ function formatBytes(value: number | null): string {
   return Math.abs(value) >= SIZE
     ? `${(value / SIZE).toFixed(2)} GiB`
     : `${(value / 1024 ** 2).toFixed(0)} MiB`;
+}
+
+/** Admission is a read-only plan; only matching, fresh native proof establishes execution. */
+export function DeploymentExecutionDecision({
+  requested, selection, native, nativeReady, preview,
+}: {
+  requested: RequestedExecution | null;
+  selection: ExecutionSelection | null;
+  native: ManagedLocalNativeStatus | null;
+  nativeReady: boolean;
+  preview: boolean;
+}) {
+  const actual = nativeReady ? selection?.actual ?? null : null;
+  const rejectionReasons = selection?.reasons ?? [];
+  const candidates = selection?.candidates ?? [];
+  const readiness = !native ? "Unknown · no fresh native observation"
+    : nativeReady ? actual ? "Ready · verified native placement" : "Native Ready · execution proof unavailable"
+    : native.state === "Recovering" ? "Recovering · waiting for native CPU fallback result"
+    : native.state === "Failed" ? "Failed · inspect native error before manually retrying"
+    : native.state === "Ready" ? "Native Ready reported · exact deployment proof missing"
+    : `${native.state} · not Ready for this deployment`;
+  return (
+    <section aria-label="Requested selected actual deployment execution" className="space-y-1 border-t pt-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="font-medium">Execution decision {preview ? "· admission preview only" : "· saved deployment"}</p>
+        <span className="text-muted-foreground">Admission: {selection?.state ?? "Unknown"}</span>
+      </div>
+      <div className="grid grid-cols-1 gap-1 sm:grid-cols-3">
+        <p className="min-w-0 break-words"><strong>Requested:</strong>{" "}
+          {requested ? `${requested.backend.toUpperCase()} · ${requested.gpuLayers ?? "unknown"} layers` : "Unknown"}
+        </p>
+        <p className="min-w-0 break-words"><strong>Selected (plan):</strong>{" "}
+          {selection?.selected
+            ? `${selection.selected.backend.toUpperCase()} · ${selection.selected.gpuLayers} layers · ${selection.selected.runtimeVariantId}`
+            : "None"}
+        </p>
+        <p className="min-w-0 break-words"><strong>Actual (native):</strong>{" "}
+          {actual
+            ? `${actual.backend.toUpperCase()} · ${actual.gpuLayers} layers · ${actual.runtimeVariantId}`
+            : "Not verified"}
+        </p>
+      </div>
+      <p className="break-words text-muted-foreground">Device: requested{" "}
+        {requested?.deviceIds.length ? requested.deviceIds.join(", ") : "unspecified"} · selected{" "}
+        {selection?.selected?.deviceIds.join(", ") || "none"} · actual{" "}
+        {actual?.deviceIds.join(", ") || "unverified"}</p>
+      <p className="text-muted-foreground">Fallback policy: {requested?.fallback.policy ?? "Unknown"}
+        {" · "}Candidate policy: {selection?.policy ?? "Unknown"}
+        {" · "}Admission fallback: {selection?.fallbackUsed
+          ? selection.fallbackAuthorized ? "Authorized" : "Not authorized"
+          : "None"}</p>
+      <p role="status">Readiness: {readiness}</p>
+      {native?.fallbackUsed && (
+        <p role="status">Native fallback: {native.fallbackAuthorized ? "Authorized" : "NOT AUTHORIZED"}
+          {" · "}{native.requestedBackend?.toUpperCase() ?? "Unknown"} → {native.selectedBackend?.toUpperCase() ?? "Unknown"}
+          {" · "}{native.fallbackReason ?? "Reason unavailable"}</p>
+      )}
+      {native?.recoveryState && native.recoveryState !== "none" && (
+        <p role="status">Native recovery: {native.recoveryState}
+          {native.failureKind ? ` · ${native.failureKind}` : ""}
+          {native.inferenceRouteIssued ? " · inference route already issued" : ""}</p>
+      )}
+      <details className="space-y-1">
+        <summary className="cursor-pointer font-medium">Candidate rejection and recovery details ({candidates.length} candidates)</summary>
+        <div className="space-y-1 pt-1 text-muted-foreground">
+          {candidates.length > 0 && <ul className="list-disc space-y-2 pl-4">
+            {candidates.map(candidate => <li key={`${candidate.role}-${candidate.backend}`}>
+              <strong>{candidate.role === "requested" ? "Requested" : "Fallback"} {candidate.backend.toUpperCase()}:</strong>{" "}
+              {candidate.state === "eligible" ? "Eligible" : "Rejected"}
+              {" · "}Variants: {candidate.inspectedVariantIds.join(", ") || "none inspected"}
+              {candidate.selected?.deviceIds.length
+                ? ` · Device: ${candidate.selected.deviceIds.join(", ")}` : ""}
+              {candidate.reasons.length > 0 && <ul className="list-disc pl-4">
+                {[...new Set(candidate.reasons)].map(reason =>
+                  <li key={reason}>{reason}</li>)}
+              </ul>}
+            </li>)}
+          </ul>}
+          {rejectionReasons.length > 0 && <p>Admission decision: {rejectionReasons.join("; ")}</p>}
+          {!candidates.length && !rejectionReasons.length &&
+            <p>No candidate evaluations were returned. An admission failure may precede backend evaluation.</p>}
+          {native?.failureKind && <p>Native failure category: {native.failureKind}</p>}
+          {native?.error && <p role="alert">Native error: {native.error}</p>}
+          <p>Recovery: {native?.state === "Recovering"
+            ? "Native startup CPU recovery is in progress; await Ready or Failed."
+            : native?.state === "Failed"
+            ? "Review the native failure and retry Start for this deployment from Settings."
+            : native?.state === "Starting" || native?.state === "Loading"
+              ? "Wait for a current Ready process and verified offload."
+              : native?.state === "Ready" && !actual
+                ? "Refresh native status before relying on backend or offload claims."
+                : "Refresh native observations by reopening Suitability; start or stop from Settings."}</p>
+          {preview && <p>This preview is read-only. The actual native execution belongs to the saved deployment.</p>}
+        </div>
+      </details>
+    </section>
+  );
 }
 
 function EvidenceLine({
@@ -515,6 +621,10 @@ export function DeploymentSuitabilityControl({
           </p>
         ) : (
           <>
+            <DeploymentExecutionDecision requested={executionRequest ?? null}
+              selection={backendSelection} native={managed ? freshNative : null}
+              nativeReady={!!resolved.observation && freshNative?.state === "Ready"}
+              preview={backendPreview !== "saved"} />
             <div className="grid grid-cols-2 gap-2">
               <label className="space-y-1">
                 <span className="font-medium">Workload</span>
@@ -655,21 +765,6 @@ export function DeploymentSuitabilityControl({
                     )}
                   </div>
                 )}
-                <p>Requested for {backendPreview === "saved" ? "this deployment" : "preview only"}: {executionRequest?.backend.toUpperCase() ?? "UNKNOWN"}
-                  {" · "}Admission: {backendSelection?.state ?? "unknown"}
-                  {" · "}Selected: {backendSelection?.selected
-                    ? `${backendSelection.selected.backend.toUpperCase()} / ${backendSelection.selected.gpuLayers} GPU layers`
-                    : "None"}</p>
-                <p>Fallback used: {backendSelection?.fallbackUsed ? "Yes (authorized)" : "No"}
-                  {backendSelection?.reasons.length ? ` · ${backendSelection.reasons.join("; ")}` : ""}</p>
-                {freshNative?.fallbackUsed && (
-                  <p role="status">Actual fallback: {freshNative.fallbackAuthorized ? "Authorized" : "NOT AUTHORIZED"}
-                    {" · "}{freshNative.requestedBackend?.toUpperCase()} to {freshNative.selectedBackend?.toUpperCase()}
-                    {" · "}{freshNative.fallbackReason ?? "No native reason"}</p>
-                )}
-                <p>Actual native execution: {backendSelection?.actual
-                  ? `${backendSelection.actual.backend.toUpperCase()} / ${backendSelection.actual.gpuLayers} GPU layers · ${backendSelection.actual.runtimeVariantId}`
-                  : "Not observed (no exact Ready native launch evidence)"}</p>
                 {freshNative?.selectedBackend === "cuda" && (
                   <p>CUDA device: {freshNative.selectedDeviceId ?? "Unknown"}
                     {" · "}Selected offload: {freshNative.selectedGpuLayers ?? "Unknown"} layers
