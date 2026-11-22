@@ -142,6 +142,12 @@ const BUILTIN_SECURITY:Readonly<Record<string,BuiltinDeclaration>> = {
   bash_list:builtin("process",["read-only"],[]),
   bash_logs:builtin("process",["read-only"],[]),
   bounded_command:builtin("native-command",["read-only","process-execution","local-reversible-write"],["command"],true,["process-tree","timeout","environment-filter"]),
+  tf_fs_read:builtin("native-filesystem",["read-only"],["filesystem"]),
+  tf_fs_write:builtin("native-filesystem",["local-reversible-write","local-destructive-write"],["filesystem"],true),
+  tf_fs_delete:builtin("native-filesystem",["local-destructive-write"],["filesystem"],true),
+  tf_repo_read:builtin("native-repository",["read-only"],["command"]),
+  tf_repo_write:builtin("native-repository",["local-reversible-write","local-destructive-write"],["command","filesystem"],true),
+  tf_build_run:builtin("native-build",["process-execution","local-reversible-write"],["command","filesystem"],true),
   fetch_web_page:builtin("network",["network-read"],["network"],true),
   compare_web_sources:builtin("network",["network-read"],["network"],true),
   run_subagent:builtin("agent",["external-side-effect"],[],true),
@@ -180,7 +186,7 @@ const result=(decision:ToolDecision,reasonCode:string,
     retry:decision==="ALLOW"?"unknown":decision==="DENY"||decision==="UNSUPPORTED"?"safe":"unsafe",
   });
 
-function pathWithin(root:string,path:string):boolean {
+export function pathWithin(root:string,path:string):boolean {
   // This is only a preflight lexical scope check, never a substitute for
   // native canonicalization and reparse-point/symlink enforcement.
   if(!root || !path || /[\u0000-\u001f]/.test(root+path))return false;

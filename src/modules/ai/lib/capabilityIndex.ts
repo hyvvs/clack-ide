@@ -85,6 +85,9 @@ const semanticNames: Readonly<Record<string, string>> = {
   grep: "search_repository", glob: "search_repository",
   write_file: "write_file", edit: "edit_file", multi_edit: "edit_file",
   create_directory: "create_directory",
+  tf_fs_read: "read_file", tf_fs_write: "write_file",
+  tf_fs_delete: "delete_file", tf_repo_read: "inspect_repository",
+  tf_repo_write: "modify_repository", tf_build_run: "execute_build",
   bash_run: "execute_command", bash_background: "execute_command",
   bash_list: "inspect_command", bash_logs: "inspect_command", bash_kill: "terminate_command",
   fetch_web_page: "fetch_web_page", discover_capabilities: "discover_capabilities",
@@ -95,10 +98,12 @@ const readOperations = new Set([
   "read_file", "list_directory", "grep", "glob", "bash_list", "bash_logs",
   "request_conversation_evidence", "discover_capabilities", "fetch_web_page",
   "compare_web_sources",
+  "tf_fs_read", "tf_repo_read",
 ]);
 const workspaceOperations = new Set([
   "write_file", "edit", "multi_edit", "create_directory",
   "bash_run", "bash_background", "bash_kill",
+  "tf_fs_write", "tf_fs_delete", "tf_repo_write", "tf_build_run",
 ]);
 function normalizedFabric(c: CapabilitySeed): ToolFabricMetadata {
   if (c.fabric) return c.fabric;
@@ -228,14 +233,16 @@ export class CapabilityIndex {
   }
 }
 
-const readOnly = new Set(["read_file", "list_directory", "grep", "glob", "bash_list", "bash_logs"]);
-const writing = new Set(["write_file", "edit", "multi_edit", "create_directory", "bash_run", "bash_background", "bash_kill"]);
+const readOnly = new Set(["read_file", "list_directory", "grep", "glob", "bash_list", "bash_logs", "tf_fs_read", "tf_repo_read"]);
+const writing = new Set(["write_file", "edit", "multi_edit", "create_directory", "bash_run", "bash_background", "bash_kill",
+  "tf_fs_write", "tf_fs_delete", "tf_repo_write", "tf_build_run"]);
 function hints(name: string, permissions: readonly string[], binding?: ToolBinding) {
   const read = readOnly.has(name) || permissions.includes("read-files");
   const write = writing.has(name) || permissions.some(p => p === "write-files" || p === "create-files");
   return {
     read, write,
-    destructive: ["bash_run", "bash_kill", "bash_background"].includes(name) || permissions.includes("run-commands"),
+    destructive: ["bash_run", "bash_kill", "bash_background", "tf_fs_delete", "tf_repo_write", "tf_build_run"].includes(name) ||
+      permissions.includes("run-commands"),
     openWorld: binding?.kind === "http" || binding?.kind === "mcp" || permissions.includes("network"),
   };
 }

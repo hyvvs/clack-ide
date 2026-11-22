@@ -4,6 +4,7 @@ import type { ToolContext } from "@/modules/ai/tools/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyAgentPermissionPolicy,
+  canPersistPermission,
   recordTfApprovedToolCall,
   consumeTfApprovedToolCall,
   clearChatPermissions,
@@ -141,6 +142,107 @@ describe("agent permission resolver", () => {
     clearChatPermissions("chat-a");
     expect(consumeTfApprovedToolCall({toolCallId:third,sessionId:"chat-a",
       agentId:"builtin:coder",workspaceRoot:"/work/a",parameters:input})).toBe(false);
+  });
+  it("TF operation scopes every source and destination and fails closed on escaped paths",()=>{
+    usePreferencesStore.setState({agentPermissionProfiles:{
+      "builtin:coder":profile("full-access")}});
+    const ctx=context();
+    const check=(name:string,input:Record<string,unknown>)=>
+      resolveCurrentToolFabricDecision(name,input,ctx,
+        builtinToolSecurity(name)!);
+    expect(check("tf_fs_read",{operation:"file_read",path:"src/../a.ts"}))
+      .toMatchObject({decision:"ALLOW",reasonCode:"within-scoped-policy"});
+    expect(check("tf_fs_write",{operation:"file_create",path:"src/new.ts",
+      content:"test"})).toMatchObject({decision:"REQUIRE_APPROVAL",
+        reasonCode:"explicit-approval-required"});
+    expect(check("tf_fs_write",{operation:"file_move",path:"src/a.ts",
+      destination:"src/b.ts",expectedSha256:"a".repeat(64)})
+      .decision).toBe("REQUIRE_APPROVAL");
+    for(const input of [
+      {operation:"file_move",path:"src/a.ts",destination:"../outside",
+        expectedSha256:"a".repeat(64)},
+      {operation:"file_move",path:"../outside",destination:"src/b.ts",
+        expectedSha256:"a".repeat(64)},
+      {operation:"file_move",path:"src/a.ts",destination:"src/../../a/b.ts",
+        expectedSha256:"a".repeat(64)},
+      {operation:"file_move",path:"src/a.ts",destination:"/work/a/../a/b.ts",
+        expectedSha256:"a".repeat(64)},
+    ])expect(check("tf_fs_write",input).reasonCode)
+      .toBe("filesystem-outside-workspace");
+    expect(check("tf_repo_write",{operation:"repo_stage",
+      paths:["src/a.ts","../outside"]}).reasonCode)
+      .toBe("filesystem-outside-workspace");
+    expect(check("tf_repo_read",{operation:"repo_diff",
+      paths:["src/a.ts","/work/b/file"]}).reasonCode)
+      .toBe("filesystem-outside-workspace");
+    expect(check("tf_repo_write",{operation:"repo_stage",paths:["src/a.ts"]})
+      .decision).toBe("REQUIRE_APPROVAL");
+    expect(check("tf_build_run",{operation:"build_typecheck",timeoutMs:5000})
+      .decision).toBe("REQUIRE_APPROVAL");
+    expect(check("tf_build_run",{operation:"unknown_build"})
+      .reasonCode).toBe("tf-operation-invalid-input");
+    expect(check("tf_fs_write",{operation:"file_move",path:"a.ts",
+      destination:"b.ts",expectedSha256:"a".repeat(64),
+      content:"injected"}).reasonCode)
+      .toBe("tf-operation-invalid-input");
+  });
+  it("every new native effect consumes exact hashed SDK UI proof once, even Full Access",async()=>{
+    usePreferencesStore.setState({agentPermissionProfiles:{
+      "builtin:coder":profile("full-access")}});
+    const ctx=context();
+    const execute=vi.fn(async()=>({ok:true}));
+    const inputs={
+      tf_fs_write:{operation:"file_patch",path:"src/a.ts",oldText:"before",
+        newText:"after",expectedSha256:"a".repeat(64)},
+      tf_fs_delete:{operation:"file_delete",path:"src/a.ts",
+        expectedSha256:"a".repeat(64)},
+      tf_repo_write:{operation:"repo_stage",paths:["src/a.ts"]},
+      tf_build_run:{operation:"build_typecheck",timeoutMs:5000},
+    };
+    const tools=applyAgentPermissionPolicy(Object.fromEntries(
+      Object.keys(inputs).map(name=>[name,{execute}])),ctx,
+      name=>builtinToolSecurity(name)??undefined) as unknown as Record<string,{
+        execute:(input:unknown,options:unknown)=>Promise<unknown>;
+        needsApproval:(input:unknown,options:unknown)=>Promise<boolean>;
+      }>;
+    for(const [name,input] of Object.entries(inputs)){
+      const opts={toolCallId:`native-call-${name}`};
+      expect(canPersistPermission(name,input,ctx)).toBe(false);
+      expect(await tools[name].needsApproval(input,opts)).toBe(true);
+      expect(await tools[name].execute(input,opts)).toMatchObject({
+        code:"tf_exact_approval_required",effectState:"NoEffect"});
+      expect(recordTfApprovedToolCall({toolName:name,
+        toolCallId:opts.toolCallId,sessionId:"chat-a",
+        agentId:"builtin:coder",workspaceRoot:"/work/a",
+        cwd:"/work/a",parameters:input})).toBe(true);
+      expect(await tools[name].execute(input,opts)).toEqual({ok:true});
+      expect(await tools[name].execute(input,opts)).toMatchObject({
+        code:"tf_exact_approval_required"});
+    }
+    expect(execute).toHaveBeenCalledTimes(4);
+    const changed={operation:"file_patch",path:"src/a.ts",
+      oldText:"before",newText:"changed-secret",expectedSha256:"a".repeat(64)};
+    expect(recordTfApprovedToolCall({toolName:"tf_fs_write",toolCallId:"mutation",
+      sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",parameters:inputs.tf_fs_write})).toBe(true);
+    expect(consumeTfApprovedToolCall({toolName:"tf_fs_write",
+      toolCallId:"mutation",sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",parameters:changed})).toBe(false);
+    expect(consumeTfApprovedToolCall({toolName:"tf_fs_write",
+      toolCallId:"mutation",sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",parameters:inputs.tf_fs_write})).toBe(false);
+    expect(recordTfApprovedToolCall({toolName:"tf_build_run",
+      toolCallId:"cwd-drift",sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",cwd:"/work/a/src",
+      parameters:inputs.tf_build_run})).toBe(true);
+    expect(consumeTfApprovedToolCall({toolName:"tf_build_run",
+      toolCallId:"cwd-drift",sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",cwd:"/work/a",
+      parameters:inputs.tf_build_run})).toBe(false);
+    expect(recordTfApprovedToolCall({toolName:"tf_fs_write",
+      toolCallId:"wrong-extra",sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",parameters:{...inputs.tf_fs_write,
+        arbitrary:"cannot-grant"}})).toBe(false);
   });
 
   it("uses the existing approval policy in Ask mode", () => {

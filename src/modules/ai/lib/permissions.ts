@@ -1,5 +1,7 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
+import { isTfOperationTool, tfOperationEffectful, validateTfOperationInput } from
+  "@/modules/ai/tools/tfOperations";
 import {
   setAgentWorkspacePermissions,
   type AgentWorkspacePermission,
@@ -10,7 +12,7 @@ import {
 } from "@/modules/workspace";
 import type { ToolContext } from "@/modules/ai/tools/context";
 import {
-  builtinToolSecurity, evaluateToolFabricPolicy, unknownToolSecurity,
+  builtinToolSecurity, evaluateToolFabricPolicy, pathWithin, unknownToolSecurity,
   type ToolRegistrySecurity, type ToolSandboxPolicy, type ToolScope,
   type ToolPolicyResult, type ToolSideEffect,
 } from "./toolFabricPolicy";
@@ -105,6 +107,10 @@ const TOOL_CATEGORIES: Readonly<Record<string, PermissionCategory>> = {
   create_directory: "create-files",
   bash_run: "run-commands",
   bounded_command: "run-commands",
+  tf_fs_write: "write-files",
+  tf_fs_delete: "write-files",
+  tf_repo_write: "run-commands",
+  tf_build_run: "run-commands",
   bash_background: "run-commands",
   request_peer_task: "delegate-runs",
   cancel_peer_task: "delegate-runs",
@@ -119,24 +125,66 @@ const chatGrants = new Map<string, Set<PermissionCategory>>();
  * independently compromised same-origin renderer still cannot be used as a
  * cryptographic proof of human intent; native controls remain authoritative. */
 type TfOnceApproval = {sessionId:string;agentId:string;workspaceRoot:string;
-  inputIdentity:string;expiresAt:number};
+  cwd:string;toolName:string;inputIdentity:string;expiresAt:number};
 const tfOnceApprovals=new Map<string,TfOnceApproval>();
 const TF_ONCE_APPROVAL_LIMIT=256;
 const TF_ONCE_APPROVAL_WINDOW_MS=60_000;
-function exactTfInputIdentity(input:Record<string,unknown>):string|null {
-  if((input.action!=="read_status"&&input.action!=="write_marker") ||
-      typeof input.cwd!=="string" || typeof input.executable!=="string" ||
-      !Array.isArray(input.args) || input.args.length>12 ||
-      !input.args.every(arg=>typeof arg==="string"&&arg.length<=512))return null;
-  return JSON.stringify([input.action,input.executable,input.args,input.cwd]);
+/** Synchronous SHA-256 so a physical Allow once handler can record a digest
+ * without retaining content or awaiting an untrusted async continuation. */
+function sha256Identity(value:string):string {
+  const bytes=new TextEncoder().encode(value);
+  const primes:number[]=[];
+  for(let n=2;primes.length<64;n++)
+    if(primes.every(p=>n%p!==0))primes.push(n);
+  const k=primes.map(n=>Math.floor((Math.cbrt(n)%1)*0x100000000)>>>0);
+  const h=primes.slice(0,8).map(n=>Math.floor((Math.sqrt(n)%1)*0x100000000)>>>0);
+  const bitLength=bytes.length*8;
+  const count=Math.ceil((bytes.length+9)/64)*64;
+  const data=new Uint8Array(count);
+  data.set(bytes);data[bytes.length]=0x80;
+  const view=new DataView(data.buffer);
+  view.setUint32(count-8,Math.floor(bitLength/0x100000000));
+  view.setUint32(count-4,bitLength>>>0);
+  const w=new Uint32Array(64);
+  const r=(v:number,b:number)=>(v>>>b)|(v<<(32-b));
+  for(let start=0;start<count;start+=64){
+    for(let i=0;i<16;i++)w[i]=view.getUint32(start+i*4);
+    for(let i=16;i<64;i++){
+      const a=w[i-15],b=w[i-2];
+      w[i]=(w[i-16]+(r(a,7)^r(a,18)^(a>>>3))+w[i-7]+
+        (r(b,17)^r(b,19)^(b>>>10)))>>>0;
+    }
+    let [a,b,c,d,e,f,g,j]=h;
+    for(let i=0;i<64;i++){
+      const t1=(j+(r(e,6)^r(e,11)^r(e,25))+((e&f)^(~e&g))+k[i]+w[i])>>>0;
+      const t2=((r(a,2)^r(a,13)^r(a,22))+((a&b)^(a&c)^(b&c)))>>>0;
+      j=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;
+    }
+    for(const [i,n] of [a,b,c,d,e,f,g,j].entries())h[i]=(h[i]+n)>>>0;
+  }
+  return h.map(n=>n.toString(16).padStart(8,"0")).join("");
+}
+function exactTfInputIdentity(toolName:string,input:Record<string,unknown>):string|null {
+  if(isTfOperationTool(toolName)){
+    if(!validateTfOperationInput(toolName,input))return null;
+    return sha256Identity(canonicalJson([toolName,input]));
+  }
+  if(toolName!=="bounded_command" ||
+     (input.action!=="read_status"&&input.action!=="write_marker") ||
+     typeof input.cwd!=="string" || typeof input.executable!=="string" ||
+     !Array.isArray(input.args) || input.args.length>12 ||
+     !input.args.every(arg=>typeof arg==="string"&&arg.length<=512))return null;
+  return sha256Identity(canonicalJson([toolName,input.action,input.executable,
+    input.args,input.cwd]));
 }
 export function recordTfApprovedToolCall(input:{toolCallId:string;sessionId:string;
   agentId:string;workspaceRoot:string|null;toolName:string;
-  parameters:Record<string,unknown>},now=Date.now()):boolean {
-  if(input.toolName!=="bounded_command" || !input.toolCallId ||
+  parameters:Record<string,unknown>;cwd?:string|null},now=Date.now()):boolean {
+  if((input.toolName!=="bounded_command" &&
+      !tfOperationEffectful(input.toolName)) || !input.toolCallId ||
       input.toolCallId.length>256 || !input.sessionId || !input.agentId ||
       !input.workspaceRoot || !Number.isSafeInteger(now))return false;
-  const identity=exactTfInputIdentity(input.parameters);
+  const identity=exactTfInputIdentity(input.toolName,input.parameters);
   if(!identity)return false;
   for(const [key,proof] of tfOnceApprovals)
     if(proof.expiresAt<=now)tfOnceApprovals.delete(key);
@@ -144,11 +192,13 @@ export function recordTfApprovedToolCall(input:{toolCallId:string;sessionId:stri
       tfOnceApprovals.has(input.toolCallId))return false;
   tfOnceApprovals.set(input.toolCallId,{sessionId:input.sessionId,
     agentId:input.agentId,workspaceRoot:input.workspaceRoot,
+    cwd:input.cwd??input.workspaceRoot,toolName:input.toolName,
     inputIdentity:identity,expiresAt:now+TF_ONCE_APPROVAL_WINDOW_MS});
   return true;
 }
 export function consumeTfApprovedToolCall(input:{toolCallId:string;sessionId:string;
-  agentId:string;workspaceRoot:string|null;parameters:Record<string,unknown>},
+  agentId:string;workspaceRoot:string|null;parameters:Record<string,unknown>;
+  toolName?:string;cwd?:string|null},
   now=Date.now()):boolean {
   if(!input.toolCallId)return false;
   const approval=tfOnceApprovals.get(input.toolCallId);
@@ -158,7 +208,10 @@ export function consumeTfApprovedToolCall(input:{toolCallId:string;sessionId:str
   return !!approval && approval.expiresAt>now &&
     approval.sessionId===input.sessionId && approval.agentId===input.agentId &&
     approval.workspaceRoot===input.workspaceRoot &&
-    approval.inputIdentity===exactTfInputIdentity(input.parameters);
+    approval.toolName===(input.toolName??"bounded_command") &&
+    approval.cwd===(input.cwd??input.workspaceRoot) &&
+    approval.inputIdentity===exactTfInputIdentity(
+      input.toolName??"bounded_command",input.parameters);
 }
 
 /** Read-only snapshot for same-run recovery authority comparison. */
@@ -275,6 +328,9 @@ export function canPersistPermission(
   input: Record<string, unknown>,
   ctx: PermissionContext,
 ): boolean {
+  // Exact native effects cannot be promoted into chat/workspace permission;
+  // even Full Access must produce a fresh SDK Allow once proof.
+  if(tfOperationEffectful(toolName) || toolName==="bounded_command")return false;
   if (isStrictPermissionRequest(toolName, input)) return false;
   const category = permissionCategoryForTool(toolName);
   // Network destinations are chosen per invocation. Neither chat nor a
@@ -454,6 +510,15 @@ const legacySandbox:ToolSandboxPolicy={
     "resource-limits","credential-injection","child-process-limits"],
   status:"unsupported",
 };
+/** Native tf_operation owns its real OS controls and reauthorizes each
+ * resource. Do not assert full filesystem/network isolation in TS preflight. */
+const tfOperationSandbox:ToolSandboxPolicy={
+  identity:"tf-native-operation-v1",required:[],enforced:[],
+  unsupported:["process-tree","timeout","environment-filter",
+    "filesystem-isolation","network-isolation","readonly-mounts",
+    "resource-limits","credential-injection","child-process-limits"],
+  status:"unsupported",
+};
 
 function absoluteScopePath(value:unknown,base:string|null):string|null {
   if(typeof value!=="string" || !value.trim())return null;
@@ -489,8 +554,71 @@ export function resolveCurrentToolFabricDecision(
       effects=["unknown"];
     }
   }
+  const nativeOp=isTfOperationTool(toolName);
+  if(nativeOp && phase==="execution"){
+    if(!validateTfOperationInput(toolName,input))
+      return {decision:"DENY",reasonCode:"tf-operation-invalid-input",
+        policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+    const operation=input.operation;
+    if(toolName==="tf_fs_write")
+      effects=operation==="file_create"||operation==="directory_create"
+        ? ["local-reversible-write"] : ["local-destructive-write"];
+    if(toolName==="tf_repo_write")
+      effects=operation==="repo_stage"||operation==="repo_unstage"
+        ? ["local-reversible-write"] : ["local-destructive-write"];
+  }
   if(phase==="execution"){
-    if(security.resources.includes("filesystem")){
+    if(nativeOp){
+      const operation=input.operation as string;
+      const addFile=(value:unknown,ops:("read"|"write"|"create"|"delete")[])=>{
+        const absolute=absoluteScopePath(value,cwd);
+        if(!absolute || !root)return false;
+        scopes.push({kind:"filesystem",workspaceRoot:root,path:absolute,operations:ops});
+        return true;
+      };
+      if(toolName==="tf_fs_read" && !addFile(input.path,["read"]))
+        return {decision:"DENY",reasonCode:"tf-source-not-scoped",
+          policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+      if(toolName==="tf_fs_write" || toolName==="tf_fs_delete"){
+        const operations:("read"|"write"|"create"|"delete")[]=
+          operation==="file_delete" ? ["delete"] :
+          operation==="file_move" ? ["read","delete"] :
+          operation==="directory_create"||operation==="file_create"
+            ? ["create"] : ["read","write"];
+        if(!addFile(input.path,operations) ||
+          (operation==="file_move" && !addFile(input.destination,
+            ["create","write"])))
+          return {decision:"DENY",reasonCode:"tf-target-not-scoped",
+            policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+      }
+      if(toolName==="tf_repo_read" || toolName==="tf_repo_write"){
+        if(Array.isArray(input.paths)){
+          if(input.paths.length>128 || !input.paths.every(path=>
+            addFile(path,toolName==="tf_repo_read"?["read"]:["read","write"])))
+            return {decision:"DENY",reasonCode:"tf-repo-path-not-scoped",
+              policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+        }
+      }
+      if(toolName==="tf_repo_read" || toolName==="tf_repo_write" ||
+        toolName==="tf_build_run"){
+        const nativeCwd=root;
+        if(!nativeCwd)return {decision:"DENY",reasonCode:"tf-cwd-not-scoped",
+          policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+        if(toolName==="tf_repo_write" || toolName==="tf_build_run"){
+          // Branch switching and bounded builds may affect the whole worktree,
+          // not only named pathspecs. This is the declared *intended* workspace
+          // effect ceiling; native must reauthorize it and cannot assert
+          // filesystem/network OS isolation for arbitrary build scripts.
+          scopes.push({kind:"filesystem",workspaceRoot:root,path:root,
+            operations:["read","write","create","delete"]});
+        }
+        scopes.push({kind:"command",executable:`native-tf-operation:${operation}`,
+          args:[operation],cwd:nativeCwd,envNames:[],
+          timeoutMs:toolName==="tf_build_run" &&
+            typeof input.timeoutMs==="number" ? input.timeoutMs:30_000});
+      }
+    }
+    if(!nativeOp && security.resources.includes("filesystem")){
       const candidate=absoluteScopePath(input.path??input.root??
         (toolName==="grep"||toolName==="glob"?root:null),cwd);
       if(candidate && root)
@@ -506,7 +634,7 @@ export function resolveCurrentToolFabricDecision(
           path,operations:["write"]});
       }
     }
-    if(security.resources.includes("command")){
+    if(!nativeOp && security.resources.includes("command")){
       const directory=typeof input.cwd==="string"?input.cwd:cwd;
       if(directory){
         const structured=toolName==="bounded_command";
@@ -554,9 +682,12 @@ export function resolveCurrentToolFabricDecision(
       `tf-preflight:${ctx.getSessionId()??"none"}:${toolName}`,
     actor:{agentId,sessionId:ctx.getSessionId(),workspaceId:root?workspacePermissionKey(root):null,
       workspaceRoot:root},tool:effectiveTool,operation:toolName,
-    requestedEffects:effects,resourceIdentity:JSON.stringify([
-      toolName,input.path??null,input.cwd??null,input.url??null,input.executable??null,input.args??null]).slice(0,2048),
-    scopes,sandbox:toolName==="bounded_command" ? {...tfWindowSandbox,configuration:{
+    requestedEffects:effects,resourceIdentity:nativeOp
+      ? `tf-operation:${exactTfInputIdentity(toolName,input)??"missing"}`
+      : JSON.stringify([toolName,input.path??null,input.cwd??null,
+        input.url??null,input.executable??null,input.args??null]).slice(0,2048),
+    scopes,sandbox:nativeOp?tfOperationSandbox:
+      toolName==="bounded_command" ? {...tfWindowSandbox,configuration:{
       workspaceRoot:root,mounts:[],tempDirectory:null,
       environment:{forwardedNames:[],inheritParent:false},
       network:{mode:"unsupported",destinations:[]},
@@ -651,14 +782,18 @@ export function applyAgentPermissionPolicy<
             }:{}),
           };
         }
-        if(lookupRegistrySecurity && toolName==="bounded_command" &&
-           (input as {action?:unknown}|null)?.action==="write_marker"){
+        if(lookupRegistrySecurity &&
+          ((toolName==="bounded_command" &&
+            (input as {action?:unknown}|null)?.action==="write_marker") ||
+           tfOperationEffectful(toolName))){
           const toolCallId=options && typeof options==="object" &&
             "toolCallId" in options && typeof options.toolCallId==="string"
             ? options.toolCallId : "";
           if(!consumeTfApprovedToolCall({toolCallId,
             sessionId:ctx.getSessionId()??"",agentId:ctx.getAgentId(),
             workspaceRoot:ctx.getWorkspaceRoot(),
+            cwd:toolName==="bounded_command"?undefined:ctx.getCwd()??ctx.getWorkspaceRoot(),
+            toolName,
             parameters:(input??{}) as Record<string,unknown>}))
             return {error:"This exact native command requires an unexpired Allow once approval from the current chat.",
               code:"tf_exact_approval_required",effectState:"NoEffect",retry:"no_auto_retry"};
@@ -747,6 +882,22 @@ function isToolRequestInsideWorkspace(
   }
   const workspaceRoot = ctx.getWorkspaceRoot();
   if (!workspaceRoot) return false;
+  if(isTfOperationTool(toolName)){
+    if(!validateTfOperationInput(toolName,input))return false;
+    const cwd=ctx.getCwd()??workspaceRoot;
+    if(!pathWithin(workspaceRoot,cwd))return false;
+    const targets:unknown[]=[];
+    if(input.path!==undefined)targets.push(input.path);
+    if(input.destination!==undefined)targets.push(input.destination);
+    if(input.paths!==undefined){
+      if(!Array.isArray(input.paths))return false;
+      targets.push(...input.paths);
+    }
+    return targets.every(raw=>{
+      const path=absoluteScopePath(raw,cwd);
+      return !!path && pathWithin(workspaceRoot,path);
+    });
+  }
   if (category === "run-commands") {
     const cwd = typeof input.cwd === "string" ? input.cwd : ctx.getCwd();
     return !!cwd && isInsideWorkspace(cwd, workspaceRoot);

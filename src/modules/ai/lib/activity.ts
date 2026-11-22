@@ -364,38 +364,74 @@ export function messageActivity(
           owner: base.owner,
           toolCallId,
         });
-      // TF's opt-in native command returns its structured effect receipt in
-      // the existing persisted SDK tool output. Project ONLY bounded,
-      // content-free fields into ActivityTimeline; never persist another
-      // trace database or copy command output, argv, environment or tokens.
+      // Native TF commands and scoped filesystem/repository/build operations
+      // return receipts in the existing persisted SDK tool output. Project
+      // ONLY bounded, content-free evidence: never duplicate output, file
+      // contents, argv, environment, credentials or execution tokens here.
       const tf = object(output?.effectReceipt);
-      if (tf?.toolId === "tf.bounded_command.v1" &&
+      const tfOperation = tf?.toolId === "tf.operation.v1";
+      const tfEffect = tfOperation ? tf?.effectState : tf?.sideEffect;
+      if ((tf?.toolId === "tf.bounded_command.v1" || tfOperation) &&
           typeof tf.requestId === "string" &&
           typeof tf.terminal === "string" &&
-          typeof tf.sideEffect === "string") {
+          typeof tfEffect === "string") {
         const safe = (value:unknown) => activityText(value,160) || "Unknown";
         const pid = typeof tf.pid === "number" && Number.isSafeInteger(tf.pid) && tf.pid>0
           ? String(tf.pid) : "Unknown";
         const paths = Array.isArray(tf.affectedResources) ? tf.affectedResources
           .slice(0,4).map(path=>safePath(path)).filter(Boolean) : [];
+        const requested = Array.isArray(tf.requestedResources) ? tf.requestedResources
+          .slice(0,4).map(path=>safePath(path)).filter(Boolean) : [];
+        const sha = (value: unknown) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
+          ? value : null;
+        const commit = (value: unknown) => typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value)
+          ? value : null;
+        const instant = (value: unknown) =>
+          typeof value === "number" && Number.isSafeInteger(value) &&
+          value >= 946684800000 && value <= 4102444800000
+            ? new Date(value).toISOString() : null;
+        const listedPaths = (value: unknown) => Array.isArray(value)
+          ? value.slice(0, 4).map(path => safePath(path)).filter(Boolean).join(", ")
+          : "";
+        const commandAdapter = tfOperation &&
+          ["native_filesystem", "pinned_git", "pinned_npm", "pinned_cargo"].includes(String(tf.commandAdapter))
+          ? String(tf.commandAdapter) : null;
         const detail=[
           `Request: ${safe(tf.requestId)}`,
           `Actor: ${safe(tf.actor)}`,
+          ...(tfOperation ? [`Operation: ${safe(tf.operation)}`] : []),
+          ...(commandAdapter ? [`Trusted adapter: ${commandAdapter}`] : []),
+          ...(commandAdapter && typeof tf.commandCwd === "string"
+            ? [`Command directory: ${safePath(tf.commandCwd)}`] : []),
+          ...(instant(tf.startedAt) ? [`Started: ${instant(tf.startedAt)}`] : []),
+          ...(instant(tf.endedAt) ? [`Ended: ${instant(tf.endedAt)}`] : []),
           `Policy: ${safe(tf.policyDecision)}`,
           `Approval: ${safe(tf.approvalId)}`,
           `Sandbox: ${safe(tf.sandbox)} (${safe(tf.isolation)})`,
           `Process: ${pid}`,
           `Terminal: ${safe(tf.terminal)}`,
-          `Effect: ${safe(tf.sideEffect)}`,
+          `Effect: ${safe(tfEffect)}`,
           `Uncertainty: ${safe(tf.uncertainty)}`,
-          `Retry: ${tf.autoRetry === false ? "No automatic replay" : "Unknown · no authority asserted"}`,
+          `Retry: ${tf.autoRetry === false || tfOperation ? "No automatic replay after uncertain effects" : "Unknown · no authority asserted"}`,
+          ...(requested.length ? [`Requested resources: ${requested.join(", ")}`] : []),
           ...(paths.length ? [`Affected resources: ${paths.join(", ")}`] : []),
-          ...(typeof tf.stdoutSha256 === "string" && /^[0-9a-f]{64}$/.test(tf.stdoutSha256)
-            ? [`Output SHA-256: ${tf.stdoutSha256}`] : []),
+          ...(typeof tf.beforeExists === "boolean" ? [`Existed before: ${tf.beforeExists ? "yes" : "no"}`] : []),
+          ...(typeof tf.afterExists === "boolean" ? [`Exists after: ${tf.afterExists ? "yes" : "no"}`] : []),
+          ...(sha(tf.beforeSha256) ? [`Before SHA-256: ${sha(tf.beforeSha256)}`] : []),
+          ...(sha(tf.afterSha256) ? [`After SHA-256: ${sha(tf.afterSha256)}`] : []),
+          ...(sha(tf.stdoutSha256) ? [`Output SHA-256: ${sha(tf.stdoutSha256)}`] : []),
+          ...(commit(tf.beforeHead) ? [`HEAD before: ${commit(tf.beforeHead)}`] : []),
+          ...(commit(tf.afterHead) ? [`HEAD after: ${commit(tf.afterHead)}`] : []),
+          ...(typeof tf.beforeBranch === "string" ? [`Branch before: ${safe(tf.beforeBranch)}`] : []),
+          ...(typeof tf.afterBranch === "string" ? [`Branch after: ${safe(tf.afterBranch)}`] : []),
+          ...(listedPaths(tf.beforeChangedPaths) ? [`Changed before: ${listedPaths(tf.beforeChangedPaths)}`] : []),
+          ...(listedPaths(tf.afterChangedPaths) ? [`Changed after: ${listedPaths(tf.afterChangedPaths)}`] : []),
+          ...(listedPaths(tf.beforeStagedPaths) ? [`Staged before: ${listedPaths(tf.beforeStagedPaths)}`] : []),
+          ...(listedPaths(tf.afterStagedPaths) ? [`Staged after: ${listedPaths(tf.afterStagedPaths)}`] : []),
         ].join("\n");
         add({
           id:`${base.id}:tf-effect`,kind:"runtime",
-          label:`${tool}: native ${safe(tf.terminal)} · effect ${safe(tf.sideEffect)}`,
+          label:`${tool}: native ${safe(tf.terminal)} · effect ${safe(tfEffect)}`,
           detail,owner:base.owner,toolCallId,
           source:"Native TF effect receipt (historical)",
         });

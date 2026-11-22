@@ -2,7 +2,7 @@ pub mod modules;
 
 use modules::{
     acp, agent, archive, attachments, clipboard, fs, git, history, net, opener, pdf, pty, secrets,
-    shell, tf_command, workspace,
+    shell, tf_command, tf_operations, workspace,
 };
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -239,6 +239,7 @@ pub fn run() {
         })
         .manage(fs::watch::FsWatchState::default())
         .manage(tf_command::TfCommandState::default())
+        .manage(tf_operations::TfOperationState::default())
         .manage(modules::conversation_memory::project::freshness::FreshnessState::default())
         .manage(history::HistoryState::default())
         .manage(fs::grep::ContentSearchState::default())
@@ -366,6 +367,10 @@ pub fn run() {
             tf_command::tf_command_approve,
             tf_command::tf_command_execute,
             tf_command::tf_command_cancel,
+            tf_operations::tf_operation_prepare,
+            tf_operations::tf_operation_approve,
+            tf_operations::tf_operation_execute,
+            tf_operations::tf_operation_cancel,
             shell::shell_identity,
             shell::shell_session_open,
             shell::shell_session_run,

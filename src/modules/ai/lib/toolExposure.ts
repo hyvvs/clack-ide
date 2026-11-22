@@ -152,6 +152,16 @@ export function requiredUiToolNames(messages: readonly UIMessage[]): string[] {
   return [...names].sort(compare);
 }
 type Schema = Awaited<ReturnType<typeof serializedToolSchemas>>[number];
+/** Destructive native tools are never ambient coding-task suggestions. A
+ * matching task may expose one, but the central policy and native approval
+ * still decide whether that exact operation may execute. */
+function taskRequestsSensitiveNativeTool(name: string, query: string): boolean {
+  if (name === "tf_fs_delete")
+    return /\b(delete|remove|erase|discard)\b/i.test(query);
+  if (name === "tf_repo_write")
+    return /\b(stage|unstage|staging|unstaging|checkout)\b|\b(git\s+(add|restore|switch)|create\s+branch|switch\s+branch|new\s+branch)\b/i.test(query);
+  return true;
+}
 export function selectToolSchemas(input: {
   schemas: Schema[];
   query: string;
@@ -216,7 +226,7 @@ export function selectToolSchemas(input: {
             /\b(fix|edit|file|files|code|implement|create|directory|read|search)\b/i.test(
               boundedQuery,
             ) &&
-            /^(read_file|list_directory|grep|glob|edit|multi_edit|write_file|create_directory|todo_write)$/.test(
+            /^(read_file|list_directory|grep|glob|edit|multi_edit|write_file|create_directory|todo_write|tf_fs_read|tf_fs_write|tf_fs_delete|tf_repo_read|tf_repo_write)$/.test(
               schema.function.name,
             )
           )
@@ -225,7 +235,7 @@ export function selectToolSchemas(input: {
             /\b(test|build|install|command|server|shell)\b/i.test(
               boundedQuery,
             ) &&
-            /^(bash_run|bash_background|bash_list|bash_logs|bash_kill|open_preview)$/.test(
+            /^(bash_run|bash_background|bash_list|bash_logs|bash_kill|open_preview|tf_build_run|tf_repo_read|tf_repo_write)$/.test(
               schema.function.name,
             )
           )
@@ -245,6 +255,9 @@ export function selectToolSchemas(input: {
           ranked[0].score === ranked[EXPOSURE_LIMITS.optional].score &&
           ranked[EXPOSURE_LIMITS.optional].score ===
             ranked[EXPOSURE_LIMITS.optional - 1].score)));
+  const taskRelevant = ranked.filter(({schema}) =>
+    mandatory.includes(schema.function.name) ||
+    taskRequestsSensitiveNativeTool(schema.function.name, boundedQuery));
   const selected = new Set(mandatory);
   const capabilities = (name: string) => input.capabilities?.[name] ?? operationCapabilities(name);
   for (const capability of input.objective?.required ?? []) {
@@ -278,8 +291,8 @@ export function selectToolSchemas(input: {
   for (const { schema, score } of conversational
     ? []
     : fallback
-      ? ranked.slice(0, EXPOSURE_LIMITS.optional)
-      : ranked.filter((r) => r.score >= Math.min(4, ranked[0]?.score || 1)).slice(0, EXPOSURE_LIMITS.optional)) {
+      ? taskRelevant.slice(0, EXPOSURE_LIMITS.optional)
+      : taskRelevant.filter((r) => r.score >= Math.min(4, taskRelevant[0]?.score || 1)).slice(0, EXPOSURE_LIMITS.optional)) {
     if (fallback || score > 0) {
       if (["delegated", "read-only"].includes(input.objective?.kind ?? "") && (requiresWorkspaceWriteLease(schema.function.name) || capabilities(schema.function.name).some(c => ["create", "modify", "command"].includes(c))) && !mandatory.includes(schema.function.name)) continue;
       if (fallback && !ranked.some(r => r.score > 0) && !capabilities(schema.function.name).includes("read") && schema.function.name !== "list_directory") continue;

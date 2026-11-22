@@ -11,6 +11,12 @@ const operations: Readonly<Record<string, readonly ToolCapability[]>> = {
   edit: ["modify"],
   multi_edit: ["modify"],
   bash_run: ["command"],
+  tf_fs_read: ["read"],
+  tf_fs_write: ["create","modify"],
+  tf_fs_delete: ["modify"],
+  tf_repo_read: ["read"],
+  tf_repo_write: ["modify"],
+  tf_build_run: ["command"],
   request_peer_task: ["peer"],
   communicate_peer_task: ["peer"],
 };

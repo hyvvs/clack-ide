@@ -146,6 +146,15 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                               Native-only Git command · writes require Allow once · Windows filesystem/network isolation unsupported
                             </p>
                           )}
+                          {item.name.startsWith("tf_fs_") || item.name.startsWith("tf_repo_") || item.name === "tf_build_run" ? (
+                            <p className="text-[10.5px] text-muted-foreground">
+                              Structured native Tool Fabric operation · scoped paths and effect receipts
+                              {item.name === "tf_fs_write" || item.name === "tf_fs_delete" || item.name === "tf_repo_write" || item.name === "tf_build_run"
+                                ? " · exact Allow once and native confirmation for effects"
+                                : " · read policy applies"}
+                              {" · "}filesystem/network OS isolation unsupported
+                            </p>
+                          ) : null}
                         </li>
                       ))}
                     </ul>
