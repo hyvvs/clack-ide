@@ -18,6 +18,30 @@ export type ManagedLocalNativeStatus = {
   error?: string | null;
   /** Native verified launch observation; absent unless exact owner is Ready. */
   actualExecution?: ActualExecution | null;
+  requestedBackend?: string | null;
+  selectedBackend?: string | null;
+  requestedGpuLayers?: number | null;
+  selectedGpuLayers?: number | null;
+  selectedDeviceId?: string | null;
+  fallbackUsed?: boolean;
+  fallbackAuthorized?: boolean;
+  fallbackReason?: string | null;
+  gpuFreeBeforeBytes?: number | null;
+  gpuFreeAfterBytes?: number | null;
+  cudaProcessVramBytes?: number | null;
+};
+export type ManagedCudaVariantStatus = {
+  installed: boolean;
+  runtimeVariantId: "b12248/cuda";
+  backend: "cuda";
+  version: string;
+  platform: string;
+  source: string;
+  engineArchiveSha256: string;
+  dependencyArchiveSha256: string;
+  executableSha256: string;
+  license: string;
+  error?: string | null;
 };
 export type ManagedLocalNativeRoute = {
   baseUrl: string;

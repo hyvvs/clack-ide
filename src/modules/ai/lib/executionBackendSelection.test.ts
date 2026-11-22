@@ -90,8 +90,9 @@ describe("Universal Compute Foundation — native-bound CPU/CUDA admission", () 
       driverVersion: "616.92", totalMemoryBytes: 16_303 * 1024 ** 2,
       availableMemoryBytes: 13_399 * 1024 ** 2,
     });
-    expect(runtimeBackendVariants(ctx.runtime, installed).map(v => [v.backend, v.support]))
-      .toContainEqual(["cuda", "UNSUPPORTED"]);
+    expect(runtimeBackendVariants(ctx.runtime, installed).find(v=>v.backend==="cuda"))
+      .toMatchObject({support:"AVAILABLE",installation:"UNKNOWN",
+        source:"official-b12248-windows-x64-cuda13.5-pinned-release-manifest"});
     expect(runtimeBackendVariants(ctx.runtime, installed)[0]).toMatchObject({
       backend: "cpu", support: "AVAILABLE", installation: "AVAILABLE",
       id: "b12248/cpu", trust: "VERIFIED",
@@ -102,7 +103,7 @@ describe("Universal Compute Foundation — native-bound CPU/CUDA admission", () 
     const result = setup().choose(cuda());
     expect(result).toMatchObject({state: "rejected", selected: null, actual: null,
       fallbackUsed: false, fallbackAuthorized: false});
-    expect(result.reasons.join(" ")).toContain("cuda: runtime build support UNSUPPORTED");
+    expect(result.reasons.join(" ")).toContain("cuda: runtime installation UNKNOWN");
   });
 
   it("authorized compatible fallback records requested CUDA, selected CPU and reason", () => {

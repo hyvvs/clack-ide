@@ -40,7 +40,7 @@ import {
   MANAGED_LOCAL_HOST_ID,
   resolveManagedLocalSelection,
 } from "@/modules/ai/lib/managedLocalModels";
-import type { ManagedLocalNativeStatus } from "@/modules/ai/lib/managedLocalRuntime";
+import type { ManagedCudaVariantStatus, ManagedLocalNativeStatus } from "@/modules/ai/lib/managedLocalRuntime";
 import {
   type NativeGgufResource,
   nativeGgufResourceSchema,
@@ -62,6 +62,7 @@ type LocalRead = {
   hardware: NativeHardwareObservation | null;
   metadata: NativeGgufResource | null;
   runtime: ManagedLocalNativeStatus | null;
+  cudaVariant: ManagedCudaVariantStatus | null;
 };
 
 function nativeRuntimeStatus(value: unknown): ManagedLocalNativeStatus | null {
@@ -270,9 +271,10 @@ export function DeploymentSuitabilityControl({
     // Explicit popover open is the sole trigger. These three native commands
     // read host RAM, imported GGUF metadata and runtime status; none runs inference.
     void (async () => {
-      const [rawHardware, rawMetadata] = await Promise.allSettled([
+      const [rawHardware, rawMetadata, rawCudaVariant] = await Promise.allSettled([
         invoke<unknown>("local_hardware_observation"),
         invoke<unknown>("managed_local_runtime_model_metadata", { digest }),
+        invoke<ManagedCudaVariantStatus>("managed_local_runtime_cuda_variant_status"),
       ]);
       if (request.current !== token) return;
       // Read status last so an expensive digest check cannot make an earlier
@@ -308,6 +310,11 @@ export function DeploymentSuitabilityControl({
             ? metadata.data
             : null,
         runtime: nativeRuntimeStatus(rawRuntime),
+        cudaVariant: rawCudaVariant.status === "fulfilled" &&
+          rawCudaVariant.value.version === "b12248" &&
+          rawCudaVariant.value.runtimeVariantId === "b12248/cuda" &&
+          typeof rawCudaVariant.value.installed === "boolean"
+          ? rawCudaVariant.value : null,
       });
       setLoading(false);
     })().catch(() => {
@@ -326,6 +333,7 @@ export function DeploymentSuitabilityControl({
     now - currentRead.readAt < 30_000
       ? currentRead.runtime
       : null;
+  const cudaVariant = freshNative ? currentRead?.cudaVariant ?? null : null;
   let resolved: Resolved | null = null;
   try {
     if (open) resolved = resolveSelection(state, selection, freshNative, now);
@@ -375,11 +383,12 @@ export function DeploymentSuitabilityControl({
     ? selectDeploymentExecution({
         host, runtime, deployment, artifact, hardware, requested: executionRequest,
         installedRuntime: managed ? freshNative : null,
+        cudaVariant: managed ? cudaVariant : null,
         nativeExecution: managed ? freshNative : null,
         now,
       }) : null;
   const installedBackends = runtime
-    ? runtimeBackendVariants(runtime, managed ? freshNative : null) : [];
+    ? runtimeBackendVariants(runtime, managed ? freshNative : null, managed ? cudaVariant : null) : [];
   const tiers = resource ? contextTargets(resource) : [];
   // LM6 current-scope matching checks the FULL procedure, epoch, artifact,
   // host, runtime, context and backend before showing a measured claim.
@@ -614,6 +623,11 @@ export function DeploymentSuitabilityControl({
                     .map(variant => `${variant.backend.toUpperCase()} ${variant.support} / installed ${variant.installation}`)
                     .join(" · ") || "Backend support UNKNOWN"}
                 </p>
+                <p className="text-muted-foreground">
+                  CUDA variant: {cudaVariant?.installed ? "Verified installed" :
+                    cudaVariant ? `Not installed · ${cudaVariant.error ?? "unavailable"}` : "UNKNOWN"}
+                  {cudaVariant?.installed ? ` · ${cudaVariant.platform} · engine ZIP ${cudaVariant.engineArchiveSha256.slice(0,12)}… · CUDA DLL ZIP ${cudaVariant.dependencyArchiveSha256.slice(0,12)}…` : ""}
+                </p>
                 <p>Saved request: {savedRequest
                   ? `${savedRequest.backend.toUpperCase()} · ${savedRequest.gpuLayers ?? "Unknown"} GPU layers · fallback ${savedRequest.fallback.policy}`
                   : "UNKNOWN (not a CPU default)"}</p>
@@ -648,9 +662,20 @@ export function DeploymentSuitabilityControl({
                     : "None"}</p>
                 <p>Fallback used: {backendSelection?.fallbackUsed ? "Yes (authorized)" : "No"}
                   {backendSelection?.reasons.length ? ` · ${backendSelection.reasons.join("; ")}` : ""}</p>
+                {freshNative?.fallbackUsed && (
+                  <p role="status">Actual fallback: {freshNative.fallbackAuthorized ? "Authorized" : "NOT AUTHORIZED"}
+                    {" · "}{freshNative.requestedBackend?.toUpperCase()} to {freshNative.selectedBackend?.toUpperCase()}
+                    {" · "}{freshNative.fallbackReason ?? "No native reason"}</p>
+                )}
                 <p>Actual native execution: {backendSelection?.actual
                   ? `${backendSelection.actual.backend.toUpperCase()} / ${backendSelection.actual.gpuLayers} GPU layers · ${backendSelection.actual.runtimeVariantId}`
                   : "Not observed (no exact Ready native launch evidence)"}</p>
+                {freshNative?.selectedBackend === "cuda" && (
+                  <p>CUDA device: {freshNative.selectedDeviceId ?? "Unknown"}
+                    {" · "}Selected offload: {freshNative.selectedGpuLayers ?? "Unknown"} layers
+                    {" · "}Free VRAM before/after: {formatBytes(freshNative.gpuFreeBeforeBytes ?? null)} / {formatBytes(freshNative.gpuFreeAfterBytes ?? null)}
+                    {" · "}Process VRAM: {formatBytes(freshNative.cudaProcessVramBytes ?? null)}</p>
+                )}
                 {backendPreview !== "saved" && <p className="text-muted-foreground">Preview only; no settings, deployment, runtime or selected model were changed.</p>}
               </div>
               <p>

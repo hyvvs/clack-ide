@@ -3,6 +3,7 @@ import type { ModelInfo } from "@/modules/ai/config";
 import {
   deploymentIdentity,
   localComputeFabricSchema,
+  requestedExecutionSchema,
   reconcileLocalComputeFabric,
   withLocalComputeFabric,
   type ComputeHost,
@@ -10,6 +11,7 @@ import {
   type LocalRuntime,
   type ModelArtifact,
   type ModelDeployment,
+  type RequestedExecution,
 } from "@/modules/ai/lib/localComputeFabric";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import type { ModelTransportIdentity } from "@/modules/ai/lib/savedProviderModels";
@@ -48,6 +50,63 @@ export const managedLocalMaterialSchema = z.object({
   grammar: z.literal(false),
 }).strict();
 export type ManagedLocalMaterial = z.infer<typeof managedLocalMaterialSchema>;
+/** V2 material is an explicitly accelerated deployment variant, not a rewrite
+ * of the original v1 CPU configuration or the Qwen qualification identity. */
+const managedCudaMaterialSchema = z.object({
+  version: z.literal(2), context: z.number().int().min(512).max(131_072),
+  tool: z.literal(false), grammar: z.literal(false),
+}).strict();
+export function managedCudaConfigurationIdentity(context: number): string {
+  const material = managedCudaMaterialSchema.parse({version:2,context,tool:false,grammar:false});
+  return JSON.stringify(material);
+}
+const cudaDeviceId = z.string().regex(/^clack-this-pc:accelerator:GPU-[0-9a-fA-F-]{12,96}$/);
+export function managedCudaDeploymentId(
+  digest: string, context: number, gpuLayers: number,
+  deviceId: string, policy: "disabled" | "allow-compatible",
+): string {
+  return JSON.stringify(["managed-gguf-cuda",ggufDigest.parse(digest),
+    managedCudaConfigurationIdentity(context),gpuLayers,cudaDeviceId.parse(deviceId),policy]);
+}
+
+/** Registers a distinct model deployment under the EXISTING host, runtime and
+ * content-addressed artifact. No process runs, no legacy record is modified. */
+export function attachManagedCudaVariant(
+  state: SelfHostedState, sourceSelectionId: string,
+  options: {deviceId: string; gpuLayers: number; fallback: "disabled" | "allow-compatible"},
+): {state:SelfHostedState;selectionId:string} {
+  const source = resolveManagedLocalSelection(state,sourceSelectionId);
+  if (source.status !== "available" && source.status !== "unavailable")
+    throw new Error("CUDA deployment requires an existing verified managed GGUF registration");
+  const {artifact,runtime,host,deployment} = source;
+  if (runtime.id !== MANAGED_LOCAL_RUNTIME_ID || host.id !== MANAGED_LOCAL_HOST_ID ||
+      deployment.requestedExecution) throw new Error("CUDA variant must originate from a legacy CPU managed deployment");
+  if (!artifact.digest) throw new Error("Managed CUDA variant requires the original content-addressed GGUF digest");
+  const material = managedLocalMaterialSchema.parse(JSON.parse(deployment.configurationIdentity ?? "null"));
+  const deviceId = cudaDeviceId.parse(options.deviceId);
+  if (!Number.isSafeInteger(options.gpuLayers) || options.gpuLayers < 1 || options.gpuLayers > 999)
+    throw new Error("CUDA GPU layer count must be between 1 and 999");
+  const requested: RequestedExecution = requestedExecutionSchema.parse({
+    backend:"cuda",deviceIds:[deviceId],gpuLayers:options.gpuLayers,
+    contextLength:material.context,fallback:{policy:options.fallback},
+  });
+  const cuda: ModelDeployment = {
+    id:managedCudaDeploymentId(artifact.digest,material.context,options.gpuLayers,deviceId,options.fallback),
+    hostId:host.id,runtimeId:runtime.id,artifactId:artifact.id,
+    runtimeModelName:deployment.runtimeModelName,
+    configurationRevision:runtime.configurationRevision,
+    configurationIdentity:managedCudaConfigurationIdentity(material.context),
+    variantId:"b12248/cuda",requestedExecution:requested,
+  };
+  const fabric = managedLocalFabric(state);
+  const prior = fabric.deployments.find(row=>row.id===cuda.id);
+  if(prior && deploymentIdentity(prior)!==deploymentIdentity(cuda))
+    throw new Error("Conflicting CUDA deployment identity");
+  const next=withLocalComputeFabric({...state,fabric:localComputeFabricSchema.parse({
+    ...fabric,deployments:prior?fabric.deployments:[...fabric.deployments,cuda],
+  })});
+  return {state:next,selectionId:managedLocalSelectionId(cuda)};
+}
 export type AttachManagedLocalGguf = {
   digest: string;
   /** Optional import-time hint; only its basename can become a display label. */
@@ -142,11 +201,25 @@ function managedLocalAttachment(fabric: LocalComputeFabric, deployment: ModelDep
     return;
   let material: unknown;
   try { material = JSON.parse(deployment.configurationIdentity); } catch { return; }
-  const parsed = managedLocalMaterialSchema.safeParse(material);
-  if (!parsed.success ||
-      deployment.configurationIdentity !== managedLocalConfigurationIdentity(parsed.data) ||
-      deployment.id !== managedLocalDeploymentId(artifact.digest, parsed.data))
-    return;
+  if (deployment.variantId === "b12248/cuda") {
+    const parsed=managedCudaMaterialSchema.safeParse(material);
+    const requested=requestedExecutionSchema.safeParse(deployment.requestedExecution);
+    const layers=requested.success ? requested.data.gpuLayers : undefined;
+    if(!parsed.success||!requested.success||requested.data.backend!=="cuda"||
+       requested.data.contextLength!==parsed.data.context||
+       requested.data.deviceIds.length!==1||
+       !cudaDeviceId.safeParse(requested.data.deviceIds[0]).success||
+       layers===undefined||!Number.isInteger(layers)||layers<1||layers>999||
+       (requested.data.fallback.policy!=="disabled"&&requested.data.fallback.policy!=="allow-compatible")||
+       deployment.configurationIdentity!==managedCudaConfigurationIdentity(parsed.data.context)||
+       deployment.id!==managedCudaDeploymentId(artifact.digest,parsed.data.context,
+         layers,requested.data.deviceIds[0],requested.data.fallback.policy))return;
+  } else {
+    const parsed = managedLocalMaterialSchema.safeParse(material);
+    if (!parsed.success || deployment.requestedExecution!==undefined || deployment.variantId!==undefined ||
+        deployment.configurationIdentity !== managedLocalConfigurationIdentity(parsed.data) ||
+        deployment.id !== managedLocalDeploymentId(artifact.digest, parsed.data)) return;
+  }
   return { deployment, artifact, runtime, host, identity: deploymentIdentity(deployment) };
 }
 

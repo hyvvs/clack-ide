@@ -412,6 +412,8 @@ pub fn run() {
             modules::managed_local_runtime::managed_local_runtime_model_present,
             modules::managed_local_runtime::managed_local_runtime_import,
             modules::managed_local_runtime::managed_local_runtime_install_bundle,
+            modules::managed_local_runtime::managed_local_runtime_install_cuda_bundles,
+            modules::managed_local_runtime::managed_local_runtime_cuda_variant_status,
             modules::managed_local_runtime::managed_local_runtime_start,
             modules::managed_local_runtime::managed_local_runtime_stop,
             modules::managed_local_runtime::managed_local_runtime_route,
