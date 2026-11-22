@@ -15,6 +15,7 @@ import {
   beginInference,
   cancelSessionInference,
 } from "@/modules/ai/lib/inferenceLifecycle";
+import type { ManagedExecutionIdentity } from "@/modules/ai/lib/managedExecutionEvidence";
 
 const owner: ActivityOwner = {
   sessionId: "chat",
@@ -61,6 +62,50 @@ const reasoning: UIMessageChunk[] = [
 const latest = (messages: UIMessage[]) => messages[messages.length - 1];
 
 describe("real SDK activity stream integration", () => {
+  it("durably records native-authenticated managed CPU/CUDA execution under existing Chat receipts without a second trace store",async()=>{
+    const execution = {
+      stableExecutionIdentity:"exact-deployment/cuda/gpu-uuid/b12248",
+      deployment:{deploymentId:"managed-exact-cuda"},
+      requested:{backend:"cuda",deviceIds:["GPU-uuid"],gpuLayers:40,
+        fallback:{policy:"explicit-order",order:["cpu"]},
+        candidates:[{backend:"cuda",deviceIds:["GPU-uuid"],gpuLayers:40},
+          {backend:"cpu",deviceIds:["clack-this-pc:cpu:0"],gpuLayers:0}]},
+      selected:{backend:"cuda",requestedGpuLayers:40,cpuThreads:8,fallbackUsed:false,
+        fallbackReason:null},
+      actual:{backend:"cuda",deviceIds:["clack-this-pc:accelerator:GPU-uuid"],
+        gpuLayers:25,runtimeVariantId:"b12248/cuda"},
+      runtime:{runtimeBuildDigest:"sha256:"+ "a".repeat(64),
+        processId:7211,epoch:"b".repeat(64),
+        route:{baseUrl:"http://127.0.0.1:55001/v1",alias:"clack-0011223344556677"}},
+      memory:{hostAvailableBeforeBytes:12*1024**3,
+        deviceAvailableBeforeBytes:8*1024**3,
+        estimatedDeviceRequiredBytes:3*1024**3},
+      observedAt:1_800_000_000_000,
+    } as ManagedExecutionIdentity;
+    const capture=vi.fn(async()=>execution);
+    const updates=await collect(activityStream([],owner,undefined,
+      async()=>chunks(reasoning),()=> "safe",capture));
+    const record=readActivity(latest(updates),"chat","workspace");
+    const native=record?.receipts.find(row=>row.managedExecution)?.managedExecution;
+    expect(native).toMatchObject({
+      requestedBackendOrder:["cuda","cpu"],selectedBackend:"cuda",
+      actualBackend:"cuda",runtimeVariantId:"b12248/cuda",
+      actualGpuLayers:25,requestedGpuLayers:40,
+      processId:7211,runtimeEpoch:"b".repeat(64),
+      routeBaseUrl:"http://127.0.0.1:55001/v1",
+      sdkTerminalOutcome:"completed",nativeRequestTerminal:"Unknown",
+      processStillCurrentAtTerminal:true,
+    });
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(record)).not.toContain("apiKey");
+    expect(JSON.stringify(record)).not.toContain("Bearer");
+    const drift=await collect(activityStream([],owner,undefined,
+      async()=>chunks(reasoning),()=> "safe",vi.fn()
+        .mockResolvedValueOnce(execution).mockResolvedValueOnce(null)));
+    expect(readActivity(latest(drift),"chat","workspace")?.receipts
+      .find(row=>row.managedExecution)?.managedExecution?.processStillCurrentAtTerminal)
+      .toBe(false);
+  });
   it("records native custom-tool transitions and unknown effects without trusting result narration", async () => {
     const updates = await collect(
       activityStream(

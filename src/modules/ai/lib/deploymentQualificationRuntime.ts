@@ -11,6 +11,10 @@ import {
   type LocalComputeFabric,
   type RuntimeCapabilityName,
 } from "@/modules/ai/lib/localComputeFabric";
+import {
+  observedManagedExecutionIdentity,
+  type ManagedExecutionIdentity,
+} from "@/modules/ai/lib/managedExecutionEvidence";
 import type { SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import {
   isManagedLocalSelectionId,
@@ -157,6 +161,52 @@ async function sha256(value: string): Promise<`sha256:${string}`> {
     .map(x => x.toString(16).padStart(2, "0")).join("")}`;
 }
 
+/** Verifier-owned projection from one exact, authenticated native v3 Ready
+ * receipt. Stored in the EXISTING v2 qualification evidence envelope. The
+ * scope holds the stable execution key; no inferred placement or live route
+ * credential is persisted. Historical v2 receipts omit this field. */
+export function boundedQualificationExecutionEvidence(
+  execution: ManagedExecutionIdentity | null,
+  deploymentId: string,
+  executionIdentity: string | undefined,
+) {
+  if (!executionIdentity) return undefined;
+  const receipt = execution?.actual.executionReceipt;
+  if (!execution || !receipt || receipt.version !== 3 ||
+      execution.stableExecutionIdentity !== executionIdentity ||
+      receipt.deploymentId !== deploymentId ||
+      receipt.deploymentIdentity !== execution.deployment.deploymentIdentity ||
+      execution.selected.backend !== execution.actual.backend ||
+      execution.selected.runtimeVariantId !== execution.actual.runtimeVariantId ||
+      JSON.stringify(execution.selected.deviceIds) !== JSON.stringify(execution.actual.deviceIds))
+    throw new Error("Native v3 execution proof changed before bounded qualification receipt");
+  return {
+    source: "native-authenticated-ready-v3" as const,
+    policyIdentity: receipt.policyIdentity,
+    requested: {
+      backend: execution.requested.backend,
+      deviceIds: [...execution.requested.deviceIds],
+      gpuLayers: execution.requested.gpuLayers ?? null,
+      fallbackPolicy: execution.requested.fallback.policy,
+    },
+    selected: {
+      backend: execution.selected.backend,
+      deviceIds: [...execution.selected.deviceIds],
+      runtimeVariantId: execution.selected.runtimeVariantId,
+      candidateIndex: receipt.selectedCandidateIndex,
+      fallbackUsed: receipt.fallbackUsed,
+      fallbackAuthorized: receipt.fallbackAuthorized,
+    },
+    actual: {
+      backend: execution.actual.backend,
+      deviceIds: [...execution.actual.deviceIds],
+      gpuLayers: execution.actual.gpuLayers,
+      runtimeVariantId: execution.actual.runtimeVariantId,
+      runtimeBuildDigest: receipt.runtimeBuildDigest ?? null,
+    },
+  };
+}
+
 export async function boundedChatReceipts(
   fabric: LocalComputeFabric,
   deploymentId: string,
@@ -164,18 +214,22 @@ export async function boundedChatReceipts(
   result: BoundedChatObservation,
   flight: QualificationFlightSnapshot,
   now = Date.now(),
+  execution: ManagedExecutionIdentity | null = null,
 ): Promise<DeploymentQualificationEvidenceReceipt[]> {
   const { deploymentQualificationScope, deploymentQualificationEvidenceReceiptSchema } =
     await import("@/modules/ai/lib/localComputeFabric");
   const scope = deploymentQualificationScope(fabric, deploymentId, observation, now);
   if (!scope || !flight.systemContextDigest)
     throw new Error("No current native deployment scope for bounded qualification");
+  const executionEvidence = boundedQualificationExecutionEvidence(
+    execution, deploymentId, scope.executionIdentity);
   const evidenceDigest = await sha256(result.evidenceDigestInput);
   const receipts = QUALIFICATION_CAPABILITIES.map(capability => {
     const passed = capability === "chat" ? result.chat :
       capability === "streaming" ? result.streaming : result.terminalCompletion;
     return deploymentQualificationEvidenceReceiptSchema.parse({
       version: 2, scope: { ...scope, deploymentId }, capability,
+      ...(executionEvidence ? { executionEvidence } : {}),
       status: passed ? "verified" : "failed",
       verifiedAt: now, expiresAt: now + 86_400_000,
       procedure: { id: "clack-managed-chat-bounded", version: 1 },
@@ -204,7 +258,19 @@ export async function boundedChatReceipts(
     personaId: "builtin:coder", systemContextDigest: flight.systemContextDigest,
     requestId: result.requestId, finish: result.finish,
   }).status) throw new Error("Adherence verifier results inconsistent");
-  return [...receipts, adherence];
+  const annotatedAdherence = executionEvidence
+    ? deploymentQualificationEvidenceReceiptSchema.parse({
+        ...adherence, executionEvidence,
+      })
+    : adherence;
+  const all = [...receipts, annotatedAdherence];
+  // Native B03 appends one operation/epoch/ACK marker to each receipt.
+  // Enforce the existing 12 KiB per-row history limit *before* requesting
+  // a CAS ticket. Oversized policy evidence cannot create ambiguous writes.
+  if (all.some(row =>
+    new TextEncoder().encode(JSON.stringify(row)).length + 256 > 12 * 1024))
+    throw new Error("Bounded qualification execution evidence exceeds native CAS row budget");
+  return all;
 }
 
 /** Safely persist only evidence into the existing CAS envelope. Runtime
@@ -461,9 +527,13 @@ async function executeManagedChatQualification(
     );
     if (!fresh?.observation)
       throw new Error("Native Ready identity unavailable after the qualifying Chat");
+    const execution = fresh.observation.executionIdentity
+      ? observedManagedExecutionIdentity(
+          usePreferencesStore.getState().selfHostedInference, selectionId, after, timestamp)
+      : null;
     phase = "receipt-scoring";
     const receipts = await budget.within(() => boundedChatReceipts(fresh.fabric,
-      selected.deployment.id, fresh.observation!, observed, flight!, timestamp));
+      selected.deployment.id, fresh.observation!, observed, flight!, timestamp, execution));
     phase = "cas-commit";
     budget.beginPersistence();
     try {
@@ -508,6 +578,14 @@ async function executeManagedChatQualification(
         }));
       if (committedOwner.epoch !== after.epoch || committedOwner.processId !== after.processId)
         throw new Error("Managed runtime changed before qualification could be published");
+      if (execution) {
+        const currentExecution = observedManagedExecutionIdentity(
+          usePreferencesStore.getState().selfHostedInference,
+          selectionId, committedOwner, Date.now());
+        if (!currentExecution ||
+            currentExecution.stableExecutionIdentity !== execution.stableExecutionIdentity)
+          throw new Error("Verified native execution changed after qualification acknowledgement");
+      }
       budget.persisted();
     } catch (error) {
       if (casTicket)

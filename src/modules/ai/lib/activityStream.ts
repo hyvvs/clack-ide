@@ -9,6 +9,8 @@ import {
   type InferenceScope,
 } from "@/modules/ai/lib/inferenceLifecycle";
 import type { ProviderRetryEvent } from "@/modules/ai/lib/providerRetry";
+import type { ManagedExecutionIdentity } from "@/modules/ai/lib/managedExecutionEvidence";
+import type { ManagedActivityExecution } from "@/modules/ai/lib/activityRecord";
 
 export type ActivityStreamContext = {
   customTool: (id: string, state: string, effect: string) => void;
@@ -16,6 +18,49 @@ export type ActivityStreamContext = {
   retry: (event: ProviderRetryEvent) => void;
   recovered: () => void;
 };
+
+/** Only the source's native authenticated Ready receipt may provide this
+ * evidence. SDK stream termination and Rust inference-N terminal are distinct.
+ * A failed readback becomes Unknown, not a guessed CPU/CUDA trace. */
+function managedActivityTrace(
+  original: ManagedExecutionIdentity,
+  terminal: "completed" | "failed" | "cancelled" | "unknown",
+  current: ManagedExecutionIdentity | null,
+): ManagedActivityExecution {
+  const stillCurrent=!!current &&
+    current.stableExecutionIdentity===original.stableExecutionIdentity &&
+    current.runtime.epoch===original.runtime.epoch &&
+    current.runtime.processId===original.runtime.processId &&
+    current.runtime.route?.baseUrl===original.runtime.route?.baseUrl &&
+    current.runtime.route?.alias===original.runtime.route?.alias;
+  return {
+    version:1,
+    stableExecutionIdentity:original.stableExecutionIdentity,
+    deploymentId:original.deployment.deploymentId,
+    requestedBackendOrder:original.requested.candidates?.map(row=>row.backend) ??
+      [original.requested.backend,...(original.requested.fallback.order??[])],
+    selectedBackend:original.selected.backend,
+    actualBackend:original.actual.backend,
+    deviceIds:[...original.actual.deviceIds],
+    runtimeVariantId:original.actual.runtimeVariantId,
+    runtimeBuildDigest:original.runtime.runtimeBuildDigest,
+    actualGpuLayers:original.actual.gpuLayers,
+    requestedGpuLayers:original.selected.requestedGpuLayers,
+    cpuThreads:original.selected.cpuThreads,
+    processId:original.runtime.processId,
+    runtimeEpoch:original.runtime.epoch,
+    routeBaseUrl:original.runtime.route?.baseUrl??null,
+    fallbackUsed:original.selected.fallbackUsed,
+    fallbackReason:original.selected.fallbackReason?.slice(0,1024)??null,
+    nativeHostAvailableBytes:original.memory.hostAvailableBeforeBytes,
+    nativeDeviceAvailableBytes:original.memory.deviceAvailableBeforeBytes,
+    estimatedDeviceRequirementBytes:original.memory.estimatedDeviceRequiredBytes,
+    observedAt:original.observedAt,
+    sdkTerminalOutcome:terminal,
+    nativeRequestTerminal:"Unknown",
+    processStillCurrentAtTerminal:stillCurrent,
+  };
+}
 
 export function activityStream(
   messages: UIMessage[],
@@ -25,6 +70,7 @@ export function activityStream(
     context: ActivityStreamContext,
   ) => Promise<ReadableStream<UIMessageChunk>>,
   onError: (error: unknown) => string,
+  captureManagedExecution?: () => Promise<ManagedExecutionIdentity | null>,
 ): ReadableStream<UIMessageChunk> {
   const last = messages[messages.length - 1];
   const previous =
@@ -44,6 +90,21 @@ export function activityStream(
       return reader?.cancel(reason);
     },
     async start(controller) {
+      const before=await captureManagedExecution?.().catch(()=>null) ?? null;
+      let terminalTraced=false;
+      const recordNativeExecution = async (
+        terminal:"completed"|"failed"|"cancelled"|"unknown",
+      ) => {
+        if (!before || !active || terminalTraced) return;
+        terminalTraced=true;
+        const after=await captureManagedExecution?.().catch(()=>null)??null;
+        recorder.add({
+          id:`managed-execution:${owner.runId}:${crypto.randomUUID()}`,
+          kind:"request",
+          label:"Managed execution receipt (SDK terminal; native inference terminal unverified)",
+          managedExecution:managedActivityTrace(before,terminal,after),
+        });
+      };
       const writer = {
         write: (chunk: UIMessageChunk) => {
           if (active) controller.enqueue(chunk);
@@ -130,8 +191,12 @@ export function activityStream(
               value.type === "error" ||
               value.type === "abort" ||
               value.type === "finish"
-            )
+            ) {
+              await recordNativeExecution(
+                value.type==="finish"?"completed":
+                  value.type==="abort"?"cancelled":"failed");
               metadata();
+            }
             writer.write(value);
             if (
               changed &&
@@ -146,6 +211,7 @@ export function activityStream(
         }
       } catch (error) {
         if (!active) return;
+        await recordNativeExecution("failed");
         recorder.add({
           id: `error:${crypto.randomUUID()}`,
           kind: "error",

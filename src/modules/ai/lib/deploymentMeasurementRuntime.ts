@@ -5,9 +5,11 @@ import {
   lm6AttemptFromSignals,
   lm6ExactScope,
   lm6Failure,
+  lm6FitsNativeCasHistory,
   lm6SingleNativeRequest,
   LM6_MAX_ATTEMPTS,
   type Lm6Attempt,
+  type Lm6AttemptNativeExecution,
   type Lm6Run,
   type Lm6Signals,
 } from "./deploymentMeasurement";
@@ -31,6 +33,10 @@ import { readAnswer } from "./answerContinuation";
 import type { UIMessage } from "ai";
 import { evaluateInstructionAdherence } from "./instructionAdherenceQualification";
 import { observedManagedFabric } from "./deploymentQualificationView";
+import {
+  observedManagedExecutionIdentity,
+  type ManagedExecutionIdentity,
+} from "./managedExecutionEvidence";
 import {
   reconcileLocalComputeFabric,
   type DeploymentRuntimeObservation,
@@ -74,8 +80,40 @@ type Target = {
   provider: "ollama" | "openai-compatible";
   managed: boolean;
   native?: ManagedLocalNativeStatus;
+  execution?: ManagedExecutionIdentity;
   endpointId?: string;
 };
+
+/** Keep the per-attempt proof small enough for the existing bounded native
+ * CAS history. The stable key lives once in run.scope.executionIdentity. */
+export function lm6NativeExecutionForAttempt(
+  execution: ManagedExecutionIdentity | null | undefined,
+  nativeTerminalOutcome: Lm6AttemptNativeExecution["nativeTerminalOutcome"],
+): Lm6AttemptNativeExecution | undefined {
+  if (!execution?.actual.executionReceipt || execution.actual.executionReceipt.version !== 3)
+    return undefined;
+  return {
+    requested: {
+      backend: execution.requested.backend,
+      gpuLayers: execution.requested.gpuLayers ?? null,
+      fallbackPolicy: execution.requested.fallback.policy,
+    },
+    selected: {
+      backend: execution.selected.backend,
+      gpuLayers: execution.selected.selectedGpuLayers,
+      candidateIndex: execution.selected.policyPosition,
+      fallbackUsed: execution.selected.fallbackUsed,
+      fallbackAuthorized: execution.selected.fallbackAuthorized,
+    },
+    actual: {
+      backend: execution.actual.backend,
+      deviceIds: [...execution.actual.deviceIds],
+      gpuLayers: execution.actual.gpuLayers,
+      runtimeVariantId: execution.actual.runtimeVariantId,
+    },
+    nativeTerminalOutcome,
+  };
+}
 
 function managedStatus(raw: unknown): ManagedLocalNativeStatus {
   if (!raw || typeof raw !== "object" || typeof (raw as { state?: unknown }).state !== "string")
@@ -137,7 +175,16 @@ async function targetFor(selectionId: string, allowStart: boolean,
     if (!current?.observation)
       return null;
     const resource = projectModelResourceProfile(selected.artifact, selected.runtime, selected.deployment);
-    if (resource.executionPlacement.value !== "CPU") return null;
+    const v3 = !!selected.deployment.requestedExecution?.candidates?.length;
+    const execution = v3
+      ? observedManagedExecutionIdentity(state, selectionId, ready.status, Date.now())
+      : null;
+    // A CUDA request is not a measurement of CUDA. Only the independently
+    // authenticated native actual execution can admit a v3 LM6 attempt.
+    if (v3 && (!execution?.actual.executionReceipt ||
+        current.observation.executionIdentity !== execution.stableExecutionIdentity ||
+        !["cpu", "cuda"].includes(execution.actual.backend))) return null;
+    if (!v3 && resource.executionPlacement.value !== "CPU") return null;
     const digest = selected.artifact.digest;
     if (!digest) return null;
     deadline?.assertOpen();
@@ -150,8 +197,13 @@ async function targetFor(selectionId: string, allowStart: boolean,
     deadline?.assertOpen();
     return {
       state, fabric: current.fabric, deploymentId: selected.deployment.id, selectionId,
-      observation: current.observation, contextTokens: resource.configuredContext.value,
-      backend: "CPU", thermal: ready.thermal,
+      observation: current.observation,
+      contextTokens: v3
+        ? execution?.actual.contextLength ?? execution?.requested.contextLength ?? null
+        : resource.configuredContext.value,
+      backend: execution?.actual.backend === "cuda" ? "GPU" : "CPU",
+      ...(execution ? { execution } : {}),
+      thermal: ready.thermal,
       thermalSource: ready.thermal === "cold" ? "native-status-stopped-then-ready"
         : "native-current-deployment-ready",
       provider: "openai-compatible", managed: true, native: ready.status,
@@ -164,7 +216,9 @@ async function targetFor(selectionId: string, allowStart: boolean,
   return null;
 }
 
-async function localResourcePoint(): Promise<{
+async function localResourcePoint(exactGpuDevice?: {
+  hostId: string; deviceId: string | null;
+}): Promise<{
   ram: number | null; vram: number | null;
   ramAt: number | null; vramAt: number | null;
 }> {
@@ -176,18 +230,26 @@ async function localResourcePoint(): Promise<{
     const now = Date.now();
     if (value.observedAt > now || now - value.observedAt > 30_000)
       throw new Error("Native host resource observation is stale");
-    // A single measured NVIDIA VRAM reading is a host free-memory point,
-    // not a process allocation and never an aggregated multi-GPU budget.
+    // Legacy single-GPU telemetry remains historically compatible. V3
+    // measurement only carries VRAM for the exact independently executed
+    // device; a CPU fallback on a GPU-equipped host is NOT GPU execution.
     const nvidia = value.gpus.filter(g => g.vendor?.value === "NVIDIA");
-    const gpu = nvidia.length === 1 ? nvidia[0].availableVramBytes : null;
+    const observedGpu = exactGpuDevice
+      ? exactGpuDevice.deviceId === null ? null
+        : nvidia.find(g =>
+          g.deviceId?.value &&
+          `${exactGpuDevice.hostId}:accelerator:${g.deviceId.value}` === exactGpuDevice.deviceId &&
+          g.deviceId.observedAt <= now && now - g.deviceId.observedAt <= 30_000)
+      : nvidia.length === 1 ? nvidia[0] : null;
+    const gpu = observedGpu?.availableVramBytes ?? null;
     const validVram = !!gpu &&
       gpu.source === "system32-nvidia-smi-readonly-vendor-telemetry" &&
       gpu.observedAt <= now && now - gpu.observedAt <= 30_000;
     return {
       ram: value.source === "native-os-readonly" ? value.availableRamBytes : null,
-      vram: validVram ? gpu!.value : null,
+      vram: validVram ? gpu?.value ?? null : null,
       ramAt: value.availableRamBytes !== null ? value.observedAt : null,
-      vramAt: validVram ? gpu!.observedAt : null,
+      vramAt: validVram ? gpu?.observedAt ?? null : null,
     };
   } catch {
     return { ram: null, vram: null, ramAt: null, vramAt: null };
@@ -313,6 +375,11 @@ export async function runBoundedDeploymentMeasurement(
     const startedAt = Date.now();
     const runId = crypto.randomUUID();
     const attempts: Lm6Attempt[] = [];
+    const resourceDevice = initial.execution ? {
+      hostId: initial.execution.deployment.hostId,
+      deviceId: initial.execution.actual.backend === "cuda"
+        ? initial.execution.actual.deviceIds[0] ?? null : null,
+    } : undefined;
     // Final-live-three is a separately authorized measurement-only procedure:
     // cold Chat, same-epoch warm Chat, cancellation. Do NOT re-run the known
     // LM2F adherence failure. Existing standard UI procedure is unchanged.
@@ -362,7 +429,7 @@ export async function runBoundedDeploymentMeasurement(
       let sdkActuallySettled = false;
       let cancellationResult: { startedOutput?: boolean; acknowledged?: boolean } = {};
       let noContinuationObserved: boolean | null = null;
-      const pointBefore = initial.managed ? await deadline.within(localResourcePoint) :
+      const pointBefore = initial.managed ? await deadline.within(() => localResourcePoint(resourceDevice)) :
         { ram: null, vram: null, ramAt: null, vramAt: null };
       let pointDuring: Awaited<ReturnType<typeof localResourcePoint>> =
         { ram: null, vram: null, ramAt: null, vramAt: null };
@@ -388,7 +455,7 @@ export async function runBoundedDeploymentMeasurement(
         await deadline.within(() => prepareSessionChat(sessionId!));
         deadline.assertOpen();
         const sent = deadline.within(() => boundedSend(sessionId!, plan.prompt, plan.cancel));
-        if (initial.managed) pointDuring = await deadline.within(localResourcePoint);
+        if (initial.managed) pointDuring = await deadline.within(() => localResourcePoint(resourceDevice));
         const outcome = await sent;
         settled = outcome.completedWithoutBound;
         failed = outcome.error;
@@ -453,7 +520,7 @@ export async function runBoundedDeploymentMeasurement(
           }).status : "incomplete";
         capabilityCheck = verdict === "verified" ? "passed" : verdict;
       }
-      const pointAfter = initial.managed ? await deadline.within(localResourcePoint) :
+      const pointAfter = initial.managed ? await deadline.within(() => localResourcePoint(resourceDevice)) :
         { ram: null, vram: null, ramAt: null, vramAt: null };
       const endedAt = Date.now();
       const signals: Lm6Signals = {
@@ -507,6 +574,11 @@ export async function runBoundedDeploymentMeasurement(
         failure, capabilityCheck,
         outputObserved: !!m?.firstMeaningfulAt,
         terminalObserved: verified,
+        ...(nativeRequestId && before?.execution ? {
+          nativeExecution: lm6NativeExecutionForAttempt(before.execution,
+            m?.nativeTerminalAt ? "completed" :
+              m?.cancelAcknowledgedAt ? "cancelled" : "unknown"),
+        } : {}),
         signals,
       }));
       if (sessionId) {
@@ -551,6 +623,9 @@ export async function runBoundedDeploymentMeasurement(
       configuredContextTokens: initial.contextTokens, backend: initial.backend,
       startedAt, endedAt, requestedAttempts: procedures.length, attempts,
     });
+    if (!lm6FitsNativeCasHistory(run))
+      return { status: "unavailable", runId: null,
+        deploymentId: initial.deploymentId, attempted: attempts.length };
     const final = await deadline.within(() => targetFor(selectionId, false, deadline));
     if (!final || final.observation.epoch !== initial.observation.epoch ||
         !isCurrentSameDeployment(final, initial))

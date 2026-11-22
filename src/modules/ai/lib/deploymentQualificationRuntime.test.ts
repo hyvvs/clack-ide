@@ -2,9 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 import { invoke } from "@tauri-apps/api/core";
 import type { UIMessage } from "ai";
-import { attachManagedLocalGguf, resolveManagedLocalSelection } from "./managedLocalModels";
+import {
+  attachManagedExecutionPolicyVariant, attachManagedLocalGguf,
+  resolveManagedLocalSelection,
+} from "./managedLocalModels";
 import { emptySelfHostedState, readSelfHostedState } from "./selfHostedProfiles";
 import { observedManagedFabric } from "./deploymentQualificationView";
+import {
+  deploymentIdentity, executionPolicyIdentity, requestedExecutionSchema,
+} from "./localComputeFabric";
+import { observedManagedExecutionIdentity } from "./managedExecutionEvidence";
 import {
   MANAGED_QUALIFICATION_EXPECTED,
   MANAGED_QUALIFICATION_PROMPT,
@@ -18,6 +25,7 @@ import {
   appendManagedObservedQualification,
   awaitNativeQualificationQuiescence,
   boundedChatReceipts,
+  boundedQualificationExecutionEvidence,
   inspectBoundedChat,
 } from "./deploymentQualificationRuntime";
 import { assessDeploymentCapability } from "./deploymentQualificationPolicy";
@@ -43,6 +51,52 @@ const create = () => {
   if (!observation?.observation) throw new Error("No native observation");
   return { ...original, resolved, native, observation };
 };
+
+function createV3() {
+  const original = create();
+  const requested = requestedExecutionSchema.parse({
+    backend: "cpu", deviceIds: ["clack-this-pc:cpu:0"],
+    gpuLayers: 0, contextLength: 2048,
+    fallback: { policy: "disabled" },
+    candidates: [{
+      backend: "cpu", deviceIds: ["clack-this-pc:cpu:0"],
+      gpuLayers: 0, runtimeVariantId: "b12248/cpu",
+    }],
+  });
+  const attached = attachManagedExecutionPolicyVariant(
+    original.state, original.selectionId, requested);
+  const selected = resolveManagedLocalSelection(attached.state, attached.selectionId);
+  if (selected.status === "missing" || selected.status === "not-managed")
+    throw new Error("No v3 managed test deployment");
+  const native = {
+    ...original.native,
+    deploymentId: selected.deployment.id,
+    requestedBackend: "cpu", selectedBackend: "cpu",
+    requestedGpuLayers: 0, selectedGpuLayers: 0,
+    selectedDeviceId: "clack-this-pc:cpu:0",
+    fallbackUsed: false, fallbackAuthorized: false,
+    actualExecution: {
+      backend: "cpu", deviceIds: ["clack-this-pc:cpu:0"], gpuLayers: 0,
+      runtimeVariantId: "b12248/cpu", runtimeEpoch: original.native.epoch,
+      source: "native-verified-managed-cpu-launch",
+      contextLength: 2048, observedAt: at,
+      executionReceipt: {
+        version: 3 as const, deploymentId: selected.deployment.id,
+        deploymentIdentity: deploymentIdentity(selected.deployment),
+        policyIdentity: executionPolicyIdentity(requested),
+        selectedCandidateIndex: 0, processId: 7001,
+        runtimeBuildDigest: `sha256:${"b".repeat(64)}`,
+        fallbackUsed: false, fallbackAuthorized: false,
+      },
+    },
+  };
+  const observed = observedManagedFabric(attached.state, attached.selectionId, native, at);
+  const execution = observedManagedExecutionIdentity(attached.state, attached.selectionId, native, at);
+  if (!observed?.observation || !execution)
+    throw new Error("V3 fixture missing authenticated native execution scope");
+  return { ...attached, selected, native, execution,
+    observation: { ...observed, observation: observed.observation } };
+}
 
 function flight(text = MANAGED_QUALIFICATION_EXPECTED): QualificationFlightSnapshot {
   return {
@@ -90,6 +144,64 @@ function messages(sessionId: string, modelId: string, text: string): UIMessage[]
 }
 
 describe("LM2F bounded Clack Chat qualification: actual stream evidence", () => {
+  it("Slice 5 v3 writes verifier-owned requested/selected/actual policy evidence on all four existing receipts", async () => {
+    const v = createV3();
+    const captured = inspectBoundedChat(
+      messages("qualify-s", v.selectionId, MANAGED_QUALIFICATION_EXPECTED),
+      "qualify-s", null, v.selectionId, flight(),
+    );
+    if (!captured) throw new Error("No bounded Chat evidence");
+    const receipts = await boundedChatReceipts(
+      v.observation.fabric, v.selected.deployment.id, v.observation.observation,
+      captured, flight(), at, v.execution,
+    );
+    expect(receipts).toHaveLength(4);
+    expect(receipts.map(row => row.scope.executionIdentity))
+      .toEqual(Array(4).fill(v.execution.stableExecutionIdentity));
+    for (const row of receipts) {
+      expect(row).toMatchObject({
+        version: 2,
+        executionEvidence: {
+          source: "native-authenticated-ready-v3",
+          policyIdentity: v.native.actualExecution.executionReceipt.policyIdentity,
+          requested: { backend: "cpu", deviceIds: ["clack-this-pc:cpu:0"] },
+          selected: { backend: "cpu", runtimeVariantId: "b12248/cpu",
+            candidateIndex: 0, fallbackUsed: false },
+          actual: { backend: "cpu", gpuLayers: 0, runtimeVariantId: "b12248/cpu",
+            runtimeBuildDigest: v.native.actualExecution.executionReceipt.runtimeBuildDigest },
+        },
+      });
+      expect(JSON.stringify(row).length).toBeLessThan(16 * 1024);
+    }
+    const saved = appendManagedObservedQualification(
+      v.state, v.selectionId, v.selected.identity, v.native, receipts, at);
+    expect(saved.fabric?.qualificationReceipts).toHaveLength(4);
+    const restored = readSelfHostedState(JSON.parse(JSON.stringify(saved)));
+    expect(restored.fabric?.qualificationReceipts).toEqual(receipts);
+    expect(restored.fabric?.deployments).toEqual(v.state.fabric?.deployments);
+    expect(restored.fabric?.runtimes).toEqual(v.state.fabric?.runtimes);
+  });
+
+  it("Slice 5 rejects absent/mismatched v3 native execution while old v2 receipts remain readable", async () => {
+    const v = createV3();
+    const captured = inspectBoundedChat(
+      messages("qualify-s", v.selectionId, MANAGED_QUALIFICATION_EXPECTED),
+      "qualify-s", null, v.selectionId, flight())!;
+    await expect(boundedChatReceipts(v.observation.fabric,
+      v.selected.deployment.id, v.observation.observation,
+      captured, flight(), at)).rejects.toThrow(/Native v3 execution proof changed/);
+    expect(() => boundedQualificationExecutionEvidence({
+      ...v.execution, stableExecutionIdentity: "forged",
+    }, v.selected.deployment.id, v.observation.observation.executionIdentity))
+      .toThrow(/Native v3 execution proof changed/);
+    const legacy = create();
+    const historical = await boundedChatReceipts(legacy.observation.fabric,
+      legacy.resolved.deployment.id, legacy.observation.observation!, captured,
+      flight(), at);
+    expect(historical.every(row => !("executionEvidence" in row) &&
+      row.scope.executionIdentity === undefined)).toBe(true);
+  });
+
   it("only structured Clack-owned Chat activity/answer and parsed text can qualify", () => {
     const { selectionId } = create();
     const msgs = messages("qualify-s", selectionId, MANAGED_QUALIFICATION_EXPECTED);

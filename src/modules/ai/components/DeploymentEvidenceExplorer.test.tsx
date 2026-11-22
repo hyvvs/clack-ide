@@ -67,8 +67,10 @@ vi.mock("@/modules/settings/preferences", async importOriginal => {
 import { invoke } from "@tauri-apps/api/core";
 import { completeLm6Run, lm6AttemptFromSignals, lm6ExactScope } from "@/modules/ai/lib/deploymentMeasurement";
 import { observedManagedFabric } from "@/modules/ai/lib/deploymentQualificationView";
-import { CURRENT_DEPLOYMENT_QUALIFICATION_PROCEDURES, deploymentQualificationScope } from "@/modules/ai/lib/localComputeFabric";
-import { attachManagedLocalGguf, MANAGED_LLAMA_ENGINE_VERSION } from "@/modules/ai/lib/managedLocalModels";
+import { CURRENT_DEPLOYMENT_QUALIFICATION_PROCEDURES, deploymentIdentity,
+  deploymentQualificationScope, executionPolicyIdentity, requestedExecutionSchema } from "@/modules/ai/lib/localComputeFabric";
+import { attachManagedExecutionPolicyVariant, attachManagedLocalGguf,
+  MANAGED_LLAMA_ENGINE_VERSION, resolveManagedLocalSelection } from "@/modules/ai/lib/managedLocalModels";
 import { createSelfHostedEndpoint, emptySelfHostedState, type SelfHostedState } from "@/modules/ai/lib/selfHostedProfiles";
 import { saveSelfHostedModel, selfHostedSelectionId } from "@/modules/ai/lib/selfHostedModels";
 import { useChatStore } from "@/modules/ai/store/chatStore";
@@ -246,6 +248,47 @@ describe("LM8–LM10 passive deployment guide", () => {
     expect(html).toContain("LM6 saved runs");
     expect(html).toContain("No currently qualified recommendation");
     expect(usePreferencesStore.getState().selfHostedInference).toBe(saved);
+  });
+
+  it("discloses native CUDA observed offload separately from the persisted GPU layer cap",async()=>{
+    const legacy=managed();
+    const device="clack-this-pc:accelerator:GPU-30ab48fd-809d-dc7d-c437-6ad626ece81a";
+    const buildDigest="sha256:ae0a1e064a94db82f3352c843ffa96eb190254fefafc29ce0213798c549a2799";
+    const requested=requestedExecutionSchema.parse({
+      backend:"cuda",deviceIds:[device],gpuLayers:40,contextLength:2048,
+      fallback:{policy:"disabled"},
+      candidates:[{backend:"cuda",deviceIds:[device],gpuLayers:40,
+        runtimeVariantId:"b12248/cuda",runtimeBuildDigest:buildDigest}],
+    });
+    const attached=attachManagedExecutionPolicyVariant(legacy.first.state,
+      legacy.first.selectionId,requested);
+    const exact=resolveManagedLocalSelection(attached.state,attached.selectionId);
+    if(exact.status==="missing"||exact.status==="not-managed")throw Error("missing v3 selection");
+    select(attached.state,attached.selectionId);
+    const status={...legacy.ready,deploymentId:exact.deployment.id,selectedBackend:"cuda",
+      fallbackUsed:false,fallbackAuthorized:false,
+      actualExecution:{backend:"cuda",deviceIds:[device],gpuLayers:25,
+        runtimeVariantId:"b12248/cuda",runtimeEpoch:legacy.ready.epoch,
+        source:"native-verified-cuda-init-and-layer-offload",contextLength:2048,
+        observedAt:Date.now()-100,
+        executionReceipt:{version:3,deploymentId:exact.deployment.id,
+          deploymentIdentity:deploymentIdentity(exact.deployment),
+          policyIdentity:executionPolicyIdentity(requested),selectedCandidateIndex:0,
+          processId:legacy.ready.processId,fallbackUsed:false,fallbackAuthorized:false,
+          runtimeBuildDigest:buildDigest}},
+    };
+    native.mockImplementation(async (command:string)=>
+      command==="managed_local_runtime_status" ? status : null);
+    render();
+    const html=await openGuide();
+    expect(html).toContain("Execution backend evidence</dt><dd>CUDA · Native verified");
+    expect(html).toContain("Requested GPU layer cap</dt><dd>40 layers · Derived");
+    expect(html).toContain("Observed GPU offload</dt><dd>25 layers · Measured");
+    expect(html).toContain("native backend observations do not measure full GPU memory residency");
+    expect(html).toContain("No currently qualified recommendation");
+    expect(native.mock.calls.map(call=>call[0])).toEqual([
+      "local_hardware_observation","managed_local_runtime_model_metadata","managed_local_runtime_status",
+    ]);
   });
 
   it("never probes an untrusted remote host and keeps remote metrics and recommendations unverified", async () => {

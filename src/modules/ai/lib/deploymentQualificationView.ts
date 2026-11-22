@@ -15,6 +15,7 @@ import {
   resolveSelfHostedSelection,
   type SelfHostedState,
 } from "@/modules/ai/lib/selfHostedProfiles";
+import { observedManagedExecutionIdentity } from "@/modules/ai/lib/managedExecutionEvidence";
 import { toolVerificationState } from "@/modules/ai/lib/toolVerification";
 import {
   deploymentQualificationPanelStatus,
@@ -52,6 +53,14 @@ export function observedManagedFabric(
       native.modelDigest !== selected.artifact.digest ||
       !Number.isSafeInteger(native.processId) || (native.processId ?? 0) < 1)
     return { fabric, deploymentId };
+  // Slice 5: a persisted v3 request is NOT a native execution observation.
+  // The exact CPU/CUDA/device/variant/build/PID/epoch policy receipt must pass
+  // the Slice 4 native proof fence before exposing current LM11/LM6 scope.
+  // Legacy v1/v2 native scopes remain byte-for-byte compatible.
+  const v3 = !!selected.deployment.requestedExecution?.candidates?.length;
+  const exactExecution = v3
+    ? observedManagedExecutionIdentity(state,selectionId,native,now) : null;
+  if (v3 && !exactExecution) return { fabric, deploymentId };
   const runtime = fabric.runtimes.find(row => row.id === selected.runtime.id);
   const host = fabric.hosts.find(row => row.id === selected.host.id);
   if (!runtime || !host || !runtime.enabled || !host.enabled) return { fabric, deploymentId };
@@ -65,6 +74,8 @@ export function observedManagedFabric(
       runtimeId: runtime.id, version: native.version,
       configurationRevision: runtime.configurationRevision,
       epoch: native.epoch, observedAt: now,
+      ...(exactExecution
+        ? {executionIdentity: exactExecution.stableExecutionIdentity} : {}),
     },
   };
 }
