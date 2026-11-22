@@ -10,12 +10,46 @@ export const activityOwnerSchema = z
     runId: id,
     workspaceId: id.nullable(),
     agentId: id.optional(),
-    modelId: id.optional(),
+    // Immutable managed v3 selection IDs include serialized execution policy
+    // and may exceed the historic 1,100-char model tag bound. Permit the same
+    // bounded 40 KiB exact Fabric identity without broadening session/tool IDs.
+    modelId: z.string().min(1).max(40 * 1024).optional(),
     providerId: id.optional(),
     taskId: id.optional(),
   })
   .strict();
 export type ActivityOwner = z.infer<typeof activityOwnerSchema>;
+/** Slice 5: one bounded content-free reference inside the EXISTING durable
+ * Chat activity metadata, not a new trace database or independent trust grant.
+ * SDK terminal and native request terminal are deliberately separate facts. */
+export const managedActivityExecutionSchema = z.object({
+  version: z.literal(1),
+  stableExecutionIdentity: z.string().min(1).max(40*1024),
+  deploymentId: z.string().min(1).max(40*1024),
+  requestedBackendOrder: z.array(z.string().min(1).max(64)).max(16),
+  selectedBackend: z.string().min(1).max(64),
+  actualBackend: z.string().min(1).max(64),
+  deviceIds: z.array(z.string().min(1).max(2048)).max(16),
+  runtimeVariantId: z.string().min(1).max(2048),
+  runtimeBuildDigest: z.string().max(2048).nullable(),
+  actualGpuLayers: z.number().int().nonnegative(),
+  requestedGpuLayers: z.number().int().nonnegative().nullable(),
+  cpuThreads: z.number().int().positive().nullable(),
+  processId: z.number().int().positive().safe(),
+  runtimeEpoch: z.string().min(1).max(2048),
+  routeBaseUrl: z.string().max(2048).nullable(),
+  fallbackUsed: z.boolean(),
+  fallbackReason: z.string().max(1024).nullable(),
+  nativeHostAvailableBytes: z.number().int().nonnegative().safe().nullable(),
+  nativeDeviceAvailableBytes: z.number().int().nonnegative().safe().nullable(),
+  estimatedDeviceRequirementBytes: z.number().int().nonnegative().safe().nullable(),
+  observedAt: z.number().int().nonnegative().safe(),
+  sdkTerminalOutcome: z.enum(["completed","failed","cancelled","unknown"]),
+  /** Stream completion alone is NOT the native Tauri inference-N terminal. */
+  nativeRequestTerminal: z.literal("Unknown"),
+  processStillCurrentAtTerminal: z.boolean(),
+}).strict();
+export type ManagedActivityExecution = z.infer<typeof managedActivityExecutionSchema>;
 const receiptSchema = z
   .object({
     id,
@@ -34,6 +68,7 @@ const receiptSchema = z
     part: z.number().int().nonnegative().optional(),
     format: z.enum(["summary", "content", "unspecified"]).optional(),
     owner: activityOwnerSchema.optional(),
+    managedExecution: managedActivityExecutionSchema.optional(),
   })
   .strict();
 export const activitySchema = z

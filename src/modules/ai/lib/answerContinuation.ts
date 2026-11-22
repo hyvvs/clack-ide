@@ -135,7 +135,9 @@ export const answerSchema = z.object({
         previous: z.string().max(1024).nullable(),
         recovery: z.boolean().optional(),
         provider: z.string().max(1024),
-        model: z.string().max(1024),
+        // Managed v3 model selection is an immutable policy-inclusive ID;
+        // historical plain model tags remain valid. Preserve exact capture.
+        model: z.string().max(40 * 1024),
         startedAt: z.number(),
         endedAt: z.number().optional(),
         finish: finishSchema,

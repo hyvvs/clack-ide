@@ -115,6 +115,19 @@ function Overview({ candidate, product, historyCount, instructionHistory }: {
         <div><dt className="text-muted-foreground">LM6 saved runs</dt><dd>{candidate.historyRunCount}</dd></div>
         <div><dt className="text-muted-foreground">Measured Chat samples</dt><dd>{candidate.measuredChatSamples}</dd></div>
         <div><dt className="text-muted-foreground">Generation</dt><dd>{evidenceMetric(candidate.generationThroughput)}</dd></div>
+        {candidate.backendEvidence && (
+          <div><dt className="text-muted-foreground">Execution backend evidence</dt>
+            <dd>{candidate.observedBackend ? `${candidate.observedBackend.toUpperCase()} · Native verified` :
+              `${candidate.backend} · ${candidate.backendEvidence.provenance}`}</dd></div>
+        )}
+        {candidate.requestedGpuLayers && (
+          <div><dt className="text-muted-foreground">Requested GPU layer cap</dt>
+            <dd>{evidenceMetric(candidate.requestedGpuLayers)}</dd></div>
+        )}
+        {candidate.gpuLayers && (
+          <div><dt className="text-muted-foreground">Observed GPU offload</dt>
+            <dd>{evidenceMetric(candidate.gpuLayers)}</dd></div>
+        )}
       </dl>
       {product.readiness !== "Ready" && <p className="text-muted-foreground">{product.reason}</p>}
       {instructionHistory && (
@@ -125,7 +138,9 @@ function Overview({ candidate, product, historyCount, instructionHistory }: {
         </p>
       )}
       <p className="text-muted-foreground">
-        Hardware fit is an estimate. Measurements and history never grant tools, Agent access,
+        Requested layers are a cap, not observed offload. Hardware fit is an estimate;
+        native backend observations do not measure full GPU memory residency.
+        Measurements and history never grant tools, Agent access,
         or permission to switch models. See adjacent Suitability for detailed host, RAM,
         VRAM and context capacity evidence.
       </p>

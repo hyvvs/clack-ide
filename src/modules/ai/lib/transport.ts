@@ -1,4 +1,5 @@
 import type { UIMessage } from "@ai-sdk/react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   ACTIVITY_ENABLED,
   type ActivityOwner,
@@ -9,7 +10,9 @@ import {
 } from "@/modules/ai/lib/activityStream";
 import type { CustomEndpoint } from "../config";
 import { runAgentStream, type AgentUsageDelta } from "./agent";
-import { isManagedLocalSelectionId } from "@/modules/ai/lib/managedLocalModels";
+import { isManagedLocalSelectionId, resolveManagedLocalSelection } from "@/modules/ai/lib/managedLocalModels";
+import { observedManagedExecutionIdentity } from "@/modules/ai/lib/managedExecutionEvidence";
+import { admittedManagedLocalRoute, type ManagedLocalNativeStatus } from "@/modules/ai/lib/managedLocalRuntime";
 import { acquireRemoteConnection, holdRemoteStream, remoteEndpointForModel } from "@/modules/ai/lib/remoteConnection";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { native } from "./native";
@@ -601,6 +604,31 @@ export function createContextAwareTransport(deps: Deps) {
     try { return holdRemoteStream(await run(options,activity),release); }
     catch(error){release();throw error;}
   };
+  /** The existing Chat activity metadata is the sole durable inference trace.
+   * Read current managed native owner status+route on admission and terminal,
+   * never persist bearer credentials and never infer actual backend from CUDA
+   * hardware or a TypeScript-selected plan. Failed probes leave Unknown. */
+  const captureManagedActivityExecution = async () => {
+    const modelId=deps.getModelId();
+    const state=deps.getSelfHostedInference?.();
+    if (!state || !isManagedLocalSelectionId(modelId)) return null;
+    const selected=resolveManagedLocalSelection(state,modelId);
+    if (selected.status!=="available" && selected.status!=="unavailable")return null;
+    const binding={
+      deploymentId:selected.deployment.id,
+      deploymentIdentity:selected.identity,
+      artifactDigest:selected.artifact.digest??"",
+      configurationRevision:selected.deployment.configurationRevision,
+    };
+    if (!binding.artifactDigest) return null;
+    try{
+      const status=await invoke<ManagedLocalNativeStatus>("managed_local_runtime_status",{
+        deploymentId:binding.deploymentId,deploymentIdentity:binding.deploymentIdentity,
+      });
+      const route=await admittedManagedLocalRoute(binding);
+      return observedManagedExecutionIdentity(state,modelId,status,Date.now(),route);
+    }catch { return null; }
+  };
   return {
     canRecover: (runId: string) => captured?.runId === runId,
     sendMessages: (options: SendOptions) => {
@@ -615,6 +643,8 @@ export function createContextAwareTransport(deps: Deps) {
           (error) =>
             deps.onError?.(error) ??
             "The AI run failed for an unexpected reason.",
+          isManagedLocalSelectionId(deps.getModelId())
+            ? captureManagedActivityExecution : undefined,
         ),
       );
     },

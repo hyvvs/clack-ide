@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { UIMessage } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { attachManagedLocalGguf, resolveManagedLocalSelection } from "./managedLocalModels";
+import {
+  attachManagedExecutionPolicyVariant,
+  attachManagedLocalGguf,
+  resolveManagedLocalSelection,
+} from "./managedLocalModels";
 import { emptySelfHostedState, readSelfHostedState } from "./selfHostedProfiles";
 import { observedManagedFabric } from "./deploymentQualificationView";
 import { assessDeploymentAgentEligibility } from "./deploymentQualificationPolicy";
@@ -17,11 +21,17 @@ import {
   waitForRecordedLm6NativeSettlement,
 } from "./deploymentQualificationFlight";
 import { lm6CancelledChatRequestId } from "./deploymentMeasurementRuntime";
-import { reconcileLocalComputeFabric, type DeploymentRuntimeObservation, type LocalComputeFabric } from "./localComputeFabric";
+import { lm6NativeExecutionForAttempt } from "./deploymentMeasurementRuntime";
+import {
+  deploymentIdentity, executionPolicyIdentity, requestedExecutionSchema,
+  reconcileLocalComputeFabric, type DeploymentRuntimeObservation, type LocalComputeFabric,
+} from "./localComputeFabric";
+import { observedManagedExecutionIdentity } from "./managedExecutionEvidence";
 import {
   LM6_MAX_ATTEMPTS, LM6_PROCEDURE,
   appendLm6Run, completeLm6Run, deploymentMeasurementPanel, isCurrentLm6Run,
   lm6AttemptFromSignals, lm6AttemptSchema, lm6ExactScope, lm6Failure, lm6History,
+  lm6FitsNativeCasHistory,
   lm6RunSchema, lm6VerifyNativeTool, lm6VerifyStructuredOutput,
   lm6SingleNativeRequest,
   type Lm6Attempt, type Lm6Run,
@@ -32,6 +42,60 @@ import {
 const NOW = 1_800_000_000_000;
 const DIGEST = `sha256:${"a".repeat(64)}`;
 const uuid = (id: number) => `00000000-0000-4000-8000-${String(id).padStart(12, "0")}`;
+const gpuId = "clack-this-pc:accelerator:GPU-30ab48fd-809d-dc7d-c437-6ad626ece81a";
+
+function verifiedV3Fixture(backend: "cpu" | "cuda", fallback = false) {
+  const original = fixture();
+  const cpu = { backend: "cpu" as const, deviceIds: ["clack-this-pc:cpu:0"],
+    gpuLayers: 0, runtimeVariantId: "b12248/cpu" };
+  const cuda = { backend: "cuda" as const, deviceIds: [gpuId],
+    gpuLayers: 40, runtimeVariantId: "b12248/cuda" };
+  const requested = requestedExecutionSchema.parse({
+    backend, deviceIds: backend === "cuda" ? [gpuId] : cpu.deviceIds,
+    gpuLayers: backend === "cuda" ? 40 : 0, contextLength: 2048,
+    fallback: fallback ? { policy: "explicit-order", order: ["cpu"] } : { policy: "disabled" },
+    candidates: backend === "cpu" ? [cpu] : fallback ? [cuda, cpu] : [cuda],
+  });
+  const attached = attachManagedExecutionPolicyVariant(original.state, original.selectionId, requested);
+  const selected = resolveManagedLocalSelection(attached.state, attached.selectionId);
+  if (selected.status === "missing" || selected.status === "not-managed")
+    throw new Error("Invalid managed policy fixture");
+  const actualBackend = fallback ? "cpu" : backend;
+  const actualDevice = actualBackend === "cuda" ? [gpuId] : cpu.deviceIds;
+  const native = {
+    installed: true, state: "Ready" as const, version: "b12248",
+    epoch: "v3-native-epoch", processId: 7001, port: 61234,
+    deploymentId: selected.deployment.id, modelDigest: selected.artifact.digest,
+    requestedBackend: backend, selectedBackend: actualBackend,
+    requestedGpuLayers: backend === "cuda" ? 40 : 0,
+    selectedGpuLayers: actualBackend === "cuda" ? 40 : 0,
+    selectedDeviceId: actualDevice[0], fallbackUsed: fallback, fallbackAuthorized: fallback,
+    actualExecution: {
+      backend: actualBackend, deviceIds: actualDevice,
+      gpuLayers: actualBackend === "cuda" ? 20 : 0,
+      runtimeVariantId: `b12248/${actualBackend}`,
+      runtimeEpoch: "v3-native-epoch",
+      source: actualBackend === "cuda" ? "native-verified-cuda-init-and-layer-offload"
+        : "native-verified-managed-cpu-launch",
+      contextLength: 2048, observedAt: NOW,
+      executionReceipt: {
+        version: 3 as const,
+        deploymentId: selected.deployment.id,
+        deploymentIdentity: deploymentIdentity(selected.deployment),
+        policyIdentity: executionPolicyIdentity(requested),
+        selectedCandidateIndex: fallback ? 1 : 0, processId: 7001,
+        runtimeBuildDigest: `sha256:${"b".repeat(64)}`,
+        fallbackUsed: fallback, fallbackAuthorized: fallback,
+      },
+    },
+  };
+  const observed = observedManagedFabric(attached.state, attached.selectionId, native, NOW);
+  const execution = observedManagedExecutionIdentity(attached.state, attached.selectionId, native, NOW);
+  if (!observed?.observation || !execution)
+    throw new Error("Fixture did not produce exact authenticated native Ready");
+  return { ...attached, selected, native,
+    observed: { ...observed, observation: observed.observation }, execution };
+}
 
 function fixture() {
   const created = attachManagedLocalGguf(emptySelfHostedState(), {
@@ -104,6 +168,127 @@ function current(f: Fixture, value: Lm6Run, overrides: {
 function persist(f: Fixture, value: Lm6Run = run(f)) {
   return appendLm6Run(f.state, value, f.observed.observation, NOW, f.observed.fabric);
 }
+
+describe("Slice 5 LM6 exact native execution evidence (offline)", () => {
+  it("durably records v3 CUDA request/selection/actual and terminal without inventing GPU resource usage", () => {
+    const f = verifiedV3Fixture("cuda");
+    const nativeExecution = lm6NativeExecutionForAttempt(f.execution, "completed");
+    expect(nativeExecution).toMatchObject({
+      requested: { backend: "cuda", gpuLayers: 40, fallbackPolicy: "disabled" },
+      selected: { backend: "cuda", gpuLayers: 40, candidateIndex: 0 },
+      actual: { backend: "cuda", deviceIds: [gpuId], gpuLayers: 20,
+        runtimeVariantId: "b12248/cuda" },
+      nativeTerminalOutcome: "completed",
+    });
+    const value = completeLm6Run({
+      runId: uuid(61),
+      scope: lm6ExactScope(f.observed.fabric, f.observed.deploymentId,
+        f.observed.observation, NOW)!,
+      configuredContextTokens: 2048, backend: "GPU",
+      startedAt: NOW - 2_000, endedAt: NOW - 100, requestedAttempts: 1,
+      attempts: [attempt(61, { nativeExecution })],
+    });
+    expect(value.scope.executionIdentity).toBe(f.execution.stableExecutionIdentity);
+    expect(value.scope.executionIdentity).toContain(gpuId);
+    expect(value.scope.executionIdentity).toContain("b12248/cuda");
+    expect(value.scope.executionIdentity).toContain("sha256:");
+    expect(value.attempts[0].resources.vramDuringBytes).toMatchObject({
+      value: null, provenance: "Unknown",
+    });
+    const sampled = value.attempts[0].nativeExecution!;
+    expect(lm6AttemptSchema.safeParse({
+      ...value.attempts[0], nativeExecution: { ...sampled,
+        actual: { ...sampled.actual, gpuLayers: 0 } },
+    }).success).toBe(false);
+    expect(lm6AttemptSchema.safeParse({
+      ...value.attempts[0], nativeExecution: { ...sampled,
+        actual: { ...sampled.actual, gpuLayers: 41 } },
+    }).success).toBe(false);
+    expect(JSON.stringify(value)).not.toContain("apiKey");
+    const saved = appendLm6Run(f.state, value, f.observed.observation, NOW, f.observed.fabric);
+    const restored = readSelfHostedState(JSON.parse(JSON.stringify(saved)));
+    expect(lm6History(reconcileLocalComputeFabric(restored), f.observed.deploymentId)).toEqual([value]);
+    expect(isCurrentLm6Run(value, f.observed.fabric, f.observed.deploymentId,
+      f.observed.observation, 2048, "GPU", NOW)).toBe(true);
+    // The currently shipped LM6 panel receives the generic resource
+    // projection ("Unknown") for v3, but must not hide exact native evidence.
+    const refreshed = observedManagedFabric(saved, f.selectionId, f.native, NOW);
+    if (!refreshed?.observation) throw new Error("Missing refreshed native Ready");
+    expect(deploymentMeasurementPanel({ ...saved, fabric: refreshed.fabric },
+      refreshed.deploymentId, refreshed.observation, 2048, "Unknown", NOW)
+      .current?.runId).toBe(value.runId);
+  });
+
+  it("keeps fallback CPU execution distinct from requested CUDA and does not transfer GPU proof", () => {
+    const f = verifiedV3Fixture("cuda", true);
+    const nativeExecution = lm6NativeExecutionForAttempt(f.execution, "completed");
+    expect(nativeExecution).toMatchObject({
+      requested: { backend: "cuda", fallbackPolicy: "explicit-order" },
+      selected: { backend: "cpu",
+        candidateIndex: 1, fallbackUsed: true, fallbackAuthorized: true },
+      actual: { backend: "cpu", gpuLayers: 0, runtimeVariantId: "b12248/cpu" },
+    });
+    const scope = lm6ExactScope(f.observed.fabric, f.observed.deploymentId,
+      f.observed.observation, NOW)!;
+    expect(scope.executionIdentity).toBe(f.execution.stableExecutionIdentity);
+    const saved = completeLm6Run({
+      runId: uuid(62), scope, configuredContextTokens: 2048, backend: "CPU",
+      startedAt: NOW - 2_000, endedAt: NOW - 100, requestedAttempts: 1,
+      attempts: [attempt(62, { nativeExecution })],
+    });
+    expect(isCurrentLm6Run(saved, f.observed.fabric, f.observed.deploymentId,
+      { ...f.observed.observation, executionIdentity: "other-backend-proof" },
+      2048, "CPU", NOW)).toBe(false);
+    expect(isCurrentLm6Run(saved, f.observed.fabric, f.observed.deploymentId,
+      f.observed.observation, 2048, "GPU", NOW)).toBe(false);
+  });
+
+  it("keeps three v3 attempts plus native policy identity within existing 16 KiB CAS row limit", () => {
+    const f = verifiedV3Fixture("cuda");
+    const nativeExecution = lm6NativeExecutionForAttempt(f.execution, "completed")!;
+    const scope = lm6ExactScope(f.observed.fabric, f.observed.deploymentId,
+      f.observed.observation, NOW)!;
+    const value = completeLm6Run({
+      runId: uuid(64), scope, configuredContextTokens: 2048, backend: "GPU",
+      startedAt: NOW - 2_000, endedAt: NOW - 100, requestedAttempts: 3,
+      attempts: [64, 65, 66].map(id => attempt(id, { nativeExecution })),
+    });
+    // Native B03 appends an operation/epoch/phase marker before ACK. Ensure
+    // the same on-disk 16 KiB row bound also fits that immutable marker.
+    const ticketed = { ...value, qualificationCas: {
+      operationId: "d".repeat(64), nativeEpoch: "native-v3-epoch".repeat(5),
+      phase: "acknowledged",
+    } };
+    expect(JSON.stringify(ticketed).length).toBeLessThanOrEqual(16 * 1024);
+    expect(lm6FitsNativeCasHistory(value)).toBe(true);
+    expect(appendLm6Run(f.state, value, f.observed.observation, NOW, f.observed.fabric)
+      .fabric?.measurementRuns).toHaveLength(1);
+  });
+
+  it("v3 dispatched requests must retain matching native proof and historical v1 rows remain readable", () => {
+    const f = verifiedV3Fixture("cpu");
+    const scope = lm6ExactScope(f.observed.fabric, f.observed.deploymentId,
+      f.observed.observation, NOW)!;
+    const verified = lm6NativeExecutionForAttempt(f.execution, "completed")!;
+    expect(lm6AttemptSchema.safeParse({
+      ...attempt(63), nativeExecution: { ...verified,
+        actual: { ...verified.actual, backend: "cuda" } },
+    }).success).toBe(false);
+    expect(() => completeLm6Run({
+      runId: uuid(65), scope, configuredContextTokens: 2048, backend: "CPU",
+      startedAt: NOW - 2_000, endedAt: NOW - 100, requestedAttempts: 1,
+      attempts: [attempt(65, { nativeExecution: { ...verified,
+        actual: { ...verified.actual, deviceIds: [gpuId] } } })],
+    })).toThrow(/native execution does not match exact receipt scope/);
+    expect(() => completeLm6Run({
+      runId: uuid(63), scope, configuredContextTokens: 2048, backend: "CPU",
+      startedAt: NOW - 2_000, endedAt: NOW - 100, requestedAttempts: 1,
+      attempts: [attempt(63)],
+    })).toThrow(/LM6 attempt accounting/);
+    expect(lm6NativeExecutionForAttempt(null, "unknown")).toBeUndefined();
+    expect(lm6RunSchema.safeParse(run(fixture())).success).toBe(true);
+  });
+});
 
 describe("LM6 bounded deployment measurement — deterministic 30-case matrix", () => {
   it("01 complete terminal signals retain independently sourced timings, counts, rates and resource points", () => {

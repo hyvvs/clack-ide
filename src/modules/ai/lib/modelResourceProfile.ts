@@ -1,12 +1,18 @@
 import { z } from "zod";
 import { type EvidenceValue, evidence, unknown } from "./hardwareProfile";
 import type {
+  ActualExecution,
   LocalRuntime,
   ModelArtifact,
   ModelDeployment,
 } from "./localComputeFabric";
+import { deploymentIdentity, executionPolicyIdentity, requestedExecutionSchema } from "./localComputeFabric";
 import {
+  MANAGED_LLAMA_ENGINE_VERSION,
+  MANAGED_LOCAL_RUNTIME_ID,
   MANAGED_LOCAL_RUNTIME_TYPE,
+  managedExecutionPolicyConfigurationIdentity,
+  managedExecutionPolicyDeploymentId,
   managedLocalMaterialSchema,
 } from "./managedLocalModels";
 
@@ -48,6 +54,9 @@ export type ModelResourceProfile = {
   configuredContext: EvidenceValue<number>;
   concurrency: EvidenceValue<number>;
   executionPlacement: EvidenceValue<ExecutionPlacement>;
+  /** Requested cap is an identity/configuration fact, not measured offload. */
+  requestedGpuLayers: EvidenceValue<number>;
+  /** V3 is independently observed layers, never a copy of its requested cap. */
   gpuLayers: EvidenceValue<number>;
   totalLayers: EvidenceValue<number>;
   weightMemoryBytes: EvidenceValue<number>;
@@ -87,6 +96,37 @@ function configuredMaterial(
   }
 }
 
+/** Do not take a context from a renderer candidate or from a merely plausible
+ * JSON configuration. V3 context is valid only when the canonical config,
+ * complete persisted policy and digest-derived deployment ID all agree. */
+function managedV3Configuration(
+  artifact: ModelArtifact, runtime: LocalRuntime, deployment: ModelDeployment,
+): { context: number; requestedGpuLayers: number | null; policyIdentity: string } | null {
+  if (runtime.id !== MANAGED_LOCAL_RUNTIME_ID ||
+      runtime.type !== MANAGED_LOCAL_RUNTIME_TYPE ||
+      runtime.version !== MANAGED_LLAMA_ENGINE_VERSION ||
+      deployment.runtimeId !== runtime.id ||
+      deployment.configurationRevision !== runtime.configurationRevision ||
+      deployment.variantId !== undefined || !deployment.configurationIdentity ||
+      !artifact.digest || deployment.artifactId !== artifact.id) return null;
+  try {
+    const config: unknown = JSON.parse(deployment.configurationIdentity);
+    if (!config || typeof config !== "object" || Array.isArray(config) ||
+        !("version" in config) || config.version !== 3 ||
+        !("context" in config) || typeof config.context !== "number") return null;
+    const context = config.context;
+    const requested = requestedExecutionSchema.safeParse(deployment.requestedExecution);
+    if (!requested.success || !requested.data.candidates?.length ||
+        requested.data.contextLength !== context ||
+        deployment.configurationIdentity !== managedExecutionPolicyConfigurationIdentity(context) ||
+        deployment.id !== managedExecutionPolicyDeploymentId(artifact.digest, context, requested.data) ||
+        JSON.stringify(deployment.requestedExecution) !== executionPolicyIdentity(requested.data))
+      return null;
+    return {context, requestedGpuLayers: requested.data.gpuLayers ?? null,
+      policyIdentity: executionPolicyIdentity(requested.data)};
+  } catch { return null; }
+}
+
 /** Source-of-truth: exact fabric artifact + a digest-checked native GGUF
  * header, when available. Never infer parameters/quantization from name. */
 export function projectModelResourceProfile(
@@ -94,6 +134,9 @@ export function projectModelResourceProfile(
   runtime: LocalRuntime,
   deployment: ModelDeployment,
   native?: NativeGgufResource | null,
+  /** Only pass an authenticated result of observedActualExecution. A selected
+   * plan or native status's unverified backend hints are not observations. */
+  verifiedActual?: ActualExecution | null,
 ): ModelResourceProfile {
   const candidate = nativeGgufResourceSchema.safeParse(native);
   const importedIdentityValid =
@@ -132,7 +175,15 @@ export function projectModelResourceProfile(
     ? parseCount(artifact.parameterSize)
     : null;
   const material = configuredMaterial(deployment, runtime);
-  let context = material?.context ?? null;
+  const v3 = managedV3Configuration(artifact, runtime, deployment);
+  const actual = v3 && verifiedActual?.executionReceipt?.deploymentId === deployment.id &&
+    verifiedActual.executionReceipt.deploymentIdentity === deploymentIdentity(deployment) &&
+    verifiedActual.executionReceipt.policyIdentity === v3.policyIdentity &&
+    verifiedActual.contextLength === v3.context &&
+    (verifiedActual.backend === "cpu" || verifiedActual.backend === "cuda")
+    ? verifiedActual : null;
+  let context = v3?.context ?? material?.context ?? null;
+  // V3 declares a context, not an independently verified concurrency setting.
   let parallel: number | null = material ? 1 : null;
   if (
     !material &&
@@ -182,10 +233,13 @@ export function projectModelResourceProfile(
       : null;
   const validElements =
     elements !== null && Number.isSafeInteger(elements) && elements > 0;
-  // The pinned managed b12248 artifact is intentionally CPU-only. Nothing in
-  // the host's GPU capability can override that execution configuration.
+  // Legacy v1 is pinned CPU. For v3, only independently observed native
+  // execution (not a CUDA request, selected plan or host GPU) proves backend.
   const cpuOnly =
     runtime.type === MANAGED_LOCAL_RUNTIME_TYPE && material?.gpu === 0;
+  const placement: ExecutionPlacement | null = actual?.backend === "cpu" ? "CPU" :
+    actual?.backend === "cuda" ?
+      (blocks && actual.gpuLayers < blocks ? "Hybrid" : "GPU") : null;
   return {
     deploymentId: deployment.id,
     runtimeId: runtime.id,
@@ -271,7 +325,11 @@ export function projectModelResourceProfile(
             "requests",
             "Concurrency unknown; do not assume one for capacity",
           ),
-    executionPlacement: cpuOnly
+    executionPlacement: actual && placement !== null
+      ? evidence<ExecutionPlacement>(placement, "placement", "Measured",
+          actual.source, actual.observedAt,
+          ["Native-verified backend/offload; placement does not measure GPU memory residency"])
+      : cpuOnly
       ? evidence<ExecutionPlacement>(
           "CPU",
           "placement",
@@ -282,7 +340,15 @@ export function projectModelResourceProfile(
           "placement",
           "No authoritative CPU/GPU allocation observation",
         ),
-    gpuLayers: material
+    requestedGpuLayers: v3?.requestedGpuLayers !== null && v3?.requestedGpuLayers !== undefined
+      ? evidence(v3.requestedGpuLayers, "layers", "Derived", "exact-v3-persisted-policy-cap")
+      : material ? evidence(material.gpu, "layers", "Derived", "exact-deployment-configuration")
+      : unknown("layers", "No canonical requested GPU layer cap"),
+    gpuLayers: actual
+      ? evidence(actual.gpuLayers, "layers", "Measured", actual.source, actual.observedAt)
+      : v3
+        ? unknown("layers", "V3 actual offload requires native Ready execution receipt")
+        : material
       ? evidence(
           material.gpu,
           "layers",

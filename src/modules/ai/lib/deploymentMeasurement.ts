@@ -83,6 +83,41 @@ const resourceSchema = z.object({
   vramDuringBytes: observation,
   vramAfterBytes: observation,
 }).strict();
+/** Native Ready/receipt-derived execution placement at the bounded request.
+ * This is a compact projection of verified evidence, not a second admission
+ * plan or a claim that a GPU exists because settings requested it. */
+export const lm6AttemptNativeExecutionSchema = z.object({
+  requested: z.object({
+    backend: bounded,
+    gpuLayers: z.number().int().nonnegative().nullable(),
+    fallbackPolicy: z.enum(["disabled", "allow-compatible", "explicit-order"]),
+  }).strict(),
+  selected: z.object({
+    backend: bounded,
+    gpuLayers: z.number().int().nonnegative().nullable(),
+    candidateIndex: z.number().int().nonnegative().max(15).nullable(),
+    fallbackUsed: z.boolean(),
+    fallbackAuthorized: z.boolean(),
+  }).strict(),
+  actual: z.object({
+    backend: bounded,
+    deviceIds: z.array(identifier).max(16),
+    gpuLayers: z.number().int().nonnegative(),
+    runtimeVariantId: identifier,
+  }).strict(),
+  /** From the original native inference-N registry, never SDK settlement. */
+  nativeTerminalOutcome: z.enum(["completed", "cancelled", "unknown"]),
+}).strict().superRefine((row, ctx) => {
+  if (row.selected.backend !== row.actual.backend ||
+      (row.selected.backend === "cuda" &&
+        (row.selected.gpuLayers === null || row.selected.gpuLayers < 1 ||
+          row.actual.gpuLayers < 1 || row.actual.gpuLayers > row.selected.gpuLayers)) ||
+      (row.selected.backend === "cpu" &&
+        (row.selected.gpuLayers !== 0 || row.actual.gpuLayers !== 0)) ||
+      (row.selected.fallbackUsed && !row.selected.fallbackAuthorized))
+    ctx.addIssue({ code: "custom", message: "Selected cap and verified native offload disagree" });
+});
+export type Lm6AttemptNativeExecution = z.infer<typeof lm6AttemptNativeExecutionSchema>;
 export const lm6AttemptSchema = z.object({
   attemptId: identifier,
   workload: z.enum(["chat", "instruction-adherence", "structured-output", "native-tools", "cancellation"]),
@@ -103,6 +138,8 @@ export const lm6AttemptSchema = z.object({
   distinctNativeRequestCount: z.number().int().nonnegative().max(64).nullable().optional(),
   outputObserved: z.boolean(),
   terminalObserved: z.boolean(),
+  /** Optional for all v1 legacy measurements; populated for exact v3 Ready. */
+  nativeExecution: lm6AttemptNativeExecutionSchema.optional(),
   // Evidence of cancellation acknowledgement, not just a local abort.
   cancelRequestedAt: moment.nullable(),
   cancelAcknowledgedAt: moment.nullable(),
@@ -126,6 +163,9 @@ export const lm6AttemptSchema = z.object({
     ctx.addIssue({ code: "custom", message: "Unverified cancellation ordering" });
   if (row.cancelRequestedAt !== null && row.cancelRequestedAt < row.startedAt)
     ctx.addIssue({ code: "custom", message: "Cancellation predates request" });
+  if (row.nativeExecution?.nativeTerminalOutcome === "cancelled" &&
+      row.cancelAcknowledgedAt === null)
+    ctx.addIssue({ code: "custom", message: "Native cancelled outcome needs acknowledgement" });
 });
 const runtimeScope = z.object({
   deploymentIdentity: z.string().min(1).max(40 * 1024),
@@ -140,6 +180,8 @@ const runtimeScope = z.object({
   artifactDigest: z.string().min(1).max(1024),
   artifactFormat: z.enum(["ollama-manifest", "gguf", "safetensors", "mlx-package", "opaque"]),
   deploymentId: z.string().min(1).max(40 * 1024),
+  /** Exact stable backend/device/variant/policy key from fresh native v3 Ready. */
+  executionIdentity: z.string().min(1).max(40 * 1024).optional(),
 }).strict();
 export const lm6RunSchema = z.object({
   version: z.literal(1),
@@ -177,8 +219,34 @@ export const lm6RunSchema = z.object({
       run.reliability.attempted !== a.length ||
       Object.entries(groups).some(([key, value]) =>
         run.reliability[key as keyof typeof groups] !== value) ||
-      Math.abs(run.reliability.completionFraction - groups.completed / run.requestedAttempts) > 1e-9)
+      Math.abs(run.reliability.completionFraction - groups.completed / run.requestedAttempts) > 1e-9 ||
+      (run.scope.executionIdentity !== undefined && a.some(row =>
+        row.nativeRequestId !== null && row.nativeRequestId !== undefined &&
+        row.nativeExecution === undefined)) ||
+      (run.scope.executionIdentity === undefined && a.some(row =>
+        row.nativeExecution !== undefined)))
     ctx.addIssue({ code: "custom", message: "LM6 attempt accounting is not exact" });
+  if (run.scope.executionIdentity) {
+    // Stable identity is created exclusively from a fresh native Ready v3
+    // receipt. Its key binds policy/build/backend/device/variant in ONE scope,
+    // while each attempt records its distinct terminal and actual GPU offload.
+    // Repeating all those long values for three attempts exceeds the native
+    // CAS ledger's existing 16 KiB per-row bound.
+    let key: unknown;
+    try { key = JSON.parse(run.scope.executionIdentity); } catch { /* invalid key */ }
+    if (!Array.isArray(key) || key.length !== 8 ||
+        key[0] !== "managed-execution-v1" ||
+        key[1] !== run.scope.deploymentIdentity ||
+        !["cpu", "cuda"].includes(key[4]) ||
+        run.backend !== (key[4] === "cuda" ? "GPU" : "CPU") ||
+        !Array.isArray(key[5]) ||
+        typeof key[6] !== "string" ||
+        run.attempts.some(attempt => attempt.nativeExecution &&
+          (attempt.nativeExecution.actual.backend !== key[4] ||
+           JSON.stringify(attempt.nativeExecution.actual.deviceIds) !== JSON.stringify(key[5]) ||
+           attempt.nativeExecution.actual.runtimeVariantId !== key[6])))
+      ctx.addIssue({ code: "custom", message: "LM6 native execution does not match exact receipt scope" });
+  }
 });
 export type Lm6Run = z.infer<typeof lm6RunSchema>;
 export type Lm6Attempt = z.infer<typeof lm6AttemptSchema>;
@@ -186,6 +254,13 @@ export type Lm6Failure = z.infer<typeof lm6FailureSchema>;
 export type Lm6Timings = Lm6Attempt["timings"];
 export type Lm6Usage = Lm6Attempt["usage"];
 export type Lm6Resources = Lm6Attempt["resources"];
+
+/** Native B03 adds a bounded operationId/epoch/phase marker before ACK.
+ * Reject oversized runs BEFORE requesting a CAS ticket, so a large exact
+ * policy cannot turn an ordinary ledger size limit into ambiguous persistence. */
+export function lm6FitsNativeCasHistory(run: Lm6Run): boolean {
+  return JSON.stringify(run).length + 256 <= 16 * 1024;
+}
 
 const gap = (unit: string, reason = "No authoritative provider/runtime boundary") =>
   unknown<number>(unit, reason);
@@ -276,6 +351,7 @@ export function lm6AttemptFromSignals(input: {
   capabilityCheck?: Lm6Attempt["capabilityCheck"];
   outputObserved: boolean;
   terminalObserved: boolean;
+  nativeExecution?: Lm6AttemptNativeExecution;
   signals?: Lm6Signals;
 }): Lm6Attempt {
   const s = input.signals ?? {};
@@ -310,6 +386,7 @@ export function lm6AttemptFromSignals(input: {
     distinctNativeRequestCount: input.distinctNativeRequestCount ?? null,
     outputObserved: input.outputObserved,
     terminalObserved: input.terminalObserved,
+    ...(input.nativeExecution ? { nativeExecution: input.nativeExecution } : {}),
     cancelRequestedAt: s.cancelRequestedAt ?? null,
     cancelAcknowledgedAt: s.cancelAcknowledgedAt ?? null,
     noContinuationObserved: s.noContinuationObserved ?? null,
@@ -426,8 +503,14 @@ export function deploymentMeasurementPanel(
 ) {
   const projected = reconcileLocalComputeFabric(state);
   const history = lm6History(projected, deploymentId);
+  const verifiedScope = lm6ExactScope(projected, deploymentId, observation, now);
   const current = history.find(r =>
-    isCurrentLm6Run(r, projected, deploymentId, observation, contextTokens, backend, now)) ?? null;
+    // Model resource inventory may still call a v3 CUDA/CPU execution
+    // "Unknown" until its own verified native placement is passed in. For
+    // an exact authenticated v3 scope, the native execution key itself
+    // establishes the backend; the saved run schema checks that match.
+    isCurrentLm6Run(r, projected, deploymentId, observation, contextTokens,
+      verifiedScope?.executionIdentity ? r.backend : backend, now)) ?? null;
   const attempts = current?.attempts ?? [];
   const cold = attempts.find(a => a.thermal === "cold" && a.outputObserved) ?? null;
   const warm = attempts.find(a => a.thermal === "warm" && a.outputObserved) ?? null;

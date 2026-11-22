@@ -249,8 +249,14 @@ export const localComputeFabricSchema = z.object({
   deployments: z.array(modelDeploymentSchema).max(2048),
   // One historical receipt stream INSIDE the existing native CAS registry.
   // Unknown future versions remain inert, bounded, and losslessly preserved.
+  // Slice 5: native-authenticated v3 scopes contain exact policy-inclusive
+  // deployment and executed backend/device/build identities. They exceed the
+  // historical 4 KiB v1/v2 row ceiling; retain the SAME native-CAS receipt
+  // stream and require a strict 12 KiB per-row UTF-8 cap (native total state
+  // limit 2 MiB). No second qualification database or implicit grants.
   qualificationReceipts: z.array(z.unknown()).max(128).refine(rows =>
-    rows.every(row => JSON.stringify(row)?.length <= 4096)).optional(),
+    rows.every(row => JSON.stringify(row) !== undefined &&
+      new TextEncoder().encode(JSON.stringify(row)).length <= 12 * 1024)).optional(),
   // LM6: bounded *measurement* history, deliberately never an LM2F grant.
   // Unknown newer records remain inert and losslessly retained on read.
   // Exact v1 validation and current/stale selection live in the LM6 adapter.
@@ -300,6 +306,9 @@ export const deploymentRuntimeObservationSchema = z.object({
   version: small,
   epoch: name,
   observedAt: evidenceTime,
+  /** Native-authenticated backend/device/variant/policy/build identity.
+   * Optional for historic v1/v2 deployments and unmanaged runtimes. */
+  executionIdentity: longIdentity.optional(),
 }).strict();
 export type DeploymentRuntimeObservation = z.infer<typeof deploymentRuntimeObservationSchema>;
 
@@ -315,6 +324,9 @@ export const deploymentQualificationScopeSchema = z.object({
   artifactId: longIdentity,
   artifactDigest: z.string().min(1).max(1024),
   artifactFormat: modelArtifactSchema.shape.format,
+  /** A v3 proof is scoped to actual executed placement, not just its
+   * requested policy. CUDA->CPU fallback cannot qualify later CUDA. */
+  executionIdentity: longIdentity.optional(),
 }).strict();
 export type DeploymentQualificationScope = z.infer<typeof deploymentQualificationScopeSchema>;
 
@@ -458,7 +470,10 @@ export function deploymentQualificationScope(
       (runtime.runtimeEpoch !== undefined && runtime.runtimeEpoch !== observation.epoch) ||
       // Unknown model contents or behavior cannot be certified by a stale path
       // or display name. The legacy Ollama bridge retains its own proven scope.
-      !artifact.digest || !deployment.configurationIdentity?.trim())
+      !artifact.digest || !deployment.configurationIdentity?.trim() ||
+      // A persisted v3 candidate list alone cannot confer a runtime's actual
+      // backend/device/build trust. Require the independent native receipt key.
+      (deployment.requestedExecution?.candidates && !observation.executionIdentity))
     return;
   const scope = deploymentQualificationScopeSchema.safeParse({
     deploymentIdentity: deploymentIdentity(deployment),
@@ -472,6 +487,8 @@ export function deploymentQualificationScope(
     artifactId: artifact.id,
     artifactDigest: artifact.digest,
     artifactFormat: artifact.format,
+    ...(observation.executionIdentity
+      ? {executionIdentity: observation.executionIdentity} : {}),
   });
   return scope.success ? scope.data : undefined;
 }
