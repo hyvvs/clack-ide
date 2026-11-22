@@ -90,6 +90,14 @@ const semanticNames: Readonly<Record<string, string>> = {
   tf_repo_write: "modify_repository", tf_build_run: "execute_build",
   tf_http_fetch: "fetch_web_page", tf_http_head: "inspect_web_resource",
   tf_web_search: "search_web",
+  tf_browser_open:"open_browser_session", tf_browser_navigate:"navigate_browser",
+  tf_browser_inspect:"inspect_browser_page", tf_browser_find:"find_browser_element",
+  tf_browser_click:"activate_browser_element", tf_browser_type:"type_browser_text",
+  tf_browser_select:"select_browser_option", tf_browser_scroll:"scroll_browser_page",
+  tf_browser_back:"browser_history_back",tf_browser_forward:"browser_history_forward",
+  tf_browser_refresh:"refresh_browser_page",tf_browser_screenshot:"capture_browser_screenshot",
+  tf_browser_download:"download_browser_resource", tf_browser_upload:"upload_browser_file",
+  tf_browser_close:"close_browser_session",
   bash_run: "execute_command", bash_background: "execute_command",
   bash_list: "inspect_command", bash_logs: "inspect_command", bash_kill: "terminate_command",
   fetch_web_page: "fetch_web_page", discover_capabilities: "discover_capabilities",
@@ -114,7 +122,8 @@ function normalizedFabric(c: CapabilitySeed): ToolFabricMetadata {
   const knownWorkspace = c.source === "builtin" && workspaceOperations.has(name);
   const network = c.hints.openWorld ||
     name === "fetch_web_page" || name === "compare_web_sources" ||
-    name === "tf_http_fetch" || name === "tf_http_head" || name === "tf_web_search";
+    name === "tf_http_fetch" || name === "tf_http_head" || name === "tf_web_search" ||
+    name.startsWith("tf_browser_");
   const external = c.source === "remote-mcp" || c.source === "integration" ||
     c.source === "local-mcp";
   // An MCP description/permission string is untrusted metadata. Even an
@@ -248,6 +257,7 @@ function hints(name: string, permissions: readonly string[], binding?: ToolBindi
       permissions.includes("run-commands"),
     openWorld: binding?.kind === "http" || binding?.kind === "mcp" ||
       ["tf_http_fetch","tf_http_head","tf_web_search"].includes(name) ||
+      name.startsWith("tf_browser_") ||
       permissions.includes("network"),
   };
 }

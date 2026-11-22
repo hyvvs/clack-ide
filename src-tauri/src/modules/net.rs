@@ -4,6 +4,7 @@ use std::time::Duration;
 
 pub mod inference;
 pub mod research;
+pub mod tf_browser;
 pub mod tf_web;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Method;

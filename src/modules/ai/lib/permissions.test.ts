@@ -190,7 +190,7 @@ describe("agent permission resolver", () => {
     usePreferencesStore.setState({agentPermissionProfiles:{
       "builtin:coder":profile("full-access")}});
     const ctx=context();
-    const execute=vi.fn(async()=>({ok:true}));
+    const execute=vi.fn(async(_input:unknown,_options:unknown)=>({ok:true}));
     const inputs={
       tf_fs_write:{operation:"file_patch",path:"src/a.ts",oldText:"before",
         newText:"after",expectedSha256:"a".repeat(64)},
@@ -319,6 +319,78 @@ describe("agent permission resolver", () => {
       query:"latest news",
     },{toolCallId:"read-only-search"})).toMatchObject({
       code:"tf_web_read_only_run_denied",effectState:"NoEffect"});
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it("TF4 native browser navigation and snapshot targets require exact once proof even in Full Access",async()=>{
+    usePreferencesStore.setState({agentPermissionProfiles:{
+      "builtin:coder":profile("full-access")}});
+    const ctx=context();
+    const sid="a".repeat(48),snapshotId="b".repeat(48),elementId="c".repeat(48);
+    const operations:Record<string,Record<string,unknown>>={
+      tf_browser_open:{url:"https://docs.example.org/guide"},
+      tf_browser_navigate:{browserSessionId:sid,url:"https://docs.example.org/next"},
+      tf_browser_inspect:{browserSessionId:sid},
+      tf_browser_click:{browserSessionId:sid,snapshotId,elementId},
+      tf_browser_back:{browserSessionId:sid},
+      tf_browser_close:{browserSessionId:sid},
+    };
+    const execute=vi.fn(async()=>({ok:true}));
+    const guarded=applyAgentPermissionPolicy(Object.fromEntries(
+      Object.keys(operations).map(name=>[name,{execute,needsApproval:true}])),
+      ctx,name=>builtinToolSecurity(name)??undefined) as unknown as Record<string,{
+        execute:(input:unknown,options:unknown)=>Promise<unknown>;
+        needsApproval:(input:unknown,options:unknown)=>Promise<boolean>;
+      }>;
+    for(const [name,input] of Object.entries(operations)){
+      const options={toolCallId:`browser-once-${name}`};
+      expect(resolveCurrentToolFabricDecision(name,input,ctx,
+        builtinToolSecurity(name)!)).toMatchObject({
+          decision:"REQUIRE_APPROVAL",reasonCode:"explicit-approval-required"});
+      expect(canPersistPermission(name,input,ctx)).toBe(false);
+      expect(await guarded[name].needsApproval(input,options)).toBe(true);
+      expect(await guarded[name].execute(input,options)).toMatchObject({
+        code:"tf_exact_approval_required",effectState:"NoEffect"});
+      expect(recordTfApprovedToolCall({toolName:name,
+        toolCallId:options.toolCallId,sessionId:"chat-a",agentId:"builtin:coder",
+        workspaceRoot:"/work/a",cwd:"/work/a",parameters:input})).toBe(true);
+      expect(await guarded[name].execute(input,options)).toEqual({ok:true});
+      expect(await guarded[name].execute(input,options)).toMatchObject({
+        code:"tf_exact_approval_required",effectState:"NoEffect"});
+    }
+    expect(execute).toHaveBeenCalledTimes(6);
+    const open=operations.tf_browser_open;
+    expect(recordTfApprovedToolCall({toolName:"tf_browser_open",
+      toolCallId:"browser-cross-origin",sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",cwd:"/work/a",parameters:open})).toBe(true);
+    expect(consumeTfApprovedToolCall({toolName:"tf_browser_open",
+      toolCallId:"browser-cross-origin",sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",cwd:"/work/a",parameters:{url:"https://other.example.org/"}})).toBe(false);
+    expect(recordTfApprovedToolCall({toolName:"tf_browser_open",
+      toolCallId:"browser-fake-secret",sessionId:"chat-a",agentId:"builtin:coder",
+      workspaceRoot:"/work/a",parameters:{...open,authorization:"Bearer injected"}})).toBe(false);
+    expect(resolveCurrentToolFabricDecision("tf_browser_open",{
+      url:"http://127.0.0.1/"},ctx,builtinToolSecurity("tf_browser_open")!)
+      .decision).toBe("DENY");
+    expect(resolveCurrentToolFabricDecision("tf_browser_open",{
+      url:"file:///etc/passwd"},ctx,builtinToolSecurity("tf_browser_open")!)
+      .decision).toBe("DENY");
+    for(const [name,input] of Object.entries(operations)){
+      usePreferencesStore.setState({agentPermissionProfiles:{
+        "builtin:coder":profile("chat-only")}});
+      expect(resolveCurrentToolFabricDecision(name,input,ctx,
+        builtinToolSecurity(name)!).reasonCode).toBe("agent-chat-only");
+      usePreferencesStore.setState({agentPermissionProfiles:{
+        "builtin:coder":profile("full-access")}});
+    }
+  });
+  it("disallows browser network in delegated read-only runs even when only inspecting",async()=>{
+    const ctx={...context(),getMutationMode:()=>"read-only" as const};
+    const execute=vi.fn(async(_input:unknown,_options:unknown)=>({ok:true}));
+    const guarded=applyAgentPermissionPolicy({tf_browser_inspect:{execute}},ctx,
+      name=>builtinToolSecurity(name)??undefined);
+    expect(await guarded.tf_browser_inspect.execute({browserSessionId:"a".repeat(48)},
+      {toolCallId:"readonly-inspect"})).toMatchObject({
+        code:"tf_web_read_only_run_denied",effectState:"NoEffect"});
     expect(execute).not.toHaveBeenCalled();
   });
 

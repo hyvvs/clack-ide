@@ -384,8 +384,9 @@ export function messageActivity(
       const tf = object(output?.effectReceipt);
       const tfOperation = tf?.toolId === "tf.operation.v1";
       const tfWeb = tf?.toolId === "tf.web_operation.v1";
-      const tfEffect = tfOperation || tfWeb ? tf?.effectState : tf?.sideEffect;
-      if ((tf?.toolId === "tf.bounded_command.v1" || tfOperation || tfWeb) &&
+      const tfBrowser = tf?.toolId === "tf.browser_operation.v1";
+      const tfEffect = tfOperation || tfWeb || tfBrowser ? tf?.effectState : tf?.sideEffect;
+      if ((tf?.toolId === "tf.bounded_command.v1" || tfOperation || tfWeb || tfBrowser) &&
           typeof tf.requestId === "string" &&
           typeof tf.terminal === "string" &&
           typeof tfEffect === "string") {
@@ -415,40 +416,52 @@ export function messageActivity(
           `Actor: ${safe(tf.actor)}`,
           ...(tfOperation ? [`Operation: ${safe(tf.operation)}`] : []),
           ...(tfWeb ? [`Network operation: ${safe(tf.operation)}`] : []),
-          ...(tfWeb && typeof tf.requestedUrl==="string"
+          ...(tfBrowser ? [`Browser operation: ${safe(tf.operation)}`] : []),
+          ...(tfBrowser && typeof tf.browserSessionId==="string"
+            ? [`Browser session: ${safe(tf.browserSessionId)}`] : []),
+          ...(tfBrowser && typeof tf.snapshotId==="string"
+            ? [`Page snapshot: ${safe(tf.snapshotId)}`] : []),
+          ...(tfBrowser && tf.engine==="inert_native_text"
+            ? ["Browser engine: inert bounded native text (no JavaScript or remote WebView)"] : []),
+          ...((tfWeb || tfBrowser) && typeof tf.requestedUrl==="string"
             ? [`Requested URL: ${safeNetworkUrl(tf.requestedUrl)}`] : []),
-          ...(tfWeb && typeof tf.finalUrl==="string"
+          ...((tfWeb || tfBrowser) && typeof tf.finalUrl==="string"
             ? [`Final URL: ${safeNetworkUrl(tf.finalUrl)}`] : []),
           ...(tfWeb && typeof tf.searchQuery==="string"
             ? [`Search: ${safe(tf.searchQuery)}`] : []),
           ...(tfWeb && tf.operation==="web_search" && typeof input?.query==="string"
             ? [`Search query: ${activityText(input.query, 160)}`] : []),
-          ...(tfWeb && typeof tf.statusCode==="number" &&
+          ...((tfWeb || tfBrowser) && typeof tf.statusCode==="number" &&
             Number.isInteger(tf.statusCode) && tf.statusCode>=100 && tf.statusCode<=599
             ? [`HTTP status: ${tf.statusCode}`] : []),
-          ...(tfWeb && typeof tf.contentType==="string"
+          ...((tfWeb || tfBrowser) && typeof tf.contentType==="string"
             ? [`Content type: ${safe(tf.contentType)}`] : []),
           ...(tfWeb && typeof tf.tlsState==="string" &&
             ["unknown","https_transport_observed","cleartext_http"].includes(tf.tlsState)
             ? [`TLS transport: ${tf.tlsState==="https_transport_observed"
               ?"HTTPS response observed; peer IP not attested":tf.tlsState==="cleartext_http"
                 ?"HTTP (unencrypted)":"Not observed"}`] : []),
-          ...(tfWeb && typeof tf.bytesReceived==="number" &&
+          ...((tfWeb || tfBrowser) && typeof tf.bytesReceived==="number" &&
             Number.isSafeInteger(tf.bytesReceived) && tf.bytesReceived>=0
             ? [`Bytes received: ${tf.bytesReceived}`] : []),
-          ...(tfWeb && typeof tf.bytesRetained==="number" &&
+          ...((tfWeb || tfBrowser) && typeof tf.bytesRetained==="number" &&
             Number.isSafeInteger(tf.bytesRetained) && tf.bytesRetained>=0
             ? [`Bytes retained: ${tf.bytesRetained}`] : []),
-          ...(tfWeb && typeof tf.truncated==="boolean"
+          ...((tfWeb || tfBrowser) && typeof tf.truncated==="boolean"
             ? [`Truncated: ${tf.truncated?"yes":"no"}`] : []),
-          ...(tfWeb && sha(tf.contentSha256)
+          ...((tfWeb || tfBrowser) && sha(tf.contentSha256)
             ? [`Content SHA-256: ${sha(tf.contentSha256)}`] : []),
+          ...(tfBrowser && Array.isArray(tf.elements)
+            ? [`Page links observed: ${Math.min(128,tf.elements.length)} (snapshot-scoped, untrusted)`] : []),
+          ...(tfBrowser && Array.isArray(tf.unsupported)
+            ? [`Unsupported browser operations: ${tf.unsupported.slice(0,12)
+                .filter((v):v is string=>typeof v==="string" && /^[a-z_-]{1,40}$/.test(v)).join(", ")}`] : []),
           ...(tfWeb && typeof tf.credentialReference==="string" &&
             /^credential:[A-Za-z0-9._-]{1,128}$/.test(tf.credentialReference)
             ? [`Credential reference: ${tf.credentialReference} (value withheld)`] : []),
           ...(tfWeb && typeof tf.credentialUsed==="boolean"
             ? [`Credential used: ${tf.credentialUsed?"yes":"no"}`] : []),
-          ...(tfWeb && Array.isArray(tf.redirectChain)
+          ...((tfWeb || tfBrowser) && Array.isArray(tf.redirectChain)
             ? [`Redirect transitions: ${Math.min(5,tf.redirectChain.length)}`,
                 ...tf.redirectChain.slice(0,5).map((hop,index)=>{
                   const h=object(hop);
@@ -456,7 +469,7 @@ export function messageActivity(
                     h?.to??h?.url??h?.destination);
                   return `Redirect ${index+1}: ${destination||"destination withheld"}`;
                 })] : []),
-          ...(tfWeb && Array.isArray(tf.dnsEvidence)
+          ...((tfWeb || tfBrowser) && Array.isArray(tf.dnsEvidence)
             ? [`DNS checks: ${Math.min(6,tf.dnsEvidence.length)}`,
                 ...tf.dnsEvidence.slice(0,6).map(hop=>{
                   const h=object(hop);

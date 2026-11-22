@@ -241,6 +241,7 @@ pub fn run() {
         .manage(tf_command::TfCommandState::default())
         .manage(tf_operations::TfOperationState::default())
         .manage(net::tf_web::TfWebState::default())
+        .manage(net::tf_browser::TfBrowserState::default())
         .manage(modules::conversation_memory::project::freshness::FreshnessState::default())
         .manage(history::HistoryState::default())
         .manage(fs::grep::ContentSearchState::default())
@@ -377,6 +378,11 @@ pub fn run() {
             net::tf_web::tf_web_execute,
             net::tf_web::tf_web_cancel,
             net::tf_web::tf_web_provider_status,
+            net::tf_browser::tf_browser_prepare,
+            net::tf_browser::tf_browser_approve,
+            net::tf_browser::tf_browser_execute,
+            net::tf_browser::tf_browser_cancel,
+            net::tf_browser::tf_browser_status,
             shell::shell_identity,
             shell::shell_session_open,
             shell::shell_session_run,

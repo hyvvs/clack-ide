@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Settings01Icon } from "@hugeicons/core-free-icons";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,13 @@ import { loadChatToolSummary } from "@/modules/ai/lib/chatToolSummary";
 import { chatConnectionSummary } from "@/modules/ai/lib/chatConnectionSummary";
 import { capabilityGroups } from "@/modules/ai/lib/toolCapabilities";
 import { refreshTfWebSearchProviderStatus, type WebSearchProviderStatus } from "@/modules/ai/lib/webSearchAdapters";
+import { refreshTfBrowserRuntimeStatus, type BrowserRuntimeStatus } from "@/modules/ai/lib/browserRuntimeStatus";
+
+function compactBrowserUrl(raw:string|null):string {
+  if(!raw)return "No page loaded";
+  try { const value=new URL(raw);return `${value.origin}${value.pathname.slice(0,160)}${value.search?"?…":""}`; }
+  catch { return "Unverified page URL"; }
+}
 
 export function ChatToolsControl({ sessionId }: { sessionId: string }) {
   const [open, setOpen] = useState(false);
@@ -26,12 +34,39 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
   > | null>(null);
   const [error, setError] = useState("");
   const [webProvider, setWebProvider] = useState<WebSearchProviderStatus|null>(null);
+  const [browser, setBrowser] = useState<BrowserRuntimeStatus|null>(null);
+  const [browserMessage,setBrowserMessage] = useState("");
   const session = useChatStore((s) =>
     s.sessions.find((item) => item.id === sessionId),
   );
   const profiles = usePreferencesStore((s) => s.agentPermissionProfiles);
   const grants = usePreferencesStore((s) => s.agentWorkspacePermissions);
   const preferences = usePreferencesStore();
+  const browserActor=session?.run?.agentId ?? session?.profile?.agentId ?? null;
+  const browserRoot=session?.run?.checkoutRoot ?? session?.run?.workspaceRoot ??
+    session?.profile?.workspaceRoot ?? null;
+  async function refreshBrowser():Promise<void> {
+    const status=await refreshTfBrowserRuntimeStatus(browserActor,sessionId,browserRoot);
+    setBrowser(status);
+  }
+  async function closeBrowser(browserSessionId:string):Promise<void> {
+    if(!browserActor || !browserRoot)return;
+    setBrowserMessage("Closing isolated browser session…");
+    try {
+      const prepared=await invoke<{token:string;operation:string}>("tf_browser_prepare",{
+        request:{operation:"close",actor:browserActor,sessionId,
+          workspaceRoot:browserRoot,browserSessionId},
+      });
+      if(prepared.operation!=="close" || typeof prepared.token!=="string")
+        throw Error("unexpected-browser-token");
+      const receipt=await invoke<{terminal:string;reasonCode:string}>("tf_browser_execute",{
+        token:prepared.token,
+      });
+      setBrowserMessage(receipt.terminal==="completed"?"Session closed.":
+        `Close status: ${receipt.reasonCode.slice(0,80)}`);
+    }catch { setBrowserMessage("Unable to close this session; native authority denied or unavailable."); }
+    await refreshBrowser();
+  }
   const support = chatConnectionSummary(
     session,
     preferences,
@@ -42,6 +77,8 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
     setSummary(null);
     setError("");
     setWebProvider(null);
+    setBrowser(null);
+    setBrowserMessage("");
     if (!open) return;
     let live = true;
     let sequence = 0;
@@ -72,6 +109,9 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
     }).catch(()=>{
       if(live)setWebProvider(null);
     });
+    void refreshTfBrowserRuntimeStatus(browserActor,sessionId,browserRoot).then(status=>{
+      if(live)setBrowser(status);
+    });
     return () => {
       live = false;
       for (const listener of pending)
@@ -85,6 +125,8 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
     session?.run?.startedAt,
     profiles,
     grants,
+    browserActor,
+    browserRoot,
   ]);
   const count = summary
     ? summary.builtin.filter((item) => item.decision !== "deny").length +
@@ -134,6 +176,31 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                     ? `Unavailable (${webProvider.reason}) — configure a Brave key using the existing secure credential store`
                     : "Checking native provider availability"}
               </p>
+              <section aria-label="Browser sessions" className="space-y-1.5 border-t pt-2">
+                <h4 className="font-semibold">Browser sessions</h4>
+                <p className="text-[11px] text-muted-foreground">
+                  {browser?.available ?
+                    "Native, ephemeral read-only HTML snapshots · policy-gated links. Interactive JavaScript, real WebView rendering, screenshots, form submission and file transfer are not available in this engine." :
+                    "Native browser session engine unavailable for this actor, chat or workspace."}
+                </p>
+                {browser?.sessions.length===0 ?
+                  <p className="text-[11px] text-muted-foreground">No active isolated sessions.</p> : null}
+                {browser?.sessions.map(page=>(
+                  <div key={page.browserSessionId} className="rounded border px-2 py-1.5 space-y-1">
+                    <p className="font-medium">{compactBrowserUrl(page.currentUrl)}</p>
+                    <p className="text-[11px] text-muted-foreground">Session {page.browserSessionId.slice(0,12)} · ephemeral · {page.expiresInSecs}s until idle expiry</p>
+                    <Button size="sm" variant="outline" className="h-6 text-[11px]"
+                      onClick={()=>{void closeBrowser(page.browserSessionId);}}>Close session</Button>
+                    <details className="text-[10px] text-muted-foreground">
+                      <summary className="cursor-pointer">Session evidence</summary>
+                      <p>Snapshot: {page.snapshotId??"none"}</p>
+                      <p>Engine: {page.engine} · History: {page.historyLength}</p>
+                      <p>{page.isolation}</p>
+                    </details>
+                  </div>
+                ))}
+                {browserMessage?<p role="status" className="text-[11px]">{browserMessage}</p>:null}
+              </section>
               {capabilityGroups(summary.builtin, support, summary.readOnly).map(
                 (group) => (
                   <section
@@ -176,6 +243,11 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                               checks and one-use approval
                               {item.name==="tf_web_search" ? " · Brave key from existing secret store and native confirmation required" : " · untrusted HTTP source evidence"}
                               {" · "}OS-level network isolation unsupported
+                            </p>
+                          ) : null}
+                          {item.name.startsWith("tf_browser_") ? (
+                            <p className="text-[10.5px] text-muted-foreground">
+                              Native Clack-owned ephemeral page session · public URL/redirect DNS checks · source/element snapshot receipts · one-use approval. No remote WebView, scripts, forms or screenshots in this engine.
                             </p>
                           ) : null}
                         </li>
