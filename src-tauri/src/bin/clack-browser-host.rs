@@ -2194,11 +2194,18 @@ mod host {
                     | "text/plain"
                     | "text/css"
                     | "application/javascript"
+                    | "text/javascript"
                     | "application/json"
                     | "image/png"
                     | "image/jpeg"
                     | "image/gif"
                     | "image/svg+xml"
+                    | "font/woff"
+                    | "font/woff2"
+                    | "application/font-woff"
+                    | "application/vnd.ms-fontobject"
+                    | "font/ttf"
+                    | "font/otf"
                     | "application/octet-stream"
             )
         {
@@ -4769,6 +4776,33 @@ mod host {
             tampered["contentType"] = json!("image/png");
             tampered["status"] = json!(302);
             assert!(broker_reply(&serde_json::to_vec(&tampered).unwrap(), NONCE, 3).is_err());
+        }
+
+        #[test]
+        fn production_broker_reply_accepts_exact_font_and_script_types_only() {
+            for mime in [
+                "text/javascript",
+                "font/woff",
+                "font/woff2",
+                "application/font-woff",
+                "application/vnd.ms-fontobject",
+                "font/ttf",
+                "font/otf",
+            ] {
+                let wire = json!({
+                    "version": 1, "session": NONCE, "requestId": 3,
+                    "status": 200, "contentType": mime, "bodyBase64": "",
+                });
+                assert!(
+                    broker_reply(&serde_json::to_vec(&wire).unwrap(), NONCE, 3).is_ok(),
+                    "{mime}"
+                );
+            }
+            let wire = json!({
+                "version": 1, "session": NONCE, "requestId": 3,
+                "status": 200, "contentType": "font/woff2\r\nLocation: http://127.0.0.1/", "bodyBase64": "",
+            });
+            assert!(broker_reply(&serde_json::to_vec(&wire).unwrap(), NONCE, 3).is_err());
         }
 
         #[test]

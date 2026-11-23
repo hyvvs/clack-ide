@@ -267,11 +267,18 @@ fn checked_mime(value: Option<&str>) -> Option<&'static str> {
         "text/plain" => Some("text/plain"),
         "text/css" => Some("text/css"),
         "application/javascript" => Some("application/javascript"),
+        "text/javascript" => Some("text/javascript"),
         "application/json" => Some("application/json"),
         "image/png" => Some("image/png"),
         "image/jpeg" => Some("image/jpeg"),
         "image/gif" => Some("image/gif"),
         "image/svg+xml" => Some("image/svg+xml"),
+        "font/woff" => Some("font/woff"),
+        "font/woff2" => Some("font/woff2"),
+        "application/font-woff" => Some("application/font-woff"),
+        "application/vnd.ms-fontobject" => Some("application/vnd.ms-fontobject"),
+        "font/ttf" => Some("font/ttf"),
+        "font/otf" => Some("font/otf"),
         "application/octet-stream" => Some("application/octet-stream"),
         _ => None,
     }
@@ -1541,6 +1548,27 @@ impl BrowserRuntimeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn broker_allows_bounded_web_fonts_and_common_script_mime_without_untrusted_headers() {
+        for mime in [
+            "text/javascript; charset=utf-8",
+            "font/woff",
+            "font/woff2",
+            "application/font-woff",
+            "application/vnd.ms-fontobject",
+            "font/ttf",
+            "font/otf",
+        ] {
+            assert!(checked_mime(Some(mime)).is_some(), "{mime}");
+        }
+        for mime in [
+            "text/html\r\nSet-Cookie: x=y",
+            "application/x-sh",
+            "text/xml",
+        ] {
+            assert!(checked_mime(Some(mime)).is_none(), "{mime}");
+        }
+    }
     #[test]
     fn rejects_replay_forged_session_and_non_https_before_network() {
         let nonce = "a".repeat(48);
