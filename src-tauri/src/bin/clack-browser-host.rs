@@ -220,6 +220,57 @@ mod host {
       if (node) result.truncated = true;
       return result;
     })()"#;
+    // Derive the native-only identity probe from the SAME bounded structural
+    // walker. The only inserted data are exact DOM object references retained
+    // inside an opaque DevTools object group; no node, selector, attribute,
+    // text, object ID, or secret is serialized to the parent. Deriving it from
+    // the snapshot walker prevents a second traversal with different indexing
+    // or sensitive-control exclusions.
+    fn production_dom_identity_js() -> Result<String, &'static str> {
+        const RESULT_START: &str = "      const result = { version: 2, visited: 0, truncated: false,";
+        const ELEMENT_PUSH: &str = "          result.elements.push({ index: result.visited, role, depth,";
+        const RESULT_RETURN: &str = "return result;";
+        if PRODUCTION_DOM_JS.matches(RESULT_START).count() != 1
+            || PRODUCTION_DOM_JS.matches(ELEMENT_PUSH).count() != 1
+            || PRODUCTION_DOM_JS.matches(RESULT_RETURN).count() != 2
+        {
+            return Err("observation-identity-probe-invalid");
+        }
+        let script = PRODUCTION_DOM_JS.replacen(
+            RESULT_START,
+            concat!(
+                "      const identityState = { changed: false };\n",
+                "      const identityObserver = new MutationObserver(() => {\n",
+                "        identityState.changed = true;\n",
+                "      });\n",
+                "      identityObserver.observe(document, { subtree: true,\n",
+                "        childList: true, attributes: true, characterData: true });\n",
+                "      const identityNodes = [];\n",
+                "      const result = { version: 2, visited: 0, truncated: false,"
+            ),
+            1,
+        );
+        let script = script.replacen(
+            ELEMENT_PUSH,
+            concat!(
+                "          identityNodes.push(node);\n",
+                "          result.elements.push({ index: result.visited, role, depth,"
+            ),
+            1,
+        );
+        Ok(script.replace(
+            RESULT_RETURN,
+            "return { result, nodes: identityNodes, observer: identityObserver, state: identityState };",
+        ))
+    }
+
+    // Both are fixed, host-authored CDP functions. They run only against the
+    // object returned by the single bounded walk above, never against a CSS
+    // selector or a newly discovered node at the same tree position.
+    // takeRecords() drains pending records: latch the stale bit BEFORE any
+    // return so a rejected first check cannot become valid on a second check.
+    const DOM_CAPTURE_READ_JS: &str = "function() { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return null; return { snapshot: this.result, nodeCount: this.nodes.length }; }";
+    const DOM_NODE_RECHECK_JS: &str = "function(slot) { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return null; const node = this.nodes[slot]; return node && node.isConnected && node.ownerDocument === document ? node : null; }";
     // Two fixture-only native scripts arm a REAL MutationObserver in the
     // about:blank successor and then read its actual queued mutation records
     // *after* attempting and denying the stale native generation-bound action.
@@ -1418,6 +1469,146 @@ mod host {
         elements: Vec<ProductionDomElement>,
     }
 
+    const DOM_IDENTITY_OBJECT_ID_LIMIT: usize = 256;
+
+    // Runtime.evaluate retains one object containing the fixed probe's
+    // snapshot, MutationObserver and exact Node objects. The object ID is an
+    // opaque CDP handle, not a tree index, selector or a page-derived string.
+    // It stays native-only and is never included in ChildDomReply.
+    struct NativeDomObservation {
+        snapshot: ProductionDomResult,
+        root_object_id: String,
+    }
+
+    #[derive(Clone)]
+    struct NativeDomNodeRef {
+        observation_id: u64,
+        page_generation: u64,
+        index: u32,
+        slot: usize,
+        root_object_id: String,
+    }
+
+    #[derive(Default)]
+    struct NativeDomIdentity {
+        observation_id: u64,
+        page_generation: u64,
+        root_object_id: Option<String>,
+        indices: Vec<u32>,
+    }
+
+    impl NativeDomIdentity {
+        fn invalidate(&mut self, observation_id: u64, page_generation: u64) {
+            // A new authenticated observation revokes every earlier reference
+            // even if the same physical element is still in the document.
+            self.observation_id = observation_id;
+            self.page_generation = page_generation;
+            self.root_object_id = None;
+            self.indices.clear();
+        }
+
+        fn bind(&mut self, captured: &NativeDomObservation) -> Result<(), &'static str> {
+            if self.observation_id == 0
+                || self.page_generation == 0
+                || captured.snapshot.elements.is_empty()
+                || captured.snapshot.elements.len() > PRODUCTION_DOM_MAX_ELEMENTS
+                || !valid_dom_object_id(&captured.root_object_id)
+            {
+                return Err("observation-identity-invalid");
+            }
+            self.indices = captured.snapshot.elements.iter().map(|item| item.index).collect();
+            self.root_object_id = Some(captured.root_object_id.clone());
+            Ok(())
+        }
+
+        fn reference(&self, index: u32) -> Result<NativeDomNodeRef, &'static str> {
+            let slot = self.indices.iter().position(|observed| *observed == index)
+                .ok_or("observation-element-stale")?;
+            let root_object_id = self.root_object_id.as_ref()
+                .ok_or("observation-element-stale")?;
+            Ok(NativeDomNodeRef {
+                observation_id: self.observation_id,
+                page_generation: self.page_generation,
+                index,
+                slot,
+                root_object_id: root_object_id.clone(),
+            })
+        }
+
+        // Only an exact currently retained object + ordinal can be presented
+        // to the native read-only DOM_NODE_RECHECK_JS. That fixed function
+        // rejects document mutations and detached nodes before returning the
+        // retained Node object. No model-facing caller or action is wired yet.
+        fn check_reference<'a>(
+            &'a self,
+            reference: &NativeDomNodeRef,
+            observation_id: u64,
+            page_generation: u64,
+        ) -> Result<(&'a str, usize), &'static str> {
+            if observation_id == 0
+                || page_generation == 0
+                || self.observation_id != observation_id
+                || reference.observation_id != observation_id
+                || self.page_generation != page_generation
+                || reference.page_generation != page_generation
+                || self.indices.get(reference.slot) != Some(&reference.index)
+                || self.root_object_id.as_deref() != Some(reference.root_object_id.as_str())
+            {
+                return Err("observation-element-stale");
+            }
+            Ok((self.root_object_id.as_deref().expect("checked above"), reference.slot))
+        }
+    }
+
+    fn valid_dom_object_id(id: &str) -> bool {
+        !id.is_empty()
+            && id.len() <= DOM_IDENTITY_OBJECT_ID_LIMIT
+            && id.bytes().all(|c| c.is_ascii_graphic())
+    }
+
+    fn parse_dom_identity_root(raw: &str) -> Result<String, &'static str> {
+        if raw.len() > 2048 {
+            return Err("observation-identity-bounds");
+        }
+        let response: serde_json::Value =
+            serde_json::from_str(raw).map_err(|_| "observation-identity-invalid")?;
+        if response.get("exceptionDetails").is_some()
+            || response.pointer("/result/type").and_then(|v| v.as_str()) != Some("object")
+        {
+            return Err("observation-identity-invalid");
+        }
+        let id = response.pointer("/result/objectId")
+            .and_then(|v| v.as_str())
+            .ok_or("observation-identity-invalid")?;
+        if !valid_dom_object_id(id) {
+            return Err("observation-identity-bounds");
+        }
+        Ok(id.to_owned())
+    }
+
+    fn parse_dom_identity_snapshot(raw: &str) -> Result<ProductionDomResult, &'static str> {
+        if raw.len() > PRODUCTION_DOM_FRAME_LIMIT {
+            return Err("observation-identity-bounds");
+        }
+        let response: serde_json::Value =
+            serde_json::from_str(raw).map_err(|_| "observation-identity-invalid")?;
+        if response.get("exceptionDetails").is_some() {
+            return Err("observation-identity-invalid");
+        }
+        let value = response.pointer("/result/value")
+            .ok_or("observation-identity-invalid")?;
+        let snapshot = value.get("snapshot")
+            .ok_or("observation-identity-invalid")?;
+        let count = value.get("nodeCount")
+            .and_then(|count| count.as_u64())
+            .ok_or("observation-identity-invalid")?;
+        let verified = verify_production_dom(&snapshot.to_string())?;
+        if count != verified.elements.len() as u64 {
+            return Err("observation-identity-invalid");
+        }
+        Ok(verified)
+    }
+
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct ChildDomReply<'a> {
@@ -2145,6 +2336,7 @@ mod host {
             "observation-result-bounds"
             | "observation-element-bounds"
             | "observation-result-oversize"
+            | "observation-identity-bounds"
             | "observation-request-bounds" => "bounds-exceeded",
             "observation-native-source-unavailable"
             | "observation-native-controller-unavailable"
@@ -2155,9 +2347,56 @@ mod host {
             | "observation-heading-invalid"
             | "observation-ui-dispatch"
             | "observation-script-failed"
+            | "observation-identity-invalid"
+            | "observation-identity-unavailable"
+            | "observation-identity-probe-invalid"
             | "observation-timeout"
             | "observation-session-broken" => "observation-failed",
             _ => "unknown",
+        }
+    }
+
+    type NativeDomCdpDone = Box<dyn FnOnce(Result<String, &'static str>)>;
+
+    fn native_dom_cdp_on_ui(
+        core: &ICoreWebView2,
+        method: &'static str,
+        parameters: String,
+        done: NativeDomCdpDone,
+    ) {
+        // The callback remains on WebView2's UI COM apartment. No CDP
+        // debugging endpoint, remote debugger or external process exists.
+        let pending = Arc::new(Mutex::new(Some(done)));
+        let completed_pending = pending.clone();
+        let completion = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+            move |hr, output| {
+                let checked = if hr.is_err() || output.len() > PRODUCTION_DOM_FRAME_LIMIT {
+                    Err("observation-identity-unavailable")
+                } else {
+                    Ok(output.to_string())
+                };
+                if let Ok(mut guard) = completed_pending.lock() {
+                    if let Some(done) = guard.take() {
+                        drop(guard);
+                        done(checked);
+                    }
+                }
+                Ok(())
+            },
+        ));
+        if unsafe {
+            core.CallDevToolsProtocolMethod(
+                &HSTRING::from(method),
+                &HSTRING::from(parameters),
+                &completion,
+            )
+        }.is_err() {
+            if let Ok(mut guard) = pending.lock() {
+                if let Some(done) = guard.take() {
+                    drop(guard);
+                    done(Err("observation-identity-unavailable"));
+                }
+            }
         }
     }
 
@@ -2167,17 +2406,18 @@ mod host {
         request_generation: u64,
         current_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
-    ) -> Result<ProductionDomResult, &'static str> {
+    ) -> Result<NativeDomObservation, &'static str> {
         if stats.broken.load(Ordering::Acquire)
             || stats.pending.load(Ordering::Acquire) != 0
             || current_generation.load(Ordering::Acquire) != request_generation
         {
             return Err("observation-page-stale");
         }
-        // All COM use, including the post-ExecuteScript source recheck,
-        // happens on WebView2's original UI apartment.
+        // All COM use, including the post-CDP source recheck, happens on
+        // WebView2's original UI apartment.
         let expected = expected_url.to_owned();
-        let (tx, rx) = mpsc::sync_channel::<Result<ProductionDomResult, &'static str>>(1);
+        let identity_script = production_dom_identity_js()?;
+        let (tx, rx) = mpsc::sync_channel::<Result<NativeDomObservation, &'static str>>(1);
         let app_for_ui = app.clone();
         app.run_on_main_thread(move || {
             let tx_ui = tx.clone();
@@ -2213,40 +2453,72 @@ mod host {
                             let callback_generation = current_generation.clone();
                             let callback_stats = stats.clone();
                             let callback_expected = expected.clone();
-                            let dispatch_sender = sender.clone();
-                            let completion = ExecuteScriptCompletedHandler::create(Box::new(
-                                move |hr, output| {
-                                    let checked = (|| {
-                                        if hr.is_err() {
-                                            return Err("observation-script-failed");
+                            let capture = json!({
+                                "expression": identity_script,
+                                "objectGroup": "clack-native-dom-observation",
+                                "returnByValue": false,
+                                "silent": true,
+                                "awaitPromise": false,
+                                "generatePreview": false
+                            }).to_string();
+                            native_dom_cdp_on_ui(&core, "Runtime.evaluate", capture, Box::new(
+                                move |root_result| {
+                                    let root_object_id = match root_result
+                                        .and_then(|raw| parse_dom_identity_root(&raw))
+                                    {
+                                        Ok(root) => root,
+                                        Err(reason) => {
+                                            let _ = sender.send(Err(reason));
+                                            return;
                                         }
-                                        let mut actual_source = PWSTR::null();
-                                        if unsafe { callback_core.Source(&mut actual_source) }
-                                            .is_err()
-                                        {
-                                            return Err("observation-native-source-unavailable");
-                                        }
-                                        if take_pwstr(actual_source) != callback_expected
-                                            || callback_generation.load(Ordering::Acquire)
-                                                != request_generation
-                                            || callback_stats.broken.load(Ordering::Acquire)
-                                            || callback_stats.pending.load(Ordering::Acquire) != 0
-                                        {
-                                            return Err("observation-page-stale");
-                                        }
-                                        verify_production_dom(&output)
-                                    })();
-                                    let _ = sender.send(checked);
-                                    Ok(())
+                                    };
+                                    // The native MutationObserver was armed
+                                    // before the walker visited its first node.
+                                    // Read both the closed snapshot and the
+                                    // retained node count from that SAME walk.
+                                    // The callback refuses any queued mutation.
+                                    let parameters = json!({
+                                        "objectId": root_object_id,
+                                        "functionDeclaration": DOM_CAPTURE_READ_JS,
+                                        "returnByValue": true,
+                                        "silent": true,
+                                        "awaitPromise": false,
+                                        "generatePreview": false
+                                    }).to_string();
+                                    let result_sender = sender.clone();
+                                    let validation_core = callback_core.clone();
+                                    native_dom_cdp_on_ui(
+                                        &callback_core,
+                                        "Runtime.callFunctionOn",
+                                        parameters,
+                                        Box::new(move |snapshot_result| {
+                                            let checked = (|| {
+                                                let mut actual_source = PWSTR::null();
+                                                if unsafe { validation_core.Source(&mut actual_source) }
+                                                    .is_err()
+                                                {
+                                                    return Err("observation-native-source-unavailable");
+                                                }
+                                                if take_pwstr(actual_source) != callback_expected
+                                                    || callback_generation.load(Ordering::Acquire)
+                                                        != request_generation
+                                                    || callback_stats.broken.load(Ordering::Acquire)
+                                                    || callback_stats.pending.load(Ordering::Acquire) != 0
+                                                {
+                                                    return Err("observation-page-stale");
+                                                }
+                                                let raw = snapshot_result?;
+                                                let snapshot = parse_dom_identity_snapshot(&raw)?;
+                                                Ok(NativeDomObservation {
+                                                    snapshot,
+                                                    root_object_id,
+                                                })
+                                            })();
+                                            let _ = result_sender.send(checked);
+                                        }),
+                                    );
                                 },
                             ));
-                            if unsafe {
-                                core.ExecuteScript(&HSTRING::from(PRODUCTION_DOM_JS), &completion)
-                            }
-                            .is_err()
-                            {
-                                let _ = dispatch_sender.send(Err("observation-script-failed"));
-                            }
                         })
                         .map_err(|_| "observation-ui-dispatch")
                 });
@@ -2269,6 +2541,7 @@ mod host {
         app: &tauri::AppHandle,
         session: &str,
         last_observation_id: &mut u64,
+        identities: &mut NativeDomIdentity,
         page_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
         initial_url: &str,
@@ -2300,6 +2573,7 @@ mod host {
         // Even a denied, correctly authenticated request consumes its ID.
         // Repeating that frame can never yield a later page's observation.
         *last_observation_id = request.observation_id;
+        identities.invalidate(request.observation_id, request.page_generation);
         let generation = page_generation.load(Ordering::Acquire);
         let preliminary = validate_dom_request(
             &frame,
@@ -2310,7 +2584,7 @@ mod host {
         )
         .err()
         .map(public_dom_denial);
-        let observed = if let Some(reason) = preliminary {
+        let captured = if let Some(reason) = preliminary {
             Err(reason)
         } else if stats.broken.load(Ordering::Acquire) || stats.pending.load(Ordering::Acquire) != 0
         {
@@ -2325,13 +2599,31 @@ mod host {
             )
             .map_err(public_dom_denial)
         };
+        let observed = captured.and_then(|capture| {
+            if page_generation.load(Ordering::Acquire) != request.page_generation
+                || stats.broken.load(Ordering::Acquire)
+                || stats.pending.load(Ordering::Acquire) != 0
+            {
+                return Err("page-stale");
+            }
+            identities.bind(&capture).map_err(public_dom_denial)?;
+            Ok(capture.snapshot)
+        });
         let (snapshot, reason) = match &observed {
             Ok(structure) => (Some(structure), None),
             Err(reason) => (None, Some(*reason)),
         };
         let reply = dom_reply(&request, snapshot, reason);
         let encoded = serde_json::to_vec(&reply).map_err(|_| "observation-result-invalid")?;
-        let frame = if encoded.is_empty() || encoded.len() > PRODUCTION_DOM_FRAME_LIMIT {
+        let frame = if page_generation.load(Ordering::Acquire) != request.page_generation
+            || stats.broken.load(Ordering::Acquire)
+            || stats.pending.load(Ordering::Acquire) != 0
+        {
+            identities.invalidate(request.observation_id, request.page_generation);
+            serde_json::to_vec(&dom_reply(&request, None, Some("page-stale")))
+                .map_err(|_| "observation-result-invalid")?
+        } else if encoded.is_empty() || encoded.len() > PRODUCTION_DOM_FRAME_LIMIT {
+            identities.invalidate(request.observation_id, request.page_generation);
             serde_json::to_vec(&dom_reply(&request, None, Some("bounds-exceeded")))
                 .map_err(|_| "observation-result-invalid")?
         } else {
@@ -3150,6 +3442,7 @@ mod host {
                 thread::spawn(move || {
                     let mut parent_attested = false;
                     let mut last_observation_id = 0u64;
+                    let mut native_dom_identity = NativeDomIdentity::default();
                     loop {
                         if worker_production && parent_attested {
                             // The authenticated parent's pending observation
@@ -3164,6 +3457,7 @@ mod host {
                                         &handle,
                                         &worker_session,
                                         &mut last_observation_id,
+                                        &mut native_dom_identity,
                                         worker_generation.clone(),
                                         worker_stats.clone(),
                                         &worker_initial_url,
@@ -3205,6 +3499,7 @@ mod host {
                                                 &handle,
                                                 &worker_session,
                                                 &mut last_observation_id,
+                                                &mut native_dom_identity,
                                                 worker_generation.clone(),
                                                 worker_stats.clone(),
                                                 &worker_initial_url,
@@ -5801,6 +6096,100 @@ mod host {
                     {"index":4,"role":"button","depth":2,"headingLevel":null}
                 ]
             })
+        }
+
+        #[test]
+        fn production_native_dom_identity_retains_exact_node_and_revokes_stale_observations() {
+            let snapshot = verify_production_dom(&production_dom_case().to_string()).unwrap();
+            let mut identity = NativeDomIdentity::default();
+            identity.invalidate(1, 7);
+            identity.bind(&NativeDomObservation {
+                snapshot: snapshot.clone(),
+                root_object_id: r#"{"injectedScriptId":1,"id":10}"#.into(),
+            }).unwrap();
+            let old_button = identity.reference(4).unwrap();
+            assert_eq!(identity.check_reference(&old_button, 1, 7).unwrap().1, 2);
+            assert!(identity.reference(3).is_err()); // never select by a fallback index
+            assert_eq!(identity.check_reference(&old_button, 1, 8).unwrap_err(),
+                "observation-element-stale");
+
+            // Replacement with the identical role and tree position has a
+            // different retained COM object. Re-observation cannot transplant
+            // the old reference onto the new element.
+            identity.invalidate(2, 7);
+            identity.bind(&NativeDomObservation {
+                snapshot,
+                root_object_id: r#"{"injectedScriptId":1,"id":11}"#.into(),
+            }).unwrap();
+            let replacement_button = identity.reference(4).unwrap();
+            assert_eq!(identity.check_reference(&old_button, 2, 7).unwrap_err(),
+                "observation-element-stale");
+            assert_eq!(identity.check_reference(&replacement_button, 2, 7).unwrap().1, 2);
+
+            identity.invalidate(3, 8); // native NavigationStarting epoch
+            assert_eq!(identity.check_reference(&replacement_button, 3, 8).unwrap_err(),
+                "observation-element-stale");
+            assert!(identity.reference(4).is_err());
+        }
+
+        #[test]
+        fn production_native_dom_identity_parser_is_closed_bounded_and_never_exports_handles() {
+            let root = r#"{"result":{"type":"object","objectId":"{\"injectedScriptId\":1,\"id\":9}"}}"#;
+            let parsed = parse_dom_identity_root(root).unwrap();
+            assert_eq!(parsed, r#"{"injectedScriptId":1,"id":9}"#);
+            assert_eq!(parse_dom_identity_root(r#"{"result":{"type":"string","value":"secret"}}"#)
+                .unwrap_err(), "observation-identity-invalid");
+            assert_eq!(parse_dom_identity_root(&json!({
+                "result":{"type":"object","objectId":"X".repeat(DOM_IDENTITY_OBJECT_ID_LIMIT + 1)}
+            }).to_string()).unwrap_err(), "observation-identity-bounds");
+            let structure = production_dom_case();
+            let response = json!({"result":{"type":"object","value":{
+                "snapshot": structure, "nodeCount": 3
+            }}});
+            let verified = parse_dom_identity_snapshot(&response.to_string()).unwrap();
+            assert_eq!(verified.elements.len(), 3);
+            assert!(!serde_json::to_string(&dom_reply(&ParentDomRequest {
+                version: 2, kind: "observe-dom".into(), session: NONCE.into(),
+                observation_id: 1, page_generation: 7,
+                source_id: production_dom_source_id("https://example.test/").unwrap(),
+            }, Some(&verified), None)).unwrap().contains("injectedScriptId"));
+            let mut invalid = response.clone();
+            invalid["result"]["value"]["nodeCount"] = json!(4);
+            assert_eq!(parse_dom_identity_snapshot(&invalid.to_string()).unwrap_err(),
+                "observation-identity-invalid");
+            invalid = response.clone();
+            invalid["result"]["value"]["snapshot"]["elements"][0]["name"] = json!("secret");
+            assert_eq!(parse_dom_identity_snapshot(&invalid.to_string()).unwrap_err(),
+                "observation-result-invalid");
+            invalid = response;
+            invalid["exceptionDetails"] = json!({"text":"private page exception"});
+            assert_eq!(parse_dom_identity_snapshot(&invalid.to_string()).unwrap_err(),
+                "observation-identity-invalid");
+        }
+
+        #[test]
+        fn production_native_dom_identity_probe_captures_same_walk_and_guards_mutations() {
+            let script = production_dom_identity_js().unwrap();
+            assert_eq!(script.matches("identityNodes.push(node)").count(), 1);
+            assert!(script.find("identityObserver.observe(document").unwrap()
+                < script.find("const walker = document.createTreeWalker").unwrap());
+            assert!(script.contains("node = walker.nextSibling()"));
+            assert!(script.contains("if (node.isContentEditable)"));
+            assert!(script.contains("result.elements.push({ index: result.visited"));
+            assert!(script.contains("return { result, nodes: identityNodes, observer: identityObserver, state: identityState };"));
+            assert!(!script.contains("return result;"));
+            assert!(DOM_CAPTURE_READ_JS.contains("this.observer.takeRecords().length"));
+            assert!(DOM_NODE_RECHECK_JS.contains("this.observer.takeRecords().length"));
+            assert!(DOM_CAPTURE_READ_JS.contains("this.state.changed = true"));
+            assert!(DOM_NODE_RECHECK_JS.contains("this.state.changed = true"));
+            assert!(DOM_NODE_RECHECK_JS.contains("this.nodes[slot]"));
+            assert!(DOM_NODE_RECHECK_JS.contains("node.isConnected"));
+            assert!(DOM_NODE_RECHECK_JS.contains("node.ownerDocument === document"));
+            for forbidden in ["querySelector(", "getAttribute(", ".value", ".textContent",
+                "fetch(", "localStorage", ".outerHTML", ".innerHTML"] {
+                assert!(!script.contains(forbidden), "unsafe identity probe: {forbidden}");
+                assert!(!DOM_NODE_RECHECK_JS.contains(forbidden));
+            }
         }
 
         fn production_dom_control_case() -> serde_json::Value {
