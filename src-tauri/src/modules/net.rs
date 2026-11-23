@@ -5,6 +5,9 @@ use std::time::Duration;
 pub mod inference;
 pub mod research;
 pub mod tf_browser;
+// Pure native identity/effect contract; no WebView2 launcher, IPC route or model
+// authority is enabled by registering this module.
+pub(crate) mod tf_browser_contract;
 pub mod tf_web;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Method;
