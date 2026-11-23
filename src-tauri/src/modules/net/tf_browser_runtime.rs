@@ -112,6 +112,8 @@ pub(crate) struct NativeElementStructure {
     pub expanded: Option<bool>,
     #[serde(default)]
     pub control_type: Option<String>,
+    #[serde(default)]
+    pub required: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,7 +187,7 @@ fn structural_observed_elements(
                 form_target: None,
                 form_method: None,
                 field_type: element.control_type.clone(),
-                required: None,
+                required: element.required,
                 // No page metadata can prove the absence of unobservable
                 // handlers or external effects. Remain maximally conservative.
                 has_script_handler: true,
@@ -336,6 +338,11 @@ fn validate_dom_structure(
         }
         if item.checked.is_some() && !matches!(item.role.as_str(), "checkbox" | "radio")
             || item.selected.is_some() && item.role != "option"
+            || item.required.is_some()
+                && !matches!(
+                    item.role.as_str(),
+                    "input" | "checkbox" | "radio" | "select" | "textbox"
+                )
             || item.control_type.as_deref().is_some_and(|control| {
                 !matches!(
                     control,
@@ -1972,7 +1979,7 @@ mod tests {
                  "expanded":null,"controlType":null},
                 {"index":2,"role":"checkbox","depth":1,"headingLevel":null,
                  "visible":true,"enabled":true,"checked":false,"selected":null,
-                 "expanded":null,"controlType":"checkbox"},
+                 "expanded":null,"controlType":"checkbox","required":true},
                 {"index":3,"role":"select","depth":1,"headingLevel":null,
                  "visible":true,"enabled":false,"checked":null,"selected":null,
                  "expanded":null,"controlType":"select"}
@@ -1980,7 +1987,14 @@ mod tests {
         });
         let parsed: NativeDomStructure = serde_json::from_value(raw.clone()).unwrap();
         assert!(validate_dom_structure(&parsed, &session, 5, 3, &source).is_ok());
+        assert_eq!(
+            structural_observed_elements(&parsed).unwrap()[1].required,
+            Some(true)
+        );
         let mut invalid = parsed.clone();
+        invalid.elements[0].required = Some(true);
+        assert!(validate_dom_structure(&invalid, &session, 5, 3, &source).is_err());
+        invalid.elements[0].required = None;
         invalid.elements[1].control_type = Some("password".into());
         assert!(validate_dom_structure(&invalid, &session, 5, 3, &source).is_err());
         invalid.elements[1].control_type = Some("checkbox".into());
@@ -2692,6 +2706,11 @@ mod tests {
             if dom.omitted_fields < 2
                 || !dom.truncated
                 || !has("input", "text")
+                || !dom.elements.iter().any(|item| {
+                    item.role == "input"
+                        && item.control_type.as_deref() == Some("text")
+                        && item.required == Some(true)
+                })
                 || !has("textbox", "textarea")
                 || !has("select", "select")
                 || !dom.elements.iter().any(|item| {

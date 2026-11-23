@@ -199,6 +199,10 @@ mod host {
           }
           if (ancestor) visible = false;
           const enabled = !node.matches(':disabled');
+          // Only the DOM's boolean constraint state is observable. Never
+          // inspect the control's name, placeholder, value or validation text.
+          const required = (tag === 'INPUT' || tag === 'SELECT'
+            || tag === 'TEXTAREA') ? !!node.required : null;
           const checked = tag === 'INPUT' &&
             (controlType === 'checkbox' || controlType === 'radio')
             ? !!node.checked : null;
@@ -209,7 +213,7 @@ mod host {
             node.ariaExpanded === 'false' ? false : null;
           result.elements.push({ index: result.visited, role, depth,
             headingLevel: level, visible, enabled, checked, selected,
-            expanded, controlType });
+            expanded, controlType, required });
         }
         node = walker.nextNode();
       }
@@ -1400,6 +1404,8 @@ mod host {
         expanded: Option<bool>,
         #[serde(default)]
         control_type: Option<String>,
+        #[serde(default)]
+        required: Option<bool>,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1588,6 +1594,11 @@ mod host {
             }
             if (item.checked.is_some() && !matches!(item.role.as_str(), "checkbox" | "radio"))
                 || ((item.role == "option") != item.selected.is_some())
+                || (item.required.is_some()
+                    && !matches!(
+                        item.role.as_str(),
+                        "input" | "checkbox" | "radio" | "select" | "textbox"
+                    ))
             {
                 return Err("observation-control-state-invalid");
             }
@@ -5720,6 +5731,7 @@ mod host {
             assert!(PRODUCTION_DOM_JS.contains("node.control.type"));
             assert!(PRODUCTION_DOM_JS.contains("node.getClientRects().length > 0"));
             assert!(PRODUCTION_DOM_JS.contains("node.matches(':disabled')"));
+            assert!(PRODUCTION_DOM_JS.contains("!!node.required"));
             assert!(PRODUCTION_DOM_JS.contains("!!node.checked"));
             assert!(PRODUCTION_DOM_JS.contains("!!node.selected"));
             assert!(PRODUCTION_DOM_JS.contains("node.ariaExpanded === 'true'"));
@@ -5803,7 +5815,7 @@ mod host {
                         "expanded":null,"controlType":null},
                     {"index":2,"role":"input","depth":1,"headingLevel":null,
                         "visible":true,"enabled":true,"checked":null,"selected":null,
-                        "expanded":null,"controlType":"text"},
+                        "expanded":null,"controlType":"text","required":true},
                     {"index":5,"role":"checkbox","depth":1,"headingLevel":null,
                         "visible":true,"enabled":true,"checked":true,"selected":null,
                         "expanded":null,"controlType":"checkbox"},
@@ -5839,6 +5851,7 @@ mod host {
             assert_eq!(verified.elements.len(), 9);
             assert_eq!(verified.elements[2].role, "checkbox");
             assert_eq!(verified.elements[2].checked, Some(true));
+            assert_eq!(verified.elements[1].required, Some(true));
             assert_eq!(verified.elements[4].role, "option");
             assert_eq!(verified.elements[4].selected, Some(true));
             assert!(!verified.elements[4].visible);
@@ -5861,6 +5874,7 @@ mod host {
             let serialized: serde_json::Value = serde_json::from_str(&wire).unwrap();
             assert_eq!(serialized["omittedFields"], 2);
             assert_eq!(serialized["elements"][2]["checked"], true);
+            assert_eq!(serialized["elements"][1]["required"], true);
             assert_eq!(serialized["elements"][4]["selected"], true);
             assert_eq!(serialized["elements"][6]["enabled"], false);
             assert_eq!(serialized["elements"][6]["expanded"], false);

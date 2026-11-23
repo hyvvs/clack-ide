@@ -373,3 +373,25 @@ prove bounded font transport, not usable font rendering. The controlled
 script is present in markup, but the production host does not execute it.
 Full real-browser semantic names, exact DOM action binding, approvals,
 form execution and remaining production E2E gates stay **NOT_PROVEN**.
+
+### Continuation 3 — required-field constraint bit in native closed observation
+
+On the existing Draft branch after commit `7fbb9a7`, the native fixed-role
+walker was extended with exactly one nullable, closed boolean: `required`
+for allowlisted input/select/textarea controls only. Neither raw attribute
+strings nor validation messages, labels, field names or field values are read
+or returned. Both the native host and parent reject a `required` bit on
+unrelated elements; the parent maps the bit into the *existing* TF4
+`ObservedElement.required` and held `SemanticElement.required`. No action
+authority was added. Host-only 36/36 and runtime active 7/7 tests PASS.
+
+The exact controlled HTTPS fixture's text field now has a `required` DOM
+constraint. Its fresh production AppContainer/WebView2 physical case **PASS
+1/1** with HTML 1263B, CSS 317B (same-origin redirect, 2 DNS hops), PNG
+68B, synthetic WOFF2 48B, all four real TF3 TLS/COM responses terminal
+completed. Native DOM observation still visited 15 nodes, emitted 12 safe
+elements, omitted 2 sensitive fields and confirmed the required control.
+Stale re-observation/close reference tests still PASS without executing
+interactions. The TLS fixture stopped normally (`connections=5 denied=0`);
+the temporary public DER and active marker were removed and no port-443
+listener remained. This is **not** approval/submit/form action acceptance.
