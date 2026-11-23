@@ -495,3 +495,12 @@ restricted AppContainer/WebView2 direct TCP connections=0; TF3 denied
 the HTTPS resource and native ownership shut down. This is a bounded
 **owned RFC1918 IPv4 listener negative only**, not global IPv4/IPv6,
 Fetch/XHR, WebSocket, iframe, Worker, EventSource or Beacon coverage.
+
+The separate opt-in real production
+`physical_production_owned_ipv6_loopback_denial_no_tcp_fallback` also
+physically **PASS 1/1** with the owned `[::1]:443` listener: ordinary
+parent TCP positive control=1, confined browser direct connections=0,
+TF3 resource denied, real native COM denial completed and original owned
+Job/UDF cleanup passed. This proves **only local IPv6 loopback**; it does
+not establish IPv6 external interfaces, dual-stack DNS fallback or other
+WebView2 APIs (WebSocket, Fetch/XHR, Worker, Beacon, etc.).

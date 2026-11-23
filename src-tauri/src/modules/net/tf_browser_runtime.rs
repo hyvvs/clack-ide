@@ -2767,6 +2767,102 @@ mod tests {
         eprintln!("PRODUCTION_OWNED_RFC1918_TCPV4_DENIAL=PASS ordinary_positive=1 restricted=0");
     }
 
+    /// Independent production IPv6 loopback egress negative. No public or
+    /// third-party IPv6 address is contacted: the listener is owned by this
+    /// test, and a successful ordinary parent TCP connect is the positive
+    /// control. TF3 must reject the restricted WebView2 HTTPS request before
+    /// any direct IPv6 socket reaches the listener, then the native COM
+    /// denial terminal and owned Job/profile cleanup must be observed.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit real production AppContainer/WebView2 owned IPv6 loopback isolation negative"]
+    async fn physical_production_owned_ipv6_loopback_denial_no_tcp_fallback() {
+        use std::net::Ipv6Addr;
+        let listener = std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 443))
+            .expect("UNAVAILABLE: owned IPv6 ::1 port 443 bind failed");
+        let positive = std::net::TcpStream::connect((Ipv6Addr::LOCALHOST, 443))
+            .expect("owned ordinary parent IPv6 positive control must connect");
+        let (accepted, _) = listener
+            .accept()
+            .expect("owned IPv6 positive control observed");
+        drop(accepted);
+        drop(positive);
+        listener
+            .set_nonblocking(true)
+            .expect("bounded IPv6 owned accept");
+
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact feature-enabled production host required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read host"))
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace = manifest.parent().expect("project workspace");
+        let parent = tempfile::Builder::new()
+            .prefix("tf4-production-owned-ipv6-")
+            .tempdir_in(manifest.join("target"))
+            .expect("unique owned IPv6 test root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize exact workspace");
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-physical-owned-ipv6".into(),
+                session_id: "tf4-physical-ipv6-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://[::1]/".into(),
+                private_parent: parent.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("owned zero-network-capability production AppContainer launched");
+        let outcome = async {
+            browser.verify_ready().await?;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                browser.serve_one(&registry, &TfWebState::default()),
+            )
+            .await
+            .map_err(|_| "production-owned-ipv6-com-timeout".to_owned())?
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(
+            cleanup.is_ok(),
+            "original owned Job/UDF/profile cleanup: {cleanup:?}"
+        );
+        let receipt = outcome.expect("TF3 must deny actual WebView2 IPv6 HTTPS request");
+        assert_eq!(receipt.request_id, 1);
+        assert!(receipt.page_generation > 0);
+        assert!(
+            receipt.native_com_completed,
+            "native COM deferral must terminate"
+        );
+        assert_eq!(receipt.terminal, "denied");
+        assert_eq!(receipt.bytes, 0);
+        assert!(receipt
+            .tf3
+            .as_ref()
+            .is_none_or(|r| r.terminal != "completed"));
+        let unauthorized = listener.accept();
+        assert!(
+            matches!(&unauthorized, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "restricted renderer reached owned IPv6 listener: {unauthorized:?}"
+        );
+        assert!(parent
+            .path()
+            .read_dir()
+            .expect("inspect owned root")
+            .next()
+            .is_none());
+        eprintln!("PRODUCTION_OWNED_IPV6_LOOPBACK_DENIAL=PASS ordinary_positive=1 restricted=0 native_com=true owned_job_udf_clean=true");
+    }
+
     /// Explicit positive public-HTTPS qualification of the *production* owner,
     /// not the fixture network policy. Uses only IANA documentation domains,
     /// no credentials, no form writes and no alternate HTTP client. A TF3
