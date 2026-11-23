@@ -1,5 +1,6 @@
 [package]
 name = "clack"
+default-run = "clack"
 version = "0.8.0"
 description = "Clack - an AI-native IDE and agent workspace"
 authors = ["crynta"]
