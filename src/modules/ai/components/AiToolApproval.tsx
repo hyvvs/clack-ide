@@ -31,7 +31,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ToolUIPart } from "ai";
-import { memo } from "react";
+import { memo, useRef } from "react";
 
 type Props = {
   part: Extract<ToolUIPart, { state: "approval-requested" }>;
@@ -86,19 +86,23 @@ const NATIVE_TF_BROWSER_TOOLS = new Set([
   "tf_browser_open","tf_browser_navigate","tf_browser_inspect",
   "tf_browser_click","tf_browser_back","tf_browser_close",
 ]);
-/** Query strings can contain secret tokens, even when rejected at native
- * admission. Show only the normalized origin and pathname in approvals. */
+/** URL paths and query strings can both contain untrusted secret tokens.
+ * Show only the parsed origin and redacted path/query in approvals. */
 function previewNetworkDestination(raw:unknown):string {
   if(typeof raw!=="string" || raw.length>2048)return "Native-validated destination only";
   try {
     const url=new URL(raw);
     if(!["http:","https:"].includes(url.protocol) || url.username || url.password)
       return "Unsupported or credential-bearing URL · deny";
-    return `${url.origin}${url.pathname.slice(0,240)}${url.search?"?… (query withheld)":""}`;
+    return `${url.origin}${url.pathname!=="/"?"/…":""}${url.search?"?…":""}`;
   }catch{return "Invalid URL · deny";}
 }
 
 function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
+  // UI-level double-click guard, not a grant store or authorization. The
+  // permission authority below still consumes its proof exactly once.
+  const respondedApproval = useRef<string | null>(null);
+  const approvalKey = `${sessionId}:${part.toolCallId}:${part.approval.id}`;
   const meta = TOOL_META[toolName];
   const label = meta?.label ?? toolName;
   const Icon = meta?.icon ?? ToolsIcon;
@@ -155,6 +159,27 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
     );
     if (granted) onRespond(true);
   };
+  const respondOnce = (choice: "deny" | "once") => {
+    if (respondedApproval.current === approvalKey) return;
+    respondedApproval.current = approvalKey;
+    if (choice === "deny") {
+      respondToApprovalChoice("deny", onRespond);
+      return;
+    }
+    if ((toolName === "bounded_command" || NATIVE_TF_EFFECTFUL_TOOLS.has(toolName) ||
+      NATIVE_TF_WEB_TOOLS.has(toolName) || NATIVE_TF_BROWSER_TOOLS.has(toolName)) &&
+      !recordTfApprovedToolCall({
+        toolCallId: part.toolCallId, sessionId,
+        agentId: permissionContext.getAgentId(),
+        workspaceRoot: permissionContext.getWorkspaceRoot(),
+        cwd: permissionContext.getCwd(),
+        toolName, parameters: input,
+      })) {
+      onRespond(false);
+      return;
+    }
+    respondToApprovalChoice("once", onRespond);
+  };
 
   return (
     <div className="clack-ai-block min-w-0 overflow-hidden shadow-sm [overflow-wrap:anywhere]" data-approval-session={sessionId}>
@@ -179,7 +204,7 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
         {typeof input.path === "string" && <p className="mb-1 font-medium text-[var(--clack-text-1)] [overflow-wrap:anywhere]">Target: {input.path.split(/[\\/]/).filter(Boolean).pop() || input.path}</p>}
         <details className="mb-2 text-[10.5px] text-[var(--clack-text-2)] [overflow-wrap:anywhere]">
           <summary className="cursor-pointer">Workspace and full target</summary>
-          <p>{owner?.run?.workspaceRoot ?? owner?.profile?.workspaceRoot ?? "Workspace unavailable"}</p>
+          <p>{owner?.run?.checkoutRoot ?? owner?.run?.workspaceRoot ?? owner?.profile?.workspaceRoot ?? "Workspace unavailable"}</p>
           {typeof input.path === "string" && <p>{input.path}</p>}
         </details>
         <PreviewBlock toolName={toolName} input={input} />
@@ -251,7 +276,7 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
         <Button
           size="sm"
           variant="destructive"
-          onClick={() => respondToApprovalChoice("deny", onRespond)}
+          onClick={() => respondOnce("deny")}
           className="h-7 gap-1.5 text-[11px]"
         >
           <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={2} />
@@ -260,20 +285,7 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
         <Button
           size="sm"
           variant="default"
-          onClick={() => {
-            if((toolName==="bounded_command" || NATIVE_TF_EFFECTFUL_TOOLS.has(toolName) || NATIVE_TF_WEB_TOOLS.has(toolName)) &&
-              !recordTfApprovedToolCall({
-                toolCallId:part.toolCallId,sessionId,
-                agentId:permissionContext.getAgentId(),
-                workspaceRoot:permissionContext.getWorkspaceRoot(),
-                cwd:permissionContext.getCwd(),
-                toolName,parameters:input,
-              })){
-              onRespond(false);
-              return;
-            }
-            respondToApprovalChoice("once", onRespond);
-          }}
+          onClick={() => respondOnce("once")}
           className="h-7 gap-1.5 text-[11px]"
         >
           <HugeiconsIcon icon={Tick02Icon} size={12} strokeWidth={2} />

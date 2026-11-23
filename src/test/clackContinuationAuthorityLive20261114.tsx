@@ -396,6 +396,7 @@ try {
   try {
     const response = await fetch(cfg.report, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(result), signal: AbortSignal.timeout(15_000) });
+    // biome-ignore lint/correctness/noUnsafeFinally: A rejected report must fail the isolated run even during teardown.
     if (!response.ok) throw new Error("Metadata-only final report rejected");
   } finally { await invoke("coworking_exit"); }
 }

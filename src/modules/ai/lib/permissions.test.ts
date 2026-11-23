@@ -383,6 +383,65 @@ describe("agent permission resolver", () => {
         "builtin:coder":profile("full-access")}});
     }
   });
+  it("browser UI proof is one-use across exact actor, session, root, cwd, tool and target scopes", () => {
+    const original = { browserSessionId: "a".repeat(48), snapshotId: "b".repeat(48),
+      elementId: "c".repeat(48) };
+    const authority = { sessionId: "chat-a", agentId: "builtin:coder",
+      workspaceRoot: "/work/a", cwd: "/work/a", toolName: "tf_browser_click",
+      parameters: original };
+    const wrong: Array<Record<string, unknown>> = [
+      { sessionId: "chat-b" },
+      { agentId: "builtin:reviewer" },
+      { workspaceRoot: "/work/b" },
+      { cwd: "/work/a/sub" },
+      { toolName: "tf_browser_open" },
+      { parameters: { ...original, browserSessionId: "d".repeat(48) } },
+      { parameters: { ...original, snapshotId: "e".repeat(48) } },
+      { parameters: { ...original, elementId: "f".repeat(48) } },
+    ];
+    for (const [index, mismatch] of wrong.entries()) {
+      const toolCallId = `browser-cross-scope-${index}`;
+      expect(recordTfApprovedToolCall({ ...authority, toolCallId })).toBe(true);
+      expect(consumeTfApprovedToolCall({
+        ...authority, ...mismatch, toolCallId,
+      })).toBe(false);
+      // A mismatch burns the entire one-shot proof, not just the attempted scope.
+      expect(consumeTfApprovedToolCall({ ...authority, toolCallId })).toBe(false);
+    }
+    expect(recordTfApprovedToolCall({ ...authority,
+      toolCallId: "browser-duplicate" })).toBe(true);
+    expect(recordTfApprovedToolCall({ ...authority,
+      toolCallId: "browser-duplicate" })).toBe(false);
+    expect(consumeTfApprovedToolCall({ ...authority,
+      toolCallId: "browser-duplicate" })).toBe(true);
+    expect(consumeTfApprovedToolCall({ ...authority,
+      toolCallId: "browser-duplicate" })).toBe(false);
+  });
+  it("browser proof expires at exactly 60 seconds and chat close revokes only its scope", () => {
+    const input = { browserSessionId: "a".repeat(48) };
+    const scoped = { agentId: "builtin:coder", workspaceRoot: "/work/a",
+      cwd: "/work/a", toolName: "tf_browser_inspect", parameters: input };
+    const issuedAt = 100_000;
+    expect(recordTfApprovedToolCall({ ...scoped, toolCallId: "browser-before-ttl",
+      sessionId: "chat-a" }, issuedAt)).toBe(true);
+    expect(consumeTfApprovedToolCall({ ...scoped, toolCallId: "browser-before-ttl",
+      sessionId: "chat-a" }, issuedAt + 59_999)).toBe(true);
+    expect(recordTfApprovedToolCall({ ...scoped, toolCallId: "browser-at-ttl",
+      sessionId: "chat-a" }, issuedAt)).toBe(true);
+    expect(consumeTfApprovedToolCall({ ...scoped, toolCallId: "browser-at-ttl",
+      sessionId: "chat-a" }, issuedAt + 60_000)).toBe(false);
+    expect(consumeTfApprovedToolCall({ ...scoped, toolCallId: "browser-at-ttl",
+      sessionId: "chat-a" }, issuedAt + 60_001)).toBe(false);
+    expect(recordTfApprovedToolCall({ ...scoped, toolCallId: "browser-chat-close",
+      sessionId: "chat-a" })).toBe(true);
+    expect(recordTfApprovedToolCall({ ...scoped, toolCallId: "browser-other-chat",
+      sessionId: "chat-b" })).toBe(true);
+    clearChatPermissions("chat-a");
+    expect(consumeTfApprovedToolCall({ ...scoped, toolCallId: "browser-chat-close",
+      sessionId: "chat-a" })).toBe(false);
+    expect(consumeTfApprovedToolCall({ ...scoped, toolCallId: "browser-other-chat",
+      sessionId: "chat-b" })).toBe(true);
+  });
   it("disallows browser network in delegated read-only runs even when only inspecting",async()=>{
     const ctx={...context(),getMutationMode:()=>"read-only" as const};
     const execute=vi.fn(async(_input:unknown,_options:unknown)=>({ok:true}));
