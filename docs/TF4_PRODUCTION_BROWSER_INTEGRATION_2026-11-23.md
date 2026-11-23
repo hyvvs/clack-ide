@@ -395,3 +395,12 @@ Stale re-observation/close reference tests still PASS without executing
 interactions. The TLS fixture stopped normally (`connections=5 denied=0`);
 the temporary public DER and active marker were removed and no port-443
 listener remained. This is **not** approval/submit/form action acceptance.
+
+The existing page-contract effect classifier was further hardened: `Scroll`
+is now `UNKNOWN`/approval-required instead of unconditionally read-only,
+because script-enabled pages may attach scroll/intersection handlers with
+external effects. `Inspect` remains inert and can validate the opaque
+reference of a disabled control, while click/typing still reject disabled
+or invisible controls. Allowlisted `textarea` is recognized as a text-entry
+field, but typing remains `UNKNOWN` and no native typing channel is enabled.
+These changes are contract safeguards, **not** physical action acceptance.

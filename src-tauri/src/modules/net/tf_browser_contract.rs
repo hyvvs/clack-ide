@@ -240,11 +240,13 @@ fn classify(kind: BrowserActionKind, item: Option<&ObservedElement>) -> BrowserE
     use BrowserActionKind as A;
     use BrowserEffect as E;
     match kind {
-        A::Inspect | A::Scroll => E::ReadOnly,
-        A::Type | A::Clear | A::Select => {
-            // Typing is not an intentional form submit, but a hostile page
-            // can attach input/change listeners that trigger external effects.
-            // We cannot prove "no network write" from a DOM field type.
+        A::Inspect => E::ReadOnly,
+        A::Scroll | A::Type | A::Clear | A::Select => {
+            // Scrolling can fire scroll/intersection handlers just as typing
+            // fires input/change handlers. Neither operation is inherently
+            // read-only once untrusted page scripts are allowed. The native
+            // implementation must prove its execution mode and invoke central
+            // policy rather than silently treating scroll as harmless.
             // The separate central policy and actual broker must decide.
             E::Unknown
         }
@@ -497,7 +499,13 @@ impl BrowserPageContract {
             .element_handles
             .get(&target.element_ref)
             .ok_or("STALE_ELEMENT")?;
-        if item.source.state.visible == Some(false) || item.source.state.enabled == Some(false) {
+        // Inspect only checks an existing opaque identity; disabled/hidden
+        // controls still have observable state. Actionable gestures must not
+        // use that exception to bypass visibility or disabled gating.
+        if kind != BrowserActionKind::Inspect
+            && (item.source.state.visible == Some(false)
+                || item.source.state.enabled == Some(false))
+        {
             return Err("ELEMENT_NOT_ACTIONABLE");
         }
         if matches!(kind, BrowserActionKind::Type | BrowserActionKind::Clear) {
@@ -507,7 +515,7 @@ impl BrowserPageContract {
             let field_type = item.source.field_type.as_deref().unwrap_or("unknown");
             if !matches!(
                 field_type,
-                "text" | "search" | "email" | "number" | "tel" | "url"
+                "text" | "search" | "email" | "number" | "tel" | "url" | "textarea"
             ) {
                 return Err("SECRET_OR_UNKNOWN_FIELD_DENIED");
             }
@@ -660,6 +668,26 @@ mod tests {
         );
     }
     #[test]
+    fn disabled_control_is_inspectable_but_never_actionable() {
+        let mut p = session();
+        let mut disabled = element(1, SemanticRole::Button, "", None, None, Some("button"));
+        disabled.state.enabled = Some(false);
+        p.observe(1, "https://example.org/form", "", "", vec![disabled], 1)
+            .unwrap();
+        let exact = target(&p);
+        assert_eq!(
+            p.prepare_action(BrowserActionKind::Inspect, exact.clone(), None)
+                .unwrap()
+                .effect,
+            BrowserEffect::ReadOnly
+        );
+        assert_eq!(
+            p.prepare_action(BrowserActionKind::Click, exact, None)
+                .unwrap_err(),
+            "ELEMENT_NOT_ACTIONABLE"
+        );
+    }
+    #[test]
     fn monotonic_snapshot_expiry_revokes_action_refs_without_late_effect_claims() {
         let mut p = session();
         p.observe(
@@ -799,6 +827,16 @@ mod tests {
                 .effect,
             BrowserEffect::Unknown
         );
+        let scroll = p
+            .prepare_action(BrowserActionKind::Scroll, target(&p), None)
+            .unwrap();
+        assert_eq!(scroll.effect, BrowserEffect::Unknown);
+        assert!(scroll.requires_approval);
+        let inspect = p
+            .prepare_action(BrowserActionKind::Inspect, target(&p), None)
+            .unwrap();
+        assert_eq!(inspect.effect, BrowserEffect::ReadOnly);
+        assert!(!inspect.requires_approval);
     }
     #[test]
     fn typed_text_cannot_target_password_hidden_or_unknown_fields() {
@@ -856,6 +894,27 @@ mod tests {
                 Some(&"x".repeat(MAX_ACTION_TEXT + 1))
             )
             .is_err());
+        p.observe(
+            1,
+            "https://example.org/form",
+            "Safe",
+            "Visible",
+            vec![element(
+                2,
+                SemanticRole::Textbox,
+                "",
+                None,
+                None,
+                Some("textarea"),
+            )],
+            2,
+        )
+        .unwrap();
+        let textarea = p
+            .prepare_action(BrowserActionKind::Type, target(&p), Some("safe note"))
+            .unwrap();
+        assert_eq!(textarea.effect, BrowserEffect::Unknown);
+        assert!(textarea.requires_approval);
     }
     #[test]
     fn snapshot_rejects_stale_observation_duplicate_serial_unsafe_urls_and_raw_secret_keys() {
