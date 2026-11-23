@@ -36,8 +36,10 @@ mod host {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use tauri::{webview::PageLoadEvent, WebviewUrl, WebviewWindowBuilder};
     use webview2_com::{
-        take_pwstr, ExecuteScriptCompletedHandler, Microsoft::Web::WebView2::Win32::*,
-        NavigationStartingEventHandler, WebResourceRequestedEventHandler,
+        take_pwstr, BrowserProcessExitedEventHandler, CallDevToolsProtocolMethodCompletedHandler,
+        ExecuteScriptCompletedHandler, Microsoft::Web::WebView2::Win32::*,
+        NavigationStartingEventHandler, ProcessFailedEventHandler,
+        WebResourceRequestedEventHandler,
     };
     use windows::{
         core::{Interface, HSTRING, PWSTR},
@@ -63,6 +65,9 @@ mod host {
     };
 
     const WATCHDOG: Duration = Duration::from_secs(16);
+    // Fixture-only parent OS-role acknowledgement, not a browser authority.
+    const PHASE_A_OS_BROWSER_ACK_FILE: &str = "parent-os-browser-proven.ack";
+    const PHASE_A_OS_BROWSER_ACK_BYTES: &[u8] = b"independent-os-browser-token-job-proven\n";
     const RENDER_MARKER: &str = "clack-renderer-js-";
     const STARTUP_LOG_LIMIT: usize = 32 * 1024;
     const STARTUP_FIELD_LIMIT: usize = 384;
@@ -351,6 +356,15 @@ mod host {
         StaleId,
         StaleSession,
         AbnormalExit,
+        PageRace,
+        DuplicateParent,
+        DuplicateLate,
+        DependentDrain,
+        CancelPending,
+        RendererCrashPending,
+        BrowserCrashPending,
+        HostExitPending,
+        ShutdownPending,
     }
     impl BrokerFault {
         fn parse(value: &str) -> Result<Self, String> {
@@ -364,6 +378,15 @@ mod host {
                 "stale-id" => Ok(Self::StaleId),
                 "stale-session" => Ok(Self::StaleSession),
                 "abnormal-exit" => Ok(Self::AbnormalExit),
+                "page-race" | "stale-page-generation" => Ok(Self::PageRace),
+                "duplicate-parent" | "stale-broker-request" => Ok(Self::DuplicateParent),
+                "duplicate-late" | "duplicate-completion" => Ok(Self::DuplicateLate),
+                "dependent-drain" | "dependent-resource" => Ok(Self::DependentDrain),
+                "cancel-pending" | "pending-cancel" => Ok(Self::CancelPending),
+                "renderer-crash-pending" | "renderer-crash" => Ok(Self::RendererCrashPending),
+                "browser-crash-pending" => Ok(Self::BrowserCrashPending),
+                "host-exit-pending" | "host-crash" => Ok(Self::HostExitPending),
+                "shutdown-pending" => Ok(Self::ShutdownPending),
                 _ => Err("unsupported acceptance broker fault".to_owned()),
             }
         }
@@ -379,15 +402,47 @@ mod host {
                 Self::StaleId => "stale-id",
                 Self::StaleSession => "stale-session",
                 Self::AbnormalExit => "abnormal-exit",
+                Self::PageRace => "stale-page-generation",
+                Self::DuplicateParent => "stale-broker-request",
+                Self::DuplicateLate => "duplicate-completion",
+                Self::DependentDrain => "dependent-resource",
+                Self::CancelPending => "pending-cancel",
+                Self::RendererCrashPending => "renderer-crash",
+                Self::BrowserCrashPending => "browser-crash-pending",
+                Self::HostExitPending => "host-crash",
+                Self::ShutdownPending => "shutdown-pending",
             }
         }
 
         fn reply_deadline(self) -> Duration {
-            if matches!(self, Self::MissingReply | Self::Crash | Self::Timeout) {
+            if matches!(
+                self,
+                Self::MissingReply | Self::Crash | Self::Timeout | Self::DuplicateParent
+            ) {
                 BROKER_FAULT_DEADLINE
             } else {
                 BROKER_REPLY_DEADLINE
             }
+        }
+        fn is_phase_a(self) -> bool {
+            matches!(
+                self,
+                Self::PageRace
+                    | Self::DuplicateParent
+                    | Self::DuplicateLate
+                    | Self::DependentDrain
+                    | Self::CancelPending
+                    | Self::RendererCrashPending
+                    | Self::BrowserCrashPending
+                    | Self::HostExitPending
+                    | Self::ShutdownPending
+            )
+        }
+        fn awaits_actual_renderer_failure(self, has_pending: bool, process_failed: bool) -> bool {
+            self == Self::RendererCrashPending && has_pending && !process_failed
+        }
+        fn awaits_parent_os_browser_proof(self) -> bool {
+            matches!(self, Self::CancelPending | Self::ShutdownPending)
         }
     }
     struct Args {
@@ -988,6 +1043,65 @@ mod host {
         last_synthetic_status: AtomicU64,
     }
 
+    // Acceptance-only event facts. Events are static labels, bounded, and
+    // contain no URLs, user content, tokens, credentials or process arguments.
+    #[derive(Default)]
+    struct PhaseA {
+        triggered: AtomicBool,
+        pending_at_trigger: AtomicU64,
+        events: Mutex<Vec<&'static str>>,
+        stale_page_denied: AtomicU64,
+        duplicate_parent_rejected: AtomicU64,
+        duplicate_completion_suppressed: AtomicU64,
+        dependent_drained: AtomicU64,
+        cancelled_pending: AtomicU64,
+        suppressed_late: AtomicU64,
+        process_failed: AtomicU64,
+        browser_exited: AtomicU64,
+        native_crash_dispatched: AtomicU64,
+        navigation_attempted: AtomicU64,
+    }
+    impl PhaseA {
+        fn event(&self, name: &'static str, pending: u64) {
+            if !self.triggered.swap(true, Ordering::AcqRel) {
+                self.pending_at_trigger.store(pending, Ordering::Release);
+            }
+            if let Ok(mut events) = self.events.lock() {
+                if events.len() < 20 {
+                    events.push(name);
+                }
+            }
+        }
+        fn note(&self, name: &'static str) {
+            if let Ok(mut events) = self.events.lock() {
+                if events.len() < 20 {
+                    events.push(name);
+                }
+            }
+        }
+        fn receipt(&self, fault: BrokerFault, stats: &BrokerStats) -> serde_json::Value {
+            json!({
+                "scenario": fault.label(),
+                "triggered": self.triggered.load(Ordering::Acquire),
+                "events": self.events.lock().map(|e| e.clone()).unwrap_or_default(),
+                "pendingAtTrigger": self.pending_at_trigger.load(Ordering::Acquire),
+                "pendingAtExit": stats.pending.load(Ordering::Acquire),
+                "completedResponseCount": stats.answered.load(Ordering::Acquire),
+                "suppressedLateCount": self.suppressed_late.load(Ordering::Acquire),
+                "stalePageDenied": self.stale_page_denied.load(Ordering::Acquire),
+                "duplicateParentRejected": self.duplicate_parent_rejected.load(Ordering::Acquire),
+                "duplicateCompletionSuppressed": self.duplicate_completion_suppressed.load(Ordering::Acquire),
+                "dependentDrained": self.dependent_drained.load(Ordering::Acquire),
+                "cancelledPending": self.cancelled_pending.load(Ordering::Acquire),
+                "processFailedEvents": self.process_failed.load(Ordering::Acquire),
+                "browserExitedEvents": self.browser_exited.load(Ordering::Acquire),
+                "nativeCrashDispatched": self.native_crash_dispatched.load(Ordering::Acquire),
+                "nativeNavigationAttempts": self.navigation_attempted.load(Ordering::Acquire),
+                "networkEgressVerified": null
+            })
+        }
+    }
+
     impl BrokerStats {
         fn note_com_response(&self, payload: &BrokerPayload) {
             let counter = match payload.status {
@@ -1039,9 +1153,19 @@ mod host {
         error: Option<String>,
     }
 
+    #[derive(Clone)]
     struct BrokerTicket {
         id: u64,
         url: String,
+        session: String,
+        page_generation: u64,
+    }
+    #[derive(Clone, Debug)]
+    struct BrokerBinding {
+        request_id: u64,
+        session: String,
+        url: String,
+        page_generation: u64,
     }
 
     #[derive(Debug)]
@@ -1050,6 +1174,7 @@ mod host {
         content_type: String,
         body: Vec<u8>,
         synthetic: bool,
+        binding: Option<BrokerBinding>,
     }
 
     impl BrokerPayload {
@@ -1059,6 +1184,7 @@ mod host {
                 content_type: "text/plain".to_owned(),
                 body: Vec::new(),
                 synthetic: true,
+                binding: None,
             }
         }
     }
@@ -1068,6 +1194,8 @@ mod host {
         deferral: ICoreWebView2Deferral,
         environment: ICoreWebView2Environment,
         page_generation: u64,
+        session: String,
+        url: String,
     }
 
     thread_local! {
@@ -1236,6 +1364,7 @@ mod host {
             content_type: reply.content_type,
             body,
             synthetic: false,
+            binding: None,
         })
     }
 
@@ -1322,6 +1451,7 @@ mod host {
         trace: &StartupTrace,
         stats: &BrokerStats,
         page_generation: &AtomicU64,
+        phase_a: &PhaseA,
     ) {
         BROKER_PENDING.with(|pending| {
             let Some(pending) = pending.borrow_mut().remove(&id) else {
@@ -1332,9 +1462,25 @@ mod host {
                     "broker.pending.stale",
                     "late or already drained COM request ignored",
                 );
+                phase_a.suppressed_late.fetch_add(1, Ordering::Relaxed);
                 return;
             };
             stats.pending.fetch_sub(1, Ordering::Relaxed);
+            if !payload.synthetic
+                && !payload
+                    .binding
+                    .as_ref()
+                    .is_some_and(|binding| broker_binding_matches(id, &pending, binding))
+            {
+                trace.error(
+                    "broker.reply.native_binding",
+                    "request session URL or page identity rejected",
+                );
+                stats.errors.fetch_add(1, Ordering::Relaxed);
+                stats.broken.store(true, Ordering::Release);
+                phase_a.stale_page_denied.fetch_add(1, Ordering::Relaxed);
+                payload = BrokerPayload::denied(502);
+            }
             if broker_reply_must_be_denied(
                 payload.synthetic,
                 stats.broken.load(Ordering::Acquire),
@@ -1347,6 +1493,7 @@ mod host {
                 );
                 stats.errors.fetch_add(1, Ordering::Relaxed);
                 stats.broken.store(true, Ordering::Release);
+                phase_a.stale_page_denied.fetch_add(1, Ordering::Relaxed);
                 payload = BrokerPayload::denied(502);
             }
             if let Err(error) =
@@ -1387,6 +1534,33 @@ mod host {
         });
     }
 
+    fn broker_binding_matches(
+        id: u64,
+        pending: &PendingBrokerRequest,
+        binding: &BrokerBinding,
+    ) -> bool {
+        broker_binding_matches_values(
+            id,
+            &pending.session,
+            &pending.url,
+            pending.page_generation,
+            binding,
+        )
+    }
+
+    fn broker_binding_matches_values(
+        id: u64,
+        session: &str,
+        url: &str,
+        generation: u64,
+        binding: &BrokerBinding,
+    ) -> bool {
+        binding.request_id == id
+            && binding.session == session
+            && binding.url == url
+            && binding.page_generation == generation
+    }
+
     fn broker_reply_must_be_denied(
         synthetic: bool,
         broken: bool,
@@ -1402,6 +1576,7 @@ mod host {
         trace: &StartupTrace,
         stats: &BrokerStats,
         page_generation: &AtomicU64,
+        phase_a: &PhaseA,
     ) {
         // A fatal pipe/session failure revokes the entire pending set, not
         // merely the request which happened to be active in the pipe worker.
@@ -1418,7 +1593,7 @@ mod host {
         } else {
             502
         };
-        broker_finish_on_ui(id, failed_response, trace, stats, page_generation);
+        broker_finish_on_ui(id, failed_response, trace, stats, page_generation, phase_a);
         for other in others {
             broker_finish_on_ui(
                 other,
@@ -1426,8 +1601,31 @@ mod host {
                 trace,
                 stats,
                 page_generation,
+                phase_a,
             );
         }
+    }
+
+    fn broker_drain_all_on_ui(
+        status: u16,
+        trace: &StartupTrace,
+        stats: &BrokerStats,
+        page_generation: &AtomicU64,
+        phase_a: &PhaseA,
+    ) -> usize {
+        let ids: Vec<u64> =
+            BROKER_PENDING.with(|pending| pending.borrow().keys().copied().collect());
+        for id in &ids {
+            broker_finish_on_ui(
+                *id,
+                BrokerPayload::denied(status),
+                trace,
+                stats,
+                page_generation,
+                phase_a,
+            );
+        }
+        ids.len()
     }
 
     // The broker never opens sockets. One bounded pipe worker owns all frames;
@@ -1454,6 +1652,7 @@ mod host {
         );
 
         let stats = Arc::new(BrokerStats::default());
+        let phase_a = Arc::new(PhaseA::default());
         let observer = Arc::new(Observed::default());
         let semantic = Arc::new(SemanticSnapshotState::default());
         let marker = format!("{RENDER_MARKER}{}", args.nonce);
@@ -1489,6 +1688,7 @@ mod host {
                 let worker_session = session.clone();
                 let worker_fault = fault;
                 let worker_generation = page_generation.clone();
+                let worker_phase_a = phase_a.clone();
                 let handle = app.handle().clone();
                 thread::spawn(move || {
                     while let Ok(ticket) = rx.recv() {
@@ -1496,8 +1696,9 @@ mod host {
                             let trace = worker_trace.clone();
                             let stats = worker_stats.clone();
                             let generation = worker_generation.clone();
+                            let phase = worker_phase_a.clone();
                             if handle.run_on_main_thread(move || {
-                                broker_drain_on_ui(ticket.id, BrokerPayload::denied(502), &trace, &stats, &generation);
+                                broker_drain_on_ui(ticket.id, BrokerPayload::denied(502), &trace, &stats, &generation, &phase);
                             }).is_err() {
                                 worker_trace.error("broker.ui.dispatch.failed", "cannot drain after session invalidation");
                                 worker_stats.errors.fetch_add(1, Ordering::Relaxed);
@@ -1511,10 +1712,60 @@ mod host {
                             method: "GET",
                             url: &ticket.url,
                         };
+                        let mut finished_early = false;
                         let answer = (|| -> io::Result<BrokerPayload> {
+                            if ticket.session != worker_session
+                                || ticket.page_generation == 0
+                                || ticket.page_generation > worker_generation.load(Ordering::Acquire)
+                            {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "broker request native session or page identity invalid",
+                                ));
+                            }
                             let body = serde_json::to_vec(&wire)
                                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "broker request serialization failed"))?;
                             broker_write_frame(&mut broker_write, &body)?;
+                            if worker_fault == BrokerFault::CancelPending && ticket.id == 1 {
+                                // A real parent GET is already in flight. Cancel its
+                                // native COM deferral *before reading* any parent
+                                // reply, with UI-thread acknowledgment rather than
+                                // a timing-dependent sleep.
+                                let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+                                let trace = worker_trace.clone();
+                                let stats = worker_stats.clone();
+                                let phase = worker_phase_a.clone();
+                                let generation = worker_generation.clone();
+                                handle.run_on_main_thread(move || {
+                                    phase.event("pending-cancel-before-reply", stats.pending.load(Ordering::Acquire));
+                                    stats.fault_triggered.store(true, Ordering::Release);
+                                    stats.broken.store(true, Ordering::Release);
+                                    stats.cancelled.fetch_add(1, Ordering::Relaxed);
+                                    phase.cancelled_pending.fetch_add(1, Ordering::Relaxed);
+                                    broker_drain_all_on_ui(503, &trace, &stats, &generation, &phase);
+                                    let _ = ack_tx.send(());
+                                }).map_err(|_| io::Error::other("native pending cancellation dispatch failed"))?;
+                                if ack_rx.recv_timeout(Duration::from_secs(2)).is_err() {
+                                    // The UI apartment is not servicing COM
+                                    // deferrals. Never continue the browser.
+                                    worker_trace.error("broker.phase-a.cancel.ack.failed", "COM cancellation acknowledgment unavailable");
+                                    std::process::exit(1);
+                                }
+                                finished_early = true;
+                                // Consume at most one buffered reply solely to
+                                // prove it is not installed/replayed after cancel.
+                                if let Ok(frame) = broker_read_frame(&mut broker_read, BROKER_FAULT_DEADLINE) {
+                                    if broker_reply(&frame, &worker_session, ticket.id).is_ok() {
+                                        worker_phase_a.suppressed_late.fetch_add(1, Ordering::Relaxed);
+                                        worker_phase_a.note("late-parent-reply-discarded");
+                                    } else {
+                                        worker_phase_a.note("late-parent-reply-invalid");
+                                    }
+                                } else {
+                                    worker_phase_a.note("late-parent-reply-not-observed");
+                                }
+                                return Err(io::Error::new(io::ErrorKind::Interrupted, "pending cancellation completed locally"));
+                            }
                             let frame = broker_read_frame(&mut broker_read, worker_fault.reply_deadline())?;
                             // The stale-session seam validates the *actual* parent
                             // reply against a deliberately different session.
@@ -1524,9 +1775,35 @@ mod host {
                             } else {
                                 worker_session.clone()
                             };
-                            broker_reply(&frame, &expected_session, ticket.id)
-                                .map_err(|reason| io::Error::new(io::ErrorKind::InvalidData, reason))
+                            let mut payload = broker_reply(&frame, &expected_session, ticket.id)
+                                .map_err(|reason| io::Error::new(io::ErrorKind::InvalidData, reason))?;
+                            if worker_fault == BrokerFault::DuplicateParent && ticket.id == 1 {
+                                // The runner must send two same-session/id v1
+                                // frames without a second GET. The second is a
+                                // true unsolicited parent replay, never applied.
+                                let replay = broker_read_frame(&mut broker_read, BROKER_FAULT_DEADLINE)?;
+                                if broker_reply(&replay, &worker_session, ticket.id).is_ok() {
+                                    worker_phase_a.event("duplicate-parent-frame-rejected", worker_stats.pending.load(Ordering::Acquire));
+                                    worker_phase_a.duplicate_parent_rejected.fetch_add(1, Ordering::Relaxed);
+                                    worker_phase_a.suppressed_late.fetch_add(1, Ordering::Relaxed);
+                                } else {
+                                    worker_phase_a.note("stale-parent-frame-rejected");
+                                    worker_phase_a.event("stale-parent-frame-rejected", worker_stats.pending.load(Ordering::Acquire));
+                                    worker_phase_a.duplicate_parent_rejected.fetch_add(1, Ordering::Relaxed);
+                                }
+                                return Err(io::Error::new(io::ErrorKind::InvalidData, "unsolicited parent broker reply rejected"));
+                            }
+                            payload.binding = Some(BrokerBinding {
+                                request_id: ticket.id,
+                                session: worker_session.clone(),
+                                url: ticket.url.clone(),
+                                page_generation: ticket.page_generation,
+                            });
+                            Ok(payload)
                         })();
+                        if finished_early {
+                            break;
+                        }
                         let failure = answer.is_err();
                         let response = match answer {
                             Ok(payload) => payload,
@@ -1546,15 +1823,31 @@ mod host {
                         let reply_trace = worker_trace.clone();
                         let reply_stats = worker_stats.clone();
                         let reply_generation = worker_generation.clone();
+                        let reply_phase_a = worker_phase_a.clone();
+                        let duplicate_late = worker_fault == BrokerFault::DuplicateLate && ticket.id == 1;
                         if let Err(error) = handle.run_on_main_thread(move || {
                             if failure {
                                 broker_drain_on_ui(
-                                    ticket.id, response, &reply_trace, &reply_stats, &reply_generation,
+                                    ticket.id, response, &reply_trace, &reply_stats, &reply_generation, &reply_phase_a,
                                 );
                             } else {
                                 broker_finish_on_ui(
-                                    ticket.id, response, &reply_trace, &reply_stats, &reply_generation,
+                                    ticket.id, response, &reply_trace, &reply_stats, &reply_generation, &reply_phase_a,
                                 );
+                                if duplicate_late {
+                                    reply_phase_a.event("duplicate-completion-replayed", reply_stats.pending.load(Ordering::Acquire));
+                                    reply_stats.fault_triggered.store(true, Ordering::Release);
+                                    // Invoke the genuine native completion path a
+                                    // second time for the exact same requestId.
+                                    // The completed COM request is no longer in
+                                    // BROKER_PENDING: no second SetResponse.
+                                    broker_finish_on_ui(
+                                        ticket.id, BrokerPayload::denied(502),
+                                        &reply_trace, &reply_stats, &reply_generation, &reply_phase_a,
+                                    );
+                                    reply_phase_a.duplicate_completion_suppressed.fetch_add(1, Ordering::Relaxed);
+                                    reply_stats.broken.store(true, Ordering::Release);
+                                }
                             }
                         }) {
                             worker_trace.error("broker.ui.dispatch.failed", &error.to_string());
@@ -1579,6 +1872,7 @@ mod host {
                 let title_semantic = semantic.clone();
                 let title_generation = page_generation.clone();
                 let title_expected_url = document_url.clone();
+                let title_session = session.clone();
                 let webview = WebviewWindowBuilder::new(
                     app,
                     "browser-host",
@@ -1591,6 +1885,59 @@ mod host {
                     if title == expected_title && !title_stats.broken.load(Ordering::Acquire) {
                         title_observer.scripted.store(true, Ordering::Release);
                         title_trace.record("broker.dom.marker", "native document title marker observed");
+                        if fault == BrokerFault::RendererCrashPending {
+                            // Renderer-crash acceptance cannot operate on an
+                            // unrendered first-document deferral. The parent
+                            // first delivers one controlled HTML document;
+                            // this native callback attests its actual JS title
+                            // and only NOW starts a single controlled pending
+                            // dependent GET, so the subsequent Page.crash is
+                            // an actual renderer/process failure experiment.
+                            if title_semantic.requested.swap(true, Ordering::AcqRel) {
+                                return;
+                            }
+                            let expected_url = title_expected_url.clone();
+                            let trace = title_trace.clone();
+                            let script = format!(
+                                "fetch('/fetch/broker/{}').catch(()=>{{}});",
+                                title_session
+                            );
+                            if webview.with_webview(move |native| {
+                                let core = match unsafe { native.controller().CoreWebView2() } {
+                                    Ok(core) => core,
+                                    Err(_) => {
+                                        trace.error("broker.phase-a.renderer-core.failed", "native controller unavailable");
+                                        return;
+                                    }
+                                };
+                                let mut raw = PWSTR::null();
+                                if unsafe { core.Source(&mut raw) }.is_err()
+                                    || take_pwstr(raw) != expected_url
+                                {
+                                    trace.error("broker.phase-a.renderer-page.stale", "actual rendered page source mismatch");
+                                    return;
+                                }
+                                let completion_trace = trace.clone();
+                                let completed = ExecuteScriptCompletedHandler::create(Box::new(
+                                    move |result, _| {
+                                        if result.is_err() {
+                                            completion_trace.error("broker.phase-a.renderer-fetch.failed", "controlled native script rejected");
+                                        }
+                                        Ok(())
+                                    },
+                                ));
+                                if unsafe {
+                                    core.ExecuteScript(&HSTRING::from(script), &completed)
+                                }.is_err() {
+                                    trace.error("broker.phase-a.renderer-fetch.dispatch-failed", "controlled dependent fetch not dispatched");
+                                } else {
+                                    trace.record("broker.phase-a.renderer-fetch.dispatched", "fixed native dependent fetch after actual renderer marker");
+                                }
+                            }).is_err() {
+                                title_trace.error("broker.phase-a.renderer-ui.failed", "native UI callback unavailable");
+                            }
+                            return;
+                        }
                         // The existing external fixture script set the title.
                         // Probe that real renderer once, with a fixed script;
                         // never execute model-supplied JavaScript or selectors.
@@ -1703,6 +2050,8 @@ mod host {
                 let callback_tx = tx;
                 let callback_fault = fault;
                 let callback_generation = page_generation.clone();
+                let callback_phase_a = phase_a.clone();
+                let callback_observer = setup_observer.clone();
                 let counter = Arc::new(AtomicU64::new(0));
                 webview.with_webview(move |native| {
                     if callback_fault == BrokerFault::MissingIntercept {
@@ -1722,9 +2071,70 @@ mod host {
                         // document, iframe, worker, and shared-worker requests.
                         // Never silently downgrade to a filter omitting sources.
                         let core22: ICoreWebView2_22 = core.cast()?;
+                        // Native events, never window polling or a debug port,
+                        // prove that a renderer/browser actually failed. Any
+                        // outstanding COM deferrals are revoked on the same UI
+                        // apartment. If the crashed COM interface will not
+                        // accept a synthetic response, broker_finish_on_ui
+                        // terminates the host rather than allow fallback.
+                        let failed_stats = callback_stats.clone();
+                        let failed_phase = callback_phase_a.clone();
+                        let failed_trace = callback_trace.clone();
+                        let failed_generation = callback_generation.clone();
+                        let process_failed = ProcessFailedEventHandler::create(Box::new(
+                            move |_, args| {
+                                let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND(0);
+                                if let Some(args) = args {
+                                    let _ = unsafe { args.ProcessFailedKind(&mut kind) };
+                                }
+                                failed_phase.process_failed.fetch_add(1, Ordering::Relaxed);
+                                failed_phase.note("native-process-failed");
+                                failed_trace.record("broker.phase-a.process-failed", "WebView2 native process failed event");
+                                if failed_stats.pending.load(Ordering::Acquire) != 0 {
+                                    failed_phase.event("process-failure-with-pending-deferrals", failed_stats.pending.load(Ordering::Acquire));
+                                    failed_stats.fault_triggered.store(true, Ordering::Release);
+                                    failed_stats.broken.store(true, Ordering::Release);
+                                    failed_generation.fetch_add(1, Ordering::AcqRel);
+                                    broker_drain_all_on_ui(502, &failed_trace, &failed_stats, &failed_generation, &failed_phase);
+                                } else {
+                                    failed_stats.broken.store(true, Ordering::Release);
+                                }
+                                Ok(())
+                            }
+                        ));
+                        let mut failed_token = 0;
+                        unsafe { core.add_ProcessFailed(&process_failed, &mut failed_token)?; }
+                        if let Ok(env5) = environment.cast::<ICoreWebView2Environment5>() {
+                            let exit_stats = callback_stats.clone();
+                            let exit_phase = callback_phase_a.clone();
+                            let exit_trace = callback_trace.clone();
+                            let exit_generation = callback_generation.clone();
+                            let browser_exited = BrowserProcessExitedEventHandler::create(Box::new(
+                                move |_, _| {
+                                    exit_phase.browser_exited.fetch_add(1, Ordering::Relaxed);
+                                    exit_phase.note("native-browser-process-exited");
+                                    exit_trace.record("broker.phase-a.browser-exited", "WebView2 browser process exited event");
+                                    if exit_stats.pending.load(Ordering::Acquire) != 0 {
+                                        exit_phase.event("browser-exit-with-pending-deferrals", exit_stats.pending.load(Ordering::Acquire));
+                                        exit_stats.fault_triggered.store(true, Ordering::Release);
+                                        exit_stats.broken.store(true, Ordering::Release);
+                                        exit_generation.fetch_add(1, Ordering::AcqRel);
+                                        broker_drain_all_on_ui(502, &exit_trace, &exit_stats, &exit_generation, &exit_phase);
+                                    }
+                                    Ok(())
+                                }
+                            ));
+                            let mut browser_exit_token = 0;
+                            unsafe { env5.add_BrowserProcessExited(&browser_exited, &mut browser_exit_token)?; }
+                            callback_trace.record("broker.phase-a.browser-exit-hook", "WebView2 environment browser exit hook registered");
+                        } else {
+                            callback_phase_a.note("browser-exit-hook-unavailable");
+                        }
                         let nav_generation = callback_generation.clone();
                         let nav_trace = callback_trace.clone();
                         let nav_stats = callback_stats.clone();
+                        let nav_phase_a = callback_phase_a.clone();
+                        let nav_fault = callback_fault;
                         let nav_expected_url = callback_url.clone();
                         let nav_first_expected = Arc::new(AtomicBool::new(false));
                         let navigation_handler = NavigationStartingEventHandler::create(Box::new(
@@ -1747,6 +2157,16 @@ mod host {
                                 if current_url == "about:blank"
                                     && !nav_first_expected.load(Ordering::Acquire)
                                 {
+                                    return Ok(());
+                                }
+                                if nav_fault == BrokerFault::PageRace
+                                    && nav_phase_a.triggered.load(Ordering::Acquire)
+                                    && current_url == "about:blank"
+                                {
+                                    nav_generation.fetch_add(1, Ordering::AcqRel);
+                                    nav_phase_a.note("native-about-blank-navigation-cancelled");
+                                    nav_trace.record("broker.phase-a.navigation-cancelled", "controlled networkless navigation rejected");
+                                    unsafe { args.SetCancel(true)?; }
                                     return Ok(());
                                 }
                                 let epoch = if current_url == nav_expected_url
@@ -1783,6 +2203,12 @@ mod host {
                         let event_trace = callback_trace.clone();
                         let event_counter = counter.clone();
                         let event_generation = callback_generation.clone();
+                        let event_phase_a = callback_phase_a.clone();
+                        let event_observer = callback_observer.clone();
+                        let event_core = core.clone();
+                        let event_document_url = callback_url.clone();
+                        let held_dependent = Arc::new(AtomicU64::new(0));
+                        let event_held_dependent = held_dependent.clone();
                         let handler = WebResourceRequestedEventHandler::create(Box::new(
                             move |_, args| {
                                 let Some(args) = args else { return Ok(()); };
@@ -1818,15 +2244,161 @@ mod host {
                                     }
                                 };
                                 let id = event_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                                let request_generation = event_generation.load(Ordering::Acquire);
+                                let is_document = uri == event_document_url;
                                 BROKER_PENDING.with(|pending| {
                                     pending.borrow_mut().insert(id, PendingBrokerRequest {
                                         args,
                                         deferral,
                                         environment: event_env.clone(),
-                                        page_generation: event_generation.load(Ordering::Acquire),
+                                        page_generation: request_generation,
+                                        session: callback_session.clone(),
+                                        url: uri.clone(),
                                     });
                                 });
                                 event_stats.pending.fetch_add(1, Ordering::Relaxed);
+                                if callback_fault == BrokerFault::HostExitPending && id == 1 {
+                                    event_phase_a.event("host-exit-with-pending-deferral", event_stats.pending.load(Ordering::Acquire));
+                                    event_stats.fault_triggered.store(true, Ordering::Release);
+                                    // Keep the real COM GetDeferral pending. The
+                                    // unconfined parent terminates ONLY the
+                                    // original owned host process handle with
+                                    // code 87 after separately attesting a
+                                    // live AppContainer browser child and this
+                                    // exact native arming event. Exiting here
+                                    // raced process-role observation and could
+                                    // not prove browser startup.
+                                    event_trace.record("broker.phase-a.host-exit.armed", "real GetDeferral pending; parent-owned host termination armed");
+                                    return Ok(());
+                                }
+                                if callback_fault == BrokerFault::ShutdownPending && id == 1 {
+                                    event_phase_a.event("shutdown-pending-drained", event_stats.pending.load(Ordering::Acquire));
+                                    event_stats.fault_triggered.store(true, Ordering::Release);
+                                    event_stats.broken.store(true, Ordering::Release);
+                                    event_trace.record("broker.phase-a.shutdown-pending.armed", "real pending deferral completing before shutdown");
+                                    let drained = broker_drain_all_on_ui(
+                                        503, &event_trace, &event_stats, &event_generation, &event_phase_a
+                                    );
+                                    event_phase_a.note(if drained > 0 { "shutdown-deferrals-completed" } else { "shutdown-no-deferrals" });
+                                    return Ok(());
+                                }
+                                if callback_fault == BrokerFault::DependentDrain && !is_document {
+                                    if event_held_dependent
+                                        .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire)
+                                        .is_ok()
+                                    {
+                                        // Hold a genuine subresource deferral,
+                                        // without forwarding a request, until a
+                                        // *second* independent WebView2 context
+                                        // arrives. No sleep or fabricated GET.
+                                        event_phase_a.note("first-dependent-deferral-held");
+                                        return Ok(());
+                                    }
+                                    event_phase_a.event(
+                                        "two-dependent-deferrals-observed",
+                                        event_stats.pending.load(Ordering::Acquire),
+                                    );
+                                    event_stats.fault_triggered.store(true, Ordering::Release);
+                                    event_stats.broken.store(true, Ordering::Release);
+                                    let drained = broker_drain_all_on_ui(
+                                        502, &event_trace, &event_stats, &event_generation, &event_phase_a
+                                    );
+                                    event_phase_a.dependent_drained.fetch_add(drained as u64, Ordering::Relaxed);
+                                    event_trace.record("broker.phase-a.dependent-drained", "multiple real pending WebView2 resource deferrals denied");
+                                    return Ok(());
+                                }
+                                if callback_fault == BrokerFault::PageRace && id == 1 {
+                                    event_phase_a.event(
+                                        "page-generation-invalidated-with-pending-deferral",
+                                        event_stats.pending.load(Ordering::Acquire),
+                                    );
+                                    event_stats.fault_triggered.store(true, Ordering::Release);
+                                    // The parent must not release its valid 200
+                                    // until this exact stage was emitted.
+                                    event_generation.fetch_add(1, Ordering::AcqRel);
+                                    event_trace.record("broker.phase-a.page-invalidated", "page generation incremented with live COM deferral");
+                                    event_phase_a.navigation_attempted.fetch_add(1, Ordering::Relaxed);
+                                    if unsafe { event_core.Navigate(&HSTRING::from("about:blank")) }.is_err() {
+                                        event_phase_a.note("native-navigation-attempt-failed");
+                                    } else {
+                                        event_phase_a.note("native-navigation-attempt-accepted");
+                                    }
+                                }
+                                if callback_fault == BrokerFault::RendererCrashPending
+                                    && !is_document
+                                    && event_observer.scripted.load(Ordering::Acquire)
+                                {
+                                    event_phase_a.event(
+                                        "renderer-termination-with-pending-dependent-deferral-armed",
+                                        event_stats.pending.load(Ordering::Acquire),
+                                    );
+                                    event_stats.fault_triggered.store(true, Ordering::Release);
+                                    // A DevTools Page.crash dispatch only
+                                    // confirmed method invocation, not actual
+                                    // renderer death in physical case xyMLZl.
+                                    // Instead arm the parent to terminate its
+                                    // *independently token-proven retained*
+                                    // exact renderer HANDLE. The native
+                                    // ProcessFailed event must then drain this
+                                    // pending COM deferral or the test fails.
+                                    event_trace.record(
+                                        "broker.phase-a.renderer-crash.armed",
+                                        "native renderer JS observed; real dependent COM deferral pending",
+                                    );
+                                    return Ok(());
+                                }
+                                if matches!(
+                                    callback_fault,
+                                    BrokerFault::BrowserCrashPending
+                                ) && id == 1 {
+                                    event_phase_a.event("native-crash-with-pending-deferral-armed", event_stats.pending.load(Ordering::Acquire));
+                                    event_stats.fault_triggered.store(true, Ordering::Release);
+                                    let method = if callback_fault == BrokerFault::RendererCrashPending {
+                                        "Page.crash"
+                                    } else {
+                                        "Browser.crash"
+                                    };
+                                    let completion_trace = event_trace.clone();
+                                    let completion_stats = event_stats.clone();
+                                    let completion_generation = event_generation.clone();
+                                    let completion_phase = event_phase_a.clone();
+                                    let completion = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+                                        move |result, _| {
+                                            if result.is_err() {
+                                                completion_phase.note("native-crash-command-rejected");
+                                                completion_trace.error("broker.phase-a.native-crash.failed", "fixed native crash command rejected");
+                                                completion_stats.errors.fetch_add(1, Ordering::Relaxed);
+                                                completion_stats.broken.store(true, Ordering::Release);
+                                                broker_drain_all_on_ui(
+                                                    502, &completion_trace, &completion_stats,
+                                                    &completion_generation, &completion_phase,
+                                                );
+                                            }
+                                            Ok(())
+                                        },
+                                    ));
+                                    if unsafe {
+                                        event_core.CallDevToolsProtocolMethod(
+                                            &HSTRING::from(method),
+                                            &HSTRING::from("{}"),
+                                            &completion,
+                                        )
+                                    }.is_ok() {
+                                        event_phase_a.native_crash_dispatched.fetch_add(1, Ordering::Relaxed);
+                                        event_trace.record("broker.phase-a.native-crash.dispatched", "fixed native crash COM method dispatched");
+                                    } else {
+                                        event_phase_a.note("native-crash-method-unavailable");
+                                        event_stats.errors.fetch_add(1, Ordering::Relaxed);
+                                        event_stats.broken.store(true, Ordering::Release);
+                                        broker_drain_all_on_ui(
+                                            502, &event_trace, &event_stats, &event_generation, &event_phase_a,
+                                        );
+                                    }
+                                    // A native ProcessFailed or BrowserProcessExited
+                                    // callback (never an artificial sleep)
+                                    // completes/fails every outstanding deferral.
+                                    return Ok(());
+                                }
                                 if callback_fault == BrokerFault::Cancel {
                                     event_stats.fault_triggered.store(true, Ordering::Release);
                                     event_stats.cancelled.fetch_add(1, Ordering::Relaxed);
@@ -1834,14 +2406,19 @@ mod host {
                                     event_stats.broken.store(true, Ordering::Release);
                                     event_trace.record("broker.fault.cancelled", "pending COM deferral cancelled locally");
                                     broker_finish_on_ui(
-                                        id, BrokerPayload::denied(503), &event_trace, &event_stats, &event_generation,
+                                        id, BrokerPayload::denied(503), &event_trace, &event_stats, &event_generation, &event_phase_a,
                                     );
                                     return Ok(());
                                 }
-                                if callback_tx.try_send(BrokerTicket { id, url: uri }).is_err() {
+                                if callback_tx.try_send(BrokerTicket {
+                                    id,
+                                    url: uri,
+                                    session: callback_session.clone(),
+                                    page_generation: request_generation,
+                                }).is_err() {
                                     event_stats.denied.fetch_add(1, Ordering::Relaxed);
                                     broker_finish_on_ui(
-                                        id, BrokerPayload::denied(503), &event_trace, &event_stats, &event_generation,
+                                        id, BrokerPayload::denied(503), &event_trace, &event_stats, &event_generation, &event_phase_a,
                                     );
                                 } else {
                                     event_stats.forwarded.fetch_add(1, Ordering::Relaxed);
@@ -1882,11 +2459,13 @@ mod host {
                 let monitor_observer = setup_observer.clone();
                 let monitor_semantic = semantic.clone();
                 let monitor_generation = page_generation.clone();
+                let monitor_phase_a = phase_a.clone();
                 let app_handle = app.handle().clone();
                 thread::spawn(move || {
                     let start = Instant::now();
                     let mut script_at = None;
                     let mut broken_at = None;
+                    let mut os_browser_acknowledged = false;
                     while start.elapsed() < WATCHDOG {
                         if let Ok(rows) = inventory(pid) {
                             if let Ok(mut owned) = monitor_observer.processes.lock() {
@@ -1896,14 +2475,48 @@ mod host {
                         if monitor_observer.scripted.load(Ordering::Acquire) && script_at.is_none() {
                             script_at = Some(Instant::now());
                         }
-                        if script_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(2))
+                        if fault.awaits_parent_os_browser_proof() && !os_browser_acknowledged {
+                            // Pre-document cancellation/shutdown can finish
+                            // genuine COM 503 before Win32_Process returns the
+                            // child role. Wait for the case-owned parent to
+                            // attest an original, live OS HANDLE + SID/job;
+                            // a missing/malformed marker hits the existing
+                            // WATCHDOG, never a successful physical receipt.
+                            if fs::read(root.join(PHASE_A_OS_BROWSER_ACK_FILE))
+                                .is_ok_and(|bytes| bytes == PHASE_A_OS_BROWSER_ACK_BYTES)
+                            {
+                                os_browser_acknowledged = true;
+                                monitor_phase_a.note("independent-os-browser-acknowledged");
+                                monitor_trace.record(
+                                    "broker.phase-a.parent-os-browser-verified",
+                                    "parent independently attested live browser and zero-capability job",
+                                );
+                            }
+                        }
+                        // A renderer-crash fixture cannot close the host just
+                        // because its test document executed two seconds ago.
+                        // The separately owned Windows runner must first find
+                        // a live renderer, verify its original process HANDLE,
+                        // token and job membership, then terminate precisely
+                        // that handle. Keep the pending COM deferral armed until
+                        // native ProcessFailed arrives (or the existing hard
+                        // WATCHDOG bounds the case). This is an event barrier,
+                        // not a longer sleep or permission to infer a crash.
+                        let awaiting_renderer_failure = fault.awaits_actual_renderer_failure(
+                            monitor_stats.pending.load(Ordering::Acquire) != 0,
+                            monitor_phase_a.process_failed.load(Ordering::Acquire) != 0,
+                        );
+                        if !awaiting_renderer_failure
+                            && script_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(2))
                             && (fault != BrokerFault::None
                                 || monitor_semantic.finished.load(Ordering::Acquire)
                                 || script_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(4)))
                         {
                             break;
                         }
-                        if monitor_stats.broken.load(Ordering::Acquire) {
+                        if monitor_stats.broken.load(Ordering::Acquire)
+                            && (!fault.awaits_parent_os_browser_proof() || os_browser_acknowledged)
+                        {
                             // Allow a bounded UI-thread dispatch to complete the
                             // synthetic 502/503/504 and its COM deferral before
                             // stopping WebView2 for a fault-injection case.
@@ -1916,6 +2529,32 @@ mod host {
                             }
                         }
                         thread::sleep(Duration::from_millis(120));
+                    }
+                    if fault.is_phase_a() && monitor_stats.pending.load(Ordering::Acquire) != 0 {
+                        // Do not tear down Tauri with an outstanding native
+                        // deferral. The existing global watchdog is the only
+                        // fallback when a prerequisite WebView2 event never
+                        // arrives. Drain on the UI apartment and wait for an
+                        // explicit acknowledgment, not an arbitrary delay.
+                        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+                        let trace = monitor_trace.clone();
+                        let stats = monitor_stats.clone();
+                        let phase = monitor_phase_a.clone();
+                        let generation = monitor_generation.clone();
+                        let dispatched = app_handle.run_on_main_thread(move || {
+                            stats.broken.store(true, Ordering::Release);
+                            phase.note("watchdog-draining-unresolved-deferrals");
+                            let drained = broker_drain_all_on_ui(
+                                504, &trace, &stats, &generation, &phase
+                            );
+                            let _ = ack_tx.send(drained);
+                        });
+                        if dispatched.is_err()
+                            || ack_rx.recv_timeout(Duration::from_secs(2)).is_err()
+                        {
+                            monitor_trace.error("broker.phase-a.watchdog-drain.failed", "native deferral completion acknowledgement unavailable");
+                            std::process::exit(1);
+                        }
                     }
                     let scripted = monitor_observer.scripted.load(Ordering::Acquire);
                     let children: Vec<_> = monitor_observer.processes.lock()
@@ -1978,6 +2617,11 @@ mod host {
                         "brokerSemanticSnapshotVerified": semantic_current,
                         "brokerSemanticSnapshotError": semantic_error,
                         "brokerSemanticSnapshot": semantic_proof,
+                        "phaseA": if fault.is_phase_a() {
+                            Some(monitor_phase_a.receipt(fault, &monitor_stats))
+                        } else {
+                            None
+                        },
                         "webviewProcessIds": webview_pids,
                         "processes": children,
                         "elapsedMs": start.elapsed().as_millis(),
@@ -2356,6 +3000,15 @@ mod host {
                 "abnormal-exit",
                 "cancel",
                 "missing-reply",
+                "stale-page-generation",
+                "stale-broker-request",
+                "duplicate-completion",
+                "dependent-resource",
+                "pending-cancel",
+                "renderer-crash",
+                "host-crash",
+                "shutdown-pending",
+                "browser-crash-pending",
             ] {
                 assert!(
                     BrokerFault::parse(label).is_ok(),
@@ -2367,6 +3020,49 @@ mod host {
             assert!(BrokerFault::Timeout.reply_deadline() < BROKER_REPLY_DEADLINE);
             assert!(BROKER_REPLY_DEADLINE < WATCHDOG);
             assert_eq!(BrokerFault::MissingIntercept.label(), "no-intercept");
+            let canonical = [
+                ("page-race", "stale-page-generation"),
+                ("duplicate-parent", "stale-broker-request"),
+                ("duplicate-late", "duplicate-completion"),
+                ("dependent-drain", "dependent-resource"),
+                ("cancel-pending", "pending-cancel"),
+                ("renderer-crash-pending", "renderer-crash"),
+                ("host-exit-pending", "host-crash"),
+            ];
+            for (alias, report_label) in canonical {
+                assert_eq!(BrokerFault::parse(alias).unwrap().label(), report_label);
+                assert!(BrokerFault::parse(alias).unwrap().is_phase_a());
+            }
+            assert!(!BrokerFault::StaleId.is_phase_a());
+            assert!(!BrokerFault::Cancel.is_phase_a());
+            assert!(BrokerFault::ShutdownPending.is_phase_a());
+        }
+
+        #[test]
+        fn pending_renderer_failure_cannot_be_replaced_by_a_script_timeout() {
+            assert!(BrokerFault::RendererCrashPending.awaits_actual_renderer_failure(true, false));
+            assert!(!BrokerFault::RendererCrashPending.awaits_actual_renderer_failure(false, false));
+            assert!(!BrokerFault::RendererCrashPending.awaits_actual_renderer_failure(true, true));
+            for kind in [
+                BrokerFault::None,
+                BrokerFault::DependentDrain,
+                BrokerFault::HostExitPending,
+            ] {
+                assert!(!kind.awaits_actual_renderer_failure(true, false));
+            }
+        }
+
+        #[test]
+        fn pre_document_cancel_and_shutdown_require_independent_os_ack() {
+            assert!(BrokerFault::CancelPending.awaits_parent_os_browser_proof());
+            assert!(BrokerFault::ShutdownPending.awaits_parent_os_browser_proof());
+            for kind in [
+                BrokerFault::None,
+                BrokerFault::HostExitPending,
+                BrokerFault::RendererCrashPending,
+            ] {
+                assert!(!kind.awaits_parent_os_browser_proof());
+            }
         }
 
         fn local_pipe() -> (File, File) {
@@ -2444,6 +3140,7 @@ mod host {
                 content_type: "text/html".to_owned(),
                 body: b"ok".to_vec(),
                 synthetic: false,
+                binding: None,
             });
             assert_eq!(stats.status_2xx.load(Ordering::Relaxed), 1);
             assert_eq!(stats.last_synthetic_status(), None);
@@ -2468,6 +3165,123 @@ mod host {
             // pipe fault; it must not silently turn into a successful 200.
             assert!(!broker_reply_must_be_denied(true, true, 1, 1));
             assert!(broker_reply_must_be_denied(true, true, 1, 2));
+        }
+
+        #[test]
+        fn phase_a_identity_binds_exact_session_request_url_and_generation() {
+            let binding = BrokerBinding {
+                request_id: 7,
+                session: NONCE.into(),
+                url: semantic_case_url(),
+                page_generation: 1,
+            };
+            assert!(broker_binding_matches_values(
+                7,
+                NONCE,
+                &semantic_case_url(),
+                1,
+                &binding
+            ));
+            assert!(!broker_binding_matches_values(
+                8,
+                NONCE,
+                &semantic_case_url(),
+                1,
+                &binding
+            ));
+            assert!(!broker_binding_matches_values(
+                7,
+                "invalid-session",
+                &semantic_case_url(),
+                1,
+                &binding
+            ));
+            assert!(!broker_binding_matches_values(
+                7,
+                NONCE,
+                "http://127.0.0.1:1234/other",
+                1,
+                &binding
+            ));
+            assert!(!broker_binding_matches_values(
+                7,
+                NONCE,
+                &semantic_case_url(),
+                2,
+                &binding
+            ));
+        }
+
+        #[test]
+        fn phase_a_replayed_parent_frame_is_detectable_without_second_request() {
+            let (mut reader, mut writer) = local_pipe();
+            let response = serde_json::to_vec(&json!({
+                "version": 1, "session": NONCE, "requestId": 5,
+                "status": 200, "contentType": "text/html",
+                "bodyBase64": BASE64.encode(b"approved fixture")
+            }))
+            .unwrap();
+            broker_write_frame(&mut writer, &response).unwrap();
+            broker_write_frame(&mut writer, &response).unwrap();
+            let first = broker_read_frame(&mut reader, Duration::from_millis(500)).unwrap();
+            let unsolicited = broker_read_frame(&mut reader, Duration::from_millis(500)).unwrap();
+            assert_eq!(first, unsolicited);
+            assert_eq!(
+                broker_reply(&first, NONCE, 5).unwrap().body,
+                b"approved fixture"
+            );
+            assert!(broker_reply(&unsolicited, NONCE, 5).is_ok());
+            // The worker's DuplicateParent branch rejects the second frame,
+            // and returns a local synthetic 502 without installing either.
+            assert_eq!(
+                broker_reply(&unsolicited, NONCE, 6).unwrap_err(),
+                "broker reply requestId mismatch"
+            );
+        }
+
+        #[test]
+        fn phase_a_static_event_report_is_bounded_and_no_user_values_escape() {
+            let phase = PhaseA::default();
+            let stats = BrokerStats::default();
+            stats.pending.store(3, Ordering::Release);
+            phase.event(
+                "pending-cancel-before-reply",
+                stats.pending.load(Ordering::Acquire),
+            );
+            for _ in 0..100 {
+                phase.note("native-com-event");
+            }
+            phase.suppressed_late.store(1, Ordering::Release);
+            let receipt = phase.receipt(BrokerFault::CancelPending, &stats);
+            assert_eq!(receipt["scenario"], "pending-cancel");
+            assert_eq!(receipt["triggered"], true);
+            assert_eq!(receipt["pendingAtTrigger"], 3);
+            assert_eq!(receipt["pendingAtExit"], 3);
+            assert_eq!(receipt["completedResponseCount"], 0);
+            assert_eq!(receipt["suppressedLateCount"], 1);
+            assert!(receipt["events"].as_array().unwrap().len() <= 20);
+            assert!(receipt["networkEgressVerified"].is_null());
+        }
+
+        #[test]
+        fn phase_a_cancellation_ack_is_event_driven_and_parent_reply_never_replays() {
+            let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+            let stats = BrokerStats::default();
+            stats.pending.store(1, Ordering::Release);
+            let phase = PhaseA::default();
+            phase.event(
+                "pending-cancel-before-reply",
+                stats.pending.load(Ordering::Acquire),
+            );
+            stats.cancelled.fetch_add(1, Ordering::Release);
+            // The real worker waits for a UI thread acknowledgment before
+            // consuming parent reply bytes; this test needs no delay.
+            ack_tx.send(()).unwrap();
+            ack_rx.recv_timeout(Duration::from_millis(100)).unwrap();
+            let response = BrokerPayload::denied(503);
+            assert!(response.synthetic);
+            assert!(response.binding.is_none());
+            assert!(broker_reply_must_be_denied(false, true, 1, 1));
         }
 
         fn semantic_case_url() -> String {
