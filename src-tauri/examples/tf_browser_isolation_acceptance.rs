@@ -6,6 +6,13 @@
 //!       --example tf_browser_isolation_acceptance
 //!   cargo run --manifest-path src-tauri/Cargo.toml --locked \
 //!       --features tf-browser-isolation-acceptance --example tf_browser_isolation_acceptance
+//! Run ONLY the new grouped Phase-A cases, without the original 8+9:
+//!   cargo run --manifest-path src-tauri/Cargo.toml --locked \
+//!       --features tf-browser-isolation-acceptance --example tf_browser_isolation_acceptance \
+//!       -- --grouped-only
+//! Or one distinct grouped case: -- --grouped-only renderer-fetch-cancel
+//! Inventory the currently implemented nine without launching any host:
+//!   -- --list-grouped
 //!
 //! Never enables a product browser. Never changes the host firewall, WFP,
 //! network adapter, installed browser or user application data. This test must
@@ -13,6 +20,7 @@
 //! same zero-network-capability AppContainer as the acceptance host. A token
 //! claim from the host alone, a failed launch, a missing renderer or a silent
 //! localhost listener is not a successful isolation proof.
+#![recursion_limit = "256"]
 
 #[cfg(not(all(windows, feature = "tf-browser-isolation-acceptance")))]
 fn main() {
@@ -22,6 +30,13 @@ fn main() {
 
 #[cfg(all(windows, feature = "tf-browser-isolation-acceptance"))]
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--phase-a-broker-helper") {
+        if let Err(reason) = windows::broker_helper_main() {
+            eprintln!("TF_BROWSER_BROKER_HELPER_UNVERIFIED: {reason}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(reason) = windows::run() {
         eprintln!("TF_BROWSER_ISOLATION_UNVERIFIED: {reason}");
         std::process::exit(1);
@@ -61,7 +76,7 @@ mod windows {
             Isolation::{CreateAppContainerProfile, DeleteAppContainerProfile},
             *,
         },
-        System::{Diagnostics::ToolHelp::*, JobObjects::*, Pipes::*, Threading::*},
+        System::{Diagnostics::ToolHelp::*, JobObjects::*, Pipes::*, Threading::*, IO::*},
     };
 
     const WAIT_MS: u32 = 18_500;
@@ -82,11 +97,28 @@ mod windows {
     const ABNORMAL_EXIT_CODE: u32 = 79;
     const PHASE_A_HOST_EXIT_CODE: u32 = 87;
     const PHASE_A_RENDERER_EXIT_CODE: u32 = 88;
+    const PHASE_A_BROKER_HELPER_EXIT_CODE: u32 = 91;
+    const PHASE_A_BROKER_HELPER_CLEANUP_CODE: u32 = 92;
     // Exact case-local release for pre-document COM cancellation/shutdown.
     // Written ONLY after independently verified live OS WebView2 browser role,
     // original retained HANDLE, matching zero-capability SID and owned job.
     const PHASE_A_OS_BROWSER_ACK_FILE: &str = "parent-os-browser-proven.ack";
     const PHASE_A_OS_BROWSER_ACK_BYTES: &[u8] = b"independent-os-browser-token-job-proven\n";
+    // New grouped real-renderer races use a different, case-local release.
+    // The parent writes this only after a real id2 native dependent GET and
+    // independently live, original-HANDLE SID/zero-capability/job proof for
+    // BOTH WebView2 browser and renderer. It never allows networking.
+    const PHASE_A_GROUP_ARM_ACK_FILE: &str = "parent-fault-arm.ack";
+    const PHASE_A_GROUP_ARM_ACK_BYTES: &[u8] =
+        b"independent-live-browser-renderer-and-native-dependent-request-proven\n";
+    const PHASE_A_BROKER_HELPER_READY_MS: u32 = 3000;
+    // Job Object completion packet IDs documented by Win32. These are
+    // WM-style completion bytes returned in lpNumberOfBytesTransferred, not
+    // the JOB_OBJECT_LIMIT_* bit flags. windows-sys 0.61.2 omits the names.
+    const JOB_COMPLETION_ACTIVE_PROCESS_ZERO: u32 = 4;
+    const JOB_COMPLETION_NEW_PROCESS: u32 = 6;
+    const JOB_COMPLETION_EXIT_PROCESS: u32 = 7;
+    const JOB_COMPLETION_ABNORMAL_EXIT_PROCESS: u32 = 8;
     // WaitForSingleObject on a retained process HANDLE needs the standard
     // Win32 SYNCHRONIZE (0x00100000) access right. The pinned windows-sys
     // module imports do not export that constant.
@@ -159,9 +191,18 @@ mod windows {
         HostCrash,
         ShutdownPending,
         DependentTimeout,
+        RendererFetchCancel,
+        RendererXhrCancel,
+        PageClosePending,
+        SessionClosePending,
+        NavigationStale,
+        SnapshotStale,
+        ElementStale,
+        BrokerProcessKill,
+        MultiPendingShutdown,
     }
     impl PhaseAScenario {
-        const ALL: [Self; 9] = [
+        const ALL: [Self; 18] = [
             Self::StalePageGeneration,
             Self::StaleBrokerRequest,
             Self::DuplicateCompletion,
@@ -171,6 +212,29 @@ mod windows {
             Self::HostCrash,
             Self::ShutdownPending,
             Self::DependentTimeout,
+            Self::RendererFetchCancel,
+            Self::RendererXhrCancel,
+            Self::PageClosePending,
+            Self::SessionClosePending,
+            Self::NavigationStale,
+            Self::SnapshotStale,
+            Self::ElementStale,
+            Self::BrokerProcessKill,
+            Self::MultiPendingShutdown,
+        ];
+        // Grouped cases are a separate acceptance scope, not a replay of the
+        // eight original negatives or nine previously accepted Phase A cases.
+        // This is nine IMPLEMENTED variants, not the full required eleven.
+        const GROUPED: [Self; 9] = [
+            Self::RendererFetchCancel,
+            Self::RendererXhrCancel,
+            Self::PageClosePending,
+            Self::SessionClosePending,
+            Self::NavigationStale,
+            Self::SnapshotStale,
+            Self::ElementStale,
+            Self::BrokerProcessKill,
+            Self::MultiPendingShutdown,
         ];
         fn label(self) -> &'static str {
             match self {
@@ -183,8 +247,192 @@ mod windows {
                 Self::HostCrash => "host-crash",
                 Self::ShutdownPending => "shutdown-pending",
                 Self::DependentTimeout => "dependent-timeout",
+                Self::RendererFetchCancel => "renderer-fetch-cancel",
+                Self::RendererXhrCancel => "renderer-xhr-cancel",
+                Self::PageClosePending => "page-close-pending",
+                Self::SessionClosePending => "session-close-pending",
+                Self::NavigationStale => "navigation-stale",
+                Self::SnapshotStale => "snapshot-stale",
+                Self::ElementStale => "element-stale",
+                Self::BrokerProcessKill => "broker-process-kill",
+                Self::MultiPendingShutdown => "multi-pending-shutdown",
             }
         }
+        fn is_grouped_race(self) -> bool {
+            matches!(
+                self,
+                Self::RendererFetchCancel
+                    | Self::RendererXhrCancel
+                    | Self::PageClosePending
+                    | Self::SessionClosePending
+                    | Self::NavigationStale
+                    | Self::SnapshotStale
+                    | Self::ElementStale
+                    | Self::BrokerProcessKill
+                    | Self::MultiPendingShutdown
+            )
+        }
+        fn expects_late_reply(self) -> bool {
+            matches!(
+                self,
+                Self::NavigationStale | Self::SnapshotStale | Self::ElementStale
+            )
+        }
+        fn group_dependent_kind(self) -> &'static str {
+            if self == Self::RendererXhrCancel {
+                "xhr"
+            } else {
+                "fetch"
+            }
+        }
+    }
+
+    const REQUIRED_GROUPED_RACES: usize = 11;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum RunnerMode {
+        /// Preserve the historical full acceptance entry point exactly.
+        Full,
+        /// Inventory-only: no host lookup, AppContainer, listener or case root.
+        ListGrouped,
+        /// Explicitly exclude all previously accepted 8+9 physical cases.
+        GroupedOnly(Vec<PhaseAScenario>),
+    }
+
+    fn parse_runner_mode(args: &[String]) -> Result<RunnerMode, String> {
+        match args {
+            [] => Ok(RunnerMode::Full),
+            [flag] if flag == "--list-grouped" => Ok(RunnerMode::ListGrouped),
+            [flag] if flag == "--grouped-only" => {
+                Ok(RunnerMode::GroupedOnly(PhaseAScenario::GROUPED.to_vec()))
+            }
+            [flag, label] if flag == "--grouped-only" => {
+                let scenario = PhaseAScenario::GROUPED
+                    .iter()
+                    .copied()
+                    .find(|scenario| scenario.label() == label)
+                    .ok_or_else(|| format!(
+                        "unknown grouped scenario {label:?}; list exact implemented names with --list-grouped"
+                    ))?;
+                Ok(RunnerMode::GroupedOnly(vec![scenario]))
+            }
+            _ => Err(
+                "unsupported acceptance arguments; use no arguments for the original full matrix, \
+                 --grouped-only [exact-grouped-scenario-label], or --list-grouped"
+                    .into(),
+            ),
+        }
+    }
+    fn grouped_race_document(nonce: &str, scenario: PhaseAScenario) -> Vec<u8> {
+        // A real, bounded renderer fixture: one fixed same-origin dependent
+        // GET, no timers, automatic retry, redirects or non-owned addresses.
+        // The host (not a speculative JS timeout) executes abort/close/
+        // navigation after the separate OS proof+parent-descriptor barrier.
+        let dependent_script = match scenario {
+            PhaseAScenario::RendererFetchCancel =>
+                format!("globalThis.__clackPhaseAFetchAbort=new AbortController();fetch('/fetch/broker/{nonce}',{{signal:globalThis.__clackPhaseAFetchAbort.signal,cache:'no-store'}}).catch(()=>{{}});"),
+            PhaseAScenario::RendererXhrCancel =>
+                format!("globalThis.__clackPhaseAXhr=new XMLHttpRequest();globalThis.__clackPhaseAXhr.open('GET','/xhr/broker/{nonce}');globalThis.__clackPhaseAXhr.send();"),
+            PhaseAScenario::MultiPendingShutdown =>
+                format!("fetch('/fetch/broker/{nonce}',{{cache:'no-store'}}).catch(()=>{{}});let x=new XMLHttpRequest();x.open('GET','/xhr/broker/{nonce}');x.send();"),
+            _ => format!("fetch('/fetch/broker/{nonce}',{{cache:'no-store'}}).catch(()=>{{}});"),
+        };
+        format!(
+            "<!doctype html><html><head><title>Phase A {}</title>\
+             <link rel=\"icon\" href=\"data:,\"></head><body>\
+             <main id=\"broker-proof\">Controlled native renderer race</main>\
+             <button id=\"race-target\" type=\"button\">Bounded element</button>\
+             <script>document.title='clack-renderer-js-{nonce}';\
+             {dependent_script}</script></body></html>",
+            scenario.label()
+        )
+        .into_bytes()
+    }
+    fn grouped_parent_receipt_verified(
+        parent: &Value,
+        nonce: &str,
+        phase: PhaseAScenario,
+        completed: bool,
+    ) -> Result<(), String> {
+        if !phase.is_grouped_race() {
+            return Err("grouped receipt checked for an original Phase A fault".into());
+        }
+        let events = parent["phase_a_events"]
+            .as_array()
+            .ok_or("grouped Phase A independent parent event array absent")?;
+        let expected_events = if completed && phase.expects_late_reply() {
+            6
+        } else {
+            4
+        };
+        if parent["requests_received"] != 2
+            || parent["responses_sent"]
+                != if completed && phase.expects_late_reply() {
+                    2
+                } else {
+                    1
+                }
+            || events.len() != expected_events
+        {
+            return Err(
+                "grouped Phase A parent had missing/duplicate native request, response, or event"
+                    .into(),
+            );
+        }
+        let descriptor = |event: &Value, id: u64, kind: &str| {
+            event["kind"] == "native-parent-descriptor-observed"
+                && event["scenario"] == phase.label()
+                && event["requestId"] == id
+                && event["resourceKind"] == kind
+                && event["sessionMatchesNonce"] == true
+                && event["nativeDispatches"] == 0
+        };
+        let frame = |event: &Value, id: u64, digest: &str| {
+            event["kind"] == "native-parent-frame-written"
+                && event["originalRequestId"] == id
+                && event["frameRequestId"] == id
+                && event["sameRequestId"] == true
+                && event["status"] == 200
+                && event["bodySha256"] == digest
+        };
+        let doc_digest = format!("{:x}", Sha256::digest(grouped_race_document(nonce, phase)));
+        let withheld = &events[3];
+        if !descriptor(&events[0], 1, "document")
+            || !frame(&events[1], 1, &doc_digest)
+            || !descriptor(&events[2], 2, phase.group_dependent_kind())
+            || withheld["kind"] != "group-parent-reply-withheld"
+            || withheld["scenario"] != phase.label()
+            || withheld["requestId"] != 2
+            || withheld["resourceKind"] != phase.group_dependent_kind()
+            || withheld["nativeDispatches"] != 0
+            || withheld["responseFramesSent"] != 0
+            || (phase == PhaseAScenario::BrokerProcessKill
+                && (withheld["parentPipeRemainedOpen"] != false
+                    || withheld["helperOwnedResponsePipe"] != true
+                    || parent["broker_helper_writer_transferred"] != true
+                    || !parent["broker_helper_pid"]
+                        .as_u64()
+                        .is_some_and(|pid| pid != 0)))
+            || (phase != PhaseAScenario::BrokerProcessKill
+                && withheld["parentPipeRemainedOpen"] != true)
+        {
+            return Err("grouped parent did not deliver exact nonce-bound document and withhold the one correct renderer GET, or replay/extra frame was attempted".into());
+        }
+        if completed && phase.expects_late_reply() {
+            let marker = format!("broker.phase-a.{}.invalidated", phase.label());
+            let late_digest = format!(
+                "{:x}",
+                Sha256::digest(b"<!doctype html><html><body>old-session-late-reply</body></html>")
+            );
+            if events[4]["kind"] != "group-host-generation-invalidated-before-parent-reply"
+                || events[4]["requestId"] != 2
+                || events[4]["hostNativeArmMarker"] != marker
+                || !frame(&events[5], 2, &late_digest)
+            {
+                return Err("grouped stale race parent reply was released before native generation invalidation or used stale/replayed identity".into());
+            }
+        }
+        Ok(())
     }
     fn dependent_timeout_document(nonce: &str) -> Vec<u8> {
         // Unlike the multi-resource "dependent-resource" case, this ninth
@@ -339,6 +587,253 @@ mod windows {
             let mut detached = receipt.clone();
             detached["phase_a_events"][3]["parentPipeRemainedOpen"] = json!(false);
             assert!(dependent_timeout_parent_receipt_verified(&detached, nonce).is_err());
+        }
+    }
+    #[cfg(test)]
+    mod grouped_native_race_tests {
+        use super::*;
+
+        #[test]
+        fn grouped_only_cli_selects_no_previously_accepted_negative_or_phase_a_case() {
+            let all = parse_runner_mode(&["--grouped-only".into()]).unwrap();
+            let RunnerMode::GroupedOnly(selected) = all else {
+                panic!("grouped-only must have an exclusive physical case selection");
+            };
+            assert_eq!(selected, PhaseAScenario::GROUPED.to_vec());
+            assert_eq!(selected.len(), 9);
+            assert_eq!(REQUIRED_GROUPED_RACES, 11);
+            assert!(selected.iter().all(|scenario| scenario.is_grouped_race()));
+            assert!(selected
+                .iter()
+                .all(|scenario| !PhaseAScenario::ALL[..9].contains(scenario)));
+            let unique = selected
+                .iter()
+                .map(|scenario| scenario.label())
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(unique.len(), selected.len());
+            for scenario in PhaseAScenario::GROUPED {
+                let parsed =
+                    parse_runner_mode(&["--grouped-only".into(), scenario.label().into()]).unwrap();
+                assert_eq!(parsed, RunnerMode::GroupedOnly(vec![scenario]));
+            }
+        }
+
+        #[test]
+        fn grouped_cli_list_is_nonphysical_and_unknown_or_original_case_fails_closed() {
+            assert_eq!(parse_runner_mode(&[]).unwrap(), RunnerMode::Full);
+            assert_eq!(
+                parse_runner_mode(&["--list-grouped".into()]).unwrap(),
+                RunnerMode::ListGrouped,
+            );
+            for args in [
+                vec!["--grouped-only", "dependent-timeout"],
+                vec!["--grouped-only", "stale-page-generation"],
+                vec!["--grouped-only", "not-a-race"],
+                vec!["--grouped-only", "renderer-fetch-cancel", "host-crash"],
+                vec!["--list-grouped", "renderer-fetch-cancel"],
+                vec!["--phase-a-broker-helper"],
+                vec!["--grouped_only"],
+                vec!["--grouped-only="],
+            ] {
+                assert!(
+                    parse_runner_mode(&args.iter().map(|s| (*s).into()).collect::<Vec<_>>())
+                        .is_err(),
+                    "unexpected CLI admission for {args:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn original_eight_negatives_and_nine_phase_a_cases_remain_in_place() {
+            assert_eq!(NegativeScenario::ALL.len(), 8);
+            assert_eq!(
+                PhaseAScenario::ALL[..9],
+                [
+                    PhaseAScenario::StalePageGeneration,
+                    PhaseAScenario::StaleBrokerRequest,
+                    PhaseAScenario::DuplicateCompletion,
+                    PhaseAScenario::DependentResource,
+                    PhaseAScenario::PendingCancel,
+                    PhaseAScenario::RendererCrash,
+                    PhaseAScenario::HostCrash,
+                    PhaseAScenario::ShutdownPending,
+                    PhaseAScenario::DependentTimeout,
+                ]
+            );
+            assert_eq!(PhaseAScenario::ALL.len(), 18);
+            assert_eq!(PhaseAScenario::ALL[9].label(), "renderer-fetch-cancel");
+            assert_eq!(PhaseAScenario::ALL[17].label(), "multi-pending-shutdown");
+            assert!(PhaseAScenario::ALL[..9]
+                .iter()
+                .all(|scenario| !scenario.is_grouped_race()));
+            assert!(PhaseAScenario::ALL[9..]
+                .iter()
+                .all(|scenario| scenario.is_grouped_race()));
+        }
+
+        fn grouped_parent(phase: PhaseAScenario, nonce: &str) -> Value {
+            let sha = format!("{:x}", Sha256::digest(grouped_race_document(nonce, phase)));
+            json!({
+                "requests_received":2,
+                "responses_sent":1,
+                "broker_helper_writer_transferred":phase == PhaseAScenario::BrokerProcessKill,
+                "broker_helper_pid":if phase == PhaseAScenario::BrokerProcessKill {Some(775)} else {None},
+                "phase_a_events":[
+                    {"kind":"native-parent-descriptor-observed","scenario":phase.label(),
+                     "requestId":1,"resourceKind":"document",
+                     "sessionMatchesNonce":true,"nativeDispatches":0},
+                    {"kind":"native-parent-frame-written","originalRequestId":1,
+                     "frameRequestId":1,"sameRequestId":true,"status":200,"bodySha256":sha},
+                    {"kind":"native-parent-descriptor-observed","scenario":phase.label(),
+                     "requestId":2,"resourceKind":phase.group_dependent_kind(),
+                     "sessionMatchesNonce":true,"nativeDispatches":0},
+                    {"kind":"group-parent-reply-withheld","scenario":phase.label(),
+                     "requestId":2,"resourceKind":phase.group_dependent_kind(),
+                     "responseFramesSent":0,"nativeDispatches":0,
+                     "parentPipeRemainedOpen":phase != PhaseAScenario::BrokerProcessKill,
+                     "helperOwnedResponsePipe":phase == PhaseAScenario::BrokerProcessKill},
+                ]
+            })
+        }
+
+        #[test]
+        fn fixed_renderer_documents_do_not_create_unowned_or_hidden_requests() {
+            for scenario in PhaseAScenario::ALL
+                .into_iter()
+                .filter(|p| p.is_grouped_race())
+            {
+                let body = String::from_utf8(grouped_race_document("n0nce", scenario)).unwrap();
+                assert!(body.contains("document.title='clack-renderer-js-n0nce'"));
+                assert!(body.contains("href=\"data:,\""));
+                assert!(body.contains("id=\"broker-proof\""));
+                assert!(body.contains("id=\"race-target\""));
+                assert!(!body.contains("http://"));
+                assert!(!body.contains("https://"));
+                if scenario == PhaseAScenario::RendererXhrCancel {
+                    assert_eq!(body.matches("XMLHttpRequest()").count(), 1);
+                    assert_eq!(body.matches("/xhr/broker/n0nce").count(), 1);
+                    assert!(!body.contains("/fetch/broker/n0nce"));
+                } else if scenario == PhaseAScenario::MultiPendingShutdown {
+                    assert_eq!(body.matches("fetch(").count(), 1);
+                    assert_eq!(body.matches("/fetch/broker/n0nce").count(), 1);
+                    assert_eq!(body.matches("/xhr/broker/n0nce").count(), 1);
+                } else {
+                    assert_eq!(body.matches("fetch(").count(), 1);
+                    assert_eq!(body.matches("/fetch/broker/n0nce").count(), 1);
+                    assert!(!body.contains("/xhr/broker/n0nce"));
+                }
+            }
+        }
+
+        #[test]
+        fn exact_parent_document_then_dependent_get_refuses_all_replay_and_early_reply() {
+            for scenario in PhaseAScenario::ALL
+                .into_iter()
+                .filter(|p| p.is_grouped_race() && !p.expects_late_reply())
+            {
+                let nonce = "owned-fixture";
+                let base = grouped_parent(scenario, nonce);
+                assert!(grouped_parent_receipt_verified(&base, nonce, scenario, true).is_ok());
+                let mut replay = base.clone();
+                replay["requests_received"] = json!(3);
+                assert!(grouped_parent_receipt_verified(&replay, nonce, scenario, true).is_err());
+                let mut stale_id = base.clone();
+                stale_id["phase_a_events"][2]["requestId"] = json!(1);
+                assert!(grouped_parent_receipt_verified(&stale_id, nonce, scenario, true).is_err());
+                let mut early = base.clone();
+                early["responses_sent"] = json!(2);
+                assert!(grouped_parent_receipt_verified(&early, nonce, scenario, true).is_err());
+                let mut wrong_kind = base.clone();
+                wrong_kind["phase_a_events"][2]["resourceKind"] = json!("image");
+                assert!(
+                    grouped_parent_receipt_verified(&wrong_kind, nonce, scenario, true).is_err()
+                );
+                let mut wrong_doc = base.clone();
+                wrong_doc["phase_a_events"][1]["bodySha256"] = json!("forged");
+                assert!(
+                    grouped_parent_receipt_verified(&wrong_doc, nonce, scenario, true).is_err()
+                );
+                let mut early_close = base.clone();
+                early_close["phase_a_events"][3]["parentPipeRemainedOpen"] =
+                    json!(scenario == PhaseAScenario::BrokerProcessKill);
+                assert!(
+                    grouped_parent_receipt_verified(&early_close, nonce, scenario, true).is_err()
+                );
+            }
+        }
+
+        #[test]
+        fn stale_generation_needs_ordered_late_original_request_reply() {
+            let scenario = PhaseAScenario::SnapshotStale;
+            let nonce = "unique-stale-case";
+            let mut parent = grouped_parent(scenario, nonce);
+            assert!(grouped_parent_receipt_verified(&parent, nonce, scenario, false).is_ok());
+            assert!(grouped_parent_receipt_verified(&parent, nonce, scenario, true).is_err());
+            parent["responses_sent"] = json!(2);
+            let events = parent["phase_a_events"].as_array_mut().unwrap();
+            events.push(json!({
+                "kind":"group-host-generation-invalidated-before-parent-reply",
+                "requestId":2,
+                "hostNativeArmMarker":"broker.phase-a.snapshot-stale.invalidated",
+            }));
+            events.push(json!({
+                "kind":"native-parent-frame-written",
+                "originalRequestId":2,"frameRequestId":2,"sameRequestId":true,"status":200,
+                "bodySha256":format!("{:x}",Sha256::digest(
+                    b"<!doctype html><html><body>old-session-late-reply</body></html>"))
+            }));
+            assert!(grouped_parent_receipt_verified(&parent, nonce, scenario, true).is_ok());
+            parent["phase_a_events"][4]["requestId"] = json!(1);
+            assert!(grouped_parent_receipt_verified(&parent, nonce, scenario, true).is_err());
+        }
+
+        #[test]
+        fn all_three_grouped_stale_variants_require_original_id_and_native_invalidation_before_release(
+        ) {
+            for scenario in [
+                PhaseAScenario::NavigationStale,
+                PhaseAScenario::SnapshotStale,
+                PhaseAScenario::ElementStale,
+            ] {
+                let nonce = "unique-real-renderer-case";
+                let mut parent = grouped_parent(scenario, nonce);
+                assert!(grouped_parent_receipt_verified(&parent, nonce, scenario, false).is_ok());
+                assert!(grouped_parent_receipt_verified(&parent, nonce, scenario, true).is_err());
+                parent["responses_sent"] = json!(2);
+                let events = parent["phase_a_events"].as_array_mut().unwrap();
+                events.push(json!({
+                    "kind":"group-host-generation-invalidated-before-parent-reply",
+                    "requestId":2,
+                    "hostNativeArmMarker":format!("broker.phase-a.{}.invalidated",scenario.label()),
+                }));
+                events.push(json!({
+                    "kind":"native-parent-frame-written",
+                    "originalRequestId":2,"frameRequestId":2,
+                    "sameRequestId":true,"status":200,
+                    "bodySha256":format!("{:x}", Sha256::digest(
+                        b"<!doctype html><html><body>old-session-late-reply</body></html>"
+                    )),
+                }));
+                assert!(grouped_parent_receipt_verified(&parent, nonce, scenario, true).is_ok());
+                let mut released_first = parent.clone();
+                released_first["phase_a_events"]
+                    .as_array_mut()
+                    .unwrap()
+                    .swap(4, 5);
+                assert!(
+                    grouped_parent_receipt_verified(&released_first, nonce, scenario, true)
+                        .is_err()
+                );
+                let mut wrong_epoch = parent.clone();
+                wrong_epoch["phase_a_events"][4]["hostNativeArmMarker"] =
+                    json!("unrelated-generation");
+                assert!(
+                    grouped_parent_receipt_verified(&wrong_epoch, nonce, scenario, true).is_err()
+                );
+                let mut replay = parent.clone();
+                replay["phase_a_events"][5]["originalRequestId"] = json!(1);
+                assert!(grouped_parent_receipt_verified(&replay, nonce, scenario, true).is_err());
+            }
         }
     }
     const BROKER_PNG: &[u8] = &[
@@ -1742,6 +2237,11 @@ document.title='clack-renderer-js-__NONCE__';"#;
         fault_injections: Vec<Value>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         phase_a_events: Vec<Value>,
+        broker_helper_pid: Option<u32>,
+        broker_helper_writer_transferred: bool,
+        broker_helper_killed_from_original_handle: bool,
+        broker_helper_exit_code: Option<u32>,
+        broker_helper_owned_job_cleanup_empty: bool,
     }
     fn encode_base64(bytes: &[u8]) -> String {
         const TABLE: &[u8; 64] =
@@ -1766,6 +2266,311 @@ document.title='clack-renderer-js-__NONCE__';"#;
         }
         output
     }
+    pub fn broker_helper_main() -> Result<(), String> {
+        // This process does not parse URLs or touch the filesystem/network.
+        // It only HOLDS the inherited parent->host broker reply writer. The
+        // trusted supervisor terminates its precise original process HANDLE
+        // after a real pending native COM dependent deferral is armed.
+        let args = std::env::args().collect::<Vec<_>>();
+        if args.len() != 5 || args[1] != "--phase-a-broker-helper" {
+            return Err("broker writer helper requires exact three inherited handles".into());
+        }
+        let parse = |value: &str| -> Result<HANDLE, String> {
+            let address = value
+                .parse::<usize>()
+                .map_err(|_| "broker helper handle was not numeric")?;
+            if address == 0 {
+                return Err("broker helper received a null inherited handle".into());
+            }
+            Ok(address as HANDLE)
+        };
+        let writer = parse(&args[2])?;
+        let ready = parse(&args[3])?;
+        let wait = parse(&args[4])?;
+        if unsafe { windows_sys::Win32::Storage::FileSystem::GetFileType(writer) }
+            != windows_sys::Win32::Storage::FileSystem::FILE_TYPE_PIPE
+        {
+            return Err("separate trusted broker helper did not inherit an OS pipe writer".into());
+        }
+        // The writer is kept alive in this process for the entire wait. A
+        // real TerminateProcess of this process closes its OS pipe handle.
+        let _pipe_writer = ManuallyDrop::new(unsafe { File::from_raw_handle(writer) });
+        if unsafe { SetEvent(ready) } == 0 {
+            return Err(err("SetEvent(original broker helper writer ready)"));
+        }
+        match unsafe { WaitForSingleObject(wait, INFINITE) } {
+            // A normal release is intentionally not a successful crash.
+            WAIT_OBJECT_0 => Err("broker helper was signaled instead of OS-killed".into()),
+            _ => Err(err("WaitForSingleObject(broker helper owned wait handle)")),
+        }
+    }
+    struct BrokerHelper {
+        process: Handle,
+        _thread: Handle,
+        job: Handle,
+        // Kernel Job Object completion packets, not timing-based polling,
+        // establish that a signaled original helper HANDLE has left its Job.
+        job_completion_port: Handle,
+        pid: u32,
+        killed: bool,
+        exit_code: Option<u32>,
+    }
+    impl BrokerHelper {
+        fn spawn(root: &Path, writer: Handle) -> Result<Self, String> {
+            let executable = std::env::current_exe()
+                .map_err(|e| format!("broker helper exact current runner executable: {e}"))?;
+            if !executable.is_file() {
+                return Err("broker helper executable vanished".into());
+            }
+            let ready = Handle::new(
+                unsafe { CreateEventW(null(), 1, 0, null()) },
+                "CreateEventW(broker helper readiness)",
+            )?;
+            let stop = Handle::new(
+                unsafe { CreateEventW(null(), 1, 0, null()) },
+                "CreateEventW(broker helper hold)",
+            )?;
+            for (handle, name) in [
+                (writer.0, "broker writer"),
+                (ready.0, "broker helper readiness event"),
+                (stop.0, "broker helper hold event"),
+            ] {
+                if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) }
+                    == 0
+                {
+                    return Err(err(&format!("inherit exact {name} for broker helper")));
+                }
+            }
+            let job = Handle::new(
+                unsafe { CreateJobObjectW(null(), null()) },
+                "CreateJobObjectW(broker-only helper)",
+            )?;
+            let mut limit: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+            limit.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if unsafe {
+                SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    (&limit as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    size_of_val(&limit) as u32,
+                )
+            } == 0
+            {
+                return Err(err(
+                    "SetInformationJobObject(broker helper KILL_ON_JOB_CLOSE)",
+                ));
+            }
+            let completion_port = Handle::new(
+                unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, null_mut(), 0, 1) },
+                "CreateIoCompletionPort(exact broker helper owned job)",
+            )?;
+            let association = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
+                CompletionKey: job.0,
+                CompletionPort: completion_port.0,
+            };
+            if unsafe {
+                SetInformationJobObject(
+                    job.0,
+                    JobObjectAssociateCompletionPortInformation,
+                    (&association as *const JOBOBJECT_ASSOCIATE_COMPLETION_PORT).cast(),
+                    size_of_val(&association) as u32,
+                )
+            } == 0
+            {
+                return Err(err(
+                    "SetInformationJobObject(exact broker helper job completion port)",
+                ));
+            }
+            let mut attrs = Attributes::new(2)?;
+            let jobs = [job.0];
+            let inherited = [writer.0, ready.0, stop.0];
+            attrs.add(PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;
+            attrs.add(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherited)?;
+            let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
+            startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+            startup.lpAttributeList = attrs.ptr();
+            let command = format!(
+                "{} --phase-a-broker-helper {} {} {}",
+                quoted(&executable.to_string_lossy()),
+                writer.0 as usize,
+                ready.0 as usize,
+                stop.0 as usize
+            );
+            let mut command = wide(command);
+            let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
+            if unsafe {
+                CreateProcessW(
+                    wide(&executable).as_ptr(),
+                    command.as_mut_ptr(),
+                    null(),
+                    null(),
+                    1,
+                    EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                    null(),
+                    wide(root).as_ptr(),
+                    &startup.StartupInfo,
+                    &mut info,
+                )
+            } == 0
+            {
+                return Err(err("CreateProcessW(distinct trusted broker writer helper)"));
+            }
+            let mut helper = Self {
+                process: Handle::new(info.hProcess, "original broker helper process")?,
+                _thread: Handle::new(info.hThread, "broker helper thread")?,
+                job,
+                job_completion_port: completion_port,
+                pid: info.dwProcessId,
+                killed: false,
+                exit_code: None,
+            };
+            let launch = (|| {
+                let mut membership = 0;
+                if unsafe { IsProcessInJob(helper.process.0, helper.job.0, &mut membership) } == 0
+                    || membership == 0
+                {
+                    return Err(
+                        "original broker helper process HANDLE not in separate owned job".into(),
+                    );
+                }
+                if unsafe { ResumeThread(helper._thread.0) } == u32::MAX {
+                    return Err(err("ResumeThread(exact broker helper process)"));
+                }
+                if unsafe { WaitForSingleObject(ready.0, PHASE_A_BROKER_HELPER_READY_MS) }
+                    != WAIT_OBJECT_0
+                {
+                    return Err(
+                        "distinct broker helper did not signal OS pipe-writer readiness".into(),
+                    );
+                }
+                if unsafe { WaitForSingleObject(helper.process.0, 0) } != WAIT_TIMEOUT {
+                    return Err(
+                        "broker helper exited before parent handed off reply pipe ownership".into(),
+                    );
+                }
+                Ok::<(), String>(())
+            })();
+            if let Err(error) = launch {
+                let cleanup = helper.terminate_and_verify(PHASE_A_BROKER_HELPER_CLEANUP_CODE);
+                return match cleanup {
+                    Ok(_) => Err(error),
+                    Err(e) => Err(format!(
+                        "STOP: separate broker helper launch failed ({error}) and job cleanup uncertain ({e})"
+                    )),
+                };
+            }
+            // Only after the separate, Job-confirmed helper has signaled its
+            // inherited handle is live may the trusted supervisor close its
+            // copy. The COM host now has exactly one OS broker pipe writer.
+            drop(writer);
+            Ok(helper)
+        }
+        fn terminate_and_verify(&mut self, target_code: u32) -> Result<u32, String> {
+            let signal = unsafe { WaitForSingleObject(self.process.0, 0) };
+            if signal == WAIT_TIMEOUT {
+                if unsafe { TerminateProcess(self.process.0, target_code) } == 0 {
+                    return Err(err(
+                        "TerminateProcess(original distinct broker helper HANDLE)",
+                    ));
+                }
+            } else if signal != WAIT_OBJECT_0 {
+                return Err(err("WaitForSingleObject(exact broker helper process)"));
+            }
+            if unsafe { WaitForSingleObject(self.process.0, PHASE_A_BROKER_HELPER_READY_MS) }
+                != WAIT_OBJECT_0
+            {
+                return Err("STOP: separate broker helper did not exit after exact original-HANDLE termination".into());
+            }
+            let mut exit_code = 0;
+            if unsafe { GetExitCodeProcess(self.process.0, &mut exit_code) } == 0 {
+                return Err(err("GetExitCodeProcess(original broker helper HANDLE)"));
+            }
+            // WaitForSingleObject(process HANDLE) proves the original process
+            // has terminated, but Windows may publish Job accounting later.
+            // Require an actual kernel ACTIVE_PROCESS_ZERO completion for THIS
+            // exact Job, with a fixed event budget and bounded deadline. No
+            // sleeps, blind retries, PID reopening or relaxed ActiveProcesses.
+            let deadline =
+                Instant::now() + Duration::from_millis(PHASE_A_BROKER_HELPER_READY_MS as u64);
+            let mut active_process_zero_observed = false;
+            for _ in 0..16 {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let timeout = remaining.as_millis().min(u32::MAX as u128).max(1) as u32;
+                let mut message: u32 = 0;
+                let mut completion_key: usize = 0;
+                let mut overlapped = null_mut();
+                if unsafe {
+                    GetQueuedCompletionStatus(
+                        self.job_completion_port.0,
+                        &mut message,
+                        &mut completion_key,
+                        &mut overlapped,
+                        timeout,
+                    )
+                } == 0
+                {
+                    return Err(err(
+                        "GetQueuedCompletionStatus(exact broker helper job terminal event)",
+                    ));
+                }
+                if completion_key != self.job.0 as usize {
+                    return Err("broker helper job completion belonged to another job".into());
+                }
+                if message == JOB_COMPLETION_ACTIVE_PROCESS_ZERO {
+                    active_process_zero_observed = true;
+                    break;
+                }
+                if !matches!(
+                    message,
+                    JOB_COMPLETION_NEW_PROCESS
+                        | JOB_COMPLETION_EXIT_PROCESS
+                        | JOB_COMPLETION_ABNORMAL_EXIT_PROCESS
+                ) {
+                    return Err(format!(
+                        "broker helper job produced an unexpected terminal message {message}"
+                    ));
+                }
+            }
+            if !active_process_zero_observed {
+                return Err(
+                    "STOP: exact broker helper job never reported kernel ACTIVE_PROCESS_ZERO"
+                        .into(),
+                );
+            }
+            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+            if unsafe {
+                QueryInformationJobObject(
+                    self.job.0,
+                    JobObjectBasicAccountingInformation,
+                    (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                    size_of_val(&accounting) as u32,
+                    null_mut(),
+                )
+            } == 0
+            {
+                return Err(err("QueryInformationJobObject(exact broker helper job)"));
+            }
+            if accounting.ActiveProcesses != 0 {
+                return Err(format!(
+                    "STOP: broker helper job still owns {} active processes",
+                    accounting.ActiveProcesses
+                ));
+            }
+            self.exit_code = Some(exit_code);
+            if target_code == PHASE_A_BROKER_HELPER_EXIT_CODE {
+                if signal != WAIT_TIMEOUT || exit_code != target_code {
+                    return Err(format!(
+                        "broker helper was not killed while live at exact armed COM deferral: prior signal={signal}, exit={exit_code}"
+                    ));
+                }
+                self.killed = true;
+            }
+            Ok(exit_code)
+        }
+    }
     struct BrokerBridge {
         request_pipe: Handle,
         response_pipe: Option<Handle>,
@@ -1774,6 +2579,7 @@ document.title='clack-renderer-js-__NONCE__';"#;
         fault: Option<NegativeScenario>,
         phase_a: Option<PhaseAScenario>,
         phase_a_pending_page_reply: Option<(u64, Vec<u8>)>,
+        broker_helper: Option<BrokerHelper>,
         nonce: String,
         port: u16,
         root: PathBuf,
@@ -1811,6 +2617,7 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 fault,
                 phase_a,
                 phase_a_pending_page_reply: None,
+                broker_helper: None,
                 nonce: nonce.to_owned(),
                 port,
                 root,
@@ -1868,20 +2675,80 @@ document.title='clack-renderer-js-__NONCE__';"#;
             }));
             Ok(())
         }
+        fn start_distinct_broker_writer_after_document(&mut self) -> Result<(), String> {
+            if self.phase_a != Some(PhaseAScenario::BrokerProcessKill)
+                || self.evidence.requests_received != 1
+                || self.evidence.responses_sent != 1
+                || self.broker_helper.is_some()
+            {
+                return Err("separate broker writer transfer attempted without unique first native document 200".into());
+            }
+            let writer = self
+                .response_pipe
+                .take()
+                .ok_or("distinct broker writer requires an original trusted parent pipe writer")?;
+            let helper = BrokerHelper::spawn(&self.root, writer)?;
+            self.evidence.broker_helper_pid = Some(helper.pid);
+            self.evidence.broker_helper_writer_transferred = true;
+            self.broker_helper = Some(helper);
+            Ok(())
+        }
+        fn kill_distinct_broker_writer_on_native_arm(&mut self) -> Result<(), String> {
+            if self.phase_a != Some(PhaseAScenario::BrokerProcessKill)
+                || self.evidence.requests_received != 2
+                || self.evidence.responses_sent != 1
+                || self.evidence.broker_helper_killed_from_original_handle
+                || self.response_pipe.is_some()
+            {
+                return Err("broker helper kill did not follow one true dependent GET with sole helper-held parent reply pipe".into());
+            }
+            let helper = self
+                .broker_helper
+                .as_mut()
+                .ok_or("distinct broker helper was absent at native deferral arm")?;
+            let code = helper.terminate_and_verify(PHASE_A_BROKER_HELPER_EXIT_CODE)?;
+            self.evidence.broker_helper_killed_from_original_handle = true;
+            self.evidence.broker_helper_exit_code = Some(code);
+            self.evidence.broker_helper_owned_job_cleanup_empty = true;
+            Ok(())
+        }
+        fn cleanup_distinct_broker_writer(&mut self) -> Result<(), String> {
+            if let Some(helper) = self.broker_helper.as_mut() {
+                if !helper.killed {
+                    // Even an unsuccessful case must clean up the real
+                    // trusted helper by its original OS HANDLE and Job.
+                    // Cleanup exit 92 is NOT fault-injection exit 91 and
+                    // cannot turn this test green.
+                    helper.terminate_and_verify(PHASE_A_BROKER_HELPER_CLEANUP_CODE)?;
+                    self.evidence.broker_helper_exit_code = helper.exit_code;
+                }
+                self.evidence.broker_helper_owned_job_cleanup_empty = true;
+            }
+            Ok(())
+        }
 
         fn release_page_reply_on_observed_marker(&mut self, stderr: &str) -> Result<(), String> {
-            if self.phase_a != Some(PhaseAScenario::StalePageGeneration)
-                || !stderr.contains("broker.phase-a.page-invalidated")
-            {
+            let marker = match self.phase_a {
+                Some(PhaseAScenario::StalePageGeneration) => {
+                    "broker.phase-a.page-invalidated".to_owned()
+                }
+                Some(phase) if phase.expects_late_reply() => {
+                    format!("broker.phase-a.{}.invalidated", phase.label())
+                }
+                _ => return Ok(()),
+            };
+            if !stderr.contains(&marker) {
                 return Ok(());
             }
             if let Some((request_id, body)) = self.phase_a_pending_page_reply.take() {
                 // The host has already logged the native epoch change. This
                 // event is our only release gate; no timer or guessed wait.
                 self.evidence.phase_a_events.push(json!({
-                    "kind":"host-page-generation-invalidated-before-parent-reply",
+                    "kind": if self.phase_a == Some(PhaseAScenario::StalePageGeneration) {
+                        "host-page-generation-invalidated-before-parent-reply"
+                    } else { "group-host-generation-invalidated-before-parent-reply" },
                     "requestId":request_id,
-                    "hostNativeArmMarker":"broker.phase-a.page-invalidated",
+                    "hostNativeArmMarker":marker,
                 }));
                 self.send_phase_a_frame(request_id, request_id, 200, &body)?;
             }
@@ -1930,7 +2797,14 @@ document.title='clack-renderer-js-__NONCE__';"#;
                             | "redirect-ok"
                             | "redirect-private"
                             | "deny"
-                    )
+                    ) || (name == "xhr"
+                        && self.phase_a.is_some_and(|phase| {
+                            matches!(
+                                phase,
+                                PhaseAScenario::RendererXhrCancel
+                                    | PhaseAScenario::MultiPendingShutdown
+                            )
+                        }))
                 });
             if !fixture {
                 return Err("broker request outside fixed acceptance targets".into());
@@ -1946,6 +2820,8 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 let expected_kind = match (phase, self.evidence.requests_received) {
                     (PhaseAScenario::DependentTimeout, 1) => Some("document"),
                     (PhaseAScenario::DependentTimeout, 2) => Some("fetch"),
+                    (phase, 1) if phase.is_grouped_race() => Some("document"),
+                    (phase, 2) if phase.is_grouped_race() => Some(phase.group_dependent_kind()),
                     (phase, 1) if phase != PhaseAScenario::DependentTimeout => Some("document"),
                     _ => None,
                 };
@@ -1965,6 +2841,30 @@ document.title='clack-renderer-js-__NONCE__';"#;
                     "sessionMatchesNonce":true,
                     "nativeDispatches":0,
                 }));
+                if phase.is_grouped_race() && request.request_id == 2 {
+                    self.evidence.phase_a_events.push(json!({
+                        "kind":"group-parent-reply-withheld",
+                        "scenario":phase.label(),
+                        "requestId":2,
+                        "resourceKind":kind,
+                        "responseFramesSent":0,
+                        "nativeDispatches":0,
+                        "parentPipeRemainedOpen":self.response_pipe.is_some(),
+                        "helperOwnedResponsePipe":phase == PhaseAScenario::BrokerProcessKill
+                            && self.broker_helper.is_some(),
+                    }));
+                    // Stale successor-page scenarios return their *valid*
+                    // old response only after the native page-generation
+                    // change has been observed. No guessed delay/retry.
+                    if phase.expects_late_reply() {
+                        self.phase_a_pending_page_reply = Some((
+                            request.request_id,
+                            b"<!doctype html><html><body>old-session-late-reply</body></html>"
+                                .to_vec(),
+                        ));
+                    }
+                    return Ok(());
+                }
                 if phase == PhaseAScenario::DependentTimeout && request.request_id == 2 {
                     self.evidence.phase_a_events.push(json!({
                         "kind":"dependent-parent-reply-withheld",
@@ -1977,7 +2877,9 @@ document.title='clack-renderer-js-__NONCE__';"#;
                     }));
                     return Ok(());
                 }
-                let body = if phase == PhaseAScenario::DependentTimeout {
+                let body = if phase.is_grouped_race() {
+                    grouped_race_document(&self.nonce, phase)
+                } else if phase == PhaseAScenario::DependentTimeout {
                     dependent_timeout_document(&self.nonce)
                 } else if phase == PhaseAScenario::DependentResource {
                     // Only this self-contained document is delivered. Its
@@ -2046,13 +2948,29 @@ document.title='clack-renderer-js-__NONCE__';"#;
                     PhaseAScenario::DuplicateCompletion
                     | PhaseAScenario::DependentResource
                     | PhaseAScenario::RendererCrash
-                    | PhaseAScenario::DependentTimeout => {
+                    | PhaseAScenario::DependentTimeout
+                    | PhaseAScenario::RendererFetchCancel
+                    | PhaseAScenario::RendererXhrCancel
+                    | PhaseAScenario::PageClosePending
+                    | PhaseAScenario::SessionClosePending
+                    | PhaseAScenario::NavigationStale
+                    | PhaseAScenario::SnapshotStale
+                    | PhaseAScenario::ElementStale
+                    | PhaseAScenario::BrokerProcessKill
+                    | PhaseAScenario::MultiPendingShutdown => {
                         self.send_phase_a_frame(
                             request.request_id,
                             request.request_id,
                             200,
                             &body,
                         )?;
+                        if phase == PhaseAScenario::BrokerProcessKill {
+                            // The real trusted parent process TRANSFERS its
+                            // broker writer to a new original-HANDLE,
+                            // separately Job-owned executable before any
+                            // renderer dependent descriptor can be polled.
+                            self.start_distinct_broker_writer_after_document()?;
+                        }
                     }
                     PhaseAScenario::PendingCancel
                     | PhaseAScenario::HostCrash
@@ -2900,6 +3818,9 @@ document.title='clack-renderer-js-__NONCE__';"#;
         let mut renderer_crash_target_pid: Option<u32> = None;
         let mut phase_a_os_browser_ack_written = false;
         let mut phase_a_os_browser_and_renderer_ack_pids: Option<(u32, u32)> = None;
+        let mut phase_a_group_ack_written = false;
+        let mut phase_a_group_ack_pids: Option<(u32, u32)> = None;
+        let mut broker_helper_cleanup_uncertain = false;
         if let Some(profile) = profile {
             // The spawned process identity is the original CreateProcessW
             // handle; never rediscover the launched host by its PID.
@@ -2927,6 +3848,9 @@ document.title='clack-renderer-js-__NONCE__';"#;
                     break;
                 }
                 if let Err(e) = broker.poll() {
+                    if e.starts_with("STOP:") {
+                        broker_helper_cleanup_uncertain = true;
+                    }
                     failure = Some(format!("restricted broker frame/TF3 dispatch failed: {e}"));
                     break;
                 }
@@ -2983,7 +3907,17 @@ document.title='clack-renderer-js-__NONCE__';"#;
                     .stderr
                     .text()
                     .contains("broker.phase-a.dependent-timeout.armed");
-            let native_dependent_armed = renderer_crash_armed || dependent_timeout_armed;
+            let group_descriptor_ready = phase_a.is_some_and(PhaseAScenario::is_grouped_race)
+                && child.broker.as_ref().is_some_and(|broker| {
+                    broker.evidence.requests_received == 2
+                        && broker.evidence.responses_sent == 1
+                        && broker.evidence.phase_a_events.iter().any(|event| {
+                            event["kind"] == "group-parent-reply-withheld"
+                                && event["requestId"] == 2
+                        })
+                });
+            let native_dependent_armed =
+                renderer_crash_armed || dependent_timeout_armed || group_descriptor_ready;
             let mut webview_pids = Vec::new();
             for p in observed
                 .values()
@@ -3012,7 +3946,8 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 && armed_dependent_role_scan_pids.as_ref() != Some(&webview_pids);
             if webview_pids.len() >= 2
                 && (new_armed_process_set
-                    || (!roles.values().any(|r| r == "renderer")
+                    || (!phase_a.is_some_and(PhaseAScenario::is_grouped_race)
+                        && !roles.values().any(|r| r == "renderer")
                         && last_role_scan.elapsed() > Duration::from_millis(1200)))
             {
                 last_role_scan = Instant::now();
@@ -3022,6 +3957,115 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 match webview_roles(&webview_pids, root) {
                     Ok(found) => roles.extend(found),
                     Err(e) => roles_error = Some(e),
+                }
+            }
+            if group_descriptor_ready
+                && !phase_a_group_ack_written
+                && host_token_proven
+                && child.stderr.text().contains("broker.dom.marker")
+            {
+                let scenario = phase_a.expect("group descriptor belongs to grouped scenario");
+                let verified_parent = child
+                    .broker
+                    .as_ref()
+                    .ok_or_else(|| "grouped case lost trusted parent broker pipe".to_owned())
+                    .and_then(|broker| {
+                        grouped_parent_receipt_verified(
+                            &serde_json::to_value(&broker.evidence)
+                                .map_err(|e| format!("serialize grouped broker events: {e}"))?,
+                            nonce,
+                            scenario,
+                            false,
+                        )
+                    });
+                if let Err(e) = verified_parent {
+                    failure = Some(format!("grouped OS acknowledgment denied: {e}"));
+                    break;
+                }
+                let mut verified_browser = None;
+                let mut verified_renderer = None;
+                for (role_pid, role) in &roles {
+                    if role != "browser" && role != "renderer" {
+                        continue;
+                    }
+                    let Some(owned) = observed.get(role_pid) else {
+                        continue;
+                    };
+                    if !role_proof_matches_retained_handle(
+                        &owned.image,
+                        owned.proof.as_ref(),
+                        proofs.get(role_pid),
+                    ) {
+                        continue;
+                    }
+                    match owned_process_live(owned) {
+                        Ok(true) if role == "browser" => verified_browser = Some(*role_pid),
+                        Ok(true) if role == "renderer" => verified_renderer = Some(*role_pid),
+                        Ok(true) | Ok(false) => {}
+                        Err(e) => {
+                            failure = Some(format!("group live OS role check failed: {e}"));
+                            break;
+                        }
+                    }
+                }
+                if failure.is_some() {
+                    break;
+                }
+                if let (Some(browser_pid), Some(renderer_pid)) =
+                    (verified_browser, verified_renderer)
+                {
+                    if browser_pid == renderer_pid {
+                        failure = Some("group real browser and renderer shared a PID".into());
+                        break;
+                    }
+                    let path = root.join(PHASE_A_GROUP_ARM_ACK_FILE);
+                    let persisted = fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&path)
+                        .and_then(|mut file| {
+                            file.write_all(PHASE_A_GROUP_ARM_ACK_BYTES)?;
+                            file.sync_all()
+                        });
+                    if let Err(e) = persisted {
+                        failure = Some(format!("group original-HANDLE OS proof ack failed: {e}"));
+                        break;
+                    }
+                    phase_a_group_ack_written = true;
+                    phase_a_group_ack_pids = Some((browser_pid, renderer_pid));
+                }
+            }
+            if phase_a == Some(PhaseAScenario::BrokerProcessKill)
+                && phase_a_group_ack_written
+                && child
+                    .stderr
+                    .text()
+                    .contains("broker.phase-a.broker-process-kill.armed")
+                // A native pending COM arm and the parent's independent
+                // browser/renderer OS proof are not yet sufficient to kill
+                // the broker helper: the host monitor must have *observed*
+                // the parent's acknowledgment and appended its real Phase-A
+                // timeline event. Otherwise fast broker EOF can finish and
+                // close the host before the monitor sees the ACK, producing
+                // an untruthful/missing event receipt. This is a strict
+                // event-order barrier, NOT a blind delay or relaxed check.
+                && child
+                    .stderr
+                    .text()
+                    .contains("broker.phase-a.parent-dependent-verified")
+                && child.broker.as_ref().is_some_and(|broker| {
+                    !broker.evidence.broker_helper_killed_from_original_handle
+                })
+            {
+                let Some(broker) = child.broker.as_mut() else {
+                    failure = Some("distinct broker helper disappeared after native arm".into());
+                    break;
+                };
+                if let Err(e) = broker.kill_distinct_broker_writer_on_native_arm() {
+                    failure = Some(format!(
+                        "real broker process kill through original OS HANDLE failed: {e}"
+                    ));
+                    break;
                 }
             }
             if matches!(
@@ -3276,6 +4320,9 @@ document.title='clack-renderer-js-__NONCE__';"#;
         }
         if let Some(broker) = child.broker.as_mut() {
             if let Err(e) = broker.poll() {
+                if e.starts_with("STOP:") {
+                    broker_helper_cleanup_uncertain = true;
+                }
                 failure = Some(format!("restricted broker final frame read failed: {e}"));
             }
             if let Err(e) = broker.release_page_reply_on_observed_marker(&child.stderr.text()) {
@@ -3326,7 +4373,20 @@ document.title='clack-renderer-js-__NONCE__';"#;
         let exit_before_cleanup = child.exit_before_cleanup();
         // Preserve diagnostic content even if job cleanup cannot be verified.
         // Job termination/verification STILL precedes case classification.
-        let cleanup = child.stop_and_verify();
+        let host_cleanup = child.stop_and_verify();
+        let broker_helper_cleanup = child
+            .broker
+            .as_mut()
+            .map_or(Ok(()), BrokerBridge::cleanup_distinct_broker_writer);
+        let cleanup = host_cleanup
+            .and(broker_helper_cleanup)
+            .and_then(|()| {
+                if broker_helper_cleanup_uncertain {
+                    Err("STOP: distinct broker helper launch/teardown was not independently verified; preserve AppContainer and case evidence".to_owned())
+                } else {
+                    Ok(())
+                }
+            });
         let capture = child.drain_output();
         let browser = roles.values().any(|r| r == "browser");
         let renderer = roles.values().any(|r| r == "renderer");
@@ -3374,6 +4434,20 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 "phaseAHostCrashExitCode": if phase_a_host_crash_injected {Some(PHASE_A_HOST_EXIT_CODE)} else {None},
                 "rendererCrashInjected": renderer_crash_injected,
                 "phaseAParentOsBrowserAckWritten": phase_a_os_browser_ack_written,
+                "phaseAParentGroupAckWritten": phase_a_group_ack_written,
+                "phaseAParentGroupAckPids": phase_a_group_ack_pids.map(
+                    |(browser, renderer)| json!({"browser":browser,"renderer":renderer})
+                ),
+                "brokerHelperKilledFromOriginalHandle": child.broker.as_ref().is_some_and(
+                    |broker| broker.evidence.broker_helper_killed_from_original_handle
+                ),
+                "brokerHelperExitCode": child.broker.as_ref().and_then(
+                    |broker| broker.evidence.broker_helper_exit_code
+                ),
+                "brokerHelperOwnedJobCleanupEmpty": child.broker.as_ref().is_some_and(
+                    |broker| broker.evidence.broker_helper_owned_job_cleanup_empty
+                ),
+                "brokerHelperCleanupUncertain": broker_helper_cleanup_uncertain,
                 "phaseAParentOsBrowserAndRendererAckPids": phase_a_os_browser_and_renderer_ack_pids.map(
                     |(browser, renderer)| json!({"browser":browser,"renderer":renderer})
                 ),
@@ -3494,6 +4568,55 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 .map_err(|e| format!("remove copied acceptance host: {e}"))?;
         }
         Ok(())
+    }
+
+    fn grouped_cleanup_no_reparse_tree(root: &Path) -> Result<(), String> {
+        use std::os::windows::fs::MetadataExt;
+        // The child can write into its own UDF; do not let a directory
+        // junction/reparse point inside that UDF redirect remove_dir_all to an
+        // unrelated profile. Only the grouped-only mode adds this check;
+        // historical original-case cleanup behavior is not changed.
+        const REPARSE_POINT: u32 = 0x400;
+        const MAX_ENTRIES: usize = 100_000;
+        let mut examined = 0usize;
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(path) = pending.pop() {
+            examined += 1;
+            if examined > MAX_ENTRIES {
+                return Err("STOP: grouped UDF cleanup tree outside bounded entry count".into());
+            }
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|e| format!("STOP: grouped UDF cleanup metadata unavailable: {e}"))?;
+            if metadata.file_type().is_symlink() || metadata.file_attributes() & REPARSE_POINT != 0
+            {
+                return Err(format!(
+                    "STOP: grouped UDF cleanup denied reparse/symlink: {}",
+                    path.display()
+                ));
+            }
+            if metadata.is_dir() {
+                for child in fs::read_dir(&path)
+                    .map_err(|e| format!("STOP: grouped UDF cleanup directory unreadable: {e}"))?
+                {
+                    pending.push(
+                        child
+                            .map_err(|e| {
+                                format!("STOP: grouped UDF cleanup child unreadable: {e}")
+                            })?
+                            .path(),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn clean_grouped_owned_udf(root: &Path) -> Result<(), String> {
+        // The owned root and every descendant inside directories that will be
+        // recursively deleted must be independently safe, not merely an
+        // ordinary-looking top-level DirEntry. A failed scan retains evidence.
+        grouped_cleanup_no_reparse_tree(root)?;
+        clean_owned_udf(root)
     }
 
     struct BrokerCaseOutcome {
@@ -4377,6 +5500,7 @@ document.title='clack-renderer-js-__NONCE__';"#;
             let expected_requests = match scenario {
                 PhaseAScenario::HostCrash | PhaseAScenario::ShutdownPending => 0,
                 PhaseAScenario::DependentTimeout => 2,
+                scenario if scenario.is_grouped_race() => 2,
                 _ => 1,
             };
             if parent["requests_received"].as_u64() != Some(expected_requests)
@@ -4399,8 +5523,17 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 | PhaseAScenario::DuplicateCompletion
                 | PhaseAScenario::DependentResource
                 | PhaseAScenario::RendererCrash
-                | PhaseAScenario::DependentTimeout => 1,
+                | PhaseAScenario::DependentTimeout
+                | PhaseAScenario::RendererFetchCancel
+                | PhaseAScenario::RendererXhrCancel
+                | PhaseAScenario::PageClosePending
+                | PhaseAScenario::SessionClosePending
+                | PhaseAScenario::MultiPendingShutdown
+                | PhaseAScenario::BrokerProcessKill => 1,
                 PhaseAScenario::StaleBrokerRequest => 2,
+                PhaseAScenario::NavigationStale
+                | PhaseAScenario::SnapshotStale
+                | PhaseAScenario::ElementStale => 2,
                 PhaseAScenario::PendingCancel
                 | PhaseAScenario::HostCrash
                 | PhaseAScenario::ShutdownPending => 0,
@@ -4424,11 +5557,46 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 }) {
                     return Err("Phase A did not independently establish a real nonce-bound native request descriptor".into());
                 }
-            } else if scenario != PhaseAScenario::DependentTimeout && !parent_events.is_empty() {
+            } else if scenario != PhaseAScenario::DependentTimeout
+                && !scenario.is_grouped_race()
+                && !parent_events.is_empty()
+            {
                 return Err("native crash/shutdown used a parent request despite a local-only pending-deferral seam".into());
             }
             if scenario == PhaseAScenario::DependentTimeout {
                 dependent_timeout_parent_receipt_verified(parent, nonce)?;
+            }
+            if scenario.is_grouped_race() {
+                grouped_parent_receipt_verified(parent, nonce, scenario, true)?;
+                if d["phaseAParentGroupAckWritten"] != true
+                    || !d["stderr"]
+                        .as_str()
+                        .is_some_and(|trace| trace.contains("broker.dom.marker"))
+                {
+                    return Err("grouped physical race lacked actual renderer DOM and independent two-role native dependent-request arm acknowledgment".into());
+                }
+                let ack = &d["phaseAParentGroupAckPids"];
+                let browser_pid = ack["browser"].as_u64().map(|pid| pid.to_string());
+                let renderer_pid = ack["renderer"].as_u64().map(|pid| pid.to_string());
+                let original_handle_roles = browser_pid
+                    .as_ref()
+                    .zip(renderer_pid.as_ref())
+                    .is_some_and(|(browser, renderer)| {
+                        browser != renderer
+                            && roles.get(browser).is_some_and(|role| role == "browser")
+                            && roles.get(renderer).is_some_and(|role| role == "renderer")
+                            && [browser, renderer].iter().all(|pid| {
+                                proofs.get(*pid).is_some_and(|proof| {
+                                    proof["appcontainer"] == true
+                                        && proof["sid_matches"] == true
+                                        && proof["capability_count"] == 0
+                                        && proof["in_owned_job"] == true
+                                })
+                            })
+                    });
+                if !original_handle_roles {
+                    return Err("grouped fault was released without distinct independently live original-HANDLE browser and renderer SID/zero-capability/Job proofs".into());
+                }
             }
             if scenario == PhaseAScenario::StalePageGeneration
                 && (!d["stderr"]
@@ -4501,6 +5669,207 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 }.into());
             }
             match scenario {
+                PhaseAScenario::RendererFetchCancel
+                | PhaseAScenario::RendererXhrCancel
+                | PhaseAScenario::PageClosePending
+                | PhaseAScenario::SessionClosePending
+                | PhaseAScenario::MultiPendingShutdown => {
+                    // This suite may only pass after the actual renderer
+                    // issued the dependent request, parent denied a reply,
+                    // and the real native host completed the corresponding
+                    // WebResourceRequested COM deferral(s) via 503. A script
+                    // error, API scheduling, or a watchdog drain is not a
+                    // completed cancellation/close/shutdown proof.
+                    let timeline = phase["events"]
+                        .as_array()
+                        .ok_or("grouped native action timeline absent")?;
+                    let pending_event = format!("{}-dependent-deferral-pending", scenario.label());
+                    let terminal_event = format!("{}-native-action-completed", scenario.label());
+                    let pending_at = timeline.iter().position(|event| event == &pending_event);
+                    let completed_at = timeline.iter().position(|event| event == &terminal_event);
+                    let trace = d["stderr"]
+                        .as_str()
+                        .ok_or("grouped native arm/completion trace absent")?;
+                    let armed_marker = format!("broker.phase-a.{}.armed", scenario.label());
+                    let completed_marker = format!("broker.phase-a.{}.completed", scenario.label());
+                    let native_ordered = trace
+                        .find(&armed_marker)
+                        .zip(trace.find(&completed_marker))
+                        .is_some_and(|(arm, completed)| arm < completed);
+                    let expected_min_pending = if scenario == PhaseAScenario::MultiPendingShutdown {
+                        2
+                    } else {
+                        1
+                    };
+                    let expected_min_answers = expected_min_pending + 1; // document 200 + native 503s
+                    if pending_at
+                        .zip(completed_at)
+                        .is_none_or(|(arm, completed)| arm >= completed)
+                        || !native_ordered
+                        || !timeline.iter().any(|event| {
+                            event == "independent-parent-dependent-request-acknowledged"
+                        })
+                        || timeline
+                            .iter()
+                            .any(|event| event == "watchdog-draining-unresolved-deferrals")
+                        || trace.contains("broker.phase-a.watchdog-drain")
+                        || host["scriptObserved"] != true
+                        || host["rendererDomProof"] != true
+                        || host["brokerTimeouts"] != 0
+                        || host["brokerSynthetic502"] != 0
+                        || host["brokerSynthetic504"] != 0
+                        || host["brokerLastSyntheticStatus"] != 503
+                        || host["brokerSynthetic503"].as_u64() != Some(expected_min_pending)
+                        || host["brokerCompleted2xx"] != 1
+                        || host["brokerCompleted4xx"] != 0
+                        || host["brokerCompleted5xx"].as_u64() != Some(expected_min_pending)
+                        || host["brokerAnswered"].as_u64() != Some(expected_min_answers)
+                        || host["brokerForwarded"] != 2
+                        || host["brokerIntercepted"].as_u64() != Some(expected_min_answers)
+                        || phase["pendingAtTrigger"].as_u64() != Some(expected_min_pending)
+                        || phase["completedResponseCount"].as_u64() != Some(expected_min_answers)
+                        || phase["suppressedLateCount"] != 0
+                        || phase["duplicateParentRejected"] != 0
+                        || phase["duplicateCompletionSuppressed"] != 0
+                        || phase["nativeNavigationAttempts"] != 0
+                    {
+                        return Err(format!(
+                            "grouped {} lacked exact two-role native arm/ack, pending>=2 for multi, true COM synthetic503 completions, no replay/timeout/watchdog, or zero pending",
+                            scenario.label()
+                        ));
+                    }
+                }
+                PhaseAScenario::NavigationStale
+                | PhaseAScenario::SnapshotStale
+                | PhaseAScenario::ElementStale => {
+                    // These cannot be made green by checking a stale DOM
+                    // label or copying a host-reported result. The host must
+                    // expose a real, generation-bound semantic snapshot and
+                    // targeted old-element action verification. Until that
+                    // native bridge is implemented this remains NOT_PROVEN.
+                    let timeline = phase["events"]
+                        .as_array()
+                        .ok_or("native semantic stale race timeline unavailable")?;
+                    let invalidated = format!("broker.phase-a.{}.invalidated", scenario.label());
+                    let trace = d["stderr"]
+                        .as_str()
+                        .ok_or("native semantic stale race trace missing")?;
+                    let generation_proven = trace.contains(&invalidated)
+                        && phase["nativeNavigationAttempts"].as_u64().unwrap_or(0) >= 1
+                        && phase["successorPageMutationCount"] == 0
+                        && timeline.iter().any(|event| {
+                            event == "late-old-session-or-element-rejected-after-invalidation"
+                        })
+                        && host["brokerSynthetic502"].as_u64().unwrap_or(0) >= 1
+                        && host["scriptObserved"] == true;
+                    let semantic_proven =
+                        match scenario {
+                            PhaseAScenario::NavigationStale => phase["stalePageDenied"]
+                                .as_u64()
+                                .is_some_and(|count| count >= 1),
+                            PhaseAScenario::SnapshotStale => phase["semanticSnapshotObserved"]
+                                == true
+                                && phase["staleSnapshotRejected"] == true
+                                && timeline.iter().any(|event| {
+                                    event == "original-semantic-snapshot-bound-to-old-generation"
+                                }),
+                            PhaseAScenario::ElementStale => phase["semanticSnapshotObserved"]
+                                == true
+                                && phase["staleElementRejected"] == true
+                                && timeline.iter().any(|event| {
+                                    event == "original-semantic-snapshot-bound-to-old-generation"
+                                }),
+                            _ => unreachable!(),
+                        };
+                    if !generation_proven
+                        || !semantic_proven
+                        || host["brokerForwarded"] != 2
+                        || host["brokerAnswered"] != 2
+                        || host["brokerCompleted2xx"] != 1
+                        || host["brokerCompleted5xx"] != 1
+                        || host["brokerSynthetic503"] != 0
+                        || host["brokerSynthetic504"] != 0
+                        || host["brokerTimeouts"] != 0
+                        || phase["completedResponseCount"] != 2
+                        || phase["suppressedLateCount"] != 0
+                        || phase["duplicateParentRejected"] != 0
+                        || phase["duplicateCompletionSuppressed"] != 0
+                        || trace.contains("broker.phase-a.watchdog-drain")
+                        || timeline
+                            .iter()
+                            .any(|event| event == "watchdog-draining-unresolved-deferrals")
+                    {
+                        return Err(format!(
+                            "{} NOT_PROVEN: real native generation/semantic snapshot or targeted old-element rejection/successor mutation-zero proof unavailable",
+                            scenario.label()
+                        ));
+                    }
+                }
+                PhaseAScenario::BrokerProcessKill => {
+                    // The existing broker-crash negative simulates pipe EOF;
+                    // it cannot independently claim a distinct OS broker
+                    // PROCESS was killed. Only an exact retained OS broker
+                    // helper process HANDLE, kill exit, owned job cleanup and
+                    // native EOF->COM 502 can satisfy this distinct case.
+                    let trace = d["stderr"]
+                        .as_str()
+                        .ok_or("broker process real OS-kill native trace absent")?;
+                    let phase_events = phase["events"]
+                        .as_array()
+                        .ok_or("broker process real OS-kill native timeline absent")?;
+                    let armed_trace = trace.find("broker.phase-a.broker-process-kill.armed");
+                    let completed_trace =
+                        trace.find("broker.phase-a.broker-process-kill.completed");
+                    let armed_event = phase_events.iter().position(|event| {
+                        event == "broker-process-kill-dependent-deferral-pending"
+                    });
+                    let completed_event = phase_events
+                        .iter()
+                        .position(|event| event == "broker-process-kill-native-action-completed");
+                    if d["brokerHelperKilledFromOriginalHandle"] != true
+                        || d["brokerHelperExitCode"] != 91
+                        || d["brokerHelperOwnedJobCleanupEmpty"] != true
+                        || parent["broker_helper_killed_from_original_handle"] != true
+                        || parent["broker_helper_exit_code"] != 91
+                        || parent["broker_helper_owned_job_cleanup_empty"] != true
+                        || parent["broker_helper_writer_transferred"] != true
+                        || !parent["broker_helper_pid"]
+                            .as_u64()
+                            .is_some_and(|pid| pid != 0)
+                        || armed_trace
+                            .zip(completed_trace)
+                            .is_none_or(|(start, end)| start >= end)
+                        || armed_event
+                            .zip(completed_event)
+                            .is_none_or(|(start, end)| start >= end)
+                        || !phase_events.iter().any(|event| {
+                            event == "independent-parent-dependent-request-acknowledged"
+                        })
+                        || trace.contains("broker.phase-a.watchdog-drain")
+                        || phase_events
+                            .iter()
+                            .any(|event| event == "watchdog-draining-unresolved-deferrals")
+                        || host["scriptObserved"] != true
+                        || host["rendererDomProof"] != true
+                        || host["brokerIntercepted"] != 2
+                        || host["brokerForwarded"] != 2
+                        || host["brokerAnswered"] != 2
+                        || host["brokerCompleted2xx"] != 1
+                        || host["brokerCompleted5xx"] != 1
+                        || host["brokerSynthetic502"] != 1
+                        || host["brokerSynthetic503"] != 0
+                        || host["brokerSynthetic504"] != 0
+                        || host["brokerTimeouts"] != 0
+                        || host["brokerPendingCount"] != 0
+                        || phase["pendingAtTrigger"] != 1
+                        || phase["completedResponseCount"] != 2
+                        || phase["suppressedLateCount"] != 0
+                        || phase["duplicateParentRejected"] != 0
+                        || phase["duplicateCompletionSuppressed"] != 0
+                    {
+                        return Err("broker-process-kill NOT_PROVEN: no independently original-HANDLE killed separate broker writer process with exact job/exit 91, event-ordered native EOF->COM502, zero pending, no watchdog or replay".into());
+                    }
+                }
                 PhaseAScenario::StalePageGeneration => {
                     if !positive("stalePageDenied")
                         || host["brokerSynthetic502"].as_u64().unwrap_or(0) == 0
@@ -4698,7 +6067,208 @@ document.title='clack-renderer-js-__NONCE__';"#;
         })
     }
 
+    /// This mode has its OWN run root, AppContainer profile per selected case,
+    /// job/UDF, independent destination and immutable verdict. It deliberately
+    /// does not call run_case(control/isolated), run_broker_case, any of the
+    /// original eight negative cases, or PhaseAScenario::ALL[..9]. Existing
+    /// accepted original evidence is neither overwritten nor re-certified.
+    fn run_grouped_only(selected: &[PhaseAScenario]) -> Result<(), String> {
+        if selected.is_empty()
+            || selected.len() > PhaseAScenario::GROUPED.len()
+            || selected
+                .iter()
+                .any(|scenario| !PhaseAScenario::GROUPED.contains(scenario))
+            || selected.windows(2).any(|pair| {
+                let first = PhaseAScenario::GROUPED.iter().position(|s| *s == pair[0]);
+                let second = PhaseAScenario::GROUPED.iter().position(|s| *s == pair[1]);
+                first.zip(second).is_none_or(|(a, b)| a >= b)
+            })
+        {
+            return Err("STOP: grouped-only selection is empty, repeated, unsorted, or outside the nine separately implemented races".into());
+        }
+        let binary = candidate_host()?;
+        let bytes = fs::read(&binary).map_err(|e| format!("read grouped host binary: {e}"))?;
+        let cases_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("tf-browser-isolation-acceptance");
+        fs::create_dir_all(&cases_root)
+            .map_err(|e| format!("create project-owned grouped cases root: {e}"))?;
+        let owned = tempfile::Builder::new()
+            .prefix("clack-tf-browser-grouped-only-")
+            .tempdir_in(&cases_root)
+            .map_err(|e| format!("create unique grouped-only case root: {e}"))?
+            .keep();
+        // This receipt never imports or asserts an earlier matrix verdict.
+        let mut outcomes = Vec::<Value>::with_capacity(selected.len());
+        let mut verified_count = 0usize;
+        let mut failure: Option<String> = None;
+        for scenario in selected {
+            let label = scenario.label();
+            let mut random = [0u8; 24];
+            if getrandom::fill(&mut random).is_err() {
+                failure = Some(format!("STOP: grouped {label} unique nonce unavailable"));
+                break;
+            }
+            let nonce = random
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            // Each one has a fresh SID as well as a new Job, process, UDF,
+            // broker, independent destination and immutable create-new receipt.
+            let mut profile = match Profile::new(&format!("ClackTfGroup{}", &nonce[..20])) {
+                Ok(profile) => profile,
+                Err(error) => {
+                    failure = Some(format!("STOP: grouped {label} profile creation: {error}"));
+                    break;
+                }
+            };
+            let sid = match profile.text_sid() {
+                Ok(sid) => sid,
+                Err(error) => {
+                    let cleanup = profile.delete();
+                    failure = Some(format!(
+                        "STOP: grouped {label} profile SID unavailable: {error}; profile cleanup: {cleanup:?}"
+                    ));
+                    break;
+                }
+            };
+            let case_result = run_phase_a_case(&owned, &bytes, &profile, &sid, &nonce, *scenario);
+            let case_root = owned.join(format!("phase-a-{label}"));
+            if let Err(reason) = &case_result {
+                // A failed preflight must never become a passing zero-egress
+                // observation. Only create a fallback receipt if the case
+                // directory already exists and no detailed one was written.
+                if case_root.is_dir() {
+                    let receipt = case_root.join("phase-a-acceptance-receipt.json");
+                    if !receipt.exists() {
+                        if let Err(error) = preserve_json(
+                            &receipt,
+                            &json!({
+                                "case":label,"fault":scenario,"status":"FAILED",
+                                "classification":"physical-independent-phase-a",
+                                "stage":"grouped-only-preflight-or-evidence",
+                                "failure":reason,"ownedJobCleanupVerified":false,
+                                "independentDestination":"UNVERIFIED",
+                            }),
+                        ) {
+                            failure = Some(format!(
+                                "STOP: grouped {label} immutable failure receipt not preserved: {error}"
+                            ));
+                        }
+                    }
+                }
+            }
+            // A missing diagnosis, a pre-spawn error, or unknown job lifetime
+            // forbids profile deletion and all subsequent physical cases.
+            let job_drained = case_result.as_ref().is_ok_and(|case| !case.unsafe_cleanup);
+            let profile_cleanup = if job_drained {
+                profile.delete()
+            } else {
+                Err("grouped case job cleanup not independently proven; AppContainer profile retained".into())
+            };
+            let fixture_cleanup = if profile_cleanup.is_ok() {
+                clean_grouped_owned_udf(&case_root)
+            } else {
+                Err(
+                    "grouped case profile/job cleanup uncertain; owned UDF and evidence retained"
+                        .into(),
+                )
+            };
+            let passed = case_result.as_ref().is_ok_and(|case| case.passed)
+                && profile_cleanup.is_ok()
+                && fixture_cleanup.is_ok();
+            if passed {
+                verified_count += 1;
+            }
+            let unsafe_to_continue =
+                !job_drained || profile_cleanup.is_err() || fixture_cleanup.is_err();
+            let case_failure = case_result.as_ref().err().cloned().or_else(|| {
+                case_result
+                    .as_ref()
+                    .ok()
+                    .and_then(|case| case.evidence["failure"].as_str().map(ToOwned::to_owned))
+            });
+            outcomes.push(json!({
+                "case":label,
+                "status":if passed {"PASS"} else {"FAILED"},
+                "physicalEvidence":case_result.as_ref().ok().map(|case| &case.evidence),
+                "failure":case_failure,
+                "ownedJobCleanupVerified":job_drained,
+                "profileDeleted":profile_cleanup.is_ok(),
+                "profileCleanupError":profile_cleanup.as_ref().err(),
+                "ownedUdfCleaned":fixture_cleanup.is_ok(),
+                "ownedUdfCleanupError":fixture_cleanup.as_ref().err(),
+            }));
+            if unsafe_to_continue {
+                failure.get_or_insert_with(|| format!(
+                    "STOP: grouped {label} job, profile or UDF cleanup unverified; no next scenario launched"
+                ));
+                break;
+            }
+            if !passed {
+                failure.get_or_insert_with(|| {
+                    format!("grouped {label} native COM/renderer/parent/zero-egress proof FAILED")
+                });
+                // A proven-safe cleanup allows other distinct grouped cases
+                // to be diagnosed; final verdict still FAILS.
+            }
+        }
+        let all_selected_verified = verified_count == selected.len()
+            && outcomes.len() == selected.len()
+            && failure.is_none();
+        let summary = json!({
+            "scope":"new grouped Phase A only; not original eight negatives or original nine Phase A",
+            "status":if all_selected_verified {"PASS_SELECTED_GROUPED_ONLY"} else {"FAILED"},
+            "requiredFullGroupedCaseCount":REQUIRED_GROUPED_RACES,
+            "implementedDistinctGroupedCaseCount":PhaseAScenario::GROUPED.len(),
+            "fullElevenGroupedRequirement":"NOT_PROVEN",
+            "originalEightNegatives":"NOT_RERUN_NOT_REVERIFIED",
+            "originalNinePhaseA":"NOT_RERUN_NOT_REVERIFIED",
+            "selectedCaseCount":selected.len(),
+            "completedCaseCount":outcomes.len(),
+            "verifiedCaseCount":verified_count,
+            "selectedCases":selected.iter().map(|case|case.label()).collect::<Vec<_>>(),
+            "failure":failure,
+            "source":"real case-local Windows AppContainer Job/WebView2 COM, independent IPv4/IPv6 TCP and IPv4 UDP; no UDPv6 or broad egress claim",
+            "cases":outcomes,
+        });
+        preserve_json(&owned.join("grouped-only-verdict.json"), &summary).map_err(|error| {
+            format!(
+                "STOP: grouped-only immutable verdict preservation failed in {}: {error}",
+                owned.display()
+            )
+        })?;
+        if !all_selected_verified {
+            return Err(format!(
+                "grouped-only proof FAILED or cleanup uncertain; retained immutable evidence={}",
+                owned.display()
+            ));
+        }
+        println!(
+            "TF_BROWSER_GROUPED_ONLY_SELECTED_PASS_FULL_11_NOT_PROVEN (selected {}/{} implemented, full eleven remains NOT_PROVEN, original 8+9 NOT_RERUN): retained evidence={}",
+            verified_count,
+            PhaseAScenario::GROUPED.len(),
+            owned.display()
+        );
+        Ok(())
+    }
+
     pub fn run() -> Result<(), String> {
+        match parse_runner_mode(&std::env::args().skip(1).collect::<Vec<_>>())? {
+            RunnerMode::ListGrouped => {
+                println!(
+                    "TF_BROWSER_GROUPED_INVENTORY implemented={} required={} fullRequirement=NOT_PROVEN originalEightAndNine=NOT_RERUN",
+                    PhaseAScenario::GROUPED.len(),
+                    REQUIRED_GROUPED_RACES
+                );
+                for scenario in PhaseAScenario::GROUPED {
+                    println!("{}", scenario.label());
+                }
+                return Ok(());
+            }
+            RunnerMode::GroupedOnly(selected) => return run_grouped_only(&selected),
+            RunnerMode::Full => {}
+        }
         let binary = candidate_host()?;
         let bytes = fs::read(&binary).map_err(|e| format!("read host binary: {e}"))?;
         let mut random = [0u8; 24];
@@ -5221,7 +6791,7 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 },
                 "physicalPhaseASuite": {
                     "status":if phase_a_cases.len() == PhaseAScenario::ALL.len() && phase_a_cases.iter().all(|case| case.as_ref().is_ok_and(|case| case.passed)) {"PASS"} else {"NOT_PROVEN"},
-                    "scope":"fresh per-case actual WebView2 native COM deferrals, exactly one nonce-bound parent request, stale/duplicate/pending cancellation and real renderer or host failure; independent IPv4+IPv6 TCP and IPv4 UDP zero destination counts, UDPv6/global egress unverified",
+                    "scope":"nine original Phase A cases plus nine separate grouped cancellation/page/session-close/stale-generation/real-broker-process-kill/multiple-pending-shutdown cases; fresh native WebView2 COM deferrals and nonce-bound parent descriptors (one or two per case), host event-ordered completion and original retained OS child HANDLE SID/job checks; independent IPv4+IPv6 TCP and IPv4 UDP zero destination counts; semantic stale cases NOT_PROVEN unless native snapshot/action bridge receipts exist; UDPv6/global egress unverified",
                     "expectedCount":PhaseAScenario::ALL.len(),
                     "performedCount":phase_a_cases.len(),
                     "cases":phase_a_cases.iter().map(|case|match case {
@@ -5245,7 +6815,7 @@ document.title='clack-renderer-js-__NONCE__';"#;
         }
         let (control_result, isolated_result, broker_result) = verdict?;
         println!(
-            "TF_BROWSER_ISOLATION_BROKER_NEGATIVE_AND_PHASE_A_PASS (independent owned IPv4/IPv6 TCP and IPv4 UDP fixture observations; TF3 brokered resources/native denials, eight original negative plus nine distinct Phase A lifecycle cases; no UDPv6/global egress claim): independent IPv4 {} / IPv6 {}; control {good:?}; isolated {denied:?}; control_host={}; isolated_host={}; brokered_host={}; child_tokens={:?}; unique_owned_UDF_cleaned=true; retained evidence={}",
+            "TF_BROWSER_ISOLATION_BROKER_NEGATIVE_AND_PHASE_A_PASS (independent owned IPv4/IPv6 TCP and IPv4 UDP fixture observations; TF3 brokered resources/native denials, eight original negative plus nine original and nine grouped Phase A lifecycle cases; no UDPv6/global egress claim): independent IPv4 {} / IPv6 {}; control {good:?}; isolated {denied:?}; control_host={}; isolated_host={}; brokered_host={}; child_tokens={:?}; unique_owned_UDF_cleaned=true; retained evidence={}",
             destination.addr, destination.ipv6_addr,
             control_result.0, isolated_result.0, broker_result.0, isolated_result.1, owned.display(),
         );

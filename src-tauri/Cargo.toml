@@ -29,13 +29,19 @@ lm11-authenticated-webview-acceptance = []
 ## Isolated real NVIDIA CUDA native acceptance log introspection; NEVER enabled
 ## in production builds or exposed through Tauri invoke permissions.
 managed-cuda-native-acceptance = []
-# Standalone Windows WebView2 acceptance host. Never part of normal Clack.
-tf-browser-isolation-acceptance = ["dep:webview2-com", "dep:windows", "dep:base64"]
+# Real Windows AppContainer browser host dependencies. The production host may
+# be compiled only when an independently authenticated launcher owns its Job,
+# broker channel and effective UDF. No interactive model tools are enabled by
+# this feature alone.
+tf-browser-native-runtime = ["dep:webview2-com", "dep:windows", "dep:base64"]
+# Non-default, owned-network fixture only; never allow this broader fixture
+# policy to become production browser network authority.
+tf-browser-isolation-acceptance = ["tf-browser-native-runtime"]
 
 [[bin]]
 name = "clack-browser-host"
 path = "src/bin/clack-browser-host.rs"
-required-features = ["tf-browser-isolation-acceptance"]
+required-features = ["tf-browser-native-runtime"]
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
@@ -112,6 +118,7 @@ windows-sys = { version = "=0.61.2", features = [
 	"Win32_System_LibraryLoader",
 	"Win32_System_Registry",
 	"Win32_System_JobObjects",
+	"Win32_System_IO",
 	"Win32_System_Threading",
 	"Win32_System_Diagnostics_ToolHelp",
 ] }

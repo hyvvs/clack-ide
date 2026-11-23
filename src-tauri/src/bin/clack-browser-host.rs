@@ -1,5 +1,7 @@
-//! Acceptance-only real Windows WebView2 host for TF4 network isolation.
-//! Build with --features tf-browser-isolation-acceptance --bin clack-browser-host.
+//! Confined Windows WebView2 host for TF4 native brokered sessions.
+//! The acceptance-only fixture is behind tf-browser-isolation-acceptance; the
+//! production launch path has no fixture loopback or direct-network grant.
+//! Build with --features tf-browser-native-runtime --bin clack-browser-host.
 //! The acceptance launcher must create a fresh case root and supply a listener.
 //! Isolated mode requires an AppContainer token with zero capabilities.
 //! Positive-control mode renders identical HTML with the ordinary caller token.
@@ -16,6 +18,7 @@ mod host {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use serde::{Deserialize, Serialize};
     use serde_json::json;
+    use sha2::{Digest, Sha256};
     use std::cell::RefCell;
     use std::collections::{BTreeMap, HashSet};
     use std::error::Error;
@@ -34,11 +37,12 @@ mod host {
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-    use tauri::{webview::PageLoadEvent, WebviewUrl, WebviewWindowBuilder};
+    use tauri::{webview::PageLoadEvent, Manager, WebviewUrl, WebviewWindowBuilder};
     use webview2_com::{
         take_pwstr, BrowserProcessExitedEventHandler, CallDevToolsProtocolMethodCompletedHandler,
-        ExecuteScriptCompletedHandler, Microsoft::Web::WebView2::Win32::*,
-        NavigationStartingEventHandler, ProcessFailedEventHandler,
+        DownloadStartingEventHandler, ExecuteScriptCompletedHandler,
+        Microsoft::Web::WebView2::Win32::*, NavigationStartingEventHandler,
+        NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
         WebResourceRequestedEventHandler,
     };
     use windows::{
@@ -65,9 +69,13 @@ mod host {
     };
 
     const WATCHDOG: Duration = Duration::from_secs(16);
+    const PRODUCTION_SESSION_LIMIT: Duration = Duration::from_secs(600);
     // Fixture-only parent OS-role acknowledgement, not a browser authority.
     const PHASE_A_OS_BROWSER_ACK_FILE: &str = "parent-os-browser-proven.ack";
     const PHASE_A_OS_BROWSER_ACK_BYTES: &[u8] = b"independent-os-browser-token-job-proven\n";
+    const PHASE_A_DEPENDENT_ACK_FILE: &str = "parent-fault-arm.ack";
+    const PHASE_A_DEPENDENT_ACK_BYTES: &[u8] =
+        b"independent-live-browser-renderer-and-native-dependent-request-proven\n";
     const RENDER_MARKER: &str = "clack-renderer-js-";
     const STARTUP_LOG_LIMIT: usize = 32 * 1024;
     const STARTUP_FIELD_LIMIT: usize = 384;
@@ -82,6 +90,84 @@ mod host {
     const SEMANTIC_MAX_LABEL_CHARS: usize = 200;
     const SEMANTIC_MAX_TEXT_BYTES: usize = 32 * 1024;
     const SEMANTIC_MAX_JSON_BYTES: usize = 64 * 1024;
+    const PRODUCTION_DOM_MAX_VISITS: u32 = 256;
+    const PRODUCTION_DOM_MAX_ELEMENTS: usize = 48;
+    const PRODUCTION_DOM_FRAME_LIMIT: usize = 16 * 1024;
+    const PRODUCTION_DOM_MAX_REQUESTS: u64 = 16;
+    const PRODUCTION_DOM_DEADLINE: Duration = Duration::from_secs(3);
+    // This script carries NO page-derived strings. Even an innocuous aria-label
+    // can contain an arbitrary password, session token or secret, so no label,
+    // title, text, attribute, href, form value or URL is read or serialized.
+    // Browser JS execution remains disabled for remote pages; this exact
+    // acceptance-compiled probe is invoked by native COM only on parent request.
+    const PRODUCTION_DOM_JS: &str = r#"(() => {
+      'use strict';
+      const result = { version: 2, visited: 0, truncated: false,
+        omittedFields: 0, elements: [] };
+      if (!document.body) return result;
+      const roles = Object.freeze({
+        MAIN: 'main', NAV: 'navigation', ARTICLE: 'article',
+        H1: 'heading', H2: 'heading', H3: 'heading',
+        H4: 'heading', H5: 'heading', H6: 'heading',
+        A: 'link', BUTTON: 'button', IMG: 'image',
+        P: 'paragraph', LI: 'listitem', FORM: 'form'
+      });
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+      let node = walker.currentNode;
+      while (node && result.visited < 256) {
+        ++result.visited;
+        const tag = node.tagName;
+        // Input controls and editable regions are intentionally invisible.
+        // Never inspect their type, names, labels, value or contents.
+        if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA'
+            || node.isContentEditable) {
+          ++result.omittedFields;
+          result.truncated = true;
+          node = walker.nextSibling();
+          continue;
+        }
+        const role = roles[tag];
+        if (role) {
+          if (result.elements.length === 48) {
+            result.truncated = true;
+            break;
+          }
+          let depth = 0, parent = node.parentElement;
+          while (parent && parent !== document.body && depth < 16) {
+            ++depth;
+            parent = parent.parentElement;
+          }
+          const level = role === 'heading' ? Number(tag[1]) : null;
+          result.elements.push({ index: result.visited, role, depth,
+            headingLevel: level });
+        }
+        node = walker.nextNode();
+      }
+      if (node) result.truncated = true;
+      return result;
+    })()"#;
+    // Two fixture-only native scripts arm a REAL MutationObserver in the
+    // about:blank successor and then read its actual queued mutation records
+    // *after* attempting and denying the stale native generation-bound action.
+    // Only a bounded integer travels back from the renderer. The observer
+    // never reads page text, HTML, URLs, attributes, form fields or secrets.
+    const GROUPED_SUCCESSOR_MUTATION_ARM_JS: &str = r#"(() => {
+      'use strict';
+      if (location.href !== 'about:blank'
+          || document.getElementById('race-target')
+          || globalThis.__clackPhaseAObserver) return false;
+      globalThis.__clackPhaseAMutationCount = 0;
+      const observer = new MutationObserver((records) => {
+        globalThis.__clackPhaseAMutationCount += records.length;
+      });
+      observer.observe(document, {
+        subtree: true, attributes: true, childList: true, characterData: true
+      });
+      globalThis.__clackPhaseAObserver = observer;
+      return true;
+    })()"#;
+    const GROUPED_SUCCESSOR_READBACK_JS: &str =
+        "(() => { if (location.href !== 'about:blank' || !globalThis.__clackPhaseAObserver) return -1; const records = globalThis.__clackPhaseAMutationCount + globalThis.__clackPhaseAObserver.takeRecords().length; globalThis.__clackPhaseAObserver.disconnect(); delete globalThis.__clackPhaseAObserver; delete globalThis.__clackPhaseAMutationCount; return records; })()";
     // Fixed acceptance-only semantic-lite script. It never reads input values,
     // cookies, localStorage, HTML markup, arbitrary selectors, or page scripts.
     // This is a bounded DOM summary, NOT an accessibility-tree attestation.
@@ -343,6 +429,7 @@ mod host {
         Isolated,
         PositiveControl,
         Brokered,
+        ProductionBroker,
     }
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     enum BrokerFault {
@@ -361,6 +448,15 @@ mod host {
         DuplicateLate,
         DependentDrain,
         DependentTimeout,
+        RendererFetchCancel,
+        RendererXhrCancel,
+        PageClosePending,
+        SessionClosePending,
+        NavigationStale,
+        SnapshotStale,
+        ElementStale,
+        BrokerProcessKill,
+        MultiPendingShutdown,
         CancelPending,
         RendererCrashPending,
         BrowserCrashPending,
@@ -384,6 +480,15 @@ mod host {
                 "duplicate-late" | "duplicate-completion" => Ok(Self::DuplicateLate),
                 "dependent-drain" | "dependent-resource" => Ok(Self::DependentDrain),
                 "dependent-timeout" => Ok(Self::DependentTimeout),
+                "renderer-fetch-cancel" => Ok(Self::RendererFetchCancel),
+                "renderer-xhr-cancel" => Ok(Self::RendererXhrCancel),
+                "page-close-pending" => Ok(Self::PageClosePending),
+                "session-close-pending" => Ok(Self::SessionClosePending),
+                "navigation-stale" => Ok(Self::NavigationStale),
+                "snapshot-stale" => Ok(Self::SnapshotStale),
+                "element-stale" => Ok(Self::ElementStale),
+                "broker-process-kill" => Ok(Self::BrokerProcessKill),
+                "multi-pending-shutdown" => Ok(Self::MultiPendingShutdown),
                 "cancel-pending" | "pending-cancel" => Ok(Self::CancelPending),
                 "renderer-crash-pending" | "renderer-crash" => Ok(Self::RendererCrashPending),
                 "browser-crash-pending" => Ok(Self::BrowserCrashPending),
@@ -409,6 +514,15 @@ mod host {
                 Self::DuplicateLate => "duplicate-completion",
                 Self::DependentDrain => "dependent-resource",
                 Self::DependentTimeout => "dependent-timeout",
+                Self::RendererFetchCancel => "renderer-fetch-cancel",
+                Self::RendererXhrCancel => "renderer-xhr-cancel",
+                Self::PageClosePending => "page-close-pending",
+                Self::SessionClosePending => "session-close-pending",
+                Self::NavigationStale => "navigation-stale",
+                Self::SnapshotStale => "snapshot-stale",
+                Self::ElementStale => "element-stale",
+                Self::BrokerProcessKill => "broker-process-kill",
+                Self::MultiPendingShutdown => "multi-pending-shutdown",
                 Self::CancelPending => "pending-cancel",
                 Self::RendererCrashPending => "renderer-crash",
                 Self::BrowserCrashPending => "browser-crash-pending",
@@ -425,6 +539,12 @@ mod host {
                     | Self::Timeout
                     | Self::DuplicateParent
                     | Self::DependentTimeout
+                    | Self::RendererFetchCancel
+                    | Self::RendererXhrCancel
+                    | Self::PageClosePending
+                    | Self::SessionClosePending
+                    | Self::BrokerProcessKill
+                    | Self::MultiPendingShutdown
             ) {
                 BROKER_FAULT_DEADLINE
             } else {
@@ -444,6 +564,15 @@ mod host {
                     | Self::BrowserCrashPending
                     | Self::HostExitPending
                     | Self::ShutdownPending
+                    | Self::RendererFetchCancel
+                    | Self::RendererXhrCancel
+                    | Self::PageClosePending
+                    | Self::SessionClosePending
+                    | Self::NavigationStale
+                    | Self::SnapshotStale
+                    | Self::ElementStale
+                    | Self::BrokerProcessKill
+                    | Self::MultiPendingShutdown
             )
         }
         fn awaits_actual_renderer_failure(self, has_pending: bool, process_failed: bool) -> bool {
@@ -455,6 +584,85 @@ mod host {
                 Self::CancelPending | Self::ShutdownPending | Self::DependentTimeout
             )
         }
+        fn grouped_dependent_action(self) -> bool {
+            matches!(
+                self,
+                Self::RendererFetchCancel
+                    | Self::RendererXhrCancel
+                    | Self::PageClosePending
+                    | Self::SessionClosePending
+                    | Self::NavigationStale
+                    | Self::SnapshotStale
+                    | Self::ElementStale
+                    | Self::BrokerProcessKill
+                    | Self::MultiPendingShutdown
+            )
+        }
+        fn grouped_stale(self) -> bool {
+            matches!(
+                self,
+                Self::NavigationStale | Self::SnapshotStale | Self::ElementStale
+            )
+        }
+        fn grouped_semantic(self) -> bool {
+            matches!(self, Self::SnapshotStale | Self::ElementStale)
+        }
+        fn dependent_arm_event(self) -> &'static str {
+            match self {
+                Self::RendererFetchCancel => "renderer-fetch-cancel-dependent-deferral-pending",
+                Self::RendererXhrCancel => "renderer-xhr-cancel-dependent-deferral-pending",
+                Self::PageClosePending => "page-close-pending-dependent-deferral-pending",
+                Self::SessionClosePending => "session-close-pending-dependent-deferral-pending",
+                Self::NavigationStale => "navigation-stale-dependent-deferral-pending",
+                Self::SnapshotStale => "snapshot-stale-dependent-deferral-pending",
+                Self::ElementStale => "element-stale-dependent-deferral-pending",
+                Self::BrokerProcessKill => "broker-process-kill-dependent-deferral-pending",
+                Self::MultiPendingShutdown => "multi-pending-shutdown-dependent-deferral-pending",
+                _ => "invalid-grouped-action",
+            }
+        }
+        fn dependent_terminal_event(self) -> &'static str {
+            match self {
+                Self::RendererFetchCancel => "renderer-fetch-cancel-native-action-completed",
+                Self::RendererXhrCancel => "renderer-xhr-cancel-native-action-completed",
+                Self::PageClosePending => "page-close-pending-native-action-completed",
+                Self::SessionClosePending => "session-close-pending-native-action-completed",
+                Self::NavigationStale | Self::SnapshotStale | Self::ElementStale => {
+                    "late-old-session-or-element-rejected-after-invalidation"
+                }
+                Self::BrokerProcessKill => "broker-process-kill-native-action-completed",
+                Self::MultiPendingShutdown => "multi-pending-shutdown-native-action-completed",
+                _ => "invalid-grouped-action",
+            }
+        }
+        fn dependent_arm_stage(self) -> &'static str {
+            match self {
+                Self::RendererFetchCancel => "broker.phase-a.renderer-fetch-cancel.armed",
+                Self::RendererXhrCancel => "broker.phase-a.renderer-xhr-cancel.armed",
+                Self::PageClosePending => "broker.phase-a.page-close-pending.armed",
+                Self::SessionClosePending => "broker.phase-a.session-close-pending.armed",
+                Self::NavigationStale => "broker.phase-a.navigation-stale.armed",
+                Self::SnapshotStale => "broker.phase-a.snapshot-stale.armed",
+                Self::ElementStale => "broker.phase-a.element-stale.armed",
+                Self::BrokerProcessKill => "broker.phase-a.broker-process-kill.armed",
+                Self::MultiPendingShutdown => "broker.phase-a.multi-pending-shutdown.armed",
+                _ => "broker.phase-a.invalid.armed",
+            }
+        }
+        fn dependent_terminal_stage(self) -> &'static str {
+            match self {
+                Self::RendererFetchCancel => "broker.phase-a.renderer-fetch-cancel.completed",
+                Self::RendererXhrCancel => "broker.phase-a.renderer-xhr-cancel.completed",
+                Self::PageClosePending => "broker.phase-a.page-close-pending.completed",
+                Self::SessionClosePending => "broker.phase-a.session-close-pending.completed",
+                Self::NavigationStale => "broker.phase-a.navigation-stale.completed",
+                Self::SnapshotStale => "broker.phase-a.snapshot-stale.completed",
+                Self::ElementStale => "broker.phase-a.element-stale.completed",
+                Self::BrokerProcessKill => "broker.phase-a.broker-process-kill.completed",
+                Self::MultiPendingShutdown => "broker.phase-a.multi-pending-shutdown.completed",
+                _ => "broker.phase-a.invalid.completed",
+            }
+        }
     }
     struct Args {
         mode: Mode,
@@ -462,18 +670,51 @@ mod host {
         fixture_port: u16,
         nonce: String,
         broker_fault: BrokerFault,
+        initial_url: Option<String>,
     }
     fn args() -> Result<Args, String> {
         let argv: Vec<OsString> = std::env::args_os().collect();
         if argv.len() < 7 {
-            return Err("expected --isolated-child|--positive-control|--brokered-child <absolute-root> --fixture-port <u16> --fixture-nonce <32-64 hex> [--broker-fault <mode>]".into());
+            return Err(
+                "expected a confined production broker or feature-only fixture mode".into(),
+            );
         }
         let mode = match argv[1].to_str() {
             Some("--isolated-child") => Mode::Isolated,
             Some("--positive-control") => Mode::PositiveControl,
             Some("--brokered-child") => Mode::Brokered,
+            Some("--production-broker") => Mode::ProductionBroker,
             _ => return Err("unsupported mode".into()),
         };
+        #[cfg(not(feature = "tf-browser-isolation-acceptance"))]
+        if mode != Mode::ProductionBroker {
+            return Err("fixture-only mode unavailable in production browser host".into());
+        }
+        if mode == Mode::ProductionBroker {
+            if argv.len() != 7 || argv[3] != "--broker-session" || argv[5] != "--initial-url" {
+                return Err("invalid production broker argument layout".into());
+            }
+            let nonce = argv[4]
+                .to_str()
+                .ok_or("invalid native session encoding")?
+                .to_owned();
+            if nonce.len() != 48 || !nonce.bytes().all(|c| c.is_ascii_hexdigit()) {
+                return Err("production native broker session must be 48 hex".into());
+            }
+            let initial_url = argv[6].to_str().ok_or("invalid production URL encoding")?;
+            if !production_broker_url(initial_url) {
+                return Err("production broker initial URL must be bounded HTTPS".into());
+            }
+            let root = canonical_case_root(&argv[2])?;
+            return Ok(Args {
+                mode,
+                root,
+                fixture_port: 0,
+                nonce,
+                broker_fault: BrokerFault::None,
+                initial_url: Some(initial_url.into()),
+            });
+        }
         let broker_fault = match (mode, argv.len()) {
             (Mode::Brokered, 9) if argv[7] == "--broker-fault" => {
                 BrokerFault::parse(argv[8].to_str().ok_or("invalid broker fault encoding")?)?
@@ -488,18 +729,7 @@ mod host {
         if argv[3] != "--fixture-port" || argv[5] != "--fixture-nonce" {
             return Err("missing required fixture arguments".into());
         }
-        let root = PathBuf::from(&argv[2]);
-        if !root.is_absolute()
-            || !root.is_dir()
-            || root
-                .symlink_metadata()
-                .map_err(|e| e.to_string())?
-                .file_type()
-                .is_symlink()
-        {
-            return Err("case root must exist as an absolute real directory".into());
-        }
-        let root = root.canonicalize().map_err(|e| format!("case root: {e}"))?;
+        let root = canonical_case_root(&argv[2])?;
         let fixture_port = argv[4]
             .to_str()
             .ok_or("invalid port encoding")?
@@ -518,7 +748,39 @@ mod host {
             fixture_port,
             nonce,
             broker_fault,
+            initial_url: None,
         })
+    }
+
+    fn canonical_case_root(raw: &OsString) -> Result<PathBuf, String> {
+        let root = PathBuf::from(raw);
+        if !root.is_absolute()
+            || !root.is_dir()
+            || root
+                .symlink_metadata()
+                .map_err(|e| e.to_string())?
+                .file_type()
+                .is_symlink()
+        {
+            return Err("native session root must be an existing real absolute directory".into());
+        }
+        root.canonicalize()
+            .map_err(|_| "native session root canonicalization failed".into())
+    }
+
+    fn production_broker_url(raw: &str) -> bool {
+        if raw.len() > 2048 || raw.bytes().any(|b| b < 0x20 || b == 0x7f || b == b'\\') {
+            return false;
+        }
+        let Ok(parsed) = reqwest::Url::parse(raw) else {
+            return false;
+        };
+        parsed.scheme() == "https"
+            && parsed.host_str().is_some()
+            && parsed.username().is_empty()
+            && parsed.password().is_none()
+            && parsed.fragment().is_none()
+            && parsed.port_or_known_default() == Some(443)
     }
 
     fn sid_string(sid: *mut core::ffi::c_void) -> Result<String, String> {
@@ -1030,6 +1292,235 @@ mod host {
         })
     }
 
+    // The production observation wire is deliberately separate from the
+    // older acceptance-only semantic fixture. Its only page-derived strings
+    // are *closed* tag-to-role enums compiled into PRODUCTION_DOM_JS.
+    // Nonce/source/page identity are supplied and checked by native code.
+    #[derive(Clone, Debug, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ParentDomRequest {
+        version: u8,
+        kind: String,
+        session: String,
+        observation_id: u64,
+        page_generation: u64,
+        source_id: String,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ProductionDomElement {
+        index: u32,
+        role: String,
+        depth: u8,
+        heading_level: Option<u8>,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ProductionDomResult {
+        version: u8,
+        visited: u32,
+        truncated: bool,
+        omitted_fields: u32,
+        elements: Vec<ProductionDomElement>,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ChildDomReply<'a> {
+        version: u8,
+        kind: &'static str,
+        session: &'a str,
+        observation_id: u64,
+        page_generation: u64,
+        source_id: &'a str,
+        terminal: &'static str,
+        reason: &'static str,
+        truncated: bool,
+        visited: u32,
+        elements: &'a [ProductionDomElement],
+    }
+
+    fn production_dom_source_id(raw_url: &str) -> Result<String, &'static str> {
+        // Reject all query strings and fragments, including blank ones:
+        // exposing their raw bytes or their derived DOM labels is forbidden.
+        let parsed = reqwest::Url::parse(raw_url).map_err(|_| "observation-source-invalid")?;
+        if !production_broker_url(raw_url)
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err("observation-source-denied");
+        }
+        Ok(format!("{:x}", Sha256::digest(raw_url.as_bytes())))
+    }
+
+    fn validate_dom_request(
+        frame: &[u8],
+        session: &str,
+        last_observation_id: u64,
+        current_generation: u64,
+        initial_url: &str,
+    ) -> Result<ParentDomRequest, &'static str> {
+        if frame.is_empty() || frame.len() > 1024 {
+            return Err("observation-request-bounds");
+        }
+        let request: ParentDomRequest =
+            serde_json::from_slice(frame).map_err(|_| "observation-request-invalid")?;
+        if request.version != 2
+            || request.kind != "observe-dom"
+            || request.session != session
+            || request.observation_id == 0
+            || request.observation_id > PRODUCTION_DOM_MAX_REQUESTS
+            || request.observation_id != last_observation_id.saturating_add(1)
+        {
+            return Err("observation-session-or-id-denied");
+        }
+        if request.page_generation == 0 || request.page_generation != current_generation {
+            return Err("observation-page-stale");
+        }
+        let source_id = production_dom_source_id(initial_url)?;
+        if request.source_id != source_id {
+            return Err("observation-source-mismatch");
+        }
+        Ok(request)
+    }
+
+    fn verify_production_dom(raw: &str) -> Result<ProductionDomResult, &'static str> {
+        if raw.len() > PRODUCTION_DOM_FRAME_LIMIT {
+            return Err("observation-result-oversize");
+        }
+        let result: ProductionDomResult =
+            serde_json::from_str(raw).map_err(|_| "observation-result-invalid")?;
+        if result.version != 2
+            || result.visited == 0
+            || result.visited > PRODUCTION_DOM_MAX_VISITS
+            || result.elements.len() > PRODUCTION_DOM_MAX_ELEMENTS
+            || result.omitted_fields > result.visited
+        {
+            return Err("observation-result-bounds");
+        }
+        let mut prev = 0;
+        for item in &result.elements {
+            if item.index <= prev || item.index > result.visited || item.depth > 16 {
+                return Err("observation-element-bounds");
+            }
+            prev = item.index;
+            if !matches!(
+                item.role.as_str(),
+                "main"
+                    | "navigation"
+                    | "article"
+                    | "heading"
+                    | "link"
+                    | "button"
+                    | "image"
+                    | "paragraph"
+                    | "listitem"
+                    | "form"
+            ) {
+                return Err("observation-role-denied");
+            }
+            if item.role == "heading" {
+                if !matches!(item.heading_level, Some(1..=6)) {
+                    return Err("observation-heading-invalid");
+                }
+            } else if item.heading_level.is_some() {
+                return Err("observation-heading-invalid");
+            }
+        }
+        Ok(result)
+    }
+
+    fn grouped_old_button_from_native_dom(raw: &str) -> Result<u32, &'static str> {
+        let summary = verify_production_dom(raw)?;
+        if summary.truncated
+            || summary.omitted_fields != 0
+            || !summary.elements.iter().any(|item| item.role == "main")
+        {
+            return Err("grouped-old-snapshot-incomplete");
+        }
+        let mut buttons = summary.elements.iter().filter(|item| item.role == "button");
+        let index = buttons.next().ok_or("grouped-old-element-missing")?.index;
+        if buttons.next().is_some() {
+            return Err("grouped-old-element-ambiguous");
+        }
+        Ok(index)
+    }
+
+    fn grouped_old_binding_is_stale(
+        captured_generation: u64,
+        captured_index: u64,
+        current_generation: u64,
+    ) -> bool {
+        captured_generation != 0
+            && captured_index != 0
+            && current_generation != 0
+            && captured_generation != current_generation
+    }
+
+    // Fixture-only native action admission, invoked with the unique old
+    // button's real COM snapshot index. Reject stale bindings *before* any
+    // renderer action or general JS can be issued. No stale fallback exists.
+    fn authorize_grouped_old_action(
+        fault: BrokerFault,
+        captured_generation: u64,
+        captured_index: u64,
+        current_generation: u64,
+    ) -> Result<(), &'static str> {
+        if !fault.grouped_semantic()
+            || captured_generation == 0
+            || captured_index == 0
+            || current_generation == 0
+        {
+            return Err("grouped-action-binding-unavailable");
+        }
+        if grouped_old_binding_is_stale(captured_generation, captured_index, current_generation) {
+            Err(if fault == BrokerFault::SnapshotStale {
+                "stale-snapshot"
+            } else {
+                "stale-element"
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn distinct_broker_writer_eof(error: &io::Error) -> bool {
+        // A timeout, parse error, stale reply or generic pipe failure is
+        // never evidence of the separately owned broker helper's OS death.
+        // The runner independently proves original HANDLE kill, exit 91 and
+        // empty helper Job; the host can only prove a real pipe EOF.
+        matches!(
+            error.kind(),
+            io::ErrorKind::BrokenPipe | io::ErrorKind::UnexpectedEof
+        ) || matches!(error.raw_os_error(), Some(109 | 232))
+    }
+
+    fn dom_reply<'a>(
+        request: &'a ParentDomRequest,
+        result: Option<&'a ProductionDomResult>,
+        reason: Option<&'static str>,
+    ) -> ChildDomReply<'a> {
+        ChildDomReply {
+            version: 2,
+            kind: "dom-snapshot",
+            session: &request.session,
+            observation_id: request.observation_id,
+            page_generation: request.page_generation,
+            source_id: &request.source_id,
+            terminal: if result.is_some() && reason.is_none() {
+                "completed"
+            } else {
+                "denied"
+            },
+            reason: reason.unwrap_or("ok"),
+            truncated: result.is_some_and(|v| v.truncated),
+            visited: result.map_or(0, |v| v.visited),
+            elements: result.map_or(&[], |v| v.elements.as_slice()),
+        }
+    }
+
     #[derive(Default)]
     struct BrokerStats {
         hook_ready: AtomicBool,
@@ -1071,6 +1562,17 @@ mod host {
         browser_exited: AtomicU64,
         native_crash_dispatched: AtomicU64,
         navigation_attempted: AtomicU64,
+        // Grouped stale semantics are not inherited from a title event:
+        // they require an actual native WebView2 script completion on the
+        // old page and a separately checked successor page.
+        semantic_snapshot_observed: AtomicBool,
+        old_semantic_generation: AtomicU64,
+        old_button_index: AtomicU64,
+        stale_snapshot_rejected: AtomicBool,
+        stale_element_rejected: AtomicBool,
+        successor_page_mutation_count: Mutex<Option<u64>>,
+        grouped_navigation_requested: AtomicBool,
+        grouped_navigation_observed: AtomicBool,
     }
     impl PhaseA {
         fn event(&self, name: &'static str, pending: u64) {
@@ -1108,6 +1610,11 @@ mod host {
                 "browserExitedEvents": self.browser_exited.load(Ordering::Acquire),
                 "nativeCrashDispatched": self.native_crash_dispatched.load(Ordering::Acquire),
                 "nativeNavigationAttempts": self.navigation_attempted.load(Ordering::Acquire),
+                "semanticSnapshotObserved": self.semantic_snapshot_observed.load(Ordering::Acquire),
+                "staleSnapshotRejected": self.stale_snapshot_rejected.load(Ordering::Acquire),
+                "staleElementRejected": self.stale_element_rejected.load(Ordering::Acquire),
+                "successorPageMutationCount": self.successor_page_mutation_count
+                    .lock().ok().and_then(|v| *v),
                 "networkEgressVerified": null
             })
         }
@@ -1150,6 +1657,22 @@ mod host {
         request_id: u64,
         method: &'static str,
         url: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        page_generation: Option<u64>,
+    }
+
+    /// Completion is a separate native effect from the parent's response
+    /// bytes reaching an anonymous pipe. Sent only after COM SetResponse AND
+    /// the same native deferral's Complete() returned successfully.
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct BrokerComCompletion<'a> {
+        version: u8,
+        session: &'a str,
+        request_id: u64,
+        kind: &'static str,
+        status: u16,
+        page_generation: u64,
     }
 
     #[derive(Deserialize)]
@@ -1170,6 +1693,101 @@ mod host {
         url: String,
         session: String,
         page_generation: u64,
+        production_ready: Option<ProductionReady>,
+    }
+    /// This handshake is a child claim, never the authority. The parent must
+    /// match every field to ORIGINAL retained Windows process handles, exact
+    /// AppContainer SID + zero capabilities + Job, and COM effective UDF
+    /// before replying 204. Nothing navigates before that exact reply.
+    #[derive(Clone, Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ProductionReady {
+        version: u8,
+        session: String,
+        request_id: u64,
+        kind: &'static str,
+        effective_udf: String,
+        host_pid: u32,
+        browser_pid: u32,
+        renderer_pid: u32,
+    }
+
+    fn native_production_ready(
+        environment: &ICoreWebView2Environment,
+        core: &ICoreWebView2,
+        requested_udf: &Path,
+        session: &str,
+    ) -> Result<ProductionReady, String> {
+        // `.data_directory` is only the requested UDF. The actual COM
+        // environment property is the storage authority, not a path guess.
+        let env7: ICoreWebView2Environment7 = environment
+            .cast()
+            .map_err(|_| "effective WebView2 UDF COM interface unavailable")?;
+        let mut actual_path = PWSTR::null();
+        unsafe { env7.UserDataFolder(&mut actual_path) }
+            .map_err(|_| "effective WebView2 UDF query failed")?;
+        let actual = PathBuf::from(take_pwstr(actual_path));
+        let actual = actual
+            .canonicalize()
+            .map_err(|_| "effective UDF canonicalization failed")?;
+        let expected = requested_udf
+            .canonicalize()
+            .map_err(|_| "requested UDF canonicalization failed")?;
+        if !actual
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&expected.to_string_lossy())
+        {
+            return Err("effective WebView2 UDF does not match isolated session UDF".into());
+        }
+        let mut browser_pid = 0u32;
+        unsafe { core.BrowserProcessId(&mut browser_pid) }
+            .map_err(|_| "native WebView2 browser PID query failed")?;
+        if browser_pid == 0 {
+            return Err("native browser PID unavailable before navigation".into());
+        }
+        let env8: ICoreWebView2Environment8 = environment
+            .cast()
+            .map_err(|_| "native WebView2 process role API unavailable")?;
+        let infos = unsafe { env8.GetProcessInfos() }
+            .map_err(|_| "native WebView2 process role query failed")?;
+        let mut count = 0u32;
+        unsafe { infos.Count(&mut count) }
+            .map_err(|_| "native WebView2 process count unavailable")?;
+        if count == 0 || count > 64 {
+            return Err("native browser process count outside bound".into());
+        }
+        let mut renderer = None;
+        for idx in 0..count {
+            let info = unsafe { infos.GetValueAtIndex(idx) }
+                .map_err(|_| "native WebView2 process information unavailable")?;
+            let mut kind = COREWEBVIEW2_PROCESS_KIND(0);
+            let mut process_id = 0i32;
+            unsafe { info.Kind(&mut kind) }
+                .map_err(|_| "native WebView2 process role unavailable")?;
+            unsafe { info.ProcessId(&mut process_id) }
+                .map_err(|_| "native WebView2 process PID unavailable")?;
+            if kind == COREWEBVIEW2_PROCESS_KIND_RENDERER && process_id > 0 {
+                // Multiple independently active renderers require an explicit
+                // per-page owner before model execution. Do not guess first.
+                if renderer.replace(process_id as u32).is_some() {
+                    return Err("ambiguous multiple WebView2 renderers before navigation".into());
+                }
+            }
+        }
+        let renderer_pid = renderer.ok_or("native renderer unavailable before navigation")?;
+        if browser_pid == renderer_pid {
+            return Err("browser and renderer PID overlap".into());
+        }
+        Ok(ProductionReady {
+            version: 1,
+            session: session.into(),
+            request_id: 0,
+            kind: "ready",
+            effective_udf: actual.to_string_lossy().into_owned(),
+            host_pid: std::process::id(),
+            browser_pid,
+            renderer_pid,
+        })
     }
     #[derive(Clone, Debug)]
     struct BrokerBinding {
@@ -1323,6 +1941,231 @@ mod host {
         Ok(bytes)
     }
 
+    fn broker_control_available(pipe: &File) -> io::Result<bool> {
+        let mut available = 0u32;
+        if unsafe {
+            PeekNamedPipe(
+                pipe.as_raw_handle().cast(),
+                null_mut(),
+                0,
+                null_mut(),
+                &mut available,
+                null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(available >= 4)
+    }
+
+    fn public_dom_denial(reason: &'static str) -> &'static str {
+        // No arbitrary error description, page content or URL crosses the
+        // sealed pipe. These values form a closed native protocol vocabulary.
+        match reason {
+            "observation-page-stale" => "page-stale",
+            "observation-source-denied"
+            | "observation-source-invalid"
+            | "observation-source-mismatch" => "source-mismatch",
+            "observation-result-bounds"
+            | "observation-element-bounds"
+            | "observation-result-oversize"
+            | "observation-request-bounds" => "bounds-exceeded",
+            "observation-native-source-unavailable"
+            | "observation-native-controller-unavailable"
+            | "observation-native-window-unavailable" => "dom-unavailable",
+            "observation-version-denied" => "version-denied",
+            "observation-result-invalid"
+            | "observation-role-denied"
+            | "observation-heading-invalid"
+            | "observation-ui-dispatch"
+            | "observation-script-failed"
+            | "observation-timeout"
+            | "observation-session-broken" => "observation-failed",
+            _ => "unknown",
+        }
+    }
+
+    fn observe_dom_on_ui(
+        app: &tauri::AppHandle,
+        expected_url: &str,
+        request_generation: u64,
+        current_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+    ) -> Result<ProductionDomResult, &'static str> {
+        if stats.broken.load(Ordering::Acquire)
+            || stats.pending.load(Ordering::Acquire) != 0
+            || current_generation.load(Ordering::Acquire) != request_generation
+        {
+            return Err("observation-page-stale");
+        }
+        // All COM use, including the post-ExecuteScript source recheck,
+        // happens on WebView2's original UI apartment.
+        let expected = expected_url.to_owned();
+        let (tx, rx) = mpsc::sync_channel::<Result<ProductionDomResult, &'static str>>(1);
+        let app_for_ui = app.clone();
+        app.run_on_main_thread(move || {
+            let tx_ui = tx.clone();
+            let dispatched = app_for_ui
+                .get_webview_window("browser-host")
+                .ok_or("observation-native-window-unavailable")
+                .and_then(|window| {
+                    window
+                        .with_webview(move |native| {
+                            let sender = tx_ui.clone();
+                            let core = match unsafe { native.controller().CoreWebView2() } {
+                                Ok(core) => core,
+                                Err(_) => {
+                                    let _ = sender
+                                        .send(Err("observation-native-controller-unavailable"));
+                                    return;
+                                }
+                            };
+                            let mut raw_source = PWSTR::null();
+                            if unsafe { core.Source(&mut raw_source) }.is_err() {
+                                let _ = sender.send(Err("observation-native-source-unavailable"));
+                                return;
+                            }
+                            if take_pwstr(raw_source) != expected
+                                || current_generation.load(Ordering::Acquire) != request_generation
+                                || stats.broken.load(Ordering::Acquire)
+                                || stats.pending.load(Ordering::Acquire) != 0
+                            {
+                                let _ = sender.send(Err("observation-page-stale"));
+                                return;
+                            }
+                            let callback_core = core.clone();
+                            let callback_generation = current_generation.clone();
+                            let callback_stats = stats.clone();
+                            let callback_expected = expected.clone();
+                            let dispatch_sender = sender.clone();
+                            let completion = ExecuteScriptCompletedHandler::create(Box::new(
+                                move |hr, output| {
+                                    let checked = (|| {
+                                        if hr.is_err() {
+                                            return Err("observation-script-failed");
+                                        }
+                                        let mut actual_source = PWSTR::null();
+                                        if unsafe { callback_core.Source(&mut actual_source) }
+                                            .is_err()
+                                        {
+                                            return Err("observation-native-source-unavailable");
+                                        }
+                                        if take_pwstr(actual_source) != callback_expected
+                                            || callback_generation.load(Ordering::Acquire)
+                                                != request_generation
+                                            || callback_stats.broken.load(Ordering::Acquire)
+                                            || callback_stats.pending.load(Ordering::Acquire) != 0
+                                        {
+                                            return Err("observation-page-stale");
+                                        }
+                                        verify_production_dom(&output)
+                                    })();
+                                    let _ = sender.send(checked);
+                                    Ok(())
+                                },
+                            ));
+                            if unsafe {
+                                core.ExecuteScript(&HSTRING::from(PRODUCTION_DOM_JS), &completion)
+                            }
+                            .is_err()
+                            {
+                                let _ = dispatch_sender.send(Err("observation-script-failed"));
+                            }
+                        })
+                        .map_err(|_| "observation-ui-dispatch")
+                });
+            if dispatched.is_err() {
+                let _ = tx.send(Err("observation-ui-dispatch"));
+            }
+        })
+        .map_err(|_| "observation-ui-dispatch")?;
+        rx.recv_timeout(PRODUCTION_DOM_DEADLINE)
+            .map_err(|_| "observation-timeout")?
+    }
+
+    /// Read a parent control frame ONLY while the single broker pipe worker
+    /// is idle, after the parent attested the native browser/renderer. Both
+    /// pipes are the same inherited, non-inheritable sealed handles already
+    /// used for the approved TF3 GET path; no new listening endpoint exists.
+    fn service_parent_dom_control(
+        read: &mut File,
+        write: &mut File,
+        app: &tauri::AppHandle,
+        session: &str,
+        last_observation_id: &mut u64,
+        page_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+        initial_url: &str,
+    ) -> Result<(), &'static str> {
+        let frame = broker_read_frame(read, PRODUCTION_DOM_DEADLINE)
+            .map_err(|_| "observation-request-invalid")?;
+        // Reject invalid session/nonce, duplicate ID, unrecognized version,
+        // oversized frame, and any unknown fields BEFORE invoking WebView2.
+        // An invalid authentication/binding kills the broker channel.
+        if frame.is_empty() || frame.len() > 1024 {
+            return Err("observation-request-bounds");
+        }
+        let request: ParentDomRequest =
+            serde_json::from_slice(&frame).map_err(|_| "observation-request-invalid")?;
+        if request.version != 2
+            || request.kind != "observe-dom"
+            || request.session != session
+            || request.observation_id == 0
+            || request.observation_id > PRODUCTION_DOM_MAX_REQUESTS
+            || request.observation_id != last_observation_id.saturating_add(1)
+            || request.source_id.len() != 64
+            || !request
+                .source_id
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        {
+            return Err("observation-session-or-id-denied");
+        }
+        // Even a denied, correctly authenticated request consumes its ID.
+        // Repeating that frame can never yield a later page's observation.
+        *last_observation_id = request.observation_id;
+        let generation = page_generation.load(Ordering::Acquire);
+        let preliminary = validate_dom_request(
+            &frame,
+            session,
+            request.observation_id - 1,
+            generation,
+            initial_url,
+        )
+        .err()
+        .map(public_dom_denial);
+        let observed = if let Some(reason) = preliminary {
+            Err(reason)
+        } else if stats.broken.load(Ordering::Acquire) || stats.pending.load(Ordering::Acquire) != 0
+        {
+            Err("dom-unavailable")
+        } else {
+            observe_dom_on_ui(
+                app,
+                initial_url,
+                request.page_generation,
+                page_generation.clone(),
+                stats.clone(),
+            )
+            .map_err(public_dom_denial)
+        };
+        let (snapshot, reason) = match &observed {
+            Ok(structure) => (Some(structure), None),
+            Err(reason) => (None, Some(*reason)),
+        };
+        let reply = dom_reply(&request, snapshot, reason);
+        let encoded = serde_json::to_vec(&reply).map_err(|_| "observation-result-invalid")?;
+        let frame = if encoded.is_empty() || encoded.len() > PRODUCTION_DOM_FRAME_LIMIT {
+            serde_json::to_vec(&dom_reply(&request, None, Some("bounds-exceeded")))
+                .map_err(|_| "observation-result-invalid")?
+        } else {
+            encoded
+        };
+        broker_write_frame(write, &frame).map_err(|_| "observation-pipe-failed")?;
+        Ok(())
+    }
+
     fn broker_reply(bytes: &[u8], nonce: &str, id: u64) -> Result<BrokerPayload, &'static str> {
         let reply: BrokerReply =
             serde_json::from_slice(bytes).map_err(|_| "malformed broker reply")?;
@@ -1387,6 +2230,7 @@ mod host {
             "image",
             "iframe",
             "fetch",
+            "xhr",
             "redirect-ok",
             "redirect-private",
             "deny",
@@ -1463,7 +2307,7 @@ mod host {
         stats: &BrokerStats,
         page_generation: &AtomicU64,
         phase_a: &PhaseA,
-    ) {
+    ) -> Option<u16> {
         BROKER_PENDING.with(|pending| {
             let Some(pending) = pending.borrow_mut().remove(&id) else {
                 // An earlier timeout may already have drained this pending
@@ -1474,7 +2318,7 @@ mod host {
                     "late or already drained COM request ignored",
                 );
                 phase_a.suppressed_late.fetch_add(1, Ordering::Relaxed);
-                return;
+                return None;
             };
             stats.pending.fetch_sub(1, Ordering::Relaxed);
             if !payload.synthetic
@@ -1542,7 +2386,8 @@ mod host {
             // recorded as successfully answered by WebView2.
             stats.note_com_response(&payload);
             stats.answered.fetch_add(1, Ordering::Release);
-        });
+            Some(payload.status)
+        })
     }
 
     fn broker_binding_matches(
@@ -1639,6 +2484,414 @@ mod host {
         ids.len()
     }
 
+    fn dispatch_grouped_stale_navigation(
+        core: &ICoreWebView2,
+        fault: BrokerFault,
+        stats: &BrokerStats,
+        generation: &AtomicU64,
+        phase: &PhaseA,
+        trace: &StartupTrace,
+        old_generation: u64,
+    ) -> bool {
+        if !fault.grouped_stale()
+            || old_generation == 0
+            || generation.load(Ordering::Acquire) != old_generation
+            || stats.pending.load(Ordering::Acquire) != 1
+            || !phase.triggered.load(Ordering::Acquire)
+            || phase
+                .grouped_navigation_requested
+                .swap(true, Ordering::AcqRel)
+        {
+            trace.error(
+                "broker.phase-a.grouped.stale-preflight",
+                "real pending native generation binding unavailable",
+            );
+            return false;
+        }
+        // Navigate the real controller to the networkless successor. The
+        // event handler must observe NavigationStarting and increment the
+        // native epoch before it emits the parent-release marker. Merely
+        // incrementing an AtomicU64 here is NOT sufficient proof.
+        match unsafe { core.Navigate(&HSTRING::from("about:blank")) } {
+            Ok(()) => {
+                phase.navigation_attempted.fetch_add(1, Ordering::AcqRel);
+                trace.record(
+                    "broker.phase-a.grouped.stale-navigation-dispatched",
+                    "controlled networkless successor navigation accepted by native COM",
+                );
+                true
+            }
+            Err(error) => {
+                trace.error(
+                    "broker.phase-a.grouped.stale-navigation-failed",
+                    &format!("HRESULT {}", error.code().0),
+                );
+                false
+            }
+        }
+    }
+
+    /// A bounded fixture-only native action, never a model-supplied script.
+    /// The separately owned parent first attests the real dependent broker
+    /// descriptor and BOTH original browser/renderer process handles. Only
+    /// then can the monitor dispatch this one UI-apartment operation.
+    fn dispatch_grouped_phase_a_action(
+        app: &tauri::AppHandle,
+        fault: BrokerFault,
+        expected_document_url: String,
+        trace: Arc<StartupTrace>,
+        stats: Arc<BrokerStats>,
+        page_generation: Arc<AtomicU64>,
+        phase: Arc<PhaseA>,
+        completed: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        if !fault.grouped_dependent_action() {
+            return Err("not a grouped fixture action".into());
+        }
+        let window = app
+            .get_webview_window("browser-host")
+            .ok_or("native grouped fixture controller missing")?;
+        window.with_webview(move |native| {
+            let core = match unsafe { native.controller().CoreWebView2() } {
+                Ok(core) => core,
+                Err(_) => {
+                    stats.broken.store(true, Ordering::Release);
+                    trace.error("broker.phase-a.grouped.core-failed", "native controller unavailable");
+                    broker_drain_all_on_ui(502, &trace, &stats, &page_generation, &phase);
+                    return;
+                }
+            };
+            let finish = |status: u16, verified_native_action: bool| {
+                let drained = broker_drain_all_on_ui(status, &trace, &stats, &page_generation, &phase);
+                stats.broken.store(true, Ordering::Release);
+                if verified_native_action && drained >= if fault == BrokerFault::MultiPendingShutdown { 2 } else { 1 } {
+                    stats.fault_triggered.store(true, Ordering::Release);
+                    if matches!(fault, BrokerFault::RendererFetchCancel | BrokerFault::RendererXhrCancel) {
+                        stats.cancelled.fetch_add(1, Ordering::Relaxed);
+                        phase.cancelled_pending.fetch_add(drained as u64, Ordering::Relaxed);
+                    }
+                    if matches!(fault, BrokerFault::PageClosePending | BrokerFault::SessionClosePending
+                        | BrokerFault::MultiPendingShutdown) {
+                        page_generation.fetch_add(1, Ordering::AcqRel);
+                    }
+                    phase.note(fault.dependent_terminal_event());
+                    trace.record(fault.dependent_terminal_stage(),
+                        "fixed native action and all pending COM deferrals completed");
+                    completed.store(true, Ordering::Release);
+                } else {
+                    trace.error("broker.phase-a.grouped.incomplete",
+                        "native action or COM completion missing; fixture remains failed");
+                }
+            };
+            match fault {
+                BrokerFault::BrokerProcessKill => {
+                    // The separately owned parent uses a *real distinct*
+                    // broker writer process. Do not simulate EOF, complete
+                    // the pending WebView2 deferral or terminate a process
+                    // here. The parent must kill its original retained
+                    // helper HANDLE only after this exact native arm marker.
+                    if stats.pending.load(Ordering::Acquire) != 1 {
+                        trace.error("broker.phase-a.broker-process-kill.preflight",
+                            "exact single live dependent COM deferral unavailable");
+                        return;
+                    }
+                    trace.record(fault.dependent_arm_stage(),
+                        "original dependent native COM deferral still pending; parent broker helper kill authorized");
+                }
+                BrokerFault::NavigationStale
+                | BrokerFault::SnapshotStale
+                | BrokerFault::ElementStale => {
+                    let mut source = PWSTR::null();
+                    let old_epoch = page_generation.load(Ordering::Acquire);
+                    if unsafe { core.Source(&mut source) }.is_err()
+                        || take_pwstr(source) != expected_document_url
+                        || stats.pending.load(Ordering::Acquire) != 1
+                        || old_epoch == 0
+                    {
+                        trace.error("broker.phase-a.grouped.old-source-unverified",
+                            "native old fixture source, epoch or pending COM deferral absent");
+                        return;
+                    }
+                    if !fault.grouped_semantic() {
+                        let _ = dispatch_grouped_stale_navigation(
+                            &core, fault, &stats, &page_generation, &phase, &trace, old_epoch);
+                        return;
+                    }
+                    // The old snapshot/element must be physically read from
+                    // the actual old renderer BEFORE its native navigation.
+                    // No accessible names, raw HTML, URLs or form fields cross
+                    // this COM callback; only compiled-in tag/role structure.
+                    let completed_core = core.clone();
+                    let completed_stats = stats.clone();
+                    let completed_generation = page_generation.clone();
+                    let completed_phase = phase.clone();
+                    let completed_trace = trace.clone();
+                    let completed_url = expected_document_url.clone();
+                    let completion = ExecuteScriptCompletedHandler::create(Box::new(
+                        move |hr, output| {
+                            let verified = (|| -> Result<u32, &'static str> {
+                                if hr.is_err() {
+                                    return Err("old semantic COM ExecuteScript failed");
+                                }
+                                let mut source = PWSTR::null();
+                                if unsafe { completed_core.Source(&mut source) }.is_err()
+                                    || take_pwstr(source) != completed_url
+                                    || completed_stats.pending.load(Ordering::Acquire) != 1
+                                    || completed_generation.load(Ordering::Acquire) != old_epoch
+                                {
+                                    return Err("old semantic source/epoch/COM pending changed");
+                                }
+                                grouped_old_button_from_native_dom(&output)
+                            })();
+                            match verified {
+                                Ok(index) => {
+                                    completed_phase.old_button_index.store(u64::from(index), Ordering::Release);
+                                    completed_phase.old_semantic_generation.store(old_epoch, Ordering::Release);
+                                    completed_phase.semantic_snapshot_observed.store(true, Ordering::Release);
+                                    completed_phase.note("original-semantic-snapshot-bound-to-old-generation");
+                                    completed_trace.record("broker.phase-a.grouped.old-semantic-verified",
+                                        "real bounded old renderer DOM structure bound to native epoch and unique button");
+                                    let _ = dispatch_grouped_stale_navigation(
+                                        &completed_core, fault, &completed_stats, &completed_generation,
+                                        &completed_phase, &completed_trace, old_epoch,
+                                    );
+                                }
+                                Err(reason) => completed_trace.error(
+                                    "broker.phase-a.grouped.old-semantic-failed", reason),
+                            }
+                            Ok(())
+                        },
+                    ));
+                    if unsafe {
+                        core.ExecuteScript(&HSTRING::from(PRODUCTION_DOM_JS), &completion)
+                    }.is_err() {
+                        trace.error("broker.phase-a.grouped.old-semantic-dispatch-failed",
+                            "fixed compiled-in structural COM script unavailable");
+                    }
+                }
+                BrokerFault::RendererFetchCancel | BrokerFault::RendererXhrCancel => {
+                    let script = if fault == BrokerFault::RendererFetchCancel {
+                        "globalThis.__clackPhaseAFetchAbort instanceof AbortController && (globalThis.__clackPhaseAFetchAbort.abort(), true)"
+                    } else {
+                        "globalThis.__clackPhaseAXhr instanceof XMLHttpRequest && (globalThis.__clackPhaseAXhr.abort(), true)"
+                    };
+                    let done_trace = trace.clone();
+                    let done_stats = stats.clone();
+                    let done_phase = phase.clone();
+                    let done_generation = page_generation.clone();
+                    let done_completed = completed.clone();
+                    let completion = ExecuteScriptCompletedHandler::create(Box::new(move |result, json_result| {
+                        let observed = result.is_ok() && json_result.trim() == "true";
+                        let count = broker_drain_all_on_ui(
+                            if observed { 503 } else { 502 },
+                            &done_trace, &done_stats, &done_generation, &done_phase);
+                        done_stats.broken.store(true, Ordering::Release);
+                        if observed && count >= 1 {
+                            done_stats.fault_triggered.store(true, Ordering::Release);
+                            done_stats.cancelled.fetch_add(1, Ordering::Relaxed);
+                            done_phase.cancelled_pending.fetch_add(count as u64, Ordering::Relaxed);
+                            done_phase.note(fault.dependent_terminal_event());
+                            done_trace.record(fault.dependent_terminal_stage(),
+                                "actual fixed renderer abort returned true; COM 503 completion observed");
+                            done_completed.store(true, Ordering::Release);
+                        } else {
+                            done_trace.error("broker.phase-a.grouped.abort-unverified",
+                                "renderer abort did not return verified true or native COM remained unresolved");
+                        }
+                        Ok(())
+                    }));
+                    if unsafe { core.ExecuteScript(&HSTRING::from(script), &completion) }.is_err() {
+                        finish(502, false);
+                    }
+                }
+                BrokerFault::PageClosePending | BrokerFault::SessionClosePending => {
+                    let stopped = unsafe { core.Stop() }.is_ok();
+                    let drained = broker_drain_all_on_ui(if stopped {503} else {502},
+                        &trace, &stats, &page_generation, &phase);
+                    let closed = stopped && unsafe { native.controller().Close() }.is_ok();
+                    stats.broken.store(true, Ordering::Release);
+                    if closed && drained >= 1 {
+                        stats.fault_triggered.store(true, Ordering::Release);
+                        page_generation.fetch_add(1, Ordering::AcqRel);
+                        phase.note(fault.dependent_terminal_event());
+                        trace.record(fault.dependent_terminal_stage(),
+                            "native page controller closed only after terminal pending COM deferral");
+                        completed.store(true, Ordering::Release);
+                    } else {
+                        trace.error("broker.phase-a.grouped.close-unverified", "native page/session close or COM completion unsuccessful");
+                    }
+                }
+                BrokerFault::MultiPendingShutdown => {
+                    // Two owned dependent WebView2 GetDeferral objects remain
+                    // pending when the parent signs the action barrier. Do
+                    // not count a queued/forged parent frame as a COM response.
+                    let stopped = unsafe { core.Stop() }.is_ok();
+                    finish(if stopped { 503 } else { 502 }, stopped);
+                }
+                _ => {}
+            }
+        }).map_err(|_| "native grouped fixture UI dispatch refused".into())
+    }
+
+    /// Called only AFTER the original stale dependent COM deferral has
+    /// completed with a native synthetic 502. A success needs a second,
+    /// independent real renderer readback from the networkless successor;
+    /// no state flag or timer is accepted as evidence of a new page.
+    fn finish_grouped_stale_on_ui(
+        app: &tauri::AppHandle,
+        fault: BrokerFault,
+        old_generation: u64,
+        native_status: Option<u16>,
+        generation: Arc<AtomicU64>,
+        phase: Arc<PhaseA>,
+        stats: Arc<BrokerStats>,
+        trace: Arc<StartupTrace>,
+        completed: Arc<AtomicBool>,
+    ) {
+        let current = generation.load(Ordering::Acquire);
+        if !fault.grouped_stale()
+            || native_status != Some(502)
+            || old_generation == 0
+            || old_generation == current
+            || !phase.grouped_navigation_observed.load(Ordering::Acquire)
+            || phase.stale_page_denied.load(Ordering::Acquire) == 0
+            || stats.pending.load(Ordering::Acquire) != 0
+        {
+            trace.error("broker.phase-a.grouped.stale-com-unverified",
+                "old WebView2 deferral was not denied after an observed native page-generation change");
+            return;
+        }
+        let Some(window) = app.get_webview_window("browser-host") else {
+            trace.error(
+                "broker.phase-a.grouped.successor-missing",
+                "original WebView2 controller unavailable",
+            );
+            return;
+        };
+        let dispatched = window.with_webview(move |native| {
+            let core = match unsafe { native.controller().CoreWebView2() } {
+                Ok(core) => core,
+                Err(_) => {
+                    trace.error("broker.phase-a.grouped.successor-core-failed",
+                        "native COM successor controller unavailable");
+                    return;
+                }
+            };
+            let mut actual_source = PWSTR::null();
+            if unsafe { core.Source(&mut actual_source) }.is_err()
+                || take_pwstr(actual_source) != "about:blank"
+                || generation.load(Ordering::Acquire) != current
+            {
+                trace.error("broker.phase-a.grouped.successor-not-loaded",
+                    "networkless successor source not independently observed");
+                return;
+            }
+            let proof_core = core.clone();
+            let proof_generation = generation.clone();
+            let proof_phase = phase.clone();
+            let proof_stats = stats.clone();
+            let proof_trace = trace.clone();
+            let proof_completed = completed.clone();
+            let armed = ExecuteScriptCompletedHandler::create(Box::new(move |hr, output| {
+                let mut current_source = PWSTR::null();
+                if hr.is_err() || output.trim() != "true"
+                    || unsafe { proof_core.Source(&mut current_source) }.is_err()
+                    || take_pwstr(current_source) != "about:blank"
+                    || proof_generation.load(Ordering::Acquire) != current
+                    || proof_stats.pending.load(Ordering::Acquire) != 0
+                {
+                    proof_trace.error("broker.phase-a.grouped.successor-observer-failed",
+                        "native successor mutation observer could not be armed and source-bound");
+                    return Ok(());
+                }
+                // Attempt the EXACT old native page-generation/element
+                // authorization check while a real MutationObserver is live
+                // on the successor. A stale result must be rejected before
+                // any click, input, navigation or arbitrary JS dispatch.
+                if fault.grouped_semantic() {
+                    let semantic_generation =
+                        proof_phase.old_semantic_generation.load(Ordering::Acquire);
+                    let button_index =
+                        proof_phase.old_button_index.load(Ordering::Acquire);
+                    let exact_denial = if fault == BrokerFault::SnapshotStale {
+                        "stale-snapshot"
+                    } else {
+                        "stale-element"
+                    };
+                    if !proof_phase.semantic_snapshot_observed.load(Ordering::Acquire)
+                        || semantic_generation != old_generation
+                        || authorize_grouped_old_action(
+                            fault, semantic_generation, button_index, current,
+                        ) != Err(exact_denial)
+                    {
+                        proof_trace.error("broker.phase-a.grouped.stale-binding-unverified",
+                            "no independently captured old DOM button/snapshot for stale native action");
+                        return Ok(());
+                    }
+                }
+                let readback_core = proof_core.clone();
+                let readback_generation = proof_generation.clone();
+                let readback_phase = proof_phase.clone();
+                let readback_stats = proof_stats.clone();
+                let readback_trace = proof_trace.clone();
+                let readback_completed = proof_completed.clone();
+                let readback = ExecuteScriptCompletedHandler::create(Box::new(move |hr, output| {
+                    let mut source = PWSTR::null();
+                    if hr.is_err() || output.trim() != "0"
+                        || unsafe { readback_core.Source(&mut source) }.is_err()
+                        || take_pwstr(source) != "about:blank"
+                        || readback_generation.load(Ordering::Acquire) != current
+                        || readback_stats.pending.load(Ordering::Acquire) != 0
+                    {
+                        readback_trace.error("broker.phase-a.grouped.successor-readback-failed",
+                            "actual successor MutationObserver did not report zero mutation records");
+                        return Ok(());
+                    }
+                    if let Ok(mut count) = readback_phase.successor_page_mutation_count.lock() {
+                        // Derived exclusively from actual renderer-side
+                        // MutationObserver.takeRecords(), not an assumed zero.
+                        *count = Some(0);
+                    } else {
+                        readback_trace.error("broker.phase-a.grouped.successor-lock-failed",
+                            "successor observer result state unavailable");
+                        return Ok(());
+                    }
+                    if fault == BrokerFault::SnapshotStale {
+                        readback_phase.stale_snapshot_rejected.store(true, Ordering::Release);
+                        readback_phase.note("native-old-semantic-snapshot-rejected-before-action");
+                    } else if fault == BrokerFault::ElementStale {
+                        readback_phase.stale_element_rejected.store(true, Ordering::Release);
+                        readback_phase.note("native-old-element-generation-rejected-before-action");
+                    }
+                    readback_phase.note("late-old-session-or-element-rejected-after-invalidation");
+                    readback_stats.fault_triggered.store(true, Ordering::Release);
+                    readback_trace.record(fault.dependent_terminal_stage(),
+                        "original native COM502; stale page/element guard rejected; successor MutationObserver measured zero");
+                    readback_completed.store(true, Ordering::Release);
+                    Ok(())
+                }));
+                if unsafe {
+                    proof_core.ExecuteScript(
+                        &HSTRING::from(GROUPED_SUCCESSOR_READBACK_JS), &readback)
+                }.is_err() {
+                    proof_trace.error("broker.phase-a.grouped.successor-readback-dispatch-failed",
+                        "fixed native successor MutationObserver readback could not dispatch");
+                }
+                Ok(())
+            }));
+            if unsafe { core.ExecuteScript(&HSTRING::from(GROUPED_SUCCESSOR_MUTATION_ARM_JS), &armed) }
+                .is_err()
+            {
+                trace.error("broker.phase-a.grouped.successor-dispatch-failed",
+                    "fixed native successor MutationObserver could not dispatch");
+            }
+        });
+        if dispatched.is_err() {
+            // No WebView2 callback => no synthetic positive receipt.
+            // The bounded monitor watchdog remains authoritative.
+        }
+    }
+
     // The broker never opens sockets. One bounded pipe worker owns all frames;
     // COM deferrals are completed only on the original WebView2 UI apartment.
     fn run_brokered(
@@ -1648,6 +2901,7 @@ mod host {
         udf: PathBuf,
     ) -> Result<(), String> {
         let fault = args.broker_fault;
+        let production = args.mode == Mode::ProductionBroker;
         trace.record("broker.fault.configured", fault.label());
         trace.record(
             "broker.pipes.begin",
@@ -1664,13 +2918,16 @@ mod host {
 
         let stats = Arc::new(BrokerStats::default());
         let phase_a = Arc::new(PhaseA::default());
+        let grouped_completed = Arc::new(AtomicBool::new(false));
         let observer = Arc::new(Observed::default());
         let semantic = Arc::new(SemanticSnapshotState::default());
         let marker = format!("{RENDER_MARKER}{}", args.nonce);
-        let document_url = format!(
-            "http://127.0.0.1:{}/document/broker/{}",
-            args.fixture_port, args.nonce
-        );
+        let document_url = args.initial_url.clone().unwrap_or_else(|| {
+            format!(
+                "http://127.0.0.1:{}/document/broker/{}",
+                args.fixture_port, args.nonce
+            )
+        });
         let mut context = tauri::generate_context!();
         context.config_mut().app.windows.clear();
         let result_flag = Arc::new(AtomicBool::new(false));
@@ -1698,11 +2955,159 @@ mod host {
                 let worker_stats = setup_stats.clone();
                 let worker_session = session.clone();
                 let worker_fault = fault;
+                let worker_production = production;
+                let worker_initial_url = document_url.clone();
                 let worker_generation = page_generation.clone();
                 let worker_phase_a = phase_a.clone();
+                let worker_grouped_completed = grouped_completed.clone();
                 let handle = app.handle().clone();
                 thread::spawn(move || {
-                    while let Ok(ticket) = rx.recv() {
+                    let mut parent_attested = false;
+                    let mut last_observation_id = 0u64;
+                    loop {
+                        if worker_production && parent_attested {
+                            // The authenticated parent's pending observation
+                            // command takes precedence over a *new* resource
+                            // ticket. Never read control bytes while awaiting
+                            // a reply to an already forwarded GET.
+                            match broker_control_available(&broker_read) {
+                                Ok(true) => {
+                                    if let Err(reason) = service_parent_dom_control(
+                                        &mut broker_read,
+                                        &mut broker_write,
+                                        &handle,
+                                        &worker_session,
+                                        &mut last_observation_id,
+                                        worker_generation.clone(),
+                                        worker_stats.clone(),
+                                        &worker_initial_url,
+                                    ) {
+                                        worker_stats.errors.fetch_add(1, Ordering::Relaxed);
+                                        worker_stats.broken.store(true, Ordering::Release);
+                                        worker_trace.error("production.observe.pipe.denied", reason);
+                                        break;
+                                    }
+                                    worker_trace.record("production.observe.replied",
+                                        "authenticated bounded structural DOM result delivered to parent");
+                                    continue;
+                                }
+                                Ok(false) => {}
+                                Err(_) => {
+                                    worker_stats.errors.fetch_add(1, Ordering::Relaxed);
+                                    worker_stats.broken.store(true, Ordering::Release);
+                                    worker_trace.error("production.observe.pipe.broken",
+                                        "authenticated parent control pipe unavailable");
+                                    break;
+                                }
+                            }
+                        }
+                        // Only the one worker that handles v1 resource frames
+                        // may read the inbound parent pipe. During an active
+                        // resource reply it consumes ONLY the exact v1 reply;
+                        // v2 observation requests are processed while idle.
+                        let ticket = if worker_production && parent_attested {
+                            match rx.recv_timeout(Duration::from_millis(30)) {
+                                Ok(ticket) => ticket,
+                                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                                Err(mpsc::RecvTimeoutError::Timeout) => {
+                                    match broker_control_available(&broker_read) {
+                                        Ok(false) => continue,
+                                        Ok(true) => {
+                                            let result = service_parent_dom_control(
+                                                &mut broker_read,
+                                                &mut broker_write,
+                                                &handle,
+                                                &worker_session,
+                                                &mut last_observation_id,
+                                                worker_generation.clone(),
+                                                worker_stats.clone(),
+                                                &worker_initial_url,
+                                            );
+                                            if let Err(reason) = result {
+                                                worker_stats.errors.fetch_add(1, Ordering::Relaxed);
+                                                worker_stats.broken.store(true, Ordering::Release);
+                                                worker_trace.error("production.observe.pipe.denied", reason);
+                                                break;
+                                            }
+                                            worker_trace.record("production.observe.replied",
+                                                "authenticated bounded structural DOM result delivered to parent");
+                                            continue;
+                                        }
+                                        Err(_) => {
+                                            worker_stats.errors.fetch_add(1, Ordering::Relaxed);
+                                            worker_stats.broken.store(true, Ordering::Release);
+                                            worker_trace.error("production.observe.pipe.broken",
+                                                "authenticated parent control pipe unavailable");
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            match rx.recv() {
+                                Ok(ticket) => ticket,
+                                Err(_) => break,
+                            }
+                        };
+                        if let Some(ready) = ticket.production_ready {
+                            // A successful first response is a parent policy
+                            // attestation, never proof from the child itself.
+                            // No WebView2 navigation may occur earlier.
+                            let acknowledged = (|| -> Result<(), String> {
+                                if !worker_production || ticket.id != 0
+                                    || ready.session != worker_session
+                                    || ready.host_pid != pid || !production_broker_url(&worker_initial_url)
+                                { return Err("unexpected production readiness request".into()) }
+                                let body = serde_json::to_vec(&ready)
+                                    .map_err(|_| "production readiness encoding failed")?;
+                                broker_write_frame(&mut broker_write, &body)
+                                    .map_err(|_| "production readiness pipe write failed")?;
+                                let reply = broker_read_frame(&mut broker_read, BROKER_REPLY_DEADLINE)
+                                    .map_err(|_| "production readiness parent authorization unavailable")?;
+                                let response = broker_reply(&reply, &worker_session, 0)
+                                    .map_err(|_| "production readiness reply identity invalid")?;
+                                if response.status != 204 || !response.body.is_empty()
+                                    || response.synthetic || response.binding.is_some()
+                                { return Err("production parent refused WebView2 readiness".into()) }
+                                Ok(())
+                            })();
+                            if let Err(reason) = acknowledged {
+                                worker_stats.broken.store(true, Ordering::Release);
+                                worker_trace.error("production.handshake.denied", &reason);
+                                break;
+                            }
+                            let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+                            let core_app = handle.clone();
+                            let approved_url = worker_initial_url.clone();
+                            let ack_trace = worker_trace.clone();
+                            let dispatched = handle.run_on_main_thread(move || {
+                                let navigation_ack = ack_tx.clone();
+                                let result = core_app.get_webview_window("browser-host")
+                                    .ok_or("production controller vanished")
+                                    .and_then(|window| window.with_webview(move |native| {
+                                        let success = unsafe { native.controller().CoreWebView2() }
+                                            .and_then(|core| unsafe { core.Navigate(&HSTRING::from(approved_url)) })
+                                            .is_ok();
+                                        let _ = navigation_ack.send(success);
+                                    }).map_err(|_| "production controller dispatch failed"));
+                                if result.is_ok() {
+                                    ack_trace.record("production.navigation.started", "parent-authorized HTTPS initial navigation dispatched");
+                                } else {
+                                    ack_trace.error("production.navigation.denied", "native parent-authorized navigation could not dispatch");
+                                }
+                                if result.is_err() {
+                                    let _ = ack_tx.send(false);
+                                }
+                            });
+                            if dispatched.is_err() || ack_rx.recv_timeout(Duration::from_secs(3)) != Ok(true) {
+                                worker_stats.broken.store(true, Ordering::Release);
+                                worker_trace.error("production.navigation.failed", "native UI acknowledgement absent");
+                                break;
+                            }
+                            worker_trace.record("production.handshake.accepted", "independent parent attested original process and effective UDF");
+                            parent_attested = true;
+                            continue;
+                        }
                         if worker_stats.broken.load(Ordering::Acquire) {
                             let trace = worker_trace.clone();
                             let stats = worker_stats.clone();
@@ -1722,6 +3127,7 @@ mod host {
                             request_id: ticket.id,
                             method: "GET",
                             url: &ticket.url,
+                            page_generation: worker_production.then_some(ticket.page_generation),
                         };
                         let mut finished_early = false;
                         let answer = (|| -> io::Result<BrokerPayload> {
@@ -1816,6 +3222,9 @@ mod host {
                             break;
                         }
                         let failure = answer.is_err();
+                        let distinct_broker_eof = worker_fault == BrokerFault::BrokerProcessKill
+                            && ticket.id == 2
+                            && answer.as_ref().err().is_some_and(distinct_broker_writer_eof);
                         let response = match answer {
                             Ok(payload) => payload,
                             Err(error) => {
@@ -1839,16 +3248,64 @@ mod host {
                         let reply_stats = worker_stats.clone();
                         let reply_generation = worker_generation.clone();
                         let reply_phase_a = worker_phase_a.clone();
+                        let reply_grouped_completed = worker_grouped_completed.clone();
+                        let reply_app = handle.clone();
+                        let reply_fault = worker_fault;
+                        let reply_old_epoch = ticket.page_generation;
                         let duplicate_late = worker_fault == BrokerFault::DuplicateLate && ticket.id == 1;
+                        let com_completion = worker_production
+                            .then(|| mpsc::sync_channel::<Option<u16>>(1));
+                        let com_sender = com_completion.as_ref().map(|(sender, _)| sender.clone());
                         if let Err(error) = handle.run_on_main_thread(move || {
                             if failure {
-                                broker_drain_on_ui(
-                                    ticket.id, response, &reply_trace, &reply_stats, &reply_generation, &reply_phase_a,
-                                );
+                                if reply_fault == BrokerFault::BrokerProcessKill && ticket.id == 2
+                                    && distinct_broker_eof
+                                {
+                                    // The separately owned parent has proved
+                                    // ORIGINAL helper OS-HANDLE kill/job/exit.
+                                    // Here we prove only the real closed pipe
+                                    // AND actual UI COM synthetic502 terminal.
+                                    let status = broker_finish_on_ui(
+                                        ticket.id, response, &reply_trace,
+                                        &reply_stats, &reply_generation, &reply_phase_a,
+                                    );
+                                    if status == Some(502)
+                                        && reply_stats.pending.load(Ordering::Acquire) == 0
+                                        && reply_phase_a.triggered.load(Ordering::Acquire)
+                                    {
+                                        reply_phase_a.note(reply_fault.dependent_terminal_event());
+                                        reply_trace.record(reply_fault.dependent_terminal_stage(),
+                                            "original broker writer EOF; exact dependent native COM SetResponse and Complete 502");
+                                        reply_grouped_completed.store(true, Ordering::Release);
+                                    } else {
+                                        reply_trace.error("broker.phase-a.broker-process-kill.com-unverified",
+                                            "real helper EOF did not complete exact native 502 deferral");
+                                        broker_drain_all_on_ui(
+                                            502, &reply_trace, &reply_stats,
+                                            &reply_generation, &reply_phase_a);
+                                    }
+                                } else {
+                                    broker_drain_on_ui(
+                                        ticket.id, response, &reply_trace, &reply_stats,
+                                        &reply_generation, &reply_phase_a);
+                                }
                             } else {
-                                broker_finish_on_ui(
+                                let installed_status = broker_finish_on_ui(
                                     ticket.id, response, &reply_trace, &reply_stats, &reply_generation, &reply_phase_a,
                                 );
+                                if reply_fault.grouped_stale() && ticket.id == 2 {
+                                    finish_grouped_stale_on_ui(
+                                        &reply_app, reply_fault, reply_old_epoch, installed_status,
+                                        reply_generation.clone(), reply_phase_a.clone(),
+                                        reply_stats.clone(), reply_trace.clone(),
+                                        reply_grouped_completed.clone(),
+                                    );
+                                }
+                                if let Some(sender) = com_sender {
+                                    // A real native UI completion is the only
+                                    // authority to unlock the parent receipt.
+                                    let _ = sender.send(installed_status);
+                                }
                                 if duplicate_late {
                                     reply_phase_a.event("duplicate-completion-replayed", reply_stats.pending.load(Ordering::Acquire));
                                     reply_stats.fault_triggered.store(true, Ordering::Release);
@@ -1869,6 +3326,48 @@ mod host {
                             worker_stats.errors.fetch_add(1, Ordering::Relaxed);
                             worker_stats.broken.store(true, Ordering::Release);
                             break;
+                        }
+                        if let Some((_, receiver)) = com_completion {
+                            // The parent must not report a delivered response
+                            // just because it successfully wrote a pipe frame.
+                            // There is one COM completion and one ACK per
+                            // exact production request, after native success.
+                            let acknowledged = receiver.recv_timeout(Duration::from_secs(3))
+                                .ok()
+                                .flatten()
+                                .filter(|_| {
+                                    !worker_stats.broken.load(Ordering::Acquire)
+                                        && ticket.page_generation != 0
+                                        && ticket.page_generation ==
+                                            worker_generation.load(Ordering::Acquire)
+                                });
+                            let Some(status) = acknowledged else {
+                                worker_stats.errors.fetch_add(1, Ordering::Relaxed);
+                                worker_stats.broken.store(true, Ordering::Release);
+                                worker_trace.error("production.com-ack.denied",
+                                    "bound native SetResponse/Complete acknowledgment absent");
+                                break;
+                            };
+                            let ack = BrokerComCompletion {
+                                version: 1,
+                                session: &worker_session,
+                                request_id: ticket.id,
+                                kind: "com-completed",
+                                status,
+                                page_generation: ticket.page_generation,
+                            };
+                            let write = serde_json::to_vec(&ack)
+                                .map_err(|_| io::Error::other("native completion ACK encoding"))
+                                .and_then(|body| broker_write_frame(&mut broker_write, &body));
+                            if write.is_err() {
+                                worker_stats.errors.fetch_add(1, Ordering::Relaxed);
+                                worker_stats.broken.store(true, Ordering::Release);
+                                worker_trace.error("production.com-ack.pipe.failed",
+                                    "native completion ACK cannot reach parent");
+                                break;
+                            }
+                            worker_trace.record("production.com-ack.sent",
+                                "exact parent request completed by WebView2 COM deferral");
                         }
                         if failure {
                             // Do not service new requests over a compromised or
@@ -2061,8 +3560,12 @@ mod host {
                 let callback_stats = setup_stats.clone();
                 let callback_url = document_url.clone();
                 let callback_session = session.clone();
+                let callback_session_for_ready = callback_session.clone();
                 let callback_port = port;
                 let callback_tx = tx;
+                let callback_ready_tx = callback_tx.clone();
+                let callback_production = production;
+                let callback_udf = udf.clone();
                 let callback_fault = fault;
                 let callback_generation = page_generation.clone();
                 let callback_phase_a = phase_a.clone();
@@ -2082,6 +3585,54 @@ mod host {
                         let environment = native.environment();
                         let controller = native.controller();
                         let core = unsafe { controller.CoreWebView2()? };
+                        if callback_production {
+                            // Before a classified/approved action authority
+                            // exists, untrusted remote JavaScript MUST NOT run:
+                            // GET handlers, beacons and credential/event effects
+                            // could otherwise mutate a site without a tool
+                            // approval. This is a read-only production bridge;
+                            // do not secretly enable interactive model tools.
+                            let settings = unsafe { core.Settings()? };
+                            unsafe {
+                                settings.SetIsScriptEnabled(false)?;
+                                settings.SetIsWebMessageEnabled(false)?;
+                                settings.SetAreDefaultScriptDialogsEnabled(false)?;
+                                settings.SetAreHostObjectsAllowed(false)?;
+                            }
+                            // No WebView-created page, native download, site
+                            // permission or unrestricted system picker may
+                            // escape the single Clack-owned page. Later popup
+                            // and download capabilities must use central TF2/
+                            // TF3 approvals and bounded page identities.
+                            let new_window = NewWindowRequestedEventHandler::create(Box::new(
+                                move |_, args| {
+                                    if let Some(args) = args { unsafe { args.SetHandled(true)?; } }
+                                    Ok(())
+                                },
+                            ));
+                            let mut popup_token = 0;
+                            unsafe { core.add_NewWindowRequested(&new_window, &mut popup_token)?; }
+                            let core4: ICoreWebView2_4 = core.cast()?;
+                            let download = DownloadStartingEventHandler::create(Box::new(
+                                move |_, args| {
+                                    if let Some(args) = args { unsafe { args.SetCancel(true)?; } }
+                                    Ok(())
+                                },
+                            ));
+                            let mut download_token = 0;
+                            unsafe { core4.add_DownloadStarting(&download, &mut download_token)?; }
+                            let permission = PermissionRequestedEventHandler::create(Box::new(
+                                move |_, args| {
+                                    if let Some(args) = args {
+                                        unsafe { args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY)?; }
+                                    }
+                                    Ok(())
+                                },
+                            ));
+                            let mut permission_token = 0;
+                            unsafe { core.add_PermissionRequested(&permission, &mut permission_token)?; }
+                            callback_trace.record("production.untrusted-features.denied", "remote scripts, popups, downloads, permissions and web messages disabled pending native authority");
+                        }
                         // The _22 API is required. Its ALL source kinds include
                         // document, iframe, worker, and shared-worker requests.
                         // Never silently downgrade to a filter omitting sources.
@@ -2150,6 +3701,7 @@ mod host {
                         let nav_stats = callback_stats.clone();
                         let nav_phase_a = callback_phase_a.clone();
                         let nav_fault = callback_fault;
+                        let nav_production = callback_production;
                         let nav_expected_url = callback_url.clone();
                         let nav_first_expected = Arc::new(AtomicBool::new(false));
                         let navigation_handler = NavigationStartingEventHandler::create(Box::new(
@@ -2172,6 +3724,50 @@ mod host {
                                 if current_url == "about:blank"
                                     && !nav_first_expected.load(Ordering::Acquire)
                                 {
+                                    return Ok(());
+                                }
+                                if nav_fault.grouped_stale() && current_url == "about:blank"
+                                    && nav_phase_a.grouped_navigation_requested.load(Ordering::Acquire)
+                                    && nav_stats.pending.load(Ordering::Acquire) == 1
+                                {
+                                    // The parent holds the original dependent
+                                    // HTTP response until it observes this
+                                    // marker. Emit it ONLY inside a real native
+                                    // NavigationStarting callback for the
+                                    // single explicitly requested networkless
+                                    // successor, not from a guessed clock or
+                                    // synthetic AtomicU64-only invalidation.
+                                    if nav_phase_a.grouped_navigation_observed.swap(true, Ordering::AcqRel) {
+                                        unsafe { args.SetCancel(true)?; }
+                                        return Ok(());
+                                    }
+                                    nav_generation.fetch_add(1, Ordering::AcqRel);
+                                    let stage = match nav_fault {
+                                        BrokerFault::NavigationStale =>
+                                            "broker.phase-a.navigation-stale.invalidated",
+                                        BrokerFault::SnapshotStale =>
+                                            "broker.phase-a.snapshot-stale.invalidated",
+                                        BrokerFault::ElementStale =>
+                                            "broker.phase-a.element-stale.invalidated",
+                                        _ => unreachable!(),
+                                    };
+                                    nav_phase_a.note("native-networkless-successor-navigation-observed");
+                                    nav_trace.record(stage,
+                                        "native WebView2 successor NavigationStarting invalidated old page generation");
+                                    return Ok(());
+                                }
+                                if nav_production {
+                                    if !production_broker_url(&current_url) {
+                                        nav_stats.broken.store(true, Ordering::Release);
+                                        nav_trace.error("production.navigation.denied", "unsupported scheme/port/authority");
+                                        unsafe { args.SetCancel(true)?; }
+                                        return Ok(());
+                                    }
+                                    if nav_first_expected.swap(true, Ordering::AcqRel) {
+                                        nav_generation.fetch_add(1, Ordering::AcqRel);
+                                        nav_phase_a.note("production-page-generation-invalidated");
+                                    }
+                                    nav_trace.record("production.navigation.policy-pending", "native page epoch bound to TF3 resource authorization");
                                     return Ok(());
                                 }
                                 if nav_fault == BrokerFault::PageRace
@@ -2222,6 +3818,7 @@ mod host {
                         let event_observer = callback_observer.clone();
                         let event_core = core.clone();
                         let event_document_url = callback_url.clone();
+                        let event_production = callback_production;
                         let held_dependent = Arc::new(AtomicU64::new(0));
                         let event_held_dependent = held_dependent.clone();
                         let handler = WebResourceRequestedEventHandler::create(Box::new(
@@ -2245,7 +3842,11 @@ mod host {
                                 let uri = take_pwstr(uri);
                                 let method = take_pwstr(method);
                                 if method != "GET"
-                                    || !broker_owned_url(&uri, callback_port, &callback_session)
+                                    || !(if event_production {
+                                        production_broker_url(&uri)
+                                    } else {
+                                        broker_owned_url(&uri, callback_port, &callback_session)
+                                    })
                                 {
                                     return broker_deny_on_ui(&args, &event_env, 403, &event_trace, &event_stats);
                                 }
@@ -2272,6 +3873,50 @@ mod host {
                                     });
                                 });
                                 event_stats.pending.fetch_add(1, Ordering::Relaxed);
+                                if callback_fault.grouped_dependent_action() && !is_document {
+                                    let expected_type = if callback_fault == BrokerFault::RendererXhrCancel {
+                                        "xhr"
+                                    } else { "fetch" };
+                                    let expected_second = format!(
+                                        "http://127.0.0.1:{}/xhr/broker/{}",
+                                        callback_port, callback_session
+                                    );
+                                    if (id == 2 && uri != format!(
+                                        "http://127.0.0.1:{}/{}/broker/{}",
+                                        callback_port, expected_type, callback_session
+                                    )) || (id == 3 && (callback_fault != BrokerFault::MultiPendingShutdown || uri != expected_second))
+                                        || id > 3 || id < 2
+                                    {
+                                        event_stats.broken.store(true, Ordering::Release);
+                                        event_phase_a.note("unexpected-grouped-dependent-rejected");
+                                        broker_drain_all_on_ui(502, &event_trace, &event_stats,
+                                            &event_generation, &event_phase_a);
+                                        return Ok(());
+                                    }
+                                    if callback_fault == BrokerFault::MultiPendingShutdown && id == 3 {
+                                        // The broker's network worker is intentionally
+                                        // serialized. Hold the second dependent COM
+                                        // deferral locally without enqueuing a third
+                                        // parent GET. Both must terminate on shutdown.
+                                        event_phase_a.event(
+                                            callback_fault.dependent_arm_event(),
+                                            event_stats.pending.load(Ordering::Acquire)
+                                        );
+                                        event_trace.record(callback_fault.dependent_arm_stage(),
+                                            "two native dependent WebView2 deferrals pending");
+                                        return Ok(());
+                                    }
+                                    if id == 2 && callback_fault != BrokerFault::MultiPendingShutdown {
+                                        event_phase_a.event(
+                                            callback_fault.dependent_arm_event(),
+                                            event_stats.pending.load(Ordering::Acquire)
+                                        );
+                                        event_trace.record(callback_fault.dependent_arm_stage(),
+                                            "native renderer dependent WebView2 COM deferral pending");
+                                    } else {
+                                        event_phase_a.note("multi-pending-first-dependent-held");
+                                    }
+                                }
                                 if callback_fault == BrokerFault::HostExitPending && id == 1 {
                                     event_phase_a.event("host-exit-with-pending-deferral", event_stats.pending.load(Ordering::Acquire));
                                     event_stats.fault_triggered.store(true, Ordering::Release);
@@ -2453,6 +4098,7 @@ mod host {
                                     url: uri,
                                     session: callback_session.clone(),
                                     page_generation: request_generation,
+                                    production_ready: None,
                                 }).is_err() {
                                     event_stats.denied.fetch_add(1, Ordering::Relaxed);
                                     broker_finish_on_ui(
@@ -2470,6 +4116,24 @@ mod host {
                         }
                         callback_stats.hook_ready.store(true, Ordering::Release);
                         callback_trace.record("broker.hook.ready", "HTTP HTTPS all contexts and sources filtered");
+                        if callback_production {
+                            // Real COM effective UDF and renderer/browser role
+                            // before any remote Navigate. Parent MUST separately
+                            // attest live original Handles / SID / capabilities
+                            // / Job, then send requestId0 204 to continue.
+                            let ready = native_production_ready(&environment, &core, &callback_udf, &callback_session_for_ready)
+                                .map_err(|reason| windows::core::Error::new(
+                                    windows::core::HRESULT(0x80004005u32 as i32), reason))?;
+                            callback_ready_tx.try_send(BrokerTicket {
+                                id: 0, url: callback_url.clone(),
+                                session: callback_session_for_ready.clone(), page_generation: 1,
+                                production_ready: Some(ready),
+                            }).map_err(|_| windows::core::Error::new(
+                                windows::core::HRESULT(0x80004005u32 as i32),
+                                "production parent broker readiness queue unavailable"))?;
+                            callback_trace.record("production.ready.armed", "native COM effective UDF and renderer/browser role verified; awaiting parent");
+                            return Ok(());
+                        }
                         if callback_fault == BrokerFault::AbnormalExit {
                             // The runner terminates this bounded, real WebView2
                             // process to exercise job cleanup. Never navigate or
@@ -2498,13 +4162,22 @@ mod host {
                 let monitor_semantic = semantic.clone();
                 let monitor_generation = page_generation.clone();
                 let monitor_phase_a = phase_a.clone();
+                let monitor_grouped_completed = grouped_completed.clone();
+                let monitor_production = production;
+                let monitor_fixture_document_url = document_url.clone();
                 let app_handle = app.handle().clone();
                 thread::spawn(move || {
                     let start = Instant::now();
                     let mut script_at = None;
                     let mut broken_at = None;
                     let mut os_browser_acknowledged = false;
-                    while start.elapsed() < WATCHDOG {
+                    let mut grouped_dispatched = false;
+                    let max_runtime = if monitor_production {
+                        PRODUCTION_SESSION_LIMIT
+                    } else {
+                        WATCHDOG
+                    };
+                    while start.elapsed() < max_runtime {
                         if let Ok(rows) = inventory(pid) {
                             if let Ok(mut owned) = monitor_observer.processes.lock() {
                                 for row in rows { owned.insert(row.pid, row); }
@@ -2531,6 +4204,28 @@ mod host {
                                 );
                             }
                         }
+                        if fault.grouped_dependent_action() && !grouped_dispatched {
+                            let required_pending = if fault == BrokerFault::MultiPendingShutdown { 2 } else { 1 };
+                            if monitor_stats.pending.load(Ordering::Acquire) >= required_pending
+                                && monitor_observer.scripted.load(Ordering::Acquire)
+                                && fs::read(root.join(PHASE_A_DEPENDENT_ACK_FILE))
+                                    .is_ok_and(|bytes| bytes == PHASE_A_DEPENDENT_ACK_BYTES)
+                            {
+                                grouped_dispatched = true;
+                                monitor_phase_a.note("independent-parent-dependent-request-acknowledged");
+                                monitor_trace.record("broker.phase-a.parent-dependent-verified",
+                                    "independent exact parent request and live browser/renderer original HANDLEs attested");
+                                if let Err(reason) = dispatch_grouped_phase_a_action(
+                                    &app_handle, fault, monitor_fixture_document_url.clone(),
+                                    monitor_trace.clone(), monitor_stats.clone(),
+                                    monitor_generation.clone(), monitor_phase_a.clone(),
+                                    monitor_grouped_completed.clone(),
+                                ) {
+                                    monitor_stats.broken.store(true, Ordering::Release);
+                                    monitor_trace.error("broker.phase-a.grouped.dispatch-failed", &reason);
+                                }
+                            }
+                        }
                         // A renderer-crash fixture cannot close the host just
                         // because its test document executed two seconds ago.
                         // The separately owned Windows runner must first find
@@ -2544,7 +4239,9 @@ mod host {
                             monitor_stats.pending.load(Ordering::Acquire) != 0,
                             monitor_phase_a.process_failed.load(Ordering::Acquire) != 0,
                         );
-                        if !awaiting_renderer_failure
+                        let awaiting_grouped_action = fault.grouped_dependent_action()
+                            && !monitor_grouped_completed.load(Ordering::Acquire);
+                        if !monitor_production && !awaiting_renderer_failure && !awaiting_grouped_action
                             && (!fault.awaits_parent_os_browser_proof() || os_browser_acknowledged)
                             && script_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(2))
                             && (fault != BrokerFault::None
@@ -2554,6 +4251,7 @@ mod host {
                             break;
                         }
                         if monitor_stats.broken.load(Ordering::Acquire)
+                            && !awaiting_grouped_action
                             && (!fault.awaits_parent_os_browser_proof() || os_browser_acknowledged)
                         {
                             // Allow a bounded UI-thread dispatch to complete the
@@ -2569,7 +4267,8 @@ mod host {
                         }
                         thread::sleep(Duration::from_millis(120));
                     }
-                    if fault.is_phase_a() && monitor_stats.pending.load(Ordering::Acquire) != 0 {
+                    if (fault.is_phase_a() || monitor_production)
+                        && monitor_stats.pending.load(Ordering::Acquire) != 0 {
                         // Do not tear down Tauri with an outstanding native
                         // deferral. The existing global watchdog is the only
                         // fallback when a prerequisite WebView2 event never
@@ -2617,14 +4316,21 @@ mod host {
                         semantic_status
                     };
                     let semantic_proof = if semantic_current { semantic_proof } else { None };
-                    let success = fault == BrokerFault::None && ready && scripted && !webview_pids.is_empty()
-                        && forwarded > 0 && answered > 0 && errors == 0
-                        && monitor_stats.pending.load(Ordering::Acquire) == 0
-                        && !monitor_stats.broken.load(Ordering::Acquire);
+                    let success = if monitor_production {
+                        ready && !webview_pids.is_empty() && forwarded > 0
+                            && answered > 0 && errors == 0
+                            && monitor_stats.pending.load(Ordering::Acquire) == 0
+                            && !monitor_stats.broken.load(Ordering::Acquire)
+                    } else {
+                        fault == BrokerFault::None && ready && scripted && !webview_pids.is_empty()
+                            && forwarded > 0 && answered > 0 && errors == 0
+                            && monitor_stats.pending.load(Ordering::Acquire) == 0
+                            && !monitor_stats.broken.load(Ordering::Acquire)
+                    };
                     result_from_thread.store(success, Ordering::Release);
                     report(&root, &json!({
                         "kind": "clack-browser-host",
-                        "mode": "brokered-child",
+                        "mode": if monitor_production { "production-broker" } else { "brokered-child" },
                         "brokerFaultMode": fault.label(),
                         "brokerFaultTriggered": monitor_stats.fault_triggered.load(Ordering::Acquire),
                         "brokerTimeouts": monitor_stats.timeouts.load(Ordering::Acquire),
@@ -2633,9 +4339,9 @@ mod host {
                         "hostToken": token,
                         "appContainer": token.app_container,
                         "udf": udf,
-                        "fixtureHost": "127.0.0.1",
-                        "fixturePort": port,
-                        "fixtureNonce": args.nonce,
+                        "fixtureHost": if monitor_production { None } else { Some("127.0.0.1") },
+                        "fixturePort": if monitor_production { None } else { Some(port) },
+                        "fixtureNonce": if monitor_production { None } else { Some(args.nonce) },
                         "brokerHookReady": ready,
                         "brokerIntercepted": monitor_stats.intercepted.load(Ordering::Acquire),
                         "brokerForwarded": forwarded,
@@ -2696,6 +4402,22 @@ mod host {
     }
 
     fn run(args: Args, trace: Arc<StartupTrace>) -> Result<(), String> {
+        if args.mode == Mode::ProductionBroker
+            && [
+                "WEBVIEW2_USER_DATA_FOLDER",
+                "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER",
+                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                "WEBVIEW2_PIPE_FOR_SCRIPT_DEBUGGER",
+                "WEBVIEW2_WAIT_FOR_SCRIPT_DEBUGGER",
+                "WEBVIEW2_RELEASE_CHANNEL_PREFERENCE",
+            ]
+            .iter()
+            .any(|key| std::env::var_os(key).is_some())
+        {
+            // No ambient executable/flags/UDF/debug override may silently
+            // change the actual host process or persistent storage boundary.
+            return Err("production WebView2 environment override denied".into());
+        }
         trace.record(
             "environment.checked",
             &format!(
@@ -2725,7 +4447,7 @@ mod host {
             ),
         );
         match args.mode {
-            Mode::Isolated | Mode::Brokered
+            Mode::Isolated | Mode::Brokered | Mode::ProductionBroker
                 if !token.app_container || !token.capability_sids.is_empty() =>
             {
                 return Err(format!("isolated child requires AppContainer no-capabilities token, actual container={} capabilities={}",
@@ -2745,14 +4467,36 @@ mod host {
         })?;
         trace.record("udf.entropy.ok", "unique UDF entropy acquired");
         let salt = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let udf = args
-            .root
-            .join(format!("webview2-{}-{salt}", std::process::id()));
+        let udf = if args.mode == Mode::ProductionBroker {
+            args.root.join("udf")
+        } else {
+            args.root
+                .join(format!("webview2-{}-{salt}", std::process::id()))
+        };
+        if args.mode == Mode::ProductionBroker {
+            use std::os::windows::fs::MetadataExt;
+            // The production parent creates a fresh, private session UDF and
+            // ACLs it only to the exact AppContainer SID BEFORE launching the
+            // child. Never allow a symlink, junction, or other reparse-point
+            // replacement to redirect cookies/storage into another profile.
+            let md = udf
+                .symlink_metadata()
+                .map_err(|_| "production parent UDF missing")?;
+            if !md.is_dir()
+                || md.file_type().is_symlink()
+                || md.file_attributes() & 0x400 != 0
+                || udf.canonicalize().ok().as_deref() != Some(udf.as_path())
+            {
+                return Err("production UDF must be exact private, non-reparse directory".into());
+            }
+        }
         trace.record("udf.create.begin", "creating unique case-owned UDF");
-        fs::create_dir(&udf).map_err(|e| {
-            trace.error("udf.create.failed", &io_error(&e));
-            format!("create unique UDF: {e}")
-        })?;
+        if args.mode != Mode::ProductionBroker {
+            fs::create_dir(&udf).map_err(|e| {
+                trace.error("udf.create.failed", &io_error(&e));
+                format!("create unique UDF: {e}")
+            })?;
+        }
         trace.record("udf.create.ok", "unique case-owned UDF created");
         trace.record("udf.access.begin", "probing read write and delete access");
         udf_access_probe(&udf, &trace).map_err(|e| {
@@ -2769,7 +4513,7 @@ mod host {
                 "environment may override requested data directory",
             );
         }
-        if args.mode == Mode::Brokered {
+        if matches!(args.mode, Mode::Brokered | Mode::ProductionBroker) {
             return run_brokered(args, trace, token, udf);
         }
         let observer = Arc::new(Observed::default());
@@ -3049,6 +4793,10 @@ mod host {
                 "host-crash",
                 "shutdown-pending",
                 "browser-crash-pending",
+                "navigation-stale",
+                "snapshot-stale",
+                "element-stale",
+                "broker-process-kill",
             ] {
                 assert!(
                     BrokerFault::parse(label).is_ok(),
@@ -3114,6 +4862,199 @@ mod host {
             assert_eq!(timeout.reply_deadline(), BROKER_FAULT_DEADLINE);
             assert!(timeout.reply_deadline() < BROKER_REPLY_DEADLINE);
             assert!(BrokerFault::None.reply_deadline() > timeout.reply_deadline());
+        }
+
+        #[test]
+        fn grouped_native_races_are_recorded_as_real_phase_a_faults() {
+            for label in [
+                "renderer-fetch-cancel",
+                "renderer-xhr-cancel",
+                "page-close-pending",
+                "session-close-pending",
+                "navigation-stale",
+                "snapshot-stale",
+                "element-stale",
+                "broker-process-kill",
+                "multi-pending-shutdown",
+            ] {
+                let fault = BrokerFault::parse(label).unwrap();
+                assert!(
+                    fault.is_phase_a(),
+                    "{label} must have a native phaseA report"
+                );
+                assert!(fault.grouped_dependent_action());
+                assert!(fault.dependent_arm_stage().contains(label));
+                assert!(fault.dependent_terminal_stage().contains(label));
+                let phase = PhaseA::default();
+                let stats = BrokerStats::default();
+                stats.pending.store(2, Ordering::Release);
+                phase.event(
+                    fault.dependent_arm_event(),
+                    stats.pending.load(Ordering::Acquire),
+                );
+                assert_eq!(phase.receipt(fault, &stats)["pendingAtTrigger"], 2);
+            }
+        }
+
+        #[test]
+        fn grouped_stale_and_broker_kill_remain_distinct_bounded_native_operations() {
+            for fault in [
+                BrokerFault::NavigationStale,
+                BrokerFault::SnapshotStale,
+                BrokerFault::ElementStale,
+            ] {
+                assert!(fault.grouped_stale());
+                assert!(fault.grouped_dependent_action());
+                assert!(fault.is_phase_a());
+                assert_eq!(fault.reply_deadline(), BROKER_REPLY_DEADLINE);
+            }
+            assert!(!BrokerFault::NavigationStale.grouped_semantic());
+            assert!(BrokerFault::SnapshotStale.grouped_semantic());
+            assert!(BrokerFault::ElementStale.grouped_semantic());
+            assert!(!BrokerFault::BrokerProcessKill.grouped_stale());
+            assert!(BrokerFault::BrokerProcessKill.grouped_dependent_action());
+            assert_eq!(
+                BrokerFault::BrokerProcessKill.reply_deadline(),
+                BROKER_FAULT_DEADLINE
+            );
+            assert_eq!(
+                BrokerFault::BrokerProcessKill.dependent_terminal_event(),
+                "broker-process-kill-native-action-completed"
+            );
+            assert_eq!(
+                BrokerFault::SnapshotStale.dependent_terminal_event(),
+                "late-old-session-or-element-rejected-after-invalidation"
+            );
+        }
+
+        #[test]
+        fn grouped_old_dom_element_requires_real_bounded_structural_snapshot() {
+            let data = json!({
+                "version":2,"visited":4,"truncated":false,"omittedFields":0,
+                "elements":[
+                    {"index":2,"role":"main","depth":0,"headingLevel":null},
+                    {"index":3,"role":"button","depth":1,"headingLevel":null}
+                ]
+            });
+            assert_eq!(grouped_old_button_from_native_dom(&data.to_string()), Ok(3));
+            let mut forged = data.clone();
+            forged["truncated"] = json!(true);
+            assert!(grouped_old_button_from_native_dom(&forged.to_string()).is_err());
+            forged = data.clone();
+            forged["elements"][1]["name"] = json!("private unrecognizable password");
+            assert!(grouped_old_button_from_native_dom(&forged.to_string()).is_err());
+            forged = data.clone();
+            forged["elements"][1]["index"] = json!(1);
+            assert!(grouped_old_button_from_native_dom(&forged.to_string()).is_err());
+            forged = data.clone();
+            forged["elements"][1]["role"] = json!("link");
+            assert!(grouped_old_button_from_native_dom(&forged.to_string()).is_err());
+            assert!(!grouped_old_binding_is_stale(0, 3, 2));
+            assert!(!grouped_old_binding_is_stale(1, 0, 2));
+            assert!(!grouped_old_binding_is_stale(1, 3, 1));
+            assert!(grouped_old_binding_is_stale(1, 3, 2));
+            assert_eq!(
+                authorize_grouped_old_action(BrokerFault::SnapshotStale, 1, 3, 2),
+                Err("stale-snapshot")
+            );
+            assert_eq!(
+                authorize_grouped_old_action(BrokerFault::ElementStale, 1, 3, 2),
+                Err("stale-element")
+            );
+            assert_eq!(
+                authorize_grouped_old_action(BrokerFault::ElementStale, 1, 3, 1),
+                Ok(())
+            );
+            assert_eq!(
+                authorize_grouped_old_action(BrokerFault::NavigationStale, 1, 3, 2),
+                Err("grouped-action-binding-unavailable")
+            );
+        }
+
+        #[test]
+        fn grouped_real_helper_eof_is_not_conflated_with_a_timeout_or_fake_reply() {
+            assert!(distinct_broker_writer_eof(&io::Error::from(
+                io::ErrorKind::BrokenPipe
+            )));
+            assert!(distinct_broker_writer_eof(&io::Error::from(
+                io::ErrorKind::UnexpectedEof
+            )));
+            assert!(distinct_broker_writer_eof(&io::Error::from_raw_os_error(
+                109
+            )));
+            assert!(distinct_broker_writer_eof(&io::Error::from_raw_os_error(
+                232
+            )));
+            assert!(!distinct_broker_writer_eof(&io::Error::from(
+                io::ErrorKind::TimedOut
+            )));
+            assert!(!distinct_broker_writer_eof(&io::Error::from(
+                io::ErrorKind::InvalidData
+            )));
+            assert!(!distinct_broker_writer_eof(&io::Error::from(
+                io::ErrorKind::PermissionDenied
+            )));
+        }
+
+        #[test]
+        fn grouped_successor_mutation_evidence_needs_two_real_com_callbacks() {
+            for script in [
+                GROUPED_SUCCESSOR_MUTATION_ARM_JS,
+                GROUPED_SUCCESSOR_READBACK_JS,
+            ] {
+                assert!(script.contains("about:blank"));
+                for forbidden in [
+                    ".innerHTML",
+                    ".outerHTML",
+                    ".innerText",
+                    ".textContent",
+                    ".value",
+                    "getAttribute(",
+                    "aria-label",
+                    "document.cookie",
+                    "localStorage",
+                    "sessionStorage",
+                    "fetch(",
+                    "WebSocket(",
+                    "XMLHttpRequest(",
+                    "sendBeacon(",
+                    "eval(",
+                    "Function(",
+                ] {
+                    assert!(
+                        !script.contains(forbidden),
+                        "unsafe grouped script API: {forbidden}"
+                    );
+                }
+            }
+            assert!(GROUPED_SUCCESSOR_MUTATION_ARM_JS.contains("new MutationObserver"));
+            assert!(GROUPED_SUCCESSOR_MUTATION_ARM_JS.contains("observer.observe(document"));
+            assert!(GROUPED_SUCCESSOR_MUTATION_ARM_JS.contains("MutationCount += records.length"));
+            assert!(GROUPED_SUCCESSOR_READBACK_JS.contains("takeRecords().length"));
+            assert!(GROUPED_SUCCESSOR_READBACK_JS.contains("MutationCount +"));
+            let phase = PhaseA::default();
+            let stats = BrokerStats::default();
+            let initial = phase.receipt(BrokerFault::SnapshotStale, &stats);
+            assert_eq!(
+                initial["successorPageMutationCount"],
+                serde_json::Value::Null
+            );
+            assert_eq!(initial["semanticSnapshotObserved"], false);
+            assert_eq!(initial["staleSnapshotRejected"], false);
+            assert_eq!(initial["staleElementRejected"], false);
+            // A mere DOM title event or same-epoch observation cannot
+            // manufacture a zero-mutated successor or stale action rejection.
+            phase
+                .semantic_snapshot_observed
+                .store(true, Ordering::Release);
+            phase.old_semantic_generation.store(1, Ordering::Release);
+            phase.old_button_index.store(3, Ordering::Release);
+            let unproved = phase.receipt(BrokerFault::ElementStale, &stats);
+            assert_eq!(
+                unproved["successorPageMutationCount"],
+                serde_json::Value::Null
+            );
+            assert_eq!(unproved["staleElementRejected"], false);
         }
 
         fn local_pipe() -> (File, File) {
@@ -3507,6 +5448,218 @@ mod host {
             assert!(sensitive_semantic_label("Authorization: Bearer abc"));
             assert!(sensitive_semantic_label("session_token=qwerty"));
             assert!(!sensitive_semantic_label("Clack brokered WebView2"));
+        }
+
+        #[test]
+        fn production_dom_parent_request_requires_exact_session_epoch_source_and_sequence() {
+            let url = "https://example.test/approved-page";
+            let source_id = production_dom_source_id(url).unwrap();
+            let mut req = json!({
+                "version": 2, "kind": "observe-dom", "session": NONCE,
+                "observationId": 1, "pageGeneration": 3, "sourceId": source_id
+            });
+            let verify = |value: &serde_json::Value| {
+                validate_dom_request(&value.to_string().into_bytes(), NONCE, 0, 3, url)
+            };
+            assert!(verify(&req).is_ok());
+            req["session"] = json!("different");
+            assert!(verify(&req).is_err());
+            req["session"] = json!(NONCE);
+            req["observationId"] = json!(2);
+            assert!(verify(&req).is_err()); // skipped one-shot ID
+            req["observationId"] = json!(1);
+            req["pageGeneration"] = json!(4);
+            assert_eq!(verify(&req).unwrap_err(), "observation-page-stale");
+            req["pageGeneration"] = json!(3);
+            req["sourceId"] = json!("0".repeat(64));
+            assert_eq!(verify(&req).unwrap_err(), "observation-source-mismatch");
+            req["sourceId"] = json!(source_id);
+            req["unrequestedSelector"] = json!("input[type=password]");
+            assert_eq!(verify(&req).unwrap_err(), "observation-request-invalid");
+            req.as_object_mut().unwrap().remove("unrequestedSelector");
+            req["version"] = json!(1);
+            assert!(verify(&req).is_err());
+        }
+
+        #[test]
+        fn production_dom_source_identity_rejects_query_fragment_or_credentials() {
+            let accepted = "https://example.test/approved";
+            let fingerprint = production_dom_source_id(accepted).unwrap();
+            assert_eq!(fingerprint.len(), 64);
+            assert!(fingerprint.bytes().all(|b| b.is_ascii_hexdigit()));
+            for source in [
+                "https://example.test/approved?secret=unknownValue",
+                "https://example.test/approved?",
+                "https://example.test/approved#token",
+                "https://user:password@example.test/approved",
+                "http://example.test/approved",
+                "https://example.test:8443/approved",
+            ] {
+                assert!(
+                    production_dom_source_id(source).is_err(),
+                    "source: {source}"
+                );
+            }
+            assert!(!fingerprint.contains("example.test"));
+            assert!(!fingerprint.contains("unknownValue"));
+        }
+
+        #[test]
+        fn production_dom_script_cannot_read_page_strings_or_initiate_network() {
+            assert!(PRODUCTION_DOM_JS.contains("createTreeWalker"));
+            assert!(PRODUCTION_DOM_JS.contains("result.visited < 256"));
+            assert!(PRODUCTION_DOM_JS.contains("result.elements.length === 48"));
+            assert!(PRODUCTION_DOM_JS.contains("node.isContentEditable"));
+            for forbidden in [
+                ".textContent",
+                ".innerHTML",
+                ".outerHTML",
+                ".innerText",
+                ".nodeValue",
+                ".value",
+                "getAttribute(",
+                "aria-label",
+                "document.title",
+                "location.href",
+                "document.URL",
+                "document.cookie",
+                ".href",
+                ".src",
+                ".alt",
+                "localStorage",
+                "sessionStorage",
+                "fetch(",
+                "WebSocket(",
+                "XMLHttpRequest(",
+                "sendBeacon(",
+                "eval(",
+                "Function(",
+                "querySelector(",
+            ] {
+                assert!(
+                    !PRODUCTION_DOM_JS.contains(forbidden),
+                    "fixed structural probe contains forbidden API: {forbidden}"
+                );
+            }
+        }
+
+        fn production_dom_case() -> serde_json::Value {
+            json!({
+                "version": 2, "visited": 4, "truncated": true,
+                "omittedFields": 1,
+                "elements": [
+                    {"index":1,"role":"main","depth":0,"headingLevel":null},
+                    {"index":2,"role":"heading","depth":1,"headingLevel":2},
+                    {"index":4,"role":"button","depth":2,"headingLevel":null}
+                ]
+            })
+        }
+
+        #[test]
+        fn production_dom_serializes_bounded_closed_roles_without_any_secret_names() {
+            let value = production_dom_case();
+            let verified = verify_production_dom(&value.to_string()).unwrap();
+            assert!(verified.truncated);
+            assert_eq!(verified.omitted_fields, 1);
+            let request = ParentDomRequest {
+                version: 2,
+                kind: "observe-dom".into(),
+                session: NONCE.into(),
+                observation_id: 1,
+                page_generation: 3,
+                source_id: production_dom_source_id("https://example.test/approved").unwrap(),
+            };
+            let serialized =
+                serde_json::to_string(&dom_reply(&request, Some(&verified), None)).unwrap();
+            let envelope: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(envelope["kind"], "dom-snapshot");
+            assert_eq!(envelope["reason"], "ok");
+            assert_eq!(envelope["terminal"], "completed");
+            assert_eq!(envelope["truncated"], true);
+            assert_eq!(envelope["elements"].as_array().unwrap().len(), 3);
+            for forbidden in [
+                "omittedFields",
+                "accessibleName",
+                "ariaLabel",
+                "rawHtml",
+                "url",
+                "value",
+                "secret",
+                "password",
+            ] {
+                assert!(!serialized.contains(forbidden), "leaked field: {forbidden}");
+            }
+            let denied =
+                serde_json::to_value(dom_reply(&request, None, Some("page-stale"))).unwrap();
+            assert_eq!(denied["terminal"], "denied");
+            assert_eq!(denied["reason"], "page-stale");
+            assert_eq!(denied["visited"], 0);
+            assert!(denied["elements"].as_array().unwrap().is_empty());
+        }
+
+        #[test]
+        fn production_dom_rejects_unbounded_and_unrecognized_page_supplied_fields() {
+            let base = production_dom_case();
+            let check = |v: &serde_json::Value| verify_production_dom(&v.to_string());
+            assert!(check(&base).is_ok());
+            let mut forged = base.clone();
+            forged["elements"][0]["name"] = json!("unrecognizable-secret-value");
+            assert!(check(&forged).is_err()); // deny ALL accessible names
+            forged = base.clone();
+            forged["url"] = json!("https://site/?session=unknown-secret");
+            assert!(check(&forged).is_err()); // no source URL from page
+            forged = base.clone();
+            forged["elements"][0]["role"] = json!("input");
+            assert_eq!(check(&forged).unwrap_err(), "observation-role-denied");
+            forged = base.clone();
+            forged["elements"][1]["headingLevel"] = json!(8);
+            assert_eq!(check(&forged).unwrap_err(), "observation-heading-invalid");
+            forged = base.clone();
+            forged["elements"][2]["index"] = json!(2);
+            assert_eq!(check(&forged).unwrap_err(), "observation-element-bounds");
+            forged = base.clone();
+            forged["visited"] = json!(PRODUCTION_DOM_MAX_VISITS + 1);
+            assert_eq!(check(&forged).unwrap_err(), "observation-result-bounds");
+            forged = base.clone();
+            forged["omittedFields"] = json!(5);
+            assert_eq!(check(&forged).unwrap_err(), "observation-result-bounds");
+            assert_eq!(
+                verify_production_dom(&"x".repeat(PRODUCTION_DOM_FRAME_LIMIT + 1)).unwrap_err(),
+                "observation-result-oversize"
+            );
+        }
+
+        #[test]
+        fn production_com_ack_and_page_generation_do_not_modify_fixture_v1_frames() {
+            let request = BrokerRequest {
+                version: 1,
+                session: NONCE,
+                request_id: 7,
+                method: "GET",
+                url: "https://example.test/resource",
+                page_generation: Some(3),
+            };
+            let production = serde_json::to_value(&request).unwrap();
+            assert_eq!(production["pageGeneration"], 3);
+            let acceptance = serde_json::to_value(&BrokerRequest {
+                page_generation: None,
+                ..request
+            })
+            .unwrap();
+            assert!(acceptance.get("pageGeneration").is_none());
+            let ack = serde_json::to_value(BrokerComCompletion {
+                version: 1,
+                session: NONCE,
+                request_id: 7,
+                kind: "com-completed",
+                status: 403,
+                page_generation: 3,
+            })
+            .unwrap();
+            assert_eq!(ack["kind"], "com-completed");
+            assert_eq!(ack["status"], 403);
+            assert_eq!(ack["pageGeneration"], production["pageGeneration"]);
+            assert_eq!(ack["requestId"], production["requestId"]);
         }
     }
 }
