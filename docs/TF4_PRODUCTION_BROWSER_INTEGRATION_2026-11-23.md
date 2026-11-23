@@ -487,3 +487,11 @@ The test specifically does **not** claim `deferral.Complete()` on the
 cancelled/killed flight. Its own ephemeral certificate/active marker,
 signal and port-443 listener were cleaned on exact RunId Stop. This is
 one of the required independent lifecycle cases, **not** all eleven.
+
+Separately, the opt-in real production `physical_production_owned_rfc1918_denial_no_tcp_fallback`
+case physically **PASS 1/1** with an exact assigned Windows WSL vEthernet
+interface `172.28.208.1:443`: ordinary parent TCP positive control=1,
+restricted AppContainer/WebView2 direct TCP connections=0; TF3 denied
+the HTTPS resource and native ownership shut down. This is a bounded
+**owned RFC1918 IPv4 listener negative only**, not global IPv4/IPv6,
+Fetch/XHR, WebSocket, iframe, Worker, EventSource or Beacon coverage.
