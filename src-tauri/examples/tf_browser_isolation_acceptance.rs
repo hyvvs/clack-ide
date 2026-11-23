@@ -158,9 +158,10 @@ mod windows {
         RendererCrash,
         HostCrash,
         ShutdownPending,
+        DependentTimeout,
     }
     impl PhaseAScenario {
-        const ALL: [Self; 8] = [
+        const ALL: [Self; 9] = [
             Self::StalePageGeneration,
             Self::StaleBrokerRequest,
             Self::DuplicateCompletion,
@@ -169,6 +170,7 @@ mod windows {
             Self::RendererCrash,
             Self::HostCrash,
             Self::ShutdownPending,
+            Self::DependentTimeout,
         ];
         fn label(self) -> &'static str {
             match self {
@@ -180,7 +182,163 @@ mod windows {
                 Self::RendererCrash => "renderer-crash",
                 Self::HostCrash => "host-crash",
                 Self::ShutdownPending => "shutdown-pending",
+                Self::DependentTimeout => "dependent-timeout",
             }
+        }
+    }
+    fn dependent_timeout_document(nonce: &str) -> Vec<u8> {
+        // Unlike the multi-resource "dependent-resource" case, this ninth
+        // fixture makes exactly one renderer-initiated dependent GET.
+        // No external URL, redirect, retry, timer, or native TF3 dispatch.
+        format!(
+            "<!doctype html><html><head><title>Phase A dependent timeout</title>\
+             <link rel=\"icon\" href=\"data:,\"></head>\
+             <body><main>Controlled dependent timeout fixture</main>\
+             <script>document.title='clack-renderer-js-{nonce}';\
+             fetch('/fetch/broker/{nonce}',{{cache:'no-store'}}).catch(()=>{{}});\
+             </script></body></html>"
+        )
+        .into_bytes()
+    }
+    fn dependent_timeout_parent_receipt_verified(
+        parent: &Value,
+        nonce: &str,
+    ) -> Result<(), String> {
+        let events = parent["phase_a_events"]
+            .as_array()
+            .ok_or("dependent-timeout native parent event array absent")?;
+        // Exact event sequence, not just counts: one real document GET (id1)
+        // answered with matching immutable HTML, one real renderer dependent
+        // GET (id2) with NO response frame and the pipe kept open for timeout.
+        // Reject a third request, duplicate ID, reordered frame or replay.
+        if events.len() != 4 {
+            return Err("dependent-timeout parent event count was not exactly four".into());
+        }
+        let document = &events[0];
+        let frame = &events[1];
+        let dependent = &events[2];
+        let withheld = &events[3];
+        let document_sha = format!("{:x}", Sha256::digest(dependent_timeout_document(nonce)));
+        let descriptor = |event: &Value, request_id: u64, kind: &str| {
+            event["kind"] == "native-parent-descriptor-observed"
+                && event["scenario"] == "dependent-timeout"
+                && event["requestId"] == request_id
+                && event["resourceKind"] == kind
+                && event["sessionMatchesNonce"] == true
+                && event["nativeDispatches"] == 0
+        };
+        if parent["requests_received"] != 2
+            || parent["responses_sent"] != 1
+            || !descriptor(document, 1, "document")
+            || frame["kind"] != "native-parent-frame-written"
+            || frame["originalRequestId"] != 1
+            || frame["frameRequestId"] != 1
+            || frame["sameRequestId"] != true
+            || frame["status"] != 200
+            || frame["bodySha256"].as_str() != Some(document_sha.as_str())
+            || !descriptor(dependent, 2, "fetch")
+            || withheld["kind"] != "dependent-parent-reply-withheld"
+            || withheld["scenario"] != "dependent-timeout"
+            || withheld["requestId"] != 2
+            || withheld["resourceKind"] != "fetch"
+            || withheld["responseFramesSent"] != 0
+            || withheld["nativeDispatches"] != 0
+            || withheld["parentPipeRemainedOpen"] != true
+        {
+            return Err(
+                "dependent-timeout lacked ordered native id1 document 200 and single id2 fetch with withheld parent reply, or had a retry/replay"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod dependent_timeout_tests {
+        use super::*;
+
+        #[test]
+        fn ninth_phase_preserves_the_original_eight_order() {
+            assert_eq!(
+                PhaseAScenario::ALL[..8],
+                [
+                    PhaseAScenario::StalePageGeneration,
+                    PhaseAScenario::StaleBrokerRequest,
+                    PhaseAScenario::DuplicateCompletion,
+                    PhaseAScenario::DependentResource,
+                    PhaseAScenario::PendingCancel,
+                    PhaseAScenario::RendererCrash,
+                    PhaseAScenario::HostCrash,
+                    PhaseAScenario::ShutdownPending,
+                ]
+            );
+            assert_eq!(PhaseAScenario::ALL[8], PhaseAScenario::DependentTimeout);
+            assert_eq!(NegativeScenario::ALL.len(), 8);
+        }
+
+        fn valid_receipt(nonce: &str) -> Value {
+            json!({
+                "requests_received":2,
+                "responses_sent":1,
+                "phase_a_events":[
+                    {"kind":"native-parent-descriptor-observed","scenario":"dependent-timeout",
+                     "requestId":1,"resourceKind":"document","sessionMatchesNonce":true,
+                     "nativeDispatches":0},
+                    {"kind":"native-parent-frame-written","originalRequestId":1,
+                     "frameRequestId":1,"sameRequestId":true,"status":200,
+                     "bodySha256":format!("{:x}", Sha256::digest(dependent_timeout_document(nonce)))},
+                    {"kind":"native-parent-descriptor-observed","scenario":"dependent-timeout",
+                     "requestId":2,"resourceKind":"fetch","sessionMatchesNonce":true,
+                     "nativeDispatches":0},
+                    {"kind":"dependent-parent-reply-withheld","scenario":"dependent-timeout",
+                     "requestId":2,"resourceKind":"fetch","responseFramesSent":0,
+                     "nativeDispatches":0,"parentPipeRemainedOpen":true},
+                ],
+            })
+        }
+
+        #[test]
+        fn dependent_timeout_document_has_one_owned_fetch_and_renderer_marker() {
+            let nonce = "only-owned-nonce";
+            let html = String::from_utf8(dependent_timeout_document(nonce)).unwrap();
+            assert_eq!(html.matches("fetch(").count(), 1);
+            assert_eq!(html.matches("/fetch/broker/only-owned-nonce").count(), 1);
+            assert!(html.contains("document.title='clack-renderer-js-only-owned-nonce'"));
+            assert!(html.contains("<link rel=\"icon\" href=\"data:,\">"));
+            assert!(!html.contains("http://"));
+            assert!(!html.contains("https://"));
+        }
+
+        #[test]
+        fn dependent_timeout_parent_rejects_replay_and_unsent_dependent_frame() {
+            let nonce = "case-unique-nonce";
+            let receipt = valid_receipt(nonce);
+            assert!(dependent_timeout_parent_receipt_verified(&receipt, nonce).is_ok());
+            let mut extra = receipt.clone();
+            extra["requests_received"] = json!(3);
+            assert!(dependent_timeout_parent_receipt_verified(&extra, nonce).is_err());
+            let mut duplicate = receipt.clone();
+            duplicate["phase_a_events"][2]["requestId"] = json!(1);
+            assert!(dependent_timeout_parent_receipt_verified(&duplicate, nonce).is_err());
+            let mut wrong_kind = receipt.clone();
+            wrong_kind["phase_a_events"][2]["resourceKind"] = json!("document");
+            assert!(dependent_timeout_parent_receipt_verified(&wrong_kind, nonce).is_err());
+            let mut replay = receipt.clone();
+            let replayed_event = replay["phase_a_events"][2].clone();
+            replay["phase_a_events"]
+                .as_array_mut()
+                .unwrap()
+                .push(replayed_event);
+            assert!(dependent_timeout_parent_receipt_verified(&replay, nonce).is_err());
+            let mut late = receipt.clone();
+            late["responses_sent"] = json!(2);
+            assert!(dependent_timeout_parent_receipt_verified(&late, nonce).is_err());
+            let mut forged = receipt.clone();
+            forged["phase_a_events"][1]["bodySha256"] = json!("forged");
+            assert!(dependent_timeout_parent_receipt_verified(&forged, nonce).is_err());
+            let mut detached = receipt.clone();
+            detached["phase_a_events"][3]["parentPipeRemainedOpen"] = json!(false);
+            assert!(dependent_timeout_parent_receipt_verified(&detached, nonce).is_err());
         }
     }
     const BROKER_PNG: &[u8] = &[
@@ -1779,14 +1937,20 @@ document.title='clack-renderer-js-__NONCE__';"#;
             }
             let kind = kind.ok_or("missing acceptance broker fixture kind")?;
             if let Some(phase) = self.phase_a {
-                // These phases exercise a single native descriptor, then
-                // either return a forged/valid frame or let the host cancel,
-                // invalidate, crash or shut down while the deferral is live.
-                // Dependent resources must be drained by COM locally; they
-                // cannot be silently forwarded to the trusted parent.
-                if self.evidence.requests_received != 1
-                    || request.request_id != 1
-                    || kind != "document"
+                // Existing eight phases exercise at most one native document
+                // descriptor. The distinct dependent-timeout case requires a
+                // real renderer-initiated, native-intercepted second GET;
+                // the parent returns the first document but deliberately
+                // withholds the dependent response on an open pipe. Any
+                // unexpected dependent/replayed descriptor is fatal.
+                let expected_kind = match (phase, self.evidence.requests_received) {
+                    (PhaseAScenario::DependentTimeout, 1) => Some("document"),
+                    (PhaseAScenario::DependentTimeout, 2) => Some("fetch"),
+                    (phase, 1) if phase != PhaseAScenario::DependentTimeout => Some("document"),
+                    _ => None,
+                };
+                if request.request_id != u64::from(self.evidence.requests_received)
+                    || expected_kind != Some(kind)
                 {
                     return Err(format!(
                         "Phase A {} forwarded an unexpected dependent/replayed broker descriptor",
@@ -1801,7 +1965,21 @@ document.title='clack-renderer-js-__NONCE__';"#;
                     "sessionMatchesNonce":true,
                     "nativeDispatches":0,
                 }));
-                let body = if phase == PhaseAScenario::DependentResource {
+                if phase == PhaseAScenario::DependentTimeout && request.request_id == 2 {
+                    self.evidence.phase_a_events.push(json!({
+                        "kind":"dependent-parent-reply-withheld",
+                        "scenario":phase.label(),
+                        "requestId":2,
+                        "resourceKind":"fetch",
+                        "responseFramesSent":0,
+                        "nativeDispatches":0,
+                        "parentPipeRemainedOpen":self.response_pipe.is_some(),
+                    }));
+                    return Ok(());
+                }
+                let body = if phase == PhaseAScenario::DependentTimeout {
+                    dependent_timeout_document(&self.nonce)
+                } else if phase == PhaseAScenario::DependentResource {
                     // Only this self-contained document is delivered. Its
                     // dependencies are exact relative owned resources.
                     // Worker-54 must drain multiple genuine native deferrals
@@ -1867,7 +2045,8 @@ document.title='clack-renderer-js-__NONCE__';"#;
                     }
                     PhaseAScenario::DuplicateCompletion
                     | PhaseAScenario::DependentResource
-                    | PhaseAScenario::RendererCrash => {
+                    | PhaseAScenario::RendererCrash
+                    | PhaseAScenario::DependentTimeout => {
                         self.send_phase_a_frame(
                             request.request_id,
                             request.request_id,
@@ -2708,9 +2887,10 @@ document.title='clack-renderer-js-__NONCE__';"#;
         // internal about:blank bootstrap to the confined fixture document.
         // Preserve old independently proved process identities as evidence,
         // but never choose an EXITED renderer for a current crash injection.
-        // At the exact native pending-dependent arm event, reclassify live
-        // owned PIDs on a changed process-set observation, not a sleep/retry.
-        let mut armed_renderer_role_scan_pids: Option<Vec<u32>> = None;
+        // At an exact native dependent COM arm (renderer crash OR dependent
+        // timeout), reclassify live owned PIDs on a changed process-set
+        // observation, not a sleep/retry or historical renderer PID.
+        let mut armed_dependent_role_scan_pids: Option<Vec<u32>> = None;
         let deadline = Instant::now() + Duration::from_millis(WAIT_MS as u64);
         let mut failure: Option<String> = None;
         let mut host_token_proven = false;
@@ -2719,6 +2899,7 @@ document.title='clack-renderer-js-__NONCE__';"#;
         let mut renderer_crash_injected = false;
         let mut renderer_crash_target_pid: Option<u32> = None;
         let mut phase_a_os_browser_ack_written = false;
+        let mut phase_a_os_browser_and_renderer_ack_pids: Option<(u32, u32)> = None;
         if let Some(profile) = profile {
             // The spawned process identity is the original CreateProcessW
             // handle; never rediscover the launched host by its PID.
@@ -2797,6 +2978,12 @@ document.title='clack-renderer-js-__NONCE__';"#;
                     .stderr
                     .text()
                     .contains("broker.phase-a.renderer-crash.armed");
+            let dependent_timeout_armed = phase_a == Some(PhaseAScenario::DependentTimeout)
+                && child
+                    .stderr
+                    .text()
+                    .contains("broker.phase-a.dependent-timeout.armed");
+            let native_dependent_armed = renderer_crash_armed || dependent_timeout_armed;
             let mut webview_pids = Vec::new();
             for p in observed
                 .values()
@@ -2805,7 +2992,7 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 // Past role observations remain immutable evidence, but the
                 // armed renderer-crash target must be alive on its ORIGINAL
                 // independently token- and job-proven process HANDLE.
-                match if renderer_crash_armed {
+                match if native_dependent_armed {
                     owned_process_live(p)
                 } else {
                     Ok(true)
@@ -2821,16 +3008,16 @@ document.title='clack-renderer-js-__NONCE__';"#;
             if failure.is_some() {
                 break;
             }
-            let new_armed_process_set = renderer_crash_armed
-                && armed_renderer_role_scan_pids.as_ref() != Some(&webview_pids);
+            let new_armed_process_set = native_dependent_armed
+                && armed_dependent_role_scan_pids.as_ref() != Some(&webview_pids);
             if webview_pids.len() >= 2
                 && (new_armed_process_set
                     || (!roles.values().any(|r| r == "renderer")
                         && last_role_scan.elapsed() > Duration::from_millis(1200)))
             {
                 last_role_scan = Instant::now();
-                if renderer_crash_armed {
-                    armed_renderer_role_scan_pids = Some(webview_pids.clone());
+                if native_dependent_armed {
+                    armed_dependent_role_scan_pids = Some(webview_pids.clone());
                 }
                 match webview_roles(&webview_pids, root) {
                     Ok(found) => roles.extend(found),
@@ -2839,7 +3026,11 @@ document.title='clack-renderer-js-__NONCE__';"#;
             }
             if matches!(
                 phase_a,
-                Some(PhaseAScenario::PendingCancel | PhaseAScenario::ShutdownPending)
+                Some(
+                    PhaseAScenario::PendingCancel
+                        | PhaseAScenario::ShutdownPending
+                        | PhaseAScenario::DependentTimeout
+                )
             ) && !phase_a_os_browser_ack_written
                 && host_token_proven
                 && (match phase_a {
@@ -2850,12 +3041,17 @@ document.title='clack-renderer-js-__NONCE__';"#;
                         .stderr
                         .text()
                         .contains("broker.phase-a.shutdown-pending.armed"),
+                    Some(PhaseAScenario::DependentTimeout) => {
+                        dependent_timeout_armed && child.stderr.text().contains("broker.dom.marker")
+                    }
                     _ => false,
                 })
             {
-                let mut independently_live_browser = false;
+                let needs_live_renderer = phase_a == Some(PhaseAScenario::DependentTimeout);
+                let mut independently_live_browser_pid = None;
+                let mut independently_live_renderer_pid = None;
                 for (role_pid, kind) in &roles {
-                    if kind != "browser" {
+                    if kind != "browser" && !(needs_live_renderer && kind == "renderer") {
                         continue;
                     }
                     let Some(owned) = observed.get(role_pid) else {
@@ -2870,8 +3066,16 @@ document.title='clack-renderer-js-__NONCE__';"#;
                     }
                     match owned_process_live(owned) {
                         Ok(true) => {
-                            independently_live_browser = true;
-                            break;
+                            if kind == "browser" {
+                                independently_live_browser_pid = Some(*role_pid);
+                            } else if kind == "renderer" {
+                                independently_live_renderer_pid = Some(*role_pid);
+                            }
+                            if !needs_live_renderer {
+                                // Preserve the original pre-document cancel
+                                // and shutdown first-live-browser barrier.
+                                break;
+                            }
                         }
                         Ok(false) => {}
                         Err(e) => {
@@ -2883,7 +3087,9 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 if failure.is_some() {
                     break;
                 }
-                if independently_live_browser {
+                if independently_live_browser_pid.is_some()
+                    && (!needs_live_renderer || independently_live_renderer_pid.is_some())
+                {
                     // A new unique case cannot reuse an old parent release.
                     // The file only orders harness process lifetime; it does
                     // not authorize browser actions, TF3 network or secrets.
@@ -2901,6 +3107,12 @@ document.title='clack-renderer-js-__NONCE__';"#;
                         break;
                     }
                     phase_a_os_browser_ack_written = true;
+                    if needs_live_renderer {
+                        phase_a_os_browser_and_renderer_ack_pids = Some((
+                            independently_live_browser_pid.expect("live browser proved above"),
+                            independently_live_renderer_pid.expect("live renderer proved above"),
+                        ));
+                    }
                 }
             }
             if phase_a == Some(PhaseAScenario::HostCrash)
@@ -3162,6 +3374,9 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 "phaseAHostCrashExitCode": if phase_a_host_crash_injected {Some(PHASE_A_HOST_EXIT_CODE)} else {None},
                 "rendererCrashInjected": renderer_crash_injected,
                 "phaseAParentOsBrowserAckWritten": phase_a_os_browser_ack_written,
+                "phaseAParentOsBrowserAndRendererAckPids": phase_a_os_browser_and_renderer_ack_pids.map(
+                    |(browser, renderer)| json!({"browser":browser,"renderer":renderer})
+                ),
                 "rendererCrashTargetPid": renderer_crash_target_pid,
                 "rendererCrashExitCode": if renderer_crash_injected {Some(PHASE_A_RENDERER_EXIT_CODE)} else {None},
                 "hostAppContainerZeroCapabilitiesJobProven": host_token_proven,
@@ -4161,6 +4376,7 @@ document.title='clack-renderer-js-__NONCE__';"#;
             // not as a fabricated or missing network-side parent request.
             let expected_requests = match scenario {
                 PhaseAScenario::HostCrash | PhaseAScenario::ShutdownPending => 0,
+                PhaseAScenario::DependentTimeout => 2,
                 _ => 1,
             };
             if parent["requests_received"].as_u64() != Some(expected_requests)
@@ -4182,7 +4398,8 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 PhaseAScenario::StalePageGeneration
                 | PhaseAScenario::DuplicateCompletion
                 | PhaseAScenario::DependentResource
-                | PhaseAScenario::RendererCrash => 1,
+                | PhaseAScenario::RendererCrash
+                | PhaseAScenario::DependentTimeout => 1,
                 PhaseAScenario::StaleBrokerRequest => 2,
                 PhaseAScenario::PendingCancel
                 | PhaseAScenario::HostCrash
@@ -4207,8 +4424,11 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 }) {
                     return Err("Phase A did not independently establish a real nonce-bound native request descriptor".into());
                 }
-            } else if !parent_events.is_empty() {
+            } else if scenario != PhaseAScenario::DependentTimeout && !parent_events.is_empty() {
                 return Err("native crash/shutdown used a parent request despite a local-only pending-deferral seam".into());
+            }
+            if scenario == PhaseAScenario::DependentTimeout {
+                dependent_timeout_parent_receipt_verified(parent, nonce)?;
             }
             if scenario == PhaseAScenario::StalePageGeneration
                 && (!d["stderr"]
@@ -4261,7 +4481,9 @@ document.title='clack-renderer-js-__NONCE__';"#;
             let positive = |key: &str| phase[key].as_u64().unwrap_or(0) > 0;
             if matches!(
                 scenario,
-                PhaseAScenario::PendingCancel | PhaseAScenario::ShutdownPending
+                PhaseAScenario::PendingCancel
+                    | PhaseAScenario::ShutdownPending
+                    | PhaseAScenario::DependentTimeout
             ) && (d["phaseAParentOsBrowserAckWritten"] != true
                 || !phase["events"].as_array().is_some_and(|events| {
                     events
@@ -4272,7 +4494,11 @@ document.title='clack-renderer-js-__NONCE__';"#;
                     trace.contains("broker.phase-a.parent-os-browser-verified")
                 }))
             {
-                return Err("pre-document COM fault was not released by an independently token- and job-verified live OS browser role".into());
+                return Err(if scenario == PhaseAScenario::DependentTimeout {
+                    "dependent timeout did not receive native acknowledgement of independently token/job-proven live browser AND renderer"
+                } else {
+                    "pre-document COM fault was not released by an independently token- and job-verified live OS browser role"
+                }.into());
             }
             match scenario {
                 PhaseAScenario::StalePageGeneration => {
@@ -4304,6 +4530,79 @@ document.title='clack-renderer-js-__NONCE__';"#;
                         || host["brokerSynthetic502"].as_u64().unwrap_or(0) < 2
                     {
                         return Err("at least two real dependent WebView2 subresource COM deferrals were not independently drained before forwarding (XHR context not separately claimed)".into());
+                    }
+                }
+                PhaseAScenario::DependentTimeout => {
+                    // A real rendered document has completed with native COM
+                    // 200; its one renderer Fetch GET is still pending when
+                    // the host records the dependent arm. Parent ID2's pipe
+                    // remains open but unresponded. Only the actual broker
+                    // read deadline may produce one completed COM 504.
+                    let ack_pids = &d["phaseAParentOsBrowserAndRendererAckPids"];
+                    let browser_pid = ack_pids["browser"].as_u64().map(|pid| pid.to_string());
+                    let renderer_pid = ack_pids["renderer"].as_u64().map(|pid| pid.to_string());
+                    let original_handle_roles_proven = browser_pid
+                        .as_ref()
+                        .zip(renderer_pid.as_ref())
+                        .is_some_and(|(browser, renderer)| {
+                            browser != renderer
+                                && roles.get(browser).is_some_and(|role| role == "browser")
+                                && roles.get(renderer).is_some_and(|role| role == "renderer")
+                                && [browser, renderer].iter().all(|pid| {
+                                    proofs.get(*pid).is_some_and(|proof| {
+                                        proof["appcontainer"] == true
+                                            && proof["sid_matches"] == true
+                                            && proof["capability_count"] == 0
+                                            && proof["in_owned_job"] == true
+                                    })
+                                })
+                        });
+                    let events = phase["events"]
+                        .as_array()
+                        .ok_or("dependent-timeout native event timeline absent")?;
+                    let pending = events
+                        .iter()
+                        .position(|event| event == "dependent-fetch-deferral-pending");
+                    let expired = events
+                        .iter()
+                        .position(|event| event == "dependent-reply-deadline-expired");
+                    let trace = d["stderr"]
+                        .as_str()
+                        .ok_or("dependent-timeout native stderr trace absent")?;
+                    let armed_trace = trace.find("broker.phase-a.dependent-timeout.armed");
+                    let expired_trace = trace.find("broker.phase-a.dependent-timeout.expired");
+                    if !original_handle_roles_proven
+                        || pending.zip(expired).is_none_or(|(start, end)| start >= end)
+                        || armed_trace
+                            .zip(expired_trace)
+                            .is_none_or(|(start, end)| start >= end)
+                        || !trace.contains("broker.dom.marker")
+                        || trace.contains("broker.phase-a.watchdog-drain")
+                        || events
+                            .iter()
+                            .any(|event| event == "watchdog-draining-unresolved-deferrals")
+                        || host["scriptObserved"] != true
+                        || host["rendererDomProof"] != true
+                        || host["brokerIntercepted"] != 2
+                        || host["brokerForwarded"] != 2
+                        || host["brokerAnswered"] != 2
+                        || host["brokerTimeouts"] != 1
+                        || host["brokerLastSyntheticStatus"] != 504
+                        || host["brokerSynthetic504"] != 1
+                        || host["brokerSynthetic502"] != 0
+                        || host["brokerSynthetic503"] != 0
+                        || host["brokerCompleted2xx"] != 1
+                        || host["brokerCompleted4xx"] != 0
+                        || host["brokerCompleted5xx"] != 1
+                        || host["brokerCancelled"] != 0
+                        || phase["pendingAtTrigger"] != 1
+                        || phase["completedResponseCount"] != 2
+                        || phase["suppressedLateCount"] != 0
+                        || phase["duplicateParentRejected"] != 0
+                        || phase["duplicateCompletionSuppressed"] != 0
+                        || phase["nativeNavigationAttempts"] != 0
+                    {
+                        return Err("dependent-timeout lacked exact live renderer+browser original-HANDLE acknowledgement, event-ordered native dependent GET timeout, single document 200 plus synthetic COM 504, pending zero, or no-replay/no-watchdog proof".into());
                     }
                 }
                 PhaseAScenario::PendingCancel => {
@@ -4946,7 +5245,7 @@ document.title='clack-renderer-js-__NONCE__';"#;
         }
         let (control_result, isolated_result, broker_result) = verdict?;
         println!(
-            "TF_BROWSER_ISOLATION_BROKER_NEGATIVE_AND_PHASE_A_PASS (independent owned IPv4/IPv6 TCP and IPv4 UDP fixture observations; TF3 brokered resources/native denials, eight original negative plus eight distinct Phase A lifecycle cases; no UDPv6/global egress claim): independent IPv4 {} / IPv6 {}; control {good:?}; isolated {denied:?}; control_host={}; isolated_host={}; brokered_host={}; child_tokens={:?}; unique_owned_UDF_cleaned=true; retained evidence={}",
+            "TF_BROWSER_ISOLATION_BROKER_NEGATIVE_AND_PHASE_A_PASS (independent owned IPv4/IPv6 TCP and IPv4 UDP fixture observations; TF3 brokered resources/native denials, eight original negative plus nine distinct Phase A lifecycle cases; no UDPv6/global egress claim): independent IPv4 {} / IPv6 {}; control {good:?}; isolated {denied:?}; control_host={}; isolated_host={}; brokered_host={}; child_tokens={:?}; unique_owned_UDF_cleaned=true; retained evidence={}",
             destination.addr, destination.ipv6_addr,
             control_result.0, isolated_result.0, broker_result.0, isolated_result.1, owned.display(),
         );

@@ -360,6 +360,7 @@ mod host {
         DuplicateParent,
         DuplicateLate,
         DependentDrain,
+        DependentTimeout,
         CancelPending,
         RendererCrashPending,
         BrowserCrashPending,
@@ -382,6 +383,7 @@ mod host {
                 "duplicate-parent" | "stale-broker-request" => Ok(Self::DuplicateParent),
                 "duplicate-late" | "duplicate-completion" => Ok(Self::DuplicateLate),
                 "dependent-drain" | "dependent-resource" => Ok(Self::DependentDrain),
+                "dependent-timeout" => Ok(Self::DependentTimeout),
                 "cancel-pending" | "pending-cancel" => Ok(Self::CancelPending),
                 "renderer-crash-pending" | "renderer-crash" => Ok(Self::RendererCrashPending),
                 "browser-crash-pending" => Ok(Self::BrowserCrashPending),
@@ -406,6 +408,7 @@ mod host {
                 Self::DuplicateParent => "stale-broker-request",
                 Self::DuplicateLate => "duplicate-completion",
                 Self::DependentDrain => "dependent-resource",
+                Self::DependentTimeout => "dependent-timeout",
                 Self::CancelPending => "pending-cancel",
                 Self::RendererCrashPending => "renderer-crash",
                 Self::BrowserCrashPending => "browser-crash-pending",
@@ -417,7 +420,11 @@ mod host {
         fn reply_deadline(self) -> Duration {
             if matches!(
                 self,
-                Self::MissingReply | Self::Crash | Self::Timeout | Self::DuplicateParent
+                Self::MissingReply
+                    | Self::Crash
+                    | Self::Timeout
+                    | Self::DuplicateParent
+                    | Self::DependentTimeout
             ) {
                 BROKER_FAULT_DEADLINE
             } else {
@@ -431,6 +438,7 @@ mod host {
                     | Self::DuplicateParent
                     | Self::DuplicateLate
                     | Self::DependentDrain
+                    | Self::DependentTimeout
                     | Self::CancelPending
                     | Self::RendererCrashPending
                     | Self::BrowserCrashPending
@@ -442,7 +450,10 @@ mod host {
             self == Self::RendererCrashPending && has_pending && !process_failed
         }
         fn awaits_parent_os_browser_proof(self) -> bool {
-            matches!(self, Self::CancelPending | Self::ShutdownPending)
+            matches!(
+                self,
+                Self::CancelPending | Self::ShutdownPending | Self::DependentTimeout
+            )
         }
     }
     struct Args {
@@ -1812,6 +1823,10 @@ mod host {
                                 worker_stats.broken.store(true, Ordering::Release);
                                 if error.kind() == io::ErrorKind::TimedOut {
                                     worker_stats.timeouts.fetch_add(1, Ordering::Relaxed);
+                                    if worker_fault == BrokerFault::DependentTimeout && ticket.id == 2 {
+                                        worker_phase_a.note("dependent-reply-deadline-expired");
+                                        worker_trace.record("broker.phase-a.dependent-timeout.expired", "dependent Fetch broker reply missing at bounded native deadline");
+                                    }
                                 }
                                 if worker_fault != BrokerFault::None {
                                     worker_stats.fault_triggered.store(true, Ordering::Release);
@@ -2307,6 +2322,29 @@ mod host {
                                     event_trace.record("broker.phase-a.dependent-drained", "multiple real pending WebView2 resource deferrals denied");
                                     return Ok(());
                                 }
+                                if callback_fault == BrokerFault::DependentTimeout && !is_document {
+                                    // Only the exact fixed renderer-initiated
+                                    // same-origin Fetch can enter this seam. A
+                                    // second dependent request is not allowed
+                                    // to silently reuse another native ticket.
+                                    let expected_fetch = format!(
+                                        "http://127.0.0.1:{}/fetch/broker/{}",
+                                        callback_port, callback_session
+                                    );
+                                    if id != 2 || uri != expected_fetch {
+                                        event_stats.broken.store(true, Ordering::Release);
+                                        event_phase_a.note("unexpected-dependent-fetch-rejected");
+                                        broker_drain_all_on_ui(
+                                            502, &event_trace, &event_stats, &event_generation, &event_phase_a
+                                        );
+                                        return Ok(());
+                                    }
+                                    event_phase_a.event("dependent-fetch-deferral-pending", event_stats.pending.load(Ordering::Acquire));
+                                    event_trace.record(
+                                        "broker.phase-a.dependent-timeout.armed",
+                                        "actual renderer dependent Fetch WebView2 COM deferral pending",
+                                    );
+                                }
                                 if callback_fault == BrokerFault::PageRace && id == 1 {
                                     event_phase_a.event(
                                         "page-generation-invalidated-with-pending-deferral",
@@ -2507,6 +2545,7 @@ mod host {
                             monitor_phase_a.process_failed.load(Ordering::Acquire) != 0,
                         );
                         if !awaiting_renderer_failure
+                            && (!fault.awaits_parent_os_browser_proof() || os_browser_acknowledged)
                             && script_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(2))
                             && (fault != BrokerFault::None
                                 || monitor_semantic.finished.load(Ordering::Acquire)
@@ -3004,6 +3043,7 @@ mod host {
                 "stale-broker-request",
                 "duplicate-completion",
                 "dependent-resource",
+                "dependent-timeout",
                 "pending-cancel",
                 "renderer-crash",
                 "host-crash",
@@ -3056,6 +3096,7 @@ mod host {
         fn pre_document_cancel_and_shutdown_require_independent_os_ack() {
             assert!(BrokerFault::CancelPending.awaits_parent_os_browser_proof());
             assert!(BrokerFault::ShutdownPending.awaits_parent_os_browser_proof());
+            assert!(BrokerFault::DependentTimeout.awaits_parent_os_browser_proof());
             for kind in [
                 BrokerFault::None,
                 BrokerFault::HostExitPending,
@@ -3063,6 +3104,16 @@ mod host {
             ] {
                 assert!(!kind.awaits_parent_os_browser_proof());
             }
+        }
+
+        #[test]
+        fn real_dependent_fetch_timeout_has_short_deadline_and_is_phase_a_only() {
+            let timeout = BrokerFault::parse("dependent-timeout").unwrap();
+            assert_eq!(timeout.label(), "dependent-timeout");
+            assert!(timeout.is_phase_a());
+            assert_eq!(timeout.reply_deadline(), BROKER_FAULT_DEADLINE);
+            assert!(timeout.reply_deadline() < BROKER_REPLY_DEADLINE);
+            assert!(BrokerFault::None.reply_deadline() > timeout.reply_deadline());
         }
 
         fn local_pipe() -> (File, File) {
