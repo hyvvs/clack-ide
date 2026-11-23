@@ -39,7 +39,10 @@ param(
     # Separate single-document read-only native COM element recheck probe.
     # No JS, CSS, image, font or other remote resources. Original routes and
     # accepted multi-resource fixtures remain the default and unchanged.
-    [switch] $MinimalRecheckDocument
+    [switch] $MinimalRecheckDocument,
+    # Independent actual WebView2 programmatic exact-node click/navigation
+    # acceptance document. Does not alter the historical recheck fixture.
+    [switch] $MinimalClickDocument
 )
 
 Set-StrictMode -Version Latest
@@ -58,6 +61,7 @@ if ($Action -eq 'Help') {
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve [-CssRedirect] [-MaxDurationSeconds 600] [-MaxRequests 64]'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -PendingDocumentDelayMilliseconds 2500 (one explicitly signaled pending HTTPS / GET for the new cancellation-only test)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalRecheckDocument (one static no-subresource HTML page for the separate read-only COM recheck test)'
+    Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalClickDocument (two bounded static pages for the separate live COM click navigation probe)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Stop -RunId <32-hex-run-id>'
     Write-Output ('Second terminal: $env:CLACK_TF4_OWNED_HTTPS_CERT = "' + $publicPath + '"')
     Write-Output 'Run ONLY the selected Rust test concurrently. Script never launches it.'
@@ -175,7 +179,7 @@ $routes.Add('/page.js', @{ Type = 'application/javascript'; Body = $utf8.GetByte
 $routes.Add('/pixel.png', @{ Type = 'image/png'; Body = $pixelBytes })
 $routes.Add('/font.woff2', @{ Type = 'font/woff2'; Body = $fontBytes })
 if ($MinimalRecheckDocument) {
-    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument) {
         throw '-MinimalRecheckDocument cannot combine with CSS redirect or pending-document delay.'
     }
     $minimalHtml = @'
@@ -191,6 +195,34 @@ if ($MinimalRecheckDocument) {
 '@
     $routes.Clear()
     $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($minimalHtml) })
+}
+if ($MinimalClickDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument) {
+        throw '-MinimalClickDocument cannot combine with other fixture modes.'
+    }
+    $clickHtml = @'
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'">
+<link rel="icon" href="data:,">
+<title>TF4 owned exact click</title></head>
+<body><main><h1>Controlled before activation</h1><p>No page-authored scripts</p>
+<a href="/clicked">Approved destination link</a>
+<button type="button" disabled>Disabled control</button></main></body></html>
+'@
+    $afterHtml = @'
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'">
+<link rel="icon" href="data:,">
+<title>TF4 click navigation destination</title></head>
+<body><main><h1>Controlled destination reached</h1><p>No scripted mutations</p></main></body></html>
+'@
+    $routes.Clear()
+    $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($clickHtml) })
+    $routes.Add('/clicked', @{ Type = 'text/html'; Body = $utf8.GetBytes($afterHtml) })
 }
 foreach ($route in $routes.Values) {
     if ($route.Body.Length -eq 0 -or $route.Body.Length -gt 65536) {
@@ -420,7 +452,7 @@ try {
         ' maxHeaderBytes=8192 maxBodyBytes=65536' +
         ' pendingDocumentDelayMs=' + $PendingDocumentDelayMilliseconds)
     Write-Output ('CSS=' + $(if ($CssRedirect) { 'one bounded same-origin 302 to /style.css' } else { 'direct /page.css' }))
-    Write-Output ('DOCUMENT_MODE=' + $(if ($MinimalRecheckDocument) { 'one_static_no_subresource_html' } else { 'original_multiresource' }))
+    Write-Output ('DOCUMENT_MODE=' + $(if ($MinimalRecheckDocument) { 'one_static_no_subresource_html' } elseif ($MinimalClickDocument) { 'two_static_exact_click_navigation' } else { 'original_multiresource' }))
 
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     while ($clock.Elapsed.TotalSeconds -lt $MaxDurationSeconds -and

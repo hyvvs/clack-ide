@@ -19,6 +19,61 @@ production-interactive certification.
 
 ## New implementation and scoped results
 
+### 2026-11-23: first exact retained-node live programmatic activation (separate opt-in test)
+
+Following the earlier read-only held-node `ACCEPTED`/`STALE` and same-index
+replacement proofs, the **production native host** now supports a narrowly
+bounded internal `act-element` / `click` command over its existing authenticated
+sealed parent/host v2 pipe. The frame binds session nonce, monotonically
+consumed sequence, latest authenticated observation, page generation, TF3
+source digest, original native visit index and serialized ordinal. An opaque
+48-character approval identifier is required in the frame, but its issuer is
+**not yet wired to central Tool Fabric application approval**. In particular,
+host validation of that field's syntax does not constitute consent.
+
+The fixed host-authored `Runtime.callFunctionOn` function uses the retained
+exact DOM Node in one renderer invocation: it rejects detached/changed,
+disabled/invisible/non-link/non-button nodes, latches the observation consumed,
+and calls `node.click()` at most once. This is **programmatic DOM activation**,
+not a trusted hardware pointer gesture. There is no caller-provided script,
+CSS-selector fallback, replacement-by-index, unbounded field data, or action
+retry. Native dispatch replies are closed `DISPATCHED`, `STALE`,
+`DENIED_TARGET`, `UNKNOWN`; a COM callback/IPC ACK alone cannot claim an
+external effect `CONFIRMED`. New Rust effect receipt types preserve
+`NotAttempted` versus `Unknown` versus independently `Observed`, and prohibit
+automatic replay after ambiguous or dispatched effects.
+
+**Separate opt-in physical probe, PASS 1/1:**
+
+- Owned fixture run `684cc1d917fd4720b6016ef8e75c58dd` used new
+  `-MinimalClickDocument`, serving precisely two static HTTPS pages with no
+  page-authored scripts and a fixed `<a href="/clicked">` link.
+- The actual isolated Windows AppContainer/WebView2 COM host activated the
+  exact retained link Node through the fixed native function. Its closed
+  dispatch receipt remained `Unknown` effect / `NEVER_REPLAY`.
+- Independently the actual TF3 broker observed a second completed controlled
+  HTTPS `GET https://127.0.0.1/clicked` with 200 response after the original
+  document GET, proving a resulting navigation in this *specific fixture*.
+- Old opaque action reference was consumed. Browser owned Job reached 0
+  active processes; host exited; UDF and private profile were removed. The
+  owned TLS listener was explicitly stopped; certificate, active run marker
+  and port-443 listener absence verified.
+- Two focused native-host action tests (2/2), the native parent reply test
+  (1/1), feature-enabled native host `cargo check` and debug native host
+  `cargo build` passed. The new opt-in physical test passed (1/1).
+
+**Not accepted:** this action was initiated only by a narrowly guarded
+`#[cfg(test)]` parent sender requiring `CLACK_TF4_OWNED_NATIVE_CLICK=1`
+and the exact owned loopback origin. It was **not** authorized by the installed
+application's central Tool Fabric approval dialog, was not model-facing, and
+does not prove trusted mouse input, text/type/select/scroll/submit, credential
+handling, screenshots, TF2 file transfer, popup/storage, public Internet HTTPS,
+the 11 independent races or the 17-step production E2E. The existing
+`tf_browser.rs` native non-Close operation gate stays intentionally CLOSED.
+The application background browser owner still lacks a centrally authorized
+command channel and a complete action/effect receipt integration. **Draft PR
+#46 must remain Draft.**
+
 - The non-default tf-browser-native-runtime builds the same native host in a
   separate production mode. The internal TF4 native one-use approval and
   existing TF3 public DNS/IP/SSRF/redirect network authority are reused.

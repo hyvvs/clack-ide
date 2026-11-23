@@ -274,6 +274,12 @@ mod host {
     // return so a rejected first check cannot become valid on a second check.
     const DOM_CAPTURE_READ_JS: &str = "function() { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return null; return { snapshot: this.result, nodeCount: this.nodes.length }; }";
     const DOM_NODE_RECHECK_JS: &str = "function(slot) { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return null; const node = this.nodes[slot]; return node && node.isConnected && node.ownerDocument === document ? node : null; }";
+    // Host-authored exact-node DOM activation. In one renderer invocation,
+    // validate the retained Node, consume the observation BEFORE activation,
+    // and dispatch at most one HTMLElement.click(). This is a programmatic
+    // DOM activation, NOT a trusted hardware pointer event or effect proof.
+    // Caller-provided JS, selectors, element strings and retries are absent.
+    const DOM_EXACT_CLICK_JS: &str = "function(slot) { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return false; const node = this.nodes[slot]; if (!node || !node.isConnected || node.ownerDocument !== document || (node.tagName !== 'BUTTON' && node.tagName !== 'A') || node.disabled === true || !node.getClientRects().length) return false; this.state.changed = true; node.click(); return true; }";
     // Debug-build-only *fixed* physical acceptance probe for the specifically
     // owned, one-document 127.0.0.1 HTTPS fixture. It never accepts code,
     // selectors, tag names, values or a mutation target from a caller. This
@@ -1482,6 +1488,43 @@ mod host {
         state: &'static str,
     }
 
+    // Authenticated parent-only effect command. An approval ID must come
+    // from the trusted parent's central policy/consent transaction; it is
+    // NOT minted by the host, inferred from page content, or a model field.
+    // No caller-provided expression, selector or element text is accepted.
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ParentDomActionRequest {
+        version: u8,
+        kind: String,
+        session: String,
+        check_sequence: u64,
+        observation_id: u64,
+        page_generation: u64,
+        source_id: String,
+        index: u32,
+        ordinal: u32,
+        action: String,
+        approval_id: String,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ChildDomActionReply<'a> {
+        version: u8,
+        kind: &'static str,
+        session: &'a str,
+        check_sequence: u64,
+        observation_id: u64,
+        page_generation: u64,
+        source_id: &'a str,
+        index: u32,
+        ordinal: u32,
+        action: &'static str,
+        approval_id: &'a str,
+        state: &'static str,
+    }
+
     fn dom_recheck_reply(
         request: &ParentDomRecheckRequest,
         accepted: bool,
@@ -1562,6 +1605,7 @@ mod host {
         page_generation: u64,
         root_object_id: Option<String>,
         indices: Vec<u32>,
+        click_allowed: Vec<bool>,
         #[cfg(debug_assertions)]
         debug_mutation_used: bool,
     }
@@ -1574,6 +1618,7 @@ mod host {
             self.page_generation = page_generation;
             self.root_object_id = None;
             self.indices.clear();
+            self.click_allowed.clear();
         }
 
         fn bind(&mut self, captured: &NativeDomObservation) -> Result<(), &'static str> {
@@ -1590,6 +1635,14 @@ mod host {
                 .elements
                 .iter()
                 .map(|item| item.index)
+                .collect();
+            self.click_allowed = captured
+                .snapshot
+                .elements
+                .iter()
+                .map(|item| {
+                    item.visible && item.enabled && matches!(item.role.as_str(), "button" | "link")
+                })
                 .collect();
             self.root_object_id = Some(captured.root_object_id.clone());
             Ok(())
@@ -1624,6 +1677,10 @@ mod host {
                 return Err("observation-element-stale");
             }
             Ok(reference)
+        }
+
+        fn may_click(&self, reference: &NativeDomNodeRef) -> bool {
+            self.click_allowed.get(reference.slot) == Some(&true)
         }
 
         // Only an exact currently retained object + ordinal can be presented
@@ -1834,6 +1891,59 @@ mod host {
         Ok((request, reference))
     }
 
+    fn validate_dom_action_request(
+        frame: &[u8],
+        session: &str,
+        last_check_sequence: u64,
+        latest_observation_id: u64,
+        current_generation: u64,
+        initial_url: &str,
+        identities: &NativeDomIdentity,
+    ) -> Result<(ParentDomActionRequest, Option<NativeDomNodeRef>), &'static str> {
+        if frame.is_empty() || frame.len() > 1024 {
+            return Err("action-request-bounds");
+        }
+        let request: ParentDomActionRequest =
+            serde_json::from_slice(frame).map_err(|_| "action-request-invalid")?;
+        if request.version != 2
+            || request.kind != "act-element"
+            || request.action != "click"
+            || request.approval_id.len() != 48
+            || !request
+                .approval_id
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err("action-not-authorized-or-kind-denied");
+        }
+        // Reuse every existing exact-node protocol invariant, including
+        // strict nonce, source digest, monotonic sequence, observation epoch,
+        // original visit index, and serialized ordinal. No separate selector
+        // or reassociation rule is permitted in the action path.
+        let check_frame = json!({
+            "version": request.version,
+            "kind": "recheck-element",
+            "session": request.session,
+            "checkSequence": request.check_sequence,
+            "observationId": request.observation_id,
+            "pageGeneration": request.page_generation,
+            "sourceId": request.source_id,
+            "index": request.index,
+            "ordinal": request.ordinal,
+        })
+        .to_string();
+        let (_, reference) = validate_dom_recheck_request(
+            check_frame.as_bytes(),
+            session,
+            last_check_sequence,
+            latest_observation_id,
+            current_generation,
+            initial_url,
+            identities,
+        )?;
+        Ok((request, reference))
+    }
+
     // A RemoteObject is acceptable ONLY if CDP confirms an actual DOM Node
     // identity. Generic JS objects, JSON booleans, null, exceptions and
     // error descriptions cannot prove the original node survived.
@@ -1852,6 +1962,28 @@ mod host {
                 .pointer("/result/objectId")
                 .and_then(|v| v.as_str())
                 .is_some_and(valid_dom_object_id)
+    }
+
+    // The only positive response is a closed boolean emitted *after* the
+    // fixed activation function reached its single click call. This does not
+    // prove navigation or server writes: it means DISPATCHED, not CONFIRMED.
+    fn parse_dom_activation_response(raw: &str) -> Result<bool, &'static str> {
+        if raw.is_empty() || raw.len() > 2048 {
+            return Err("action-com-response-unknown");
+        }
+        let Ok(response) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return Err("action-com-response-unknown");
+        };
+        if response.get("exceptionDetails").is_some()
+            || response.pointer("/result/type").and_then(|v| v.as_str()) != Some("boolean")
+            || response.pointer("/result/objectId").is_some()
+        {
+            return Err("action-com-response-unknown");
+        }
+        response
+            .pointer("/result/value")
+            .and_then(|v| v.as_bool())
+            .ok_or("action-com-response-unknown")
     }
 
     #[cfg(debug_assertions)]
@@ -2749,7 +2881,11 @@ mod host {
         current_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
         debug_replace_heading: bool,
+        activate_exact_click: bool,
     ) -> Result<bool, &'static str> {
+        if debug_replace_heading && activate_exact_click {
+            return Err("action-mode-conflict");
+        }
         #[cfg(not(debug_assertions))]
         if debug_replace_heading {
             return Err("debug-dom-replacement-unavailable");
@@ -2798,7 +2934,9 @@ mod host {
                             let callback_generation = current_generation.clone();
                             let callback_stats = stats.clone();
                             let callback_expected = expected.clone();
-                            let declaration = if debug_replace_heading {
+                            let declaration = if activate_exact_click {
+                                DOM_EXACT_CLICK_JS
+                            } else if debug_replace_heading {
                                 #[cfg(debug_assertions)]
                                 {
                                     DOM_DEBUG_REPLACE_HEADING_JS
@@ -2826,6 +2964,15 @@ mod host {
                                 parameters,
                                 Box::new(move |remote| {
                                     let checked = (|| {
+                                        // For an effectful activation the DOM
+                                        // may have navigated before this COM
+                                        // callback. Never misclassify the
+                                        // resulting source change as a stale
+                                        // *pre*-dispatch reference. Failure
+                                        // to get a closed ACK is UNKNOWN.
+                                        if activate_exact_click {
+                                            return parse_dom_activation_response(&remote?);
+                                        }
                                         let mut source = PWSTR::null();
                                         if unsafe { callback_core.Source(&mut source) }.is_err() {
                                             return Err("recheck-native-source-unavailable");
@@ -2920,6 +3067,7 @@ mod host {
                 page_generation.clone(),
                 stats.clone(),
                 debug_replace_heading,
+                false,
             )
             .unwrap_or(false)
         } else {
@@ -2939,6 +3087,81 @@ mod host {
             return Err("recheck-reply-bounds");
         }
         broker_write_frame(write, &reply).map_err(|_| "recheck-pipe-failed")
+    }
+
+    // Production-host implementation, but NOT a model or Tauri action tool.
+    // Only the already authenticated and attested parent broker can send this
+    // frame. Its central approval owner must mint the one-use approval ID
+    // BEFORE sending; the release public action gate stays closed until that
+    // parent transaction is integrated and physically tested.
+    fn service_parent_dom_action_frame(
+        frame: &[u8],
+        write: &mut File,
+        app: &tauri::AppHandle,
+        session: &str,
+        last_observation_id: u64,
+        last_check_sequence: &mut u64,
+        identities: &mut NativeDomIdentity,
+        page_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+        initial_url: &str,
+    ) -> Result<(), &'static str> {
+        let (request, reference) = validate_dom_action_request(
+            frame,
+            session,
+            *last_check_sequence,
+            last_observation_id,
+            page_generation.load(Ordering::Acquire),
+            initial_url,
+            identities,
+        )?;
+        // Burn the shared native command sequence for every syntactically
+        // authorized attempt, including DENIED_TARGET / STALE / UNKNOWN.
+        *last_check_sequence = request.check_sequence;
+        let state = match reference {
+            None => "STALE",
+            Some(reference) if !identities.may_click(&reference) => "DENIED_TARGET",
+            Some(reference) => {
+                let outcome = recheck_dom_on_ui(
+                    app,
+                    initial_url,
+                    request.page_generation,
+                    reference,
+                    page_generation,
+                    stats,
+                    false,
+                    true,
+                );
+                // The single-use native reference is consumed regardless of
+                // a missing COM ACK. A later request must freshly observe;
+                // an ambiguous action must NEVER be automatically retried.
+                identities.invalidate(request.observation_id, request.page_generation);
+                match outcome {
+                    Ok(true) => "DISPATCHED",
+                    Ok(false) => "STALE",
+                    Err(_) => "UNKNOWN",
+                }
+            }
+        };
+        let reply = ChildDomActionReply {
+            version: 2,
+            kind: "element-action",
+            session: &request.session,
+            check_sequence: request.check_sequence,
+            observation_id: request.observation_id,
+            page_generation: request.page_generation,
+            source_id: &request.source_id,
+            index: request.index,
+            ordinal: request.ordinal,
+            action: "click",
+            approval_id: &request.approval_id,
+            state,
+        };
+        let bytes = serde_json::to_vec(&reply).map_err(|_| "action-reply-invalid")?;
+        if bytes.is_empty() || bytes.len() > 1024 {
+            return Err("action-reply-bounds");
+        }
+        broker_write_frame(write, &bytes).map_err(|_| "action-pipe-failed")
     }
 
     /// Read a parent control frame ONLY while the single broker pipe worker
@@ -2969,6 +3192,20 @@ mod host {
             serde_json::from_slice(&frame).map_err(|_| "observation-request-invalid")?;
         if discriminator.get("kind").and_then(|v| v.as_str()) == Some("recheck-element") {
             return service_parent_dom_recheck_frame(
+                &frame,
+                write,
+                app,
+                session,
+                *last_observation_id,
+                last_check_sequence,
+                identities,
+                page_generation,
+                stats,
+                initial_url,
+            );
+        }
+        if discriminator.get("kind").and_then(|v| v.as_str()) == Some("act-element") {
+            return service_parent_dom_action_frame(
                 &frame,
                 write,
                 app,
@@ -6544,6 +6781,101 @@ mod host {
                 "index": 4, "ordinal": 2
             });
             (identity, request)
+        }
+
+        #[test]
+        fn production_exact_click_is_one_shot_closed_and_rejects_forged_authority() {
+            let mut snapshot = production_dom_case();
+            snapshot["elements"][2]["visible"] = json!(true);
+            snapshot["elements"][2]["enabled"] = json!(true);
+            let mut identity = NativeDomIdentity::default();
+            identity.invalidate(1, 7);
+            identity
+                .bind(&NativeDomObservation {
+                    snapshot: verify_production_dom(&snapshot.to_string()).unwrap(),
+                    root_object_id: r#"{"injectedScriptId":1,"id":11}"#.into(),
+                })
+                .unwrap();
+            let request = json!({
+                "version":2, "kind":"act-element", "session":NONCE,
+                "checkSequence":1,"observationId":1,"pageGeneration":7,
+                "sourceId":production_dom_source_id("https://example.test/").unwrap(),
+                "index":4,"ordinal":2,"action":"click","approvalId":"a".repeat(48),
+            });
+            let validate = |r: &serde_json::Value, last: u64, held: &NativeDomIdentity| {
+                validate_dom_action_request(
+                    r.to_string().as_bytes(),
+                    NONCE,
+                    last,
+                    1,
+                    7,
+                    "https://example.test/",
+                    held,
+                )
+            };
+            let (parsed, node) = validate(&request, 0, &identity).unwrap();
+            assert_eq!(parsed.action, "click");
+            assert!(identity.may_click(&node.unwrap()));
+            assert!(
+                validate(&request, 1, &identity).is_err(),
+                "replayed action frame"
+            );
+            for (field, value) in [
+                ("session", json!("fake")),
+                ("action", json!("execute-script")),
+                ("approvalId", json!("bad")),
+                ("approvalId", json!("A".repeat(48))),
+                ("checkSequence", json!(2)),
+            ] {
+                let mut forged = request.clone();
+                forged[field] = value;
+                assert!(validate(&forged, 0, &identity).is_err(), "forged {field}");
+            }
+            let mut forged = request.clone();
+            forged["selector"] = json!("button");
+            assert!(validate(&forged, 0, &identity).is_err());
+            let mut stale = request.clone();
+            stale["ordinal"] = json!(1);
+            assert!(validate(&stale, 0, &identity).unwrap().1.is_none());
+            identity.invalidate(2, 7);
+            assert!(validate(&request, 0, &identity).unwrap().1.is_none());
+            let (disabled, _) = native_dom_recheck_case();
+            assert!(!disabled.may_click(&disabled.reference(4).unwrap()));
+        }
+
+        #[test]
+        fn production_exact_click_is_atomic_dom_activation_not_verified_pointer_or_effect() {
+            assert!(DOM_EXACT_CLICK_JS.starts_with("function(slot)"));
+            let mutation = DOM_EXACT_CLICK_JS
+                .find("this.state.changed = true; node.click()")
+                .unwrap();
+            assert!(mutation > DOM_EXACT_CLICK_JS.find("this.nodes[slot]").unwrap());
+            for forbidden in [
+                "querySelector",
+                "innerHTML",
+                "outerHTML",
+                "eval(",
+                "Function(",
+                "fetch(",
+                "document.cookie",
+                "localStorage",
+                "dispatchMouseEvent",
+            ] {
+                assert!(!DOM_EXACT_CLICK_JS.contains(forbidden));
+            }
+            assert_eq!(
+                parse_dom_activation_response(r#"{"result":{"type":"boolean","value":true}}"#),
+                Ok(true)
+            );
+            assert_eq!(
+                parse_dom_activation_response(r#"{"result":{"type":"boolean","value":false}}"#),
+                Ok(false)
+            );
+            assert!(parse_dom_activation_response(r#"{"exceptionDetails":{"text":"private"},"result":{"type":"boolean","value":true}}"#).is_err());
+            assert!(
+                parse_dom_activation_response(r#"{"result":{"type":"object","value":true}}"#)
+                    .is_err()
+            );
         }
 
         #[test]

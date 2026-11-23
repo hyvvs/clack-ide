@@ -209,6 +209,75 @@ struct ParentObserve<'a> {
     source_id: &'a str,
 }
 
+/// Production sealed-pipe action frame shape. No public sender is connected
+/// yet: central TF4 approval must bind a PreparedAction before it can send.
+/// Only one closed action kind exists in this first native host slice.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentElementAction<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: &'a str,
+    index: u32,
+    ordinal: u32,
+    action: &'static str,
+    approval_id: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildElementAction {
+    version: u8,
+    kind: String,
+    session: String,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: String,
+    index: u32,
+    ordinal: u32,
+    action: String,
+    approval_id: String,
+    state: String,
+}
+
+fn validate_element_action_reply(
+    frame: &[u8],
+    request: &ParentElementAction<'_>,
+) -> Result<crate::modules::net::tf_browser_contract::NativeEffectTerminal, &'static str> {
+    use crate::modules::net::tf_browser_contract::NativeEffectTerminal as T;
+    if frame.is_empty() || frame.len() > 1024 {
+        return Err("browser-action-reply-bounds");
+    }
+    let reply: ChildElementAction =
+        serde_json::from_slice(frame).map_err(|_| "browser-action-reply-schema-denied")?;
+    if reply.version != 2
+        || reply.kind != "element-action"
+        || reply.session != request.session
+        || reply.check_sequence != request.check_sequence
+        || reply.observation_id != request.observation_id
+        || reply.page_generation != request.page_generation
+        || reply.source_id != request.source_id
+        || reply.index != request.index
+        || reply.ordinal != request.ordinal
+        || reply.action != request.action
+        || reply.approval_id != request.approval_id
+    {
+        return Err("browser-action-reply-identity-denied");
+    }
+    match reply.state.as_str() {
+        "DISPATCHED" => Ok(T::Dispatched),
+        "STALE" => Ok(T::Stale),
+        "DENIED_TARGET" => Ok(T::Denied),
+        "UNKNOWN" => Ok(T::Unknown),
+        _ => Err("browser-action-reply-state-denied"),
+    }
+}
+
 /// A test-only, sealed read-only identity recheck. The ordinal and index are
 /// derived from the authenticated previous DOM snapshot and PreparedAction,
 /// never taken from a caller/model selector or supplied ordinal.
@@ -1688,6 +1757,111 @@ mod windows_owner {
             Ok(accepted)
         }
 
+        /// Deliberate owned-fixture-only physical action probe. The host
+        /// implementation is compiled into release, but this parent sender
+        /// is NOT a production authorization path, command or model tool.
+        /// Central UI approval integration must replace this test-only grant.
+        #[cfg(test)]
+        pub(crate) async fn exact_click_owned_fixture_for_test(
+            &mut self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<crate::modules::net::tf_browser_contract::NativeEffectReceipt, String> {
+            use crate::modules::net::tf_browser_contract::{
+                BrowserActionKind, NativeEffectReceipt, NativeEffectTerminal,
+            };
+            if std::env::var("CLACK_TF4_OWNED_NATIVE_CLICK").as_deref() != Ok("1")
+                || self.initial_url != "https://127.0.0.1/"
+            {
+                return Err("native-click-not-an-owned-physical-test".into());
+            }
+            if !self.ready || self.stopped || self.poisoned || self.last_request_id == 0 {
+                return Err("native-click-session-not-ready".into());
+            }
+            let prepared = self
+                .page_contract
+                .prepare_action(BrowserActionKind::Click, target, None)
+                .map_err(str::to_owned)?;
+            if !prepared.requires_approval {
+                return Err("native-click-effect-must-require-approval".into());
+            }
+            let (observation_id, generation, indices) = self
+                .last_recheck_observation
+                .clone()
+                .ok_or("native-click-observation-missing")?;
+            if observation_id != self.last_observation_id || generation != self.last_page_generation
+            {
+                return Err("native-click-observation-stale".into());
+            }
+            let index = u32::try_from(prepared.observed_serial)
+                .map_err(|_| "native-click-index-overflow")?;
+            let ordinal = indices
+                .iter()
+                .position(|observed| *observed == index)
+                .ok_or("native-click-element-not-found")?;
+            if index == 0 || index > 256 || ordinal >= 48 {
+                return Err("native-click-index-bounds".into());
+            }
+            let sequence = self
+                .last_recheck_sequence
+                .checked_add(1)
+                .filter(|value| *value <= 256)
+                .ok_or("native-click-sequence-exhausted")?;
+            // Burn authority BEFORE touching COM. No retry of an unknown
+            // action even if its reply is lost while navigating.
+            self.last_recheck_sequence = sequence;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
+            if self
+                .browser
+                .as_ref()
+                .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+                || self
+                    .renderer
+                    .as_ref()
+                    .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+            {
+                return Err("native-click-process-unattested".into());
+            }
+            let source = format!("{:x}", Sha256::digest(self.initial_url.as_bytes()));
+            let nonce = self.nonce.clone();
+            let approval_id = random_nonce()?;
+            let request = ParentElementAction {
+                version: 2,
+                kind: "act-element",
+                session: &nonce,
+                check_sequence: sequence,
+                observation_id,
+                page_generation: generation,
+                source_id: &source,
+                index,
+                ordinal: ordinal as u32,
+                action: "click",
+                approval_id: &approval_id,
+            };
+            let frame = serde_json::to_vec(&request).map_err(|_| "native-click-request-invalid")?;
+            if frame.is_empty() || frame.len() > 1024 {
+                return Err("native-click-request-bounds".into());
+            }
+            self.write_parent_frame(frame).await?;
+            let mut reader = self
+                .requests
+                .try_clone()
+                .map_err(|_| "native-click-pipe-clone-failed")?;
+            let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                .await
+                .map_err(|_| "native-click-read-worker-failed")??;
+            let terminal =
+                validate_element_action_reply(&bytes, &request).map_err(str::to_owned)?;
+            self.page_contract.revoke_snapshot();
+            self.last_recheck_observation = None;
+            if terminal != NativeEffectTerminal::Unknown {
+                self.poisoned = false;
+                flight.committed = true;
+            }
+            Ok(NativeEffectReceipt::classify(terminal))
+        }
+
         async fn observe_structure_inner(
             &mut self,
             observation_id: u64,
@@ -2332,6 +2506,73 @@ mod tests {
                 .is_err(),
             "a replacement request cannot be disguised as a read-only recheck"
         );
+    }
+
+    #[test]
+    fn native_exact_click_reply_never_promotes_dispatch_to_effect_confirmation() {
+        use crate::modules::net::tf_browser_contract::{
+            NativeEffectReceipt, NativeEffectTerminal as T,
+        };
+        let request = ParentElementAction {
+            version: 2,
+            kind: "act-element",
+            session: "a",
+            check_sequence: 3,
+            observation_id: 2,
+            page_generation: 1,
+            source_id: "b",
+            index: 4,
+            ordinal: 2,
+            action: "click",
+            approval_id: "c",
+        };
+        let raw = serde_json::json!({
+            "version":2, "kind":"element-action", "session":"a",
+            "checkSequence":3,"observationId":2,"pageGeneration":1,
+            "sourceId":"b","index":4,"ordinal":2,"action":"click",
+            "approvalId":"c","state":"DISPATCHED",
+        });
+        assert_eq!(
+            validate_element_action_reply(raw.to_string().as_bytes(), &request),
+            Ok(T::Dispatched)
+        );
+        let receipt = NativeEffectReceipt::classify(T::Dispatched);
+        assert_eq!(receipt.effect_state, "Unknown");
+        assert_eq!(receipt.retry, "NEVER_REPLAY");
+        for (field, bad) in [
+            ("session", serde_json::json!("d")),
+            ("checkSequence", serde_json::json!(4)),
+            ("observationId", serde_json::json!(3)),
+            ("sourceId", serde_json::json!("d")),
+            ("pageGeneration", serde_json::json!(2)),
+            ("index", serde_json::json!(5)),
+            ("ordinal", serde_json::json!(3)),
+            ("action", serde_json::json!("submit")),
+            ("approvalId", serde_json::json!("d")),
+            ("state", serde_json::json!("CONFIRMED")),
+        ] {
+            let mut forged = raw.clone();
+            forged[field] = bad;
+            assert!(
+                validate_element_action_reply(forged.to_string().as_bytes(), &request).is_err(),
+                "forged {field}"
+            );
+        }
+        let mut injected = raw.clone();
+        injected["body"] = serde_json::json!("leaked-secret");
+        assert!(validate_element_action_reply(injected.to_string().as_bytes(), &request).is_err());
+        for (wire, terminal) in [
+            ("STALE", T::Stale),
+            ("DENIED_TARGET", T::Denied),
+            ("UNKNOWN", T::Unknown),
+        ] {
+            let mut reply = raw.clone();
+            reply["state"] = serde_json::json!(wire);
+            assert_eq!(
+                validate_element_action_reply(reply.to_string().as_bytes(), &request),
+                Ok(terminal)
+            );
+        }
     }
     #[test]
     fn native_structure_never_accepts_page_derived_text_or_stale_identity() {
@@ -3762,5 +4003,156 @@ mod tests {
         if physical_replacement {
             eprintln!("PRODUCTION_OWNED_EXACT_DOM_MUTATION=PASS native one-shot debug-controlled same-index replacement, old exact recheck STALE, fresh authenticated snapshot ACCEPTED, clean Job/UDF/profile; RELEASE_HOOK=ABSENT");
         }
+    }
+
+    /// Distinct physical WebView2/AppContainer/COM/TF3 native activation probe.
+    /// The parent grant is explicitly TEST-ONLY, not central Tool Fabric
+    /// approval. An actual GET /clicked (separate from its dispatch ACK) is
+    /// needed to prove page navigation. Never call this production acceptance.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "opt-in separate owned HTTPS two-page real WebView2 exact-node programmatic click; NOT central-policy approval or 17-step E2E"]
+    async fn physical_production_owned_https_exact_click_navigation_probe() {
+        use crate::modules::net::tf_browser_contract::NativeEffectTerminal;
+        use std::time::Duration;
+        assert_eq!(
+            std::env::var("CLACK_TF4_OWNED_NATIVE_CLICK").as_deref(),
+            Ok("1")
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let canonical =
+            std::fs::canonicalize(evidence.join("server.cer")).expect("live fixture public DER");
+        assert_eq!(
+            std::fs::canonicalize(
+                std::env::var("CLACK_TF4_OWNED_HTTPS_CERT").expect("run-scoped public DER path")
+            )
+            .unwrap(),
+            canonical
+        );
+        let cert = reqwest::Certificate::from_der(&std::fs::read(&canonical).unwrap())
+            .expect("owned DER certificate");
+        let run_id = std::fs::read_to_string(evidence.join("active.run"))
+            .expect("run-scoped active fixture")
+            .trim()
+            .to_owned();
+        assert!(run_id.len() == 32 && run_id.bytes().all(|b| b.is_ascii_hexdigit()));
+        let host = PathBuf::from(
+            std::env::var("CLACK_TF4_NATIVE_PROBE_HOST").expect("actual feature-enabled host path"),
+        );
+        let digest = format!("{:x}", Sha256::digest(std::fs::read(&host).unwrap()));
+        let parent = tempfile::Builder::new()
+            .prefix("tf4-native-click-")
+            .tempdir_in(manifest.join("target"))
+            .unwrap();
+        let workspace = manifest.parent().unwrap();
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(workspace).expect("owned workspace only");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-owned-click-test-only".into(),
+                session_id: format!("tf4-click-{}", &run_id[..12]),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                private_parent: parent.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("real isolated AppContainer WebView2 host");
+        let result = async {
+            tokio::time::timeout(Duration::from_secs(18), browser.verify_ready())
+                .await
+                .map_err(|_| "click-native-ready-deadline")??;
+            let first = tokio::time::timeout(
+                Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "click-initial-document-deadline")??;
+            if first.request_id != 1
+                || first.terminal != "completed"
+                || !first.native_com_completed
+                || first.tf3.as_ref().is_none_or(|tf3| {
+                    tf3.status_code != Some(200)
+                        || tf3.requested_url.as_deref() != Some("https://127.0.0.1/")
+                })
+            {
+                return Err("click-initial-native-document-not-attested".into());
+            }
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let snapshot =
+                tokio::time::timeout(Duration::from_secs(10), browser.observe_closed_snapshot())
+                    .await
+                    .map_err(|_| "click-closed-native-snapshot-deadline")??;
+            let link = snapshot
+                .elements
+                .iter()
+                .find(|element| {
+                    element.role == SemanticRole::Link
+                        && element.state.enabled == Some(true)
+                        && element.state.visible == Some(true)
+                })
+                .ok_or("click-live-link-not-observed")?;
+            let target = ActionTarget {
+                browser_session_id: snapshot.browser_session_id.clone(),
+                page_id: snapshot.page_id.clone(),
+                page_generation: snapshot.page_generation,
+                snapshot_id: snapshot.snapshot_id.clone(),
+                element_ref: link.element_ref.clone(),
+            };
+            let native = tokio::time::timeout(
+                Duration::from_secs(10),
+                browser.exact_click_owned_fixture_for_test(target.clone()),
+            )
+            .await
+            .map_err(|_| "click-actual-com-deadline")??;
+            if native.terminal != NativeEffectTerminal::Dispatched
+                || native.auto_retry
+                || native.effect_state != "Unknown"
+                || native.retry != "NEVER_REPLAY"
+            {
+                return Err(format!("click-dispatch-not-closed-ack: {:?}", native));
+            }
+            if browser
+                .verify_closed_reference_without_execution_for_test(target)
+                .is_ok()
+            {
+                return Err("click-consumed-native-reference-reusable".into());
+            }
+            let destination = tokio::time::timeout(
+                Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "click-navigation-TF3-deadline")??;
+            if destination.request_id != 2
+                || destination.terminal != "completed"
+                || !destination.native_com_completed
+                || destination.tf3.as_ref().is_none_or(|tf3| {
+                    tf3.requested_url.as_deref() != Some("https://127.0.0.1/clicked")
+                        || tf3.status_code != Some(200)
+                        || tf3.terminal != "completed"
+                })
+            {
+                return Err("click-actual-navigation-TF3-not-observed".into());
+            }
+            Ok::<_, String>(())
+        }
+        .await;
+        let close = browser.shutdown();
+        assert!(
+            close.is_ok(),
+            "owned native click cleanup failed: {close:?}"
+        );
+        result
+            .expect("actual WebView2 native programmatic click then independent TF3 /clicked GET");
+        browser
+            .verify_clean_readonly_close_for_test(2)
+            .expect("two native GETs, Job0, host terminated, UDF/profile removed");
+        assert!(parent.path().read_dir().unwrap().next().is_none());
+        eprintln!("PRODUCTION_OWNED_EXACT_CLICK_NAVIGATION_PROBE=PASS real AppContainer/WebView2 COM retained exact link node programmatic DOM click, independent TF3 HTTPS GET /clicked, native Job0/UDF/profile clean; TEST-ONLY parent grant; NOT trusted pointer or central approval or full E2E; FIXTURE_RUN_ID={run_id}");
     }
 }

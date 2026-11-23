@@ -151,6 +151,95 @@ pub(crate) struct PreparedAction {
     pub kind: BrowserActionKind,
 }
 
+/// Closed outcome of ONE attempted effectful native action. This is not a
+/// report of what the page/server did: only an independently observed result
+/// can be marked Confirmed. A lost reply after dispatch is Unknown and MUST
+/// NOT be replayed using the same authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(crate) enum NativeEffectTerminal {
+    Denied,
+    Stale,
+    CancelledBeforeDispatch,
+    FailedBeforeDispatch,
+    Dispatched,
+    Confirmed,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeEffectReceipt {
+    pub terminal: NativeEffectTerminal,
+    pub policy_decision: &'static str,
+    pub effect_state: &'static str,
+    pub retry: &'static str,
+    pub auto_retry: bool,
+    pub reason_code: &'static str,
+}
+
+impl NativeEffectReceipt {
+    /// A native dispatch ACK is not proof that an effect persisted. The
+    /// caller may only supply `Confirmed` after separate native observation
+    /// has been bound to this exact action; transport success alone is not
+    /// enough. This constructor never grants dispatch authorization.
+    pub(crate) fn classify(terminal: NativeEffectTerminal) -> Self {
+        use NativeEffectTerminal as T;
+        let (policy_decision, effect_state, retry, reason_code) = match terminal {
+            T::Denied => (
+                "denied",
+                "NotAttempted",
+                "NOT_ATTEMPTED",
+                "native-effect-policy-denied",
+            ),
+            T::Stale => (
+                "allowed",
+                "NotAttempted",
+                "SAFE_REPREPARE",
+                "native-effect-exact-node-stale",
+            ),
+            T::CancelledBeforeDispatch => (
+                "allowed",
+                "NotAttempted",
+                "SAFE_REPREPARE",
+                "native-effect-cancelled-before-dispatch",
+            ),
+            T::FailedBeforeDispatch => (
+                "allowed",
+                "NotAttempted",
+                "SAFE_REPREPARE",
+                "native-effect-failed-before-dispatch",
+            ),
+            T::Dispatched => (
+                "allowed",
+                "Unknown",
+                "NEVER_REPLAY",
+                "native-effect-dispatched-unconfirmed",
+            ),
+            T::Confirmed => (
+                "allowed",
+                "Observed",
+                "NEVER_REPLAY",
+                "native-effect-independently-confirmed",
+            ),
+            T::Unknown => (
+                "allowed",
+                "Unknown",
+                "NEVER_REPLAY",
+                "native-effect-dispatch-uncertain",
+            ),
+        };
+        Self {
+            terminal,
+            policy_decision,
+            effect_state,
+            retry,
+            auto_retry: false,
+            reason_code,
+        }
+    }
+}
+
 struct HeldElement {
     source: ObservedElement,
 }
@@ -608,6 +697,38 @@ impl BrowserPageContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_effect_receipts_never_confuse_dispatch_with_confirmation_or_replay() {
+        use NativeEffectTerminal as T;
+        for terminal in [
+            T::Denied,
+            T::Stale,
+            T::CancelledBeforeDispatch,
+            T::FailedBeforeDispatch,
+        ] {
+            let receipt = NativeEffectReceipt::classify(terminal);
+            assert_eq!(receipt.effect_state, "NotAttempted");
+            assert!(!receipt.auto_retry);
+            assert_ne!(receipt.retry, "NEVER_REPLAY");
+        }
+        for terminal in [T::Dispatched, T::Unknown] {
+            let receipt = NativeEffectReceipt::classify(terminal);
+            assert_eq!(receipt.effect_state, "Unknown");
+            assert_eq!(receipt.retry, "NEVER_REPLAY");
+            assert!(!receipt.auto_retry);
+        }
+        let confirmed = NativeEffectReceipt::classify(T::Confirmed);
+        assert_eq!(confirmed.effect_state, "Observed");
+        assert_eq!(confirmed.retry, "NEVER_REPLAY");
+        assert!(!confirmed.auto_retry);
+        assert_eq!(
+            NativeEffectReceipt::classify(T::Denied).policy_decision,
+            "denied"
+        );
+        let json = serde_json::to_value(NativeEffectReceipt::classify(T::Unknown)).unwrap();
+        assert_eq!(json["terminal"], "UNKNOWN");
+        assert_eq!(json["autoRetry"], false);
+    }
     fn session() -> BrowserPageContract {
         BrowserPageContract::new("a".repeat(48), "https://example.org/form").unwrap()
     }
