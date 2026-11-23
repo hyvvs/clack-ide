@@ -326,3 +326,50 @@ server stopped with `connections=5 denied=0`; its public DER and active
 marker were absent and port 443 had no listener after stop. Distinct earlier
 FAILED evidence is retained. User-visible interactive browser execution
 still remains disabled and **PR #46 Draft**.
+
+### Continuation 2 — native closed-control observation and real snapshot references
+
+The owned TLS fixture now also includes an explicitly controlled, non-
+submitting form with a text input, password, hidden input, checked checkbox,
+selected option, textarea, select and disabled button. No write to the fixture
+is triggered. The **unchanged production AppContainer/COM host** now returns
+only closed structural roles, allowlisted control type and strictly typed
+`visible`, `enabled`, `checked`, `selected`, `expanded` state, and a bounded
+`omittedFields` count. It does not read or emit the contents of fields, user-
+provided accessible names/labels, HTML, arbitrary attributes, href, cookies,
+page scripts or URL query strings. Password/hidden/file and unsupported types
+are dropped; labels associated with excluded inputs and editable subtrees are
+also omitted. Fixed COM script evaluation remains permitted for observation;
+**untrusted page JavaScript remains disabled**.
+
+New real Windows controlled-HTTPS test PASS (fresh temporary certificate),
+with physical TF3 and native COM evidence, including revalidated CSS redirect:
+
+```text
+id=1 HTML 1254B completed COM=true TLS=observed DNS=1
+id=2 CSS   317B completed COM=true TLS=observed DNS=2 (same-origin 302)
+id=3 PNG    68B completed COM=true TLS=observed DNS=1
+id=4 WOFF2  48B completed COM=true TLS=observed DNS=1
+PRODUCTION_OWNED_HTTPS_DOM=PASS visited=15 elements=12 generation=1 omitted_sensitive_fields=2 controls=closed-states-only
+PRODUCTION_OWNED_HTTPS_SNAPSHOT_REF=PASS page_generation=1 elements=12 stale_previous=STALE_ELEMENT fresh_reference=accepted_without_execution private_values=withheld
+```
+
+The production owner now feeds that actual nonce/source/page-bound COM result
+into the **existing** `BrowserPageContract` (no new evidence or policy store),
+which allocates random opaque element references and a unique snapshot ID.
+The test independently observed the same page twice; the first reference
+was rejected as `STALE_ELEMENT` even though the page generation was unchanged;
+a fresh reference was accepted for identity validation **without action
+execution**. Existing `BrowserPageContract` references now additionally
+expire after 30 monotonic seconds and are revoked on failed new observation,
+page invalidation and clean close. The last physical run tested reference
+invalidity again after its owned native session shutdown. No model-facing
+live-action endpoint was introduced.
+
+The closed-control snapshot deliberately has **empty accessible names and
+visible text** and lacks full accessibility relationships. It is not yet the
+required full production semantic/action acceptance. The pseudo-WOFF2 bytes
+prove bounded font transport, not usable font rendering. The controlled
+script is present in markup, but the production host does not execute it.
+Full real-browser semantic names, exact DOM action binding, approvals,
+form execution and remaining production E2E gates stay **NOT_PROVEN**.

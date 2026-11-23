@@ -7,6 +7,9 @@
 //! job membership and the WebView2 COM effective UDF *before navigation*.
 //! The acceptance-only host/fixture mode is never launched by this module.
 
+use super::tf_browser_contract::{
+    BrowserPageContract, ObservedElement, PageSnapshot, SemanticRole, SemanticState,
+};
 use super::tf_web::{self, TfWebOperation, TfWebReceipt, TfWebRequest, TfWebState};
 use crate::modules::workspace::WorkspaceRegistry;
 use serde::{Deserialize, Serialize};
@@ -94,6 +97,21 @@ pub(crate) struct NativeElementStructure {
     pub role: String,
     pub depth: u8,
     pub heading_level: Option<u8>,
+    /// Native DOM state, never a model action authority. These fields are
+    /// restricted to booleans and a closed non-secret control-type vocabulary;
+    /// the child never transports labels, URLs, text or input values.
+    #[serde(default)]
+    pub visible: bool,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub checked: Option<bool>,
+    #[serde(default)]
+    pub selected: Option<bool>,
+    #[serde(default)]
+    pub expanded: Option<bool>,
+    #[serde(default)]
+    pub control_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,7 +127,71 @@ pub(crate) struct NativeDomStructure {
     pub reason: String,
     pub truncated: bool,
     pub visited: u32,
+    /// Sensitive/unsupported fields withheld by the fixed native DOM walker.
+    /// This is a bounded count, never a serialized list of private data.
+    #[serde(default)]
+    pub omitted_fields: u32,
     pub elements: Vec<NativeElementStructure>,
+}
+
+/// Transform only the exact closed native COM control observation into the
+/// existing TF4 page-reference contract. Names, page text, HTML, URLs, form
+/// targets, raw attributes and values are NEVER supplied by this bridge.
+/// This allocates opaque snapshot/element references but does not authorize
+/// execution, and is intentionally not registered as a model-facing tool.
+fn structural_observed_elements(
+    value: &NativeDomStructure,
+) -> Result<Vec<ObservedElement>, &'static str> {
+    if value.terminal != "completed" || value.reason != "ok" {
+        return Err("browser-structure-no-valid-observation");
+    }
+    value
+        .elements
+        .iter()
+        .map(|element| {
+            let role = match element.role.as_str() {
+                "link" => SemanticRole::Link,
+                "button" => SemanticRole::Button,
+                "checkbox" => SemanticRole::Checkbox,
+                "radio" => SemanticRole::Radio,
+                "select" => SemanticRole::Combobox,
+                "textbox" => SemanticRole::Textbox,
+                "input" => match element.control_type.as_deref() {
+                    Some("button" | "submit" | "reset") => SemanticRole::Button,
+                    Some(_) => SemanticRole::Textbox,
+                    None => return Err("browser-structure-untyped-control-denied"),
+                },
+                "option" => SemanticRole::Option,
+                "heading" => SemanticRole::Heading,
+                "main" => SemanticRole::Main,
+                "paragraph" => SemanticRole::Paragraph,
+                "img" | "image" => SemanticRole::Image,
+                "label" => SemanticRole::Label,
+                "form" | "navigation" | "article" | "listitem" => SemanticRole::Other,
+                _ => return Err("browser-structure-unrecognized-role"),
+            };
+            Ok(ObservedElement {
+                serial: u64::from(element.index),
+                role,
+                accessible_name: String::new(),
+                state: SemanticState {
+                    enabled: Some(element.enabled),
+                    checked: element.checked,
+                    selected: element.selected,
+                    expanded: element.expanded,
+                    visible: Some(element.visible),
+                },
+                href: None,
+                form_target: None,
+                form_method: None,
+                field_type: element.control_type.clone(),
+                required: None,
+                // No page metadata can prove the absence of unobservable
+                // handlers or external effects. Remain maximally conservative.
+                has_script_handler: true,
+            })
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -211,6 +293,8 @@ fn validate_dom_structure(
                 | "unknown"
         )
         || value.visited > 512
+        || value.omitted_fields > value.visited
+        || (value.omitted_fields > 0 && !value.truncated)
         || value.elements.len() > 64
         || (value.terminal == "denied" && !value.elements.is_empty())
         || (value.terminal == "denied" && value.reason == "ok")
@@ -249,6 +333,49 @@ fn validate_dom_structure(
             )
         {
             return Err("browser-structure-element-invalid");
+        }
+        if item.checked.is_some() && !matches!(item.role.as_str(), "checkbox" | "radio")
+            || item.selected.is_some() && item.role != "option"
+            || item.control_type.as_deref().is_some_and(|control| {
+                !matches!(
+                    control,
+                    "text"
+                        | "email"
+                        | "tel"
+                        | "search"
+                        | "number"
+                        | "checkbox"
+                        | "radio"
+                        | "button"
+                        | "submit"
+                        | "reset"
+                        | "date"
+                        | "time"
+                        | "month"
+                        | "week"
+                        | "color"
+                        | "range"
+                        | "select"
+                        | "textarea"
+                )
+            })
+        {
+            return Err("browser-structure-control-state-invalid");
+        }
+        if let Some(control) = item.control_type.as_deref() {
+            let role_ok = match control {
+                "checkbox" => item.role == "checkbox",
+                "radio" => item.role == "radio",
+                "select" => item.role == "select",
+                "textarea" => item.role == "textbox",
+                "button" | "submit" | "reset" => {
+                    matches!(item.role.as_str(), "button" | "input")
+                }
+                _ => item.role == "input",
+            };
+            if !role_ok {
+                return Err("browser-structure-control-role-mismatch");
+            }
         }
         previous = item.index;
     }
@@ -873,6 +1000,7 @@ mod windows_owner {
         last_request_id: u64,
         last_page_generation: u64,
         last_observation_id: u64,
+        page_contract: BrowserPageContract,
         ready: bool,
         // Futures may be cancelled while a blocking pipe reader is still
         // executing. An interrupted readiness/request can never be retried on
@@ -1057,6 +1185,8 @@ mod windows_owner {
             let host = rollback.host.take().expect("retained host");
             let job = rollback.job.take().expect("retained job");
             let profile = rollback.profile.take().expect("retained profile");
+            let page_contract = BrowserPageContract::new(nonce.clone(), initial.as_str())
+                .map_err(|_| "browser-initial-page-contract-invalid")?;
             rollback.disarmed = true;
             Ok(Self {
                 nonce,
@@ -1077,6 +1207,7 @@ mod windows_owner {
                 last_request_id: 0,
                 last_page_generation: 0,
                 last_observation_id: 0,
+                page_contract,
                 ready: false,
                 poisoned: false,
                 job_drained: false,
@@ -1229,6 +1360,10 @@ mod windows_owner {
         /// intentionally absent until adequate production secret protection
         /// and exact live DOM element binding can be demonstrated.
         pub(crate) async fn observe_structure(&mut self) -> Result<NativeDomStructure, String> {
+            // A new native observation attempt invalidates every previous
+            // snapshot even if COM fails, renderer crashes, or the page
+            // changes midway through the request.
+            self.page_contract.revoke_snapshot();
             if !self.ready
                 || self.stopped
                 || self.poisoned
@@ -1254,6 +1389,66 @@ mod windows_owner {
                 flight.committed = true;
             }
             observed
+        }
+
+        /// First production snapshot backed by real COM observation and the
+        /// existing random opaque element-reference state machine. It carries
+        /// only closed roles/control-state booleans, with empty names/text and
+        /// no selector or href authority. Deliberately internal: live actions
+        /// are NOT enabled until the separate effect/approval path is proven.
+        pub(crate) async fn observe_closed_snapshot(&mut self) -> Result<PageSnapshot, String> {
+            let native = self.observe_structure().await?;
+            if native.terminal != "completed" || native.page_generation != self.last_page_generation
+            {
+                return Err("STALE".into());
+            }
+            // Source and page identity were already checked by the authenticated
+            // native owner. New page generations must be invalidated by a
+            // trusted navigation contract before any further refs are granted.
+            if self.page_contract.identity().page_generation != native.page_generation {
+                return Err("STALE".into());
+            }
+            let elements = structural_observed_elements(&native).map_err(str::to_owned)?;
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "browser-native-clock-unavailable")?
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64;
+            self.page_contract
+                .observe(
+                    native.page_generation,
+                    &self.initial_url,
+                    "",
+                    "",
+                    elements,
+                    timestamp,
+                )
+                .map_err(str::to_owned)?;
+            // The omitted-field/truncation state is held authoritatively by
+            // the same page contract as its opaque reference mapping.
+            Ok(self
+                .page_contract
+                .mark_snapshot_truncated(native.truncated)
+                .map_err(str::to_owned)?
+                .clone())
+        }
+
+        #[cfg(test)]
+        pub(crate) fn verify_closed_reference_without_execution_for_test(
+            &self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<(), String> {
+            if self.stopped || self.poisoned || !self.ready {
+                return Err("STALE".into());
+            }
+            self.page_contract
+                .prepare_action(
+                    crate::modules::net::tf_browser_contract::BrowserActionKind::Inspect,
+                    target,
+                    None,
+                )
+                .map(|_| ())
+                .map_err(str::to_owned)
         }
 
         async fn observe_structure_inner(
@@ -1377,6 +1572,9 @@ mod windows_owner {
             validate_get(&req, &self.nonce, self.last_request_id)?;
             if req.page_generation < self.last_page_generation {
                 return Err("browser-broker-stale-page-generation".into());
+            }
+            if req.page_generation != self.last_page_generation {
+                self.page_contract.revoke_snapshot();
             }
             self.last_request_id = req.request_id;
             self.last_page_generation = req.page_generation;
@@ -1553,6 +1751,9 @@ mod windows_owner {
             if self.stopped {
                 return Ok(());
             }
+            // Revoke every snapshot/element capability before terminating the
+            // owned browser processes; late callbacks cannot resurrect them.
+            self.page_contract.close();
             if !self.job_drained {
                 if unsafe { TerminateJobObject(self.job.0, 1) } == 0 {
                     return Err(win_err("browser-terminate-job"));
@@ -1628,6 +1829,7 @@ impl BrowserRuntimeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::net::tf_browser_contract::{ActionTarget, BrowserActionKind};
     #[test]
     fn broker_allows_bounded_web_fonts_and_common_script_mime_without_untrusted_headers() {
         for mime in [
@@ -1755,6 +1957,109 @@ mod tests {
         impossible.elements[1].index = 2;
         impossible.elements[1].role = "unsafe-untrusted-role".into();
         assert!(validate_dom_structure(&impossible, &session, 4, 7, &source).is_err());
+    }
+    #[test]
+    fn native_control_states_are_closed_non_secret_and_never_an_action_grant() {
+        let session = "a".repeat(48);
+        let source = "b".repeat(64);
+        let raw = serde_json::json!({
+            "version":2,"kind":"dom-snapshot","session":session,
+            "observationId":5,"pageGeneration":3,"sourceId":source,
+            "terminal":"completed","reason":"ok","truncated":false,
+            "visited":3,"elements":[
+                {"index":1,"role":"form","depth":0,"headingLevel":null,
+                 "visible":true,"enabled":true,"checked":null,"selected":null,
+                 "expanded":null,"controlType":null},
+                {"index":2,"role":"checkbox","depth":1,"headingLevel":null,
+                 "visible":true,"enabled":true,"checked":false,"selected":null,
+                 "expanded":null,"controlType":"checkbox"},
+                {"index":3,"role":"select","depth":1,"headingLevel":null,
+                 "visible":true,"enabled":false,"checked":null,"selected":null,
+                 "expanded":null,"controlType":"select"}
+            ]
+        });
+        let parsed: NativeDomStructure = serde_json::from_value(raw.clone()).unwrap();
+        assert!(validate_dom_structure(&parsed, &session, 5, 3, &source).is_ok());
+        let mut invalid = parsed.clone();
+        invalid.elements[1].control_type = Some("password".into());
+        assert!(validate_dom_structure(&invalid, &session, 5, 3, &source).is_err());
+        invalid.elements[1].control_type = Some("checkbox".into());
+        invalid.elements[1].role = "input".into();
+        assert!(validate_dom_structure(&invalid, &session, 5, 3, &source).is_err());
+        invalid.elements[1].role = "checkbox".into();
+        invalid.elements[2].checked = Some(true);
+        assert!(validate_dom_structure(&invalid, &session, 5, 3, &source).is_err());
+        for key in [
+            "name",
+            "visibleText",
+            "value",
+            "href",
+            "secret",
+            "ariaLabel",
+        ] {
+            let mut leaked = raw.clone();
+            leaked["elements"][1][key] = serde_json::json!("unrecognized-opaque-secret");
+            assert!(
+                serde_json::from_value::<NativeDomStructure>(leaked).is_err(),
+                "{key} should not be representable in the production wire"
+            );
+        }
+    }
+    #[test]
+    fn native_closed_controls_map_into_existing_random_stale_bound_page_contract() {
+        let nonce = "c".repeat(48);
+        let dom: NativeDomStructure = serde_json::from_value(serde_json::json!({
+            "version":2,"kind":"dom-snapshot","session":nonce,
+            "observationId":1,"pageGeneration":1,"sourceId":"d".repeat(64),
+            "terminal":"completed","reason":"ok","truncated":true,
+            "visited":5,"omittedFields":2,
+            "elements":[
+                {"index":1,"role":"input","depth":1,"headingLevel":null,
+                 "visible":true,"enabled":true,"checked":null,"selected":null,
+                 "expanded":null,"controlType":"text"},
+                {"index":3,"role":"checkbox","depth":1,"headingLevel":null,
+                 "visible":true,"enabled":true,"checked":true,"selected":null,
+                 "expanded":null,"controlType":"checkbox"},
+                {"index":5,"role":"option","depth":2,"headingLevel":null,
+                 "visible":true,"enabled":true,"checked":null,"selected":true,
+                 "expanded":null,"controlType":null}
+            ]
+        }))
+        .unwrap();
+        assert!(validate_dom_structure(&dom, &nonce, 1, 1, &"d".repeat(64)).is_ok());
+        let elements = structural_observed_elements(&dom).unwrap();
+        assert_eq!(elements.len(), 3);
+        assert_eq!(elements[0].role, SemanticRole::Textbox);
+        assert_eq!(elements[0].field_type.as_deref(), Some("text"));
+        assert_eq!(elements[1].role, SemanticRole::Checkbox);
+        assert_eq!(elements[1].state.checked, Some(true));
+        assert_eq!(elements[2].role, SemanticRole::Option);
+        assert_eq!(elements[2].state.selected, Some(true));
+        assert!(elements.iter().all(|e| e.accessible_name.is_empty()
+            && e.href.is_none()
+            && e.form_target.is_none()
+            && e.has_script_handler));
+        let mut page = BrowserPageContract::new(nonce.clone(), "https://example.org/").unwrap();
+        page.observe(1, "https://example.org/", "", "", elements, 1)
+            .unwrap();
+        let first = page.mark_snapshot_truncated(dom.truncated).unwrap().clone();
+        assert!(first.truncated);
+        assert_eq!(first.elements.len(), 3);
+        assert!(first.elements.iter().all(|e| e.element_ref.len() == 48));
+        let target = ActionTarget {
+            browser_session_id: first.browser_session_id.clone(),
+            page_id: first.page_id.clone(),
+            page_generation: first.page_generation,
+            snapshot_id: first.snapshot_id.clone(),
+            element_ref: first.elements[0].element_ref.clone(),
+        };
+        page.observe(1, "https://example.org/", "", "", vec![], 2)
+            .unwrap();
+        assert_eq!(
+            page.prepare_action(BrowserActionKind::Type, target, Some("x"))
+                .unwrap_err(),
+            "STALE_ELEMENT"
+        );
     }
     #[test]
     fn bounded_frames_reject_zero_oversize_and_incomplete_input() {
@@ -2379,18 +2684,125 @@ mod tests {
             {
                 return Err("owned-https-rendered-dom-not-verified".into());
             }
+            let has = |role: &str, control: &str| {
+                dom.elements.iter().any(|item| {
+                    item.role == role && item.control_type.as_deref() == Some(control)
+                })
+            };
+            if dom.omitted_fields < 2
+                || !dom.truncated
+                || !has("input", "text")
+                || !has("textbox", "textarea")
+                || !has("select", "select")
+                || !dom.elements.iter().any(|item| {
+                    item.role == "checkbox"
+                        && item.control_type.as_deref() == Some("checkbox")
+                        && item.checked == Some(true)
+                })
+                || !dom.elements.iter().any(|item| {
+                    item.role == "option" && item.selected == Some(true)
+                })
+                || !dom.elements.iter().any(|item| {
+                    item.role == "button"
+                        && item.control_type.as_deref() == Some("button")
+                        && !item.enabled
+                })
+                || dom.elements.iter().any(|item| {
+                    matches!(item.control_type.as_deref(), Some("password" | "hidden" | "file"))
+                })
+            {
+                return Err("owned-https-closed-control-state-or-secret-omission-not-verified".into());
+            }
             eprintln!(
-                "PRODUCTION_OWNED_HTTPS_DOM=PASS visited={} elements={} generation={}",
+                "PRODUCTION_OWNED_HTTPS_DOM=PASS visited={} elements={} generation={} omitted_sensitive_fields={} controls=closed-states-only",
                 dom.visited,
                 dom.elements.len(),
-                dom.page_generation
+                dom.page_generation,
+                dom.omitted_fields,
             );
-            Ok::<_, String>(())
+            let first = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                browser.observe_closed_snapshot(),
+            )
+            .await
+            .map_err(|_| "owned-https-first-reference-snapshot-deadline".to_owned())??;
+            if first.page_generation != dom.page_generation
+                || first.browser_session_id != browser.nonce
+                || first.url != "https://127.0.0.1/"
+                || first.origin != "https://127.0.0.1"
+                || !first.truncated
+                || first.elements.len() != dom.elements.len()
+                || !first.title.is_empty()
+                || !first.visible_text.is_empty()
+                || first.elements.iter().any(|item| {
+                    item.element_ref.len() != 48
+                        || !item.element_ref.bytes().all(|b| b.is_ascii_hexdigit())
+                        || !item.accessible_name.is_empty()
+                        || item.href.is_some()
+                        || item.form_target.is_some()
+                        || item.form_method.is_some()
+                })
+            {
+                return Err("owned-https-opaque-reference-snapshot-bounds-or-privacy-invalid".into());
+            }
+            let first_ref = ActionTarget {
+                browser_session_id: first.browser_session_id.clone(),
+                page_id: first.page_id.clone(),
+                page_generation: first.page_generation,
+                snapshot_id: first.snapshot_id.clone(),
+                element_ref: first.elements[0].element_ref.clone(),
+            };
+            let second = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                browser.observe_closed_snapshot(),
+            )
+            .await
+            .map_err(|_| "owned-https-second-reference-snapshot-deadline".to_owned())??;
+            if first.snapshot_id == second.snapshot_id
+                || first.elements[0].element_ref == second.elements[0].element_ref
+                || browser
+                    .verify_closed_reference_without_execution_for_test(first_ref)
+                    .unwrap_err()
+                    != "STALE_ELEMENT"
+            {
+                return Err("owned-https-reobserved-old-reference-not-stale".into());
+            }
+            let fresh = second
+                .elements
+                .iter()
+                .find(|item| {
+                    item.state.visible == Some(true) && item.state.enabled == Some(true)
+                })
+                .ok_or("owned-https-current-visible-element-not-observed")?;
+            let fresh_ref = ActionTarget {
+                browser_session_id: second.browser_session_id.clone(),
+                page_id: second.page_id.clone(),
+                page_generation: second.page_generation,
+                snapshot_id: second.snapshot_id.clone(),
+                element_ref: fresh.element_ref.clone(),
+            };
+            browser
+                .verify_closed_reference_without_execution_for_test(fresh_ref.clone())
+                .map_err(|_| "owned-https-current-reference-not-recognized")?;
+            eprintln!(
+                "PRODUCTION_OWNED_HTTPS_SNAPSHOT_REF=PASS page_generation={} elements={} stale_previous=STALE_ELEMENT fresh_reference=accepted_without_execution private_values=withheld",
+                second.page_generation,
+                second.elements.len()
+            );
+            Ok::<_, String>(fresh_ref)
         }
         .await;
         let cleanup = browser.shutdown();
         assert!(cleanup.is_ok(), "real Job/UDF/profile cleanup: {cleanup:?}");
-        outcome.expect("real production COM must receive all owned HTTPS resources and DOM");
+        let previously_live =
+            outcome.expect("real production COM must receive all owned HTTPS resources and DOM");
+        assert_eq!(
+            browser
+                .verify_closed_reference_without_execution_for_test(previously_live)
+                .unwrap_err(),
+            "STALE",
+            "closed owned session must reject every formerly live reference"
+        );
         eprintln!(
             "PRODUCTION_OWNED_HTTPS_READ_ONLY=PASS four native COM resources, TF3 TLS, structural DOM, owned Job/UDF; UNTRUSTED_JAVASCRIPT=DISABLED"
         );

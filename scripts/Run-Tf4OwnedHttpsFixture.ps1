@@ -102,6 +102,16 @@ $html = @'
     <h1>TF4 owned fixture</h1>
     <p id="font-glyphs">ABCD0123</p>
     <img id="fixture-image" alt="" src="/pixel.png" width="1" height="1">
+    <form id="safe-observation-form" action="/never-submit" method="post">
+      <label for="safe-text">Visible controlled field</label>
+      <input id="safe-text" type="text" value="synthetic-nonsecret-input-value">
+      <input id="safe-password" type="password" value="synthetic-secret-must-not-appear">
+      <input id="safe-hidden" type="hidden" value="synthetic-hidden-must-not-appear">
+      <input id="safe-check" type="checkbox" checked>
+      <select id="safe-select"><option selected>Controlled option</option></select>
+      <textarea id="safe-textarea">synthetic-nonsecret-field-content</textarea>
+      <button id="safe-button" type="button" disabled>Disabled action</button>
+    </form>
   </main>
 </body>
 </html>

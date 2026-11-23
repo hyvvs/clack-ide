@@ -95,11 +95,12 @@ mod host {
     const PRODUCTION_DOM_FRAME_LIMIT: usize = 16 * 1024;
     const PRODUCTION_DOM_MAX_REQUESTS: u64 = 16;
     const PRODUCTION_DOM_DEADLINE: Duration = Duration::from_secs(3);
-    // This script carries NO page-derived strings. Even an innocuous aria-label
-    // can contain an arbitrary password, session token or secret, so no label,
-    // title, text, attribute, href, form value or URL is read or serialized.
-    // Browser JS execution remains disabled for remote pages; this exact
-    // acceptance-compiled probe is invoked by native COM only on parent request.
+    // This script carries NO open page-derived strings. Even an innocuous
+    // accessible name can contain a password or session token; only fixed
+    // tag roles, normalized allowlisted control types and closed booleans are
+    // returned. No labels, text, arbitrary attributes, href, field values or
+    // URL are read or serialized. Browser page JavaScript stays disabled for
+    // remote pages; only this compiled-in COM observation can run.
     const PRODUCTION_DOM_JS: &str = r#"(() => {
       'use strict';
       const result = { version: 2, visited: 0, truncated: false,
@@ -110,23 +111,71 @@ mod host {
         H1: 'heading', H2: 'heading', H3: 'heading',
         H4: 'heading', H5: 'heading', H6: 'heading',
         A: 'link', BUTTON: 'button', IMG: 'image',
-        P: 'paragraph', LI: 'listitem', FORM: 'form'
+        P: 'paragraph', LI: 'listitem', FORM: 'form',
+        INPUT: 'input', SELECT: 'select', TEXTAREA: 'textbox',
+        OPTION: 'option', LABEL: 'label'
+      });
+      const inputTypes = Object.freeze({
+        text: true, email: true, tel: true, search: true,
+        number: true, checkbox: true, radio: true,
+        button: true, submit: true, reset: true,
+        date: true, time: true, month: true, week: true,
+        color: true, range: true
+      });
+      const buttonTypes = Object.freeze({
+        button: true, submit: true, reset: true
       });
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
       let node = walker.currentNode;
       while (node && result.visited < 256) {
         ++result.visited;
         const tag = node.tagName;
-        // Input controls and editable regions are intentionally invisible.
-        // Never inspect their type, names, labels, value or contents.
-        if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA'
-            || node.isContentEditable) {
+        // Discard entire editable subtrees and all non-allowlisted INPUT
+        // types (including sensitive/credential, hidden and file controls).
+        // .type is the browser-normalized control enum, never a raw attribute.
+        let controlType = null;
+        if (node.isContentEditable) {
           ++result.omittedFields;
           result.truncated = true;
           node = walker.nextSibling();
           continue;
         }
-        const role = roles[tag];
+        if (tag === 'INPUT') {
+          const kind = node.type;
+          if (!Object.prototype.hasOwnProperty.call(inputTypes, kind)) {
+            ++result.omittedFields;
+            result.truncated = true;
+            node = walker.nextSibling();
+            continue;
+          }
+          controlType = kind;
+        } else if (tag === 'SELECT') {
+          controlType = 'select';
+        } else if (tag === 'TEXTAREA') {
+          controlType = 'textarea';
+        } else if (tag === 'BUTTON') {
+          const kind = node.type;
+          if (!Object.prototype.hasOwnProperty.call(buttonTypes, kind)) {
+            ++result.omittedFields;
+            result.truncated = true;
+            node = walker.nextSibling();
+            continue;
+          }
+          controlType = kind;
+        } else if (tag === 'LABEL' && node.control
+                   && node.control.tagName === 'INPUT'
+                   && !Object.prototype.hasOwnProperty.call(
+                     inputTypes, node.control.type)) {
+          // An associated sensitive INPUT also hides its LABEL subtree.
+          ++result.omittedFields;
+          result.truncated = true;
+          node = walker.nextSibling();
+          continue;
+        }
+        const role = tag === 'INPUT'
+          ? (controlType === 'checkbox' ? 'checkbox' :
+             controlType === 'radio' ? 'radio' : 'input')
+          : roles[tag];
         if (role) {
           if (result.elements.length === 48) {
             result.truncated = true;
@@ -138,8 +187,29 @@ mod host {
             parent = parent.parentElement;
           }
           const level = role === 'heading' ? Number(tag[1]) : null;
+          // A conservative visibility check is bounded by the same 16-level
+          // structural depth. No CSS string escapes as output.
+          let visible = node.getClientRects().length > 0, ancestor = node;
+          for (let i = 0; visible && ancestor && i <= 16; ++i) {
+            const style = window.getComputedStyle(ancestor);
+            if (ancestor.hidden || style.display === 'none'
+                || style.visibility !== 'visible'
+                || !(Number(style.opacity) > 0)) visible = false;
+            ancestor = ancestor.parentElement;
+          }
+          if (ancestor) visible = false;
+          const enabled = !node.matches(':disabled');
+          const checked = tag === 'INPUT' &&
+            (controlType === 'checkbox' || controlType === 'radio')
+            ? !!node.checked : null;
+          const selected = tag === 'OPTION' ? !!node.selected : null;
+          // This DOM property can hold arbitrary text, so compare it only
+          // against the two literal booleans; never return the raw string.
+          const expanded = node.ariaExpanded === 'true' ? true :
+            node.ariaExpanded === 'false' ? false : null;
           result.elements.push({ index: result.visited, role, depth,
-            headingLevel: level });
+            headingLevel: level, visible, enabled, checked, selected,
+            expanded, controlType });
         }
         node = walker.nextNode();
       }
@@ -1294,8 +1364,9 @@ mod host {
 
     // The production observation wire is deliberately separate from the
     // older acceptance-only semantic fixture. Its only page-derived strings
-    // are *closed* tag-to-role enums compiled into PRODUCTION_DOM_JS.
-    // Nonce/source/page identity are supplied and checked by native code.
+    // are closed tag-to-role/control-type enums compiled into PRODUCTION_DOM_JS.
+    // State fields are closed booleans, not raw field values. Nonce/source/page
+    // identity are supplied and checked by native code.
     #[derive(Clone, Debug, Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct ParentDomRequest {
@@ -1314,6 +1385,21 @@ mod host {
         role: String,
         depth: u8,
         heading_level: Option<u8>,
+        // Defaults preserve pre-state fixture JSON; newly emitted production
+        // observations always carry the full six-field schema. None serializes
+        // as JSON null for an irrelevant or unrecognized closed state.
+        #[serde(default)]
+        visible: bool,
+        #[serde(default)]
+        enabled: bool,
+        #[serde(default)]
+        checked: Option<bool>,
+        #[serde(default)]
+        selected: Option<bool>,
+        #[serde(default)]
+        expanded: Option<bool>,
+        #[serde(default)]
+        control_type: Option<String>,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1339,6 +1425,9 @@ mod host {
         reason: &'static str,
         truncated: bool,
         visited: u32,
+        // A bounded count of wholly omitted sensitive/editable DOM nodes.
+        // This is metadata only; no field type, value or name is returned.
+        omitted_fields: u32,
         elements: &'a [ProductionDomElement],
     }
 
@@ -1397,6 +1486,7 @@ mod host {
             || result.visited > PRODUCTION_DOM_MAX_VISITS
             || result.elements.len() > PRODUCTION_DOM_MAX_ELEMENTS
             || result.omitted_fields > result.visited
+            || (result.omitted_fields != 0 && !result.truncated)
         {
             return Err("observation-result-bounds");
         }
@@ -1418,6 +1508,13 @@ mod host {
                     | "paragraph"
                     | "listitem"
                     | "form"
+                    | "input"
+                    | "checkbox"
+                    | "radio"
+                    | "select"
+                    | "textbox"
+                    | "option"
+                    | "label"
             ) {
                 return Err("observation-role-denied");
             }
@@ -1427,6 +1524,72 @@ mod host {
                 }
             } else if item.heading_level.is_some() {
                 return Err("observation-heading-invalid");
+            }
+            // A page cannot smuggle an arbitrary type, accessible name or
+            // extra state into the sealed parent response. This vocabulary
+            // matches the fixed native JS and parent-side closed enumeration.
+            let control = item.control_type.as_deref();
+            if control.is_some_and(|kind| {
+                !matches!(
+                    kind,
+                    "text"
+                        | "email"
+                        | "tel"
+                        | "search"
+                        | "number"
+                        | "checkbox"
+                        | "radio"
+                        | "button"
+                        | "submit"
+                        | "reset"
+                        | "date"
+                        | "time"
+                        | "month"
+                        | "week"
+                        | "color"
+                        | "range"
+                        | "select"
+                        | "textarea"
+                )
+            }) {
+                return Err("observation-control-type-denied");
+            }
+            let role_type_valid = match item.role.as_str() {
+                "checkbox" => control == Some("checkbox") && item.checked.is_some(),
+                "radio" => control == Some("radio") && item.checked.is_some(),
+                "input" => matches!(
+                    control,
+                    Some(
+                        "text"
+                            | "email"
+                            | "tel"
+                            | "search"
+                            | "number"
+                            | "button"
+                            | "submit"
+                            | "reset"
+                            | "date"
+                            | "time"
+                            | "month"
+                            | "week"
+                            | "color"
+                            | "range"
+                    )
+                ),
+                "select" => control == Some("select"),
+                "textbox" => control == Some("textarea"),
+                // Legacy acceptance BUTTON without controlType remains
+                // deserializable. Current production JS always emits it.
+                "button" => matches!(control, None | Some("button" | "submit" | "reset")),
+                _ => control.is_none(),
+            };
+            if !role_type_valid {
+                return Err("observation-control-role-invalid");
+            }
+            if (item.checked.is_some() && !matches!(item.role.as_str(), "checkbox" | "radio"))
+                || ((item.role == "option") != item.selected.is_some())
+            {
+                return Err("observation-control-state-invalid");
             }
         }
         Ok(result)
@@ -1517,6 +1680,7 @@ mod host {
             reason: reason.unwrap_or("ok"),
             truncated: result.is_some_and(|v| v.truncated),
             visited: result.map_or(0, |v| v.visited),
+            omitted_fields: result.map_or(0, |v| v.omitted_fields),
             elements: result.map_or(&[], |v| v.elements.as_slice()),
         }
     }
@@ -5552,6 +5716,36 @@ mod host {
             assert!(PRODUCTION_DOM_JS.contains("result.visited < 256"));
             assert!(PRODUCTION_DOM_JS.contains("result.elements.length === 48"));
             assert!(PRODUCTION_DOM_JS.contains("node.isContentEditable"));
+            assert!(PRODUCTION_DOM_JS.contains("node = walker.nextSibling()"));
+            assert!(PRODUCTION_DOM_JS.contains("node.control.type"));
+            assert!(PRODUCTION_DOM_JS.contains("node.getClientRects().length > 0"));
+            assert!(PRODUCTION_DOM_JS.contains("node.matches(':disabled')"));
+            assert!(PRODUCTION_DOM_JS.contains("!!node.checked"));
+            assert!(PRODUCTION_DOM_JS.contains("!!node.selected"));
+            assert!(PRODUCTION_DOM_JS.contains("node.ariaExpanded === 'true'"));
+            assert!(PRODUCTION_DOM_JS.contains("node.ariaExpanded === 'false'"));
+            assert!(PRODUCTION_DOM_JS.contains("controlType === 'checkbox' ? 'checkbox'"));
+            assert!(PRODUCTION_DOM_JS.contains("controlType === 'radio' ? 'radio'"));
+            assert!(PRODUCTION_DOM_JS.contains("TEXTAREA: 'textbox'"));
+            let allowlist = PRODUCTION_DOM_JS
+                .split("const inputTypes = Object.freeze({")
+                .nth(1)
+                .unwrap()
+                .split("});")
+                .next()
+                .unwrap();
+            for permitted in [
+                "text", "email", "tel", "search", "number", "checkbox", "radio", "button",
+                "submit", "reset", "date", "time", "month", "week", "color", "range",
+            ] {
+                assert!(allowlist.contains(&format!("{permitted}: true")));
+            }
+            for sensitive in ["password:", "hidden:", "file:", "url:", "datetime-local:"] {
+                assert!(
+                    !allowlist.contains(sensitive),
+                    "sensitive/nonclosed control {sensitive}"
+                );
+            }
             for forbidden in [
                 ".textContent",
                 ".innerHTML",
@@ -5597,6 +5791,228 @@ mod host {
             })
         }
 
+        fn production_dom_control_case() -> serde_json::Value {
+            // The two missing visit indexes stand for sensitive fixture-only
+            // INPUTs that are counted but NEVER represented in elements.
+            json!({
+                "version": 2, "visited": 12, "truncated": true,
+                "omittedFields": 2,
+                "elements": [
+                    {"index":1,"role":"form","depth":0,"headingLevel":null,
+                        "visible":true,"enabled":true,"checked":null,"selected":null,
+                        "expanded":null,"controlType":null},
+                    {"index":2,"role":"input","depth":1,"headingLevel":null,
+                        "visible":true,"enabled":true,"checked":null,"selected":null,
+                        "expanded":null,"controlType":"text"},
+                    {"index":5,"role":"checkbox","depth":1,"headingLevel":null,
+                        "visible":true,"enabled":true,"checked":true,"selected":null,
+                        "expanded":null,"controlType":"checkbox"},
+                    {"index":6,"role":"select","depth":1,"headingLevel":null,
+                        "visible":true,"enabled":true,"checked":null,"selected":null,
+                        "expanded":null,"controlType":"select"},
+                    {"index":7,"role":"option","depth":2,"headingLevel":null,
+                        "visible":false,"enabled":true,"checked":null,"selected":true,
+                        "expanded":null,"controlType":null},
+                    {"index":8,"role":"textbox","depth":1,"headingLevel":null,
+                        "visible":true,"enabled":true,"checked":null,"selected":null,
+                        "expanded":null,"controlType":"textarea"},
+                    {"index":9,"role":"button","depth":1,"headingLevel":null,
+                        "visible":true,"enabled":false,"checked":null,"selected":null,
+                        "expanded":false,"controlType":"submit"},
+                    {"index":11,"role":"label","depth":1,"headingLevel":null,
+                        "visible":true,"enabled":true,"checked":null,"selected":null,
+                        "expanded":null,"controlType":null},
+                    {"index":12,"role":"radio","depth":1,"headingLevel":null,
+                        "visible":true,"enabled":true,"checked":false,"selected":null,
+                        "expanded":true,"controlType":"radio"}
+                ]
+            })
+        }
+
+        #[test]
+        fn production_dom_control_states_are_closed_nullable_and_secrets_absent() {
+            let value = production_dom_control_case();
+            let verified = verify_production_dom(&value.to_string()).unwrap();
+            assert_eq!(verified.visited, 12);
+            assert_eq!(verified.omitted_fields, 2);
+            assert!(verified.truncated);
+            assert_eq!(verified.elements.len(), 9);
+            assert_eq!(verified.elements[2].role, "checkbox");
+            assert_eq!(verified.elements[2].checked, Some(true));
+            assert_eq!(verified.elements[4].role, "option");
+            assert_eq!(verified.elements[4].selected, Some(true));
+            assert!(!verified.elements[4].visible);
+            assert_eq!(verified.elements[6].role, "button");
+            assert!(!verified.elements[6].enabled);
+            assert_eq!(verified.elements[6].expanded, Some(false));
+            assert_eq!(verified.elements[8].checked, Some(false));
+            assert_eq!(verified.elements[8].expanded, Some(true));
+            let request = ParentDomRequest {
+                version: 2,
+                kind: "observe-dom".into(),
+                session: NONCE.into(),
+                observation_id: 1,
+                page_generation: 1,
+                source_id: production_dom_source_id("https://example.test/").unwrap(),
+            };
+            let wire = serde_json::to_string(&dom_reply(&request, Some(&verified), None))
+                .expect("closed control-state frame");
+            assert!(wire.len() < PRODUCTION_DOM_FRAME_LIMIT);
+            let serialized: serde_json::Value = serde_json::from_str(&wire).unwrap();
+            assert_eq!(serialized["omittedFields"], 2);
+            assert_eq!(serialized["elements"][2]["checked"], true);
+            assert_eq!(serialized["elements"][4]["selected"], true);
+            assert_eq!(serialized["elements"][6]["enabled"], false);
+            assert_eq!(serialized["elements"][6]["expanded"], false);
+            assert_eq!(
+                serialized["elements"][0]["checked"],
+                serde_json::Value::Null
+            );
+            for secret_field in [
+                "accessibleName",
+                "ariaLabel",
+                "innerHTML",
+                "textContent",
+                "rawHtml",
+                "fieldValue",
+                "password",
+                "hidden",
+                "file",
+                "href",
+                "labelText",
+                "sessionToken",
+                "secret",
+            ] {
+                assert!(
+                    !wire.contains(secret_field),
+                    "secret field leaked: {secret_field}"
+                );
+            }
+            // No representation exists at either omitted visit index.
+            assert!(!verified
+                .elements
+                .iter()
+                .any(|item| item.index == 3 || item.index == 4));
+        }
+
+        #[test]
+        fn production_dom_rejects_sensitive_types_forged_states_and_extra_page_fields() {
+            let base = production_dom_control_case();
+            let check = |value: &serde_json::Value| verify_production_dom(&value.to_string());
+            for kind in [
+                "password",
+                "hidden",
+                "file",
+                "url",
+                "datetime-local",
+                "custom-unknown",
+                "PASSWORD",
+                "",
+                "Text",
+            ] {
+                let mut forged = base.clone();
+                forged["elements"][1]["controlType"] = json!(kind);
+                assert_eq!(
+                    check(&forged).unwrap_err(),
+                    "observation-control-type-denied"
+                );
+            }
+            let mut forged = base.clone();
+            forged["elements"][2]["role"] = json!("input");
+            assert_eq!(
+                check(&forged).unwrap_err(),
+                "observation-control-role-invalid"
+            );
+            forged = base.clone();
+            forged["elements"][2]["controlType"] = json!("text");
+            assert_eq!(
+                check(&forged).unwrap_err(),
+                "observation-control-role-invalid"
+            );
+            forged = base.clone();
+            forged["elements"][2]["checked"] = serde_json::Value::Null;
+            assert_eq!(
+                check(&forged).unwrap_err(),
+                "observation-control-role-invalid"
+            );
+            forged = base.clone();
+            forged["elements"][1]["checked"] = json!(true);
+            assert_eq!(
+                check(&forged).unwrap_err(),
+                "observation-control-state-invalid"
+            );
+            forged = base.clone();
+            forged["elements"][3]["selected"] = json!(false);
+            assert_eq!(
+                check(&forged).unwrap_err(),
+                "observation-control-state-invalid"
+            );
+            forged = base.clone();
+            forged["elements"][4]["selected"] = serde_json::Value::Null;
+            assert_eq!(
+                check(&forged).unwrap_err(),
+                "observation-control-state-invalid"
+            );
+            forged = base.clone();
+            forged["elements"][7]["controlType"] = json!("email");
+            assert_eq!(
+                check(&forged).unwrap_err(),
+                "observation-control-role-invalid"
+            );
+            forged = base.clone();
+            forged["elements"][1]["visible"] = json!("true");
+            assert_eq!(check(&forged).unwrap_err(), "observation-result-invalid");
+            forged = base.clone();
+            forged["elements"][6]["enabled"] = serde_json::Value::Null;
+            assert_eq!(check(&forged).unwrap_err(), "observation-result-invalid");
+            forged = base.clone();
+            forged["elements"][2]["checked"] = json!("sensitive-checkbox-data");
+            assert_eq!(check(&forged).unwrap_err(), "observation-result-invalid");
+            forged = base.clone();
+            forged["elements"][4]["selected"] = json!("sensitive-option-value");
+            assert_eq!(check(&forged).unwrap_err(), "observation-result-invalid");
+            forged = base.clone();
+            forged["elements"][6]["expanded"] = json!("secret-aria-attribute");
+            assert_eq!(check(&forged).unwrap_err(), "observation-result-invalid");
+            forged = base.clone();
+            forged["elements"][1]["name"] = json!("secret-credential");
+            assert_eq!(check(&forged).unwrap_err(), "observation-result-invalid");
+            forged = base.clone();
+            forged["elements"][1]["value"] = json!("sensitive-field-value");
+            assert_eq!(check(&forged).unwrap_err(), "observation-result-invalid");
+            forged = base.clone();
+            forged["truncated"] = json!(false);
+            assert_eq!(check(&forged).unwrap_err(), "observation-result-bounds");
+        }
+
+        #[test]
+        fn production_dom_control_state_payload_stays_bounded_at_48_elements() {
+            let mut maxed = json!({
+                "version":2,"visited":256,"truncated":true,"omittedFields":0,
+                "elements":[]
+            });
+            for index in 1..=PRODUCTION_DOM_MAX_ELEMENTS {
+                maxed["elements"].as_array_mut().unwrap().push(json!({
+                    "index":index,"role":"checkbox","depth":16,
+                    "headingLevel":null,"visible":true,"enabled":false,
+                    "checked":index%2==0,"selected":null,"expanded":null,
+                    "controlType":"checkbox"
+                }));
+            }
+            let valid = verify_production_dom(&maxed.to_string()).unwrap();
+            assert_eq!(valid.elements.len(), PRODUCTION_DOM_MAX_ELEMENTS);
+            assert!(maxed.to_string().len() < PRODUCTION_DOM_FRAME_LIMIT);
+            maxed["elements"].as_array_mut().unwrap().push(json!({
+                "index":49,"role":"label","depth":0,"headingLevel":null,
+                "visible":true,"enabled":true,"checked":null,
+                "selected":null,"expanded":null,"controlType":null
+            }));
+            assert_eq!(
+                verify_production_dom(&maxed.to_string()).unwrap_err(),
+                "observation-result-bounds"
+            );
+        }
+
         #[test]
         fn production_dom_serializes_bounded_closed_roles_without_any_secret_names() {
             let value = production_dom_case();
@@ -5618,9 +6034,17 @@ mod host {
             assert_eq!(envelope["reason"], "ok");
             assert_eq!(envelope["terminal"], "completed");
             assert_eq!(envelope["truncated"], true);
+            assert_eq!(envelope["omittedFields"], 1);
             assert_eq!(envelope["elements"].as_array().unwrap().len(), 3);
+            for item in envelope["elements"].as_array().unwrap() {
+                assert_eq!(item["visible"], false); // legacy fixtures default closed false
+                assert_eq!(item["enabled"], false);
+                assert!(item["checked"].is_null());
+                assert!(item["selected"].is_null());
+                assert!(item["expanded"].is_null());
+                assert!(item["controlType"].is_null());
+            }
             for forbidden in [
-                "omittedFields",
                 "accessibleName",
                 "ariaLabel",
                 "rawHtml",
@@ -5636,6 +6060,7 @@ mod host {
             assert_eq!(denied["terminal"], "denied");
             assert_eq!(denied["reason"], "page-stale");
             assert_eq!(denied["visited"], 0);
+            assert_eq!(denied["omittedFields"], 0);
             assert!(denied["elements"].as_array().unwrap().is_empty());
         }
 
@@ -5652,6 +6077,12 @@ mod host {
             assert!(check(&forged).is_err()); // no source URL from page
             forged = base.clone();
             forged["elements"][0]["role"] = json!("input");
+            assert_eq!(
+                check(&forged).unwrap_err(),
+                "observation-control-role-invalid"
+            );
+            forged = base.clone();
+            forged["elements"][0]["role"] = json!("script");
             assert_eq!(check(&forged).unwrap_err(), "observation-role-denied");
             forged = base.clone();
             forged["elements"][1]["headingLevel"] = json!(8);

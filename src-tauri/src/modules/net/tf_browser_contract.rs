@@ -8,6 +8,7 @@
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 const MAX_ELEMENTS: usize = 64;
 const MAX_TEXT: usize = 32 * 1024;
@@ -15,6 +16,7 @@ const MAX_SNAPSHOT: usize = 64 * 1024;
 const MAX_NAME: usize = 200;
 const MAX_URL: usize = 2048;
 const MAX_ACTION_TEXT: usize = 1024;
+const MAX_SNAPSHOT_LIFETIME: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -146,6 +148,7 @@ struct HeldElement {
 pub(crate) struct BrowserPageContract {
     live: PageIdentity,
     snapshot: Option<PageSnapshot>,
+    snapshot_created: Option<Instant>,
     element_handles: HashMap<String, HeldElement>,
     closed: bool,
 }
@@ -290,6 +293,7 @@ impl BrowserPageContract {
                 origin,
             },
             snapshot: None,
+            snapshot_created: None,
             element_handles: HashMap::new(),
             closed: false,
         })
@@ -315,13 +319,22 @@ impl BrowserPageContract {
         self.live.url = url;
         self.live.origin = origin;
         self.snapshot = None;
+        self.snapshot_created = None;
         self.element_handles.clear();
         Ok(())
     }
 
     pub(crate) fn close(&mut self) {
         self.closed = true;
+        self.revoke_snapshot();
+    }
+
+    /// Any native observation attempt (including a failed or cancelled one)
+    /// revokes all element capabilities from earlier observations. Re-issuing
+    /// a snapshot never turns an old reference into a valid new one.
+    pub(crate) fn revoke_snapshot(&mut self) {
         self.snapshot = None;
+        self.snapshot_created = None;
         self.element_handles.clear();
     }
 
@@ -339,6 +352,10 @@ impl BrowserPageContract {
         if self.closed {
             return Err("STALE_SESSION");
         }
+        // Any new observation attempt invalidates all older action targets,
+        // including when native generation/source validation subsequently
+        // fails. A denied observation must never leave prior references live.
+        self.revoke_snapshot();
         let (url, origin) = safe_url(observed_url)?;
         if observed_generation != self.live.page_generation
             || url != self.live.url
@@ -427,7 +444,30 @@ impl BrowserPageContract {
         }
         self.element_handles = handles;
         self.snapshot = Some(snapshot);
+        // A monotonic native-owner lifetime: never trust the page's clock or
+        // its claimed observedAtMs to keep old actionable refs alive.
+        self.snapshot_created = Some(Instant::now());
         Ok(self.snapshot.as_ref().expect("just stored"))
+    }
+
+    /// Record that the authenticated native walker withheld sensitive fields
+    /// or reached its bounds. A partial snapshot remains partial in the
+    /// authoritative held state, not merely in a returned display copy.
+    pub(crate) fn mark_snapshot_truncated(
+        &mut self,
+        truncated: bool,
+    ) -> Result<&PageSnapshot, &'static str> {
+        let snapshot = self.snapshot.as_mut().ok_or("STALE_ELEMENT")?;
+        snapshot.truncated = truncated;
+        if serde_json::to_vec(snapshot)
+            .map_err(|_| "SNAPSHOT_SERIALIZATION_FAILED")?
+            .len()
+            > MAX_SNAPSHOT
+        {
+            self.revoke_snapshot();
+            return Err("SNAPSHOT_BOUNDS_INVALID");
+        }
+        Ok(self.snapshot.as_ref().expect("validated snapshot"))
     }
 
     pub(crate) fn prepare_action(
@@ -438,6 +478,12 @@ impl BrowserPageContract {
     ) -> Result<PreparedAction, &'static str> {
         if self.closed {
             return Err("STALE_SESSION");
+        }
+        if self
+            .snapshot_created
+            .is_none_or(|when| when.elapsed() > MAX_SNAPSHOT_LIFETIME)
+        {
+            return Err("STALE_ELEMENT");
         }
         let snapshot = self.snapshot.as_ref().ok_or("STALE_ELEMENT")?;
         if target.browser_session_id != self.live.browser_session_id
@@ -493,7 +539,11 @@ impl BrowserPageContract {
     /// Called after the native callback, before claiming an observed effect.
     /// A changed page makes completion UNKNOWN, never retryable automatically.
     pub(crate) fn verify_completion(&self, action: &PreparedAction) -> Result<(), &'static str> {
-        if self.closed {
+        if self.closed
+            || self
+                .snapshot_created
+                .is_none_or(|when| when.elapsed() > MAX_SNAPSHOT_LIFETIME)
+        {
             return Err("UNKNOWN_COMPLETION");
         }
         let page = &self.live;
@@ -605,6 +655,58 @@ mod tests {
         p.invalidate_page("https://example.org/next").unwrap();
         assert_eq!(
             p.prepare_action(BrowserActionKind::Click, original, None)
+                .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+    }
+    #[test]
+    fn monotonic_snapshot_expiry_revokes_action_refs_without_late_effect_claims() {
+        let mut p = session();
+        p.observe(
+            1,
+            "https://example.org/form",
+            "",
+            "",
+            vec![element(1, SemanticRole::Button, "", None, None, None)],
+            1,
+        )
+        .unwrap();
+        let target = target(&p);
+        let prepared = p
+            .prepare_action(BrowserActionKind::Click, target.clone(), None)
+            .unwrap();
+        p.snapshot_created =
+            Some(Instant::now() - MAX_SNAPSHOT_LIFETIME - Duration::from_millis(1));
+        assert_eq!(
+            p.prepare_action(BrowserActionKind::Click, target, None)
+                .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+        assert_eq!(
+            p.verify_completion(&prepared).unwrap_err(),
+            "UNKNOWN_COMPLETION"
+        );
+    }
+    #[test]
+    fn failed_new_observation_revokes_old_live_reference() {
+        let mut p = session();
+        p.observe(
+            1,
+            "https://example.org/form",
+            "",
+            "",
+            vec![element(1, SemanticRole::Button, "", None, None, None)],
+            1,
+        )
+        .unwrap();
+        let old_target = target(&p);
+        assert_eq!(
+            p.observe(2, "https://example.org/form", "", "", vec![], 2)
+                .unwrap_err(),
+            "STALE_PAGE"
+        );
+        assert_eq!(
+            p.prepare_action(BrowserActionKind::Click, old_target, None)
                 .unwrap_err(),
             "STALE_ELEMENT"
         );
