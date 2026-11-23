@@ -31,7 +31,15 @@ param(
     [ValidateRange(500, 10000)]
     [int] $ClientTimeoutMilliseconds = 3000,
     [switch] $CssRedirect,
-    [switch] $DiagnosticStages
+    [switch] $DiagnosticStages,
+    # Explicit physical pending-document cancellation probe ONLY. The default
+    # remains unchanged for all previously accepted owned-HTTPS fixtures.
+    [ValidateRange(0, 3500)]
+    [int] $PendingDocumentDelayMilliseconds = 0,
+    # Separate single-document read-only native COM element recheck probe.
+    # No JS, CSS, image, font or other remote resources. Original routes and
+    # accepted multi-resource fixtures remain the default and unchanged.
+    [switch] $MinimalRecheckDocument
 )
 
 Set-StrictMode -Version Latest
@@ -48,6 +56,8 @@ $port = 443
 if ($Action -eq 'Help') {
     Write-Output 'TF4 owned HTTPS fixture: foreground IPv4 127.0.0.1:443 only.'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve [-CssRedirect] [-MaxDurationSeconds 600] [-MaxRequests 64]'
+    Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -PendingDocumentDelayMilliseconds 2500 (one explicitly signaled pending HTTPS / GET for the new cancellation-only test)'
+    Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalRecheckDocument (one static no-subresource HTML page for the separate read-only COM recheck test)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Stop -RunId <32-hex-run-id>'
     Write-Output ('Second terminal: $env:CLACK_TF4_OWNED_HTTPS_CERT = "' + $publicPath + '"')
     Write-Output 'Run ONLY the selected Rust test concurrently. Script never launches it.'
@@ -164,6 +174,24 @@ $routes.Add('/page.css', @{ Type = 'text/css'; Body = $utf8.GetBytes($css) })
 $routes.Add('/page.js', @{ Type = 'application/javascript'; Body = $utf8.GetBytes($js) })
 $routes.Add('/pixel.png', @{ Type = 'image/png'; Body = $pixelBytes })
 $routes.Add('/font.woff2', @{ Type = 'font/woff2'; Body = $fontBytes })
+if ($MinimalRecheckDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0) {
+        throw '-MinimalRecheckDocument cannot combine with CSS redirect or pending-document delay.'
+    }
+    $minimalHtml = @'
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'">
+<link rel="icon" href="data:,">
+<title>TF4 exact native identity fixture</title></head>
+<body><main><h1>Controlled heading</h1><p>Read only native identity</p>
+<button type="button" disabled>Disabled control</button>
+</main></body></html>
+'@
+    $routes.Clear()
+    $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($minimalHtml) })
+}
 foreach ($route in $routes.Values) {
     if ($route.Body.Length -eq 0 -or $route.Body.Length -gt 65536) {
         throw 'Fixed fixture response violates the 64 KiB body bound.'
@@ -293,6 +321,8 @@ $served = 0
 $denied = 0
 $run = [System.Guid]::NewGuid().ToString('N')
 $stopPath = Join-Path $target ('stop-' + $run + '.request')
+$pendingDocumentSignal = Join-Path $target ('pending-document-' + $run + '.signal')
+$ownedPendingDocumentSignal = $false
 $cleanupFailures = [System.Collections.Generic.List[string]]::new()
 
 try {
@@ -387,8 +417,10 @@ try {
     Write-Output ('LIMITS maxSeconds=' + $MaxDurationSeconds +
         ' maxConnections=' + $MaxRequests +
         ' perClientMs=' + $ClientTimeoutMilliseconds +
-        ' maxHeaderBytes=8192 maxBodyBytes=65536')
+        ' maxHeaderBytes=8192 maxBodyBytes=65536' +
+        ' pendingDocumentDelayMs=' + $PendingDocumentDelayMilliseconds)
     Write-Output ('CSS=' + $(if ($CssRedirect) { 'one bounded same-origin 302 to /style.css' } else { 'direct /page.css' }))
+    Write-Output ('DOCUMENT_MODE=' + $(if ($MinimalRecheckDocument) { 'one_static_no_subresource_html' } else { 'original_multiresource' }))
 
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     while ($clock.Elapsed.TotalSeconds -lt $MaxDurationSeconds -and
@@ -424,6 +456,33 @@ try {
             $stage = 'headers'
             $path = Read-StrictGetPath -Stream $tls -TimeoutMilliseconds $ClientTimeoutMilliseconds
             $stage = 'response'
+            if ($PendingDocumentDelayMilliseconds -gt 0 -and $path -ceq '/') {
+                # The only signal source is an already TLS-authenticated,
+                # strictly parsed HTTPS GET /. Parent TF3 cannot initiate it
+                # before the production WebView2 child owns a live COM
+                # WebResourceRequested deferral and emits its native GET.
+                #
+                # Each accepted GET appends exactly one ASCII 'D' (bounded by
+                # MaxRequests). The cancellation test observes count 1 while
+                # the first response remains delayed; count >1 means replay.
+                # Signal is scoped by this run ID and removed in finally.
+                $signal = [System.IO.FileStream]::new(
+                    $pendingDocumentSignal,
+                    [System.IO.FileMode]::Append,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::Read
+                )
+                $ownedPendingDocumentSignal = $true
+                try {
+                    if ($signal.Length -ge $MaxRequests) {
+                        throw 'Pending document signal exceeded the accepted request bound.'
+                    }
+                    $signal.WriteByte(68)
+                    $signal.Flush($true)
+                }
+                finally { $signal.Dispose() }
+                Start-Sleep -Milliseconds $PendingDocumentDelayMilliseconds
+            }
             if ($CssRedirect -and $path -ceq '/page.css') {
                 # Optional exact same-origin one-hop CSS redirect. The
                 # redirected path is another fixed route with no second hop.
@@ -463,6 +522,10 @@ finally {
     if ([System.IO.File]::Exists($stopPath)) {
         try { [System.IO.File]::Delete($stopPath) }
         catch { $cleanupFailures.Add('owned stop marker removal') }
+    }
+    if ($ownedPendingDocumentSignal -and [System.IO.File]::Exists($pendingDocumentSignal)) {
+        try { [System.IO.File]::Delete($pendingDocumentSignal) }
+        catch { $cleanupFailures.Add('owned pending document signal removal') }
     }
     if ($ownedActive -and [System.IO.File]::Exists($activePath)) {
         try {

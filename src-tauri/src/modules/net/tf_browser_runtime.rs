@@ -175,6 +175,8 @@ fn structural_observed_elements(
             Ok(ObservedElement {
                 serial: u64::from(element.index),
                 role,
+                depth: element.depth,
+                heading_level: element.heading_level,
                 accessible_name: String::new(),
                 state: SemanticState {
                     enabled: Some(element.enabled),
@@ -205,6 +207,69 @@ struct ParentObserve<'a> {
     observation_id: u64,
     page_generation: u64,
     source_id: &'a str,
+}
+
+/// A test-only, sealed read-only identity recheck. The ordinal and index are
+/// derived from the authenticated previous DOM snapshot and PreparedAction,
+/// never taken from a caller/model selector or supplied ordinal.
+#[cfg(test)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentElementRecheck<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: &'a str,
+    index: u32,
+    ordinal: u32,
+}
+
+#[cfg(test)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildElementRecheck {
+    version: u8,
+    kind: String,
+    session: String,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: String,
+    index: u32,
+    ordinal: u32,
+    state: String,
+}
+
+#[cfg(test)]
+fn validate_element_recheck_reply(
+    frame: &[u8],
+    request: &ParentElementRecheck<'_>,
+) -> Result<bool, &'static str> {
+    if frame.is_empty() || frame.len() > 1024 {
+        return Err("browser-recheck-frame-bounds");
+    }
+    let reply: ChildElementRecheck =
+        serde_json::from_slice(frame).map_err(|_| "browser-recheck-schema-denied")?;
+    if reply.version != 2
+        || reply.kind != "element-recheck"
+        || reply.session != request.session
+        || reply.check_sequence != request.check_sequence
+        || reply.observation_id != request.observation_id
+        || reply.page_generation != request.page_generation
+        || reply.source_id != request.source_id
+        || reply.index != request.index
+        || reply.ordinal != request.ordinal
+    {
+        return Err("browser-recheck-native-identity-denied");
+    }
+    match reply.state.as_str() {
+        "ACCEPTED" => Ok(true),
+        "STALE" => Ok(false),
+        _ => Err("browser-recheck-state-denied"),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1007,6 +1072,12 @@ mod windows_owner {
         last_request_id: u64,
         last_page_generation: u64,
         last_observation_id: u64,
+        #[cfg(test)]
+        last_recheck_sequence: u64,
+        /// Native index order captured from the very same successful COM
+        /// structure observation that generated the held opaque handles.
+        #[cfg(test)]
+        last_recheck_observation: Option<(u64, u64, Vec<u32>)>,
         page_contract: BrowserPageContract,
         ready: bool,
         // Futures may be cancelled while a blocking pipe reader is still
@@ -1214,6 +1285,10 @@ mod windows_owner {
                 last_request_id: 0,
                 last_page_generation: 0,
                 last_observation_id: 0,
+                #[cfg(test)]
+                last_recheck_sequence: 0,
+                #[cfg(test)]
+                last_recheck_observation: None,
                 page_contract,
                 ready: false,
                 poisoned: false,
@@ -1404,6 +1479,10 @@ mod windows_owner {
         /// no selector or href authority. Deliberately internal: live actions
         /// are NOT enabled until the separate effect/approval path is proven.
         pub(crate) async fn observe_closed_snapshot(&mut self) -> Result<PageSnapshot, String> {
+            #[cfg(test)]
+            {
+                self.last_recheck_observation = None;
+            }
             let native = self.observe_structure().await?;
             if native.terminal != "completed" || native.page_generation != self.last_page_generation
             {
@@ -1433,11 +1512,24 @@ mod windows_owner {
                 .map_err(str::to_owned)?;
             // The omitted-field/truncation state is held authoritatively by
             // the same page contract as its opaque reference mapping.
-            Ok(self
+            let snapshot = self
                 .page_contract
                 .mark_snapshot_truncated(native.truncated)
                 .map_err(str::to_owned)?
-                .clone())
+                .clone();
+            #[cfg(test)]
+            {
+                self.last_recheck_observation = Some((
+                    native.observation_id,
+                    native.page_generation,
+                    native
+                        .elements
+                        .iter()
+                        .map(|element| element.index)
+                        .collect(),
+                ));
+            }
+            Ok(snapshot)
         }
 
         #[cfg(test)]
@@ -1456,6 +1548,108 @@ mod windows_owner {
                 )
                 .map(|_| ())
                 .map_err(str::to_owned)
+        }
+
+        /// Explicit test-only *read-only* native exact-element identity check.
+        /// This does not click, focus, type, execute arbitrary script, provide
+        /// action approval, or enable an IPC. The only ordinal sent to the
+        /// child comes from the order of our authenticated COM observation;
+        /// the index is the contract's held PreparedAction.observed_serial.
+        #[cfg(test)]
+        pub(crate) async fn recheck_closed_reference_for_test(
+            &mut self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<bool, String> {
+            use crate::modules::net::tf_browser_contract::BrowserActionKind;
+            if !self.ready || self.stopped || self.poisoned || self.last_request_id == 0 {
+                return Err("browser-recheck-session-unavailable".into());
+            }
+            let prepared = self
+                .page_contract
+                .prepare_action(BrowserActionKind::Inspect, target, None)
+                .map_err(str::to_owned)?;
+            let (observation_id, generation, indexes) = self
+                .last_recheck_observation
+                .clone()
+                .ok_or("browser-recheck-native-observation-missing")?;
+            if observation_id != self.last_observation_id
+                || generation != self.last_page_generation
+                || indexes.is_empty()
+                || indexes.len() > 48
+            {
+                return Err("browser-recheck-native-observation-stale".into());
+            }
+            let index = u32::try_from(prepared.observed_serial)
+                .map_err(|_| "browser-recheck-native-index-bounds")?;
+            let ordinal = indexes
+                .iter()
+                .position(|observed| *observed == index)
+                .ok_or("browser-recheck-native-element-not-found")?;
+            if index == 0 || index > 256 || ordinal >= 48 {
+                return Err("browser-recheck-native-index-bounds".into());
+            }
+            let sequence = self
+                .last_recheck_sequence
+                .checked_add(1)
+                .filter(|value| *value <= 256)
+                .ok_or("browser-recheck-budget-exhausted")?;
+            // Consume sequence before dispatch. If the pipe/COM operation
+            // fails, the session is poisoned and original Job terminated.
+            self.last_recheck_sequence = sequence;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
+            if self
+                .browser
+                .as_ref()
+                .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+                || self
+                    .renderer
+                    .as_ref()
+                    .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+            {
+                return Err("browser-recheck-process-unattested".into());
+            }
+            let source = format!("{:x}", Sha256::digest(self.initial_url.as_bytes()));
+            let session = self.nonce.clone();
+            let request = ParentElementRecheck {
+                version: 2,
+                kind: "recheck-element",
+                session: &session,
+                check_sequence: sequence,
+                observation_id,
+                page_generation: generation,
+                source_id: &source,
+                index,
+                ordinal: ordinal as u32,
+            };
+            let frame =
+                serde_json::to_vec(&request).map_err(|_| "browser-recheck-serialization-failed")?;
+            if frame.is_empty() || frame.len() > 1024 {
+                return Err("browser-recheck-frame-bounds".into());
+            }
+            self.write_parent_frame(frame).await?;
+            let mut reader = self
+                .requests
+                .try_clone()
+                .map_err(|_| "browser-recheck-pipe-clone-failed")?;
+            let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                .await
+                .map_err(|_| "browser-recheck-read-worker-failed")??;
+            let accepted =
+                validate_element_recheck_reply(&bytes, &request).map_err(str::to_owned)?;
+            self.page_contract
+                .verify_completion(&prepared)
+                .map_err(str::to_owned)?;
+            if !accepted {
+                // Native element changed: revoke the stale snapshot/handles
+                // even though the same document generation might be live.
+                self.page_contract.revoke_snapshot();
+                self.last_recheck_observation = None;
+            }
+            self.poisoned = false;
+            flight.committed = true;
+            Ok(accepted)
         }
 
         async fn observe_structure_inner(
@@ -1805,6 +1999,93 @@ mod windows_owner {
             self.stopped = true;
             Ok(())
         }
+
+        /// Physical-test-only independent readback of the *same* owned
+        /// production Job, AppContainer profile and UDF after cancellation.
+        /// Do not infer zero residue merely from a successful shutdown call.
+        #[cfg(test)]
+        pub(crate) fn verify_cancelled_document_shutdown_for_test(
+            &self,
+            original_get_id: u64,
+        ) -> Result<(), String> {
+            if !self.ready
+                || !self.stopped
+                || !self.poisoned
+                || !self.job_drained
+                || !self.profile.deleted
+                || self.last_request_id != original_get_id
+                || self.last_page_generation == 0
+            {
+                return Err("pending-document-shutdown-state-not-attested".into());
+            }
+            if unsafe { WaitForSingleObject(self.host.0, 0) } != WAIT_OBJECT_0 {
+                return Err("pending-document-host-still-live".into());
+            }
+            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+            if unsafe {
+                QueryInformationJobObject(
+                    self.job.0,
+                    JobObjectBasicAccountingInformation,
+                    (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                    size_of_val(&accounting) as u32,
+                    null_mut(),
+                )
+            } == 0
+                || accounting.ActiveProcesses != 0
+            {
+                return Err("pending-document-job-active-process-residue".into());
+            }
+            for path in [&self.private_root, &self.effective_udf] {
+                match fs::symlink_metadata(path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => return Err("pending-document-udf-or-private-root-residue".into()),
+                }
+            }
+            Ok(())
+        }
+
+        /// The same independent kernel/profile/UDF readback for an orderly
+        /// read-only test session closed *after* native COM observations.
+        #[cfg(test)]
+        pub(crate) fn verify_clean_readonly_close_for_test(
+            &self,
+            expected_get_count: u64,
+        ) -> Result<(), String> {
+            if !self.ready
+                || !self.stopped
+                || self.poisoned
+                || !self.job_drained
+                || !self.profile.deleted
+                || self.last_request_id != expected_get_count
+                || self.last_page_generation == 0
+            {
+                return Err("read-only-recheck-closed-state-not-attested".into());
+            }
+            if unsafe { WaitForSingleObject(self.host.0, 0) } != WAIT_OBJECT_0 {
+                return Err("read-only-recheck-host-not-terminated".into());
+            }
+            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+            if unsafe {
+                QueryInformationJobObject(
+                    self.job.0,
+                    JobObjectBasicAccountingInformation,
+                    (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                    size_of_val(&accounting) as u32,
+                    null_mut(),
+                )
+            } == 0
+                || accounting.ActiveProcesses != 0
+            {
+                return Err("read-only-recheck-job-process-residue".into());
+            }
+            for path in [&self.private_root, &self.effective_udf] {
+                match fs::symlink_metadata(path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => return Err("read-only-recheck-udf-or-private-root-residue".into()),
+                }
+            }
+            Ok(())
+        }
     }
     impl Drop for BrowserRuntimeSession {
         fn drop(&mut self) {
@@ -1932,6 +2213,71 @@ mod tests {
             ..accepted
         };
         assert!(validate_com_ack(&wrong_session, &nonce, 2, 5, 403).is_err());
+    }
+
+    #[test]
+    fn native_element_recheck_accepts_only_exact_closed_readonly_identity() {
+        let session = "a".repeat(48);
+        let source = "c".repeat(64);
+        let request = ParentElementRecheck {
+            version: 2,
+            kind: "recheck-element",
+            session: &session,
+            check_sequence: 1,
+            observation_id: 2,
+            page_generation: 3,
+            source_id: &source,
+            index: 7,
+            ordinal: 4,
+        };
+        let good = serde_json::json!({
+            "version": 2, "kind": "element-recheck",
+            "session": session, "checkSequence": 1,
+            "observationId": 2, "pageGeneration": 3,
+            "sourceId": source, "index": 7, "ordinal": 4,
+            "state": "ACCEPTED",
+        });
+        assert_eq!(
+            validate_element_recheck_reply(&good.to_string().into_bytes(), &request),
+            Ok(true)
+        );
+        let mut altered = good.clone();
+        altered["state"] = serde_json::json!("STALE");
+        assert_eq!(
+            validate_element_recheck_reply(&altered.to_string().into_bytes(), &request),
+            Ok(false),
+            "stale is only a negative observation, never an action grant"
+        );
+        for (field, forged) in [
+            ("checkSequence", serde_json::json!(2)),
+            ("observationId", serde_json::json!(1)),
+            ("pageGeneration", serde_json::json!(4)),
+            ("sourceId", serde_json::json!("d".repeat(64))),
+            ("session", serde_json::json!("b".repeat(48))),
+            ("index", serde_json::json!(8)),
+            ("ordinal", serde_json::json!(3)),
+            ("state", serde_json::json!("CLICKED")),
+            ("kind", serde_json::json!("com-completed")),
+            ("version", serde_json::json!(1)),
+        ] {
+            let mut forged_reply = good.clone();
+            forged_reply[field] = forged;
+            assert!(
+                validate_element_recheck_reply(&forged_reply.to_string().into_bytes(), &request)
+                    .is_err(),
+                "field {field} is a bound native identity, not caller authority"
+            );
+        }
+        let mut leaked = good.clone();
+        leaked["value"] = serde_json::json!("synthetic-hidden-page-secret");
+        assert!(
+            validate_element_recheck_reply(&leaked.to_string().into_bytes(), &request).is_err(),
+            "the sealed native reply cannot contain page text or values"
+        );
+        assert!(
+            validate_element_recheck_reply(&vec![b'a'; 1025], &request).is_err(),
+            "bounded recheck reply"
+        );
     }
     #[test]
     fn native_structure_never_accepts_page_derived_text_or_stale_identity() {
@@ -2751,6 +3097,13 @@ mod tests {
                 || first.origin != "https://127.0.0.1"
                 || !first.truncated
                 || first.elements.len() != dom.elements.len()
+                || !first.elements.iter().zip(&dom.elements).all(|(snapshot, native)| {
+                    snapshot.depth == native.depth
+                        && snapshot.heading_level == native.heading_level
+                })
+                || !first.elements.iter().any(|item| {
+                    item.role == SemanticRole::Heading && item.heading_level == Some(1)
+                })
                 || !first.title.is_empty()
                 || !first.visible_text.is_empty()
                 || first.elements.iter().any(|item| {
@@ -2803,8 +3156,21 @@ mod tests {
             browser
                 .verify_closed_reference_without_execution_for_test(fresh_ref.clone())
                 .map_err(|_| "owned-https-current-reference-not-recognized")?;
+            // Optional next-stage physical assertion: only the native-held
+            // PreparedAction.observed_serial and authenticated COM order may
+            // select a read-only exact element recheck. No live action is
+            // dispatched and no model ordinal/selector is accepted.
+            let rechecked = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                browser.recheck_closed_reference_for_test(fresh_ref.clone()),
+            )
+            .await
+            .map_err(|_| "owned-https-exact-recheck-deadline".to_owned())??;
+            if !rechecked {
+                return Err("owned-https-native-exact-element-recheck-stale".into());
+            }
             eprintln!(
-                "PRODUCTION_OWNED_HTTPS_SNAPSHOT_REF=PASS page_generation={} elements={} stale_previous=STALE_ELEMENT fresh_reference=accepted_without_execution private_values=withheld",
+                "PRODUCTION_OWNED_HTTPS_SNAPSHOT_REF=PASS page_generation={} elements={} stale_previous=STALE_ELEMENT fresh_reference=accepted_without_execution native_exact_recheck=ACCEPTED private_values=withheld",
                 second.page_generation,
                 second.elements.len()
             );
@@ -2824,6 +3190,390 @@ mod tests {
         );
         eprintln!(
             "PRODUCTION_OWNED_HTTPS_READ_ONLY=PASS four native COM resources, TF3 TLS, structural DOM, owned Job/UDF; UNTRUSTED_JAVASCRIPT=DISABLED"
+        );
+    }
+
+    /// ONE independent physical cancellation/close probe: the *production*
+    /// zero-network AppContainer/WebView2 COM host must originate a real
+    /// deferred document GET, the existing parent must reach native TF3 HTTPS
+    /// transport, and the separately owned TLS server must accept that exact
+    /// request but deliberately withhold the response. Dropping the still-
+    /// pending parent flight invokes its existing Job-killing cancellation
+    /// fence; shutdown then independently proves process count zero, removed
+    /// UDF and successful native AppContainer profile deletion. No synthetic
+    /// COM ACK, fixture-only child, second executor, or production exception.
+    ///
+    /// Explicitly run only this new ignored test while a distinct terminal
+    /// serves Run-Tf4OwnedHttpsFixture.ps1 -Action Serve
+    /// -PendingDocumentDelayMilliseconds 2500. Stop that fixture with its
+    /// printed -RunId even if the test fails; the server's finally cleans
+    /// CurrentUser certificate, CNG key, DER and run-scoped signal.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit production AppContainer/WebView2 pending COM document cancellation: requires unique delayed owned HTTPS fixture and RunId Stop"]
+    async fn physical_production_owned_https_pending_document_cancel_close_no_replay() {
+        use std::time::Duration;
+
+        assert_eq!(
+            std::env::var("CLACK_TF4_PENDING_DOCUMENT_CANCEL").as_deref(),
+            Ok("1"),
+            "explicit CLACK_TF4_PENDING_DOCUMENT_CANCEL=1 required"
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let expected_cert = evidence.join("server.cer");
+        let supplied_cert = std::env::var_os("CLACK_TF4_OWNED_HTTPS_CERT")
+            .map(PathBuf::from)
+            .expect("exact live owned fixture DER path required");
+        assert_eq!(
+            std::fs::canonicalize(&supplied_cert).expect("live fixture public cert"),
+            std::fs::canonicalize(&expected_cert).expect("owned server.cer present"),
+            "never accept an arbitrary certificate or unrelated TLS fixture"
+        );
+        let run_id = std::fs::read_to_string(evidence.join("active.run"))
+            .expect("active owned fixture RunId")
+            .trim()
+            .to_owned();
+        assert!(
+            run_id.len() == 32
+                && run_id.bytes().all(|c| c.is_ascii_hexdigit())
+                && run_id == run_id.to_ascii_lowercase(),
+            "invalid scoped active RunId"
+        );
+        let signal = evidence.join(format!("pending-document-{run_id}.signal"));
+        assert!(
+            !signal.exists(),
+            "pending signal pre-existed; use a fresh RunId and dedicated fixture"
+        );
+        let certificate = reqwest::Certificate::from_der(
+            &std::fs::read(&expected_cert).expect("owned public DER readable"),
+        )
+        .expect("owned public DER decodes");
+
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact feature-enabled production host required");
+        let host_sha256 = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read production host"))
+        );
+        // Dedicated self-cleaning parent; no reuse of the accepted 8+9
+        // multi-resource test's browser profile or temporary directory.
+        let parent = tempfile::Builder::new()
+            .prefix("tf4-owned-pending-close-")
+            .tempdir_in(manifest.join("target"))
+            .expect("unique owned temporary browser parent");
+        let workspace = manifest.parent().expect("project workspace");
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(workspace).expect("approve workspace");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-owned-pending-cancel".into(),
+                session_id: format!("tf4-pending-close-{}", &run_id[..12]),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                private_parent: parent.path().to_path_buf(),
+                host_executable: host,
+                host_sha256,
+            },
+            &registry,
+        )
+        .expect("real production zero-network-capability AppContainer launched");
+        let ready = tokio::time::timeout(Duration::from_secs(18), browser.verify_ready())
+            .await
+            .expect("real COM / process readiness deadline");
+        if let Err(reason) = ready {
+            let cleanup = browser.shutdown();
+            panic!("real production host readiness: {reason}; cleanup: {cleanup:?}");
+        }
+
+        // Poll the *actual* production COM -> ChildGet -> TF3 HTTPS future.
+        // A fixture marker can only be written after an authenticated TLS
+        // request for / reaches the server, before the delayed HTTP body.
+        // The pending future MUST NOT finish while this marker first appears.
+        let mut flight =
+            Box::pin(browser.serve_one_owned_https_for_test(&registry, &web, &certificate));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+        loop {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "real COM pending-document/TF3 fixture signal not observed"
+            );
+            tokio::select! {
+                finished = &mut flight => {
+                    panic!("document COM/TF3 completed before the required delayed pending signal: {finished:?}");
+                }
+                _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+            }
+            match std::fs::read(&signal) {
+                Ok(bytes) => {
+                    assert_eq!(
+                        bytes.as_slice(),
+                        b"D",
+                        "exactly one physically accepted real pending document GET"
+                    );
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => panic!("pending document TLS signal unreadable: {e}"),
+            }
+        }
+        // Cancelling the still-pending parent future drops FlightFence:
+        // terminate the original constrained Job. Do NOT claim COM Complete;
+        // instead prove no success ACK, unsafe fallback or later reuse occurs.
+        drop(flight);
+        let closed = browser.shutdown();
+        assert!(
+            closed.is_ok(),
+            "owned Job/UDF/profile cancellation cleanup: {closed:?}"
+        );
+        browser
+            .verify_cancelled_document_shutdown_for_test(1)
+            .expect("same original Job active count zero, profile deleted, UDF gone");
+        assert!(
+            parent
+                .path()
+                .read_dir()
+                .expect("inspect test-only parent")
+                .next()
+                .is_none(),
+            "no child UDF/browser working-directory residue"
+        );
+        // The server's maximum authorized delay is 3.5 seconds. Observing
+        // after that bound proves the only accepted document GET was not
+        // replayed by stale callbacks, pipe workers or parent retries.
+        tokio::time::sleep(Duration::from_millis(4_100)).await;
+        assert_eq!(
+            std::fs::read(&signal).expect("live RunId signal before explicit Stop"),
+            b"D",
+            "late or duplicate document GET after native cancel/shutdown"
+        );
+        assert!(
+            browser
+                .serve_one_owned_https_for_test(&registry, &web, &certificate)
+                .await
+                .is_err(),
+            "closed browser session must reject late/replayed resource work"
+        );
+        browser
+            .verify_cancelled_document_shutdown_for_test(1)
+            .expect("zero process/profile/UDF residue still holds after late window");
+        eprintln!(
+            "PRODUCTION_OWNED_PENDING_HTTPS_CANCEL=PASS original AppContainer/WebView2 COM deferral pending, one delayed TF3 TLS GET, cancelled FlightFence, JobActive=0, UDF=absent, AppContainerProfile=deleted, late/duplicate GET=0, no COM Complete claim; FIXTURE_RUN_ID={run_id} stop via Run-Tf4OwnedHttpsFixture.ps1 -Action Stop -RunId {run_id}"
+        );
+    }
+
+    /// Separate opt-in physical read-only identity recheck: a deliberately
+    /// minimal one-document HTTPS fixture, NOT the previously accepted 8+9
+    /// multi-resource fixture. The original *production* zero-network host
+    /// issues exactly one WebView2 GetDeferral -> TF3 HTTPS GET -> COM ACK.
+    /// A held native COM snapshot is rechecked via authenticated v2 sealed
+    /// pipe without JS action, selectors, model ordinal or mutation.
+    ///
+    /// Start -MinimalRecheckDocument in a separate terminal, set the same
+    /// explicit host and public DER env vars, run only this ignored test,
+    /// and STOP the displayed fixture RunId, including on failure.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit separate single-document production WebView2 native exact-element recheck; RunId-scoped owned HTTPS minimal fixture required"]
+    async fn physical_production_owned_https_one_document_exact_element_recheck() {
+        use std::time::Duration;
+
+        assert_eq!(
+            std::env::var("CLACK_TF4_EXACT_ELEMENT_RECHECK").as_deref(),
+            Ok("1"),
+            "explicit CLACK_TF4_EXACT_ELEMENT_RECHECK=1 required"
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let expected_cert = evidence.join("server.cer");
+        let supplied_cert = std::env::var_os("CLACK_TF4_OWNED_HTTPS_CERT")
+            .map(PathBuf::from)
+            .expect("exact live owned fixture DER required");
+        assert_eq!(
+            std::fs::canonicalize(&supplied_cert).expect("live fixture public cert"),
+            std::fs::canonicalize(&expected_cert).expect("expected owned server.cer"),
+            "no arbitrary trust anchor"
+        );
+        let cert = reqwest::Certificate::from_der(
+            &std::fs::read(&expected_cert).expect("owned public DER bytes"),
+        )
+        .expect("valid native public DER");
+        let run_id = std::fs::read_to_string(evidence.join("active.run"))
+            .expect("active owned fixture RunId")
+            .trim()
+            .to_owned();
+        assert!(
+            run_id.len() == 32
+                && run_id == run_id.to_ascii_lowercase()
+                && run_id.bytes().all(|c| c.is_ascii_hexdigit()),
+            "invalid active fixture RunId"
+        );
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("feature-enabled production WebView2 host path required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact production host"))
+        );
+        let parent = tempfile::Builder::new()
+            .prefix("tf4-owned-exact-recheck-")
+            .tempdir_in(manifest.join("target"))
+            .expect("new dedicated owned browser parent");
+        let workspace = manifest.parent().expect("project root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize only test workspace");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-owned-exact-readonly".into(),
+                session_id: format!("tf4-exact-recheck-{}", &run_id[..12]),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                private_parent: parent.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("real production zero-network AppContainer/Job launch");
+        let outcome = async {
+            tokio::time::timeout(Duration::from_secs(18), browser.verify_ready())
+                .await
+                .map_err(|_| "exact-recheck-native-readiness-timeout".to_owned())??;
+            let resource = tokio::time::timeout(
+                Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "exact-recheck-single-document-timeout".to_owned())??;
+            let tf3 = resource
+                .tf3
+                .as_ref()
+                .ok_or("exact-recheck-missing-real-tf3-receipt")?;
+            if resource.request_id != 1
+                || resource.terminal != "completed"
+                || !resource.native_com_completed
+                || resource.bytes == 0
+                || tf3.terminal != "completed"
+                || tf3.reason_code != "ok"
+                || tf3.status_code != Some(200)
+                || tf3.tls_state != "https_transport_observed"
+                || tf3.requested_url.as_deref() != Some("https://127.0.0.1/")
+                || tf3.content_type.as_deref() != Some("text/html")
+                || tf3.dns_evidence.len() != 1
+                || tf3.dns_evidence[0].host != "127.0.0.1"
+                || tf3.dns_evidence[0].classification != "all-allowed"
+            {
+                return Err("exact-recheck-real-com-tf3-document-not-attested".into());
+            }
+            // Minimal HTML has NO CSS/JS/images/fonts/iframe; only the
+            // original single network document is needed for native DOM.
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let first =
+                tokio::time::timeout(Duration::from_secs(10), browser.observe_closed_snapshot())
+                    .await
+                    .map_err(|_| "exact-recheck-first-com-snapshot-timeout".to_owned())??;
+            let heading = first
+                .elements
+                .iter()
+                .find(|e| e.role == SemanticRole::Heading && e.heading_level == Some(1))
+                .ok_or("exact-recheck-real-heading-not-observed")?;
+            let first_ref = ActionTarget {
+                browser_session_id: first.browser_session_id.clone(),
+                page_id: first.page_id.clone(),
+                page_generation: first.page_generation,
+                snapshot_id: first.snapshot_id.clone(),
+                element_ref: heading.element_ref.clone(),
+            };
+            let accepted = tokio::time::timeout(
+                Duration::from_secs(10),
+                browser.recheck_closed_reference_for_test(first_ref.clone()),
+            )
+            .await
+            .map_err(|_| "exact-recheck-native-com-deadline".to_owned())??;
+            if !accepted {
+                return Err("exact-recheck-current-real-com-element-was-stale".into());
+            }
+            // A SECOND authenticated native observation invalidates the
+            // previous opaque snapshot. No model action or page mutation.
+            let second =
+                tokio::time::timeout(Duration::from_secs(10), browser.observe_closed_snapshot())
+                    .await
+                    .map_err(|_| "exact-recheck-reobservation-timeout".to_owned())??;
+            if first.snapshot_id == second.snapshot_id
+                || browser
+                    .recheck_closed_reference_for_test(first_ref.clone())
+                    .await
+                    .unwrap_err()
+                    != "STALE_ELEMENT"
+            {
+                return Err("exact-recheck-old-reference-not-stale-after-reobservation".into());
+            }
+            let current = second
+                .elements
+                .iter()
+                .find(|e| e.role == SemanticRole::Heading && e.heading_level == Some(1))
+                .ok_or("exact-recheck-second-real-heading-unavailable")?;
+            let current_ref = ActionTarget {
+                browser_session_id: second.browser_session_id.clone(),
+                page_id: second.page_id.clone(),
+                page_generation: second.page_generation,
+                snapshot_id: second.snapshot_id.clone(),
+                element_ref: current.element_ref.clone(),
+            };
+            if !tokio::time::timeout(
+                Duration::from_secs(10),
+                browser.recheck_closed_reference_for_test(current_ref.clone()),
+            )
+            .await
+            .map_err(|_| "exact-recheck-fresh-com-deadline".to_owned())??
+            {
+                return Err("exact-recheck-reobserved-current-element-stale".into());
+            }
+            Ok::<_, String>((first_ref, current_ref))
+        }
+        .await;
+        let closed = browser.shutdown();
+        assert!(
+            closed.is_ok(),
+            "production one-document recheck Job/UDF/profile cleanup: {closed:?}"
+        );
+        let (old_ref, current_ref) =
+            outcome.expect("real production read-only exact COM element recheck must pass");
+        browser
+            .verify_clean_readonly_close_for_test(1)
+            .expect("one GET; native Job0, host exit, removed UDF/profile");
+        assert!(
+            parent
+                .path()
+                .read_dir()
+                .expect("inspect owned parent residue")
+                .next()
+                .is_none(),
+            "no owned browser profile/UDF working directories"
+        );
+        for target in [old_ref, current_ref] {
+            assert_eq!(
+                browser
+                    .verify_closed_reference_without_execution_for_test(target.clone())
+                    .unwrap_err(),
+                "STALE",
+                "closed session has no future native element authority"
+            );
+            assert!(
+                browser
+                    .recheck_closed_reference_for_test(target)
+                    .await
+                    .is_err(),
+                "closed session cannot issue new COM observation/recheck"
+            );
+        }
+        eprintln!(
+            "PRODUCTION_OWNED_EXACT_ELEMENT_RECHECK=PASS original production AppContainer/WebView2 COM+TF3 TLS one document, exact PreparedAction serial/ordinal read-only native recheck ACCEPTED twice, stale prior snapshot after reobservation, close stale, JobActive=0, UDF=absent, profile=deleted, no click/selector/JS action; FIXTURE_RUN_ID={run_id} stop via Run-Tf4OwnedHttpsFixture.ps1 -Action Stop -RunId {run_id}"
         );
     }
 }

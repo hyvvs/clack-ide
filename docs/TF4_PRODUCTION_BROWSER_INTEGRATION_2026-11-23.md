@@ -404,3 +404,86 @@ reference of a disabled control, while click/typing still reject disabled
 or invisible controls. Allowlisted `textarea` is recognized as a text-entry
 field, but typing remains `UNKNOWN` and no native typing channel is enabled.
 These changes are contract safeguards, **not** physical action acceptance.
+
+The production owner now retains the native walker's bounded structural
+`depth` (0–16) and exact `headingLevel` (1–6 for headings only) in the
+existing opaque TF4 element snapshots. These are non-secret numeric
+metadata; no inferred parent reference, element selector or DOM text is
+created, because omitted/intervening DOM nodes make adjacency unreliable
+as a parent relationship. Invalid depths or role/heading combinations fail
+closed in the existing page contract. Focused contract and runtime unit
+tests PASS; the fresh production owned-HTTPS/COM replay also verified
+heading level 1 and exact depth/level correspondence with the native
+snapshot for every observed element.
+
+The action contract now reserves distinct `Check`, `Uncheck`, and `Select`
+intent classifications: check permits only checkbox/radio, uncheck only
+checkbox (not radio without another exact group choice), and select only
+combobox. All three remain `UNKNOWN` effect / central-approval-required.
+This is deliberately a classification and exact-role check only: no native
+gesture, submission or model action was enabled.
+
+### Continuation 4 — native-retained exact DOM nodes (read-only identity foundation)
+
+The production AppContainer/WebView2 host now derives its native-only
+identity capture from the **same** bounded fixed structural DOM walker,
+retaining exact DOM Node objects in a CDP Runtime object group on the
+WebView2 UI apartment. Neither the CDP object ID nor nodes, selectors,
+page strings, arbitrary scripts or credentials cross the sealed parent
+pipe. Its internal `NativeDomIdentity` registry binds the latest
+authenticated observation sequence and page generation to the retained
+node slots and revokes previous slots on reobservation. A fixed native
+read-only recheck function refuses queued DOM mutations and detached/
+foreign-document nodes, but this recheck has **not yet been dispatched
+by a real production action**. Native action authority remains disabled.
+
+Native host unit tests **39/39 PASS** after three new identity/parser/
+probe cases. A fresh real production AppContainer HTTPS rerun with the
+correct `-CssRedirect` controlled fixture also **PASS 1/1**, delivering
+HTML/CSS/PNG/synthetic WOFF2 via four independently completed TF3+COM
+responses; the exact same 15 visited/12 reported/2 omitted secret fields
+and random opaque snapshot stale checks still pass. These native checks
+prove the internal CDP bridge did not regress read-only observations,
+**not** that a same-index replacement is physically rejected by a live
+action. The first fixture attempt lacked `-CssRedirect` and failed its
+explicit CSS expectation before the DOM test; a fresh corrected run
+passed. Temporary certificate, active marker and listener were cleaned
+after the runs; no historical evidence was deleted.
+
+### Continuation 5 — exact sealed-pipe identity recheck and cancellation gate
+
+The existing native host now accepts only a new bounded, authenticated
+`recheck-element` control frame on the *same* already-owned parent pipe:
+session nonce, strictly increasing check sequence, last native observation,
+page generation, source digest, original observed visit index and its
+authoritative snapshot ordinal. The host resolves only its retained Node
+object; its fixed internal COM recheck rejects pending MutationObserver
+records, disconnected/foreign-document Node objects, stale navigation and
+unattested state. The reply exposes only a closed `ACCEPTED` or `STALE`
+state with echoed identity, never a node handle, selector or text. Invalid
+or replayed control frames terminate the channel. Native host unit tests
+**43/43 PASS**. The parent has a `#[cfg(test)]` method that derives
+index/ordinal from the *existing* prepared `Inspect` target and verified
+native observation; there is no production/model-facing action or IPC.
+The standalone exact-element COM recheck physical test is **PASS 1/1**
+on a fresh minimal one-document owned HTTPS fixture with real
+AppContainer/WebView2+TF3/COM: the exact retained node was ACCEPTED
+twice, the previous opaque reference was STALE after native reobservation,
+and both references were STALE after shutdown; Job/UDF/profile cleanup
+passed. The accepted historical fixture 8+9 was not rerun. This is only a
+point-in-time read, **not** permission to click: an effectful gesture must
+combine identity validation and one execution atomically on the same
+native UI apartment after central approval, to prevent a check/use race.
+
+An **independent** one-case production pending-document cancellation test
+physically **PASS 1/1** with the actual zero-network AppContainer/WebView2
+document deferral, controlled HTTPS TF3 transport and a delayed single GET.
+While the TLS server withheld the first document, the parent dropped its
+pending flight, terminated the existing Job and independently checked
+host exited, original Job active processes zero, AppContainer profile
+deleted and private UDF/root absent. After the fixture delay window its
+GET count remained exactly one and the closed session rejected replay.
+The test specifically does **not** claim `deferral.Complete()` on the
+cancelled/killed flight. Its own ephemeral certificate/active marker,
+signal and port-443 listener were cleaned on exact RunId Stop. This is
+one of the required independent lifecycle cases, **not** all eleven.
