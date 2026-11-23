@@ -274,6 +274,14 @@ mod host {
     // return so a rejected first check cannot become valid on a second check.
     const DOM_CAPTURE_READ_JS: &str = "function() { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return null; return { snapshot: this.result, nodeCount: this.nodes.length }; }";
     const DOM_NODE_RECHECK_JS: &str = "function(slot) { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return null; const node = this.nodes[slot]; return node && node.isConnected && node.ownerDocument === document ? node : null; }";
+    // Debug-build-only *fixed* physical acceptance probe for the specifically
+    // owned, one-document 127.0.0.1 HTTPS fixture. It never accepts code,
+    // selectors, tag names, values or a mutation target from a caller. This
+    // is NOT compiled into the optimized production host. It replaces only
+    // one exact retained H1 with a new H1 in the same parent/position, then
+    // latches the old observation stale before returning a closed boolean.
+    #[cfg(debug_assertions)]
+    const DOM_DEBUG_REPLACE_HEADING_JS: &str = "function(slot) { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return false; const node = this.nodes[slot]; if (!node || node.tagName !== 'H1' || !node.isConnected || node.ownerDocument !== document || !node.parentNode) return false; const successor = document.createElement('h1'); node.parentNode.replaceChild(successor, node); this.state.changed = true; return true; }";
     // Two fixture-only native scripts arm a REAL MutationObserver in the
     // about:blank successor and then read its actual queued mutation records
     // *after* attempting and denying the stale native generation-bound action.
@@ -1451,6 +1459,12 @@ mod host {
         source_id: String,
         index: u32,
         ordinal: u32,
+        // Absent in release builds, where even an authenticated frame with
+        // this property fails the strict unknown-field parser. The model and
+        // installed application have no interface capable of sending it.
+        #[cfg(debug_assertions)]
+        #[serde(default)]
+        debug_replace_heading: Option<bool>,
     }
 
     #[derive(Serialize)]
@@ -1548,6 +1562,8 @@ mod host {
         page_generation: u64,
         root_object_id: Option<String>,
         indices: Vec<u32>,
+        #[cfg(debug_assertions)]
+        debug_mutation_used: bool,
     }
 
     impl NativeDomIdentity {
@@ -1793,6 +1809,12 @@ mod host {
         {
             return Err("recheck-session-sequence-or-bounds-denied");
         }
+        #[cfg(debug_assertions)]
+        if request.debug_replace_heading.is_some()
+            && (request.debug_replace_heading != Some(true) || initial_url != "https://127.0.0.1/")
+        {
+            return Err("debug-dom-replacement-not-owned-fixture");
+        }
         let actual_source_id = production_dom_source_id(initial_url)?;
         let reference = if request.observation_id != latest_observation_id
             || request.page_generation != current_generation
@@ -1830,6 +1852,20 @@ mod host {
                 .pointer("/result/objectId")
                 .and_then(|v| v.as_str())
                 .is_some_and(valid_dom_object_id)
+    }
+
+    #[cfg(debug_assertions)]
+    fn parse_dom_debug_replacement_response(raw: &str) -> bool {
+        if raw.is_empty() || raw.len() > 2048 {
+            return false;
+        }
+        let Ok(response) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return false;
+        };
+        response.get("exceptionDetails").is_none()
+            && response.pointer("/result/type").and_then(|v| v.as_str()) == Some("boolean")
+            && response.pointer("/result/value").and_then(|v| v.as_bool()) == Some(true)
+            && response.pointer("/result/objectId").is_none()
     }
 
     fn verify_production_dom(raw: &str) -> Result<ProductionDomResult, &'static str> {
@@ -2712,7 +2748,12 @@ mod host {
         reference: NativeDomNodeRef,
         current_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
+        debug_replace_heading: bool,
     ) -> Result<bool, &'static str> {
+        #[cfg(not(debug_assertions))]
+        if debug_replace_heading {
+            return Err("debug-dom-replacement-unavailable");
+        }
         if stats.broken.load(Ordering::Acquire)
             || stats.pending.load(Ordering::Acquire) != 0
             || current_generation.load(Ordering::Acquire) != request_generation
@@ -2757,9 +2798,21 @@ mod host {
                             let callback_generation = current_generation.clone();
                             let callback_stats = stats.clone();
                             let callback_expected = expected.clone();
+                            let declaration = if debug_replace_heading {
+                                #[cfg(debug_assertions)]
+                                {
+                                    DOM_DEBUG_REPLACE_HEADING_JS
+                                }
+                                #[cfg(not(debug_assertions))]
+                                {
+                                    DOM_NODE_RECHECK_JS
+                                }
+                            } else {
+                                DOM_NODE_RECHECK_JS
+                            };
                             let parameters = json!({
                                 "objectId": reference.root_object_id,
-                                "functionDeclaration": DOM_NODE_RECHECK_JS,
+                                "functionDeclaration": declaration,
                                 "arguments": [{ "value": reference.slot }],
                                 "returnByValue": false,
                                 "silent": true,
@@ -2785,7 +2838,20 @@ mod host {
                                         {
                                             return Err("recheck-page-stale");
                                         }
-                                        Ok(parse_dom_node_recheck_response(&remote?))
+                                        let raw = remote?;
+                                        if debug_replace_heading {
+                                            #[cfg(debug_assertions)]
+                                            {
+                                                return Ok(parse_dom_debug_replacement_response(
+                                                    &raw,
+                                                ));
+                                            }
+                                            #[cfg(not(debug_assertions))]
+                                            {
+                                                return Err("debug-dom-replacement-unavailable");
+                                            }
+                                        }
+                                        Ok(parse_dom_node_recheck_response(&raw))
                                     })();
                                     let _ = sender.send(checked);
                                 }),
@@ -2809,7 +2875,7 @@ mod host {
         session: &str,
         last_observation_id: u64,
         last_check_sequence: &mut u64,
-        identities: &NativeDomIdentity,
+        identities: &mut NativeDomIdentity,
         page_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
         initial_url: &str,
@@ -2826,6 +2892,25 @@ mod host {
         // A valid request consumes the sequence even if the reference is stale
         // or COM fails. Duplicate/replayed checks cannot become fresh later.
         *last_check_sequence = request.check_sequence;
+        let debug_replace_heading = {
+            #[cfg(debug_assertions)]
+            {
+                request.debug_replace_heading == Some(true)
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                false
+            }
+        };
+        #[cfg(debug_assertions)]
+        if debug_replace_heading {
+            if identities.debug_mutation_used {
+                return Err("debug-dom-replacement-already-consumed");
+            }
+            // Consume before COM dispatch. An uncertain response can never
+            // authorize another replacement or an automatic retry.
+            identities.debug_mutation_used = true;
+        }
         let accepted = if let Some(reference) = reference {
             recheck_dom_on_ui(
                 app,
@@ -2834,6 +2919,7 @@ mod host {
                 reference,
                 page_generation.clone(),
                 stats.clone(),
+                debug_replace_heading,
             )
             .unwrap_or(false)
         } else {
@@ -2843,8 +2929,12 @@ mod host {
             && page_generation.load(Ordering::Acquire) == request.page_generation
             && !stats.broken.load(Ordering::Acquire)
             && stats.pending.load(Ordering::Acquire) == 0;
-        let reply = serde_json::to_vec(&dom_recheck_reply(&request, accepted))
-            .map_err(|_| "recheck-reply-invalid")?;
+        let mut closed = dom_recheck_reply(&request, accepted);
+        #[cfg(debug_assertions)]
+        if debug_replace_heading && accepted {
+            closed.state = "MUTATED";
+        }
+        let reply = serde_json::to_vec(&closed).map_err(|_| "recheck-reply-invalid")?;
         if reply.is_empty() || reply.len() > 1024 {
             return Err("recheck-reply-bounds");
         }
@@ -6611,6 +6701,78 @@ mod host {
                 &identity
             )
             .is_err());
+        }
+
+        #[cfg(debug_assertions)]
+        #[test]
+        fn debug_owned_heading_replacement_is_fixed_origin_bound_and_never_exposes_page_script() {
+            let (identity, mut request) = native_dom_recheck_case();
+            request["sourceId"] = json!(production_dom_source_id("https://127.0.0.1/").unwrap());
+            request["debugReplaceHeading"] = json!(true);
+            let parsed = validate_dom_recheck_request(
+                request.to_string().as_bytes(),
+                NONCE,
+                0,
+                1,
+                7,
+                "https://127.0.0.1/",
+                &identity,
+            )
+            .unwrap();
+            assert_eq!(parsed.0.debug_replace_heading, Some(true));
+            assert!(parsed.1.is_some());
+            assert!(
+                validate_dom_recheck_request(
+                    request.to_string().as_bytes(),
+                    NONCE,
+                    0,
+                    1,
+                    7,
+                    "https://example.test/",
+                    &identity,
+                )
+                .is_err(),
+                "debug replacement cannot target public hosts"
+            );
+            request["debugReplaceHeading"] = json!(false);
+            assert!(validate_dom_recheck_request(
+                request.to_string().as_bytes(),
+                NONCE,
+                0,
+                1,
+                7,
+                "https://127.0.0.1/",
+                &identity,
+            )
+            .is_err());
+
+            assert!(DOM_DEBUG_REPLACE_HEADING_JS.contains("node.tagName !== 'H1'"));
+            assert!(DOM_DEBUG_REPLACE_HEADING_JS.contains("document.createElement('h1')"));
+            assert!(DOM_DEBUG_REPLACE_HEADING_JS
+                .contains("node.parentNode.replaceChild(successor, node)"));
+            assert!(DOM_DEBUG_REPLACE_HEADING_JS.contains("this.state.changed = true"));
+            for forbidden in [
+                "querySelector(",
+                "getAttribute(",
+                ".value",
+                ".textContent",
+                "fetch(",
+                "WebSocket(",
+                "XMLHttpRequest(",
+                "localStorage",
+                ".outerHTML",
+            ] {
+                assert!(!DOM_DEBUG_REPLACE_HEADING_JS.contains(forbidden));
+            }
+            assert!(parse_dom_debug_replacement_response(
+                r#"{"result":{"type":"boolean","value":true}}"#
+            ));
+            assert!(!parse_dom_debug_replacement_response(
+                r#"{"result":{"type":"boolean","value":false}}"#
+            ));
+            assert!(!parse_dom_debug_replacement_response(
+                r#"{"result":{"type":"object","subtype":"node"}}"#
+            ));
         }
 
         #[test]

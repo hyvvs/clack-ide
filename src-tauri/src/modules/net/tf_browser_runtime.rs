@@ -225,6 +225,8 @@ struct ParentElementRecheck<'a> {
     source_id: &'a str,
     index: u32,
     ordinal: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    debug_replace_heading: Option<bool>,
 }
 
 #[cfg(test)]
@@ -266,7 +268,8 @@ fn validate_element_recheck_reply(
         return Err("browser-recheck-native-identity-denied");
     }
     match reply.state.as_str() {
-        "ACCEPTED" => Ok(true),
+        "ACCEPTED" if request.debug_replace_heading.is_none() => Ok(true),
+        "MUTATED" if request.debug_replace_heading == Some(true) => Ok(true),
         "STALE" => Ok(false),
         _ => Err("browser-recheck-state-denied"),
     }
@@ -1560,6 +1563,38 @@ mod windows_owner {
             &mut self,
             target: crate::modules::net::tf_browser_contract::ActionTarget,
         ) -> Result<bool, String> {
+            self.recheck_closed_reference_mode_for_test(target, false)
+                .await
+        }
+
+        /// Strict debug-host, owned 127.0.0.1 fixture only. Physically mutates
+        /// one retained H1 using a fixed host-authored COM function, never an
+        /// arbitrary script or model action. The NEXT ordinary exact recheck
+        /// must independently report STALE for the detached original node.
+        #[cfg(all(test, debug_assertions))]
+        pub(crate) async fn replace_owned_heading_for_test(
+            &mut self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<(), String> {
+            if self.initial_url != "https://127.0.0.1/" {
+                return Err("debug-dom-replacement-owned-origin-required".into());
+            }
+            if self
+                .recheck_closed_reference_mode_for_test(target, true)
+                .await?
+            {
+                Ok(())
+            } else {
+                Err("debug-dom-replacement-not-observed".into())
+            }
+        }
+
+        #[cfg(test)]
+        async fn recheck_closed_reference_mode_for_test(
+            &mut self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+            debug_replace_heading: bool,
+        ) -> Result<bool, String> {
             use crate::modules::net::tf_browser_contract::BrowserActionKind;
             if !self.ready || self.stopped || self.poisoned || self.last_request_id == 0 {
                 return Err("browser-recheck-session-unavailable".into());
@@ -1622,6 +1657,7 @@ mod windows_owner {
                 source_id: &source,
                 index,
                 ordinal: ordinal as u32,
+                debug_replace_heading: debug_replace_heading.then_some(true),
             };
             let frame =
                 serde_json::to_vec(&request).map_err(|_| "browser-recheck-serialization-failed")?;
@@ -2229,6 +2265,7 @@ mod tests {
             source_id: &source,
             index: 7,
             ordinal: 4,
+            debug_replace_heading: None,
         };
         let good = serde_json::json!({
             "version": 2, "kind": "element-recheck",
@@ -2277,6 +2314,23 @@ mod tests {
         assert!(
             validate_element_recheck_reply(&vec![b'a'; 1025], &request).is_err(),
             "bounded recheck reply"
+        );
+        let debug_request = ParentElementRecheck {
+            debug_replace_heading: Some(true),
+            ..request
+        };
+        let mut mutated = good;
+        mutated["state"] = serde_json::json!("MUTATED");
+        assert_eq!(
+            validate_element_recheck_reply(&mutated.to_string().into_bytes(), &debug_request),
+            Ok(true),
+            "only explicit test-owned replacement may acknowledge MUTATED"
+        );
+        mutated["state"] = serde_json::json!("ACCEPTED");
+        assert!(
+            validate_element_recheck_reply(&mutated.to_string().into_bytes(), &debug_request)
+                .is_err(),
+            "a replacement request cannot be disguised as a read-only recheck"
         );
     }
     #[test]
@@ -3476,6 +3530,12 @@ mod tests {
     async fn physical_production_owned_https_one_document_exact_element_recheck() {
         use std::time::Duration;
 
+        // A separate, deliberate debug-host acceptance variant of this
+        // one-document test. Absent by default; the fixed H1 replacement
+        // hook is excluded from optimized production host builds.
+        let physical_replacement =
+            std::env::var("CLACK_TF4_EXACT_DOM_MUTATION").as_deref() == Ok("1");
+
         assert_eq!(
             std::env::var("CLACK_TF4_EXACT_ELEMENT_RECHECK").as_deref(),
             Ok("1"),
@@ -3594,6 +3654,34 @@ mod tests {
             if !accepted {
                 return Err("exact-recheck-current-real-com-element-was-stale".into());
             }
+            if physical_replacement {
+                #[cfg(not(debug_assertions))]
+                return Err("exact-recheck-debug-replacement-unavailable-in-release".into());
+                #[cfg(debug_assertions)]
+                {
+                // This dispatches ONLY the debug-host's fixed, one-shot,
+                // exact-loopback retained-H1 replacement. No arbitrary page
+                // script, selector, tag, value or model command is accepted.
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    browser.replace_owned_heading_for_test(first_ref.clone()),
+                )
+                .await
+                .map_err(|_| "exact-recheck-debug-replacement-deadline".to_owned())??;
+                let still_original = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    browser.recheck_closed_reference_for_test(first_ref.clone()),
+                )
+                .await
+                .map_err(|_| "exact-recheck-post-mutation-com-deadline".to_owned())??;
+                if still_original {
+                    return Err("exact-recheck-replaced-node-resolved-successor".into());
+                }
+                eprintln!(
+                    "PRODUCTION_NATIVE_SAME_INDEX_REPLACEMENT=PASS original heading native COM retained node replaced by same H1 tag at same parent position, original exact node STALE, no selector fallback or untrusted page JS"
+                );
+                }
+            }
             // A SECOND authenticated native observation invalidates the
             // previous opaque snapshot. No model action or page mutation.
             let second =
@@ -3671,5 +3759,8 @@ mod tests {
         eprintln!(
             "PRODUCTION_OWNED_EXACT_ELEMENT_RECHECK=PASS original production AppContainer/WebView2 COM+TF3 TLS one document, exact PreparedAction serial/ordinal read-only native recheck ACCEPTED twice, stale prior snapshot after reobservation, close stale, JobActive=0, UDF=absent, profile=deleted, no click/selector/JS action; FIXTURE_RUN_ID={run_id} stop via Run-Tf4OwnedHttpsFixture.ps1 -Action Stop -RunId {run_id}"
         );
+        if physical_replacement {
+            eprintln!("PRODUCTION_OWNED_EXACT_DOM_MUTATION=PASS native one-shot debug-controlled same-index replacement, old exact recheck STALE, fresh authenticated snapshot ACCEPTED, clean Job/UDF/profile; RELEASE_HOOK=ABSENT");
+        }
     }
 }

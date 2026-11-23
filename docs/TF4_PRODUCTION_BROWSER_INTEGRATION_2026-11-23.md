@@ -504,3 +504,33 @@ TF3 resource denied, real native COM denial completed and original owned
 Job/UDF cleanup passed. This proves **only local IPv6 loopback**; it does
 not establish IPv6 external interfaces, dual-stack DNS fallback or other
 WebView2 APIs (WebSocket, Fetch/XHR, Worker, Beacon, etc.).
+
+### Continuation 6 — physical same-index DOM node replacement acceptance
+
+An additional deliberate opt-in `CLACK_TF4_EXACT_DOM_MUTATION=1` variant of
+the separately owned **one-document** production HTTPS identity test
+physically **PASS 1/1**. The real zero-network AppContainer/WebView2 host
+rendered the minimal HTTPS document via existing TF3 TLS and native COM,
+observed an exact H1 in its bounded structural snapshot and rechecked its
+retained Node as `ACCEPTED`. An explicitly debug-build-only, authenticated
+one-shot fixed COM function then replaced that specific H1 with a *new H1
+in the same parent position*, without reading names, values or arbitrary
+attributes, or enabling untrusted page scripts. The old retained Node
+rechecked `STALE`, never resolved the successor by the same index; fresh
+native COM observation generated a new opaque snapshot/reference and its
+exact node rechecked `ACCEPTED`. Close invalidated both references and
+confirmed Job active processes zero, removed UDF/profile and clean
+shutdown. Native host tests **44/44 PASS** after the new strict debug
+mutation/source/closed-response test. This is actual physical same-index
+replacement evidence, not an inferred snapshot generation change.
+
+The mutation hook is compiled only with `debug_assertions`, accepts only
+the already-authenticated parent v2 recheck frame and the exact
+`https://127.0.0.1/` origin, consumes its one-shot budget before the
+fixed COM attempt, and is **absent from optimized release compilation**.
+It accepts no scripts, selectors, arbitrary target tags, credentials or
+model/installed-UI calls. The replacement test used RunId
+`f9d71020f72e4f70aad6729c4d8f7dd3`; exact RunId Stop completed with
+one connection and zero denied, certificate/active marker absent and no
+443 listener. It does **not** prove atomic effectful action admission,
+central approval consumption, form submission or complete TF4 E2E.
