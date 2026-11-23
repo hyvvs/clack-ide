@@ -213,3 +213,116 @@ in `src/test/strongHostedNotesAgent.tsx` and Linux example
 prove every failure is baseline-related. No unrelated CI repair was attempted.
 New remote CI on the updated PR remains necessary. All final production
 interactive/E2E blockers and Draft/NO readiness boundary above still apply.
+
+## Continuation 2 — positive HTTPS qualification attempt and scoped bridge changes
+
+Starting source HEAD `0792c3ddbe46efa7c595b9a1f2bdbdb01949dd87`.
+The first explicitly opted-in real production AppContainer/WebView2 HTTPS
+document test used only the IANA documentation URL `https://example.com/`
+and the digest-matched production host. It physically reached the native
+WebResourceRequested/TF3/COM path, but the public HTTPS response did **not**
+complete. The test intentionally **FAILED** and reported:
+
+```text
+PRODUCTION_POSITIVE_HTTPS_RESOURCE terminal=denied reason=network-failed
+bytes=0 native_com=true tf3_terminal=denied tf3_reason=network-failed
+tls=unknown dns_hops=1
+```
+
+The owned Job/profile/UDF cleanup assertion passed before this failed
+document assertion. One parent-only diagnostic `curl.exe --noproxy '*'
+--connect-timeout 4 --max-time 8 -I https://example.com/` failed with
+`curl: (35) Recv failure: Connection was reset`. No proxy environment names
+were present. This supports a restriction or transport failure on **that**
+public endpoint from this Windows host; it does not prove all external HTTPS
+is unavailable, nor establish a production document-load PASS.
+
+Code now uses the existing TF3 public HTTPS executor with an additional
+trusted parent-approved origin restriction on **each** redirect hop before
+DNS resolution/connection, still retaining TF3 per-hop DNS/IP/SSRF/TLS,
+bounded bytes, cancellation and token receipts. The native host and parent
+MIME allowlists additionally agree on common WebP/AVIF, JavaScript and font
+types. No production AppContainer network capability, second HTTP executor,
+new trust store, or model-facing WebView2 operation was introduced.
+
+A separate **Rust-test-only** exact `https://127.0.0.1:443/` owned-certificate
+mode is being prepared for a controlled TLS/document/dependent-resource
+physical check while external HTTPS is blocked. It uses the original real
+production WebView2/AppContainer/COM transport and TF3 implementation, but
+the isolated owned-loopback policy and ephemeral public trust certificate
+are unavailable in the release binary or Tauri IPC. It must be labeled
+**production-host controlled HTTPS**, not public HTTPS certification.
+At this checkpoint that new controlled physical case is **NOT_PROVEN**.
+
+Focused tests after the origin and test-transport implementation: TF3
+**22/22 PASS**, production owner active non-physical **5/5 PASS** (six
+physical probes ignored by default); host **33/33 PASS** after updated
+resource MIME support. Scoped rustfmt and `git diff --check` PASS; feature
+enabled `cargo check` PASS before the last test-only restriction assertion.
+These do not count as a positive native production E2E. PR #46 remains
+Draft; the full semantic/action/form/credential/file/popup/race and security
+acceptance matrix is still incomplete.
+
+### Continuation 2 controlled production-host TLS physical chronology
+
+The first real owned-HTTPS run used the Windows production AppContainer and
+WebView2 host (no fixture host executable), an exact scoped
+`https://127.0.0.1:443/` TLS fixture with ephemeral public DER, and the
+same TF3 bounded binary GET executor through a **test-only** immutable
+loopback token. It physically completed 4/4 native COM/TF3 GETs: main HTML
+(551 bytes), CSS (317), PNG (68), and WOFF2 MIME resource (48). The original
+test mistakenly expected a fifth JavaScript GET and timed out. This original
+test run is **FAILED**, not a PASS. Source inspection proved the production
+host intentionally calls `SetIsScriptEnabled(false)` until action/effect
+policy is implemented; therefore untrusted scripts must **not** run. The
+missing fifth request is consistent with this deliberate restriction, not a
+reason to weaken the browser security settings. Test-only fake WOFF2 bytes
+prove transport/MIME, not actual font decode or visual rendering.
+
+The subsequent strictly owned TLS physical test used the same real
+production host, plus the optional one-hop same-origin CSS 302 from
+`/page.css` to `/style.css`. The correctly scoped read-only run **PASS 1/1**:
+
+```text
+id=1 HTML 551B tf3=completed tls=https_transport_observed COM=true dns_hops=1
+id=2 CSS  317B tf3=completed tls=https_transport_observed COM=true dns_hops=2
+id=3 PNG   68B tf3=completed tls=https_transport_observed COM=true dns_hops=1
+id=4 WOFF2 48B tf3=completed tls=https_transport_observed COM=true dns_hops=1
+PRODUCTION_OWNED_HTTPS_DOM=PASS visited=5 elements=4 generation=1
+PRODUCTION_OWNED_HTTPS_READ_ONLY=PASS
+UNTRUSTED_JAVASCRIPT=DISABLED
+```
+
+Each of the four responses was separately authenticated to the pipe/session,
+served through TF3 and acknowledged only after actual native COM deferral
+completion. The second CSS DNS hop demonstrates TF3 redirect reclassification
+within the approved HTTPS origin. The parent independently retained original
+host/browser/renderer identities in the owned zero-capability AppContainer
+and verified Job/process, effective UDF and profile cleanup. The TLS fixture
+stopped cleanly after 5 owned localhost connections (4 browser resource
+responses and the single CSS redirect hop), zero rejected connections; the
+run-scoped `server.cer`/`active.run` were deleted and port 443 was no longer
+listening. No global TLS trust, generic network permission, or system browser
+profile was created. The fixture server's explicit local TLS smoke checks
+had independently verified certificate IP SAN, non-exportable CNG key and
+cleanup. No external/public HTTPS success or JS execution is claimed.
+
+**Important limits:** This is a **positive controlled production-host
+read-only HTTPS document/render/resource bridge**, not full production
+interactive acceptance. Native structure elements are closed roles only,
+not semantic names, live target references, or action authority. Public
+`https://example.com/` failed independently, and no other public endpoint
+was certified. Real JavaScript resources/handlers, governed interactions,
+form effects, credentials, screenshots, files, popups/storage, complete
+11-case production races and 17-step production E2E remain **NOT_PROVEN**.
+The new Rust test now also requires the exact CSS redirect chain and two
+DNS hops. The strengthened variant was subsequently run again against a new
+ephemeral TLS certificate and new owned listener and **PASS 1/1**, physically
+confirming the same four completed COM/TF3 resources, exact `/page.css` →
+`/style.css` redirect chain, 2 DNS classifications for CSS and one for each
+other resource, `PRODUCTION_OWNED_HTTPS_DOM=PASS visited=5 elements=4
+generation=1`, and verified Job/UDF/profile cleanup. The bounded owned TLS
+server stopped with `connections=5 denied=0`; its public DER and active
+marker were absent and port 443 had no listener after stop. Distinct earlier
+FAILED evidence is retained. User-visible interactive browser execution
+still remains disabled and **PR #46 Draft**.

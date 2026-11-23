@@ -2194,15 +2194,19 @@ mod host {
                     | "text/plain"
                     | "text/css"
                     | "application/javascript"
+                    | "application/x-javascript"
                     | "text/javascript"
                     | "application/json"
                     | "image/png"
                     | "image/jpeg"
                     | "image/gif"
+                    | "image/webp"
+                    | "image/avif"
                     | "image/svg+xml"
                     | "font/woff"
                     | "font/woff2"
                     | "application/font-woff"
+                    | "application/font-woff2"
                     | "application/vnd.ms-fontobject"
                     | "font/ttf"
                     | "font/otf"
@@ -4785,7 +4789,11 @@ mod host {
                 "font/woff",
                 "font/woff2",
                 "application/font-woff",
+                "application/font-woff2",
                 "application/vnd.ms-fontobject",
+                "application/x-javascript",
+                "image/webp",
+                "image/avif",
                 "font/ttf",
                 "font/otf",
             ] {

@@ -835,6 +835,9 @@ fn browser_resource_content_type(value: &str) -> bool {
                 | "font/otf"
         )
 }
+fn browser_origin_allowed(request: &Url, approved: &Url) -> bool {
+    request.scheme() == "https" && request.origin() == approved.origin()
+}
 fn safe_text(value: &str, cap: usize) -> String {
     value
         .chars()
@@ -925,6 +928,8 @@ async fn network_fetch(
     policy: NetworkPolicy,
     attempted: &mut bool,
     mut browser_bytes: Option<&mut Vec<u8>>,
+    browser_approved_origin: Option<&Url>,
+    tls_test_root: Option<&reqwest::Certificate>,
 ) -> Result<(), Failure> {
     let search = p.request.operation == TfWebOperation::WebSearch;
     // The only credentialed TF3 operation is the fixed-origin native Brave
@@ -969,6 +974,14 @@ async fn network_fetch(
     loop {
         let url_checked =
             normalize_url_policy(url.as_str(), policy).map_err(|_| Failure("url-policy-denied"))?;
+        // Native TF4 may approve exactly one HTTPS origin. Check *every* hop
+        // before resolving DNS or creating a socket, including a redirect's
+        // next destination. TF3 remains the sole DNS/IP/SSRF/TLS authority.
+        if browser_approved_origin
+            .is_some_and(|approved| !browser_origin_allowed(&url_checked, approved))
+        {
+            return Err(Failure("browser-redirect-origin-denied"));
+        }
         #[cfg(any(test, feature = "tf-browser-isolation-acceptance"))]
         if matches!(policy, NetworkPolicy::FixtureLoopback) {
             // The acceptance-only policy is a single *exact* origin, not a
@@ -1026,13 +1039,23 @@ async fn network_fetch(
         if remaining.is_zero() {
             return Err(Failure("timeout"));
         }
-        let client = super::custom_tool_transport()
+        let mut builder = super::custom_tool_transport()
             .connect_timeout(remaining.min(Duration::from_secs(5)))
             .timeout(remaining)
             .resolve_to_addrs(&host, &addresses)
-            .user_agent("Clack-TF-Web/1.0")
-            .build()
-            .map_err(|_| Failure("client-unavailable"))?;
+            .user_agent("Clack-TF-Web/1.0");
+        // Only the explicit in-process owned-loopback HTTPS test helper can
+        // pass a temporary trust anchor. Ordinary production HTTP/TLS never
+        // inherits this certificate and TLS verification remains enabled.
+        #[cfg(not(test))]
+        if tls_test_root.is_some() {
+            return Err(Failure("test-certificate-not-available-in-production"));
+        }
+        #[cfg(test)]
+        if let Some(root) = tls_test_root {
+            builder = builder.add_root_certificate(root.clone());
+        }
+        let client = builder.build().map_err(|_| Failure("client-unavailable"))?;
         let method = if p.request.operation == TfWebOperation::HttpHead {
             Method::HEAD
         } else {
@@ -1271,13 +1294,15 @@ async fn network_fetch(
         return Ok(());
     }
 }
-async fn execute_policy_with_output(
+async fn execute_policy_with_output_scoped(
     token: &str,
     registry: &WorkspaceRegistry,
     state: &TfWebState,
     credential: Option<String>,
     policy: NetworkPolicy,
     browser_bytes: Option<&mut Vec<u8>>,
+    browser_approved_origin: Option<&Url>,
+    tls_test_root: Option<&reqwest::Certificate>,
 ) -> Result<TfWebReceipt, String> {
     let (p, mut rx) = consume_policy(token, registry, state, policy)?;
     let mut receipt = receipt_for(&p);
@@ -1291,6 +1316,8 @@ async fn execute_policy_with_output(
         policy,
         &mut attempted,
         browser_bytes,
+        browser_approved_origin,
+        tls_test_root,
     )
     .await;
     if let Err(Failure(reason)) = result {
@@ -1317,6 +1344,26 @@ async fn execute_policy_with_output(
     complete(token, state);
     Ok(receipt)
 }
+async fn execute_policy_with_output(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    credential: Option<String>,
+    policy: NetworkPolicy,
+    browser_bytes: Option<&mut Vec<u8>>,
+) -> Result<TfWebReceipt, String> {
+    execute_policy_with_output_scoped(
+        token,
+        registry,
+        state,
+        credential,
+        policy,
+        browser_bytes,
+        None,
+        None,
+    )
+    .await
+}
 async fn execute_policy(
     token: &str,
     registry: &WorkspaceRegistry,
@@ -1342,6 +1389,95 @@ pub async fn execute_browser_resource(
         None,
         NetworkPolicy::Public,
         Some(&mut bytes),
+    )
+    .await?;
+    Ok(TfBrowserResource { receipt, bytes })
+}
+
+/// Real confined browser resource, bound to the trusted parent-approved HTTPS
+/// origin at *each redirect hop*. No child-provided approval is accepted.
+/// Other TF3 callers retain their pre-existing policy and redirect behavior.
+pub async fn execute_browser_resource_same_origin(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    approved_origin: &Url,
+) -> Result<TfBrowserResource, String> {
+    if approved_origin.scheme() != "https"
+        || approved_origin.host_str().is_none()
+        || !approved_origin.username().is_empty()
+        || approved_origin.password().is_some()
+        || approved_origin.port_or_known_default() != Some(443)
+    {
+        return Err("browser-approved-https-origin-invalid".into());
+    }
+    let mut bytes = Vec::new();
+    let receipt = execute_policy_with_output_scoped(
+        token,
+        registry,
+        state,
+        None,
+        NetworkPolicy::Public,
+        Some(&mut bytes),
+        Some(approved_origin),
+        None,
+    )
+    .await?;
+    Ok(TfBrowserResource { receipt, bytes })
+}
+
+/// Local owned HTTPS acceptance only. Not compiled into a production binary,
+/// and not callable through IPC, model tools, or the public TF3 prepare path.
+/// Exact 127.0.0.1:443, strict TLS using a caller-created ephemeral *public*
+/// certificate, the same TF3 fetch/redirect/COM transport, and same-origin
+/// restrictions on every hop. No insecure TLS switch or global trust change.
+#[cfg(test)]
+pub(crate) fn prepare_owned_https_for_test(
+    req: TfWebRequest,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+) -> Result<TfWebPrepared, String> {
+    let url = req.url.as_deref().ok_or("owned-https-url-required")?;
+    let parsed = Url::parse(url).map_err(|_| "owned-https-url-invalid")?;
+    if req.operation != TfWebOperation::HttpGet
+        || req.search_result_id.is_some()
+        || req.query.is_some()
+        || parsed.scheme() != "https"
+        || parsed.host_str() != Some("127.0.0.1")
+        || parsed.port_or_known_default() != Some(443)
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("owned-https-exact-loopback-only".into());
+    }
+    prepare_policy(req, registry, state, NetworkPolicy::FixtureLoopback)
+}
+
+#[cfg(test)]
+pub(crate) async fn execute_owned_https_for_test(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    approved_origin: &Url,
+    ephemeral_public_certificate: &reqwest::Certificate,
+) -> Result<TfBrowserResource, String> {
+    if approved_origin.scheme() != "https"
+        || approved_origin.host_str() != Some("127.0.0.1")
+        || approved_origin.port_or_known_default() != Some(443)
+    {
+        return Err("owned-https-approved-origin-denied".into());
+    }
+    let mut bytes = Vec::new();
+    let receipt = execute_policy_with_output_scoped(
+        token,
+        registry,
+        state,
+        None,
+        NetworkPolicy::FixtureLoopback,
+        Some(&mut bytes),
+        Some(approved_origin),
+        Some(ephemeral_public_certificate),
     )
     .await?;
     Ok(TfBrowserResource { receipt, bytes })
@@ -1413,6 +1549,89 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::Arc;
     use std::thread;
+
+    #[test]
+    fn confined_browser_redirects_are_limited_to_exact_https_origin() {
+        let approved = Url::parse("https://example.com/task").unwrap();
+        for target in [
+            "https://example.com/",
+            "https://example.com/next?nonsecret=1",
+            "https://example.com:443/a",
+        ] {
+            assert!(browser_origin_allowed(
+                &Url::parse(target).unwrap(),
+                &approved
+            ));
+        }
+        for target in [
+            "http://example.com/",
+            "https://www.example.com/",
+            "https://example.org/",
+            "https://example.com:444/",
+            "https://127.0.0.1/",
+            "https://169.254.169.254/",
+        ] {
+            assert!(!browser_origin_allowed(
+                &Url::parse(target).unwrap(),
+                &approved
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn confined_browser_origin_denial_happens_before_dns_or_socket() {
+        let (dir, registry, state) = setup();
+        let prepared = prepare(
+            fixture(dir.path(), "https://example.org/outside".into()),
+            &registry,
+            &state,
+        )
+        .unwrap();
+        let approved = Url::parse("https://example.com/").unwrap();
+        let result =
+            execute_browser_resource_same_origin(&prepared.token, &registry, &state, &approved)
+                .await
+                .unwrap();
+        assert_eq!(result.receipt.terminal, "denied");
+        assert_eq!(result.receipt.reason_code, "browser-redirect-origin-denied");
+        assert!(result.receipt.dns_evidence.is_empty());
+        assert!(result.receipt.final_url.is_none());
+        assert!(result.bytes.is_empty());
+    }
+
+    #[test]
+    fn owned_https_test_preflight_does_not_grant_other_private_or_public_hosts() {
+        let (dir, registry, state) = setup();
+        for target in [
+            "http://127.0.0.1/",
+            "https://[::1]/",
+            "https://192.168.1.1/",
+            "https://169.254.169.254/",
+            "https://example.com/",
+            "https://127.0.0.1:444/",
+            "https://127.0.0.1/?token=test",
+        ] {
+            assert!(
+                prepare_owned_https_for_test(
+                    fixture(dir.path(), target.into()),
+                    &registry,
+                    &state,
+                )
+                .is_err(),
+                "non-owned test origin was accepted: {target}"
+            );
+        }
+        let accepted = prepare_owned_https_for_test(
+            fixture(dir.path(), "https://127.0.0.1/page.css".into()),
+            &registry,
+            &state,
+        )
+        .expect("only exact owned HTTPS origin allowed");
+        assert!(
+            consume_policy(&accepted.token, &registry, &state, NetworkPolicy::Public).is_err(),
+            "test-only token must not be accepted under public TF3 policy"
+        );
+    }
 
     fn setup() -> (tempfile::TempDir, WorkspaceRegistry, TfWebState) {
         let dir = tempfile::tempdir().unwrap();

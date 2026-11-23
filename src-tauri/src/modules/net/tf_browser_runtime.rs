@@ -267,15 +267,19 @@ fn checked_mime(value: Option<&str>) -> Option<&'static str> {
         "text/plain" => Some("text/plain"),
         "text/css" => Some("text/css"),
         "application/javascript" => Some("application/javascript"),
+        "application/x-javascript" => Some("application/x-javascript"),
         "text/javascript" => Some("text/javascript"),
         "application/json" => Some("application/json"),
         "image/png" => Some("image/png"),
         "image/jpeg" => Some("image/jpeg"),
         "image/gif" => Some("image/gif"),
+        "image/webp" => Some("image/webp"),
+        "image/avif" => Some("image/avif"),
         "image/svg+xml" => Some("image/svg+xml"),
         "font/woff" => Some("font/woff"),
         "font/woff2" => Some("font/woff2"),
         "application/font-woff" => Some("application/font-woff"),
+        "application/font-woff2" => Some("application/font-woff2"),
         "application/vnd.ms-fontobject" => Some("application/vnd.ms-fontobject"),
         "font/ttf" => Some("font/ttf"),
         "font/otf" => Some("font/otf"),
@@ -1300,6 +1304,30 @@ mod windows_owner {
             registry: &WorkspaceRegistry,
             web_state: &TfWebState,
         ) -> Result<BrokerResourceReceipt, String> {
+            self.serve_one_scoped(registry, web_state, None).await
+        }
+
+        /// In-process physical acceptance only: the real production host,
+        /// original AppContainer and COM pipe remain unchanged. The parent
+        /// uses a *test-only* exact loopback HTTPS TF3 policy with ephemeral
+        /// certificate trust. No production binary or IPC can invoke this.
+        #[cfg(test)]
+        pub(crate) async fn serve_one_owned_https_for_test(
+            &mut self,
+            registry: &WorkspaceRegistry,
+            web_state: &TfWebState,
+            public_cert: &reqwest::Certificate,
+        ) -> Result<BrokerResourceReceipt, String> {
+            self.serve_one_scoped(registry, web_state, Some(public_cert))
+                .await
+        }
+
+        async fn serve_one_scoped(
+            &mut self,
+            registry: &WorkspaceRegistry,
+            web_state: &TfWebState,
+            test_public_cert: Option<&reqwest::Certificate>,
+        ) -> Result<BrokerResourceReceipt, String> {
             if !self.ready
                 || self.stopped
                 || self.poisoned
@@ -1309,7 +1337,9 @@ mod windows_owner {
             }
             self.poisoned = true;
             let mut flight = FlightFence::new(self.job.0);
-            let outcome = self.serve_one_inner(registry, web_state).await;
+            let outcome = self
+                .serve_one_inner(registry, web_state, test_public_cert)
+                .await;
             if outcome.is_ok() {
                 self.poisoned = false;
                 flight.committed = true;
@@ -1321,6 +1351,7 @@ mod windows_owner {
             &mut self,
             registry: &WorkspaceRegistry,
             web_state: &TfWebState,
+            test_public_cert: Option<&reqwest::Certificate>,
         ) -> Result<BrokerResourceReceipt, String> {
             token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
             if self
@@ -1353,8 +1384,8 @@ mod windows_owner {
                 return Err("browser-broker-workspace-revoked".into());
             }
             // The session's approved origin is the only remote HTTPS origin
-            // accessible to this child. Cross-origin URLs and every redirect
-            // stay denied until a new native approval/capability is defined.
+            // accessible to this child. Cross-origin URLs and redirects are
+            // rejected before a new DNS resolution or network connection.
             let requested =
                 reqwest::Url::parse(&req.url).map_err(|_| "browser-request-url-invalid")?;
             let approved = reqwest::Url::parse(&self.initial_url)
@@ -1389,9 +1420,27 @@ mod windows_owner {
                 search_result_id: None,
                 timeout_ms: Some(5_000),
                 max_bytes: Some(RESOURCE_MAX),
-                max_redirects: Some(0),
+                // TF3 reclassifies DNS/IP/SSRF on every hop; the native
+                // same-origin executor additionally refuses a redirected
+                // origin *before* resolving or connecting to it.
+                max_redirects: Some(3),
             };
-            let prepared = match tf_web::prepare(native, registry, web_state) {
+            let prepared_result = {
+                #[cfg(test)]
+                {
+                    if test_public_cert.is_some() {
+                        tf_web::prepare_owned_https_for_test(native, registry, web_state)
+                    } else {
+                        tf_web::prepare(native, registry, web_state)
+                    }
+                }
+                #[cfg(not(test))]
+                {
+                    let _ = test_public_cert;
+                    tf_web::prepare(native, registry, web_state)
+                }
+            };
+            let prepared = match prepared_result {
                 Ok(prepared) => prepared,
                 Err(_) => {
                     self.send_and_verify(
@@ -1414,8 +1463,39 @@ mod windows_owner {
                     });
                 }
             };
-            let result =
-                tf_web::execute_browser_resource(&prepared.token, registry, web_state).await;
+            let result = {
+                #[cfg(test)]
+                {
+                    if let Some(cert) = test_public_cert {
+                        tf_web::execute_owned_https_for_test(
+                            &prepared.token,
+                            registry,
+                            web_state,
+                            &approved,
+                            cert,
+                        )
+                        .await
+                    } else {
+                        tf_web::execute_browser_resource_same_origin(
+                            &prepared.token,
+                            registry,
+                            web_state,
+                            &approved,
+                        )
+                        .await
+                    }
+                }
+                #[cfg(not(test))]
+                {
+                    tf_web::execute_browser_resource_same_origin(
+                        &prepared.token,
+                        registry,
+                        web_state,
+                        &approved,
+                    )
+                    .await
+                }
+            };
             match result {
                 Ok(result) => {
                     let receipt = result.receipt;
@@ -1555,7 +1635,11 @@ mod tests {
             "font/woff",
             "font/woff2",
             "application/font-woff",
+            "application/font-woff2",
             "application/vnd.ms-fontobject",
+            "application/x-javascript",
+            "image/webp",
+            "image/avif",
             "font/ttf",
             "font/otf",
         ] {
@@ -2016,5 +2100,299 @@ mod tests {
             "restricted browser reached independently owned RFC1918 TCP listener: {unauthorized:?}"
         );
         eprintln!("PRODUCTION_OWNED_RFC1918_TCPV4_DENIAL=PASS ordinary_positive=1 restricted=0");
+    }
+
+    /// Explicit positive public-HTTPS qualification of the *production* owner,
+    /// not the fixture network policy. Uses only IANA documentation domains,
+    /// no credentials, no form writes and no alternate HTTP client. A TF3
+    /// denial/network failure is a real failure, not a fixture-equivalent PASS.
+    /// The active AppContainer has zero generic network capabilities and the
+    /// first WebView2 document must finish its actual COM deferral before any
+    /// DOM result can be accepted. This alone is not the full interactive E2E.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "opt-in physical production positive public HTTPS/COM/document DOM probe"]
+    async fn physical_production_allowed_https_document_and_dom() {
+        let target = std::env::var("CLACK_TF4_POSITIVE_HTTPS_URL")
+            .expect("explicit HTTPS documentation target opt-in required");
+        assert!(
+            matches!(
+                target.as_str(),
+                "https://example.com/" | "https://example.org/"
+            ),
+            "only static IANA documentation origins may be contacted by this physical probe"
+        );
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact production host executable required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact production host"))
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace = manifest
+            .parent()
+            .expect("workspace parent of native manifest");
+        let private_parent = manifest
+            .join("target")
+            .join("tf4-production-positive-https-acceptance");
+        std::fs::create_dir_all(&private_parent).expect("dedicated positive test private parent");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize exact workspace");
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-physical-positive".into(),
+                session_id: "tf4-physical-positive-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: target.clone(),
+                private_parent,
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("physical production AppContainer launch");
+        let outcome = async {
+            browser.verify_ready().await?;
+            let resource = tokio::time::timeout(
+                std::time::Duration::from_secs(17),
+                browser.serve_one(&registry, &TfWebState::default()),
+            )
+            .await
+            .map_err(|_| "positive-https-com-deadline".to_owned())??;
+            eprintln!(
+                "PRODUCTION_POSITIVE_HTTPS_RESOURCE terminal={} reason={} bytes={} native_com={} tf3_terminal={} tf3_reason={} tls={} dns_hops={}",
+                resource.terminal,
+                resource.reason,
+                resource.bytes,
+                resource.native_com_completed,
+                resource.tf3.as_ref().map_or("none", |r| r.terminal),
+                resource.tf3.as_ref().map_or("none", |r| r.reason_code),
+                resource.tf3.as_ref().map_or("none", |r| r.tls_state),
+                resource.tf3.as_ref().map_or(0, |r| r.dns_evidence.len()),
+            );
+            if resource.terminal != "completed"
+                || !resource.native_com_completed
+                || resource.bytes == 0
+                || resource.tf3.as_ref().is_none_or(|r| {
+                    r.terminal != "completed"
+                        || r.reason_code != "ok"
+                        || r.tls_state != "https_transport_observed"
+                        || r.content_type.as_deref().is_none_or(|mime| {
+                            !mime.starts_with("text/html")
+                        })
+                        || r.dns_evidence.is_empty()
+                        || r.dns_evidence.iter().any(|d| d.classification != "all-allowed")
+                })
+            {
+                return Err("positive-production-tf3-https-document-not-completed".into());
+            }
+            let dom = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                browser.observe_structure(),
+            )
+            .await
+            .map_err(|_| "positive-https-structural-observation-deadline".to_owned())??;
+            eprintln!(
+                "PRODUCTION_POSITIVE_HTTPS_DOM terminal={} reason={} visited={} elements={} generation={}",
+                dom.terminal,
+                dom.reason,
+                dom.visited,
+                dom.elements.len(),
+                dom.page_generation
+            );
+            if dom.terminal != "completed" || dom.visited == 0 || dom.elements.is_empty() {
+                return Err("positive-production-webview2-document-not-observed".into());
+            }
+            Ok::<_, String>((resource, dom))
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(
+            cleanup.is_ok(),
+            "owned process/Job/UDF/profile cleanup: {cleanup:?}"
+        );
+        let (resource, dom) = outcome.expect("real production HTTPS document must render");
+        assert_eq!(resource.page_generation, dom.page_generation);
+        eprintln!("PRODUCTION_POSITIVE_HTTPS_DOCUMENT=PASS TF3 HTTPS COM DOM Job UDF");
+    }
+
+    /// Controlled HTTPS alternative when public egress is unavailable. This
+    /// uses the *production* AppContainer, WebView2 and native COM broker; only
+    /// the Rust test binary receives a scoped TF3 owned-127.0.0.1 exception and
+    /// an ephemeral public trust anchor. No release code, host, or general
+    /// network policy can use that exception. A separate strictly-owned TLS
+    /// fixture must be listening at 127.0.0.1:443 with a matching certificate.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit scoped HTTPS fixture with real production WebView2/TF3 COM path"]
+    async fn physical_production_owned_https_document_resources_and_dom() {
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact feature-enabled production host required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact production host"))
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence_dir = manifest.join("target").join("tf4-owned-https");
+        let expected_cert = evidence_dir.join("server.cer");
+        let supplied_cert = std::env::var_os("CLACK_TF4_OWNED_HTTPS_CERT")
+            .map(PathBuf::from)
+            .expect("explicit owned HTTPS public certificate is required");
+        assert_eq!(
+            std::fs::canonicalize(&supplied_cert).expect("owned public cert available"),
+            std::fs::canonicalize(&expected_cert).expect("expected exact cert file"),
+            "only the owned acceptance public certificate is permitted"
+        );
+        let cert = reqwest::Certificate::from_der(
+            &std::fs::read(&expected_cert).expect("read the temporary public TLS cert"),
+        )
+        .expect("valid DER public certificate");
+        let private_parent = manifest
+            .join("target")
+            .join("tf4-production-owned-https-acceptance");
+        std::fs::create_dir_all(&private_parent).expect("create exact owned browser parent");
+        let workspace = manifest.parent().expect("approved project root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("approve only workspace");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-owned-https".into(),
+                session_id: "tf4-owned-https-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                private_parent,
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("real zero-network-capability production AppContainer launch");
+        let outcome = async {
+            browser.verify_ready().await?;
+            let mut paths = std::collections::HashSet::<String>::new();
+            let mut generation = None;
+            // The real production host intentionally disables untrusted
+            // remote JavaScript until effect classification/approval exists.
+            // Read-only acceptance proves HTML, CSS, PNG and font, each via
+            // a new TF3 token and a completed native COM deferral.
+            for expected_id in 1..=4u64 {
+                let resource = tokio::time::timeout(
+                    std::time::Duration::from_secs(17),
+                    browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+                )
+                .await
+                .map_err(|_| "owned-https-native-resource-deadline".to_owned())??;
+                let tf3 = resource.tf3.as_ref().ok_or("owned-https-tf3-receipt-missing")?;
+                eprintln!(
+                    "PRODUCTION_OWNED_HTTPS_RESOURCE id={} terminal={} tf3={} reason={} tls={} bytes={} com={} dns_hops={}",
+                    resource.request_id,
+                    resource.terminal,
+                    tf3.terminal,
+                    tf3.reason_code,
+                    tf3.tls_state,
+                    resource.bytes,
+                    resource.native_com_completed,
+                    tf3.dns_evidence.len(),
+                );
+                if resource.request_id != expected_id
+                    || resource.terminal != "completed"
+                    || !resource.native_com_completed
+                    || resource.bytes == 0
+                    || tf3.terminal != "completed"
+                    || tf3.reason_code != "ok"
+                    || tf3.tls_state != "https_transport_observed"
+                    || tf3.truncated
+                    || tf3.content_sha256.as_deref().is_none_or(|s| s.len() != 64)
+                    || tf3.dns_evidence.is_empty()
+                    || tf3.dns_evidence.iter().any(|d| {
+                        d.host != "127.0.0.1" || d.classification != "all-allowed"
+                    })
+                {
+                    return Err("owned-https-tf3-com-or-ssl-delivery-failed".into());
+                }
+                if generation.is_some_and(|g| g != resource.page_generation) {
+                    return Err("owned-https-generation-changed".into());
+                }
+                generation = Some(resource.page_generation);
+                let requested = tf3
+                    .requested_url
+                    .as_deref()
+                    .ok_or("owned-https-request-url-missing")?;
+                let uri = reqwest::Url::parse(requested)
+                    .map_err(|_| "owned-https-request-url-invalid")?;
+                let owned_origin = reqwest::Url::parse("https://127.0.0.1/").unwrap().origin();
+                if uri.origin() != owned_origin
+                    || tf3
+                        .final_url
+                        .as_deref()
+                        .and_then(|url| reqwest::Url::parse(url).ok())
+                        .is_none_or(|final_url| final_url.origin() != owned_origin)
+                {
+                    return Err("owned-https-origin-escaped".into());
+                }
+                let expected_mime = match uri.path() {
+                    "/" => "text/html",
+                    "/page.css" => "text/css",
+                    "/page.js" => return Err("owned-https-untrusted-script-not-disabled".into()),
+                    "/pixel.png" => "image/png",
+                    "/font.woff2" => "font/woff2",
+                    _ => return Err("owned-https-unexpected-browser-resource".into()),
+                };
+                if checked_mime(tf3.content_type.as_deref()) != Some(expected_mime) {
+                    return Err("owned-https-resource-content-type-mismatch".into());
+                }
+                if uri.path() == "/page.css" {
+                    if tf3.redirect_chain.len() != 1
+                        || tf3.redirect_chain[0] != "https://127.0.0.1/page.css"
+                        || tf3.final_url.as_deref() != Some("https://127.0.0.1/style.css")
+                        || tf3.dns_evidence.len() != 2
+                    {
+                        return Err("owned-https-same-origin-css-redirect-not-revalidated".into());
+                    }
+                } else if !tf3.redirect_chain.is_empty() {
+                    return Err("owned-https-unexpected-redirect".into());
+                }
+                paths.insert(uri.path().to_owned());
+            }
+            for expected in ["/", "/page.css", "/pixel.png", "/font.woff2"] {
+                if !paths.contains(expected) {
+                    return Err("owned-https-required-dependent-resource-not-delivered".into());
+                }
+            }
+            let dom = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                browser.observe_structure(),
+            )
+            .await
+            .map_err(|_| "owned-https-dom-observation-timeout".to_owned())??;
+            if dom.terminal != "completed"
+                || dom.elements.is_empty()
+                || dom.visited == 0
+                || Some(dom.page_generation) != generation
+            {
+                return Err("owned-https-rendered-dom-not-verified".into());
+            }
+            eprintln!(
+                "PRODUCTION_OWNED_HTTPS_DOM=PASS visited={} elements={} generation={}",
+                dom.visited,
+                dom.elements.len(),
+                dom.page_generation
+            );
+            Ok::<_, String>(())
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(cleanup.is_ok(), "real Job/UDF/profile cleanup: {cleanup:?}");
+        outcome.expect("real production COM must receive all owned HTTPS resources and DOM");
+        eprintln!(
+            "PRODUCTION_OWNED_HTTPS_READ_ONLY=PASS four native COM resources, TF3 TLS, structural DOM, owned Job/UDF; UNTRUSTED_JAVASCRIPT=DISABLED"
+        );
     }
 }
