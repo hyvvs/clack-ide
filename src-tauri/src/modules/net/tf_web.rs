@@ -927,6 +927,12 @@ async fn network_fetch(
     mut browser_bytes: Option<&mut Vec<u8>>,
 ) -> Result<(), Failure> {
     let search = p.request.operation == TfWebOperation::WebSearch;
+    // The only credentialed TF3 operation is the fixed-origin native Brave
+    // search path. Browser and ordinary GET/HEAD requests must not silently
+    // accept a credential supplied by a native caller.
+    if !search && credential.is_some() {
+        return Err(Failure("credential-operation-denied"));
+    }
     let mut url = if search {
         if credential.is_none_or(str::is_empty) {
             return Err(Failure("provider-unconfigured"));
@@ -963,6 +969,19 @@ async fn network_fetch(
     loop {
         let url_checked =
             normalize_url_policy(url.as_str(), policy).map_err(|_| Failure("url-policy-denied"))?;
+        #[cfg(any(test, feature = "tf-browser-isolation-acceptance"))]
+        if matches!(policy, NetworkPolicy::FixtureLoopback) {
+            // The acceptance-only policy is a single *exact* origin, not a
+            // general permission to access every process on 127.0.0.1. A
+            // redirect may change the path, but never scheme, host or port.
+            let original = p.target.as_ref().ok_or(Failure("missing-target"))?;
+            if url_checked.scheme() != original.scheme()
+                || url_checked.host_str() != original.host_str()
+                || url_checked.port_or_known_default() != original.port_or_known_default()
+            {
+                return Err(Failure("fixture-redirect-origin-denied"));
+            }
+        }
         let host = url_checked
             .host_str()
             .ok_or(Failure("missing-host"))?
@@ -1053,17 +1072,46 @@ async fn network_fetch(
                 if policy == NetworkPolicy::FixtureLoopback {
                     // This diagnostic applies only to the fixed, controlled
                     // loopback fixture. No general URLs or credentials logged.
+                    // Preserve a bounded underlying transport cause so that
+                    // an accepted TCP connection without completed HTTP can
+                    // be distinguished from a harness parser failure in a
+                    // *new immutable case*, rather than guessed from XDArr0.
+                    use std::error::Error as _;
+                    let mut causes = Vec::new();
+                    let mut nested = e.source();
+                    for _ in 0..3 {
+                        let Some(cause) = nested else { break };
+                        causes.push(cause.to_string());
+                        nested = cause.source();
+                    }
                     eprintln!(
-                        "tf3-browser-fixture-transport: connect={} request={} body={} timeout={} error={e}",
+                        "tf3-browser-fixture-transport: connect={} request={} body={} timeout={} cause={}",
                         e.is_connect(),
                         e.is_request(),
                         e.is_body(),
-                        e.is_timeout()
+                        e.is_timeout(),
+                        safe_text(&causes.join(" | "), 256)
                     );
                 }
                 if e.is_timeout() {
                     Failure("timeout")
                 } else {
+                    #[cfg(feature = "tf-browser-isolation-acceptance")]
+                    if matches!(policy, NetworkPolicy::FixtureLoopback) {
+                        // Preserve a bounded, credential-free failure class
+                        // in the *native* receipt for reproducible controlled
+                        // acceptance diagnostics. Public TF3 reason codes
+                        // remain unchanged.
+                        return if e.is_connect() {
+                            Failure("fixture-network-connect-failed")
+                        } else if e.is_request() {
+                            Failure("fixture-network-request-failed")
+                        } else if e.is_body() {
+                            Failure("fixture-network-body-failed")
+                        } else {
+                            Failure("fixture-network-other-failed")
+                        };
+                    }
                     Failure("network-failed")
                 }
             })?;
@@ -1493,6 +1541,164 @@ mod tests {
         }
     }
     #[test]
+    fn browser_policy_denies_hidden_network_aliases_and_foreign_fixture_redirect_targets() {
+        let blocked = [
+            "127.0.0.1",
+            "127.1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "::1",
+            "::ffff:127.0.0.1",
+            "fe80::1",
+            "fd00::1",
+        ];
+        for ip in blocked {
+            if let Ok(parsed) = ip.parse::<IpAddr>() {
+                assert!(!allowed_ip(parsed, NetworkPolicy::Public), "{ip}");
+            }
+        }
+        for raw in [
+            "http://localhost/",
+            "http://localhost.localdomain/",
+            "http://127.0.0.1.evil.local/",
+            "http://[::1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "ftp://example.org/",
+            "ws://example.org/",
+            "wss://example.org/",
+            "file:///C:/secrets",
+            "http://127.0.0.1/?access_token=sentinel",
+        ] {
+            let result = normalize_url(raw);
+            if let Ok(url) = result {
+                let host = url.host_str().unwrap();
+                if let Ok(ip) = host.trim_matches(&['[', ']'][..]).parse::<IpAddr>() {
+                    assert!(!allowed_ip(ip, NetworkPolicy::Public), "{raw}");
+                } else {
+                    // DNS names not categorically blocked by syntax are still
+                    // resolved and classified at *every* native TF3 hop.
+                    assert!(!url.scheme().starts_with("ws"), "{raw}");
+                }
+            }
+        }
+        for ip in [
+            "::1",
+            "::ffff:127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "8.8.8.8",
+        ] {
+            assert!(
+                !allowed_ip(ip.parse().unwrap(), NetworkPolicy::FixtureLoopback),
+                "acceptance fixture must never broaden to {ip}"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn browser_get_never_accepts_a_native_supplied_secret_or_exposes_it_in_receipts() {
+        const SENTINEL: &str = "tf4-secret-sentinel-never-log-or-dom-3943";
+        let (dir, registry, state) = setup();
+        let prepared = prepare(
+            fixture(dir.path(), "https://example.org/".into()),
+            &registry,
+            &state,
+        )
+        .unwrap();
+        let receipt = execute(&prepared.token, &registry, &state, Some(SENTINEL.into()))
+            .await
+            .unwrap();
+        assert_eq!(receipt.terminal, "denied");
+        assert_eq!(receipt.reason_code, "credential-operation-denied");
+        assert_eq!(receipt.bytes_received, None);
+        assert!(!receipt.credential_used);
+        assert!(receipt.body.is_none());
+        let serialized = serde_json::to_string(&receipt).unwrap();
+        assert!(!serialized.contains(SENTINEL));
+        assert!(!serialized.contains("x-subscription-token"));
+        assert!(execute(&prepared.token, &registry, &state, None)
+            .await
+            .is_err());
+    }
+    #[tokio::test]
+    async fn revoked_native_provider_credential_fails_before_network_and_cannot_replay() {
+        const TEST_ONLY_SENTINEL: &str = "tf4-revoked-test-credential-never-in-receipt";
+        let (dir, registry, state) = setup();
+        let mut search = request(dir.path(), TfWebOperation::WebSearch);
+        search.query = Some("controlled test-only provider revocation".into());
+        let prepared = prepare(search, &registry, &state).unwrap();
+        // Test-only simulation of an earlier one-use approval. The native
+        // command always re-reads the existing keyring reference at execute
+        // time; after revocation it passes None, never a stale secret.
+        {
+            let mut entries = state.entries.lock().unwrap();
+            entries.pending.get_mut(&prepared.token).unwrap().approved = true;
+        }
+        let receipt = execute(&prepared.token, &registry, &state, None)
+            .await
+            .unwrap();
+        assert_eq!(receipt.terminal, "denied");
+        assert_eq!(receipt.reason_code, "provider-unconfigured");
+        assert_eq!(receipt.credential_reference, Some(CREDENTIAL_REF));
+        assert!(!receipt.credential_used);
+        assert_eq!(receipt.bytes_received, None);
+        assert!(receipt.body.is_none());
+        assert!(receipt.dns_evidence.is_empty());
+        assert!(receipt.redirect_chain.is_empty());
+        assert!(!serde_json::to_string(&receipt)
+            .unwrap()
+            .contains(TEST_ONLY_SENTINEL));
+        assert!(execute(
+            &prepared.token,
+            &registry,
+            &state,
+            Some(TEST_ONLY_SENTINEL.into())
+        )
+        .await
+        .is_err());
+    }
+    #[test]
+    fn tf3_browser_request_schema_rejects_raw_credentials_headers_and_request_bodies() {
+        let base = serde_json::json!({
+            "operation": "http_get",
+            "actor": "test-actor",
+            "sessionId": "test-session",
+            "workspaceRoot": "C:\\test-workspace",
+            "url": "https://example.org/test",
+            "query": null,
+            "searchResultId": null,
+            "timeoutMs": 1000,
+            "maxBytes": 512,
+            "maxRedirects": 0
+        });
+        for (name, supplied) in [
+            ("credentialReference", serde_json::json!("credential:fake")),
+            ("credential", serde_json::json!("test-only-secret")),
+            (
+                "authorization",
+                serde_json::json!("Bearer test-only-secret"),
+            ),
+            (
+                "headers",
+                serde_json::json!({"Authorization": "Bearer test-only-secret"}),
+            ),
+            ("body", serde_json::json!("test-only-secret")),
+            ("method", serde_json::json!("POST")),
+            ("cookie", serde_json::json!("session=test-only-secret")),
+        ] {
+            let mut malformed = base.clone();
+            malformed
+                .as_object_mut()
+                .unwrap()
+                .insert(name.to_owned(), supplied);
+            assert!(
+                serde_json::from_value::<TfWebRequest>(malformed).is_err(),
+                "TF3 browser-facing request must reject unsupported field {name}"
+            );
+        }
+    }
+    #[test]
     fn scope_token_one_use_approval_cancel_and_provider_status() {
         let (dir, registry, state) = setup();
         let req = fixture(dir.path(), "https://example.org/".into());
@@ -1545,7 +1751,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            consume(&fixture_prepared.token, &registry, &state).err().as_deref(),
+            consume(&fixture_prepared.token, &registry, &state)
+                .err()
+                .as_deref(),
             Some("network-policy-mismatch")
         );
         assert!(consume_policy(
@@ -1774,7 +1982,7 @@ mod tests {
         .await
         .unwrap();
         server.join().unwrap();
-        assert_eq!(receipt.reason_code, "dns-private-or-reserved-denied");
+        assert_eq!(receipt.reason_code, "fixture-redirect-origin-denied");
         assert_eq!(receipt.redirect_chain.len(), 1);
         assert!(body.is_empty());
     }
@@ -1784,7 +1992,13 @@ mod tests {
         let (url, server) = serve(
             b"HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             Duration::ZERO);
-        let p = prepare_policy(fixture(dir.path(), url), &registry, &state, NetworkPolicy::FixtureLoopback).unwrap();
+        let p = prepare_policy(
+            fixture(dir.path(), url),
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .unwrap();
         let receipt = execute_policy(
             &p.token,
             &registry,
@@ -1795,9 +2009,98 @@ mod tests {
         .await
         .unwrap();
         server.join().unwrap();
-        assert_eq!(receipt.reason_code, "dns-private-or-reserved-denied");
+        assert_eq!(receipt.reason_code, "fixture-redirect-origin-denied");
         assert_eq!(receipt.redirect_chain.len(), 1);
-        assert_eq!(receipt.dns_evidence.len(), 2);
+        // The redirect never reaches the second DNS resolution or socket:
+        // exact fixture origin authority is checked first.
+        assert_eq!(receipt.dns_evidence.len(), 1);
+    }
+    #[tokio::test]
+    async fn fixture_redirect_cannot_switch_to_another_loopback_service_port() {
+        let (dir, registry, state) = setup();
+        let first = TcpListener::bind("127.0.0.1:0").unwrap();
+        let second = TcpListener::bind("127.0.0.1:0").unwrap();
+        let next_port = second.local_addr().unwrap().port();
+        let first_port = first.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = first.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request).unwrap();
+            write!(
+                socket,
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{next_port}/unsafe\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ).unwrap();
+            socket.flush().unwrap();
+        });
+        let prepared = prepare_policy(
+            fixture(dir.path(), format!("http://127.0.0.1:{first_port}/first")),
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .unwrap();
+        let receipt = execute_policy(
+            &prepared.token,
+            &registry,
+            &state,
+            None,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(receipt.terminal, "denied");
+        assert_eq!(receipt.reason_code, "fixture-redirect-origin-denied");
+        assert_eq!(receipt.redirect_chain.len(), 1);
+        assert_eq!(receipt.dns_evidence.len(), 1);
+        second.set_nonblocking(true).unwrap();
+        assert!(
+            second.accept().is_err(),
+            "redirect must not connect to a different local service"
+        );
+    }
+    #[tokio::test]
+    async fn abrupt_fixture_peer_close_is_denied_with_a_nonsecret_transport_receipt() {
+        // This is a new deterministic transport-failure fixture, NOT a
+        // retroactive explanation for immutable historical XDArr0.
+        let (dir, registry, state) = setup();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            // Abort without any HTTP status/header/body. No synthetic OK.
+            drop(socket);
+        });
+        let prepared = prepare_policy(
+            fixture(dir.path(), format!("http://127.0.0.1:{port}/no-http-reply")),
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .unwrap();
+        let receipt = execute_policy(
+            &prepared.token,
+            &registry,
+            &state,
+            None,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert_ne!(receipt.terminal, "completed");
+        assert_eq!(receipt.status_code, None);
+        assert_eq!(receipt.bytes_retained, 0);
+        assert!(!receipt.auto_retry);
+        assert!(
+            receipt.reason_code.starts_with("fixture-network-")
+                || receipt.reason_code == "network-failed"
+        );
+        let evidence = serde_json::to_string(&receipt).unwrap();
+        assert!(!evidence.contains("x-subscription-token"));
     }
     #[tokio::test]
     async fn test_only_allowed_redirect_revalidates_dns_on_each_hop() {
@@ -1888,7 +2191,13 @@ mod tests {
         let (url, server) = serve(
             b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
             Duration::ZERO);
-        let p = prepare_policy(fixture(dir.path(), url), &registry, &state, NetworkPolicy::FixtureLoopback).unwrap();
+        let p = prepare_policy(
+            fixture(dir.path(), url),
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .unwrap();
         let receipt = execute_policy(
             &p.token,
             &registry,
@@ -1912,7 +2221,9 @@ mod tests {
         );
         let mut req = fixture(dir.path(), url);
         req.timeout_ms = Some(30);
-        let token = prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback).unwrap().token;
+        let token = prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback)
+            .unwrap()
+            .token;
         let receipt = execute_policy(
             &token,
             &registry,
@@ -1928,9 +2239,14 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok",
             Duration::from_millis(150),
         );
-        let token = prepare_policy(fixture(dir.path(), url), &registry, &state, NetworkPolicy::FixtureLoopback)
-            .unwrap()
-            .token;
+        let token = prepare_policy(
+            fixture(dir.path(), url),
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .unwrap()
+        .token;
         let registry = Arc::new(registry);
         let state = Arc::new(state);
         let cloned_registry = registry.clone();

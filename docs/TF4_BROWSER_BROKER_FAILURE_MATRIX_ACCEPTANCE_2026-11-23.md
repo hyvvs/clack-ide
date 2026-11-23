@@ -1,0 +1,41 @@
+# TF4 Windows broker failure matrix — additive controlled acceptance (2026-11-23)
+
+**Status:** Eight acceptance-only broker fault cases physically PASS in the tested Windows environment; **complete production TF4 / model-visible browser interactions NOT ACCEPTED**. This is an additive checkpoint on branch `tf/browser-computer-use` and Draft PR #46, starting at `98ab6ad082906884234ec7df6a3cecb9b8ebbd78`. It does not replace the historical 2026-11-22 isolation reports or turn any earlier failing case into a pass.
+
+## Immutable physical evidence
+
+- `src-tauri/target/tf-browser-isolation-acceptance/clack-tf-browser-isolation-p4vdfu/acceptance-verdict.json`: earlier five fault cases PASS following scoped process-job inventory, abnormal-exit arm-stage synchronization and controlled UDP listener binding corrections; earlier failed cases `erXeEE`, `y9fsX2`, `lclkgY`, `2eRyE8`, `H6tRQy` remain retained. This case is **not** the later eight-case qualification.
+- **`src-tauri/target/tf-browser-isolation-acceptance/clack-tf-browser-isolation-PViMEb/acceptance-verdict.json`: fresh eight-case PASS**, after rebuilding the current `clack-browser-host` and `tf_browser_isolation_acceptance` example. The executable returned exit code 0 with `TF_BROWSER_ISOLATION_BROKER_AND_NEGATIVE_PASS`.
+- All eight negative subcases have an independently owned job/profile/UDF/pipe, an immutable per-case receipt, zero observed unauthorized IPv4 TCP, IPv6 TCP and IPv4 UDP activity at their independently controlled listeners, no duplicate broker request replay, and verified empty owned jobs at shutdown. The overall case records `ownedUdfCleaned=true`, `profileDeleted=true`, `jobProcessesVerifiedGone=true`, normal `brokered.case.status=PASS`, and `brokered.unknownResourceOriginZero=true`.
+
+| Executed case | Evidence and expected native behavior | Important scope limit |
+| --- | --- | --- |
+| `broker-crash` | Parent response pipe closed on a pending request; native synthetic **502**, completed deferral, zero outstanding requests | Pipe EOF simulation, **not** separate broker-process kill |
+| `broker-timeout` | Parent intentionally withholds reply; bounded synthetic **504**, zero pending | Test-only shortened deadline |
+| `no-intercept` | Safe configuration denial with hook **and navigation both omitted** | **Not** a live navigation bypassing an absent hook |
+| `stale-id` | Forged wrong/old request ID rejected; synthetic **502**, zero pending | One forged ID, not all page lifecycles |
+| `abnormal-exit` | Host killed with owned exit code **79** after real WebView2 children/hook readiness; job empty and owned UDF/profile reaped | Deliberate host termination; no resource in flight in this mode |
+| `cancel` | Locally canceled intercepted request; synthetic **503** and completed COM deferral; no parent resource forwarded | Does not prove cancellation of all dependent resources, fetch or XHR |
+| `stale-session` | Well-formed parent response with original nonce rejected against revoked expected session; synthetic **502** | Does not prove every replaced-page and generation race |
+| `missing-reply` | Response pipe remains open, reply bytes never arrive; bounded synthetic **504**, zero pending | Does not simulate every broker daemon failure mode |
+
+The physical case's normal broker rendered exact controlled HTML/JS/CSS/PNG/iframe/fetch and redirects through TF3; unsupported active page resource was denied locally and never reached the parent origin. `FixtureLoopback` now also rejects cross-origin redirect hops by original scheme, host and port; a redirect to private metadata returns `fixture-redirect-origin-denied` **before** unsafe second-hop delivery. The browser and renderer were actual AppContainer processes with matching SID, **zero network capability SIDs**, and owned Job Object membership. The uncontrolled positive control connected 15 times over TCP (13 IPv4 and two IPv6) and sent three UDP datagrams; the confined malicious browser connected zero times over independently controlled IPv4/IPv6 TCP and sent zero IPv4 UDP datagrams. These are physical listener observations, **not** a claim of OS-global egress telemetry; UDPv6 was not measured.
+
+## New source-level defenses and fresh checks
+
+- TF3 ordinary GET/HEAD explicitly denies supplied native credentials (`credential-operation-denied`) rather than silently accepting them; request schema denies raw authorization headers, cookies, bodies and credential references. Native receipts remain secret-free, one-use and actor/workspace scoped. **This is a denial boundary, not accepted browser credential injection.**
+- A further isolated native regression simulates approved fixed-origin Brave provider search after native-keyring revocation: missing credential must yield `provider-unconfigured` with zero DNS/request bytes, no credential-use flag, a credential-free receipt, and no replay of the consumed token. This tests the existing provider credential reference, **not** arbitrary browser-origin credential forwarding.
+- Broker worker/native COM response paths now count `brokerAnswered` only after successful `SetResponse` **and** deferred `Complete`. Pending COM requests are terminally drained on pipe faults, synthetic 502/503/504 counters/status are recorded, and stale page/session or response IDs cannot silently deliver an old reply.
+- Fixture-only transport diagnostics distinguish connect/request/body failures, timeouts and early peer closes without changing the production Public-policy failure classification or disclosing arbitrary URLs.
+- Fresh pre-physical native checks: `tf_web` tests **18/18 PASS**, browser-host feature tests **9/9 PASS**, `cargo build --locked --features tf-browser-isolation-acceptance --bin clack-browser-host --example tf_browser_isolation_acceptance` **PASS**. Following the physical case, the added revoked-key test brought TF3 to **19/19 PASS**. Native TF4 **14/14**, TF1 **13/13**, TF2 **7/7**, focused TS **24/24**, TypeScript typecheck, and frontend production build also PASS. This checkpoint predates subsequent semantic and hidden-network additions, which require their own build and physical validation.
+
+## Explicit remaining gates (not passed)
+
+1. Full cancellation of top-level navigation, dependent stylesheet/image/script, fetch/XHR and in-flight page swaps; closed/restarted session and all generation races; separate broker process kill while a request is outstanding; browser crash with pending resources.
+2. Physical hidden-network class matrix beyond controlled listeners, especially IPv4-mapped IPv6, DNS/private resolution, link-local/RFC1918 destination ownership, WebRTC/STUN and UDPv6; no permission is given to contact arbitrary private/public destinations.
+3. Test-only credential **reference** resolution and revocation/staleness, exact origin and redirect/subresource exclusion, secret-free DOM/snapshot/logs/receipts, and absence of a second browser credential store.
+4. The exact historical `XDArr0` root cause is **UNKNOWN**. That old failure had one accepted TCP connection, zero completed origin HTTP requests, and generic TF3 `network-failed`. New failure-class instrumentation cannot retroactively prove which peer/socket/lifecycle condition occurred. Preserve the original failed evidence.
+5. A production-qualified remote HTTPS broker and supported-platform statement. The current host and physical runner remain non-default `tf-browser-isolation-acceptance` feature cases restricted to controlled origin. No cross-platform qualification is implied.
+6. Real semantic snapshots and stale element references, policy/approval/effect receipts, safe form submission, uploads/downloads, popups, storage isolation, screenshots, task UI and model tool exposure. The production model-facing browser still uses an explicit inert native-text engine. Do not promote WebView2 to public model use solely from these broker results.
+
+**Final gate:** The selected controlled Windows network-isolation/broker failure cases are PASS, but **BROWSER_INTERACTION_POLICY, BROWSER_EFFECT_RECEIPTS, BROWSER_CREDENTIAL_ISOLATION, BROWSER_LIFECYCLE (full), and MODEL_BROWSER_EXPOSURE are not accepted**. PR #46 must remain **Draft, unmerged**. **TF4 complete and safe to merge: NO.** No TF5/MCP work is authorized by this checkpoint.
