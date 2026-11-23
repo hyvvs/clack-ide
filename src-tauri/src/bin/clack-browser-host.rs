@@ -227,8 +227,10 @@ mod host {
     // the snapshot walker prevents a second traversal with different indexing
     // or sensitive-control exclusions.
     fn production_dom_identity_js() -> Result<String, &'static str> {
-        const RESULT_START: &str = "      const result = { version: 2, visited: 0, truncated: false,";
-        const ELEMENT_PUSH: &str = "          result.elements.push({ index: result.visited, role, depth,";
+        const RESULT_START: &str =
+            "      const result = { version: 2, visited: 0, truncated: false,";
+        const ELEMENT_PUSH: &str =
+            "          result.elements.push({ index: result.visited, role, depth,";
         const RESULT_RETURN: &str = "return result;";
         if PRODUCTION_DOM_JS.matches(RESULT_START).count() != 1
             || PRODUCTION_DOM_JS.matches(ELEMENT_PUSH).count() != 1
@@ -1516,15 +1518,25 @@ mod host {
             {
                 return Err("observation-identity-invalid");
             }
-            self.indices = captured.snapshot.elements.iter().map(|item| item.index).collect();
+            self.indices = captured
+                .snapshot
+                .elements
+                .iter()
+                .map(|item| item.index)
+                .collect();
             self.root_object_id = Some(captured.root_object_id.clone());
             Ok(())
         }
 
         fn reference(&self, index: u32) -> Result<NativeDomNodeRef, &'static str> {
-            let slot = self.indices.iter().position(|observed| *observed == index)
+            let slot = self
+                .indices
+                .iter()
+                .position(|observed| *observed == index)
                 .ok_or("observation-element-stale")?;
-            let root_object_id = self.root_object_id.as_ref()
+            let root_object_id = self
+                .root_object_id
+                .as_ref()
                 .ok_or("observation-element-stale")?;
             Ok(NativeDomNodeRef {
                 observation_id: self.observation_id,
@@ -1556,7 +1568,10 @@ mod host {
             {
                 return Err("observation-element-stale");
             }
-            Ok((self.root_object_id.as_deref().expect("checked above"), reference.slot))
+            Ok((
+                self.root_object_id.as_deref().expect("checked above"),
+                reference.slot,
+            ))
         }
     }
 
@@ -1577,7 +1592,8 @@ mod host {
         {
             return Err("observation-identity-invalid");
         }
-        let id = response.pointer("/result/objectId")
+        let id = response
+            .pointer("/result/objectId")
             .and_then(|v| v.as_str())
             .ok_or("observation-identity-invalid")?;
         if !valid_dom_object_id(id) {
@@ -1595,11 +1611,14 @@ mod host {
         if response.get("exceptionDetails").is_some() {
             return Err("observation-identity-invalid");
         }
-        let value = response.pointer("/result/value")
+        let value = response
+            .pointer("/result/value")
             .ok_or("observation-identity-invalid")?;
-        let snapshot = value.get("snapshot")
+        let snapshot = value
+            .get("snapshot")
             .ok_or("observation-identity-invalid")?;
-        let count = value.get("nodeCount")
+        let count = value
+            .get("nodeCount")
             .and_then(|count| count.as_u64())
             .ok_or("observation-identity-invalid")?;
         let verified = verify_production_dom(&snapshot.to_string())?;
@@ -2368,8 +2387,8 @@ mod host {
         // debugging endpoint, remote debugger or external process exists.
         let pending = Arc::new(Mutex::new(Some(done)));
         let completed_pending = pending.clone();
-        let completion = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
-            move |hr, output| {
+        let completion =
+            CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |hr, output| {
                 let checked = if hr.is_err() || output.len() > PRODUCTION_DOM_FRAME_LIMIT {
                     Err("observation-identity-unavailable")
                 } else {
@@ -2382,15 +2401,16 @@ mod host {
                     }
                 }
                 Ok(())
-            },
-        ));
+            }));
         if unsafe {
             core.CallDevToolsProtocolMethod(
                 &HSTRING::from(method),
                 &HSTRING::from(parameters),
                 &completion,
             )
-        }.is_err() {
+        }
+        .is_err()
+        {
             if let Ok(mut guard) = pending.lock() {
                 if let Some(done) = guard.take() {
                     drop(guard);
@@ -2460,9 +2480,13 @@ mod host {
                                 "silent": true,
                                 "awaitPromise": false,
                                 "generatePreview": false
-                            }).to_string();
-                            native_dom_cdp_on_ui(&core, "Runtime.evaluate", capture, Box::new(
-                                move |root_result| {
+                            })
+                            .to_string();
+                            native_dom_cdp_on_ui(
+                                &core,
+                                "Runtime.evaluate",
+                                capture,
+                                Box::new(move |root_result| {
                                     let root_object_id = match root_result
                                         .and_then(|raw| parse_dom_identity_root(&raw))
                                     {
@@ -2484,7 +2508,8 @@ mod host {
                                         "silent": true,
                                         "awaitPromise": false,
                                         "generatePreview": false
-                                    }).to_string();
+                                    })
+                                    .to_string();
                                     let result_sender = sender.clone();
                                     let validation_core = callback_core.clone();
                                     native_dom_cdp_on_ui(
@@ -2494,16 +2519,23 @@ mod host {
                                         Box::new(move |snapshot_result| {
                                             let checked = (|| {
                                                 let mut actual_source = PWSTR::null();
-                                                if unsafe { validation_core.Source(&mut actual_source) }
-                                                    .is_err()
+                                                if unsafe {
+                                                    validation_core.Source(&mut actual_source)
+                                                }
+                                                .is_err()
                                                 {
-                                                    return Err("observation-native-source-unavailable");
+                                                    return Err(
+                                                        "observation-native-source-unavailable",
+                                                    );
                                                 }
                                                 if take_pwstr(actual_source) != callback_expected
                                                     || callback_generation.load(Ordering::Acquire)
                                                         != request_generation
                                                     || callback_stats.broken.load(Ordering::Acquire)
-                                                    || callback_stats.pending.load(Ordering::Acquire) != 0
+                                                    || callback_stats
+                                                        .pending
+                                                        .load(Ordering::Acquire)
+                                                        != 0
                                                 {
                                                     return Err("observation-page-stale");
                                                 }
@@ -2513,12 +2545,13 @@ mod host {
                                                     snapshot,
                                                     root_object_id,
                                                 })
-                                            })();
+                                            })(
+                                            );
                                             let _ = result_sender.send(checked);
                                         }),
                                     );
-                                },
-                            ));
+                                }),
+                            );
                         })
                         .map_err(|_| "observation-ui-dispatch")
                 });
@@ -6103,42 +6136,64 @@ mod host {
             let snapshot = verify_production_dom(&production_dom_case().to_string()).unwrap();
             let mut identity = NativeDomIdentity::default();
             identity.invalidate(1, 7);
-            identity.bind(&NativeDomObservation {
-                snapshot: snapshot.clone(),
-                root_object_id: r#"{"injectedScriptId":1,"id":10}"#.into(),
-            }).unwrap();
+            identity
+                .bind(&NativeDomObservation {
+                    snapshot: snapshot.clone(),
+                    root_object_id: r#"{"injectedScriptId":1,"id":10}"#.into(),
+                })
+                .unwrap();
             let old_button = identity.reference(4).unwrap();
             assert_eq!(identity.check_reference(&old_button, 1, 7).unwrap().1, 2);
             assert!(identity.reference(3).is_err()); // never select by a fallback index
-            assert_eq!(identity.check_reference(&old_button, 1, 8).unwrap_err(),
-                "observation-element-stale");
+            assert_eq!(
+                identity.check_reference(&old_button, 1, 8).unwrap_err(),
+                "observation-element-stale"
+            );
 
             // Replacement with the identical role and tree position has a
             // different retained COM object. Re-observation cannot transplant
             // the old reference onto the new element.
             identity.invalidate(2, 7);
-            identity.bind(&NativeDomObservation {
-                snapshot,
-                root_object_id: r#"{"injectedScriptId":1,"id":11}"#.into(),
-            }).unwrap();
+            identity
+                .bind(&NativeDomObservation {
+                    snapshot,
+                    root_object_id: r#"{"injectedScriptId":1,"id":11}"#.into(),
+                })
+                .unwrap();
             let replacement_button = identity.reference(4).unwrap();
-            assert_eq!(identity.check_reference(&old_button, 2, 7).unwrap_err(),
-                "observation-element-stale");
-            assert_eq!(identity.check_reference(&replacement_button, 2, 7).unwrap().1, 2);
+            assert_eq!(
+                identity.check_reference(&old_button, 2, 7).unwrap_err(),
+                "observation-element-stale"
+            );
+            assert_eq!(
+                identity
+                    .check_reference(&replacement_button, 2, 7)
+                    .unwrap()
+                    .1,
+                2
+            );
 
             identity.invalidate(3, 8); // native NavigationStarting epoch
-            assert_eq!(identity.check_reference(&replacement_button, 3, 8).unwrap_err(),
-                "observation-element-stale");
+            assert_eq!(
+                identity
+                    .check_reference(&replacement_button, 3, 8)
+                    .unwrap_err(),
+                "observation-element-stale"
+            );
             assert!(identity.reference(4).is_err());
         }
 
         #[test]
         fn production_native_dom_identity_parser_is_closed_bounded_and_never_exports_handles() {
-            let root = r#"{"result":{"type":"object","objectId":"{\"injectedScriptId\":1,\"id\":9}"}}"#;
+            let root =
+                r#"{"result":{"type":"object","objectId":"{\"injectedScriptId\":1,\"id\":9}"}}"#;
             let parsed = parse_dom_identity_root(root).unwrap();
             assert_eq!(parsed, r#"{"injectedScriptId":1,"id":9}"#);
-            assert_eq!(parse_dom_identity_root(r#"{"result":{"type":"string","value":"secret"}}"#)
-                .unwrap_err(), "observation-identity-invalid");
+            assert_eq!(
+                parse_dom_identity_root(r#"{"result":{"type":"string","value":"secret"}}"#)
+                    .unwrap_err(),
+                "observation-identity-invalid"
+            );
             assert_eq!(parse_dom_identity_root(&json!({
                 "result":{"type":"object","objectId":"X".repeat(DOM_IDENTITY_OBJECT_ID_LIMIT + 1)}
             }).to_string()).unwrap_err(), "observation-identity-bounds");
@@ -6148,31 +6203,50 @@ mod host {
             }}});
             let verified = parse_dom_identity_snapshot(&response.to_string()).unwrap();
             assert_eq!(verified.elements.len(), 3);
-            assert!(!serde_json::to_string(&dom_reply(&ParentDomRequest {
-                version: 2, kind: "observe-dom".into(), session: NONCE.into(),
-                observation_id: 1, page_generation: 7,
-                source_id: production_dom_source_id("https://example.test/").unwrap(),
-            }, Some(&verified), None)).unwrap().contains("injectedScriptId"));
+            assert!(!serde_json::to_string(&dom_reply(
+                &ParentDomRequest {
+                    version: 2,
+                    kind: "observe-dom".into(),
+                    session: NONCE.into(),
+                    observation_id: 1,
+                    page_generation: 7,
+                    source_id: production_dom_source_id("https://example.test/").unwrap(),
+                },
+                Some(&verified),
+                None
+            ))
+            .unwrap()
+            .contains("injectedScriptId"));
             let mut invalid = response.clone();
             invalid["result"]["value"]["nodeCount"] = json!(4);
-            assert_eq!(parse_dom_identity_snapshot(&invalid.to_string()).unwrap_err(),
-                "observation-identity-invalid");
+            assert_eq!(
+                parse_dom_identity_snapshot(&invalid.to_string()).unwrap_err(),
+                "observation-identity-invalid"
+            );
             invalid = response.clone();
             invalid["result"]["value"]["snapshot"]["elements"][0]["name"] = json!("secret");
-            assert_eq!(parse_dom_identity_snapshot(&invalid.to_string()).unwrap_err(),
-                "observation-result-invalid");
+            assert_eq!(
+                parse_dom_identity_snapshot(&invalid.to_string()).unwrap_err(),
+                "observation-result-invalid"
+            );
             invalid = response;
             invalid["exceptionDetails"] = json!({"text":"private page exception"});
-            assert_eq!(parse_dom_identity_snapshot(&invalid.to_string()).unwrap_err(),
-                "observation-identity-invalid");
+            assert_eq!(
+                parse_dom_identity_snapshot(&invalid.to_string()).unwrap_err(),
+                "observation-identity-invalid"
+            );
         }
 
         #[test]
         fn production_native_dom_identity_probe_captures_same_walk_and_guards_mutations() {
             let script = production_dom_identity_js().unwrap();
             assert_eq!(script.matches("identityNodes.push(node)").count(), 1);
-            assert!(script.find("identityObserver.observe(document").unwrap()
-                < script.find("const walker = document.createTreeWalker").unwrap());
+            assert!(
+                script.find("identityObserver.observe(document").unwrap()
+                    < script
+                        .find("const walker = document.createTreeWalker")
+                        .unwrap()
+            );
             assert!(script.contains("node = walker.nextSibling()"));
             assert!(script.contains("if (node.isContentEditable)"));
             assert!(script.contains("result.elements.push({ index: result.visited"));
@@ -6185,9 +6259,20 @@ mod host {
             assert!(DOM_NODE_RECHECK_JS.contains("this.nodes[slot]"));
             assert!(DOM_NODE_RECHECK_JS.contains("node.isConnected"));
             assert!(DOM_NODE_RECHECK_JS.contains("node.ownerDocument === document"));
-            for forbidden in ["querySelector(", "getAttribute(", ".value", ".textContent",
-                "fetch(", "localStorage", ".outerHTML", ".innerHTML"] {
-                assert!(!script.contains(forbidden), "unsafe identity probe: {forbidden}");
+            for forbidden in [
+                "querySelector(",
+                "getAttribute(",
+                ".value",
+                ".textContent",
+                "fetch(",
+                "localStorage",
+                ".outerHTML",
+                ".innerHTML",
+            ] {
+                assert!(
+                    !script.contains(forbidden),
+                    "unsafe identity probe: {forbidden}"
+                );
                 assert!(!DOM_NODE_RECHECK_JS.contains(forbidden));
             }
         }
