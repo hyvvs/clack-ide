@@ -163,7 +163,22 @@ pub(crate) enum NativeEffectTerminal {
     CancelledBeforeDispatch,
     FailedBeforeDispatch,
     Dispatched,
+    /// Requires independently observed post-dispatch effect evidence.
+    /// `verify_completion` checks reference freshness, not that the effect occurred.
     Confirmed,
+    Unknown,
+}
+
+/// Coarse terminal classification for consumers that need a stable outcome.
+/// The fine-grained `NativeEffectTerminal` still identifies the exact cause.
+/// Only an independently observed effect may be `Success`; a dispatch ACK is
+/// always `Unknown` because the page/server effect has not been established.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(crate) enum NativeEffectOutcome {
+    Success,
+    Failed,
+    Cancelled,
     Unknown,
 }
 
@@ -171,6 +186,7 @@ pub(crate) enum NativeEffectTerminal {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NativeEffectReceipt {
     pub terminal: NativeEffectTerminal,
+    pub canonical_terminal: NativeEffectOutcome,
     pub policy_decision: &'static str,
     pub effect_state: &'static str,
     pub retry: &'static str,
@@ -184,45 +200,54 @@ impl NativeEffectReceipt {
     /// has been bound to this exact action; transport success alone is not
     /// enough. This constructor never grants dispatch authorization.
     pub(crate) fn classify(terminal: NativeEffectTerminal) -> Self {
+        use NativeEffectOutcome as O;
         use NativeEffectTerminal as T;
-        let (policy_decision, effect_state, retry, reason_code) = match terminal {
+        let (canonical_terminal, policy_decision, effect_state, retry, reason_code) = match terminal
+        {
             T::Denied => (
+                O::Failed,
                 "denied",
                 "NotAttempted",
                 "NOT_ATTEMPTED",
                 "native-effect-policy-denied",
             ),
             T::Stale => (
+                O::Failed,
                 "allowed",
                 "NotAttempted",
                 "SAFE_REPREPARE",
                 "native-effect-exact-node-stale",
             ),
             T::CancelledBeforeDispatch => (
+                O::Cancelled,
                 "allowed",
                 "NotAttempted",
                 "SAFE_REPREPARE",
                 "native-effect-cancelled-before-dispatch",
             ),
             T::FailedBeforeDispatch => (
+                O::Failed,
                 "allowed",
                 "NotAttempted",
                 "SAFE_REPREPARE",
                 "native-effect-failed-before-dispatch",
             ),
             T::Dispatched => (
+                O::Unknown,
                 "allowed",
                 "Unknown",
                 "NEVER_REPLAY",
                 "native-effect-dispatched-unconfirmed",
             ),
             T::Confirmed => (
+                O::Success,
                 "allowed",
                 "Observed",
                 "NEVER_REPLAY",
                 "native-effect-independently-confirmed",
             ),
             T::Unknown => (
+                O::Unknown,
                 "allowed",
                 "Unknown",
                 "NEVER_REPLAY",
@@ -231,6 +256,7 @@ impl NativeEffectReceipt {
         };
         Self {
             terminal,
+            canonical_terminal,
             policy_decision,
             effect_state,
             retry,
@@ -728,6 +754,74 @@ mod tests {
         let json = serde_json::to_value(NativeEffectReceipt::classify(T::Unknown)).unwrap();
         assert_eq!(json["terminal"], "UNKNOWN");
         assert_eq!(json["autoRetry"], false);
+    }
+    #[test]
+    fn native_effect_canonical_terminals_preserve_detail_and_observed_effect_truth() {
+        use NativeEffectOutcome as O;
+        use NativeEffectTerminal as T;
+        for (terminal, fine, expected, effect, retry) in [
+            (
+                T::Denied,
+                "DENIED",
+                O::Failed,
+                "NotAttempted",
+                "NOT_ATTEMPTED",
+            ),
+            (
+                T::Stale,
+                "STALE",
+                O::Failed,
+                "NotAttempted",
+                "SAFE_REPREPARE",
+            ),
+            (
+                T::CancelledBeforeDispatch,
+                "CANCELLED_BEFORE_DISPATCH",
+                O::Cancelled,
+                "NotAttempted",
+                "SAFE_REPREPARE",
+            ),
+            (
+                T::FailedBeforeDispatch,
+                "FAILED_BEFORE_DISPATCH",
+                O::Failed,
+                "NotAttempted",
+                "SAFE_REPREPARE",
+            ),
+            (
+                T::Dispatched,
+                "DISPATCHED",
+                O::Unknown,
+                "Unknown",
+                "NEVER_REPLAY",
+            ),
+            (
+                T::Confirmed,
+                "CONFIRMED",
+                O::Success,
+                "Observed",
+                "NEVER_REPLAY",
+            ),
+            (T::Unknown, "UNKNOWN", O::Unknown, "Unknown", "NEVER_REPLAY"),
+        ] {
+            let receipt = NativeEffectReceipt::classify(terminal);
+            assert_eq!(receipt.terminal, terminal);
+            assert_eq!(receipt.canonical_terminal, expected);
+            assert_eq!(receipt.effect_state, effect);
+            assert_eq!(receipt.retry, retry);
+            assert!(!receipt.auto_retry);
+            assert_eq!(receipt.effect_state == "Observed", expected == O::Success);
+            assert_eq!(receipt.retry == "NEVER_REPLAY", effect != "NotAttempted");
+            let json = serde_json::to_value(receipt).unwrap();
+            assert_eq!(json["terminal"], fine);
+            assert_eq!(
+                json["canonicalTerminal"],
+                serde_json::to_value(expected).unwrap()
+            );
+            assert_eq!(json["effectState"], effect);
+            assert_eq!(json["retry"], retry);
+            assert_eq!(json["autoRetry"], false);
+        }
     }
     fn session() -> BrowserPageContract {
         BrowserPageContract::new("a".repeat(48), "https://example.org/form").unwrap()

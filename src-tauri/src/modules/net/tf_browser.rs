@@ -22,13 +22,27 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 use tauri::async_runtime::JoinHandle;
 use tauri::Manager;
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+use tokio::sync::{mpsc, oneshot};
 use tokio::sync::{watch, Semaphore};
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+use super::tf_browser_contract::{
+    ActionTarget, BrowserEffect, NativeEffectOutcome, NativeEffectReceipt, NativeEffectTerminal,
+    PageSnapshot, SemanticRole,
+};
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+use super::tf_browser_runtime::NativeConsumedExactClickApproval;
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+use super::tf_browser_runtime::{NativeControlTurnRequester, NativeExactClickApprovalScope};
 
 const TOOL_ID: &str = "tf.browser_operation.v1";
 const ENGINE: &str = "inert_native_text";
@@ -53,6 +67,12 @@ const MAX_TEXT: usize = 32 * 1024;
 const MAX_NETWORK_BYTES: usize = 64 * 1024;
 const MAX_TIMEOUT: u64 = 15_000;
 const MAX_URL: usize = 2048;
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+const NATIVE_CLICK_QUEUED: u8 = 0;
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+const NATIVE_CLICK_DISPATCH_COMMITTED: u8 = 1;
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+const NATIVE_CLICK_CANCELLED: u8 = 2;
 static APPROVAL_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(4)));
 
 fn confined_runtime_packaged() -> bool {
@@ -75,11 +95,17 @@ pub enum TfBrowserOperation {
     /// Internal UI-only, opt-in native read-only startup. Not in model tool
     /// schemas, not a substitute for semantic observation/action acceptance.
     OpenConfined,
+    /// Internal application-owned native observation, deliberately absent
+    /// from current model tool registration until full TF4 acceptance.
+    ObserveConfined,
     Navigate,
     Snapshot,
     ClickLink,
     Back,
     Close,
+    /// Emergency stop/cleanup of an isolated native session through its
+    /// trusted application owner; deliberately NOT registered as a model tool.
+    CloseConfined,
     Click,
     Type,
     Scroll,
@@ -97,6 +123,14 @@ impl TfBrowserOperation {
             self,
             Self::Click | Self::Type | Self::Scroll | Self::Screenshot
         )
+    }
+    fn approval_required(self) -> bool {
+        // DOM effects require actual application consent even when the
+        // destination is the currently approved origin. A test/headless
+        // allowance must never be sufficient for a native gesture.
+        self.network()
+            || self == Self::ObserveConfined
+            || matches!(self, Self::Click | Self::Type | Self::Scroll)
     }
 }
 
@@ -481,6 +515,9 @@ fn consume<'a>(
             .browser_id
             .as_deref()
             .ok_or("browser-session-id-required")?;
+        if entries.active.contains_key(token) {
+            return Err("native-click-active-token-conflict".into());
+        }
         let session = entries
             .sessions
             .get_mut(id)
@@ -489,7 +526,12 @@ fn consume<'a>(
             return Err("browser-session-revision-or-scope-changed".into());
         }
         #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-        if session.native.is_some() && p.request.operation != TfBrowserOperation::Close {
+        if session.native.is_some()
+            && !matches!(
+                p.request.operation,
+                TfBrowserOperation::CloseConfined | TfBrowserOperation::ObserveConfined
+            )
+        {
             return Err("confined-native-action-observation-not-accepted".into());
         }
         if session.busy {
@@ -672,7 +714,7 @@ pub fn status(
     })
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TfBrowserRequest {
     pub operation: TfBrowserOperation,
@@ -681,6 +723,9 @@ pub struct TfBrowserRequest {
     pub workspace_root: String,
     pub browser_session_id: Option<String>,
     pub url: Option<String>,
+    /// Native-only exact page owner. Never interpreted as a selector.
+    pub page_id: Option<String>,
+    pub page_generation: Option<u64>,
     pub snapshot_id: Option<String>,
     pub element_id: Option<String>,
     pub selector: Option<String>,
@@ -720,6 +765,15 @@ pub struct TfBrowserReceipt {
     pub operation: TfBrowserOperation,
     pub browser_session_id: Option<String>,
     pub terminal: &'static str,
+    /// Native exact-node terminal, only when the action actor returned a
+    /// verified closed action result. This distinguishes DISPATCHED from
+    /// UNKNOWN transport failure; neither means successful external effect.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_terminal: Option<NativeEffectTerminal>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_terminal: Option<NativeEffectOutcome>,
     pub effect_state: &'static str,
     pub reason_code: String,
     pub policy_decision: &'static str,
@@ -740,6 +794,10 @@ pub struct TfBrowserReceipt {
     pub content_sha256: Option<String>,
     /// Inert extracted plain text. Never rendered HTML/DOM.
     pub body: Option<String>,
+    /// Closed, bounded native semantic DOM projection only for internal
+    /// confined observation. No arbitrary JS, selectors or CDP handles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_page: Option<serde_json::Value>,
     pub snapshot_id: Option<String>,
     pub elements: Vec<TfBrowserElement>,
     pub started_at: u64,
@@ -797,6 +855,10 @@ struct BrowserSession {
     history: Vec<String>,
     revision: u64,
     busy: bool,
+    /// Reserve one exact action token before queued native dispatch, rather
+    /// than leaving multiple callers eligible while waiting for a host turn.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    native_reserved_action: Option<String>,
     expires: Instant,
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     native: Option<NativeBackground>,
@@ -805,9 +867,131 @@ struct BrowserSession {
 struct NativeBackground {
     stop: watch::Sender<bool>,
     task: Option<JoinHandle<Result<(), String>>>,
+    owner_alive: Arc<AtomicBool>,
+    command_tx: mpsc::Sender<NativeCommand>,
+    turn_requester: NativeControlTurnRequester,
+    /// Latest authenticated COM snapshot; invalidated by any brokered
+    /// navigation/new-document GET or effectful action attempt.
+    snapshot: Arc<Mutex<Option<PageSnapshot>>>,
     /// In-memory per-session projection of the canonical TF3 broker receipts.
     /// Not a parallel receipt database or an authoritative effect grant.
     receipts: Arc<Mutex<Vec<BrokerResourceReceipt>>>,
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+struct NativeOwnerLivenessGuard(Arc<AtomicBool>);
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+impl Drop for NativeOwnerLivenessGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+enum NativeCommand {
+    Observe {
+        reply: oneshot::Sender<Result<PageSnapshot, String>>,
+    },
+    Click {
+        token: String,
+        browser_id: String,
+        target: ActionTarget,
+        active: Arc<Active>,
+        reply: oneshot::Sender<Result<NativeEffectReceipt, String>>,
+    },
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+struct NativeActionBusyGuard {
+    app: tauri::AppHandle,
+    browser_id: String,
+    token: String,
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+impl Drop for NativeActionBusyGuard {
+    fn drop(&mut self) {
+        let state = self.app.state::<TfBrowserState>();
+        if let Ok(mut entries) = state.entries.lock() {
+            // Terminal actor handling burns even an expired or pre-consumption
+            // command; no orphaned busy lease or approval may be replayed.
+            entries.pending.remove(&self.token);
+            entries.active.remove(&self.token);
+            if let Some(session) = entries.sessions.get_mut(&self.browser_id) {
+                if session.native_reserved_action.as_deref() == Some(self.token.as_str()) {
+                    session.native_reserved_action = None;
+                    session.busy = false;
+                }
+            }
+        };
+    }
+}
+/// A cancelled Tauri future cannot leave a queued, unused central approval
+/// behind. If the actor already consumed the token, only its own lease may
+/// unlock the session; ambiguous native dispatch must never be replayed.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+struct NativeActionQueueGuard<'a> {
+    state: &'a TfBrowserState,
+    browser_id: String,
+    token: String,
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+impl Drop for NativeActionQueueGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut entries) = self.state.entries.lock() {
+            // The UI future may disappear after actor consumption but before
+            // irreversible dispatch. Try to win the same atomic cancel/commit
+            // race used by explicit tf_browser_cancel.
+            if let Some(active) = entries.active.get(&self.token) {
+                if let Some(phase) = active.native_click_phase.as_ref() {
+                    if phase
+                        .compare_exchange(
+                            NATIVE_CLICK_QUEUED,
+                            NATIVE_CLICK_CANCELLED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        active.cancelled.store(true, Ordering::Release);
+                    }
+                }
+            }
+            if entries.pending.remove(&self.token).is_some() {
+                entries.active.remove(&self.token);
+                if let Some(session) = entries.sessions.get_mut(&self.browser_id) {
+                    if session.native_reserved_action.as_deref() == Some(self.token.as_str()) {
+                        session.native_reserved_action = None;
+                        session.busy = false;
+                    }
+                }
+            }
+        }
+    }
+}
+/// Only the actor's pre-dispatch approval/scope phase may call this mapper.
+/// Once dispatch has been entered, any transport or COM error is UNKNOWN.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn native_pre_dispatch_terminal(reason: &str) -> NativeEffectTerminal {
+    if reason == "native-click-cancelled-before-consumption" {
+        NativeEffectTerminal::CancelledBeforeDispatch
+    } else if matches!(
+        reason,
+        "STALE_ELEMENT"
+            | "STALE_SESSION"
+            | "native-click-observation-stale"
+            | "native-click-central-page-or-element-changed"
+            | "confined-native-central-page-or-element-changed"
+            | "confined-native-snapshot-stale"
+    ) {
+        NativeEffectTerminal::Stale
+    } else if matches!(
+        reason,
+        "unknown-or-consumed-browser-token"
+            | "confined-native-central-approval-expired-or-scope-changed"
+            | "confined-native-central-session-or-source-changed"
+            | "native-click-central-approval-required"
+    ) {
+        NativeEffectTerminal::Denied
+    } else {
+        NativeEffectTerminal::FailedBeforeDispatch
+    }
 }
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 impl Drop for NativeBackground {
@@ -816,6 +1000,7 @@ impl Drop for NativeBackground {
         // running unattended; the background loop selects on this exact
         // sender and its owned Job Object is kill-on-close.
         self.stop.send_replace(true);
+        self.owner_alive.store(false, Ordering::Release);
     }
 }
 #[derive(Clone)]
@@ -829,9 +1014,19 @@ struct Pending {
     expires: Instant,
     approved: bool,
     approving: bool,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    native_target: Option<ActionTarget>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    native_effect: Option<BrowserEffect>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    native_role: Option<SemanticRole>,
 }
 struct Active {
     cancelled: AtomicBool,
+    /// Linearizes native cancel vs irreversible dispatch. This is a phase
+    /// marker on the existing active call, NOT a separate approval token.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    native_click_phase: Option<AtomicU8>,
     tf_web_token: Mutex<Option<String>>,
     cancel_watch: watch::Sender<bool>,
 }
@@ -840,6 +1035,8 @@ impl Default for Active {
         let (cancel_watch, _) = watch::channel(false);
         Self {
             cancelled: AtomicBool::new(false),
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            native_click_phase: None,
             tf_web_token: Mutex::new(None),
             cancel_watch,
         }
@@ -971,6 +1168,8 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
         TfBrowserOperation::Open | TfBrowserOperation::OpenConfined => {
             if req.browser_session_id.is_some()
                 || req.url.is_none()
+                || req.page_id.is_some()
+                || req.page_generation.is_some()
                 || req.snapshot_id.is_some()
                 || req.element_id.is_some()
                 || req.selector.is_some()
@@ -1001,6 +1200,8 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
         }
         TfBrowserOperation::Navigate => {
             if req.url.is_none()
+                || req.page_id.is_some()
+                || req.page_generation.is_some()
                 || req.snapshot_id.is_some()
                 || req.element_id.is_some()
                 || req.selector.is_some()
@@ -1012,6 +1213,8 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
         }
         TfBrowserOperation::ClickLink => {
             if req.url.is_some()
+                || req.page_id.is_some()
+                || req.page_generation.is_some()
                 || req.selector.is_some()
                 || req.text.is_some()
                 || req.snapshot_id.as_deref().is_none_or(|s| !valid_id(s))
@@ -1020,8 +1223,14 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
                 return Err("click-link-parameters-denied".into());
             }
         }
-        TfBrowserOperation::Back | TfBrowserOperation::Snapshot | TfBrowserOperation::Close => {
+        TfBrowserOperation::Back
+        | TfBrowserOperation::Snapshot
+        | TfBrowserOperation::ObserveConfined
+        | TfBrowserOperation::Close
+        | TfBrowserOperation::CloseConfined => {
             if req.url.is_some()
+                || req.page_id.is_some()
+                || req.page_generation.is_some()
                 || req.element_id.is_some()
                 || req.selector.is_some()
                 || req.text.is_some()
@@ -1031,9 +1240,23 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
                 return Err("browser-operation-parameters-denied".into());
             }
         }
+        TfBrowserOperation::Click => {
+            if req.url.is_some()
+                || req.selector.is_some()
+                || req.text.is_some()
+                || req.page_id.as_deref().is_none_or(|s| !valid_id(s))
+                || req.page_generation.is_none_or(|g| g == 0)
+                || req.snapshot_id.as_deref().is_none_or(|s| !valid_id(s))
+                || req.element_id.as_deref().is_none_or(|s| !valid_id(s))
+            {
+                return Err("native-click-exact-target-required".into());
+            }
+        }
         // Unsupported operations cannot acquire arbitrary selectors or scripts.
         _ => {
             if req.url.is_some()
+                || req.page_id.is_some()
+                || req.page_generation.is_some()
                 || req.element_id.is_some()
                 || req.text.is_some()
                 || req.selector.is_some()
@@ -1073,6 +1296,12 @@ pub fn prepare(
     if entries.pending.len() >= MAX_PENDING || entries.active.len() >= MAX_ACTIVE {
         return Err("browser-capacity-exceeded".into());
     }
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    let mut native_target: Option<ActionTarget> = None;
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    let mut native_effect: Option<BrowserEffect> = None;
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    let mut native_role: Option<SemanticRole> = None;
     let (browser_id, revision, url) = if matches!(
         req.operation,
         TfBrowserOperation::Open | TfBrowserOperation::OpenConfined
@@ -1095,8 +1324,73 @@ pub fn prepare(
             return Err("browser-session-scope-denied".into());
         }
         #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-        if session.native.is_some() && req.operation != TfBrowserOperation::Close {
-            return Err("confined-native-operation-not-yet-accepted".into());
+        if let Some(native) = session.native.as_ref() {
+            if !native.owner_alive.load(Ordering::Acquire)
+                && req.operation != TfBrowserOperation::CloseConfined
+            {
+                return Err("confined-native-owner-not-live".into());
+            }
+            if !matches!(
+                req.operation,
+                TfBrowserOperation::CloseConfined
+                    | TfBrowserOperation::ObserveConfined
+                    | TfBrowserOperation::Click
+            ) {
+                return Err("confined-native-operation-not-yet-accepted".into());
+            }
+            if req.operation == TfBrowserOperation::Click {
+                let page = native
+                    .snapshot
+                    .lock()
+                    .map_err(|_| "confined-native-snapshot-unavailable")?
+                    .clone()
+                    .ok_or("confined-native-snapshot-required")?;
+                if req.page_id.as_deref() != Some(page.page_id.as_str())
+                    || req.page_generation != Some(page.page_generation)
+                    || req.snapshot_id.as_deref() != Some(page.snapshot_id.as_str())
+                    || !page.elements.iter().any(|element| {
+                        req.element_id.as_deref() == Some(element.element_ref.as_str())
+                    })
+                    || page.origin
+                        != Url::parse(&session.snapshot.url)
+                            .map_err(|_| "confined-native-origin-invalid")?
+                            .origin()
+                            .ascii_serialization()
+                {
+                    return Err("confined-native-action-exact-target-stale".into());
+                }
+                native_role = page
+                    .elements
+                    .iter()
+                    .find(|element| req.element_id.as_deref() == Some(element.element_ref.as_str()))
+                    .map(|element| element.role.clone());
+                native_target = Some(ActionTarget {
+                    browser_session_id: page.browser_session_id.clone(),
+                    page_id: page.page_id,
+                    page_generation: page.page_generation,
+                    snapshot_id: page.snapshot_id,
+                    element_ref: req.element_id.clone().ok_or("element-id-required")?,
+                });
+                // First closed action slice is only for link-like UNKNOWN
+                // effects. Destructive/writing classifications fail closed
+                // during the independent native recheck, not coerced to this.
+                native_effect = Some(BrowserEffect::Unknown);
+            }
+        } else if matches!(
+            req.operation,
+            TfBrowserOperation::ObserveConfined | TfBrowserOperation::CloseConfined
+        ) {
+            return Err("confined-native-session-required".into());
+        }
+        // The inert text-page engine has no DOM Node identity and must not
+        // manufacture a production action token for this operation.
+        if session.native.is_none()
+            && matches!(
+                req.operation,
+                TfBrowserOperation::Click | TfBrowserOperation::Type | TfBrowserOperation::Scroll
+            )
+        {
+            return Err("native-action-requires-confined-approved-runtime".into());
         }
         if session.busy {
             return Err("browser-session-busy".into());
@@ -1133,6 +1427,12 @@ pub fn prepare(
                 }
                 None
             }
+            TfBrowserOperation::ObserveConfined | TfBrowserOperation::Click => {
+                // Bind the original approved origin in the existing immutable
+                // pending transaction. Do not show untrusted URL path/query in
+                // the approval UI or treat it as an independent TF3 grant.
+                Some(valid_nav_url(&session.snapshot.url)?)
+            }
             _ => None,
         };
         (Some(id.to_owned()), Some(session.revision), url)
@@ -1143,15 +1443,27 @@ pub fn prepare(
         token: token.clone(),
         request_id: request_id.clone(),
         operation: req.operation,
-        requires_approval: req.operation.network(),
+        requires_approval: req.operation.approval_required(),
         workspace_root: root.to_string_lossy().into_owned(),
         browser_session_id: browser_id.clone(),
-        engine: if req.operation == TfBrowserOperation::OpenConfined {
+        engine: if matches!(
+            req.operation,
+            TfBrowserOperation::OpenConfined
+                | TfBrowserOperation::ObserveConfined
+                | TfBrowserOperation::Click
+                | TfBrowserOperation::CloseConfined
+        ) {
             CONFINED_ENGINE
         } else {
             ENGINE
         },
-        isolation: if req.operation == TfBrowserOperation::OpenConfined {
+        isolation: if matches!(
+            req.operation,
+            TfBrowserOperation::OpenConfined
+                | TfBrowserOperation::ObserveConfined
+                | TfBrowserOperation::Click
+                | TfBrowserOperation::CloseConfined
+        ) {
             CONFINED_ISOLATION
         } else {
             ISOLATION
@@ -1169,6 +1481,12 @@ pub fn prepare(
             expires: Instant::now() + PENDING_TTL,
             approved: !prepared.requires_approval,
             approving: false,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            native_target,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            native_effect,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            native_role,
         },
     );
     Ok(prepared)
@@ -1185,10 +1503,15 @@ pub fn approve_headless(token: &str, state: &TfBrowserState) -> Result<(), Strin
         .pending
         .get_mut(token)
         .ok_or("unknown-or-consumed-browser-token")?;
-    if !p.request.operation.network() || p.approved || p.approving {
+    if !p.request.operation.approval_required() || p.approved || p.approving {
         return Err("browser-approval-not-applicable".into());
     }
-    if p.request.operation == TfBrowserOperation::OpenConfined {
+    if matches!(
+        p.request.operation,
+        TfBrowserOperation::OpenConfined
+            | TfBrowserOperation::ObserveConfined
+            | TfBrowserOperation::Click
+    ) {
         return Err("confined-native-requires-visible-application-approval".into());
     }
     p.approved = true;
@@ -1200,7 +1523,37 @@ pub fn cancel(token: &str, state: &TfBrowserState, web_state: &TfWebState) -> Re
             .entries
             .lock()
             .map_err(|_| "browser-state-unavailable")?;
-        if entries.pending.remove(token).is_some() {
+        if let Some(pending) = entries.pending.remove(token) {
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            if pending.request.operation == TfBrowserOperation::Click {
+                if let Some(active) = entries.active.remove(token) {
+                    if let Some(phase) = active.native_click_phase.as_ref() {
+                        let _ = phase.compare_exchange(
+                            NATIVE_CLICK_QUEUED,
+                            NATIVE_CLICK_CANCELLED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        );
+                    }
+                    active.cancelled.store(true, Ordering::SeqCst);
+                    active.cancel_watch.send_replace(true);
+                }
+            }
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            if pending.request.operation == TfBrowserOperation::Click {
+                if let Some(session) = pending
+                    .browser_id
+                    .as_deref()
+                    .and_then(|id| entries.sessions.get_mut(id))
+                {
+                    if session.native_reserved_action.as_deref() == Some(token) {
+                        session.native_reserved_action = None;
+                        session.busy = false;
+                    }
+                }
+            }
+            #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
+            let _ = pending;
             return Ok(true);
         }
         entries.active.get(token).cloned()
@@ -1208,6 +1561,22 @@ pub fn cancel(token: &str, state: &TfBrowserState, web_state: &TfWebState) -> Re
     let Some(active) = active else {
         return Ok(false);
     };
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    if let Some(phase) = active.native_click_phase.as_ref() {
+        // Once the actor commits irreversible dispatch, cancellation cannot
+        // honestly promise to stop the native COM gesture.
+        if phase
+            .compare_exchange(
+                NATIVE_CLICK_QUEUED,
+                NATIVE_CLICK_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Ok(false);
+        }
+    }
     active.cancelled.store(true, Ordering::SeqCst);
     active.cancel_watch.send_replace(true);
     let inner = active
@@ -1228,17 +1597,33 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
         operation: p.request.operation,
         browser_session_id: p.browser_id.clone(),
         terminal: "denied",
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+        native_terminal: None,
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+        canonical_terminal: None,
         effect_state: "NoEffect",
         reason_code: "not-executed".into(),
         policy_decision: "denied",
         retry: "not_attempted",
         auto_retry: false,
-        engine: if p.request.operation == TfBrowserOperation::OpenConfined {
+        engine: if matches!(
+            p.request.operation,
+            TfBrowserOperation::OpenConfined
+                | TfBrowserOperation::ObserveConfined
+                | TfBrowserOperation::Click
+                | TfBrowserOperation::CloseConfined
+        ) {
             CONFINED_ENGINE
         } else {
             ENGINE
         },
-        isolation: if p.request.operation == TfBrowserOperation::OpenConfined {
+        isolation: if matches!(
+            p.request.operation,
+            TfBrowserOperation::OpenConfined
+                | TfBrowserOperation::ObserveConfined
+                | TfBrowserOperation::Click
+                | TfBrowserOperation::CloseConfined
+        ) {
             CONFINED_ISOLATION
         } else {
             ISOLATION
@@ -1255,6 +1640,7 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
         truncated: false,
         content_sha256: None,
         body: None,
+        native_page: None,
         snapshot_id: None,
         elements: Vec::new(),
         started_at: millis(),
@@ -1271,6 +1657,107 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
             "os_browser_network_sandbox_and_peer_ip_attestation",
         ],
     }
+}
+
+/// The ONLY production native click grant consumption. A child control-turn
+/// offer is transport scheduling, NEVER consent. This atomically burns the
+/// existing TF4 pending token, issued in prepare() and approved by the genuine
+/// application dialog. A mismatch also burns it. No model-provided approval
+/// ID, second store or test fixture flag participates in this transaction.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn consume_native_click_approval(
+    token: &str,
+    native: &NativeExactClickApprovalScope<'_>,
+    registry: &WorkspaceRegistry,
+    state: &TfBrowserState,
+) -> Result<(NativeConsumedExactClickApproval, String), String> {
+    let mut entries = state
+        .entries
+        .lock()
+        .map_err(|_| "browser-state-unavailable")?;
+    // Remove BEFORE any checks or native call; rejected/mismatched approvals
+    // cannot be retargeted and ambiguous dispatch can never be replayed.
+    let p = entries
+        .pending
+        .remove(token)
+        .ok_or("unknown-or-consumed-browser-token")?;
+    if p.expires <= Instant::now()
+        || !p.approved
+        || p.approving
+        || p.request.operation != TfBrowserOperation::Click
+        || p.native_effect != Some(native.effect)
+        || p.native_target.as_ref() != Some(native.target)
+        || p.request.actor != native.actor
+        || p.request.session_id != native.session_id
+        || p.root != native.workspace_root
+        || p.request.page_id.as_deref() != Some(native.target.page_id.as_str())
+        || p.request.page_generation != Some(native.target.page_generation)
+        || p.request.snapshot_id.as_deref() != Some(native.target.snapshot_id.as_str())
+        || p.request.element_id.as_deref() != Some(native.target.element_ref.as_str())
+        || scope(
+            &p.request.actor,
+            &p.request.session_id,
+            &p.request.workspace_root,
+            registry,
+        )? != p.root
+    {
+        return Err("confined-native-central-approval-expired-or-scope-changed".into());
+    }
+    let id = p.browser_id.as_ref().ok_or("browser-session-id-required")?;
+    let session = entries
+        .sessions
+        .get_mut(id)
+        .ok_or("browser-session-expired")?;
+    if !matches_scope(session, &p.request, &p.root)
+        || p.revision != Some(session.revision)
+        || !session.busy
+        || session.native_reserved_action.as_deref() != Some(token)
+        || session
+            .native
+            .as_ref()
+            .is_none_or(|native| !native.owner_alive.load(Ordering::Acquire))
+        || format!("{:x}", Sha256::digest(session.snapshot.url.as_bytes())) != native.source_id
+    {
+        return Err("confined-native-central-session-or-source-changed".into());
+    }
+    let snapshot = session
+        .native
+        .as_ref()
+        .ok_or("confined-native-owner-missing")?
+        .snapshot
+        .lock()
+        .map_err(|_| "confined-native-snapshot-unavailable")?
+        .clone()
+        .ok_or("confined-native-snapshot-stale")?;
+    if snapshot.browser_session_id != native.target.browser_session_id
+        || snapshot.page_id != native.target.page_id
+        || snapshot.page_generation != native.target.page_generation
+        || snapshot.snapshot_id != native.target.snapshot_id
+        || !snapshot.elements.iter().any(|e| {
+            e.element_ref == native.target.element_ref && p.native_role.as_ref() == Some(&e.role)
+        })
+        || snapshot.origin
+            != Url::parse(&session.snapshot.url)
+                .map_err(|_| "confined-native-origin-invalid")?
+                .origin()
+                .ascii_serialization()
+    {
+        return Err("confined-native-central-page-or-element-changed".into());
+    }
+    let witness = NativeConsumedExactClickApproval::from_consumed_central_token(
+        token.to_owned(),
+        native,
+        p.expires,
+    )?;
+    // Lease the one native actor until its dispatch/UNKNOWN terminal. The
+    // separate RAII guard clears this even if the Tauri future is cancelled.
+    let next_revision = session
+        .revision
+        .checked_add(1)
+        .ok_or("browser-revision-exhausted")?;
+    session.busy = true;
+    session.revision = next_revision;
+    Ok((witness, id.clone()))
 }
 
 /// Production-only read-only confined browser startup through the existing
@@ -1357,7 +1844,7 @@ async fn execute_confined_native(
         Err("confined-native-cancelled-during-launch".to_owned())
     } else {
         tokio::select! {
-            ready = browser.verify_ready() => ready,
+            ready = browser.verify_ready_for_control_turns() => ready,
             changed = cancelled.changed() => {
                 let _ = changed;
                 Err("confined-native-cancelled-during-readiness".to_owned())
@@ -1381,15 +1868,27 @@ async fn execute_confined_native(
         return Ok(receipt);
     }
 
-    // One exact session is owned by the pre-existing TfBrowserState map.
-    // This task only brokers bounded TF3 GET requests on a single serialized
-    // pipe. No secondary registry, HTTP client, credential store or receipts
-    // database is introduced. Dropping the one owner signals immediate stop.
+    // The same single background task owns both native COM control turns and
+    // TF3 GET service. No second reader/writer is allowed on either sealed pipe.
+    // Host-issued idle turns are scheduling leases only; they do NOT authorize
+    // an effectful gesture or replace the central approval transaction.
     let (stop, mut stopped) = watch::channel(false);
+    let turn_requester = browser
+        .control_turn_requester()
+        .ok_or("confined-native-control-turn-attestation-missing")?;
+    let queued_turn_requester = turn_requester.clone();
+    let (command_tx, mut command_rx) = mpsc::channel::<NativeCommand>(8);
     let receipts = Arc::new(Mutex::new(Vec::<BrokerResourceReceipt>::new()));
     let history = receipts.clone();
+    let snapshot = Arc::new(Mutex::new(None::<PageSnapshot>));
+    let published_snapshot = snapshot.clone();
     let service_app = app.clone();
+    let owner_alive = Arc::new(AtomicBool::new(true));
+    let running = owner_alive.clone();
     let task = tauri::async_runtime::spawn(async move {
+        // Runs on every normal exit and on panic/unwind; a dead actor must
+        // never keep granting fresh actions from an old semantic snapshot.
+        let _liveness = NativeOwnerLivenessGuard(running);
         let deadline = tokio::time::Instant::now() + SESSION_TTL;
         let mut terminal = Ok(());
         loop {
@@ -1412,11 +1911,121 @@ async fn execute_confined_native(
             };
             match outcome {
                 Ok(Ok(result)) => {
-                    if let Ok(mut rows) = history.lock() {
-                        if rows.len() >= 32 {
-                            rows.remove(0);
+                    if result.terminal != "idle" {
+                        // Every new GET can mutate DOM/state. Never retain an
+                        // exact element across a new native resource flight.
+                        if let Ok(mut latest) = published_snapshot.lock() {
+                            *latest = None;
                         }
-                        rows.push(result);
+                        if let Ok(mut rows) = history.lock() {
+                            if rows.len() >= 32 {
+                                rows.remove(0);
+                            }
+                            rows.push(result);
+                        }
+                    }
+                    if browser.has_control_turn() {
+                        // At this point the child worker explicitly froze new
+                        // v1 resource tickets and both pipes are idle. Do NOT
+                        // poll/cancel serve_one() against command_rx: dropping
+                        // an active GET future kills its owned FlightFence.
+                        if let Ok(command) = command_rx.try_recv() {
+                            match command {
+                                NativeCommand::Observe { reply } => {
+                                    if !reply.is_closed() {
+                                        let observed =
+                                            browser.observe_closed_snapshot_in_control_turn().await;
+                                        if let Ok(mut current) = published_snapshot.lock() {
+                                            *current = observed.as_ref().ok().cloned();
+                                        }
+                                        let failed = observed.is_err();
+                                        let _ = reply.send(observed);
+                                        if failed {
+                                            terminal =
+                                                Err("confined-native-observation-uncertain".into());
+                                            break;
+                                        }
+                                    }
+                                }
+                                NativeCommand::Click {
+                                    token,
+                                    browser_id,
+                                    target,
+                                    active,
+                                    reply,
+                                } => {
+                                    // The owner of this mailbox command must
+                                    // release its reservation even on denied,
+                                    // stale, cancelled, expired or closed reply.
+                                    let _lease = NativeActionBusyGuard {
+                                        app: service_app.clone(),
+                                        browser_id: browser_id.clone(),
+                                        token: token.clone(),
+                                    };
+                                    if !reply.is_closed() {
+                                        let approved = (|| {
+                                            if active.cancelled.load(Ordering::Acquire) {
+                                                return Err(
+                                                    "native-click-cancelled-before-consumption"
+                                                        .to_owned(),
+                                                );
+                                            }
+                                            let scope =
+                                                browser.exact_click_scope_for_central(&target)?;
+                                            let authority = service_app.state::<TfBrowserState>();
+                                            let registry = service_app.state::<WorkspaceRegistry>();
+                                            consume_native_click_approval(
+                                                &token, &scope, &registry, &authority,
+                                            )
+                                        })();
+                                        let attempted = match approved {
+                                            Ok((grant, approved_browser_id)) => {
+                                                if approved_browser_id != browser_id {
+                                                    Ok(NativeEffectReceipt::classify(
+                                                        NativeEffectTerminal::FailedBeforeDispatch,
+                                                    ))
+                                                } else if active
+                                                    .native_click_phase
+                                                    .as_ref()
+                                                    .is_none_or(|phase| {
+                                                        phase
+                                                            .compare_exchange(
+                                                                NATIVE_CLICK_QUEUED,
+                                                                NATIVE_CLICK_DISPATCH_COMMITTED,
+                                                                Ordering::AcqRel,
+                                                                Ordering::Acquire,
+                                                            )
+                                                            .is_err()
+                                                    })
+                                                {
+                                                    Ok(NativeEffectReceipt::classify(
+                                                        NativeEffectTerminal::CancelledBeforeDispatch,
+                                                    ))
+                                                } else {
+                                                    browser
+                                                        .dispatch_exact_click_in_control_turn(grant)
+                                                        .await
+                                                }
+                                            }
+                                            Err(reason) => Ok(NativeEffectReceipt::classify(
+                                                native_pre_dispatch_terminal(&reason),
+                                            )),
+                                        };
+                                        if let Ok(mut latest) = published_snapshot.lock() {
+                                            *latest = None;
+                                        }
+                                        let _ = reply.send(attempted);
+                                    }
+                                }
+                            }
+                            // Signals are coalesced scheduling requests. A
+                            // second already-queued command must explicitly
+                            // request the NEXT host turn; one claim cannot
+                            // be reused or carry two v2 control frames.
+                            if !command_rx.is_empty() {
+                                queued_turn_requester.request();
+                            }
+                        }
                     }
                 }
                 Ok(Err(reason)) => {
@@ -1439,6 +2048,10 @@ async fn execute_confined_native(
     let native = NativeBackground {
         stop,
         task: Some(task),
+        owner_alive,
+        command_tx,
+        turn_requester,
+        snapshot,
         receipts,
     };
     let id = p
@@ -1480,6 +2093,7 @@ async fn execute_confined_native(
             history: Vec::new(),
             revision: 1,
             busy: false,
+            native_reserved_action: None,
             expires: Instant::now() + SESSION_TTL,
             native: Some(native),
         },
@@ -1494,6 +2108,254 @@ async fn execute_confined_native(
     Ok(receipt)
 }
 
+/// Internal UI-only, one-use centrally approved semantic observation. The
+/// existing actor owns the same sealed native session and host-issued turn;
+/// no competing pipe reader, script/selector API, or model tool is created.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+async fn execute_confined_observation(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfBrowserState,
+) -> Result<TfBrowserReceipt, String> {
+    let (p, _active, _guard) = consume(token, registry, state)?;
+    if p.request.operation != TfBrowserOperation::ObserveConfined {
+        return Err("confined-native-observation-operation-changed".into());
+    }
+    let mut receipt = initial_receipt(&p);
+    receipt.policy_decision = "allowed";
+    receipt.retry = "NEVER_REPLAY";
+    receipt.uncertainty = "native-observation-pending";
+    let id = p
+        .browser_id
+        .as_deref()
+        .ok_or("browser-session-id-required")?;
+    let (sender, turn_requester) = {
+        let entries = state
+            .entries
+            .lock()
+            .map_err(|_| "browser-state-unavailable")?;
+        let session = entries.sessions.get(id).ok_or("browser-session-expired")?;
+        if !matches_scope(session, &p.request, &p.root)
+            || p.revision != Some(session.revision)
+            || session
+                .native
+                .as_ref()
+                .is_none_or(|native| !native.owner_alive.load(Ordering::Acquire))
+            || p.url.as_deref() != Some(session.snapshot.url.as_str())
+        {
+            return Err("confined-native-observation-scope-changed".into());
+        }
+        let owner = session
+            .native
+            .as_ref()
+            .ok_or("confined-native-owner-missing")?;
+        (owner.command_tx.clone(), owner.turn_requester.clone())
+    };
+    let (reply, result) = oneshot::channel();
+    let request = NativeCommand::Observe { reply };
+    let observed = match tokio::time::timeout(Duration::from_secs(2), sender.send(request)).await {
+        Ok(Ok(())) => {
+            // Scheduling only: cannot mint/extend approval or authorize COM.
+            turn_requester.request();
+            tokio::time::timeout(Duration::from_secs(25), result).await
+        }
+        _ => {
+            receipt.terminal = "unknown";
+            receipt.reason_code = "native-observation-command-transfer-uncertain".into();
+            receipt.effect_state = "Unknown";
+            receipt.uncertainty = "native-observation-session-may-be-closing";
+            receipt.ended_at = millis();
+            return Ok(receipt);
+        }
+    };
+    match observed {
+        Ok(Ok(Ok(page))) => {
+            // BrowserPageContract independently bounded and secret-filtered
+            // this projection; cap the serialized projection again at IPC.
+            let bytes = serde_json::to_vec(&page)
+                .map_err(|_| "native-semantic-snapshot-serialization-failed")?;
+            if bytes.len() > 64 * 1024 {
+                receipt.terminal = "failed";
+                receipt.reason_code = "native-semantic-snapshot-bounds-denied".into();
+                receipt.uncertainty = "native-observation-data-withheld";
+            } else {
+                let mut projected: serde_json::Value = serde_json::from_slice(&bytes)
+                    .map_err(|_| "native-semantic-snapshot-invalid")?;
+                // The authenticated host nonce is an INTERNAL pipe/session
+                // identity. UI callers use the existing TF4 outer session ID;
+                // prepare() independently maps it back to the retained native
+                // nonce and never trusts the caller to supply either mapping.
+                let object = projected
+                    .as_object_mut()
+                    .ok_or("native-semantic-snapshot-shape-denied")?;
+                object.insert("browserSessionId".into(), id.to_owned().into());
+                receipt.native_page = Some(projected);
+                receipt.snapshot_id = Some(page.snapshot_id);
+                receipt.terminal = "completed";
+                receipt.effect_state = "Observed";
+                receipt.reason_code = "native-exact-semantic-snapshot-observed".into();
+                receipt.uncertainty = "authenticated-bounded-WebView2-COM-snapshot";
+                // Each successful new observation invalidates older held
+                // references and approvals, including those not yet used.
+                let mut entries = state
+                    .entries
+                    .lock()
+                    .map_err(|_| "browser-state-unavailable")?;
+                if let Some(session) = entries.sessions.get_mut(id) {
+                    if !matches_scope(session, &p.request, &p.root) {
+                        return Err("confined-native-observation-owner-changed".into());
+                    }
+                    session.revision = session.revision.saturating_add(1);
+                }
+            }
+        }
+        _ => {
+            receipt.terminal = "unknown";
+            receipt.effect_state = "Unknown";
+            receipt.reason_code = "native-semantic-observation-outcome-uncertain".into();
+            receipt.uncertainty = "native-observation-IPC-or-COM-unverified";
+        }
+    }
+    receipt.ended_at = millis();
+    Ok(receipt)
+}
+
+/// The original TF4 pending entry, UI approval and approved exact snapshot
+/// remain authoritative until the native actor reaches an exclusive host turn.
+/// This function cannot fabricate a grant or dispatch directly through IPC.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+async fn execute_confined_click(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfBrowserState,
+    web_state: &TfWebState,
+) -> Result<TfBrowserReceipt, String> {
+    let (p, sender, turn_requester, target, active) = {
+        let mut entries = state
+            .entries
+            .lock()
+            .map_err(|_| "browser-state-unavailable")?;
+        reap(&mut entries);
+        let p = entries
+            .pending
+            .get(token)
+            .ok_or("unknown-or-consumed-browser-token")?
+            .clone();
+        if p.request.operation != TfBrowserOperation::Click
+            || !p.approved
+            || p.approving
+            || p.expires <= Instant::now()
+            || p.native_effect != Some(BrowserEffect::Unknown)
+            || scope(
+                &p.request.actor,
+                &p.request.session_id,
+                &p.request.workspace_root,
+                registry,
+            )? != p.root
+        {
+            return Err("native-click-central-approval-required-or-expired".into());
+        }
+        let id = p
+            .browser_id
+            .as_deref()
+            .ok_or("browser-session-id-required")?;
+        let session = entries
+            .sessions
+            .get_mut(id)
+            .ok_or("browser-session-expired")?;
+        if !matches_scope(session, &p.request, &p.root)
+            || p.revision != Some(session.revision)
+            || session.busy
+            || p.url.as_deref() != Some(session.snapshot.url.as_str())
+        {
+            return Err("native-click-session-scope-or-revision-changed".into());
+        }
+        let owner = session
+            .native
+            .as_ref()
+            .ok_or("native-click-confined-session-required")?;
+        if !owner.owner_alive.load(Ordering::Acquire) {
+            return Err("native-click-owner-not-live".into());
+        }
+        let sender = owner.command_tx.clone();
+        let turn_requester = owner.turn_requester.clone();
+        let target = p
+            .native_target
+            .clone()
+            .ok_or("native-click-exact-target-required")?;
+        let active = Arc::new(Active {
+            native_click_phase: Some(AtomicU8::new(NATIVE_CLICK_QUEUED)),
+            ..Active::default()
+        });
+        session.busy = true;
+        session.native_reserved_action = Some(token.to_owned());
+        entries.active.insert(token.to_owned(), active.clone());
+        (p, sender, turn_requester, target, active)
+    };
+    let _queued = NativeActionQueueGuard {
+        state,
+        browser_id: p.browser_id.clone().ok_or("browser-session-id-required")?,
+        token: token.to_owned(),
+    };
+    let mut receipt = initial_receipt(&p);
+    receipt.policy_decision = "allowed";
+    receipt.retry = "NEVER_REPLAY";
+    receipt.uncertainty = "native-exact-click-outcome-unverified";
+    let (reply, result) = oneshot::channel();
+    let command = NativeCommand::Click {
+        token: token.to_owned(),
+        browser_id: p.browser_id.clone().ok_or("browser-session-id-required")?,
+        target,
+        active,
+        reply,
+    };
+    let terminal = match tokio::time::timeout(Duration::from_secs(2), sender.send(command)).await {
+        Ok(Ok(())) => {
+            turn_requester.request();
+            tokio::time::timeout(Duration::from_secs(25), result).await
+        }
+        _ => {
+            // This command may have entered the native owner; even loss of
+            // the send ACK cannot establish that no click was attempted.
+            receipt.native_terminal = Some(NativeEffectTerminal::Unknown);
+            receipt.canonical_terminal = Some(NativeEffectOutcome::Unknown);
+            receipt.terminal = "unknown";
+            receipt.effect_state = "Unknown";
+            receipt.reason_code = "native-click-command-delivery-uncertain".into();
+            receipt.ended_at = millis();
+            let _ = cancel(token, state, web_state);
+            return Ok(receipt);
+        }
+    };
+    let effect = match terminal {
+        Ok(Ok(Ok(result))) => result,
+        _ => NativeEffectReceipt::classify(NativeEffectTerminal::Unknown),
+    };
+    receipt.native_terminal = Some(effect.terminal);
+    receipt.canonical_terminal = Some(effect.canonical_terminal);
+    receipt.terminal = match effect.canonical_terminal {
+        NativeEffectOutcome::Success => "success",
+        NativeEffectOutcome::Failed => "failed",
+        NativeEffectOutcome::Cancelled => "cancelled",
+        NativeEffectOutcome::Unknown => "unknown",
+    };
+    receipt.effect_state = effect.effect_state;
+    receipt.policy_decision = effect.policy_decision;
+    receipt.retry = effect.retry;
+    receipt.auto_retry = false;
+    receipt.reason_code = effect.reason_code.into();
+    receipt.uncertainty = if effect.canonical_terminal == NativeEffectOutcome::Success {
+        "separately-bound-native-effect-confirmed"
+    } else {
+        "native-dispatch-is-not-independent-effect-evidence"
+    };
+    receipt.ended_at = millis();
+    // Revoke an unused/expired token if execution never reached consumption;
+    // a consumed token cannot be recreated or replayed by this call.
+    let _ = cancel(token, state, web_state);
+    Ok(receipt)
+}
+
 /// Execute once: pending -> active is atomic. A session holds a single busy
 /// lease while TF3 fetch runs; cancel forwards to the inner TF3 token.
 pub async fn execute(
@@ -1505,7 +2367,7 @@ pub async fn execute(
     let (p, active, _guard) = consume(token, registry, state)?;
     let mut receipt = initial_receipt(&p);
     match p.request.operation {
-        TfBrowserOperation::OpenConfined => {
+        TfBrowserOperation::OpenConfined | TfBrowserOperation::ObserveConfined => {
             // Direct/headless callers have no authenticated installed-app
             // digest, approval context or verified lifecycle owner. No
             // implicit downgrade to the inert executor or unconfined WebView.
@@ -1551,7 +2413,7 @@ pub async fn execute(
             };
             clone_snapshot(&p, &snapshot, &mut receipt);
         }
-        TfBrowserOperation::Close => {
+        TfBrowserOperation::Close | TfBrowserOperation::CloseConfined => {
             let mut removed = {
                 let mut entries = state
                     .entries
@@ -1784,6 +2646,8 @@ pub async fn execute(
                             history: Vec::new(),
                             revision: 1,
                             busy: false,
+                            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+                            native_reserved_action: None,
                             expires: Instant::now() + SESSION_TTL,
                             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
                             native: None,
@@ -1832,6 +2696,23 @@ pub async fn execute(
     Ok(receipt)
 }
 
+/// Native approval UI only: never echo an untrusted URL path, query string,
+/// fragment, credential or raw page text into the OS consent dialog.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn target_origin_for_approval(raw: Option<&str>) -> Result<String, String> {
+    let url = Url::parse(raw.ok_or("native-approval-origin-missing")?)
+        .map_err(|_| "native-approval-origin-invalid")?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("native-approval-origin-denied".into());
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
 #[tauri::command]
 pub fn tf_browser_prepare(
     request: TfBrowserRequest,
@@ -1858,7 +2739,7 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             .pending
             .get_mut(&token)
             .ok_or("unknown-or-consumed-browser-token")?;
-        if !p.request.operation.network() || p.approved || p.approving {
+        if !p.request.operation.approval_required() || p.approved || p.approving {
             return Err("browser-approval-not-applicable".into());
         }
         p.approving = true;
@@ -1871,17 +2752,51 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         .as_ref()
         .and_then(|u| u.host_str())
         .unwrap_or("(unknown)");
-    let native_confined = pending.request.operation == TfBrowserOperation::OpenConfined;
+    let native_confined = matches!(
+        pending.request.operation,
+        TfBrowserOperation::OpenConfined
+            | TfBrowserOperation::ObserveConfined
+            | TfBrowserOperation::Click
+    );
+    let native_purpose = match pending.request.operation {
+        TfBrowserOperation::OpenConfined =>
+            "Start one isolated AppContainer/WebView2 HTTPS session. No native page gesture is authorized by this approval.",
+        TfBrowserOperation::ObserveConfined =>
+            "Read one bounded redacted semantic DOM snapshot from this existing isolated session. No page action is authorized.",
+        TfBrowserOperation::Click =>
+            "Execute exactly ONE exact retained DOM Node click after the page, snapshot, element, actor, workspace, origin and UNKNOWN effect classification are rechecked. The click can trigger an external effect; dispatch alone is not proof of completion. It cannot be replayed.",
+        _ => "Only TF3 pinned HTTP(S) text retrieval is supported; redirects and targets require per-hop policy.",
+    };
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    let native_target_details = if pending.request.operation == TfBrowserOperation::Click {
+        let target = pending
+            .native_target
+            .as_ref()
+            .ok_or("native-click-approved-target-missing")?;
+        let effect = pending
+            .native_effect
+            .ok_or("native-click-approved-effect-missing")?;
+        let role = pending
+            .native_role
+            .as_ref()
+            .ok_or("native-click-approved-role-missing")?;
+        let approved_origin = target_origin_for_approval(pending.url.as_deref())?;
+        format!(
+            "\nExact approved browser origin: {approved_origin}\nObserved DOM role: {role:?}\nPage generation: {}\nPage identity: {}\nSnapshot identity: {}\nOriginal opaque element reference: {}\nConservative effect: {effect:?}\nNo selector or text-based fallback. Native rechecks all identities before one programmatic click.\n",
+            target.page_generation, target.page_id, target.snapshot_id, target.element_ref
+        )
+    } else {
+        String::new()
+    };
+    #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
+    let native_target_details = String::new();
     let summary = format!(
-        "Clack {} — allow once?\n\nRequest: {}\nActor: {}\nSession: {}\nWorkspace: {}\nOperation: {:?}\nTarget host: {}\n\n{}",
-        if native_confined { "confined native browser HTTPS read-only session" } else { "inert-document network navigation" },
+        "Clack {} — allow once?\n\nRequest: {}\nActor: {}\nSession: {}\nWorkspace: {}\nOperation: {:?}\nTarget host: {}\n{}\n{}",
+        if native_confined { "confined native browser scoped operation" } else { "inert-document network navigation" },
         pending.request_id, pending.request.actor, pending.request.session_id,
         pending.root.display(), pending.request.operation, host,
-        if native_confined {
-            "WebView2 must run in a zero-network-capability AppContainer with native process/Job and effective-UDF attestation before any navigation. TF3 policy is re-evaluated for each bounded HTTPS GET. Scripts, forms, popups, credentials, files and model interaction are DISABLED. Startup does not confirm DOM observation or any external effect."
-        } else {
-            "Only TF3 pinned HTTP(S) text retrieval is supported. No browser JS/DOM, popups, cookies, file upload/download or OS browser network sandbox is provided. Every redirect rechecks DNS/IP policy."
-        },
+        native_target_details,
+        native_purpose,
     );
     let dialog_app = app.clone();
     let consent = tokio::time::timeout(
@@ -1928,6 +2843,7 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         .ok_or("unknown-or-consumed-browser-token")?;
     if root != pending.root
         || live.request_id != pending.request_id
+        || live.request != pending.request
         || live.request.actor != pending.request.actor
         || live.request.session_id != pending.request.session_id
         || live.root != pending.root
@@ -1936,7 +2852,7 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         || live.revision != pending.revision
         || live.approved
         || !live.approving
-        || !live.request.operation.network()
+        || !live.request.operation.approval_required()
     {
         return Err("browser-native-approval-scope-changed".into());
     }
@@ -1954,15 +2870,24 @@ pub async fn tf_browser_execute(
     let web_state = app.state::<TfWebState>();
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     {
-        let is_confined = state
+        let confined_operation = state
             .entries
             .lock()
             .map_err(|_| "browser-state-unavailable")?
             .pending
             .get(&token)
-            .is_some_and(|p| p.request.operation == TfBrowserOperation::OpenConfined);
-        if is_confined {
-            return execute_confined_native(&token, &app, &registry, &state).await;
+            .map(|p| p.request.operation);
+        match confined_operation {
+            Some(TfBrowserOperation::OpenConfined) => {
+                return execute_confined_native(&token, &app, &registry, &state).await;
+            }
+            Some(TfBrowserOperation::ObserveConfined) => {
+                return execute_confined_observation(&token, &registry, &state).await;
+            }
+            Some(TfBrowserOperation::Click) => {
+                return execute_confined_click(&token, &registry, &state, &web_state).await;
+            }
+            _ => {}
         }
     }
     execute(&token, &registry, &state, &web_state).await
@@ -2023,6 +2948,8 @@ mod tests {
             workspace_root: root.to_string_lossy().into_owned(),
             browser_session_id: None,
             url: None,
+            page_id: None,
+            page_generation: None,
             snapshot_id: None,
             element_id: None,
             selector: None,
@@ -2063,6 +2990,8 @@ mod tests {
                 history: vec!["http://127.0.0.1/previous".into()],
                 revision: 1,
                 busy: false,
+                #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+                native_reserved_action: None,
                 expires: Instant::now() + SESSION_TTL,
                 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
                 native: None,
@@ -2160,6 +3089,136 @@ mod tests {
         let p = prepare(r, &registry, &state).unwrap();
         assert!(consume(&p.token, &registry, &state).is_err());
         assert!(approve_headless(&p.token, &state).is_err());
+    }
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn native_cancel_tracks_consumed_active_token_without_reissuing_approval() {
+        let (_dir, _registry, state, web) = setup();
+        let token = nonce().unwrap();
+        let active = Arc::new(Active {
+            native_click_phase: Some(AtomicU8::new(NATIVE_CLICK_QUEUED)),
+            ..Active::default()
+        });
+        state
+            .entries
+            .lock()
+            .unwrap()
+            .active
+            .insert(token.clone(), active.clone());
+        // A consumed native approval has no Pending entry. Cancellation must
+        // still reach its existing active token without minting a new grant.
+        assert!(cancel(&token, &state, &web).unwrap());
+        assert!(active.cancelled.load(Ordering::Acquire));
+        assert!(*active.cancel_watch.borrow());
+        assert_eq!(
+            active
+                .native_click_phase
+                .as_ref()
+                .unwrap()
+                .load(Ordering::Acquire),
+            NATIVE_CLICK_CANCELLED
+        );
+        assert!(!state.entries.lock().unwrap().pending.contains_key(&token));
+    }
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn native_cancel_cannot_claim_to_stop_committed_dispatch() {
+        let (_dir, _registry, state, web) = setup();
+        let token = nonce().unwrap();
+        let active = Arc::new(Active {
+            native_click_phase: Some(AtomicU8::new(NATIVE_CLICK_DISPATCH_COMMITTED)),
+            ..Active::default()
+        });
+        state
+            .entries
+            .lock()
+            .unwrap()
+            .active
+            .insert(token.clone(), active.clone());
+        assert!(!cancel(&token, &state, &web).unwrap());
+        assert!(!active.cancelled.load(Ordering::Acquire));
+        assert_eq!(
+            active
+                .native_click_phase
+                .as_ref()
+                .unwrap()
+                .load(Ordering::Acquire),
+            NATIVE_CLICK_DISPATCH_COMMITTED
+        );
+    }
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn native_pre_dispatch_denial_is_not_misreported_as_possible_dispatch() {
+        for (reason, terminal) in [
+            (
+                "native-click-cancelled-before-consumption",
+                NativeEffectTerminal::CancelledBeforeDispatch,
+            ),
+            ("STALE_ELEMENT", NativeEffectTerminal::Stale),
+            (
+                "confined-native-central-page-or-element-changed",
+                NativeEffectTerminal::Stale,
+            ),
+            (
+                "unknown-or-consumed-browser-token",
+                NativeEffectTerminal::Denied,
+            ),
+            (
+                "native-click-process-unattested",
+                NativeEffectTerminal::FailedBeforeDispatch,
+            ),
+        ] {
+            let classified = native_pre_dispatch_terminal(reason);
+            assert_eq!(classified, terminal, "{reason}");
+            let receipt = NativeEffectReceipt::classify(classified);
+            assert_ne!(receipt.canonical_terminal, NativeEffectOutcome::Unknown);
+            assert_eq!(receipt.effect_state, "NotAttempted");
+            assert!(!receipt.auto_retry);
+        }
+    }
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn native_preconsumption_cancel_burns_token_and_releases_reserved_lease() {
+        let (dir, registry, state, web) = setup();
+        let (browser_id, _, _) = fake_session(dir.path(), &state);
+        let mut request = req(dir.path(), TfBrowserOperation::Snapshot);
+        request.browser_session_id = Some(browser_id.clone());
+        let prepared = prepare(request, &registry, &state).unwrap();
+        let active = Arc::new(Active {
+            native_click_phase: Some(AtomicU8::new(NATIVE_CLICK_QUEUED)),
+            ..Active::default()
+        });
+        {
+            let mut entries = state.entries.lock().unwrap();
+            entries
+                .pending
+                .get_mut(&prepared.token)
+                .unwrap()
+                .request
+                .operation = TfBrowserOperation::Click;
+            entries
+                .active
+                .insert(prepared.token.clone(), active.clone());
+            let session = entries.sessions.get_mut(&browser_id).unwrap();
+            session.busy = true;
+            session.native_reserved_action = Some(prepared.token.clone());
+        }
+        assert!(cancel(&prepared.token, &state, &web).unwrap());
+        assert!(active.cancelled.load(Ordering::Acquire));
+        assert_eq!(
+            active
+                .native_click_phase
+                .as_ref()
+                .unwrap()
+                .load(Ordering::Acquire),
+            NATIVE_CLICK_CANCELLED
+        );
+        let entries = state.entries.lock().unwrap();
+        assert!(!entries.pending.contains_key(&prepared.token));
+        assert!(!entries.active.contains_key(&prepared.token));
+        let session = entries.sessions.get(&browser_id).unwrap();
+        assert!(!session.busy);
+        assert!(session.native_reserved_action.is_none());
     }
     #[tokio::test]
     async fn every_native_navigation_reuses_tf3_and_denies_private_metadata() {
@@ -2266,12 +3325,27 @@ mod tests {
     async fn unsafe_dom_actions_are_truthful_unsupported_receipts() {
         let (dir, registry, state, web) = setup();
         let (id, _, _) = fake_session(dir.path(), &state);
+        // Effectful DOM gestures cannot even mint a pending grant against
+        // the inert text browser or bypass the native approval gate.
         for op in [
             TfBrowserOperation::Click,
             TfBrowserOperation::Type,
             TfBrowserOperation::Scroll,
-            TfBrowserOperation::Screenshot,
         ] {
+            let mut r = req(dir.path(), op);
+            r.browser_session_id = Some(id.clone());
+            if op == TfBrowserOperation::Click {
+                r.page_id = Some(nonce().unwrap());
+                r.page_generation = Some(1);
+                r.snapshot_id = Some(nonce().unwrap());
+                r.element_id = Some(nonce().unwrap());
+            }
+            assert_eq!(
+                prepare(r, &registry, &state).err().as_deref(),
+                Some("native-action-requires-confined-approved-runtime")
+            );
+        }
+        for op in [TfBrowserOperation::Screenshot] {
             let mut r = req(dir.path(), op);
             r.browser_session_id = Some(id.clone());
             let p = prepare(r, &registry, &state).unwrap();
@@ -2282,6 +3356,43 @@ mod tests {
             assert!(observed.unsupported.contains(&"script_and_dom_execution"));
             assert!(observed.dns_evidence.is_empty());
         }
+    }
+    #[test]
+    fn native_click_shape_rejects_any_missing_or_extraneous_identity_before_authorization() {
+        let (dir, registry, state, _) = setup();
+        let (id, _, _) = fake_session(dir.path(), &state);
+        let mut r = req(dir.path(), TfBrowserOperation::Click);
+        r.browser_session_id = Some(id);
+        assert_eq!(
+            prepare(r.clone(), &registry, &state).err().as_deref(),
+            Some("native-click-exact-target-required")
+        );
+        r.page_id = Some(nonce().unwrap());
+        r.page_generation = Some(1);
+        r.snapshot_id = Some(nonce().unwrap());
+        r.element_id = Some(nonce().unwrap());
+        r.selector = Some("button".into());
+        assert_eq!(
+            prepare(r.clone(), &registry, &state).err().as_deref(),
+            Some("native-click-exact-target-required")
+        );
+        r.selector = None;
+        r.text = Some("arbitrary script or text".into());
+        assert_eq!(
+            prepare(r.clone(), &registry, &state).err().as_deref(),
+            Some("native-click-exact-target-required")
+        );
+        r.text = None;
+        r.page_generation = Some(0);
+        assert_eq!(
+            prepare(r.clone(), &registry, &state).err().as_deref(),
+            Some("native-click-exact-target-required")
+        );
+        r.page_generation = Some(1);
+        assert_eq!(
+            prepare(r, &registry, &state).err().as_deref(),
+            Some("native-action-requires-confined-approved-runtime")
+        );
     }
     #[test]
     fn status_enumeration_is_actor_session_root_bound() {

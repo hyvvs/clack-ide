@@ -15,6 +15,10 @@ use crate::modules::workspace::WorkspaceRegistry;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 const FRAME_MAX: usize = 128 * 1024;
 const RESOURCE_MAX: usize = 32 * 1024;
@@ -84,6 +88,153 @@ struct ChildComAck {
     kind: String,
     status: u16,
     page_generation: u64,
+}
+
+/// The child broker worker, not the parent, decides when both sealed pipes
+/// are free of a v1 GET/COM completion. This offer is a scheduling lease and
+/// NEVER evidence of human consent or authority to perform an action.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildControlTurnOffer {
+    version: u8,
+    kind: String,
+    session: String,
+    turn_id: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentControlTurnChoice<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    turn_id: u64,
+}
+
+fn validate_control_turn_offer(
+    bytes: &[u8],
+    session: &str,
+    previous_id: u64,
+) -> Result<u64, &'static str> {
+    let offer: ChildControlTurnOffer =
+        serde_json::from_slice(bytes).map_err(|_| "browser-control-turn-offer-invalid")?;
+    if offer.version != 2
+        || offer.kind != "control-turn-offer"
+        || offer.session != session
+        || offer.turn_id == 0
+        || Some(offer.turn_id) != previous_id.checked_add(1)
+    {
+        return Err("browser-control-turn-offer-stale");
+    }
+    Ok(offer.turn_id)
+}
+
+/// Exact scope presented to an EXISTING central native approval owner. Only
+/// that owner may atomically consume a previously approved, expiring one-use
+/// grant and return its real 48-hex approval ID. This type neither creates a
+/// grant nor provides a model/Tauri IPC endpoint. A host control-turn offer
+/// is only a scheduling lease, never a substitute for this separate consent.
+pub(crate) struct NativeExactClickApprovalScope<'a> {
+    pub actor: &'a str,
+    pub session_id: &'a str,
+    pub workspace_root: &'a Path,
+    pub target: &'a super::tf_browser_contract::ActionTarget,
+    pub effect: super::tf_browser_contract::BrowserEffect,
+    pub source_id: String,
+    pub observation_id: u64,
+    pub index: u32,
+    pub ordinal: u32,
+    pub check_sequence: u64,
+}
+
+/// Scheduling signal only. The native owner may clone this handle into its
+/// bounded command mailbox, and request a future exclusive host control turn
+/// while `serve_one` is awaiting input. It creates NO consent or action grant.
+/// Multiple requests coalesce; pending commands still need their own exact
+/// central approval and an independently held native control turn.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct NativeControlTurnRequester(Arc<AtomicBool>);
+
+impl NativeControlTurnRequester {
+    #[allow(dead_code)] // owner mailbox integration is in tf_browser.rs
+    pub(crate) fn request(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// Unforgeable-to-callers consumed central consent witness. Fields and
+/// construction are intentionally private; this transport module cannot mint
+/// approval and NO current public/native/model path creates a witness. A later
+/// central TF4 approval owner must supply a genuinely consumed grant from its
+/// authoritative transaction before the click sender can be wired.
+/// Moving the witness into dispatch prevents reuse by the Rust type system.
+#[allow(dead_code)]
+pub(crate) struct NativeConsumedExactClickApproval {
+    approval_id: String,
+    actor: String,
+    session_id: String,
+    workspace_root: PathBuf,
+    target: super::tf_browser_contract::ActionTarget,
+    effect: super::tf_browser_contract::BrowserEffect,
+    source_id: String,
+    observation_id: u64,
+    index: u32,
+    ordinal: u32,
+    check_sequence: u64,
+    expires_at: std::time::Instant,
+}
+
+impl NativeConsumedExactClickApproval {
+    /// Called ONLY by the trusted sibling native central-approval owner after
+    /// its existing one-use approval token was atomically consumed. This is a
+    /// value constructor, not a consent issuer: it cannot authenticate a UI
+    /// decision, and must never be called with a synthetic/random approval ID.
+    /// `pub(super)` deliberately excludes frontend, IPC and model callers.
+    pub(super) fn from_consumed_central_token(
+        approval_id: String,
+        scope: &NativeExactClickApprovalScope<'_>,
+        expires_at: std::time::Instant,
+    ) -> Result<Self, String> {
+        let now = std::time::Instant::now();
+        if approval_id.len() != 48
+            || !approval_id
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            || expires_at <= now
+            || expires_at.duration_since(now) > std::time::Duration::from_secs(60)
+        {
+            return Err("native-click-central-token-invalid-or-expired".into());
+        }
+        Ok(Self {
+            approval_id,
+            actor: scope.actor.to_owned(),
+            session_id: scope.session_id.to_owned(),
+            workspace_root: scope.workspace_root.to_path_buf(),
+            target: (*scope.target).clone(),
+            effect: scope.effect,
+            source_id: scope.source_id.clone(),
+            observation_id: scope.observation_id,
+            index: scope.index,
+            ordinal: scope.ordinal,
+            check_sequence: scope.check_sequence,
+            expires_at,
+        })
+    }
+
+    fn matches_exact(&self, scope: &NativeExactClickApprovalScope<'_>) -> bool {
+        self.expires_at > std::time::Instant::now()
+            && self.actor == scope.actor
+            && self.session_id == scope.session_id
+            && self.workspace_root.as_path() == scope.workspace_root
+            && &self.target == scope.target
+            && self.effect == scope.effect
+            && self.source_id == scope.source_id
+            && self.observation_id == scope.observation_id
+            && self.index == scope.index
+            && self.ordinal == scope.ordinal
+            && self.check_sequence == scope.check_sequence
+    }
 }
 
 /// This is deliberately only a non-sensitive DOM *structure* probe. It is not
@@ -354,6 +505,8 @@ struct ParentReply<'a> {
     content_type: &'a str,
     body_base64: String,
     error: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    control_turns: Option<bool>,
 }
 
 fn random_nonce() -> Result<String, String> {
@@ -981,6 +1134,36 @@ mod windows_owner {
         read_exact_deadline(pipe, &mut body, deadline)?;
         Ok(body)
     }
+
+    // No clone/read worker and no FlightFence exists during an *empty* idle
+    // wait. The caller arms the fence BEFORE consuming the first byte of a
+    // begun frame. Cancellation of an idle wait is therefore harmless; a
+    // cancelled partial frame or pending TF3 transaction still kills the Job.
+    async fn wait_for_pipe_frame_start(pipe: &File, deadline: Instant) -> Result<bool, String> {
+        loop {
+            let mut available = 0u32;
+            if unsafe {
+                PeekNamedPipe(
+                    pipe.as_raw_handle().cast(),
+                    null_mut(),
+                    0,
+                    null_mut(),
+                    &mut available,
+                    null_mut(),
+                )
+            } == 0
+            {
+                return Err("browser-broker-idle-pipe-broken".into());
+            }
+            if available != 0 {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
     fn read_exact_deadline(
         pipe: &mut File,
         output: &mut [u8],
@@ -1144,12 +1327,20 @@ mod windows_owner {
         last_request_id: u64,
         last_page_generation: u64,
         last_observation_id: u64,
-        #[cfg(test)]
+        /// Monotonic authenticated native control sequence shared by future
+        /// production actions and test-only exact-node rechecks.
         last_recheck_sequence: u64,
         /// Native index order captured from the very same successful COM
         /// structure observation that generated the held opaque handles.
-        #[cfg(test)]
+        /// Bookkeeping is production-owned; it does NOT confer approval.
         last_recheck_observation: Option<(u64, u64, Vec<u32>)>,
+        // Negotiated in the *attested* readiness ACK, never from a model,
+        // mutable environment variable, or a later unauthenticated frame.
+        control_turns_enabled: bool,
+        last_control_turn_id: u64,
+        pending_control_turn: Option<u64>,
+        control_turn_claimed: bool,
+        control_turn_requested: Arc<AtomicBool>,
         page_contract: BrowserPageContract,
         ready: bool,
         // Futures may be cancelled while a blocking pipe reader is still
@@ -1357,10 +1548,13 @@ mod windows_owner {
                 last_request_id: 0,
                 last_page_generation: 0,
                 last_observation_id: 0,
-                #[cfg(test)]
                 last_recheck_sequence: 0,
-                #[cfg(test)]
                 last_recheck_observation: None,
+                control_turns_enabled: false,
+                last_control_turn_id: 0,
+                pending_control_turn: None,
+                control_turn_claimed: false,
+                control_turn_requested: Arc::new(AtomicBool::new(false)),
                 page_contract,
                 ready: false,
                 poisoned: false,
@@ -1370,10 +1564,24 @@ mod windows_owner {
         }
 
         pub(crate) async fn verify_ready(&mut self) -> Result<(), String> {
+            self.verify_ready_inner(false).await
+        }
+
+        /// Explicit trusted-owner opt-in for *serialized transport only*.
+        /// The ordinary production caller and existing physical fixtures use
+        /// `verify_ready()` and retain their current direct v2 behavior.
+        /// This neither authorizes an action nor enables model capabilities.
+        #[allow(dead_code)] // parked until the existing native owner opts in
+        pub(crate) async fn verify_ready_for_control_turns(&mut self) -> Result<(), String> {
+            self.verify_ready_inner(true).await
+        }
+
+        async fn verify_ready_inner(&mut self, control_turns: bool) -> Result<(), String> {
             if self.ready || self.stopped || self.poisoned {
                 return Err("browser-readiness-replayed".into());
             }
             self.poisoned = true;
+            self.control_turns_enabled = control_turns;
             let mut flight = FlightFence::new(self.job.0);
             // Keep potentially stalled anonymous pipe reads off the Tauri
             // runtime thread; timeout remains bounded even for a dead host.
@@ -1438,6 +1646,7 @@ mod windows_owner {
                 content_type: mime,
                 body_base64: encode_base64(data),
                 error,
+                control_turns: (id == 0 && self.control_turns_enabled).then_some(true),
             };
             let frame = serde_json::to_vec(&response).map_err(|_| "browser-reply-serialization")?;
             self.write_parent_frame(frame).await
@@ -1514,10 +1723,14 @@ mod windows_owner {
         /// intentionally absent until adequate production secret protection
         /// and exact live DOM element binding can be demonstrated.
         pub(crate) async fn observe_structure(&mut self) -> Result<NativeDomStructure, String> {
+            if self.control_turns_enabled && !self.control_turn_claimed {
+                return Err("browser-control-turn-required".into());
+            }
             // A new native observation attempt invalidates every previous
             // snapshot even if COM fails, renderer crashes, or the page
             // changes midway through the request.
             self.page_contract.revoke_snapshot();
+            self.last_recheck_observation = None;
             if !self.ready
                 || self.stopped
                 || self.poisoned
@@ -1551,10 +1764,6 @@ mod windows_owner {
         /// no selector or href authority. Deliberately internal: live actions
         /// are NOT enabled until the separate effect/approval path is proven.
         pub(crate) async fn observe_closed_snapshot(&mut self) -> Result<PageSnapshot, String> {
-            #[cfg(test)]
-            {
-                self.last_recheck_observation = None;
-            }
             let native = self.observe_structure().await?;
             if native.terminal != "completed" || native.page_generation != self.last_page_generation
             {
@@ -1589,19 +1798,207 @@ mod windows_owner {
                 .mark_snapshot_truncated(native.truncated)
                 .map_err(str::to_owned)?
                 .clone();
-            #[cfg(test)]
-            {
-                self.last_recheck_observation = Some((
-                    native.observation_id,
-                    native.page_generation,
-                    native
-                        .elements
-                        .iter()
-                        .map(|element| element.index)
-                        .collect(),
-                ));
-            }
+            self.last_recheck_observation = Some((
+                native.observation_id,
+                native.page_generation,
+                native
+                    .elements
+                    .iter()
+                    .map(|element| element.index)
+                    .collect(),
+            ));
             Ok(snapshot)
+        }
+
+        /// Transport-only, owner-callable native snapshot. The caller must
+        /// own `&mut BrowserRuntimeSession` and a host-issued control turn;
+        /// one claimed turn carries exactly one v2 DOM frame. No second pipe
+        /// reader, alternate permission path or model tool is introduced.
+        #[allow(dead_code)] // parked; existing production/fixture callers unchanged
+        pub(crate) async fn observe_closed_snapshot_in_control_turn(
+            &mut self,
+        ) -> Result<PageSnapshot, String> {
+            if !self.has_control_turn() || !self.ready || self.poisoned || self.stopped {
+                return Err("browser-exclusive-control-turn-required".into());
+            }
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            self.answer_control_turn("control-turn-claim").await?;
+            self.poisoned = false;
+            self.control_turn_claimed = true;
+            let result = self.observe_closed_snapshot().await;
+            self.control_turn_claimed = false;
+            if result.is_ok() {
+                self.poisoned = false;
+                flight.committed = true;
+            } else {
+                self.poisoned = true;
+            }
+            result
+        }
+
+        /// Read-only pre-consumption scope for the existing central native
+        /// approval owner. It performs the same live opaque-node eligibility
+        /// and native source/index/ordinal checks as dispatch, without using
+        /// a control turn or creating consent. The caller must then atomically
+        /// consume its separately approved once token, construct a witness,
+        /// and hand the witness back to dispatch, which rechecks everything.
+        /// No command, model capability or network effect is exposed here.
+        #[allow(dead_code)] // native approval owner integration is separate
+        pub(crate) fn exact_click_scope_for_central<'a>(
+            &'a self,
+            target: &'a crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<super::NativeExactClickApprovalScope<'a>, String> {
+            use crate::modules::net::tf_browser_contract::BrowserActionKind;
+            if !self.has_control_turn()
+                || !self.ready
+                || self.poisoned
+                || self.stopped
+                || self.last_request_id == 0
+            {
+                return Err("native-click-exclusive-control-turn-required".into());
+            }
+            let prepared = self
+                .page_contract
+                .prepare_action(BrowserActionKind::Click, (*target).clone(), None)
+                .map_err(str::to_owned)?;
+            if !prepared.requires_approval {
+                return Err("native-click-central-approval-required".into());
+            }
+            let (observation_id, generation, indices) = self
+                .last_recheck_observation
+                .as_ref()
+                .ok_or("native-click-observation-missing")?;
+            if *observation_id != self.last_observation_id
+                || *generation != self.last_page_generation
+            {
+                return Err("native-click-observation-stale".into());
+            }
+            let index = u32::try_from(prepared.observed_serial)
+                .map_err(|_| "native-click-index-overflow")?;
+            let ordinal = indices
+                .iter()
+                .position(|observed| *observed == index)
+                .ok_or("native-click-element-not-found")?;
+            if index == 0 || index > 256 || ordinal >= 48 {
+                return Err("native-click-index-bounds".into());
+            }
+            let sequence = self
+                .last_recheck_sequence
+                .checked_add(1)
+                .filter(|value| *value <= 256)
+                .ok_or("native-click-sequence-exhausted")?;
+            token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
+            if self
+                .browser
+                .as_ref()
+                .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+                || self
+                    .renderer
+                    .as_ref()
+                    .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+            {
+                return Err("native-click-process-unattested".into());
+            }
+            Ok(super::NativeExactClickApprovalScope {
+                actor: &self.actor,
+                session_id: &self.session_id,
+                workspace_root: &self.workspace_root,
+                target,
+                effect: prepared.effect,
+                source_id: format!("{:x}", Sha256::digest(self.initial_url.as_bytes())),
+                observation_id: *observation_id,
+                index,
+                ordinal: ordinal as u32,
+                check_sequence: sequence,
+            })
+        }
+
+        /// ONE actual WebView2 exact-node click using the already-existing
+        /// host COM path. A consumed central consent witness MUST have been
+        /// issued by the existing native authority after rechecking actor/chat,
+        /// canonical workspace, effect, page/source/snapshot/opaque node and
+        /// expiry. The witness cannot be constructed through this public API;
+        /// there is no issuer here or production caller yet. This function
+        /// NEVER mints an ID, asks for consent, or exposes an IPC/model tool.
+        /// The child-issued control turn is scheduling only, not approval.
+        /// On any ambiguous post-approval transport/COM outcome return UNKNOWN
+        /// with NEVER_REPLAY and terminate the owned Job via FlightFence.
+        #[allow(dead_code)] // no central witness issuer is connected yet
+        pub(crate) async fn dispatch_exact_click_in_control_turn(
+            &mut self,
+            approval: super::NativeConsumedExactClickApproval,
+        ) -> Result<crate::modules::net::tf_browser_contract::NativeEffectReceipt, String> {
+            use crate::modules::net::tf_browser_contract::{
+                NativeEffectReceipt, NativeEffectTerminal,
+            };
+            let target = approval.target.clone();
+            let scope = self.exact_click_scope_for_central(&target)?;
+            // No arbitrary 48-hex string, boolean, or model argument can
+            // substitute for the consumed exact central approval witness.
+            if !approval.matches_exact(&scope) {
+                return Err("native-click-central-approval-scope-stale".into());
+            }
+            let observation_id = scope.observation_id;
+            let generation = scope.target.page_generation;
+            let index = scope.index;
+            let ordinal = scope.ordinal;
+            let sequence = scope.check_sequence;
+            let source = scope.source_id.clone();
+            let approval_id = approval.approval_id;
+            if approval_id.len() != 48
+                || !approval_id
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            {
+                return Err("native-click-central-approval-id-invalid".into());
+            }
+            let nonce = self.nonce.clone();
+            let request = ParentElementAction {
+                version: 2,
+                kind: "act-element",
+                session: &nonce,
+                check_sequence: sequence,
+                observation_id,
+                page_generation: generation,
+                source_id: &source,
+                index,
+                ordinal,
+                action: "click",
+                approval_id: &approval_id,
+            };
+            let frame = serde_json::to_vec(&request).map_err(|_| "native-click-request-invalid")?;
+            if frame.is_empty() || frame.len() > 1024 {
+                return Err("native-click-request-bounds".into());
+            }
+            // Burn the native sequence AND every page reference before any
+            // pipe/COM I/O. Post-dispatch errors are UNKNOWN, never replayed.
+            self.last_recheck_sequence = sequence;
+            self.page_contract.revoke_snapshot();
+            self.last_recheck_observation = None;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            let result = async {
+                self.answer_control_turn("control-turn-claim").await?;
+                self.write_parent_frame(frame).await?;
+                let mut reader = self
+                    .requests
+                    .try_clone()
+                    .map_err(|_| "native-click-pipe-clone-failed")?;
+                let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                    .await
+                    .map_err(|_| "native-click-read-worker-failed")??;
+                validate_element_action_reply(&bytes, &request).map_err(str::to_owned)
+            }
+            .await;
+            match result {
+                Ok(terminal) if terminal != NativeEffectTerminal::Unknown => {
+                    self.poisoned = false;
+                    flight.committed = true;
+                    Ok(NativeEffectReceipt::classify(terminal))
+                }
+                _ => Ok(NativeEffectReceipt::classify(NativeEffectTerminal::Unknown)),
+            }
         }
 
         #[cfg(test)]
@@ -1913,6 +2310,58 @@ mod windows_owner {
             self.serve_one_scoped(registry, web_state, None).await
         }
 
+        /// True only after a strictly sequential host-issued, authenticated
+        /// idle offer. A future native owner may choose an approved control
+        /// before calling serve_one again; the ordinary broker loop simply
+        /// resumes it. An offer is NOT an action/approval capability.
+        pub(crate) fn has_control_turn(&self) -> bool {
+            self.control_turns_enabled && self.pending_control_turn.is_some()
+        }
+
+        /// Obtain a queue-safe *scheduling* request handle after the attested
+        /// host enabled exclusive turns. Calling `request()` does not confer
+        /// consent; it only asks the sole pipe owner to retain its NEXT host
+        /// idle offer for the approved command rather than auto-declining it.
+        #[allow(dead_code)] // consumed by future tf_browser.rs mailbox owner
+        pub(crate) fn control_turn_requester(&self) -> Option<super::NativeControlTurnRequester> {
+            self.control_turns_enabled
+                .then(|| super::NativeControlTurnRequester(self.control_turn_requested.clone()))
+        }
+
+        async fn answer_control_turn(&mut self, kind: &'static str) -> Result<(), String> {
+            if !self.control_turns_enabled
+                || !matches!(kind, "control-turn-claim" | "control-turn-continue")
+            {
+                return Err("browser-control-turn-answer-denied".into());
+            }
+            // Burn the lease before the write. Any interruption kills the Job
+            // via the caller's FlightFence; the old turn is NEVER reusable.
+            let id = self
+                .pending_control_turn
+                .take()
+                .ok_or("browser-control-turn-not-held")?;
+            let frame = serde_json::to_vec(&ParentControlTurnChoice {
+                version: 2,
+                kind,
+                session: &self.nonce,
+                turn_id: id,
+            })
+            .map_err(|_| "browser-control-turn-choice-serialization")?;
+            self.write_parent_frame(frame).await
+        }
+
+        fn idle_broker_receipt(&self, reason: &'static str) -> BrokerResourceReceipt {
+            BrokerResourceReceipt {
+                request_id: self.last_request_id,
+                page_generation: self.last_page_generation,
+                native_com_completed: false,
+                terminal: "idle",
+                reason: reason.into(),
+                bytes: 0,
+                tf3: None,
+            }
+        }
+
         /// In-process physical acceptance only: the real production host,
         /// original AppContainer and COM pipe remain unchanged. The parent
         /// uses a *test-only* exact loopback HTTPS TF3 policy with ephemeral
@@ -1941,16 +2390,77 @@ mod windows_owner {
             {
                 return Err("browser-broker-not-ready-or-budget-exhausted".into());
             }
-            self.poisoned = true;
-            let mut flight = FlightFence::new(self.job.0);
-            let outcome = self
-                .serve_one_inner(registry, web_state, test_public_cert)
-                .await;
-            if outcome.is_ok() {
+            if self.pending_control_turn.is_some() {
+                self.poisoned = true;
+                let mut flight = FlightFence::new(self.job.0);
+                self.answer_control_turn("control-turn-continue").await?;
                 self.poisoned = false;
                 flight.committed = true;
             }
-            outcome
+            // Unlike the former unconditional 5s read+fence, an empty idle
+            // session has NO blocking read task to outlive cancellation and
+            // NO FlightFence to kill the Job. A begun frame still gets an
+            // immediate fence before any of its bytes are consumed.
+            // Keep ONE idle budget while declining unsolicited offers; they
+            // must not generate bogus TF3 receipts every 250ms or prevent the
+            // outer 15s broker owner from observing an empty idle terminal.
+            let idle_deadline = Instant::now() + Duration::from_secs(12);
+            loop {
+                match wait_for_pipe_frame_start(&self.requests, idle_deadline).await {
+                    Ok(false) => return Ok(self.idle_broker_receipt("no-child-frame-yet")),
+                    Ok(true) => {}
+                    Err(reason) => {
+                        self.poisoned = true;
+                        return Err(reason);
+                    }
+                }
+                self.poisoned = true;
+                let mut flight = FlightFence::new(self.job.0);
+                let mut reader = self
+                    .requests
+                    .try_clone()
+                    .map_err(|_| "browser-pipe-clone-denied")?;
+                let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                    .await
+                    .map_err(|_| "browser-pipe-worker-failed")??;
+                let is_offer = self.control_turns_enabled
+                    && serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("kind")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .as_deref()
+                        == Some("control-turn-offer");
+                if is_offer {
+                    let id =
+                        validate_control_turn_offer(&bytes, &self.nonce, self.last_control_turn_id)
+                            .map_err(str::to_owned)?;
+                    self.last_control_turn_id = id;
+                    self.pending_control_turn = Some(id);
+                    if self.control_turn_requested.swap(false, Ordering::AcqRel) {
+                        self.poisoned = false;
+                        flight.committed = true;
+                        return Ok(self.idle_broker_receipt("host-exclusive-control-turn-offered"));
+                    }
+                    // No native command is waiting; decline while the SAME
+                    // owner holds the exact host lease. A fresh GET is never
+                    // forwarded by the child until this write completes.
+                    self.answer_control_turn("control-turn-continue").await?;
+                    self.poisoned = false;
+                    flight.committed = true;
+                    continue;
+                }
+                let outcome = self
+                    .serve_one_inner(registry, web_state, test_public_cert, &bytes)
+                    .await;
+                if outcome.is_ok() {
+                    self.poisoned = false;
+                    flight.committed = true;
+                }
+                return outcome;
+            }
         }
 
         async fn serve_one_inner(
@@ -1958,6 +2468,7 @@ mod windows_owner {
             registry: &WorkspaceRegistry,
             web_state: &TfWebState,
             test_public_cert: Option<&reqwest::Certificate>,
+            bytes: &[u8],
         ) -> Result<BrokerResourceReceipt, String> {
             token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
             if self
@@ -1971,15 +2482,8 @@ mod windows_owner {
             {
                 return Err("browser-child-process-unattested".into());
             }
-            let mut reader = self
-                .requests
-                .try_clone()
-                .map_err(|_| "browser-pipe-clone-denied")?;
-            let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
-                .await
-                .map_err(|_| "browser-pipe-worker-failed")??;
             let req: ChildGet =
-                serde_json::from_slice(&bytes).map_err(|_| "browser-broker-request-malformed")?;
+                serde_json::from_slice(bytes).map_err(|_| "browser-broker-request-malformed")?;
             validate_get(&req, &self.nonce, self.last_request_id)?;
             if req.page_generation < self.last_page_generation {
                 return Err("browser-broker-stale-page-generation".into());
@@ -2328,6 +2832,147 @@ impl BrowserRuntimeSession {
 mod tests {
     use super::*;
     use crate::modules::net::tf_browser_contract::{ActionTarget, BrowserActionKind};
+
+    #[test]
+    fn exclusive_host_control_turns_reject_replay_forgery_and_unknown_fields() {
+        let session = "a".repeat(48);
+        let offer = serde_json::json!({"version":2,"kind":"control-turn-offer",
+            "session":session,"turnId":1});
+        assert_eq!(
+            validate_control_turn_offer(offer.to_string().as_bytes(), &session, 0),
+            Ok(1)
+        );
+        assert!(validate_control_turn_offer(offer.to_string().as_bytes(), &session, 1).is_err());
+        assert!(validate_control_turn_offer(offer.to_string().as_bytes(), "wrong", 0).is_err());
+        let advance = serde_json::json!({"version":2,"kind":"control-turn-offer",
+            "session":session,"turnId":2});
+        assert_eq!(
+            validate_control_turn_offer(advance.to_string().as_bytes(), &session, 1),
+            Ok(2)
+        );
+        for (field, value) in [
+            ("version", serde_json::json!(1)),
+            ("kind", serde_json::json!("com-completed")),
+            ("turnId", serde_json::json!(0)),
+            ("session", serde_json::json!("forged")),
+        ] {
+            let mut corrupt = offer.clone();
+            corrupt[field] = value;
+            assert!(
+                validate_control_turn_offer(corrupt.to_string().as_bytes(), &session, 0).is_err()
+            );
+        }
+        let mut injected = offer;
+        injected["approvalId"] = serde_json::json!("not-a-consent");
+        assert!(validate_control_turn_offer(injected.to_string().as_bytes(), &session, 0).is_err());
+        let decline = serde_json::to_value(ParentControlTurnChoice {
+            version: 2,
+            kind: "control-turn-continue",
+            session: &session,
+            turn_id: 1,
+        })
+        .unwrap();
+        assert_eq!(decline["kind"], "control-turn-continue");
+        assert_eq!(decline["turnId"], 1);
+        assert!(decline.get("approvalId").is_none());
+    }
+
+    #[test]
+    fn native_turn_requester_coalesces_without_creating_any_consent() {
+        let pending = Arc::new(AtomicBool::new(false));
+        let owner_signal = NativeControlTurnRequester(pending.clone());
+        let queued = owner_signal.clone();
+        queued.request();
+        owner_signal.request();
+        assert!(pending.swap(false, Ordering::AcqRel));
+        assert!(!pending.swap(false, Ordering::AcqRel));
+    }
+
+    #[test]
+    fn consumed_central_click_witness_is_exact_scope_and_expires_without_reuse() {
+        use crate::modules::net::tf_browser_contract::BrowserEffect;
+        use std::time::{Duration, Instant};
+        let target = ActionTarget {
+            browser_session_id: "browser-1".into(),
+            page_id: "page-1".into(),
+            page_generation: 2,
+            snapshot_id: "snapshot-1".into(),
+            element_ref: "opaque-node-1".into(),
+        };
+        let workspace = PathBuf::from("C:/authorized-workspace");
+        let source = "a".repeat(64);
+        let proof = NativeConsumedExactClickApproval {
+            approval_id: "b".repeat(48),
+            actor: "human-actor".into(),
+            session_id: "conversation-1".into(),
+            workspace_root: workspace.clone(),
+            target: target.clone(),
+            effect: BrowserEffect::PotentialExternalWrite,
+            source_id: source.clone(),
+            observation_id: 5,
+            index: 9,
+            ordinal: 3,
+            check_sequence: 7,
+            expires_at: Instant::now() + Duration::from_secs(30),
+        };
+        let scoped = NativeExactClickApprovalScope {
+            actor: "human-actor",
+            session_id: "conversation-1",
+            workspace_root: &workspace,
+            target: &target,
+            effect: BrowserEffect::PotentialExternalWrite,
+            source_id: source.clone(),
+            observation_id: 5,
+            index: 9,
+            ordinal: 3,
+            check_sequence: 7,
+        };
+        assert!(proof.matches_exact(&scoped));
+        assert!(
+            NativeConsumedExactClickApproval::from_consumed_central_token(
+                "b".repeat(48),
+                &scoped,
+                Instant::now() + Duration::from_secs(30),
+            )
+            .is_ok()
+        );
+        assert!(
+            NativeConsumedExactClickApproval::from_consumed_central_token(
+                "not-an-issued-id".into(),
+                &scoped,
+                Instant::now() + Duration::from_secs(30),
+            )
+            .is_err()
+        );
+        assert!(
+            NativeConsumedExactClickApproval::from_consumed_central_token(
+                "b".repeat(48),
+                &scoped,
+                Instant::now() + Duration::from_secs(61),
+            )
+            .is_err()
+        );
+        assert!(!NativeConsumedExactClickApproval {
+            check_sequence: 8,
+            ..proof
+        }
+        .matches_exact(&scoped));
+        let expired = NativeConsumedExactClickApproval {
+            approval_id: "b".repeat(48),
+            actor: "human-actor".into(),
+            session_id: "conversation-1".into(),
+            workspace_root: workspace.clone(),
+            target: target.clone(),
+            effect: BrowserEffect::PotentialExternalWrite,
+            source_id: source.clone(),
+            observation_id: 5,
+            index: 9,
+            ordinal: 3,
+            check_sequence: 7,
+            expires_at: Instant::now() - Duration::from_millis(1),
+        };
+        assert!(!expired.matches_exact(&scoped));
+    }
     #[test]
     fn broker_allows_bounded_web_fonts_and_common_script_mime_without_untrusted_headers() {
         for mime in [
@@ -3281,6 +3926,126 @@ mod tests {
     /// an ephemeral public trust anchor. No release code, host, or general
     /// network policy can use that exception. A separate strictly-owned TLS
     /// fixture must be listening at 127.0.0.1:443 with a matching certificate.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit owned HTTPS fixture only: read-only control turn, real WebView2 COM and TF3; no action consent or model tool"]
+    async fn physical_production_opt_in_exclusive_control_turn_snapshot() {
+        use std::time::Duration;
+        assert_eq!(
+            std::env::var("CLACK_TF4_NATIVE_CONTROL_TURN").as_deref(),
+            Ok("1"),
+            "this real COM/TF3 probe is never automatic"
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let certificate = std::fs::canonicalize(evidence.join("server.cer"))
+            .expect("active owned HTTPS fixture public certificate");
+        assert_eq!(
+            std::fs::canonicalize(
+                std::env::var("CLACK_TF4_OWNED_HTTPS_CERT").expect("fixture certificate path")
+            )
+            .unwrap(),
+            certificate
+        );
+        let cert = reqwest::Certificate::from_der(&std::fs::read(&certificate).unwrap()).unwrap();
+        let host = PathBuf::from(
+            std::env::var("CLACK_TF4_NATIVE_PROBE_HOST").expect("feature-enabled owned host"),
+        );
+        let digest = format!("{:x}", Sha256::digest(std::fs::read(&host).unwrap()));
+        let private = tempfile::Builder::new()
+            .prefix("tf4-control-turn-")
+            .tempdir_in(manifest.join("target"))
+            .unwrap();
+        let workspace = manifest.parent().unwrap();
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(workspace).unwrap();
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-control-turn-readonly".into(),
+                session_id: "tf4-control-turn-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                private_parent: private.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .unwrap();
+        let observed = async {
+            tokio::time::timeout(
+                Duration::from_secs(18),
+                browser.verify_ready_for_control_turns(),
+            )
+            .await
+            .map_err(|_| "control-turn-ready-timeout")??;
+            let requester = browser
+                .control_turn_requester()
+                .ok_or("turns-not-negotiated")?;
+            // First prove actual parent-only TF3 GET and UI-apartment native
+            // COM completion. Unsolicited host turns are transparently
+            // declined and NEVER compete with these four resource receipts.
+            for expected in 1..=4u64 {
+                let resource = tokio::time::timeout(
+                    Duration::from_secs(17),
+                    browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+                )
+                .await
+                .map_err(|_| "control-turn-tf3-com-timeout")??;
+                if resource.request_id != expected
+                    || resource.terminal != "completed"
+                    || !resource.native_com_completed
+                    || resource.tf3.is_none()
+                {
+                    return Err("control-turn-real-com-not-proven".into());
+                }
+            }
+            requester.request(); // scheduling request, NOT central consent
+            let offered = tokio::time::timeout(
+                Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "control-turn-exclusive-offer-timeout")??;
+            if offered.terminal != "idle"
+                || offered.reason != "host-exclusive-control-turn-offered"
+                || !browser.has_control_turn()
+            {
+                return Err("control-turn-host-idle-offer-not-proven".into());
+            }
+            let snapshot = tokio::time::timeout(
+                Duration::from_secs(10),
+                browser.observe_closed_snapshot_in_control_turn(),
+            )
+            .await
+            .map_err(|_| "control-turn-physical-dom-timeout")??;
+            if snapshot.elements.is_empty()
+                || snapshot.page_generation == 0
+                || !snapshot.title.is_empty()
+                || !snapshot.visible_text.is_empty()
+                || browser.has_control_turn()
+                || browser
+                    .observe_closed_snapshot_in_control_turn()
+                    .await
+                    .is_ok()
+            {
+                return Err("control-turn-one-use-closed-dom-invalid".into());
+            }
+            Ok::<_, String>(())
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(
+            cleanup.is_ok(),
+            "owned Job/UDF/AppContainer cleanup required: {cleanup:?}"
+        );
+        assert!(
+            observed.is_ok(),
+            "real read-only control turn: {observed:?}"
+        );
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "explicit scoped HTTPS fixture with real production WebView2/TF3 COM path"]

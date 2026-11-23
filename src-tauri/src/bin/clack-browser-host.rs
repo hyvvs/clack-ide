@@ -96,6 +96,10 @@ mod host {
     const PRODUCTION_DOM_MAX_REQUESTS: u64 = 16;
     const PRODUCTION_DOM_MAX_CHECKS: u64 = 256;
     const PRODUCTION_DOM_DEADLINE: Duration = Duration::from_secs(3);
+    // A control turn is a scheduling lease, NOT an action approval. The broker
+    // worker alone holds both pipe handles and never forwards a GET while a
+    // host-issued turn is outstanding.
+    const PRODUCTION_CONTROL_TURN_POLL: Duration = Duration::from_millis(250);
     // This script carries NO open page-derived strings. Even an innocuous
     // accessible name can contain a password or session token; only fixed
     // tag roles, normalized allowlisted control types and closed booleans are
@@ -2379,6 +2383,24 @@ mod host {
         content_type: String,
         body_base64: String,
         error: Option<String>,
+        #[serde(default)]
+        control_turns: Option<bool>,
+    }
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ChildControlTurnOffer<'a> {
+        version: u8,
+        kind: &'static str,
+        session: &'a str,
+        turn_id: u64,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ParentControlTurnChoice {
+        version: u8,
+        kind: String,
+        session: String,
+        turn_id: u64,
     }
 
     #[derive(Clone)]
@@ -3297,6 +3319,71 @@ mod host {
         Ok(())
     }
 
+    // The host offers an exclusive control slot; the parent can only decline
+    // or claim that exact slot. The host reads one v2 command only after the
+    // claim, never while an outstanding v1 GET expects its exact parent reply.
+    // A missing/malformed choice terminates the broker, not a retryable turn.
+    fn validate_control_turn_choice(
+        frame: &[u8],
+        session: &str,
+        turn_id: u64,
+    ) -> Result<bool, &'static str> {
+        let choice: ParentControlTurnChoice =
+            serde_json::from_slice(frame).map_err(|_| "control-turn-choice-invalid")?;
+        if choice.version != 2 || choice.session != session || choice.turn_id != turn_id {
+            return Err("control-turn-choice-stale");
+        }
+        match choice.kind.as_str() {
+            "control-turn-continue" => Ok(false),
+            "control-turn-claim" => Ok(true),
+            _ => Err("control-turn-choice-kind-denied"),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn service_parent_control_turn(
+        read: &mut File,
+        write: &mut File,
+        app: &tauri::AppHandle,
+        session: &str,
+        turn_id: u64,
+        last_observation_id: &mut u64,
+        last_check_sequence: &mut u64,
+        identities: &mut NativeDomIdentity,
+        page_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+        initial_url: &str,
+    ) -> Result<(), &'static str> {
+        if stats.broken.load(Ordering::Acquire) || stats.pending.load(Ordering::Acquire) != 0 {
+            return Err("control-turn-not-idle");
+        }
+        let offer = ChildControlTurnOffer {
+            version: 2,
+            kind: "control-turn-offer",
+            session,
+            turn_id,
+        };
+        let bytes = serde_json::to_vec(&offer).map_err(|_| "control-turn-offer-invalid")?;
+        broker_write_frame(write, &bytes).map_err(|_| "control-turn-offer-pipe-failed")?;
+        let choice = broker_read_frame(read, PRODUCTION_DOM_DEADLINE)
+            .map_err(|_| "control-turn-choice-timeout-or-pipe-failed")?;
+        if validate_control_turn_choice(&choice, session, turn_id)? {
+            service_parent_dom_control(
+                read,
+                write,
+                app,
+                session,
+                last_observation_id,
+                last_check_sequence,
+                identities,
+                page_generation,
+                stats,
+                initial_url,
+            )?;
+        }
+        Ok(())
+    }
+
     fn broker_reply(bytes: &[u8], nonce: &str, id: u64) -> Result<BrokerPayload, &'static str> {
         let reply: BrokerReply =
             serde_json::from_slice(bytes).map_err(|_| "malformed broker reply")?;
@@ -3308,6 +3395,11 @@ mod host {
         }
         if reply.request_id != id {
             return Err("broker reply requestId mismatch");
+        }
+        if reply.control_turns.is_some()
+            && (id != 0 || reply.control_turns != Some(true) || reply.status != 204)
+        {
+            return Err("broker control-turn negotiation denied");
         }
         if !(200..=599).contains(&reply.status) || (300..400).contains(&reply.status) {
             // No Location header is part of protocol v1. A 3xx without a
@@ -4105,11 +4197,16 @@ mod host {
                 let handle = app.handle().clone();
                 thread::spawn(move || {
                     let mut parent_attested = false;
+                    // False for every existing production/physical fixture.
+                    // An attested parent must explicitly opt in during the
+                    // first 204 readiness ACK before the host offers turns.
+                    let mut worker_control_turns = false;
+                    let mut next_control_turn_id = 0u64;
                     let mut last_observation_id = 0u64;
                     let mut last_check_sequence = 0u64;
                     let mut native_dom_identity = NativeDomIdentity::default();
                     loop {
-                        if worker_production && parent_attested {
+                        if worker_production && parent_attested && !worker_control_turns {
                             // The authenticated parent's pending observation
                             // command takes precedence over a *new* resource
                             // ticket. Never read control bytes while awaiting
@@ -4152,10 +4249,54 @@ mod host {
                         // resource reply it consumes ONLY the exact v1 reply;
                         // v2 observation requests are processed while idle.
                         let ticket = if worker_production && parent_attested {
-                            match rx.recv_timeout(Duration::from_millis(30)) {
+                            match rx.recv_timeout(if worker_control_turns {
+                                PRODUCTION_CONTROL_TURN_POLL
+                            } else {
+                                Duration::from_millis(30)
+                            }) {
                                 Ok(ticket) => ticket,
                                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                                 Err(mpsc::RecvTimeoutError::Timeout) => {
+                                    if worker_control_turns {
+                                        if worker_stats.broken.load(Ordering::Acquire) {
+                                            break;
+                                        }
+                                        if worker_stats.pending.load(Ordering::Acquire) != 0 {
+                                            // A UI request is entering the
+                                            // bounded queue; never offer a
+                                            // control slot over its deferral.
+                                            continue;
+                                        }
+                                        // No pending native COM deferral or
+                                        // forwarded GET: the single host pipe
+                                        // worker now freezes its ticket queue
+                                        // until one authenticated choice and
+                                        // optional one v2 control complete.
+                                        let Some(id) = next_control_turn_id.checked_add(1) else {
+                                            worker_stats.broken.store(true, Ordering::Release);
+                                            break;
+                                        };
+                                        next_control_turn_id = id;
+                                        if let Err(reason) = service_parent_control_turn(
+                                            &mut broker_read,
+                                            &mut broker_write,
+                                            &handle,
+                                            &worker_session,
+                                            id,
+                                            &mut last_observation_id,
+                                            &mut last_check_sequence,
+                                            &mut native_dom_identity,
+                                            worker_generation.clone(),
+                                            worker_stats.clone(),
+                                            &worker_initial_url,
+                                        ) {
+                                            worker_stats.errors.fetch_add(1, Ordering::Relaxed);
+                                            worker_stats.broken.store(true, Ordering::Release);
+                                            worker_trace.error("production.control-turn.denied", reason);
+                                            break;
+                                        }
+                                        continue;
+                                    }
                                     match broker_control_available(&broker_read) {
                                         Ok(false) => continue,
                                         Ok(true) => {
@@ -4201,7 +4342,7 @@ mod host {
                             // A successful first response is a parent policy
                             // attestation, never proof from the child itself.
                             // No WebView2 navigation may occur earlier.
-                            let acknowledged = (|| -> Result<(), String> {
+                            let acknowledged = (|| -> Result<bool, String> {
                                 if !worker_production || ticket.id != 0
                                     || ready.session != worker_session
                                     || ready.host_pid != pid || !production_broker_url(&worker_initial_url)
@@ -4214,16 +4355,22 @@ mod host {
                                     .map_err(|_| "production readiness parent authorization unavailable")?;
                                 let response = broker_reply(&reply, &worker_session, 0)
                                     .map_err(|_| "production readiness reply identity invalid")?;
+                                let control_turns = serde_json::from_slice::<BrokerReply>(&reply)
+                                    .map_err(|_| "production control-turn readiness invalid")?
+                                    .control_turns == Some(true);
                                 if response.status != 204 || !response.body.is_empty()
                                     || response.synthetic || response.binding.is_some()
                                 { return Err("production parent refused WebView2 readiness".into()) }
-                                Ok(())
+                                Ok(control_turns)
                             })();
-                            if let Err(reason) = acknowledged {
-                                worker_stats.broken.store(true, Ordering::Release);
-                                worker_trace.error("production.handshake.denied", &reason);
-                                break;
-                            }
+                            worker_control_turns = match acknowledged {
+                                Ok(enabled) => enabled,
+                                Err(reason) => {
+                                    worker_stats.broken.store(true, Ordering::Release);
+                                    worker_trace.error("production.handshake.denied", &reason);
+                                    break;
+                                }
+                            };
                             let (ack_tx, ack_rx) = mpsc::sync_channel(1);
                             let core_app = handle.clone();
                             let approved_url = worker_initial_url.clone();
@@ -5871,6 +6018,144 @@ mod host {
         use super::*;
 
         const NONCE: &str = "0123456789abcdef0123456789abcdef";
+
+        #[test]
+        fn control_turn_requires_an_exact_host_issued_nonce_and_monotonic_choice() {
+            let claim = json!({"version":2,"kind":"control-turn-claim",
+                "session":NONCE,"turnId":7});
+            assert_eq!(
+                validate_control_turn_choice(claim.to_string().as_bytes(), NONCE, 7),
+                Ok(true)
+            );
+            let skip = json!({"version":2,"kind":"control-turn-continue",
+                "session":NONCE,"turnId":7});
+            assert_eq!(
+                validate_control_turn_choice(skip.to_string().as_bytes(), NONCE, 7),
+                Ok(false)
+            );
+            assert!(validate_control_turn_choice(claim.to_string().as_bytes(), NONCE, 8).is_err());
+            assert!(
+                validate_control_turn_choice(claim.to_string().as_bytes(), "other", 7).is_err()
+            );
+            for (field, value) in [
+                ("kind", json!("act-element")),
+                ("version", json!(1)),
+                ("session", json!("forged")),
+                ("turnId", json!(8)),
+            ] {
+                let mut corrupted = claim.clone();
+                corrupted[field] = value;
+                assert!(
+                    validate_control_turn_choice(corrupted.to_string().as_bytes(), NONCE, 7)
+                        .is_err()
+                );
+            }
+            let mut extra = claim;
+            extra["approvalId"] = json!("not-an-authorization");
+            assert!(validate_control_turn_choice(extra.to_string().as_bytes(), NONCE, 7).is_err());
+        }
+
+        #[test]
+        fn readiness_is_the_only_legal_control_turn_opt_in() {
+            let normal = json!({"version":1,"session":NONCE,"requestId":0,
+                "status":204,"contentType":"text/plain","bodyBase64":"","error":null});
+            assert!(broker_reply(normal.to_string().as_bytes(), NONCE, 0).is_ok());
+            let mut enabled = normal;
+            enabled["controlTurns"] = json!(true);
+            assert!(broker_reply(enabled.to_string().as_bytes(), NONCE, 0).is_ok());
+            assert!(broker_reply(enabled.to_string().as_bytes(), NONCE, 1).is_err());
+            enabled["controlTurns"] = json!(false);
+            assert!(broker_reply(enabled.to_string().as_bytes(), NONCE, 0).is_err());
+            enabled["controlTurns"] = json!(true);
+            enabled["status"] = json!(200);
+            assert!(broker_reply(enabled.to_string().as_bytes(), NONCE, 0).is_err());
+        }
+
+        #[test]
+        fn sealed_pipe_decline_must_precede_next_v1_get_with_one_exclusive_reader() {
+            let (mut child_read, mut parent_write) = local_pipe();
+            let (mut parent_read, mut child_write) = local_pipe();
+            let host = thread::spawn(move || {
+                let offer = ChildControlTurnOffer {
+                    version: 2,
+                    kind: "control-turn-offer",
+                    session: NONCE,
+                    turn_id: 3,
+                };
+                broker_write_frame(&mut parent_write, &serde_json::to_vec(&offer).unwrap())
+                    .unwrap();
+                let choice = broker_read_frame(&mut parent_read, Duration::from_secs(1)).unwrap();
+                assert_eq!(validate_control_turn_choice(&choice, NONCE, 3), Ok(false));
+                // The real host broker worker can forward this GET only AFTER
+                // the exact declined turn has been consumed on its single pipe.
+                let get = json!({"version":1,"session":NONCE,"requestId":1,
+                    "method":"GET","url":"https://example.org/","pageGeneration":1});
+                broker_write_frame(&mut parent_write, get.to_string().as_bytes()).unwrap();
+            });
+            let first = broker_read_frame(&mut child_read, Duration::from_secs(1)).unwrap();
+            let seen: serde_json::Value = serde_json::from_slice(&first).unwrap();
+            assert_eq!(seen["kind"], "control-turn-offer");
+            assert_eq!(seen["turnId"], 3);
+            let skip = json!({"version":2,"kind":"control-turn-continue",
+                "session":NONCE,"turnId":3});
+            broker_write_frame(&mut child_write, skip.to_string().as_bytes()).unwrap();
+            let next = broker_read_frame(&mut child_read, Duration::from_secs(1)).unwrap();
+            let get: serde_json::Value = serde_json::from_slice(&next).unwrap();
+            assert_eq!(get["version"], 1);
+            assert_eq!(get["requestId"], 1);
+            assert_eq!(get["method"], "GET");
+            host.join().unwrap();
+        }
+
+        #[test]
+        fn sealed_pipe_claim_keeps_v2_dom_terminal_before_following_v1_get() {
+            let (mut child_read, mut parent_write) = local_pipe();
+            let (mut parent_read, mut child_write) = local_pipe();
+            let host = thread::spawn(move || {
+                let offer = ChildControlTurnOffer {
+                    version: 2,
+                    kind: "control-turn-offer",
+                    session: NONCE,
+                    turn_id: 5,
+                };
+                broker_write_frame(&mut parent_write, &serde_json::to_vec(&offer).unwrap())
+                    .unwrap();
+                let choice = broker_read_frame(&mut parent_read, Duration::from_secs(1)).unwrap();
+                assert_eq!(validate_control_turn_choice(&choice, NONCE, 5), Ok(true));
+                let control = broker_read_frame(&mut parent_read, Duration::from_secs(1)).unwrap();
+                let command: ParentDomRequest = serde_json::from_slice(&control).unwrap();
+                assert_eq!(command.kind, "observe-dom");
+                assert_eq!(command.session, NONCE);
+                let terminal = json!({"version":2,"kind":"dom-snapshot","session":NONCE,
+                    "observationId":command.observation_id,"pageGeneration":1,
+                    "sourceId":command.source_id,"terminal":"denied","reason":"dom-unavailable",
+                    "truncated":false,"visited":0,"omittedFields":0,"elements":[]});
+                broker_write_frame(&mut parent_write, terminal.to_string().as_bytes()).unwrap();
+                let get = json!({"version":1,"session":NONCE,"requestId":1,
+                    "method":"GET","url":"https://example.org/","pageGeneration":1});
+                broker_write_frame(&mut parent_write, get.to_string().as_bytes()).unwrap();
+            });
+            let offer = broker_read_frame(&mut child_read, Duration::from_secs(1)).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&offer).unwrap()["turnId"],
+                5
+            );
+            let claim = json!({"version":2,"kind":"control-turn-claim",
+                "session":NONCE,"turnId":5});
+            broker_write_frame(&mut child_write, claim.to_string().as_bytes()).unwrap();
+            let control = json!({"version":2,"kind":"observe-dom","session":NONCE,
+                "observationId":1,"pageGeneration":1,"sourceId":"a".repeat(64)});
+            broker_write_frame(&mut child_write, control.to_string().as_bytes()).unwrap();
+            let response = broker_read_frame(&mut child_read, Duration::from_secs(1)).unwrap();
+            let terminal: serde_json::Value = serde_json::from_slice(&response).unwrap();
+            assert_eq!(terminal["kind"], "dom-snapshot");
+            assert_eq!(terminal["terminal"], "denied");
+            let next = broker_read_frame(&mut child_read, Duration::from_secs(1)).unwrap();
+            let get: serde_json::Value = serde_json::from_slice(&next).unwrap();
+            assert_eq!(get["version"], 1);
+            assert_eq!(get["method"], "GET");
+            host.join().unwrap();
+        }
 
         #[test]
         fn only_exact_case_owned_get_urls_can_reach_the_parent() {

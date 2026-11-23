@@ -589,3 +589,51 @@ model/installed-UI calls. The replacement test used RunId
 one connection and zero denied, certificate/active marker absent and no
 443 listener. It does **not** prove atomic effectful action admission,
 central approval consumption, form submission or complete TF4 E2E.
+
+### Continuation 7 — central native click bridge and cancellation source verification (not physical approval acceptance)
+
+On the existing `tf/browser-computer-use` branch after committed HEAD
+`74398fe408b441b668f95919d9bb09071dcef6cc`, the TF4 native owner,
+WebView2 host and runtime now include an authenticated, serialized exclusive
+control-turn protocol and a move-only consumed native approval witness.
+The existing TF4 pending token and genuine application approval dialog remain
+the intended authority; a host-issued control turn is **scheduling only**.
+The original retained DOM Node must still pass the host's exact recheck.
+
+The native owner now tracks a queued click in the existing active-call map,
+including after consumption of its pending token. A per-call atomic phase
+linearizes cancellation against irreversible dispatch commitment. A cancelled
+queued call cannot win the dispatch transition, whereas a cancellation after
+dispatch commitment is **not** represented as guaranteed cancellation.
+The actor burns pending authority and clears its exact busy lease on stale,
+denied, cancelled, expired, closed-reply or completed command paths. Known
+pre-dispatch rejections retain FAILED/CANCELLED native terminals; after possible
+transport/COM dispatch, uncertainty remains UNKNOWN with no automatic replay.
+The outer click receipt exposes both the fine native terminal and canonical
+terminal, including on uncertain command delivery. This is source-level
+hardening, not a claim of an independently observed effect.
+
+Verification of this combined native source on Windows, with
+`CARGO_INCREMENTAL=0` and the `tf-browser-native-runtime` feature:
+
+- `cargo check --locked --features tf-browser-native-runtime --tests --lib --bin clack-browser-host`: **PASS**, exit 0.
+- Browser owner (`modules::net::tf_browser::tests::`): **19/19 PASS**.
+- Native action/effect contract (`modules::net::tf_browser_contract::tests::`): **13/13 PASS**.
+- Native runtime: **12/12 active PASS, 11 physical tests ignored**, not run.
+- Native host (`--bin clack-browser-host`): **50/50 PASS**, including the
+  real two-pipe control-turn ordering unit tests.
+
+Two individually validated regenerable Rust incremental cache directories
+were removed only after confirming the intended target parent, no reparse
+point and no active compiler processes. Protected untracked `outputs/` and
+`scripts/__pycache__/` and earlier physical fixture records were untouched.
+
+**Not accepted:** no central `tf_browser_prepare` -> genuine OS dialog
+`tf_browser_approve` -> `tf_browser_execute` -> real exact-node click has yet
+been physically performed; no independent post-action effect has been bound
+to such approval, so `SUCCESS` has not been demonstrated. This continuation
+does not satisfy form submission, screenshot, credentials, transfers,
+popup/storage, 13-case lifecycle matrix, extended network-class isolation,
+17-step production E2E, optimized current release/package/install acceptance,
+or model-facing native capability admission. PR #46 must remain **Draft**;
+do not merge or start TF5.
