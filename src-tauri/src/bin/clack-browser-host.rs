@@ -94,6 +94,7 @@ mod host {
     const PRODUCTION_DOM_MAX_ELEMENTS: usize = 48;
     const PRODUCTION_DOM_FRAME_LIMIT: usize = 16 * 1024;
     const PRODUCTION_DOM_MAX_REQUESTS: u64 = 16;
+    const PRODUCTION_DOM_MAX_CHECKS: u64 = 256;
     const PRODUCTION_DOM_DEADLINE: Duration = Duration::from_secs(3);
     // This script carries NO open page-derived strings. Even an innocuous
     // accessible name can contain a password or session token; only fixed
@@ -1435,6 +1436,56 @@ mod host {
         source_id: String,
     }
 
+    // A separate closed, authenticated v2 control. The original DOM visit
+    // index and zero-based serialized element ordinal must BOTH match the
+    // currently held observation. There is no selector, expression, or action.
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ParentDomRecheckRequest {
+        version: u8,
+        kind: String,
+        session: String,
+        check_sequence: u64,
+        observation_id: u64,
+        page_generation: u64,
+        source_id: String,
+        index: u32,
+        ordinal: u32,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ChildDomRecheckReply<'a> {
+        version: u8,
+        kind: &'static str,
+        session: &'a str,
+        check_sequence: u64,
+        observation_id: u64,
+        page_generation: u64,
+        source_id: &'a str,
+        index: u32,
+        ordinal: u32,
+        state: &'static str,
+    }
+
+    fn dom_recheck_reply(
+        request: &ParentDomRecheckRequest,
+        accepted: bool,
+    ) -> ChildDomRecheckReply<'_> {
+        ChildDomRecheckReply {
+            version: 2,
+            kind: "element-recheck",
+            session: &request.session,
+            check_sequence: request.check_sequence,
+            observation_id: request.observation_id,
+            page_generation: request.page_generation,
+            source_id: &request.source_id,
+            index: request.index,
+            ordinal: request.ordinal,
+            state: if accepted { "ACCEPTED" } else { "STALE" },
+        }
+    }
+
     #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct ProductionDomElement {
@@ -1545,6 +1596,18 @@ mod host {
                 slot,
                 root_object_id: root_object_id.clone(),
             })
+        }
+
+        fn reference_at(&self, index: u32, ordinal: u32) -> Result<NativeDomNodeRef, &'static str> {
+            let slot = usize::try_from(ordinal).map_err(|_| "observation-element-stale")?;
+            if self.indices.get(slot) != Some(&index) {
+                return Err("observation-element-stale");
+            }
+            let reference = self.reference(index)?;
+            if reference.slot != slot {
+                return Err("observation-element-stale");
+            }
+            Ok(reference)
         }
 
         // Only an exact currently retained object + ordinal can be presented
@@ -1689,6 +1752,84 @@ mod host {
             return Err("observation-source-mismatch");
         }
         Ok(request)
+    }
+
+    fn valid_dom_source_token(token: &str) -> bool {
+        token.len() == 64
+            && token
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    }
+
+    // Invalid authentication, schema, and sequence terminate the sealed
+    // channel. A valid, in-order check for an obsolete page/observation or
+    // unmatched element returns STALE without ever dispatching COM.
+    fn validate_dom_recheck_request(
+        frame: &[u8],
+        session: &str,
+        last_check_sequence: u64,
+        latest_observation_id: u64,
+        current_generation: u64,
+        initial_url: &str,
+        identities: &NativeDomIdentity,
+    ) -> Result<(ParentDomRecheckRequest, Option<NativeDomNodeRef>), &'static str> {
+        if frame.is_empty() || frame.len() > 1024 {
+            return Err("recheck-request-bounds");
+        }
+        let request: ParentDomRecheckRequest =
+            serde_json::from_slice(frame).map_err(|_| "recheck-request-invalid")?;
+        if request.version != 2
+            || request.kind != "recheck-element"
+            || request.session != session
+            || request.check_sequence == 0
+            || request.check_sequence > PRODUCTION_DOM_MAX_CHECKS
+            || request.check_sequence != last_check_sequence.saturating_add(1)
+            || request.observation_id == 0
+            || request.page_generation == 0
+            || request.index == 0
+            || request.index > PRODUCTION_DOM_MAX_VISITS
+            || request.ordinal >= PRODUCTION_DOM_MAX_ELEMENTS as u32
+            || !valid_dom_source_token(&request.source_id)
+        {
+            return Err("recheck-session-sequence-or-bounds-denied");
+        }
+        let actual_source_id = production_dom_source_id(initial_url)?;
+        let reference = if request.observation_id != latest_observation_id
+            || request.page_generation != current_generation
+            || request.source_id != actual_source_id
+        {
+            None
+        } else {
+            identities
+                .reference_at(request.index, request.ordinal)
+                .ok()
+                .filter(|reference| {
+                    identities
+                        .check_reference(reference, request.observation_id, request.page_generation)
+                        .is_ok()
+                })
+        };
+        Ok((request, reference))
+    }
+
+    // A RemoteObject is acceptable ONLY if CDP confirms an actual DOM Node
+    // identity. Generic JS objects, JSON booleans, null, exceptions and
+    // error descriptions cannot prove the original node survived.
+    fn parse_dom_node_recheck_response(raw: &str) -> bool {
+        if raw.is_empty() || raw.len() > 2048 {
+            return false;
+        }
+        let Ok(response) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return false;
+        };
+        response.get("exceptionDetails").is_none()
+            && response.pointer("/result/type").and_then(|v| v.as_str()) == Some("object")
+            && response.pointer("/result/subtype").and_then(|v| v.as_str()) == Some("node")
+            && response.pointer("/result/value").is_none()
+            && response
+                .pointer("/result/objectId")
+                .and_then(|v| v.as_str())
+                .is_some_and(valid_dom_object_id)
     }
 
     fn verify_production_dom(raw: &str) -> Result<ProductionDomResult, &'static str> {
@@ -2564,6 +2705,152 @@ mod host {
             .map_err(|_| "observation-timeout")?
     }
 
+    fn recheck_dom_on_ui(
+        app: &tauri::AppHandle,
+        expected_url: &str,
+        request_generation: u64,
+        reference: NativeDomNodeRef,
+        current_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+    ) -> Result<bool, &'static str> {
+        if stats.broken.load(Ordering::Acquire)
+            || stats.pending.load(Ordering::Acquire) != 0
+            || current_generation.load(Ordering::Acquire) != request_generation
+            || reference.page_generation != request_generation
+        {
+            return Err("recheck-page-stale");
+        }
+        let expected = expected_url.to_owned();
+        let (tx, rx) = mpsc::sync_channel::<Result<bool, &'static str>>(1);
+        let app_for_ui = app.clone();
+        app.run_on_main_thread(move || {
+            let tx_ui = tx.clone();
+            let dispatched = app_for_ui
+                .get_webview_window("browser-host")
+                .ok_or("recheck-native-window-unavailable")
+                .and_then(|window| {
+                    window
+                        .with_webview(move |native| {
+                            let sender = tx_ui.clone();
+                            let core = match unsafe { native.controller().CoreWebView2() } {
+                                Ok(core) => core,
+                                Err(_) => {
+                                    let _ =
+                                        sender.send(Err("recheck-native-controller-unavailable"));
+                                    return;
+                                }
+                            };
+                            let mut source = PWSTR::null();
+                            if unsafe { core.Source(&mut source) }.is_err() {
+                                let _ = sender.send(Err("recheck-native-source-unavailable"));
+                                return;
+                            }
+                            if take_pwstr(source) != expected
+                                || current_generation.load(Ordering::Acquire) != request_generation
+                                || stats.broken.load(Ordering::Acquire)
+                                || stats.pending.load(Ordering::Acquire) != 0
+                            {
+                                let _ = sender.send(Err("recheck-page-stale"));
+                                return;
+                            }
+                            let callback_core = core.clone();
+                            let callback_generation = current_generation.clone();
+                            let callback_stats = stats.clone();
+                            let callback_expected = expected.clone();
+                            let parameters = json!({
+                                "objectId": reference.root_object_id,
+                                "functionDeclaration": DOM_NODE_RECHECK_JS,
+                                "arguments": [{ "value": reference.slot }],
+                                "returnByValue": false,
+                                "silent": true,
+                                "awaitPromise": false,
+                                "generatePreview": false
+                            })
+                            .to_string();
+                            native_dom_cdp_on_ui(
+                                &core,
+                                "Runtime.callFunctionOn",
+                                parameters,
+                                Box::new(move |remote| {
+                                    let checked = (|| {
+                                        let mut source = PWSTR::null();
+                                        if unsafe { callback_core.Source(&mut source) }.is_err() {
+                                            return Err("recheck-native-source-unavailable");
+                                        }
+                                        if take_pwstr(source) != callback_expected
+                                            || callback_generation.load(Ordering::Acquire)
+                                                != request_generation
+                                            || callback_stats.broken.load(Ordering::Acquire)
+                                            || callback_stats.pending.load(Ordering::Acquire) != 0
+                                        {
+                                            return Err("recheck-page-stale");
+                                        }
+                                        Ok(parse_dom_node_recheck_response(&remote?))
+                                    })();
+                                    let _ = sender.send(checked);
+                                }),
+                            );
+                        })
+                        .map_err(|_| "recheck-ui-dispatch")
+                });
+            if dispatched.is_err() {
+                let _ = tx.send(Err("recheck-ui-dispatch"));
+            }
+        })
+        .map_err(|_| "recheck-ui-dispatch")?;
+        rx.recv_timeout(PRODUCTION_DOM_DEADLINE)
+            .map_err(|_| "recheck-timeout")?
+    }
+
+    fn service_parent_dom_recheck_frame(
+        frame: &[u8],
+        write: &mut File,
+        app: &tauri::AppHandle,
+        session: &str,
+        last_observation_id: u64,
+        last_check_sequence: &mut u64,
+        identities: &NativeDomIdentity,
+        page_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+        initial_url: &str,
+    ) -> Result<(), &'static str> {
+        let (request, reference) = validate_dom_recheck_request(
+            frame,
+            session,
+            *last_check_sequence,
+            last_observation_id,
+            page_generation.load(Ordering::Acquire),
+            initial_url,
+            identities,
+        )?;
+        // A valid request consumes the sequence even if the reference is stale
+        // or COM fails. Duplicate/replayed checks cannot become fresh later.
+        *last_check_sequence = request.check_sequence;
+        let accepted = if let Some(reference) = reference {
+            recheck_dom_on_ui(
+                app,
+                initial_url,
+                request.page_generation,
+                reference,
+                page_generation.clone(),
+                stats.clone(),
+            )
+            .unwrap_or(false)
+        } else {
+            false
+        };
+        let accepted = accepted
+            && page_generation.load(Ordering::Acquire) == request.page_generation
+            && !stats.broken.load(Ordering::Acquire)
+            && stats.pending.load(Ordering::Acquire) == 0;
+        let reply = serde_json::to_vec(&dom_recheck_reply(&request, accepted))
+            .map_err(|_| "recheck-reply-invalid")?;
+        if reply.is_empty() || reply.len() > 1024 {
+            return Err("recheck-reply-bounds");
+        }
+        broker_write_frame(write, &reply).map_err(|_| "recheck-pipe-failed")
+    }
+
     /// Read a parent control frame ONLY while the single broker pipe worker
     /// is idle, after the parent attested the native browser/renderer. Both
     /// pipes are the same inherited, non-inheritable sealed handles already
@@ -2574,6 +2861,7 @@ mod host {
         app: &tauri::AppHandle,
         session: &str,
         last_observation_id: &mut u64,
+        last_check_sequence: &mut u64,
         identities: &mut NativeDomIdentity,
         page_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
@@ -2586,6 +2874,22 @@ mod host {
         // An invalid authentication/binding kills the broker channel.
         if frame.is_empty() || frame.len() > 1024 {
             return Err("observation-request-bounds");
+        }
+        let discriminator: serde_json::Value =
+            serde_json::from_slice(&frame).map_err(|_| "observation-request-invalid")?;
+        if discriminator.get("kind").and_then(|v| v.as_str()) == Some("recheck-element") {
+            return service_parent_dom_recheck_frame(
+                &frame,
+                write,
+                app,
+                session,
+                *last_observation_id,
+                last_check_sequence,
+                identities,
+                page_generation,
+                stats,
+                initial_url,
+            );
         }
         let request: ParentDomRequest =
             serde_json::from_slice(&frame).map_err(|_| "observation-request-invalid")?;
@@ -3475,6 +3779,7 @@ mod host {
                 thread::spawn(move || {
                     let mut parent_attested = false;
                     let mut last_observation_id = 0u64;
+                    let mut last_check_sequence = 0u64;
                     let mut native_dom_identity = NativeDomIdentity::default();
                     loop {
                         if worker_production && parent_attested {
@@ -3490,6 +3795,7 @@ mod host {
                                         &handle,
                                         &worker_session,
                                         &mut last_observation_id,
+                                        &mut last_check_sequence,
                                         &mut native_dom_identity,
                                         worker_generation.clone(),
                                         worker_stats.clone(),
@@ -3501,7 +3807,7 @@ mod host {
                                         break;
                                     }
                                     worker_trace.record("production.observe.replied",
-                                        "authenticated bounded structural DOM result delivered to parent");
+                                        "authenticated bounded DOM control terminal delivered to parent");
                                     continue;
                                 }
                                 Ok(false) => {}
@@ -3532,6 +3838,7 @@ mod host {
                                                 &handle,
                                                 &worker_session,
                                                 &mut last_observation_id,
+                                                &mut last_check_sequence,
                                                 &mut native_dom_identity,
                                                 worker_generation.clone(),
                                                 worker_stats.clone(),
@@ -3544,7 +3851,7 @@ mod host {
                                                 break;
                                             }
                                             worker_trace.record("production.observe.replied",
-                                                "authenticated bounded structural DOM result delivered to parent");
+                                                "authenticated bounded DOM control terminal delivered to parent");
                                             continue;
                                         }
                                         Err(_) => {
@@ -6129,6 +6436,236 @@ mod host {
                     {"index":4,"role":"button","depth":2,"headingLevel":null}
                 ]
             })
+        }
+
+        fn native_dom_recheck_case() -> (NativeDomIdentity, serde_json::Value) {
+            let mut identity = NativeDomIdentity::default();
+            identity.invalidate(1, 7);
+            identity
+                .bind(&NativeDomObservation {
+                    snapshot: verify_production_dom(&production_dom_case().to_string()).unwrap(),
+                    root_object_id: r#"{"injectedScriptId":1,"id":11}"#.into(),
+                })
+                .unwrap();
+            let request = json!({
+                "version": 2, "kind": "recheck-element", "session": NONCE,
+                "checkSequence": 1, "observationId": 1, "pageGeneration": 7,
+                "sourceId": production_dom_source_id("https://example.test/").unwrap(),
+                "index": 4, "ordinal": 2
+            });
+            (identity, request)
+        }
+
+        #[test]
+        fn production_dom_recheck_requires_exact_latest_node_index_and_ordinal() {
+            let (mut identity, original) = native_dom_recheck_case();
+            let validate = |request: &serde_json::Value, last: u64, held: &NativeDomIdentity| {
+                validate_dom_recheck_request(
+                    request.to_string().as_bytes(),
+                    NONCE,
+                    last,
+                    1,
+                    7,
+                    "https://example.test/",
+                    held,
+                )
+            };
+            let (request, node) = validate(&original, 0, &identity).unwrap();
+            let node = node.expect("original node retained by the exact same COM walk");
+            assert_eq!(node.slot, 2);
+            assert_eq!(node.index, 4);
+            assert_eq!(identity.check_reference(&node, 1, 7).unwrap().1, 2);
+            let accepted = serde_json::to_value(dom_recheck_reply(&request, true)).unwrap();
+            assert_eq!(accepted["state"], "ACCEPTED");
+            assert_eq!(accepted["kind"], "element-recheck");
+            assert_eq!(accepted["checkSequence"], 1);
+            assert_eq!(accepted.as_object().unwrap().len(), 10);
+            let serialized = accepted.to_string();
+            for forbidden in [
+                "objectId",
+                "node",
+                "selector",
+                "script",
+                "value",
+                "password",
+                "injectedScriptId",
+                "role",
+                "depth",
+                "html",
+                "description",
+            ] {
+                assert!(
+                    !serialized.contains(forbidden),
+                    "private DOM field: {forbidden}"
+                );
+            }
+
+            for (key, value) in [
+                ("ordinal", json!(1)), // same index with different slot
+                ("index", json!(2)),   // same slot with different index
+                ("observationId", json!(2)),
+                ("pageGeneration", json!(8)),
+                ("sourceId", json!("a".repeat(64))),
+            ] {
+                let mut stale = original.clone();
+                stale[key] = value;
+                let (parsed, node) = validate(&stale, 0, &identity).unwrap();
+                assert!(node.is_none(), "mismatch must not dispatch COM: {key}");
+                let reply = serde_json::to_value(dom_recheck_reply(&parsed, false)).unwrap();
+                assert_eq!(reply["state"], "STALE");
+                assert!(reply.get("reason").is_none());
+            }
+
+            // Same-index replacement after re-observation has an entirely new
+            // retained root and is never the old observation's live Node.
+            identity.invalidate(2, 7);
+            identity
+                .bind(&NativeDomObservation {
+                    snapshot: verify_production_dom(&production_dom_case().to_string()).unwrap(),
+                    root_object_id: r#"{"injectedScriptId":1,"id":12}"#.into(),
+                })
+                .unwrap();
+            assert!(identity.check_reference(&node, 1, 7).is_err());
+            assert!(validate(&original, 0, &identity).unwrap().1.is_none());
+        }
+
+        #[test]
+        fn production_dom_recheck_denies_replay_skips_forged_fields_and_unbounded_frames() {
+            let (identity, request) = native_dom_recheck_case();
+            let validate = |candidate: &serde_json::Value, last: u64| {
+                validate_dom_recheck_request(
+                    candidate.to_string().as_bytes(),
+                    NONCE,
+                    last,
+                    1,
+                    7,
+                    "https://example.test/",
+                    &identity,
+                )
+            };
+            assert!(validate(&request, 0).unwrap().1.is_some());
+            assert!(validate(&request, 1).is_err()); // repeated sequence
+            let mut next = request.clone();
+            next["checkSequence"] = json!(2);
+            assert!(validate(&next, 1).unwrap().1.is_some());
+            assert!(validate(&next, 0).is_err()); // skipped sequence
+            next["checkSequence"] = json!(PRODUCTION_DOM_MAX_CHECKS);
+            assert!(validate(&next, PRODUCTION_DOM_MAX_CHECKS - 1).is_ok());
+            next["checkSequence"] = json!(PRODUCTION_DOM_MAX_CHECKS + 1);
+            assert!(validate(&next, PRODUCTION_DOM_MAX_CHECKS).is_err());
+
+            for (key, value) in [
+                ("session", json!("not-the-session")),
+                ("version", json!(1)),
+                ("kind", json!("execute-javascript")),
+                ("checkSequence", json!(0)),
+                ("observationId", json!(0)),
+                ("pageGeneration", json!(0)),
+                ("ordinal", json!(PRODUCTION_DOM_MAX_ELEMENTS)),
+                ("index", json!(0)),
+                ("index", json!(PRODUCTION_DOM_MAX_VISITS + 1)),
+                ("sourceId", json!("ABCDEF".repeat(11))),
+            ] {
+                let mut forged = request.clone();
+                forged[key] = value;
+                assert!(
+                    validate(&forged, 0).is_err(),
+                    "forged field accepted: {key}"
+                );
+            }
+            for field in [
+                "selector",
+                "javascript",
+                "objectId",
+                "value",
+                "action",
+                "node",
+            ] {
+                let mut forged = request.clone();
+                forged[field] = json!("private page data");
+                assert!(
+                    validate(&forged, 0).is_err(),
+                    "extra field accepted: {field}"
+                );
+            }
+            let mut missing = request.clone();
+            missing.as_object_mut().unwrap().remove("ordinal");
+            assert!(validate(&missing, 0).is_err());
+            assert!(validate_dom_recheck_request(
+                &vec![b'x'; 1025],
+                NONCE,
+                0,
+                1,
+                7,
+                "https://example.test/",
+                &identity
+            )
+            .is_err());
+            assert!(validate_dom_recheck_request(
+                b"{",
+                NONCE,
+                0,
+                1,
+                7,
+                "https://example.test/",
+                &identity
+            )
+            .is_err());
+        }
+
+        #[test]
+        fn production_dom_recheck_accepts_only_real_node_remote_object() {
+            let actual = json!({"result":{
+                "type":"object", "subtype":"node",
+                "className":"HTMLButtonElement",
+                "objectId":r#"{"injectedScriptId":1,"id":21}"#
+            }});
+            assert!(parse_dom_node_recheck_response(&actual.to_string()));
+            for fake in [
+                json!({"result":{"type":"object","objectId":"abc"}}),
+                json!({"result":{"type":"object","subtype":"null","value":null}}),
+                json!({"result":{"type":"boolean","value":true}}),
+                json!({"result":{"type":"object","subtype":"node","value":true}}),
+                json!({"result":{"type":"object","subtype":"node","objectId":"abc","value":true}}),
+                json!({"result":{"type":"object","subtype":"array","objectId":"abc"}}),
+                json!({"result":{"type":"object","subtype":"node","objectId":""}}),
+                json!({"result":{"type":"object","subtype":"node","objectId":"X".repeat(257)}}),
+                json!({"result":{"type":"object","subtype":"node","objectId":"abc"},
+                    "exceptionDetails":{"text":"private renderer error"}}),
+            ] {
+                assert!(!parse_dom_node_recheck_response(&fake.to_string()));
+            }
+            assert!(!parse_dom_node_recheck_response("{invalid"));
+            assert!(!parse_dom_node_recheck_response(&"x".repeat(2049)));
+        }
+
+        #[test]
+        fn production_dom_recheck_uses_fixed_read_only_mutation_latched_com_probe() {
+            assert!(DOM_NODE_RECHECK_JS.starts_with("function(slot)"));
+            assert!(DOM_NODE_RECHECK_JS.contains("this.observer.takeRecords().length"));
+            assert!(DOM_NODE_RECHECK_JS.contains("this.state.changed = true"));
+            assert!(DOM_NODE_RECHECK_JS.contains("if (this.state.changed) return null"));
+            assert!(DOM_NODE_RECHECK_JS.contains("this.nodes[slot]"));
+            assert!(DOM_NODE_RECHECK_JS.contains("node.isConnected"));
+            assert!(DOM_NODE_RECHECK_JS.contains("node.ownerDocument === document"));
+            for forbidden in [
+                "querySelector",
+                "getAttribute",
+                "textContent",
+                "innerHTML",
+                "outerHTML",
+                "fetch(",
+                "location.href",
+                "document.cookie",
+                "localStorage",
+                "eval(",
+                "Function(",
+                ".click(",
+                ".focus(",
+                ".value",
+            ] {
+                assert!(!DOM_NODE_RECHECK_JS.contains(forbidden));
+            }
         }
 
         #[test]
