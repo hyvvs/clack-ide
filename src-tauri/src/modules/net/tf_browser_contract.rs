@@ -62,6 +62,11 @@ pub(crate) struct ObservedElement {
     // Native DOM bridge supplies a per-document serial, not a CSS selector.
     pub serial: u64,
     pub role: SemanticRole,
+    /// Depth is bounded structural context, NOT a parent/node selector.
+    /// Unknown intermediary tags and omitted sensitive nodes prevent any
+    /// reliable inference of the immediate parent from snapshot adjacency.
+    pub depth: u8,
+    pub heading_level: Option<u8>,
     pub accessible_name: String,
     pub state: SemanticState,
     pub href: Option<String>,
@@ -77,6 +82,8 @@ pub(crate) struct ObservedElement {
 pub(crate) struct SemanticElement {
     pub element_ref: String,
     pub role: SemanticRole,
+    pub depth: u8,
+    pub heading_level: Option<u8>,
     pub accessible_name: String,
     pub state: SemanticState,
     pub href: Option<String>,
@@ -119,6 +126,8 @@ pub(crate) enum BrowserActionKind {
     Type,
     Clear,
     Select,
+    Check,
+    Uncheck,
     Submit,
 }
 
@@ -134,6 +143,9 @@ pub(crate) struct ActionTarget {
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedAction {
     pub target: ActionTarget,
+    /// Native-only exact observed index from the authenticated COM snapshot.
+    /// Never use as a selector and never accept a caller-provided replacement.
+    pub observed_serial: u64,
     pub effect: BrowserEffect,
     pub requires_approval: bool,
     pub kind: BrowserActionKind,
@@ -241,7 +253,7 @@ fn classify(kind: BrowserActionKind, item: Option<&ObservedElement>) -> BrowserE
     use BrowserEffect as E;
     match kind {
         A::Inspect => E::ReadOnly,
-        A::Scroll | A::Type | A::Clear | A::Select => {
+        A::Scroll | A::Type | A::Clear | A::Select | A::Check | A::Uncheck => {
             // Scrolling can fire scroll/intersection handlers just as typing
             // fires input/change handlers. Neither operation is inherently
             // read-only once untrusted page scripts are allowed. The native
@@ -383,6 +395,13 @@ impl BrowserPageContract {
             if source.serial == 0 || !seen.insert(source.serial) {
                 return Err("ELEMENT_IDENTITY_INVALID");
             }
+            if source.depth > 16
+                || (source.role == SemanticRole::Heading
+                    && !matches!(source.heading_level, Some(1..=6)))
+                || (source.role != SemanticRole::Heading && source.heading_level.is_some())
+            {
+                return Err("ELEMENT_METADATA_INVALID");
+            }
             let accessible_name = bounded_label(&source.accessible_name)?;
             let href = source
                 .href
@@ -410,6 +429,8 @@ impl BrowserPageContract {
             snapshot_elements.push(SemanticElement {
                 element_ref: element_ref.clone(),
                 role: source.role.clone(),
+                depth: source.depth,
+                heading_level: source.heading_level,
                 accessible_name,
                 state: source.state.clone(),
                 href,
@@ -527,17 +548,30 @@ impl BrowserPageContract {
                 return Err("INVALID_ACTION_TEXT");
             }
         }
-        if kind == BrowserActionKind::Select
-            && !matches!(
-                item.source.role,
-                SemanticRole::Combobox | SemanticRole::Checkbox | SemanticRole::Radio
-            )
-        {
-            return Err("ELEMENT_TYPE_UNSUPPORTED");
+        match kind {
+            BrowserActionKind::Select if item.source.role != SemanticRole::Combobox => {
+                return Err("ELEMENT_TYPE_UNSUPPORTED");
+            }
+            BrowserActionKind::Check
+                if !matches!(
+                    item.source.role,
+                    SemanticRole::Checkbox | SemanticRole::Radio
+                ) =>
+            {
+                return Err("ELEMENT_TYPE_UNSUPPORTED");
+            }
+            // Native radio controls have no independent uncheck gesture.
+            // Unchecking a radio would require choosing a different exact
+            // group member, which is a separately approved Select/Check.
+            BrowserActionKind::Uncheck if item.source.role != SemanticRole::Checkbox => {
+                return Err("ELEMENT_TYPE_UNSUPPORTED");
+            }
+            _ => {}
         }
         let effect = classify(kind, Some(&item.source));
         Ok(PreparedAction {
             target,
+            observed_serial: item.source.serial,
             effect,
             requires_approval: effect != BrowserEffect::ReadOnly,
             kind,
@@ -588,6 +622,8 @@ mod tests {
         ObservedElement {
             serial,
             role,
+            depth: 0,
+            heading_level: None,
             accessible_name: name.into(),
             state: SemanticState {
                 enabled: Some(true),
@@ -635,6 +671,7 @@ mod tests {
         let a = p
             .prepare_action(BrowserActionKind::Click, original.clone(), None)
             .unwrap();
+        assert_eq!(a.observed_serial, 1);
         assert_eq!(a.effect, BrowserEffect::Unknown);
         assert!(a.requires_approval);
         assert!(p.verify_completion(&a).is_ok());
@@ -685,6 +722,100 @@ mod tests {
             p.prepare_action(BrowserActionKind::Click, exact, None)
                 .unwrap_err(),
             "ELEMENT_NOT_ACTIONABLE"
+        );
+    }
+    #[test]
+    fn check_uncheck_select_are_distinct_unknown_effects_with_exact_control_roles() {
+        for (role, allowed) in [
+            (SemanticRole::Checkbox, [true, true, false]),
+            (SemanticRole::Radio, [true, false, false]),
+            (SemanticRole::Combobox, [false, false, true]),
+            (SemanticRole::Textbox, [false, false, false]),
+        ] {
+            let mut p = session();
+            p.observe(
+                1,
+                "https://example.org/form",
+                "",
+                "",
+                vec![element(1, role, "", None, None, None)],
+                1,
+            )
+            .unwrap();
+            for (action, supported) in [
+                (BrowserActionKind::Check, allowed[0]),
+                (BrowserActionKind::Uncheck, allowed[1]),
+                (BrowserActionKind::Select, allowed[2]),
+            ] {
+                let found = p.prepare_action(action, target(&p), None);
+                if supported {
+                    let prepared = found.unwrap();
+                    assert_eq!(prepared.effect, BrowserEffect::Unknown);
+                    assert!(prepared.requires_approval);
+                } else {
+                    assert_eq!(found.unwrap_err(), "ELEMENT_TYPE_UNSUPPORTED");
+                }
+            }
+        }
+    }
+    #[test]
+    fn bounded_native_depth_and_heading_level_are_metadata_not_action_selectors() {
+        let mut p = session();
+        let mut heading = element(1, SemanticRole::Heading, "", None, None, None);
+        heading.depth = 3;
+        heading.heading_level = Some(2);
+        p.observe(
+            1,
+            "https://example.org/form",
+            "",
+            "",
+            vec![heading.clone()],
+            1,
+        )
+        .unwrap();
+        let displayed = &p.snapshot.as_ref().unwrap().elements[0];
+        assert_eq!(displayed.depth, 3);
+        assert_eq!(displayed.heading_level, Some(2));
+        assert_eq!(displayed.role, SemanticRole::Heading);
+        assert_eq!(
+            p.prepare_action(BrowserActionKind::Inspect, target(&p), None)
+                .unwrap()
+                .effect,
+            BrowserEffect::ReadOnly
+        );
+        heading.depth = 17;
+        assert_eq!(
+            p.observe(
+                1,
+                "https://example.org/form",
+                "",
+                "",
+                vec![heading.clone()],
+                2
+            )
+            .unwrap_err(),
+            "ELEMENT_METADATA_INVALID"
+        );
+        heading.depth = 0;
+        heading.heading_level = Some(7);
+        assert_eq!(
+            p.observe(
+                1,
+                "https://example.org/form",
+                "",
+                "",
+                vec![heading.clone()],
+                3
+            )
+            .unwrap_err(),
+            "ELEMENT_METADATA_INVALID"
+        );
+        heading.role = SemanticRole::Paragraph;
+        heading.heading_level = Some(2);
+        assert_eq!(
+            p.observe(1, "https://example.org/form", "", "", vec![heading], 4)
+                .unwrap_err(),
+            "ELEMENT_METADATA_INVALID"
         );
     }
     #[test]
