@@ -239,19 +239,11 @@ fn classify(kind: BrowserActionKind, item: Option<&ObservedElement>) -> BrowserE
     match kind {
         A::Inspect | A::Scroll => E::ReadOnly,
         A::Type | A::Clear | A::Select => {
-            if item.is_some_and(|i| {
-                matches!(
-                    i.role,
-                    SemanticRole::Textbox
-                        | SemanticRole::Combobox
-                        | SemanticRole::Checkbox
-                        | SemanticRole::Radio
-                )
-            }) {
-                E::ReadOnly // local field change only; submission is separately classified
-            } else {
-                E::Unknown
-            }
+            // Typing is not an intentional form submit, but a hostile page
+            // can attach input/change listeners that trigger external effects.
+            // We cannot prove "no network write" from a DOM field type.
+            // The separate central policy and actual broker must decide.
+            E::Unknown
         }
         A::Submit | A::Click => {
             let Some(i) = item else {
@@ -753,7 +745,7 @@ mod tests {
             p.prepare_action(BrowserActionKind::Type, target(&p), Some("v"))
                 .unwrap()
                 .effect,
-            BrowserEffect::ReadOnly
+            BrowserEffect::Unknown
         );
         assert!(p
             .prepare_action(
