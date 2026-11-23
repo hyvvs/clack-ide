@@ -59,13 +59,21 @@ type BrowserToolName = keyof typeof BROWSER_OPERATIONS;
 type BrowserAction = {
   id:string; operation:string; state:string; terminal:string|null;
   effectState:string|null; reason:string|null; page:string|null;
-  pending:boolean;
+  pending:boolean; approvalDenied:boolean;
+  toolResult:"denied"|"unknown"|null;
 };
 const object=(value:unknown):Record<string,unknown>|null=>
   value!==null && typeof value==="object" && !Array.isArray(value)
     ? value as Record<string,unknown>:null;
 const safeText=(value:unknown,max=80):string|null=>
   typeof value==="string" && value.length>0 ? value.slice(0,max):null;
+
+export function browserEngineStatus(browser:BrowserRuntimeStatus|null):string {
+  if(!browser)return "Loading · checking native browser status";
+  if(browser.reason==="no-actor-scope")return "Unavailable · Agent or workspace scope missing";
+  if(!browser.available)return "Error · native browser status unavailable";
+  return "Ready · inert native text engine checked (scoped approval still required)";
+}
 
 /** Project only the owning chat's tool states and native-confirmed receipt metadata.
  * This is chat history, not an invented native session event log. */
@@ -86,35 +94,47 @@ export function projectBrowserActionHistory(messages:readonly UIMessage[],sessio
       seen.add(id);
       const output=object(part?.output);
       const receipt=object(output?.effectReceipt);
-      const confirmed=receipt?.toolId==="tf.browser_operation.v1" &&
+      const approval=object(part?.approval);
+      const state=safeText(part?.state,40)??"unknown";
+      const confirmed=(state==="output-available" || state==="output-error") &&
+        receipt?.toolId==="tf.browser_operation.v1" &&
         receipt.sessionId===sessionId && receipt.operation===BROWSER_OPERATIONS[toolName] &&
         receipt.engine==="inert_native_text";
       const terminal=confirmed?safeText(receipt?.terminal,40):null;
-      const state=safeText(part?.state,40)??"unknown";
+      const approvalDenied=approval?.approved===false;
       const pending=state==="input-streaming" || state==="input-available" ||
-        state==="approval-requested" || state==="approval-responded";
+        state==="approval-requested" ||
+        (state==="approval-responded" && !approvalDenied);
+      const reason=output?.ok===false && typeof output.code==="string" &&
+        /^tf_browser_[a-z0-9_]{1,90}$/.test(output.code)?output.code:null;
+      const toolResult=!confirmed && reason && output?.terminal==="denied" &&
+        output.effectState==="NoEffect"?"denied":
+        !confirmed && reason && output?.terminal==="unknown" &&
+        output.effectState==="Unknown"?"unknown":null;
       result.push({
         id,operation:BROWSER_OPERATIONS[toolName],state,terminal,
         effectState:confirmed?safeText(receipt?.effectState,40):null,
-        reason:confirmed?safeText(receipt?.reasonCode,100):
-          output?.ok===false && typeof output.code==="string" &&
-          /^tf_browser_[a-z0-9_]{1,90}$/.test(output.code)?output.code:null,
+        reason:confirmed?safeText(receipt?.reasonCode,100):reason,
         page:confirmed && typeof receipt?.finalUrl==="string"
           ?compactBrowserUrl(receipt.finalUrl):null,
-        pending,
+        pending,approvalDenied,toolResult,
       });
     }
   }
   return result;
 }
 
-function browserActionStatus(action:BrowserAction,runActive:boolean):string {
+export function browserActionStatus(action:BrowserAction):string {
   if(action.terminal)return `${action.terminal}${action.effectState?` · ${action.effectState}`:""}`;
-  if(action.state==="output-denied")return "Denied before native execution";
+  if(action.toolResult==="denied")return "Tool request denied · NoEffect (no native receipt)";
+  if(action.toolResult==="unknown")return "Tool result unknown · native completion unverified";
+  if(action.approvalDenied)return "Chat approval denied · no native receipt";
+  if(action.state==="output-denied")return "Tool request denied · no native receipt";
   if(action.state==="output-error")return "Tool error · native terminal unverified";
   if(action.state==="output-available")return "Tool returned · native terminal unverified";
-  if(action.pending && runActive)return action.state==="approval-requested"
-    ?"Awaiting chat approval":"Requested · terminal pending";
+  if(action.pending)return action.state==="approval-requested"
+    ?"Approval requested in transcript · current approval unverified":
+      "Request observed · terminal pending or unverified";
   return "No verified native terminal";
 }
 
@@ -262,7 +282,6 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
     : null;
   const runActive=session?.run?.state==="running";
   const latestBrowserAction=browserActions[0];
-  const browserActionInFlight=runActive && !!latestBrowserAction?.pending;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -315,46 +334,48 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                   </span>
                 </div>
                 <p className="text-[11px] text-muted-foreground" role="status">
-                  Engine: {browser?.available ? "Inert native text · available" :
-                    browser?.reason==="no-actor-scope" ? "Unavailable · no chat, Agent or workspace scope" :
-                    browser ? "Unavailable · native status unverified" : "Checking native status"}
+                  Browser: {browserEngineStatus(browser)}
                 </p>
                 <p className="text-[11px] text-muted-foreground">
-                  Bounded public-page text and verified snapshot links only.
-                  Model DOM interaction, JavaScript, screenshots, download and upload: <strong>Not enabled</strong>.
+                  Bounded public-page text and snapshot-scoped links only.
+                  Model DOM interaction, JavaScript and screenshots: <strong>Not enabled</strong>.
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  File transfers · downloads: <strong>Not enabled</strong> · uploads: <strong>Not enabled</strong>.
                 </p>
                 {runActive && browserApprovals.length>0 ? (
                   <p className="text-[11px] font-medium" role="status">
-                    {browserApprovals.length} browser tool approval{browserApprovals.length===1?"":"s"} pending in this chat · review the request in the chat.
+                    Current pending chat approval{browserApprovals.length===1?"":"s"} ({browserApprovals.length}): {browserApprovals.slice(0,2).map(approval=>
+                      BROWSER_OPERATIONS[approval.toolName as BrowserToolName].replace(/_/g," ")).join(", ")}{browserApprovals.length>2?", …":""} · review in chat.
                   </p>
                 ):null}
                 {latestBrowserAction ? (
                   <div className="rounded border px-2 py-1.5 space-y-1 text-[11px]">
                     <p className="font-medium">
-                      {browserActionInFlight ? "Current Agent action" : "Latest Agent action"}: {latestBrowserAction.operation.replace(/_/g," ")}
+                      Latest observed Agent browser action: {latestBrowserAction.operation.replace(/_/g," ")}
                     </p>
                     <p className="text-muted-foreground">
-                      {browserActionStatus(latestBrowserAction,runActive)}
-                      {latestBrowserAction.reason ? ` · ${latestBrowserAction.reason}` : ""}
+                      {browserActionStatus(latestBrowserAction)}
+                      {latestBrowserAction.reason ? ` · Reason: ${latestBrowserAction.reason}` : ""}
                     </p>
                     {latestBrowserAction.page ? (
                       <p className="text-muted-foreground">Receipt page: {latestBrowserAction.page}</p>
                     ):null}
-                    {browserActionInFlight ? (
-                      <Button size="sm" variant="outline" className="h-6 text-[11px]"
-                        disabled={stoppingBrowserRun}
-                        onClick={()=>{
-                          setStoppingBrowserRun(true);
-                          void cancelRun(sessionId,{source:"explicit-user",reason:"user-stop"})
-                            .catch(()=>setBrowserMessage("Agent run cancellation could not be verified."))
-                            .finally(()=>setStoppingBrowserRun(false));
-                        }}>
-                        {stoppingBrowserRun ? "Stopping Agent run…" : "Stop Agent run"}
-                      </Button>
-                    ):null}
-                    {browserActionInFlight ? (
-                      <p className="text-[10px] text-muted-foreground">Stops the entire Agent run, including its browser action.</p>
-                    ):null}
+                  </div>
+                ):null}
+                {runActive ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button size="sm" variant="outline" className="h-6 text-[11px]"
+                      disabled={stoppingBrowserRun}
+                      onClick={()=>{
+                        setStoppingBrowserRun(true);
+                        void cancelRun(sessionId,{source:"explicit-user",reason:"user-stop"})
+                          .catch(()=>setBrowserMessage("Agent run cancellation could not be verified."))
+                          .finally(()=>setStoppingBrowserRun(false));
+                      }}>
+                      {stoppingBrowserRun ? "Stopping Agent run…" : "Stop Agent run"}
+                    </Button>
+                    <p className="text-[10px] text-muted-foreground">Stops the entire Agent run; browser cancellation depends on native execution state.</p>
                   </div>
                 ):null}
                 {browser?.available && browser.sessions.length===0 ? (
@@ -364,6 +385,7 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                   <div key={page.browserSessionId} className="rounded border px-2 py-1.5 space-y-1">
                     <p className="font-medium">Current page: {compactBrowserUrl(page.currentUrl)}</p>
                     <p className="text-[11px] text-muted-foreground">Origin: {browserOrigin(page.currentUrl)}</p>
+                    <p className="text-[11px] text-muted-foreground">Page: {page.currentUrl && page.snapshotId ? "Snapshot observed" : "No verified snapshot"}</p>
                     <p className="text-[11px] text-muted-foreground">
                       Active session {page.browserSessionId.slice(0,12)} · idle expiry in {page.expiresInSecs}s
                     </p>
@@ -391,8 +413,8 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                       {browserActions.map(action=>(
                         <li key={action.id} className="rounded border px-2 py-1">
                           <span className="font-medium">{action.operation.replace(/_/g," ")}</span>
-                          {" · "}{browserActionStatus(action,runActive)}
-                          {action.reason?` · ${action.reason}`:""}
+                          {" · "}{browserActionStatus(action)}
+                          {action.reason?` · Reason: ${action.reason}`:""}
                         </li>
                       ))}
                     </ol>
