@@ -24,7 +24,10 @@ mod host {
     use std::fs::{File, OpenOptions};
     use std::io::{self, Read, Write};
     use std::mem::{size_of, zeroed};
-    use std::os::windows::{ffi::OsStringExt, io::FromRawHandle};
+    use std::os::windows::{
+        ffi::OsStringExt,
+        io::{AsRawHandle, FromRawHandle},
+    };
     use std::path::{Path, PathBuf};
     use std::ptr::null_mut;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -33,7 +36,8 @@ mod host {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use tauri::{webview::PageLoadEvent, WebviewUrl, WebviewWindowBuilder};
     use webview2_com::{
-        take_pwstr, Microsoft::Web::WebView2::Win32::*, WebResourceRequestedEventHandler,
+        take_pwstr, ExecuteScriptCompletedHandler, Microsoft::Web::WebView2::Win32::*,
+        NavigationStartingEventHandler, WebResourceRequestedEventHandler,
     };
     use windows::{
         core::{Interface, HSTRING, PWSTR},
@@ -53,6 +57,7 @@ mod host {
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
     };
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
     };
@@ -63,6 +68,72 @@ mod host {
     const STARTUP_FIELD_LIMIT: usize = 384;
     const BROKER_FRAME_LIMIT: usize = 128 * 1024;
     const BROKER_QUEUE_LIMIT: usize = 32;
+    // The parent has a bounded TF3 fetch; a dead parent or missing reply must
+    // not leave a pending COM deferral blocked until process teardown.
+    const BROKER_REPLY_DEADLINE: Duration = Duration::from_secs(9);
+    const BROKER_FAULT_DEADLINE: Duration = Duration::from_millis(900);
+    const SEMANTIC_MAX_VISITS: u32 = 512;
+    const SEMANTIC_MAX_ELEMENTS: usize = 64;
+    const SEMANTIC_MAX_LABEL_CHARS: usize = 200;
+    const SEMANTIC_MAX_TEXT_BYTES: usize = 32 * 1024;
+    const SEMANTIC_MAX_JSON_BYTES: usize = 64 * 1024;
+    // Fixed acceptance-only semantic-lite script. It never reads input values,
+    // cookies, localStorage, HTML markup, arbitrary selectors, or page scripts.
+    // This is a bounded DOM summary, NOT an accessibility-tree attestation.
+    // The synchronous loop is bounded before serializing or returning to COM.
+    const SEMANTIC_SNAPSHOT_JS: &str = r#"(() => {
+      'use strict';
+      const maxVisits = 512, maxElements = 64, maxTextBytes = 32768;
+      const result = { version: 1, url: String(location.href).slice(0, 2048),
+        title: String(document.title).slice(0, 128), visited: 0,
+        textBytes: 0, truncated: false, elements: [] };
+      const roles = Object.freeze({
+        MAIN: 'main', NAV: 'navigation', ARTICLE: 'article',
+        H1: 'heading', H2: 'heading', H3: 'heading',
+        A: 'link', BUTTON: 'button', IMG: 'img',
+        P: 'paragraph', LI: 'listitem', LABEL: 'label',
+        INPUT: 'input', SELECT: 'select', TEXTAREA: 'textbox'
+      });
+      const encoder = new TextEncoder();
+      if (!document.body) return result;
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+      let node = walker.currentNode;
+      while (node && result.visited < maxVisits) {
+        ++result.visited;
+        const role = roles[node.tagName];
+        if (role) {
+          if (node.tagName === 'INPUT') {
+            const type = (node.getAttribute('type') || 'text').slice(0, 16).toLowerCase();
+            if (!['button','submit','reset','checkbox','radio'].includes(type)) {
+              node = walker.nextNode();
+              continue;
+            }
+          }
+          if (result.elements.length >= maxElements) {
+            result.truncated = true;
+            break;
+          }
+          const directText = node.firstChild && node.firstChild.nodeType === 3
+            ? node.firstChild.nodeValue : '';
+          const rawName = node.getAttribute('aria-label') ||
+            node.getAttribute('alt') || directText || '';
+          const sample = String(rawName).slice(0, 220);
+          const name = sample.replace(/[\u0000-\u001f\u007f]/g, ' ')
+            .replace(/\s+/g, ' ').trim().slice(0, 200);
+          if (String(rawName).length > 200) result.truncated = true;
+          const nextBytes = encoder.encode(name).length;
+          if (result.textBytes + nextBytes > maxTextBytes) {
+            result.truncated = true;
+            break;
+          }
+          result.textBytes += nextBytes;
+          result.elements.push({ index: result.visited, role, name });
+        }
+        node = walker.nextNode();
+      }
+      if (node) result.truncated = true;
+      return result;
+    })()"#;
 
     struct StartupTrace {
         start: Instant,
@@ -268,22 +339,85 @@ mod host {
         PositiveControl,
         Brokered,
     }
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    enum BrokerFault {
+        #[default]
+        None,
+        MissingIntercept,
+        MissingReply,
+        Crash,
+        Timeout,
+        Cancel,
+        StaleId,
+        StaleSession,
+        AbnormalExit,
+    }
+    impl BrokerFault {
+        fn parse(value: &str) -> Result<Self, String> {
+            match value {
+                "none" => Ok(Self::None),
+                "no-intercept" | "missing-intercept" => Ok(Self::MissingIntercept),
+                "missing-reply" => Ok(Self::MissingReply),
+                "crash" => Ok(Self::Crash),
+                "timeout" => Ok(Self::Timeout),
+                "cancel" => Ok(Self::Cancel),
+                "stale-id" => Ok(Self::StaleId),
+                "stale-session" => Ok(Self::StaleSession),
+                "abnormal-exit" => Ok(Self::AbnormalExit),
+                _ => Err("unsupported acceptance broker fault".to_owned()),
+            }
+        }
+
+        fn label(self) -> &'static str {
+            match self {
+                Self::None => "none",
+                Self::MissingIntercept => "no-intercept",
+                Self::MissingReply => "missing-reply",
+                Self::Crash => "crash",
+                Self::Timeout => "timeout",
+                Self::Cancel => "cancel",
+                Self::StaleId => "stale-id",
+                Self::StaleSession => "stale-session",
+                Self::AbnormalExit => "abnormal-exit",
+            }
+        }
+
+        fn reply_deadline(self) -> Duration {
+            if matches!(self, Self::MissingReply | Self::Crash | Self::Timeout) {
+                BROKER_FAULT_DEADLINE
+            } else {
+                BROKER_REPLY_DEADLINE
+            }
+        }
+    }
     struct Args {
         mode: Mode,
         root: PathBuf,
         fixture_port: u16,
         nonce: String,
+        broker_fault: BrokerFault,
     }
     fn args() -> Result<Args, String> {
         let argv: Vec<OsString> = std::env::args_os().collect();
-        if argv.len() != 7 {
-            return Err("expected --isolated-child|--positive-control|--brokered-child <absolute-root> --fixture-port <u16> --fixture-nonce <32-64 hex>".into());
+        if argv.len() < 7 {
+            return Err("expected --isolated-child|--positive-control|--brokered-child <absolute-root> --fixture-port <u16> --fixture-nonce <32-64 hex> [--broker-fault <mode>]".into());
         }
         let mode = match argv[1].to_str() {
             Some("--isolated-child") => Mode::Isolated,
             Some("--positive-control") => Mode::PositiveControl,
             Some("--brokered-child") => Mode::Brokered,
             _ => return Err("unsupported mode".into()),
+        };
+        let broker_fault = match (mode, argv.len()) {
+            (Mode::Brokered, 9) if argv[7] == "--broker-fault" => {
+                BrokerFault::parse(argv[8].to_str().ok_or("invalid broker fault encoding")?)?
+            }
+            (_, 7) => BrokerFault::None,
+            _ => {
+                return Err(
+                    "--broker-fault requires --brokered-child and an exact known mode".into(),
+                )
+            }
         };
         if argv[3] != "--fixture-port" || argv[5] != "--fixture-nonce" {
             return Err("missing required fixture arguments".into());
@@ -317,6 +451,7 @@ mod host {
             root,
             fixture_port,
             nonce,
+            broker_fault,
         })
     }
 
@@ -601,15 +736,285 @@ mod host {
         }
     }
 
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct SemanticElement {
+        index: u32,
+        role: String,
+        name: String,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct SemanticSnapshot {
+        version: u8,
+        url: String,
+        title: String,
+        visited: u32,
+        text_bytes: usize,
+        truncated: bool,
+        elements: Vec<SemanticElement>,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct VerifiedSemanticSnapshot {
+        session: String,
+        page_generation: u64,
+        snapshot_generation: u64,
+        observed_at_ms: u64,
+        origin: String,
+        session_verified: bool,
+        redacted_labels: usize,
+        snapshot: SemanticSnapshot,
+    }
+
+    #[derive(Default)]
+    struct SemanticSnapshotState {
+        requested: AtomicBool,
+        finished: AtomicBool,
+        proof: Mutex<Option<VerifiedSemanticSnapshot>>,
+        failure: Mutex<Option<&'static str>>,
+    }
+
+    impl SemanticSnapshotState {
+        fn succeed(&self, value: VerifiedSemanticSnapshot) {
+            if let Ok(mut guard) = self.proof.lock() {
+                *guard = Some(value);
+            } else {
+                self.fail("snapshot-state-unavailable");
+                return;
+            }
+            self.finished.store(true, Ordering::Release);
+        }
+
+        fn fail(&self, reason: &'static str) {
+            if let Ok(mut guard) = self.failure.lock() {
+                *guard = Some(reason);
+            }
+            self.finished.store(true, Ordering::Release);
+        }
+
+        fn receipt(
+            &self,
+        ) -> (
+            &'static str,
+            Option<&'static str>,
+            Option<VerifiedSemanticSnapshot>,
+        ) {
+            if !self.requested.load(Ordering::Acquire) {
+                return ("not-requested", None, None);
+            }
+            if !self.finished.load(Ordering::Acquire) {
+                return ("pending", None, None);
+            }
+            let proof = self.proof.lock().ok().and_then(|guard| guard.clone());
+            if proof.is_some() {
+                ("verified", None, proof)
+            } else {
+                let reason = self.failure.lock().ok().and_then(|guard| *guard);
+                (
+                    "rejected",
+                    Some(reason.unwrap_or("snapshot-state-unavailable")),
+                    None,
+                )
+            }
+        }
+    }
+
+    fn semantic_fixture_identity(
+        expected_url: &str,
+        expected_title: &str,
+    ) -> Result<(String, String), &'static str> {
+        let (origin, nonce) = expected_url
+            .rsplit_once("/document/broker/")
+            .ok_or("snapshot-source-not-controlled")?;
+        let port = origin
+            .strip_prefix("http://127.0.0.1:")
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|value| *value != 0)
+            .ok_or("snapshot-origin-not-controlled")?;
+        if port == 0
+            || !(32..=64).contains(&nonce.len())
+            || !nonce.bytes().all(|c| c.is_ascii_hexdigit())
+            || expected_title != format!("{RENDER_MARKER}{nonce}")
+        {
+            return Err("snapshot-session-or-source-mismatch");
+        }
+        Ok((origin.to_owned(), nonce.to_owned()))
+    }
+
+    fn sensitive_semantic_label(name: &str) -> bool {
+        // Deliberately conservative: these native-only acceptance summaries
+        // are never a channel for passwords, auth headers or query tokens.
+        let compact = name.to_ascii_lowercase().replace(['-', '_', ' ', '.'], "");
+        [
+            "token",
+            "password",
+            "passwd",
+            "secret",
+            "apikey",
+            "authorization",
+            "bearer",
+            "cookie",
+            "credential",
+            "privatekey",
+            "sessionid",
+            "jwt",
+        ]
+        .iter()
+        .any(|needle| compact.contains(needle))
+            || name.starts_with("sk-")
+    }
+
+    fn verify_semantic_snapshot(
+        raw: &str,
+        expected_url: &str,
+        expected_title: &str,
+        request_generation: u64,
+        current_generation: u64,
+    ) -> Result<VerifiedSemanticSnapshot, &'static str> {
+        if request_generation == 0 || request_generation != current_generation {
+            return Err("snapshot-page-stale");
+        }
+        if raw.len() > SEMANTIC_MAX_JSON_BYTES {
+            return Err("snapshot-json-over-limit");
+        }
+        let (origin, session) = semantic_fixture_identity(expected_url, expected_title)?;
+        let mut candidate: SemanticSnapshot =
+            serde_json::from_str(raw).map_err(|_| "snapshot-json-invalid")?;
+        if candidate.version != 1
+            || candidate.url != expected_url
+            || candidate.title != expected_title
+            || candidate.url.len() > 2048
+            || candidate.title.len() > 128
+        {
+            return Err("snapshot-session-or-source-mismatch");
+        }
+        if candidate.visited == 0
+            || candidate.visited > SEMANTIC_MAX_VISITS
+            || candidate.elements.len() > SEMANTIC_MAX_ELEMENTS
+            || candidate.text_bytes > SEMANTIC_MAX_TEXT_BYTES
+        {
+            return Err("snapshot-bounds-invalid");
+        }
+        let mut previous_index = 0;
+        let mut actual_text_bytes = 0usize;
+        for element in &candidate.elements {
+            if element.index <= previous_index || element.index > candidate.visited {
+                return Err("snapshot-element-index-invalid");
+            }
+            previous_index = element.index;
+            if !matches!(
+                element.role.as_str(),
+                "main"
+                    | "navigation"
+                    | "article"
+                    | "heading"
+                    | "link"
+                    | "button"
+                    | "img"
+                    | "paragraph"
+                    | "listitem"
+                    | "label"
+                    | "input"
+                    | "select"
+                    | "textbox"
+            ) || element.name.chars().count() > SEMANTIC_MAX_LABEL_CHARS
+                || element.name.chars().any(char::is_control)
+            {
+                return Err("snapshot-element-invalid");
+            }
+            actual_text_bytes = actual_text_bytes.saturating_add(element.name.len());
+        }
+        if actual_text_bytes != candidate.text_bytes || actual_text_bytes > SEMANTIC_MAX_TEXT_BYTES
+        {
+            return Err("snapshot-text-bounds-invalid");
+        }
+        // The actual controlled fixture has this independent main landmark.
+        // A title event alone is insufficient evidence of DOM extraction.
+        if !candidate
+            .elements
+            .iter()
+            .any(|element| element.role == "main" && element.name == "Clack brokered WebView2")
+        {
+            return Err("snapshot-fixture-landmark-missing");
+        }
+        let mut redacted_labels = 0usize;
+        for element in &mut candidate.elements {
+            if sensitive_semantic_label(&element.name) {
+                element.name = "[redacted]".to_owned();
+                redacted_labels += 1;
+            }
+        }
+        candidate.text_bytes = candidate.elements.iter().map(|item| item.name.len()).sum();
+        Ok(VerifiedSemanticSnapshot {
+            session,
+            page_generation: request_generation,
+            snapshot_generation: 1, // one-shot only; no interactive DOM references
+            observed_at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64,
+            origin,
+            session_verified: true,
+            redacted_labels,
+            snapshot: candidate,
+        })
+    }
+
     #[derive(Default)]
     struct BrokerStats {
         hook_ready: AtomicBool,
         broken: AtomicBool,
+        fault_triggered: AtomicBool,
         intercepted: AtomicU64,
         forwarded: AtomicU64,
         answered: AtomicU64,
+        pending: AtomicU64,
         denied: AtomicU64,
         errors: AtomicU64,
+        timeouts: AtomicU64,
+        cancelled: AtomicU64,
+        // Count only responses successfully installed by WebView2 COM. For
+        // deferred requests the deferral must also Complete() successfully.
+        status_2xx: AtomicU64,
+        status_4xx: AtomicU64,
+        status_5xx: AtomicU64,
+        synthetic_502: AtomicU64,
+        synthetic_503: AtomicU64,
+        synthetic_504: AtomicU64,
+        last_synthetic_status: AtomicU64,
+    }
+
+    impl BrokerStats {
+        fn note_com_response(&self, payload: &BrokerPayload) {
+            let counter = match payload.status {
+                200..=299 => &self.status_2xx,
+                400..=499 => &self.status_4xx,
+                _ => &self.status_5xx,
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+            if payload.synthetic {
+                self.last_synthetic_status
+                    .store(u64::from(payload.status), Ordering::Release);
+                let exact = match payload.status {
+                    502 => Some(&self.synthetic_502),
+                    503 => Some(&self.synthetic_503),
+                    504 => Some(&self.synthetic_504),
+                    _ => None,
+                };
+                if let Some(exact) = exact {
+                    exact.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        fn last_synthetic_status(&self) -> Option<u16> {
+            let value = self.last_synthetic_status.load(Ordering::Acquire);
+            (value != 0).then_some(value as u16)
+        }
     }
 
     #[derive(Serialize)]
@@ -639,10 +1044,12 @@ mod host {
         url: String,
     }
 
+    #[derive(Debug)]
     struct BrokerPayload {
         status: u16,
         content_type: String,
         body: Vec<u8>,
+        synthetic: bool,
     }
 
     impl BrokerPayload {
@@ -651,6 +1058,7 @@ mod host {
                 status,
                 content_type: "text/plain".to_owned(),
                 body: Vec::new(),
+                synthetic: true,
             }
         }
     }
@@ -659,6 +1067,7 @@ mod host {
         args: ICoreWebView2WebResourceRequestedEventArgs,
         deferral: ICoreWebView2Deferral,
         environment: ICoreWebView2Environment,
+        page_generation: u64,
     }
 
     thread_local! {
@@ -713,9 +1122,56 @@ mod host {
         pipe.flush()
     }
 
-    fn broker_read_frame(pipe: &mut File) -> io::Result<Vec<u8>> {
+    fn broker_read_exact_bounded(
+        pipe: &mut File,
+        mut output: &mut [u8],
+        deadline: Instant,
+    ) -> io::Result<()> {
+        while !output.is_empty() {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "broker reply deadline elapsed",
+                ));
+            }
+            let mut available = 0u32;
+            if unsafe {
+                PeekNamedPipe(
+                    pipe.as_raw_handle().cast(),
+                    null_mut(),
+                    0,
+                    null_mut(),
+                    &mut available,
+                    null_mut(),
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if available == 0 {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            // Read only bytes already present in the pipe. Waiting for the
+            // entire frame would deadlock if the parent writes more than the
+            // finite Windows anonymous-pipe buffer can hold.
+            let count = (available as usize).min(output.len()).min(4096);
+            let read = pipe.read(&mut output[..count])?;
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "broker reply pipe closed",
+                ));
+            }
+            output = &mut output[read..];
+        }
+        Ok(())
+    }
+
+    fn broker_read_frame(pipe: &mut File, timeout: Duration) -> io::Result<Vec<u8>> {
+        let deadline = Instant::now() + timeout;
         let mut size = [0u8; 4];
-        pipe.read_exact(&mut size)?;
+        broker_read_exact_bounded(pipe, &mut size, deadline)?;
         let size = u32::from_le_bytes(size) as usize;
         if size == 0 || size > BROKER_FRAME_LIMIT {
             return Err(io::Error::new(
@@ -724,15 +1180,21 @@ mod host {
             ));
         }
         let mut bytes = vec![0; size];
-        pipe.read_exact(&mut bytes)?;
+        broker_read_exact_bounded(pipe, &mut bytes, deadline)?;
         Ok(bytes)
     }
 
     fn broker_reply(bytes: &[u8], nonce: &str, id: u64) -> Result<BrokerPayload, &'static str> {
         let reply: BrokerReply =
             serde_json::from_slice(bytes).map_err(|_| "malformed broker reply")?;
-        if reply.version != 1 || reply.session != nonce || reply.request_id != id {
-            return Err("broker reply session or request identity mismatch");
+        if reply.version != 1 {
+            return Err("broker reply version mismatch");
+        }
+        if reply.session != nonce {
+            return Err("broker reply session mismatch");
+        }
+        if reply.request_id != id {
+            return Err("broker reply requestId mismatch");
         }
         if !(200..=599).contains(&reply.status) || (300..400).contains(&reply.status) {
             // No Location header is part of protocol v1. A 3xx without a
@@ -773,6 +1235,7 @@ mod host {
             status: reply.status,
             content_type: reply.content_type,
             body,
+            synthetic: false,
         })
     }
 
@@ -831,53 +1294,82 @@ mod host {
         stats: &BrokerStats,
     ) -> windows::core::Result<()> {
         stats.denied.fetch_add(1, Ordering::Relaxed);
-        let result =
-            unsafe { broker_set_response(args, environment, &BrokerPayload::denied(status)) };
-        if let Err(error) = &result {
-            stats.errors.fetch_add(1, Ordering::Relaxed);
-            stats.broken.store(true, Ordering::Release);
-            trace.error(
-                "broker.deny.set.failed",
-                &format!("HRESULT {}", error.code().0),
-            );
+        let payload = BrokerPayload::denied(status);
+        match unsafe { broker_set_response(args, environment, &payload) } {
+            Ok(()) => {
+                // Synchronous handlers have no outstanding COM deferral.
+                stats.note_com_response(&payload);
+                Ok(())
+            }
+            Err(error) => {
+                stats.errors.fetch_add(1, Ordering::Relaxed);
+                stats.broken.store(true, Ordering::Release);
+                trace.error(
+                    "broker.deny.set.failed",
+                    &format!("HRESULT {}", error.code().0),
+                );
+                // Returning an error without an installed WebView2 response
+                // could permit browser-network fallback. This standalone,
+                // zero-capability acceptance host must terminate instead.
+                std::process::exit(1)
+            }
         }
-        result
     }
 
     fn broker_finish_on_ui(
         id: u64,
-        payload: BrokerPayload,
+        mut payload: BrokerPayload,
         trace: &StartupTrace,
         stats: &BrokerStats,
+        page_generation: &AtomicU64,
     ) {
         BROKER_PENDING.with(|pending| {
             let Some(pending) = pending.borrow_mut().remove(&id) else {
-                trace.error(
-                    "broker.pending.missing",
-                    "request deferral absent on UI apartment",
+                // An earlier timeout may already have drained this pending
+                // request. Ignore an obsolete late dispatcher, never install
+                // its response into a newer page or request.
+                trace.record(
+                    "broker.pending.stale",
+                    "late or already drained COM request ignored",
                 );
-                stats.errors.fetch_add(1, Ordering::Relaxed);
                 return;
             };
-            let handled =
-                unsafe { broker_set_response(&pending.args, &pending.environment, &payload) };
-            if let Err(error) = handled {
+            stats.pending.fetch_sub(1, Ordering::Relaxed);
+            if broker_reply_must_be_denied(
+                payload.synthetic,
+                stats.broken.load(Ordering::Acquire),
+                pending.page_generation,
+                page_generation.load(Ordering::Acquire),
+            ) {
+                trace.error(
+                    "broker.response.stale_page",
+                    "late reply invalidated by fault or navigation",
+                );
+                stats.errors.fetch_add(1, Ordering::Relaxed);
+                stats.broken.store(true, Ordering::Release);
+                payload = BrokerPayload::denied(502);
+            }
+            if let Err(error) =
+                unsafe { broker_set_response(&pending.args, &pending.environment, &payload) }
+            {
                 trace.error(
                     "broker.response.set.failed",
                     &format!("HRESULT {}", error.code().0),
                 );
                 stats.errors.fetch_add(1, Ordering::Relaxed);
-                // A failed body/response must still produce a local denial when
-                // the COM environment can create one.
-                let _ = unsafe {
-                    broker_set_response(
-                        &pending.args,
-                        &pending.environment,
-                        &BrokerPayload::denied(502),
-                    )
-                };
-            } else {
-                stats.answered.fetch_add(1, Ordering::Relaxed);
+                stats.broken.store(true, Ordering::Release);
+                payload = BrokerPayload::denied(502);
+                if let Err(fallback_error) =
+                    unsafe { broker_set_response(&pending.args, &pending.environment, &payload) }
+                {
+                    trace.error(
+                        "broker.response.fallback.failed",
+                        &format!("HRESULT {}", fallback_error.code().0),
+                    );
+                    // Do not Complete() a deferral with no installed response:
+                    // WebView2 may otherwise continue through its own stack.
+                    std::process::exit(1);
+                }
             }
             if let Err(error) = unsafe { pending.deferral.Complete() } {
                 trace.error(
@@ -885,8 +1377,57 @@ mod host {
                     &format!("HRESULT {}", error.code().0),
                 );
                 stats.errors.fetch_add(1, Ordering::Relaxed);
+                stats.broken.store(true, Ordering::Release);
+                std::process::exit(1);
             }
+            // This is the first point at which a deferred response can be
+            // recorded as successfully answered by WebView2.
+            stats.note_com_response(&payload);
+            stats.answered.fetch_add(1, Ordering::Release);
         });
+    }
+
+    fn broker_reply_must_be_denied(
+        synthetic: bool,
+        broken: bool,
+        request_generation: u64,
+        current_generation: u64,
+    ) -> bool {
+        request_generation != current_generation || (broken && !synthetic)
+    }
+
+    fn broker_drain_on_ui(
+        id: u64,
+        failed_response: BrokerPayload,
+        trace: &StartupTrace,
+        stats: &BrokerStats,
+        page_generation: &AtomicU64,
+    ) {
+        // A fatal pipe/session failure revokes the entire pending set, not
+        // merely the request which happened to be active in the pipe worker.
+        let others: Vec<u64> = BROKER_PENDING.with(|pending| {
+            pending
+                .borrow()
+                .keys()
+                .copied()
+                .filter(|other| *other != id)
+                .collect()
+        });
+        let status = if failed_response.status == 504 {
+            504
+        } else {
+            502
+        };
+        broker_finish_on_ui(id, failed_response, trace, stats, page_generation);
+        for other in others {
+            broker_finish_on_ui(
+                other,
+                BrokerPayload::denied(status),
+                trace,
+                stats,
+                page_generation,
+            );
+        }
     }
 
     // The broker never opens sockets. One bounded pipe worker owns all frames;
@@ -897,6 +1438,8 @@ mod host {
         token: TokenDetails,
         udf: PathBuf,
     ) -> Result<(), String> {
+        let fault = args.broker_fault;
+        trace.record("broker.fault.configured", fault.label());
         trace.record(
             "broker.pipes.begin",
             "opening inherited anonymous pipe handles",
@@ -912,6 +1455,7 @@ mod host {
 
         let stats = Arc::new(BrokerStats::default());
         let observer = Arc::new(Observed::default());
+        let semantic = Arc::new(SemanticSnapshotState::default());
         let marker = format!("{RENDER_MARKER}{}", args.nonce);
         let document_url = format!(
             "http://127.0.0.1:{}/document/broker/{}",
@@ -921,6 +1465,10 @@ mod host {
         context.config_mut().app.windows.clear();
         let result_flag = Arc::new(AtomicBool::new(false));
         let result_from_thread = result_flag.clone();
+        // Pre-arm epoch 1 before CoreWebView2.Navigate: some runtime versions
+        // dispatch WebResourceRequested before NavigationStarting. The first
+        // controlled navigation stays on epoch 1 regardless of event order.
+        let page_generation = Arc::new(AtomicU64::new(1));
         let root = args.root.clone();
         let pid = std::process::id();
         let port = args.fixture_port;
@@ -939,9 +1487,23 @@ mod host {
                 let worker_trace = init_trace.clone();
                 let worker_stats = setup_stats.clone();
                 let worker_session = session.clone();
+                let worker_fault = fault;
+                let worker_generation = page_generation.clone();
                 let handle = app.handle().clone();
                 thread::spawn(move || {
                     while let Ok(ticket) = rx.recv() {
+                        if worker_stats.broken.load(Ordering::Acquire) {
+                            let trace = worker_trace.clone();
+                            let stats = worker_stats.clone();
+                            let generation = worker_generation.clone();
+                            if handle.run_on_main_thread(move || {
+                                broker_drain_on_ui(ticket.id, BrokerPayload::denied(502), &trace, &stats, &generation);
+                            }).is_err() {
+                                worker_trace.error("broker.ui.dispatch.failed", "cannot drain after session invalidation");
+                                worker_stats.errors.fetch_add(1, Ordering::Relaxed);
+                            }
+                            break;
+                        }
                         let wire = BrokerRequest {
                             version: 1,
                             session: &worker_session,
@@ -949,33 +1511,61 @@ mod host {
                             method: "GET",
                             url: &ticket.url,
                         };
-                        let answer = (|| -> Result<BrokerPayload, String> {
+                        let answer = (|| -> io::Result<BrokerPayload> {
                             let body = serde_json::to_vec(&wire)
-                                .map_err(|_| "request serialization failed".to_owned())?;
-                            broker_write_frame(&mut broker_write, &body)
-                                .map_err(|e| format!("broker write: {}", io_error(&e)))?;
-                            let frame = broker_read_frame(&mut broker_read)
-                                .map_err(|e| format!("broker read: {}", io_error(&e)))?;
-                            broker_reply(&frame, &worker_session, ticket.id)
-                                .map_err(str::to_owned)
+                                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "broker request serialization failed"))?;
+                            broker_write_frame(&mut broker_write, &body)?;
+                            let frame = broker_read_frame(&mut broker_read, worker_fault.reply_deadline())?;
+                            // The stale-session seam validates the *actual* parent
+                            // reply against a deliberately different session.
+                            // No altered request or secret is transmitted.
+                            let expected_session = if worker_fault == BrokerFault::StaleSession {
+                                format!("x{worker_session}")
+                            } else {
+                                worker_session.clone()
+                            };
+                            broker_reply(&frame, &expected_session, ticket.id)
+                                .map_err(|reason| io::Error::new(io::ErrorKind::InvalidData, reason))
                         })();
+                        let failure = answer.is_err();
                         let response = match answer {
                             Ok(payload) => payload,
                             Err(error) => {
                                 worker_stats.errors.fetch_add(1, Ordering::Relaxed);
                                 worker_stats.broken.store(true, Ordering::Release);
-                                worker_trace.error("broker.pipe.failed", &error);
-                                BrokerPayload::denied(502)
+                                if error.kind() == io::ErrorKind::TimedOut {
+                                    worker_stats.timeouts.fetch_add(1, Ordering::Relaxed);
+                                }
+                                if worker_fault != BrokerFault::None {
+                                    worker_stats.fault_triggered.store(true, Ordering::Release);
+                                }
+                                worker_trace.error("broker.pipe.failed", &io_error(&error));
+                                BrokerPayload::denied(if error.kind() == io::ErrorKind::TimedOut { 504 } else { 502 })
                             }
                         };
                         let reply_trace = worker_trace.clone();
                         let reply_stats = worker_stats.clone();
+                        let reply_generation = worker_generation.clone();
                         if let Err(error) = handle.run_on_main_thread(move || {
-                            broker_finish_on_ui(ticket.id, response, &reply_trace, &reply_stats);
+                            if failure {
+                                broker_drain_on_ui(
+                                    ticket.id, response, &reply_trace, &reply_stats, &reply_generation,
+                                );
+                            } else {
+                                broker_finish_on_ui(
+                                    ticket.id, response, &reply_trace, &reply_stats, &reply_generation,
+                                );
+                            }
                         }) {
                             worker_trace.error("broker.ui.dispatch.failed", &error.to_string());
                             worker_stats.errors.fetch_add(1, Ordering::Relaxed);
                             worker_stats.broken.store(true, Ordering::Release);
+                            break;
+                        }
+                        if failure {
+                            // Do not service new requests over a compromised or
+                            // stalled reply channel. Future intercepted requests
+                            // receive local 502 with no direct-network fallback.
                             break;
                         }
                     }
@@ -984,7 +1574,11 @@ mod host {
 
                 let title_trace = init_trace.clone();
                 let title_observer = setup_observer.clone();
+                let title_stats = setup_stats.clone();
                 let expected_title = marker.clone();
+                let title_semantic = semantic.clone();
+                let title_generation = page_generation.clone();
+                let title_expected_url = document_url.clone();
                 let webview = WebviewWindowBuilder::new(
                     app,
                     "browser-host",
@@ -993,10 +1587,105 @@ mod host {
                 .visible(false)
                 .drag_and_drop(false)
                 .data_directory(udf.clone())
-                .on_document_title_changed(move |_webview, title| {
-                    if title == expected_title {
+                .on_document_title_changed(move |webview, title| {
+                    if title == expected_title && !title_stats.broken.load(Ordering::Acquire) {
                         title_observer.scripted.store(true, Ordering::Release);
                         title_trace.record("broker.dom.marker", "native document title marker observed");
+                        // The existing external fixture script set the title.
+                        // Probe that real renderer once, with a fixed script;
+                        // never execute model-supplied JavaScript or selectors.
+                        if fault != BrokerFault::None
+                            || title_semantic.requested.swap(true, Ordering::AcqRel)
+                        {
+                            return;
+                        }
+                        let expected_url = title_expected_url.clone();
+                        let title = expected_title.clone();
+                        let state = title_semantic.clone();
+                        let stats = title_stats.clone();
+                        let generation = title_generation.clone();
+                        let trace = title_trace.clone();
+                        let epoch = generation.load(Ordering::Acquire);
+                        let dispatched = webview.with_webview(move |native| {
+                            let core = match unsafe { native.controller().CoreWebView2() } {
+                                Ok(core) => core,
+                                Err(_) => {
+                                    trace.error("semantic.snapshot.core.failed", "native controller unavailable");
+                                    state.fail("snapshot-native-controller-unavailable");
+                                    return;
+                                }
+                            };
+                            let mut source = PWSTR::null();
+                            if unsafe { core.Source(&mut source) }.is_err() {
+                                state.fail("snapshot-native-source-unavailable");
+                                return;
+                            }
+                            if take_pwstr(source) != expected_url
+                                || stats.broken.load(Ordering::Acquire)
+                                || epoch != generation.load(Ordering::Acquire)
+                            {
+                                state.fail("snapshot-native-page-stale");
+                                return;
+                            }
+                            let callback_core = core.clone();
+                            let callback_state = state.clone();
+                            let callback_stats = stats.clone();
+                            let callback_generation = generation.clone();
+                            let callback_trace = trace.clone();
+                            let callback_url = expected_url.clone();
+                            let callback_title = title.clone();
+                            let completed = ExecuteScriptCompletedHandler::create(Box::new(
+                                move |hr, output| {
+                                    if hr.is_err() {
+                                        callback_state.fail("snapshot-native-script-failed");
+                                        callback_trace.error("semantic.snapshot.script.failed", "WebView2 script completion failed");
+                                        return Ok(());
+                                    }
+                                    let mut current_source = PWSTR::null();
+                                    if unsafe { callback_core.Source(&mut current_source) }.is_err() {
+                                        callback_state.fail("snapshot-native-source-unavailable");
+                                        return Ok(());
+                                    }
+                                    if take_pwstr(current_source) != callback_url
+                                        || callback_stats.broken.load(Ordering::Acquire)
+                                    {
+                                        callback_state.fail("snapshot-native-page-stale");
+                                        return Ok(());
+                                    }
+                                    match verify_semantic_snapshot(
+                                        &output,
+                                        &callback_url,
+                                        &callback_title,
+                                        epoch,
+                                        callback_generation.load(Ordering::Acquire),
+                                    ) {
+                                        Ok(proof) => {
+                                            callback_trace.record("semantic.snapshot.verified", "bounded native-validated real DOM summary");
+                                            callback_state.succeed(proof);
+                                        }
+                                        Err(reason) => {
+                                            callback_trace.error("semantic.snapshot.rejected", reason);
+                                            callback_state.fail(reason);
+                                        }
+                                    }
+                                    Ok(())
+                                },
+                            ));
+                            if unsafe {
+                                core.ExecuteScript(&HSTRING::from(SEMANTIC_SNAPSHOT_JS), &completed)
+                            }
+                            .is_err()
+                            {
+                                state.fail("snapshot-native-dispatch-failed");
+                                trace.error("semantic.snapshot.dispatch.failed", "WebView2 ExecuteScript rejected");
+                            } else {
+                                trace.record("semantic.snapshot.dispatched", "fixed bounded DOM script dispatched");
+                            }
+                        });
+                        if dispatched.is_err() {
+                            title_semantic.fail("snapshot-native-ui-dispatch-failed");
+                            title_trace.error("semantic.snapshot.ui.failed", "native WebView2 dispatch failed");
+                        }
                     }
                 })
                 .build()
@@ -1012,8 +1701,19 @@ mod host {
                 let callback_session = session.clone();
                 let callback_port = port;
                 let callback_tx = tx;
+                let callback_fault = fault;
+                let callback_generation = page_generation.clone();
                 let counter = Arc::new(AtomicU64::new(0));
                 webview.with_webview(move |native| {
+                    if callback_fault == BrokerFault::MissingIntercept {
+                        // Deterministic configuration-denial seam, NOT proof that
+                        // an actual missed hook blocked a network request.
+                        // Never navigate with interception deliberately absent.
+                        callback_stats.fault_triggered.store(true, Ordering::Release);
+                        callback_stats.broken.store(true, Ordering::Release);
+                        callback_trace.record("broker.fault.no_intercept", "hook omitted and navigation suppressed");
+                        return;
+                    }
                     let installed = (|| -> windows::core::Result<()> {
                         let environment = native.environment();
                         let controller = native.controller();
@@ -1022,6 +1722,53 @@ mod host {
                         // document, iframe, worker, and shared-worker requests.
                         // Never silently downgrade to a filter omitting sources.
                         let core22: ICoreWebView2_22 = core.cast()?;
+                        let nav_generation = callback_generation.clone();
+                        let nav_trace = callback_trace.clone();
+                        let nav_stats = callback_stats.clone();
+                        let nav_expected_url = callback_url.clone();
+                        let nav_first_expected = Arc::new(AtomicBool::new(false));
+                        let navigation_handler = NavigationStartingEventHandler::create(Box::new(
+                            move |_, args| {
+                                let Some(args) = args else {
+                                    nav_stats.errors.fetch_add(1, Ordering::Relaxed);
+                                    nav_stats.broken.store(true, Ordering::Release);
+                                    nav_trace.error("broker.navigation.unavailable", "native navigation args absent");
+                                    return Ok(());
+                                };
+                                let mut raw = PWSTR::null();
+                                if unsafe { args.Uri(&mut raw) }.is_err() {
+                                    nav_stats.errors.fetch_add(1, Ordering::Relaxed);
+                                    nav_stats.broken.store(true, Ordering::Release);
+                                    nav_trace.error("broker.navigation.uri.failed", "native navigation URI unavailable");
+                                    unsafe { args.SetCancel(true)?; }
+                                    return Ok(());
+                                }
+                                let current_url = take_pwstr(raw);
+                                if current_url == "about:blank"
+                                    && !nav_first_expected.load(Ordering::Acquire)
+                                {
+                                    return Ok(());
+                                }
+                                let epoch = if current_url == nav_expected_url
+                                    && !nav_first_expected.swap(true, Ordering::AcqRel)
+                                {
+                                    nav_generation.load(Ordering::Acquire)
+                                } else {
+                                    nav_generation.fetch_add(1, Ordering::AcqRel) + 1
+                                };
+                                if current_url != nav_expected_url {
+                                    nav_stats.errors.fetch_add(1, Ordering::Relaxed);
+                                    nav_stats.broken.store(true, Ordering::Release);
+                                    nav_trace.error("broker.navigation.cancelled", "unexpected top-level navigation denied");
+                                    unsafe { args.SetCancel(true)?; }
+                                } else {
+                                    nav_trace.record("broker.navigation.allowed", &format!("pageGeneration {epoch}"));
+                                }
+                                Ok(())
+                            },
+                        ));
+                        let mut nav_token = 0;
+                        unsafe { core.add_NavigationStarting(&navigation_handler, &mut nav_token)?; }
                         for scheme in ["http://*", "https://*"] {
                             unsafe {
                                 core22.AddWebResourceRequestedFilterWithRequestSourceKinds(
@@ -1035,10 +1782,12 @@ mod host {
                         let event_stats = callback_stats.clone();
                         let event_trace = callback_trace.clone();
                         let event_counter = counter.clone();
+                        let event_generation = callback_generation.clone();
                         let handler = WebResourceRequestedEventHandler::create(Box::new(
                             move |_, args| {
                                 let Some(args) = args else { return Ok(()); };
                                 event_stats.intercepted.fetch_add(1, Ordering::Relaxed);
+                                event_trace.record("broker.request.intercepted", &format!("pageGeneration {}", event_generation.load(Ordering::Acquire)));
                                 let request = match unsafe { args.Request() } {
                                     Ok(request) => request,
                                     Err(_) => {
@@ -1074,12 +1823,25 @@ mod host {
                                         args,
                                         deferral,
                                         environment: event_env.clone(),
+                                        page_generation: event_generation.load(Ordering::Acquire),
                                     });
                                 });
+                                event_stats.pending.fetch_add(1, Ordering::Relaxed);
+                                if callback_fault == BrokerFault::Cancel {
+                                    event_stats.fault_triggered.store(true, Ordering::Release);
+                                    event_stats.cancelled.fetch_add(1, Ordering::Relaxed);
+                                    event_stats.denied.fetch_add(1, Ordering::Relaxed);
+                                    event_stats.broken.store(true, Ordering::Release);
+                                    event_trace.record("broker.fault.cancelled", "pending COM deferral cancelled locally");
+                                    broker_finish_on_ui(
+                                        id, BrokerPayload::denied(503), &event_trace, &event_stats, &event_generation,
+                                    );
+                                    return Ok(());
+                                }
                                 if callback_tx.try_send(BrokerTicket { id, url: uri }).is_err() {
                                     event_stats.denied.fetch_add(1, Ordering::Relaxed);
                                     broker_finish_on_ui(
-                                        id, BrokerPayload::denied(503), &event_trace, &event_stats,
+                                        id, BrokerPayload::denied(503), &event_trace, &event_stats, &event_generation,
                                     );
                                 } else {
                                     event_stats.forwarded.fetch_add(1, Ordering::Relaxed);
@@ -1093,6 +1855,14 @@ mod host {
                         }
                         callback_stats.hook_ready.store(true, Ordering::Release);
                         callback_trace.record("broker.hook.ready", "HTTP HTTPS all contexts and sources filtered");
+                        if callback_fault == BrokerFault::AbnormalExit {
+                            // The runner terminates this bounded, real WebView2
+                            // process to exercise job cleanup. Never navigate or
+                            // issue a broker GET in this mode.
+                            callback_stats.fault_triggered.store(true, Ordering::Release);
+                            callback_trace.record("broker.fault.abnormal_exit.armed", "real WebView2 ready; navigation suppressed");
+                            return Ok(());
+                        }
                         unsafe { core.Navigate(&HSTRING::from(callback_url))?; }
                         callback_trace.record("broker.document.navigate", "controlled broker document navigation dispatched");
                         Ok(())
@@ -1110,10 +1880,13 @@ mod host {
                 let monitor_trace = init_trace.clone();
                 let monitor_stats = setup_stats.clone();
                 let monitor_observer = setup_observer.clone();
+                let monitor_semantic = semantic.clone();
+                let monitor_generation = page_generation.clone();
                 let app_handle = app.handle().clone();
                 thread::spawn(move || {
                     let start = Instant::now();
                     let mut script_at = None;
+                    let mut broken_at = None;
                     while start.elapsed() < WATCHDOG {
                         if let Ok(rows) = inventory(pid) {
                             if let Ok(mut owned) = monitor_observer.processes.lock() {
@@ -1123,11 +1896,24 @@ mod host {
                         if monitor_observer.scripted.load(Ordering::Acquire) && script_at.is_none() {
                             script_at = Some(Instant::now());
                         }
-                        if script_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(2)) {
+                        if script_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(2))
+                            && (fault != BrokerFault::None
+                                || monitor_semantic.finished.load(Ordering::Acquire)
+                                || script_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(4)))
+                        {
                             break;
                         }
                         if monitor_stats.broken.load(Ordering::Acquire) {
-                            break;
+                            // Allow a bounded UI-thread dispatch to complete the
+                            // synthetic 502/503/504 and its COM deferral before
+                            // stopping WebView2 for a fault-injection case.
+                            let since = broken_at.get_or_insert_with(Instant::now);
+                            let forwarded = monitor_stats.forwarded.load(Ordering::Acquire);
+                            let answered = monitor_stats.answered.load(Ordering::Acquire);
+                            if (answered >= forwarded && monitor_stats.pending.load(Ordering::Acquire) == 0)
+                                || since.elapsed() >= Duration::from_millis(900) {
+                                break;
+                            }
                         }
                         thread::sleep(Duration::from_millis(120));
                     }
@@ -1142,12 +1928,29 @@ mod host {
                     let forwarded = monitor_stats.forwarded.load(Ordering::Acquire);
                     let answered = monitor_stats.answered.load(Ordering::Acquire);
                     let errors = monitor_stats.errors.load(Ordering::Acquire);
-                    let success = ready && scripted && !webview_pids.is_empty()
-                        && forwarded > 0 && answered > 0 && errors == 0;
+                    let (semantic_status, semantic_error, semantic_proof) = monitor_semantic.receipt();
+                    let semantic_current = semantic_proof.as_ref().is_some_and(|proof| {
+                        proof.page_generation == monitor_generation.load(Ordering::Acquire)
+                            && !monitor_stats.broken.load(Ordering::Acquire)
+                    });
+                    let semantic_status = if semantic_status == "verified" && !semantic_current {
+                        "invalidated"
+                    } else {
+                        semantic_status
+                    };
+                    let semantic_proof = if semantic_current { semantic_proof } else { None };
+                    let success = fault == BrokerFault::None && ready && scripted && !webview_pids.is_empty()
+                        && forwarded > 0 && answered > 0 && errors == 0
+                        && monitor_stats.pending.load(Ordering::Acquire) == 0
+                        && !monitor_stats.broken.load(Ordering::Acquire);
                     result_from_thread.store(success, Ordering::Release);
                     report(&root, &json!({
                         "kind": "clack-browser-host",
                         "mode": "brokered-child",
+                        "brokerFaultMode": fault.label(),
+                        "brokerFaultTriggered": monitor_stats.fault_triggered.load(Ordering::Acquire),
+                        "brokerTimeouts": monitor_stats.timeouts.load(Ordering::Acquire),
+                        "brokerCancelled": monitor_stats.cancelled.load(Ordering::Acquire),
                         "hostPid": pid,
                         "hostToken": token,
                         "appContainer": token.app_container,
@@ -1159,16 +1962,30 @@ mod host {
                         "brokerIntercepted": monitor_stats.intercepted.load(Ordering::Acquire),
                         "brokerForwarded": forwarded,
                         "brokerAnswered": answered,
+                        "brokerPendingCount": monitor_stats.pending.load(Ordering::Acquire),
                         "brokerDenied": monitor_stats.denied.load(Ordering::Acquire),
                         "brokerErrors": errors,
+                        "brokerLastSyntheticStatus": monitor_stats.last_synthetic_status(),
+                        "brokerCompleted2xx": monitor_stats.status_2xx.load(Ordering::Acquire),
+                        "brokerCompleted4xx": monitor_stats.status_4xx.load(Ordering::Acquire),
+                        "brokerCompleted5xx": monitor_stats.status_5xx.load(Ordering::Acquire),
+                        "brokerSynthetic502": monitor_stats.synthetic_502.load(Ordering::Acquire),
+                        "brokerSynthetic503": monitor_stats.synthetic_503.load(Ordering::Acquire),
+                        "brokerSynthetic504": monitor_stats.synthetic_504.load(Ordering::Acquire),
                         "scriptObserved": scripted,
                         "rendererDomProof": scripted,
+                        "brokerSemanticSnapshotStatus": semantic_status,
+                        "brokerSemanticSnapshotVerified": semantic_current,
+                        "brokerSemanticSnapshotError": semantic_error,
+                        "brokerSemanticSnapshot": semantic_proof,
                         "webviewProcessIds": webview_pids,
                         "processes": children,
                         "elapsedMs": start.elapsed().as_millis(),
                         "success": success,
                         "error": if !ready { Some("native WebView2 HTTP/HTTPS request interception unavailable") }
                             else if errors != 0 { Some("broker pipe or COM request failed") }
+                            else if fault != BrokerFault::None && !monitor_stats.fault_triggered.load(Ordering::Acquire) { Some("configured broker fault was not observed") }
+                            else if fault != BrokerFault::None { Some("acceptance-only broker fault triggered") }
                             else if !scripted { Some("brokered renderer document title not observed") }
                             else if forwarded == 0 || answered == 0 { Some("brokered request/response proof missing") }
                             else if webview_pids.is_empty() { Some("WebView2 child process not observed") }
@@ -1525,6 +2342,306 @@ mod host {
             tampered["contentType"] = json!("image/png");
             tampered["status"] = json!(302);
             assert!(broker_reply(&serde_json::to_vec(&tampered).unwrap(), NONCE, 3).is_err());
+        }
+
+        #[test]
+        fn broker_fault_flags_are_explicit_and_short_lived() {
+            for label in [
+                "none",
+                "crash",
+                "timeout",
+                "no-intercept",
+                "stale-id",
+                "stale-session",
+                "abnormal-exit",
+                "cancel",
+                "missing-reply",
+            ] {
+                assert!(
+                    BrokerFault::parse(label).is_ok(),
+                    "unsupported label {label}"
+                );
+            }
+            assert!(BrokerFault::parse("network-allow").is_err());
+            assert!(BrokerFault::parse("CRASH").is_err());
+            assert!(BrokerFault::Timeout.reply_deadline() < BROKER_REPLY_DEADLINE);
+            assert!(BROKER_REPLY_DEADLINE < WATCHDOG);
+            assert_eq!(BrokerFault::MissingIntercept.label(), "no-intercept");
+        }
+
+        fn local_pipe() -> (File, File) {
+            use windows_sys::Win32::System::Pipes::CreatePipe;
+            let mut reader = null_mut();
+            let mut writer = null_mut();
+            let ok = unsafe { CreatePipe(&mut reader, &mut writer, null_mut(), 4096) };
+            assert_ne!(ok, 0, "create test-owned anonymous pipe");
+            (unsafe { File::from_raw_handle(reader.cast()) }, unsafe {
+                File::from_raw_handle(writer.cast())
+            })
+        }
+
+        #[test]
+        fn bounded_reply_reader_drains_frames_larger_than_pipe_buffer() {
+            let (mut reader, mut writer) = local_pipe();
+            let data = vec![b'a'; 120 * 1024];
+            let expected = data.clone();
+            let producer = thread::spawn(move || broker_write_frame(&mut writer, &data));
+            let actual = broker_read_frame(&mut reader, Duration::from_secs(4)).unwrap();
+            assert_eq!(actual, expected);
+            producer.join().unwrap().unwrap();
+        }
+
+        #[test]
+        fn missing_reply_times_out_without_blocking_forever() {
+            let (mut reader, writer) = local_pipe();
+            let start = Instant::now();
+            let error = broker_read_frame(&mut reader, Duration::from_millis(60)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(start.elapsed() < Duration::from_secs(1));
+            drop(writer);
+        }
+
+        #[test]
+        fn closed_broker_reply_pipe_fails_before_deadline() {
+            let (mut reader, writer) = local_pipe();
+            drop(writer);
+            let start = Instant::now();
+            let error = broker_read_frame(&mut reader, Duration::from_secs(3)).unwrap_err();
+            assert_ne!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(start.elapsed() < Duration::from_secs(1));
+        }
+
+        #[test]
+        fn stale_session_and_stale_request_id_never_deliver_html() {
+            let response = serde_json::to_vec(&json!({
+                "version": 1, "session": NONCE, "requestId": 42,
+                "status": 200, "contentType": "text/html",
+                "bodyBase64": BASE64.encode(b"<html>synthetic</html>"),
+            }))
+            .unwrap();
+            assert!(broker_reply(&response, NONCE, 42).is_ok());
+            assert_eq!(
+                broker_reply(&response, &format!("x{NONCE}"), 42).unwrap_err(),
+                "broker reply session mismatch"
+            );
+            assert_eq!(
+                broker_reply(&response, NONCE, 41).unwrap_err(),
+                "broker reply requestId mismatch"
+            );
+        }
+
+        #[test]
+        fn response_counters_do_not_claim_com_completion_before_recording() {
+            let stats = BrokerStats::default();
+            assert_eq!(stats.last_synthetic_status(), None);
+            assert_eq!(stats.answered.load(Ordering::Relaxed), 0);
+            assert_eq!(stats.status_5xx.load(Ordering::Relaxed), 0);
+
+            // The helper is called only after SetResponse AND Complete (or
+            // synchronous SetResponse with no deferral) succeed in production.
+            stats.note_com_response(&BrokerPayload {
+                status: 200,
+                content_type: "text/html".to_owned(),
+                body: b"ok".to_vec(),
+                synthetic: false,
+            });
+            assert_eq!(stats.status_2xx.load(Ordering::Relaxed), 1);
+            assert_eq!(stats.last_synthetic_status(), None);
+            for code in [502u16, 503, 504] {
+                stats.note_com_response(&BrokerPayload::denied(code));
+                assert_eq!(stats.last_synthetic_status(), Some(code));
+            }
+            assert_eq!(stats.status_5xx.load(Ordering::Relaxed), 3);
+            assert_eq!(stats.synthetic_502.load(Ordering::Relaxed), 1);
+            assert_eq!(stats.synthetic_503.load(Ordering::Relaxed), 1);
+            assert_eq!(stats.synthetic_504.load(Ordering::Relaxed), 1);
+            // This pure helper never grants an implicit deferred answer.
+            assert_eq!(stats.answered.load(Ordering::Relaxed), 0);
+        }
+
+        #[test]
+        fn session_fault_or_new_page_revokes_late_valid_response() {
+            assert!(!broker_reply_must_be_denied(false, false, 1, 1));
+            assert!(broker_reply_must_be_denied(false, true, 1, 1));
+            assert!(broker_reply_must_be_denied(false, false, 1, 2));
+            // A synthetic 504 still completes the current request after a
+            // pipe fault; it must not silently turn into a successful 200.
+            assert!(!broker_reply_must_be_denied(true, true, 1, 1));
+            assert!(broker_reply_must_be_denied(true, true, 1, 2));
+        }
+
+        fn semantic_case_url() -> String {
+            format!("http://127.0.0.1:1234/document/broker/{NONCE}")
+        }
+
+        fn semantic_case_title() -> String {
+            format!("{RENDER_MARKER}{NONCE}")
+        }
+
+        fn semantic_case_json() -> serde_json::Value {
+            let landmark = "Clack brokered WebView2";
+            json!({
+                "version": 1,
+                "url": semantic_case_url(),
+                "title": semantic_case_title(),
+                "visited": 3,
+                "textBytes": landmark.len(),
+                "truncated": false,
+                "elements": [{
+                    "index": 1,
+                    "role": "main",
+                    "name": landmark
+                }]
+            })
+        }
+
+        #[test]
+        fn semantic_script_is_fixed_and_bounds_traversal_before_emitting_json() {
+            assert!(SEMANTIC_SNAPSHOT_JS.contains("maxVisits = 512"));
+            assert!(SEMANTIC_SNAPSHOT_JS.contains("maxElements = 64"));
+            assert!(SEMANTIC_SNAPSHOT_JS.contains("maxTextBytes = 32768"));
+            assert!(SEMANTIC_SNAPSHOT_JS.contains("createTreeWalker"));
+            for forbidden in [
+                "innerHTML",
+                "outerHTML",
+                "innerText",
+                "querySelectorAll",
+                ".value",
+                "document.cookie",
+                "localStorage",
+                "sessionStorage",
+                "fetch(",
+                "XMLHttpRequest",
+            ] {
+                assert!(
+                    !SEMANTIC_SNAPSHOT_JS.contains(forbidden),
+                    "unsafe script feature: {forbidden}"
+                );
+            }
+            assert!(SEMANTIC_SNAPSHOT_JS.contains("['button','submit','reset','checkbox','radio']"));
+        }
+
+        #[test]
+        fn semantic_snapshot_verified_against_native_session_source_and_epoch() {
+            let raw = semantic_case_json().to_string();
+            let proof =
+                verify_semantic_snapshot(&raw, &semantic_case_url(), &semantic_case_title(), 1, 1)
+                    .unwrap();
+            assert!(proof.session_verified);
+            assert_eq!(proof.session, NONCE);
+            assert_eq!(proof.origin, "http://127.0.0.1:1234");
+            assert_eq!(proof.page_generation, 1);
+            assert_eq!(proof.snapshot_generation, 1);
+            assert!(proof.observed_at_ms > 0);
+            assert_eq!(proof.snapshot.elements[0].role, "main");
+            assert_eq!(proof.redacted_labels, 0);
+            assert!(!proof.snapshot.truncated);
+        }
+
+        #[test]
+        fn semantic_snapshot_fails_closed_for_stale_or_spoofed_page() {
+            let raw = semantic_case_json().to_string();
+            assert_eq!(
+                verify_semantic_snapshot(&raw, &semantic_case_url(), &semantic_case_title(), 1, 2,)
+                    .unwrap_err(),
+                "snapshot-page-stale"
+            );
+            assert_eq!(
+                verify_semantic_snapshot(&raw, &semantic_case_url(), &semantic_case_title(), 0, 0,)
+                    .unwrap_err(),
+                "snapshot-page-stale"
+            );
+            assert!(verify_semantic_snapshot(
+                &raw,
+                "https://example.com/document/broker/other",
+                &semantic_case_title(),
+                1,
+                1,
+            )
+            .is_err());
+            assert!(
+                verify_semantic_snapshot(&raw, &semantic_case_url(), "wrong-title", 1, 1,).is_err()
+            );
+            let mut spoofed = semantic_case_json();
+            spoofed["url"] = json!("http://127.0.0.1:1234/other");
+            assert!(verify_semantic_snapshot(
+                &spoofed.to_string(),
+                &semantic_case_url(),
+                &semantic_case_title(),
+                1,
+                1,
+            )
+            .is_err());
+        }
+
+        #[test]
+        fn semantic_snapshot_rejects_oversized_malformed_or_forged_fields() {
+            let valid_url = semantic_case_url();
+            let valid_title = semantic_case_title();
+            let check = |value: &serde_json::Value| {
+                verify_semantic_snapshot(&value.to_string(), &valid_url, &valid_title, 1, 1)
+            };
+            assert_eq!(
+                verify_semantic_snapshot(
+                    &"x".repeat(SEMANTIC_MAX_JSON_BYTES + 1),
+                    &valid_url,
+                    &valid_title,
+                    1,
+                    1,
+                )
+                .unwrap_err(),
+                "snapshot-json-over-limit"
+            );
+            let mut invalid = semantic_case_json();
+            invalid["visited"] = json!(SEMANTIC_MAX_VISITS + 1);
+            assert!(check(&invalid).is_err());
+            invalid = semantic_case_json();
+            invalid["elements"][0]["name"] = json!("x".repeat(SEMANTIC_MAX_LABEL_CHARS + 1));
+            invalid["textBytes"] = json!(SEMANTIC_MAX_LABEL_CHARS + 1);
+            assert!(check(&invalid).is_err());
+            invalid = semantic_case_json();
+            invalid["elements"][0]["role"] = json!("script");
+            assert!(check(&invalid).is_err());
+            invalid = semantic_case_json();
+            invalid["elements"][0]["index"] = json!(4);
+            assert!(check(&invalid).is_err());
+            invalid = semantic_case_json();
+            invalid["textBytes"] = json!(SEMANTIC_MAX_TEXT_BYTES + 1);
+            assert!(check(&invalid).is_err());
+            invalid = semantic_case_json();
+            invalid["rawHtml"] = json!("<script>not permitted</script>");
+            assert!(check(&invalid).is_err());
+            invalid = semantic_case_json();
+            invalid["elements"] = json!([]);
+            invalid["textBytes"] = json!(0);
+            assert!(check(&invalid).is_err());
+        }
+
+        #[test]
+        fn semantic_snapshot_redacts_bounded_auth_like_labels_before_reporting() {
+            let mut value = semantic_case_json();
+            let secret = "API_KEY=top-secret-should-not-be-reported";
+            value["elements"] = json!([
+                {"index":1,"role":"main","name":"Clack brokered WebView2"},
+                {"index":2,"role":"label","name":secret}
+            ]);
+            value["textBytes"] = json!("Clack brokered WebView2".len() + secret.len());
+            let proof = verify_semantic_snapshot(
+                &value.to_string(),
+                &semantic_case_url(),
+                &semantic_case_title(),
+                1,
+                1,
+            )
+            .unwrap();
+            assert_eq!(proof.redacted_labels, 1);
+            assert_eq!(proof.snapshot.elements[1].name, "[redacted]");
+            assert!(!serde_json::to_string(&proof)
+                .unwrap()
+                .contains("top-secret"));
+            assert!(sensitive_semantic_label("Authorization: Bearer abc"));
+            assert!(sensitive_semantic_label("session_token=qwerty"));
+            assert!(!sensitive_semantic_label("Clack brokered WebView2"));
         }
     }
 }

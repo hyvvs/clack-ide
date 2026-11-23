@@ -34,7 +34,7 @@ mod windows {
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
     use std::{
-        collections::{BTreeMap, BTreeSet},
+        collections::BTreeMap,
         ffi::{c_void, OsStr},
         fs::{self, File},
         io::{Read, Write},
@@ -68,6 +68,7 @@ mod windows {
     const POLL_INTERVAL: Duration = Duration::from_millis(200);
     const ALLOWLIST_HOST: &str = "127.0.0.1";
     const MAX_SHUTDOWN_DRAIN_EVENTS: usize = 64;
+    const MAX_ACTIVE_TCP_FIXTURE_HANDLERS: usize = 32;
     // Retain at most this many bytes from EACH host stream. Continue draining
     // pipes after the limit to keep a noisy host from blocking on stdout.
     const HOST_STREAM_LIMIT: usize = 32 * 1024;
@@ -78,11 +79,135 @@ mod windows {
     // response frames within the anonymous pipe's small capacity so writes do
     // not require an unbounded peer drain to make forward progress.
     const BROKER_MAX_RESPONSE_FRAME_BYTES: usize = 3 * 1024;
+    const ABNORMAL_EXIT_CODE: u32 = 79;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+    #[serde(rename_all = "kebab-case")]
+    enum NegativeScenario {
+        BrokerCrash,
+        BrokerTimeout,
+        NoIntercept,
+        StaleId,
+        AbnormalExit,
+        Cancel,
+        StaleSession,
+        MissingReply,
+    }
+    impl NegativeScenario {
+        const ALL: [Self; 8] = [
+            Self::BrokerCrash,
+            Self::BrokerTimeout,
+            Self::NoIntercept,
+            Self::StaleId,
+            Self::AbnormalExit,
+            Self::Cancel,
+            Self::StaleSession,
+            Self::MissingReply,
+        ];
+        fn label(self) -> &'static str {
+            match self {
+                Self::BrokerCrash => "broker-crash",
+                Self::BrokerTimeout => "broker-timeout",
+                Self::NoIntercept => "no-intercept",
+                Self::StaleId => "stale-id",
+                Self::AbnormalExit => "abnormal-exit",
+                Self::Cancel => "cancel",
+                Self::StaleSession => "stale-session",
+                Self::MissingReply => "missing-reply",
+            }
+        }
+        fn host_flag(self) -> &'static str {
+            match self {
+                Self::BrokerCrash => "crash",
+                Self::BrokerTimeout => "timeout",
+                Self::NoIntercept => "no-intercept",
+                Self::StaleId => "stale-id",
+                Self::AbnormalExit => "abnormal-exit",
+                Self::Cancel => "cancel",
+                Self::StaleSession => "stale-session",
+                Self::MissingReply => "missing-reply",
+            }
+        }
+    }
     const BROKER_PNG: &[u8] = &[
         137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4,
         0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 2,
         235, 1, 245, 106, 87, 144, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
     ];
+
+    // Only loopback destinations with a physical listener in Destination::new
+    // are emitted by this bounded browser script. The literal port is read
+    // from the previously authorized brokered document URL; there are no
+    // additional listeners, arbitrary URLs, credentials or TF3 exceptions.
+    // The external-script DOM title is set LAST, after the finite probes have
+    // been initiated. This proves script execution, NOT per-API network IO.
+    const HIDDEN_BROKER_PATHS: &[(&str, &str, &str)] = &[
+        ("hidden-same-origin", "fetch", "IPv4 owned TCP"),
+        (
+            "hidden-mapped-v6",
+            "fetch",
+            "IPv4-mapped IPv6 conditional mapping to owned TCP",
+        ),
+        ("hidden-v6", "fetch", "IPv6 ::1 owned TCP"),
+        (
+            "hidden-decimal",
+            "fetch",
+            "IPv4 127.0.0.1 decimal notation owned TCP",
+        ),
+        (
+            "hidden-hex",
+            "fetch",
+            "IPv4 127.0.0.1 hexadecimal notation owned TCP",
+        ),
+        (
+            "hidden-localhost",
+            "fetch",
+            "localhost loopback resolution to owned IPv4/IPv6 TCP",
+        ),
+        (
+            "hidden-eventsource",
+            "EventSource bounded close",
+            "IPv4 owned TCP",
+        ),
+        (
+            "hidden-worker",
+            "data Worker fetch bounded terminate",
+            "IPv4 owned TCP",
+        ),
+        ("hidden-image", "image subresource", "IPv4 owned TCP"),
+        ("hidden-css-import", "stylesheet import", "IPv4 owned TCP"),
+        ("hidden-font", "font subresource", "IPv4 owned TCP"),
+        ("hidden-xhr", "XMLHttpRequest", "IPv4 owned TCP"),
+        ("hidden-ws", "WebSocket bounded close", "IPv4 owned TCP"),
+        ("hidden-iframe", "iframe subresource", "IPv4 owned TCP"),
+        ("hidden-beacon", "sendBeacon", "IPv4 owned TCP"),
+    ];
+
+    fn broker_probe_script(nonce: &str) -> String {
+        // The script never references literal RFC1918 or link-local hosts:
+        // there is no owned listener on those networks. A different-port or
+        // out-of-loopback request would violate physical-test authorization.
+        // IPv4-mapped IPv6 is attempted as a loopback-mapped candidate;
+        // platforms may reject/normalize it before dispatch, so no per-case
+        // successful interception is asserted for that representation.
+        const SCRIPT: &str = r#"globalThis.__clackBrokerScript=true;
+(()=>{const p=location.port,n='__NONCE__',q=k=>'/hidden-'+k+'/broker/'+n,v='http://127.0.0.1:'+p;
+const f=u=>{try{fetch(u,{mode:'no-cors',cache:'no-store'}).catch(()=>{})}catch(_){}};
+f(v+q('same-origin'));f('http://[::ffff:127.0.0.1]:'+p+q('mapped-v6'));
+f('http://[::1]:'+p+q('v6'));f('http://2130706433:'+p+q('decimal'));
+f('http://0x7f000001:'+p+q('hex'));f('http://localhost:'+p+q('localhost'));
+try{let e=new EventSource(v+q('eventsource'));e.onerror=()=>e.close();setTimeout(()=>e.close(),400)}catch(_){}
+try{let w=new Worker('data:text/javascript,'+encodeURIComponent("fetch('"+v+q('worker')+"',{mode:'no-cors'}).catch(()=>{})"));setTimeout(()=>w.terminate(),700)}catch(_){}
+try{let i=new Image();i.hidden=true;i.src=v+q('image');document.body.appendChild(i)}catch(_){}
+try{let s=document.createElement('style');s.textContent="@import url('"+v+q('css-import')+"');@font-face{font-family:clProbe;src:url('"+v+q('font')+"')}#broker-proof{font-family:clProbe}";document.head.appendChild(s)}catch(_){}
+try{let x=new XMLHttpRequest();x.open('GET',v+q('xhr'));x.send()}catch(_){}
+try{let i=document.createElement('iframe');i.hidden=true;i.src=v+q('iframe');document.body.appendChild(i)}catch(_){}
+try{navigator.sendBeacon(v+q('beacon'),'probe')}catch(_){}
+try{let w=new WebSocket('ws://127.0.0.1:'+p+q('ws'));setTimeout(()=>w.close(),400)}catch(_){}
+try{let r=new RTCPeerConnection({iceServers:[{urls:'stun:127.0.0.1:'+p}]});r.createDataChannel('probe');r.createOffer().then(o=>r.setLocalDescription(o)).catch(()=>{});setTimeout(()=>r.close(),900)}catch(_){}
+})();
+document.title='clack-renderer-js-__NONCE__';"#;
+        SCRIPT.replace("__NONCE__", nonce)
+    }
 
     fn preserve_json(path: &Path, value: &Value) -> Result<(), String> {
         // Every run has a fresh tempfile-owned directory. Never replace an
@@ -324,6 +449,8 @@ mod windows {
         http_requests: u32,
         websocket_upgrades: u32,
         paths: BTreeMap<String, u32>,
+        // Classification only; never retain request bytes, URLs, or headers.
+        transport_failures: BTreeMap<String, u32>,
         // Counts only a GET to the exact per-run /ipv6/<mode>/<nonce> fixture
         // route on the independent IPv6 listener, never an arbitrary socket.
         ipv6_fixture_requests: u32,
@@ -339,6 +466,7 @@ mod windows {
         // interpret this aggregate as a measured IPv6 UDP observation.
         udp_datagrams: u32,
         paths: BTreeMap<String, u32>,
+        transport_failures: BTreeMap<String, u32>,
         ipv4: TcpFamilyCounts,
         ipv6: TcpFamilyCounts,
     }
@@ -366,7 +494,27 @@ mod windows {
             thread::spawn(move || {
                 let family = if ipv6 { "IPv6" } else { "IPv4" };
                 let mut drained_after_stop = 0;
+                let mut handlers: Vec<thread::JoinHandle<()>> = Vec::new();
                 loop {
+                    // A browser or HTTP client can open an idle/speculative
+                    // socket without sending request bytes. The original
+                    // single-threaded accept-and-read fixture blocked every
+                    // later HTTP request behind that socket for two seconds.
+                    // That can create a false native TF3 request failure.
+                    // Reap completed workers and allow only bounded, owned
+                    // parallel connections. No request is retried.
+                    let mut index = 0;
+                    while index < handlers.len() {
+                        if handlers[index].is_finished() {
+                            if handlers.swap_remove(index).join().is_err() {
+                                if let Ok(mut faults) = errors.lock() {
+                                    faults.push(format!("{family} TCP fixture handler panicked"));
+                                }
+                            }
+                        } else {
+                            index += 1;
+                        }
+                    }
                     let shutting_down = stop.load(Ordering::Acquire);
                     if shutting_down && drained_after_stop >= MAX_SHUTDOWN_DRAIN_EVENTS {
                         if let Ok(mut errors) = errors.lock() {
@@ -394,14 +542,53 @@ mod windows {
                                     row.ipv4.connections += 1;
                                 }
                             }
-                            let _ = Self::handle(
-                                &mut stream,
-                                &mode,
-                                &nonce,
-                                ipv6,
-                                shutting_down,
-                                &seen,
-                            );
+                            if handlers.len() >= MAX_ACTIVE_TCP_FIXTURE_HANDLERS {
+                                if let Ok(mut faults) = errors.lock() {
+                                    faults.push(format!(
+                                        "{family} bounded TCP fixture handler capacity exceeded"
+                                    ));
+                                }
+                                continue;
+                            }
+                            let handler_seen = seen.clone();
+                            let handler_nonce = nonce.clone();
+                            let handler_mode = mode.clone();
+                            match thread::Builder::new()
+                                .name("tf4-controlled-tcp".into())
+                                .spawn(move || {
+                                    if let Err(reason) = Self::handle(
+                                        &mut stream,
+                                        &handler_mode,
+                                        &handler_nonce,
+                                        ipv6,
+                                        shutting_down,
+                                        &handler_seen,
+                                    ) {
+                                        // A connection alone is never an HTTP
+                                        // success. Keep a category, not bytes.
+                                        if let Ok(mut rows) = handler_seen.lock() {
+                                            let row = rows.entry(handler_mode).or_default();
+                                            *row.transport_failures
+                                                .entry(reason.to_owned())
+                                                .or_default() += 1;
+                                            let family_row =
+                                                if ipv6 { &mut row.ipv6 } else { &mut row.ipv4 };
+                                            *family_row
+                                                .transport_failures
+                                                .entry(reason.to_owned())
+                                                .or_default() += 1;
+                                        }
+                                    }
+                                }) {
+                                Ok(handler) => handlers.push(handler),
+                                Err(_) => {
+                                    if let Ok(mut faults) = errors.lock() {
+                                        faults.push(format!(
+                                            "{family} TCP fixture worker unavailable"
+                                        ));
+                                    }
+                                }
+                            }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             if shutting_down {
@@ -417,11 +604,30 @@ mod windows {
                         }
                     }
                 }
+                // All accepted connections are accounted for before shutdown
+                // returns its listener-backed counts, including idle ones.
+                for handler in handlers {
+                    if handler.join().is_err() {
+                        if let Ok(mut faults) = errors.lock() {
+                            faults.push(format!(
+                                "{family} TCP fixture handler panicked during shutdown"
+                            ));
+                        }
+                    }
+                }
             })
         }
 
         fn new(nonce: &str) -> Result<Self, String> {
-            let listener = TcpListener::bind((ALLOWLIST_HOST, 0))
+            // Windows can reserve a port for UDP even when TCP successfully
+            // assigned the same ephemeral number (observed 10013 in an
+            // immutable earlier case). Let the kernel select an admissible
+            // UDP port first; then bind both independent TCP families to that
+            // exact port. No retry, sleep, or global network setting change.
+            let udp = UdpSocket::bind((ALLOWLIST_HOST, 0))
+                .map_err(|e| format!("bind independent IPv4 UDP destination: {e}"))?;
+            let port = udp.local_addr().map_err(|e| e.to_string())?.port();
+            let listener = TcpListener::bind((ALLOWLIST_HOST, port))
                 .map_err(|e| format!("bind independent IPv4 destination: {e}"))?;
             let addr = listener.local_addr().map_err(|e| e.to_string())?;
             listener.set_nonblocking(true).map_err(|e| e.to_string())?;
@@ -440,8 +646,6 @@ mod windows {
             ipv6_listener
                 .set_nonblocking(true)
                 .map_err(|e| format!("nonblocking IPv6 destination: {e}"))?;
-            let udp = UdpSocket::bind((ALLOWLIST_HOST, addr.port()))
-                .map_err(|e| format!("bind independent IPv4 UDP destination: {e}"))?;
             udp.set_nonblocking(true).map_err(|e| e.to_string())?;
             let seen = Arc::new(Mutex::new(BTreeMap::<String, Counts>::new()));
             let phase = Arc::new(Mutex::new("unarmed".to_owned()));
@@ -529,22 +733,93 @@ mod windows {
             ipv6: bool,
             draining: bool,
             seen: &Mutex<BTreeMap<String, Counts>>,
-        ) -> std::io::Result<()> {
+        ) -> Result<(), &'static str> {
             // Bound a late socket's read after the verified process group is
             // empty. Even malformed queued requests must be counted promptly.
-            stream.set_read_timeout(Some(if draining {
-                Duration::from_millis(50)
-            } else {
-                Duration::from_secs(2)
-            }))?;
-            stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+            stream
+                .set_read_timeout(Some(if draining {
+                    Duration::from_millis(50)
+                } else {
+                    Duration::from_secs(2)
+                }))
+                .map_err(|_| "read-deadline-setup")?;
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .map_err(|_| "write-deadline-setup")?;
+            // TCP reads can split a header at any byte boundary. Read this
+            // SAME accepted connection until a full header terminator arrives,
+            // with a strict 4KiB/2s (50ms cleanup) bound. Never re-connect or
+            // retry a remote effect to obtain a nicer-looking HTTP count.
             let mut bytes = [0_u8; 4096];
-            let read = stream.read(&mut bytes)?;
-            let line = String::from_utf8_lossy(&bytes[..read]);
+            let mut used = 0;
+            let deadline = Instant::now()
+                + if draining {
+                    Duration::from_millis(50)
+                } else {
+                    Duration::from_secs(2)
+                };
+            loop {
+                if bytes[..used].windows(4).any(|w| w == b"\r\n\r\n")
+                    || bytes[..used].windows(2).any(|w| w == b"\n\n")
+                {
+                    break;
+                }
+                if used == bytes.len() {
+                    return Err("headers-oversize");
+                }
+                if Instant::now() >= deadline {
+                    return Err(if used == 0 {
+                        "headers-timeout-empty"
+                    } else {
+                        "headers-timeout-partial"
+                    });
+                }
+                // Winsock rounds SO_RCVTIMEO to milliseconds; a sub-ms value
+                // may become zero (infinite) unless explicitly bounded.
+                let remaining = deadline
+                    .saturating_duration_since(Instant::now())
+                    .max(Duration::from_millis(1));
+                stream
+                    .set_read_timeout(Some(remaining))
+                    .map_err(|_| "read-deadline-setup")?;
+                match stream.read(&mut bytes[used..]) {
+                    Ok(0) => {
+                        return Err(if used == 0 {
+                            "peer-closed-empty"
+                        } else {
+                            "peer-closed-partial"
+                        })
+                    }
+                    Ok(n) => used += n,
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                        ) =>
+                    {
+                        return Err(if used == 0 {
+                            "headers-timeout-empty"
+                        } else {
+                            "headers-timeout-partial"
+                        })
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                        return Err("peer-reset")
+                    }
+                    Err(_) => return Err("headers-read-failed"),
+                }
+            }
+            let line = String::from_utf8_lossy(&bytes[..used]);
             let request = line.lines().next().unwrap_or("");
             let mut parts = request.split_ascii_whitespace();
             let method = parts.next().unwrap_or("");
-            let path = parts.next().unwrap_or("/");
+            let path = parts.next().ok_or("request-line-incomplete")?;
+            if !matches!(method, "GET" | "POST" | "HEAD" | "OPTIONS")
+                || !path.starts_with('/')
+                || !parts.next().is_some_and(|p| p.starts_with("HTTP/1."))
+            {
+                return Err("request-line-invalid");
+            }
             let family = path.split('?').next().unwrap_or("/");
             let family = family
                 .split('/')
@@ -590,13 +865,13 @@ mod windows {
                         "document" => (
                             "200 OK",
                             format!(
-                                "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/css/broker/{nonce}\"><script defer src=\"/script/broker/{nonce}\"></script></head><body><main id=\"broker-proof\">Clack brokered WebView2</main><img src=\"/image/broker/{nonce}\"><iframe src=\"/iframe/broker/{nonce}\"></iframe><script>for(const kind of ['fetch','redirect-ok','redirect-private','deny']){{fetch('/'+kind+'/broker/{nonce}',{{mode:'no-cors'}}).catch(()=>{{}})}}</script></body></html>"
+                                "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/css/broker/{nonce}\"><script defer src=\"/script/broker/{nonce}\"></script></head><body><main id=\"broker-proof\">Clack brokered WebView2</main><label>Probe label</label><button type=\"button\" aria-label=\"Probe action\">Test action</button><input type=\"password\" value=\"TF4_TEST_ONLY_NEVER_EXPORT\"><input type=\"hidden\" value=\"TF4_TEST_ONLY_NEVER_EXPORT\"><img src=\"/image/broker/{nonce}\"><iframe src=\"/iframe/broker/{nonce}\"></iframe><script>for(const kind of ['fetch','redirect-ok','redirect-private','deny','unsupported']){{fetch('/'+kind+'/broker/{nonce}',{{mode:'no-cors'}}).catch(()=>{{}})}}</script></body></html>"
                             ).into_bytes(),
                             "text/html",
                             None,
                         ),
                         "css" => ("200 OK", b"#broker-proof { display: block }".to_vec(), "text/css", None),
-                        "script" => ("200 OK", format!("globalThis.__clackBrokerScript = true; document.title='clack-renderer-js-{nonce}';").into_bytes(), "application/javascript", None),
+                        "script" => ("200 OK", broker_probe_script(nonce).into_bytes(), "application/javascript", None),
                         // Static valid one-pixel PNG: binary content exercises
                         // TF3's actual browser-resource bytes, not text coercion.
                         "image" => ("200 OK", BROKER_PNG.to_vec(), "image/png", None),
@@ -635,13 +910,18 @@ mod windows {
                 stream,
                 "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n",
                 content.len()
-            )?;
+            ).map_err(|_| "response-header-write-failed")?;
             if let Some(redirect) = redirect {
-                write!(stream, "Location: {redirect}\r\n")?;
+                write!(stream, "Location: {redirect}\r\n")
+                    .map_err(|_| "response-redirect-write-failed")?;
             }
-            stream.write_all(b"\r\n")?;
-            stream.write_all(&content)?;
-            stream.flush()
+            stream
+                .write_all(b"\r\n")
+                .map_err(|_| "response-header-write-failed")?;
+            stream
+                .write_all(&content)
+                .map_err(|_| "response-body-write-failed")?;
+            stream.flush().map_err(|_| "response-flush-failed")
         }
         fn counts(&self, mode: &str) -> Counts {
             self.seen
@@ -741,21 +1021,30 @@ mod windows {
         }
         Ok(result)
     }
-    fn descendants(root: u32, rows: &[Process]) -> Vec<Process> {
-        let mut found = BTreeSet::from([root]);
-        loop {
-            let len = found.len();
-            for p in rows {
-                if found.contains(&p.parent) {
-                    found.insert(p.pid);
-                }
-            }
-            if found.len() == len {
-                break;
-            }
-        }
+    fn owned_job_processes(rows: &[Process], job: HANDLE) -> Vec<Process> {
+        // Toolhelp's th32ParentProcessID is NOT a live process-parent link.
+        // Windows can reuse a dead parent's PID; recursively traversing that
+        // number included unrelated user applications and their WebView2
+        // descendants in a previous immutable negative case (lclkgY).
+        //
+        // Our unique, already-assigned Job Object is the authoritative
+        // ownership boundary. Only inventory processes for which the OS
+        // independently confirms membership in that exact job. A separate
+        // WMI scan of the unique case UDF below still checks for WebView2
+        // children *outside* the job (rather than silently ignoring escapes).
         rows.iter()
-            .filter(|p| found.contains(&p.pid))
+            .filter(|p| {
+                let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, p.pid) };
+                if raw.is_null() {
+                    // A short-lived process may disappear between Toolhelp
+                    // snapshot and query. Never infer ownership from a stale
+                    // parent PID when the kernel membership query is absent.
+                    return false;
+                }
+                let process = Handle(raw);
+                let mut in_job = 0;
+                unsafe { IsProcessInJob(process.0, job, &mut in_job) != 0 && in_job != 0 }
+            })
             .cloned()
             .collect()
     }
@@ -961,6 +1250,7 @@ mod windows {
         delivered: BTreeMap<String, u32>,
         denied: BTreeMap<String, u32>,
         receipts: Vec<Value>,
+        fault_injections: Vec<Value>,
     }
     fn encode_base64(bytes: &[u8]) -> String {
         const TABLE: &[u8; 64] =
@@ -987,9 +1277,10 @@ mod windows {
     }
     struct BrokerBridge {
         request_pipe: Handle,
-        response_pipe: Handle,
+        response_pipe: Option<Handle>,
         pending: Vec<u8>,
         last_request_id: Option<u64>,
+        fault: Option<NegativeScenario>,
         nonce: String,
         port: u16,
         root: PathBuf,
@@ -1005,6 +1296,7 @@ mod windows {
             root: &Path,
             port: u16,
             nonce: &str,
+            fault: Option<NegativeScenario>,
         ) -> Result<Self, String> {
             let registry = WorkspaceRegistry::default();
             let root = registry
@@ -1016,9 +1308,10 @@ mod windows {
                 .map_err(|e| format!("initialize TF3 browser acceptance executor: {e}"))?;
             Ok(Self {
                 request_pipe,
-                response_pipe,
+                response_pipe: Some(response_pipe),
                 pending: Vec::new(),
                 last_request_id: None,
+                fault,
                 nonce: nonce.to_owned(),
                 port,
                 root,
@@ -1077,6 +1370,124 @@ mod windows {
                 return Err("broker request outside fixed acceptance targets".into());
             }
             let kind = kind.ok_or("missing acceptance broker fixture kind")?;
+            if let Some(fault) = self.fault {
+                // A negative case must not dispatch any native TF3 request.
+                // That preserves zero independent-origin counts and proves
+                // the host never silently falls back to direct network IO.
+                if kind != "document"
+                    || self.evidence.requests_received != 1
+                    || request.request_id != 1
+                {
+                    return Err(format!(
+                        "unexpected broker request or replay in {} negative case",
+                        fault.label()
+                    ));
+                }
+                let event = match fault {
+                    NegativeScenario::BrokerCrash => {
+                        // The trusted broker disappears by closing its only
+                        // response-writer endpoint. The restricted host sees
+                        // real EOF on its inherited anonymous pipe.
+                        if self.response_pipe.take().is_none() {
+                            return Err("broker crash injection pipe already closed".into());
+                        }
+                        json!({"kind":"broker-pipe-eof", "requestId":request.request_id,
+                            "responseFramesSent":0, "nativeDispatches":0})
+                    }
+                    NegativeScenario::BrokerTimeout | NegativeScenario::MissingReply => {
+                        // Keep the pipe open but never write any response;
+                        // host-side bounded timeout must terminate this case.
+                        // Missing-reply is a distinct host CLI configuration,
+                        // not a retry of the prior timeout case.
+                        json!({"kind":if fault == NegativeScenario::MissingReply {
+                                "broker-missing-reply-withheld"
+                            } else { "broker-response-withheld" }, "requestId":request.request_id,
+                            "responseFramesSent":0, "nativeDispatches":0})
+                    }
+                    NegativeScenario::StaleId => {
+                        // The response is well formed, but its identity is
+                        // intentionally stale. The host must reject it rather
+                        // than deliver HTML, retry or perform direct egress.
+                        let forged_id = request.request_id.saturating_sub(1);
+                        let response = BrokerResponse {
+                            version: 1,
+                            session: self.nonce.clone(),
+                            request_id: forged_id,
+                            status: 403,
+                            content_type: "text/plain".into(),
+                            body_base64: String::new(),
+                            error: Some("negative-stale-request-id".into()),
+                        };
+                        let wire = serde_json::to_vec(&response)
+                            .map_err(|e| format!("encode stale-id response frame: {e}"))?;
+                        if wire.len() > BROKER_MAX_RESPONSE_FRAME_BYTES {
+                            return Err("stale-id response exceeds bounded frame".into());
+                        }
+                        let handle = self
+                            .response_pipe
+                            .as_ref()
+                            .ok_or("stale-id response pipe unexpectedly closed")?;
+                        let mut writer =
+                            ManuallyDrop::new(unsafe { File::from_raw_handle(handle.0) });
+                        writer
+                            .write_all(&(wire.len() as u32).to_le_bytes())
+                            .and_then(|_| writer.write_all(&wire))
+                            .map_err(|e| format!("write stale-id response frame: {e}"))?;
+                        self.evidence.responses_sent += 1;
+                        json!({"kind":"broker-stale-request-id", "requestId":request.request_id,
+                            "forgedRequestId":forged_id, "responseFramesSent":1, "nativeDispatches":0})
+                    }
+                    NegativeScenario::StaleSession => {
+                        // The parent speaks a fully valid v1 protocol reply:
+                        // correct nonce, matching request ID, 200 and HTML.
+                        // Only the FEATURE-ONLY host seam expects `x{nonce}`
+                        // instead and must reject the otherwise valid frame,
+                        // completing one synthetic 502 COM response. Never
+                        // weaken parent session identity or dispatch TF3.
+                        const BODY: &[u8] =
+                            b"<!doctype html><title>stale session must be rejected</title>";
+                        let response = BrokerResponse {
+                            version: 1,
+                            session: self.nonce.clone(),
+                            request_id: request.request_id,
+                            status: 200,
+                            content_type: "text/html".into(),
+                            body_base64: encode_base64(BODY),
+                            error: None,
+                        };
+                        let wire = serde_json::to_vec(&response)
+                            .map_err(|e| format!("encode valid stale-session test reply: {e}"))?;
+                        if wire.len() > BROKER_MAX_RESPONSE_FRAME_BYTES {
+                            return Err("stale-session response exceeds bounded frame".into());
+                        }
+                        let handle = self
+                            .response_pipe
+                            .as_ref()
+                            .ok_or("stale-session response pipe unexpectedly closed")?;
+                        let mut writer =
+                            ManuallyDrop::new(unsafe { File::from_raw_handle(handle.0) });
+                        writer
+                            .write_all(&(wire.len() as u32).to_le_bytes())
+                            .and_then(|_| writer.write_all(&wire))
+                            .map_err(|e| format!("write valid stale-session test frame: {e}"))?;
+                        self.evidence.responses_sent += 1;
+                        json!({"kind":"broker-valid-reply-stale-session", "requestId":request.request_id,
+                            "replySessionMatchesRequest":true, "replyStatus":200,
+                            "replyContentType":"text/html", "replyBodySha256":format!("{:x}",Sha256::digest(BODY)),
+                            "responseFramesSent":1, "nativeDispatches":0})
+                    }
+                    NegativeScenario::NoIntercept
+                    | NegativeScenario::AbnormalExit
+                    | NegativeScenario::Cancel => {
+                        return Err(format!(
+                            "{} unexpectedly forwarded a request despite its fail-closed seam",
+                            fault.label()
+                        ));
+                    }
+                };
+                self.evidence.fault_injections.push(event);
+                return Ok(());
+            }
             let native = tf_web::TfWebRequest {
                 operation: tf_web::TfWebOperation::HttpGet,
                 actor: "tf-browser-broker-acceptance".into(),
@@ -1212,8 +1623,11 @@ mod windows {
             // The restricted host reads this exact response before producing
             // the next request. These bounded frames fit the pipe without an
             // unbounded producer/consumer buffer.
-            let mut writer =
-                ManuallyDrop::new(unsafe { File::from_raw_handle(self.response_pipe.0) });
+            let response = self
+                .response_pipe
+                .as_ref()
+                .ok_or("normal broker response pipe unexpectedly closed")?;
+            let mut writer = ManuallyDrop::new(unsafe { File::from_raw_handle(response.0) });
             writer
                 .write_all(&(payload.len() as u32).to_le_bytes())
                 .and_then(|_| writer.write_all(&payload))
@@ -1344,13 +1758,23 @@ mod windows {
             let private_redirect = self.evidence.receipts.iter().any(|receipt| {
                 receipt["kind"] == "redirect-private"
                     && receipt["result"] == "denied"
-                    && receipt["tf3"]["reasonCode"] == "dns-private-or-reserved-denied"
+                    // Exact acceptance origin is checked BEFORE resolving or
+                    // connecting to the metadata redirect's different host.
+                    // Earlier immutable cases used per-hop DNS classification;
+                    // the newer stronger fixture policy rejects even earlier.
+                    && receipt["tf3"]["reasonCode"] == "fixture-redirect-origin-denied"
                     && receipt["tf3"]["redirectChain"]
                         .as_array()
                         .is_some_and(|chain| !chain.is_empty())
+                    && receipt["tf3"]["dnsEvidence"]
+                        .as_array()
+                        .is_some_and(|rows| rows.len() == 1
+                            && rows[0]["host"] == "127.0.0.1")
             });
             if !private_redirect {
-                return Err("broker private redirect lacked TF3 per-hop deny proof".into());
+                return Err(
+                    "broker private redirect lacked TF3 exact-origin pre-connect deny proof".into(),
+                );
             }
             Ok(())
         }
@@ -1373,6 +1797,7 @@ mod windows {
             port: u16,
             nonce: &str,
             brokered: bool,
+            fault: Option<NegativeScenario>,
         ) -> Result<Self, String> {
             if brokered && profile.is_none() {
                 return Err(
@@ -1400,6 +1825,7 @@ mod windows {
                     root,
                     port,
                     nonce,
+                    fault,
                 )?;
                 Some((bridge, child_response_read, child_request_write))
             } else {
@@ -1467,8 +1893,11 @@ mod windows {
             } else {
                 "--positive-control"
             };
+            let fault_arg = fault.map_or(String::new(), |fault| {
+                format!(" --broker-fault {}", fault.host_flag())
+            });
             let mut command = wide(format!(
-                "{} {mode} {} --fixture-port {port} --fixture-nonce {nonce}",
+                "{} {mode} {} --fixture-port {port} --fixture-nonce {nonce}{fault_arg}",
                 quoted(&bin_str),
                 quoted(&root_str)
             ));
@@ -1700,9 +2129,18 @@ mod windows {
         profile: Option<&Profile>,
         port: u16,
         nonce: &str,
+        fault: Option<NegativeScenario>,
     ) -> Result<(u32, Vec<(u32, String, TokenProof)>), String> {
         let isolated = profile.is_some();
-        let mut child = match Launched::spawn(bin, root, profile, port, nonce, mode == "brokered") {
+        let mut child = match Launched::spawn(
+            bin,
+            root,
+            profile,
+            port,
+            nonce,
+            mode == "brokered" || fault.is_some(),
+            fault,
+        ) {
             Ok(child) => child,
             Err(e) => {
                 preserve_json(
@@ -1727,6 +2165,7 @@ mod windows {
         let deadline = Instant::now() + Duration::from_millis(WAIT_MS as u64);
         let mut failure: Option<String> = None;
         let mut host_token_proven = false;
+        let mut abnormal_exit_injected = false;
         if let Some(profile) = profile {
             match token_proof(pid, profile.sid.0, child.job.0) {
                 Ok(p)
@@ -1754,7 +2193,7 @@ mod windows {
             }
             match snapshot() {
                 Ok(all) => {
-                    for process in descendants(pid, &all) {
+                    for process in owned_job_processes(&all, child.job.0) {
                         if process.pid != pid {
                             observed.insert(process.pid, process);
                         }
@@ -1796,6 +2235,32 @@ mod windows {
                     }
                 }
             }
+            if fault == Some(NegativeScenario::AbnormalExit)
+                && !abnormal_exit_injected
+                && host_token_proven
+                && observed.values().any(|p| p.image == "msedgewebview2.exe")
+                && String::from_utf8_lossy(&child.stderr.bytes)
+                    .contains("broker.fault.abnormal_exit.armed")
+            {
+                // Terminate ONLY this launched, proven AppContainer host PID.
+                // Require the host's *actual logged* post-WebView2 hook/arm
+                // stage before the kill. Observing an early Chromium child
+                // alone can precede controller setup, so killing on child
+                // appearance would make navigation-suppression proof race.
+                // There is no sleep/retry-for-green: this is an exact
+                // readiness condition inside the existing bounded watchdog.
+                // Its owned job still contains browser children; subsequent
+                // stop_and_verify must terminate and account for every one.
+                if unsafe { WaitForSingleObject(child.process.0, 0) } != WAIT_TIMEOUT {
+                    failure = Some("abnormal-exit target already exited before injection".into());
+                    break;
+                }
+                if unsafe { TerminateProcess(child.process.0, ABNORMAL_EXIT_CODE) } == 0 {
+                    failure = Some(err("TerminateProcess(owned abnormal-exit host)"));
+                    break;
+                }
+                abnormal_exit_injected = true;
+            }
             let webview_pids = observed
                 .values()
                 .filter(|p| p.image == "msedgewebview2.exe")
@@ -1815,7 +2280,7 @@ mod windows {
                 // Collect a little more process evidence after the host writes.
                 thread::sleep(Duration::from_millis(300));
                 if let Ok(all) = snapshot() {
-                    for process in descendants(pid, &all) {
+                    for process in owned_job_processes(&all, child.job.0) {
                         if process.pid != pid {
                             observed.insert(process.pid, process);
                         }
@@ -1933,6 +2398,9 @@ mod windows {
             &json!({
                 "case": mode,
                 "hostPid": pid,
+                "negativeFault": fault.map(NegativeScenario::label),
+                "abnormalHostTerminationInjected": abnormal_exit_injected,
+                "abnormalHostTerminationExitCode": if abnormal_exit_injected {Some(ABNORMAL_EXIT_CODE)} else {None},
                 "hostAppContainerZeroCapabilitiesJobProven": host_token_proven,
                 "hostJobAssignmentVerifiedAtSpawn": true,
                 "hostExitBeforeCleanup": exit_before_cleanup.as_ref().ok().copied().flatten(),
@@ -2052,9 +2520,259 @@ mod windows {
         result: Result<(u32, Vec<(u32, String, TokenProof)>), String>,
         counts: Counts,
         evidence: Option<Value>,
+        host_report: Option<Value>,
+        semantic_receipt: Value,
+        hidden_probe_receipt: Value,
         ipv4_listener: SocketAddr,
         ipv6_listener: SocketAddr,
         listener_cleanup: Result<(), String>,
+    }
+
+    fn broker_semantic_receipt(host: Option<&Value>, nonce: &str, port: u16) -> Value {
+        fn exact_keys(value: &Value, keys: &[&str]) -> bool {
+            value.as_object().is_some_and(|object| {
+                object.len() == keys.len() && keys.iter().all(|name| object.contains_key(*name))
+            })
+        }
+        let proof = host.map(|h| &h["brokerSemanticSnapshot"]);
+        let snapshot = proof.map(|p| &p["snapshot"]);
+        let expected_origin = format!("http://127.0.0.1:{port}");
+        let expected_url = format!("{expected_origin}/document/broker/{nonce}");
+        let expected_title = format!("clack-renderer-js-{nonce}");
+        let native_status_verified = host.is_some_and(|h| {
+            h["brokerSemanticSnapshotStatus"] == "verified"
+                && h["brokerSemanticSnapshotVerified"] == true
+                && h["brokerSemanticSnapshotError"].is_null()
+        });
+        let identity = proof.is_some_and(|p| {
+            exact_keys(
+                p,
+                &[
+                    "session",
+                    "pageGeneration",
+                    "snapshotGeneration",
+                    "observedAtMs",
+                    "origin",
+                    "sessionVerified",
+                    "redactedLabels",
+                    "snapshot",
+                ],
+            ) && p["session"] == nonce
+                && p["origin"] == expected_origin
+                && p["sessionVerified"] == true
+                && p["pageGeneration"] == 1
+                && p["snapshotGeneration"] == 1
+                && p["observedAtMs"].as_u64().is_some_and(|t| t > 0)
+                && p["redactedLabels"] == 0
+        });
+        let mut main = false;
+        let mut label = false;
+        let mut button = false;
+        let mut last_index = 0u64;
+        let mut total_name_bytes = 0usize;
+        let mut labels_and_roles_are_safe = true;
+        let elements = snapshot
+            .and_then(|s| s["elements"].as_array())
+            .map(|items| items.as_slice())
+            .unwrap_or(&[]);
+        let visits = snapshot.and_then(|s| s["visited"].as_u64()).unwrap_or(0);
+        for item in elements {
+            let role = item["role"].as_str().unwrap_or("");
+            let name = item["name"].as_str().unwrap_or("");
+            let index = item["index"].as_u64().unwrap_or(0);
+            if !exact_keys(item, &["index", "role", "name"])
+                || index <= last_index
+                || index > visits
+                || !matches!(role, "main" | "label" | "button" | "img")
+                || !matches!(
+                    name,
+                    "" | "Clack brokered WebView2" | "Probe label" | "Probe action"
+                )
+            {
+                labels_and_roles_are_safe = false;
+            }
+            last_index = index;
+            total_name_bytes = total_name_bytes.saturating_add(name.len());
+            main |= role == "main" && name == "Clack brokered WebView2";
+            label |= role == "label" && name == "Probe label";
+            button |= role == "button" && name == "Probe action";
+        }
+        let bounded = snapshot.is_some_and(|s| {
+            exact_keys(
+                s,
+                &[
+                    "version",
+                    "url",
+                    "title",
+                    "visited",
+                    "textBytes",
+                    "truncated",
+                    "elements",
+                ],
+            ) && s["version"] == 1
+                && s["url"] == expected_url
+                && s["title"] == expected_title
+                && (3..=512).contains(&visits)
+                && (3..=64).contains(&elements.len())
+                && total_name_bytes <= 32 * 1024
+                && s["textBytes"].as_u64() == Some(total_name_bytes as u64)
+                && s["truncated"] == false
+        });
+        // The host's semantic-lite snapshot intentionally excludes PASSWORD
+        // and HIDDEN INPUT values and never exports raw HTML or DOM handles.
+        // This independent runner rejects unexpected fields and names without
+        // copying any private fixture value into its own receipt or verdict.
+        let safe_fixture = main && label && button && labels_and_roles_are_safe;
+        let verified = native_status_verified && identity && bounded && safe_fixture;
+        json!({
+            "status":if verified {"PASS"} else {"UNVERIFIED_OR_FAILED"},
+            "hostNativeSnapshotVerified":native_status_verified,
+            "sourceSessionOriginPageAndGenerationVerified":identity,
+            "boundedSafeSchemaAndText":bounded,
+            "mainLandmarkAndBenignLabelButtonVerified":safe_fixture,
+            "passwordAndHiddenInputExcludedFromSemanticOutput":labels_and_roles_are_safe,
+            "visited":visits,
+            "elements":elements.len(),
+            "noRawDomOrInputValuesCopiedToThisReceipt":true,
+            "scope":"feature-only native WebView2 semantic-lite DOM summary, not a full accessibility tree",
+        })
+    }
+
+    fn hidden_probe_receipt(
+        nonce: &str,
+        ipv4: SocketAddr,
+        ipv6: SocketAddr,
+        counts: &Counts,
+        broker: Option<&Value>,
+        host: Option<&Value>,
+        listener_shutdown: bool,
+        normal_broker_succeeded: bool,
+    ) -> Value {
+        let script = broker_probe_script(nonce);
+        let expected_hash = format!("{:x}", Sha256::digest(script.as_bytes()));
+        let script_receipt_matches =
+            broker
+                .and_then(|e| e["receipts"].as_array())
+                .is_some_and(|receipts| {
+                    receipts.iter().any(|r| {
+                        r["kind"] == "script"
+                            && r["result"] == "delivered"
+                            && r["tf3"]["nativeTerminal"] == "completed"
+                            && r["tf3"]["contentSha256"] == expected_hash
+                    })
+                });
+        let link_local_redirect_denied_without_connecting = broker
+            .and_then(|e| e["receipts"].as_array())
+            .is_some_and(|receipts| {
+                receipts.iter().any(|r| {
+                    r["kind"] == "redirect-private"
+                        && r["result"] == "denied"
+                        && r["tf3"]["reasonCode"] == "dns-private-or-reserved-denied"
+                        && r["tf3"]["redirectChain"]
+                            .as_array()
+                            .is_some_and(|hops| !hops.is_empty())
+                })
+            });
+        let mut all_hidden_paths_zero = true;
+        let paths = HIDDEN_BROKER_PATHS
+            .iter()
+            .map(|(path, api, destination)| {
+                let tcp4 = counts.ipv4.paths.get(*path).copied().unwrap_or(0);
+                let tcp6 = counts.ipv6.paths.get(*path).copied().unwrap_or(0);
+                all_hidden_paths_zero &= tcp4 == 0 && tcp6 == 0;
+                json!({
+                    "route":path,
+                    "rendererApi":api,
+                    "onlyControlledDestination":destination,
+                    "javascriptInvocation":"bounded-best-effort",
+                    "individualWebView2COMInterception":"NOT_INDEPENDENTLY_ATTESTED",
+                    "ipv4ListenerHttpRequests":tcp4,
+                    "ipv6ListenerHttpRequests":tcp6,
+                    "physicalOriginObservation":if tcp4 == 0 && tcp6 == 0 {
+                        "NO_REQUEST_REACHED_OWNED_LISTENERS"
+                    } else {
+                        "UNAUTHORIZED_REQUEST_REACHED_OWNED_LISTENER"
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        // Each accepted TCP connection is accounted for regardless of the
+        // presence of a complete request line. A browser's speculative socket
+        // is not made invisible just because it sent zero HTTP bytes.
+        let v4_has_no_unparsed_connections = counts.ipv4.connections == counts.ipv4.http_requests;
+        let completed_title = host.is_some_and(|h| {
+            h["rendererDomProof"] == true && h["scriptObserved"] == true && h["success"] == true
+        });
+        let completed_local_denials = host.is_some_and(|h| {
+            h["brokerDenied"].as_u64().unwrap_or(0) >= 3
+                && h["brokerIntercepted"].as_u64().unwrap_or(0)
+                    >= h["brokerForwarded"].as_u64().unwrap_or(0) + 3
+                && h["brokerForwarded"].as_u64() == Some(9)
+                && h["brokerAnswered"].as_u64() == Some(9)
+                && h["brokerPendingCount"] == 0
+                && h["brokerErrors"] == 0
+        });
+        let no_nonfixture_family_egress = counts.ipv6.connections == 0
+            && counts.udp_datagrams == 0
+            && all_hidden_paths_zero
+            && v4_has_no_unparsed_connections;
+        let pass = normal_broker_succeeded
+            && listener_shutdown
+            && script_receipt_matches
+            && completed_title
+            && completed_local_denials
+            && no_nonfixture_family_egress;
+        json!({
+            "status":if pass {"PASS"} else {"UNVERIFIED_OR_FAILED"},
+            "mode":"feature-only-brokered-hidden-network-class-probes",
+            "scope":"fixed case-owned loopback ports only; browser script execution via native DOM title; per-API interception not directly witnessed",
+            "fixtureEndpoints":{"tcpIpv4":ipv4.to_string(),"tcpIpv6":ipv6.to_string(),
+                "udpIpv4":ipv4.to_string(),"udpIpv6":null},
+            "nativeScript":{
+                "sha256":expected_hash,
+                "bytes":script.as_bytes().len(),
+                "tf3ReceiptHashMatches":script_receipt_matches,
+                "realRendererExecutedThroughFinalTitle":completed_title,
+            },
+            "browserComAggregate":{
+                "atLeastThreeLocalDeniedRequestsCompleted":completed_local_denials,
+                "intercepted":host.and_then(|h|h["brokerIntercepted"].as_u64()),
+                "forwarded":host.and_then(|h|h["brokerForwarded"].as_u64()),
+                "locallyDenied":host.and_then(|h|h["brokerDenied"].as_u64()),
+                "pendingDeferrals":host.and_then(|h|h["brokerPendingCount"].as_u64()),
+                "individualProbeUrlsOrSourceKinds":"NOT_REPORTED_BY_HOST",
+            },
+            "physicalListener":{
+                "ipv4":counts.ipv4,
+                "ipv6":counts.ipv6,
+                "udpIpv4Datagrams":counts.udp_datagrams,
+                "udpIpv6":"NOT_INSTRUMENTED",
+                "hiddenPathsAllZero":all_hidden_paths_zero,
+                "unparsedIpv4TcpConnectionsZero":v4_has_no_unparsed_connections,
+                "ipv6TcpZero":counts.ipv6.connections == 0,
+                "udpIpv4Zero":counts.udp_datagrams == 0,
+                "listenerShutdown":listener_shutdown,
+            },
+            "httpSourceKinds":paths,
+            "stun":{
+                "uri":"stun:127.0.0.1:<case-owned-port>",
+                "api":"RTCPeerConnection controlled ICE/STUN with close by 900ms",
+                "udpIpv4Datagrams":counts.udp_datagrams,
+                "note":"Browser may not issue ICE/STUN packets; zero datagrams is not proof ICE packet was attempted",
+            },
+            "unownedAddressClassesNotProbed":[
+                {"class":"RFC1918-private-literal",
+                 "status":"NOT_EXECUTED_NO_CASE_OWNED_DESTINATION",
+                 "reason":"No owned TCP/UDP listener is bound to a private RFC1918 interface; routing there would target unapproved devices"},
+                {"class":"IPv4-link-local-literal",
+                 "status":"NOT_EXECUTED_NO_CASE_OWNED_DESTINATION",
+                 "reason":"No owned TCP/UDP listener is bound to a link-local address; existing redirect-private uses TF3 per-hop denial before any link-local connection",
+                 "existingTf3PrivateRedirectDeniedBeforeConnect":link_local_redirect_denied_without_connecting},
+            ],
+            "noExternalOrUnownedDestinationsAdded":true,
+            "noParentTf3FixturePolicyChange":true,
+            "note":"All loopback probes use new hidden paths prohibited by broker_owned_url; native TF3 still fetches only its original 9 fixed resource requests. An API being called does NOT prove WebView2 emitted an HTTP request; independent listeners establish only that none reached these specific destinations.",
+        })
     }
 
     fn run_broker_case(
@@ -2069,6 +2787,27 @@ mod windows {
         // pipe handles are fresh and owned exclusively by this new case.
         let root = owned.join("brokered");
         fs::create_dir(&root).map_err(|e| format!("create brokered case: {e}"))?;
+        // Keep the 3KiB anonymous-pipe response contract intact. Estimate the
+        // complete serialized frame, not merely the JS payload; request IDs
+        // remain <=20 under the existing bounded broker protocol.
+        let script = broker_probe_script(nonce);
+        let projected_frame = serde_json::to_vec(&BrokerResponse {
+            version: 1,
+            session: nonce.into(),
+            request_id: 20,
+            status: 200,
+            content_type: "application/javascript".into(),
+            body_base64: encode_base64(script.as_bytes()),
+            error: None,
+        })
+        .map_err(|e| format!("serialize fixed hidden-probe frame for preflight: {e}"))?;
+        if projected_frame.len() > BROKER_MAX_RESPONSE_FRAME_BYTES {
+            return Err(format!(
+                "fixed hidden browser script response would exceed bounded {} byte pipe frame ({} bytes)",
+                BROKER_MAX_RESPONSE_FRAME_BYTES,
+                projected_frame.len()
+            ));
+        }
         fs::create_dir(root.join("webview"))
             .map_err(|e| format!("create brokered owned UDF root: {e}"))?;
         let bin = root.join("clack-browser-host.exe");
@@ -2087,6 +2826,7 @@ mod windows {
             Some(profile),
             ipv4_listener.port(),
             nonce,
+            None,
         );
         // The case diagnosis was written immutably by run_case, after job
         // teardown. Require the exact same bounded TF3 receipts in the final
@@ -2095,15 +2835,403 @@ mod windows {
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
             .and_then(|value| value.get("broker").cloned());
+        let host_report = fs::read(root.join("browser-host-report.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
         let listener_cleanup = destination.shutdown();
         let counts = destination.counts("brokered");
+        let semantic_receipt =
+            broker_semantic_receipt(host_report.as_ref(), nonce, ipv4_listener.port());
+        preserve_json(
+            &root.join("semantic-snapshot-receipt.json"),
+            &semantic_receipt,
+        )
+        .map_err(|e| format!("STOP: preserve bounded native semantic receipt: {e}"))?;
+        let hidden_probe_receipt = hidden_probe_receipt(
+            nonce,
+            ipv4_listener,
+            ipv6_listener,
+            &counts,
+            evidence.as_ref(),
+            host_report.as_ref(),
+            listener_cleanup.is_ok(),
+            result.is_ok(),
+        );
+        // Another create-new immutable record alongside, never replacing
+        // browser-host-report, native TF3 receipts or prior physical cases.
+        preserve_json(
+            &root.join("hidden-network-probe-receipt.json"),
+            &hidden_probe_receipt,
+        )
+        .map_err(|e| format!("STOP: preserve owned hidden-probe receipt: {e}"))?;
         Ok(BrokerCaseOutcome {
             result,
             counts,
             evidence,
+            host_report,
+            semantic_receipt,
+            hidden_probe_receipt,
             ipv4_listener,
             ipv6_listener,
             listener_cleanup,
+        })
+    }
+
+    struct NegativeCaseOutcome {
+        fault: NegativeScenario,
+        passed: bool,
+        unsafe_cleanup: bool,
+        evidence: Value,
+    }
+
+    fn run_negative_case(
+        owned: &Path,
+        binary: &[u8],
+        profile: &Profile,
+        sid: &str,
+        nonce: &str,
+        fault: NegativeScenario,
+    ) -> Result<NegativeCaseOutcome, String> {
+        let label = fault.label();
+        let root = owned.join(format!("negative-{label}"));
+        fs::create_dir(&root).map_err(|e| format!("create owned negative {label} root: {e}"))?;
+        fs::create_dir(root.join("webview"))
+            .map_err(|e| format!("create owned negative {label} UDF: {e}"))?;
+        let bin = root.join("clack-browser-host.exe");
+        fs::write(&bin, binary).map_err(|e| format!("copy negative {label} host: {e}"))?;
+        grant(&root, sid, true)?;
+        grant(&bin, sid, false)?;
+        grant(&root.join("webview"), sid, true)?;
+
+        // A new independently bound IPv4/IPv6 TCP + IPv4 UDP receiver for
+        // EVERY negative. The broker is deliberately not allowed to dispatch
+        // even an accepted fixture GET, so any accepted socket is a failure.
+        let mut destination = Destination::new(nonce)?;
+        destination.set_phase(label)?;
+        let listener_v4 = destination.addr;
+        let listener_v6 = destination.ipv6_addr;
+        let result = run_case(
+            &bin,
+            &root,
+            label,
+            Some(profile),
+            listener_v4.port(),
+            nonce,
+            Some(fault),
+        );
+        let shutdown = destination.shutdown();
+        let counts = destination.counts(label);
+        let diagnosis = fs::read(root.join("acceptance-diagnosis.json"))
+            .ok()
+            .and_then(|contents| serde_json::from_slice::<Value>(&contents).ok());
+        let host_report = fs::read(root.join("browser-host-report.json"))
+            .ok()
+            .and_then(|contents| serde_json::from_slice::<Value>(&contents).ok());
+
+        let verified = (|| {
+            if result.is_ok() {
+                return Err(
+                    "faulted host unexpectedly completed its normal broker success gate".to_owned(),
+                );
+            }
+            if result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.starts_with("STOP:"))
+            {
+                return Err("negative process job cleanup reported STOP".to_owned());
+            }
+            let d = diagnosis
+                .as_ref()
+                .ok_or("negative host diagnosis not preserved")?;
+            if d["hostAppContainerZeroCapabilitiesJobProven"] != true
+                || d["hostJobAssignmentVerifiedAtSpawn"] != true
+                || d["jobCleanupVerifiedEmpty"] != true
+                || d["negativeFault"] != label
+            {
+                return Err(
+                    "negative host SID/zero-capability/job/cleanup/fault proof missing".into(),
+                );
+            }
+            if shutdown.is_err() {
+                return Err("negative destination listener cleanup not verified".into());
+            }
+            if counts.tcp_connections != 0
+                || counts.ipv4.connections != 0
+                || counts.ipv6.connections != 0
+                || counts.udp_datagrams != 0
+            {
+                return Err(
+                    "negative case reached an independent IPv4/IPv6 TCP or IPv4 UDP listener"
+                        .into(),
+                );
+            }
+            // Any WebView2 process we actually observed must remain in the
+            // same owned job and unique zero-capability AppContainer. A
+            // teardown race may prevent observing all process roles; never
+            // invent missing token proofs or imply a renderer was exercised.
+            let proofs = d["webviewTokenProofs"]
+                .as_object()
+                .ok_or("negative WebView2 token proof map absent")?;
+            let roles = d["webviewRoles"]
+                .as_object()
+                .ok_or("negative WebView2 role map absent")?;
+            for pid in roles.keys() {
+                let proof = proofs
+                    .get(pid)
+                    .ok_or("negative observed browser role lacks token proof")?;
+                if proof["appcontainer"] != true
+                    || proof["sid_matches"] != true
+                    || proof["capability_count"] != 0
+                    || proof["in_owned_job"] != true
+                {
+                    return Err(
+                        "negative WebView2 role escaped AppContainer SID/zero capabilities/job"
+                            .into(),
+                    );
+                }
+            }
+            for proof in proofs.values() {
+                if proof["appcontainer"] != true
+                    || proof["sid_matches"] != true
+                    || proof["capability_count"] != 0
+                    || proof["in_owned_job"] != true
+                {
+                    return Err("negative observed WebView2 process had unsafe token/job".into());
+                }
+            }
+            let broker = &d["broker"];
+            let requests = broker["requests_received"].as_u64().unwrap_or(0);
+            let responses = broker["responses_sent"].as_u64().unwrap_or(0);
+            let injections = broker["fault_injections"]
+                .as_array()
+                .map(|items| items.as_slice())
+                .unwrap_or(&[]);
+            if broker["receipts"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+                || broker["delivered"]
+                    .as_object()
+                    .is_some_and(|rows| !rows.is_empty())
+            {
+                return Err("negative case unexpectedly dispatched a TF3 network request".into());
+            }
+            let forwarded = host_report
+                .as_ref()
+                .and_then(|h| h["brokerForwarded"].as_u64())
+                .unwrap_or(0);
+            let intercepted = host_report
+                .as_ref()
+                .and_then(|h| h["brokerIntercepted"].as_u64())
+                .unwrap_or(0);
+            if forwarded > 1 || intercepted > 1 || requests > 1 || responses > 1 {
+                return Err("negative broker performed a silent retry or multiple requests".into());
+            }
+            match fault {
+                NegativeScenario::BrokerCrash
+                | NegativeScenario::BrokerTimeout
+                | NegativeScenario::StaleId
+                | NegativeScenario::StaleSession
+                | NegativeScenario::MissingReply => {
+                    let expected_kind = match fault {
+                        NegativeScenario::BrokerCrash => "broker-pipe-eof",
+                        NegativeScenario::BrokerTimeout => "broker-response-withheld",
+                        NegativeScenario::StaleId => "broker-stale-request-id",
+                        NegativeScenario::StaleSession => "broker-valid-reply-stale-session",
+                        NegativeScenario::MissingReply => "broker-missing-reply-withheld",
+                        _ => unreachable!(),
+                    };
+                    let reply_sent = matches!(
+                        fault,
+                        NegativeScenario::StaleId | NegativeScenario::StaleSession
+                    );
+                    if requests != 1
+                        || forwarded != 1
+                        || intercepted != 1
+                        || injections.len() != 1
+                        || injections[0]["kind"] != expected_kind
+                        || injections[0]["requestId"] != 1
+                        || responses != u64::from(reply_sent)
+                        || injections[0]["responseFramesSent"] != u64::from(reply_sent)
+                        || (fault == NegativeScenario::StaleId
+                            && injections[0]["forgedRequestId"] != 0)
+                        || (fault == NegativeScenario::StaleSession
+                            && (injections[0]["replySessionMatchesRequest"] != true
+                                || injections[0]["replyStatus"] != 200
+                                || injections[0]["replyContentType"] != "text/html"
+                                || injections[0]["responseFramesSent"] != 1))
+                        || injections[0]["nativeDispatches"] != 0
+                    {
+                        return Err(
+                            "negative broker request/EOF/timeout/stale-ID/stale-session/missing-reply injection proof missing"
+                                .into(),
+                        );
+                    }
+                    let report = host_report
+                        .as_ref()
+                        .ok_or("faulted WebView2 host report absent")?;
+                    let timed_out = matches!(
+                        fault,
+                        NegativeScenario::BrokerTimeout | NegativeScenario::MissingReply
+                    );
+                    let expected_status = if timed_out { 504 } else { 502 };
+                    if report["success"] != false
+                        || report["rendererDomProof"] != false
+                        || report["brokerHookReady"] != true
+                        || report["brokerAnswered"].as_u64() != Some(1)
+                        || report["brokerErrors"].as_u64().unwrap_or(0) == 0
+                        || report["brokerFaultMode"] != fault.host_flag()
+                        || report["brokerFaultTriggered"] != true
+                        || report["brokerPendingCount"] != 0
+                        || report["brokerLastSyntheticStatus"] != expected_status
+                        || report["brokerCompleted5xx"].as_u64().unwrap_or(0) == 0
+                    {
+                        return Err(
+                            "faulted host did not deliver exactly one synthetic denial with fault marker before document delivery".into()
+                        );
+                    }
+                    if timed_out
+                        && (report["brokerTimeouts"].as_u64().unwrap_or(0) == 0
+                            || report["brokerSynthetic504"].as_u64().unwrap_or(0) == 0)
+                    {
+                        return Err(
+                            "broker timeout/missing-reply lacked bounded pipe timeout and completed synthetic 504 evidence".into()
+                        );
+                    }
+                    if !timed_out
+                        && (report["brokerTimeouts"].as_u64().unwrap_or(0) != 0
+                            || report["brokerSynthetic502"].as_u64().unwrap_or(0) == 0)
+                    {
+                        return Err("broker non-timeout fault unexpectedly timed out".into());
+                    }
+                }
+                NegativeScenario::Cancel => {
+                    // COM cancellation is local to the restricted host. A
+                    // request is intercepted but never forwarded to the
+                    // parent, and exactly one completed synthetic 503 must
+                    // account for the pending deferral.
+                    if requests != 0
+                        || responses != 0
+                        || !injections.is_empty()
+                        || forwarded != 0
+                        || intercepted != 1
+                    {
+                        return Err("cancel seam forwarded a request, retried, or failed to intercept exactly once".into());
+                    }
+                    let report = host_report
+                        .as_ref()
+                        .ok_or("cancelled WebView2 host report absent")?;
+                    if report["success"] != false
+                        || report["rendererDomProof"] != false
+                        || report["brokerHookReady"] != true
+                        || report["brokerFaultMode"] != fault.host_flag()
+                        || report["brokerFaultTriggered"] != true
+                        || report["brokerCancelled"].as_u64() != Some(1)
+                        || report["brokerDenied"].as_u64() != Some(1)
+                        || report["brokerAnswered"].as_u64() != Some(1)
+                        || report["brokerPendingCount"] != 0
+                        || report["brokerLastSyntheticStatus"] != 503
+                        || report["brokerSynthetic503"].as_u64() != Some(1)
+                        || report["brokerCompleted5xx"].as_u64() != Some(1)
+                        || report["brokerTimeouts"].as_u64().unwrap_or(0) != 0
+                        || report["brokerErrors"].as_u64().unwrap_or(0) != 0
+                    {
+                        return Err("cancel seam lacks completed COM synthetic 503 and zero-pending/no-forward proof".into());
+                    }
+                }
+                NegativeScenario::NoIntercept => {
+                    // Worker-54 deliberately skips BOTH filter and navigation.
+                    // This is a safe-configuration denial, not proof of a
+                    // browser navigating with an accidentally missing hook.
+                    if requests != 0 || responses != 0 || !injections.is_empty() {
+                        return Err(
+                            "safe no-intercept configuration unexpectedly used broker pipes".into(),
+                        );
+                    }
+                    let report = host_report
+                        .as_ref()
+                        .ok_or("no-intercept host report absent")?;
+                    if report["success"] != false
+                        || report["brokerHookReady"] != false
+                        || report["brokerIntercepted"].as_u64().unwrap_or(0) != 0
+                        || report["brokerForwarded"].as_u64().unwrap_or(0) != 0
+                        || report["brokerFaultMode"] != fault.host_flag()
+                        || report["brokerFaultTriggered"] != true
+                        || report["rendererDomProof"] != false
+                        || report["brokerPendingCount"] != 0
+                        || !report["brokerLastSyntheticStatus"].is_null()
+                    {
+                        return Err("no-intercept safe gate did not explicitly suppress interception/navigation".into());
+                    }
+                }
+                NegativeScenario::AbnormalExit => {
+                    if d["abnormalHostTerminationInjected"] != true
+                        || d["hostExitBeforeCleanup"] != ABNORMAL_EXIT_CODE
+                        || requests != 0
+                        || responses != 0
+                        || !injections.is_empty()
+                    {
+                        return Err(
+                            "abnormal host termination or missing retry proof not established"
+                                .into(),
+                        );
+                    }
+                    if !d["observedDescendants"]
+                        .as_array()
+                        .is_some_and(|rows| rows.iter().any(|r| r["image"] == "msedgewebview2.exe"))
+                    {
+                        return Err("abnormal host termination was not observed after real WebView2 startup".into());
+                    }
+                    if !d["stderr"]
+                        .as_str()
+                        .is_some_and(|trace| trace.contains("broker.fault.abnormal_exit.armed"))
+                    {
+                        return Err(
+                            "abnormal host was not demonstrably armed with navigation suppressed"
+                                .into(),
+                        );
+                    }
+                }
+            }
+            Ok::<(), String>(())
+        })();
+        let unsafe_cleanup = diagnosis
+            .as_ref()
+            .is_none_or(|d| d["jobCleanupVerifiedEmpty"] != true)
+            || result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.starts_with("STOP:"));
+        let receipt = json!({
+            "case":label,
+            "injectedFault":fault,
+            "status":if verified.is_ok() {"PASS"} else {"FAILED"},
+            "classification":if fault == NegativeScenario::NoIntercept {
+                "simulated-safe-configuration-deny-no-navigation"
+            } else {"physical-fault-injection"},
+            "failure":verified.as_ref().err(),
+            "normalCaseResult":case_result_json(Some(&result)),
+            "listenerEndpoints":{"tcpIpv4":listener_v4.to_string(),"tcpIpv6":listener_v6.to_string(),
+                "udpIpv4":listener_v4.to_string(),"udpIpv6":null},
+            "independentDestination":counts,
+            "listenerShutdown":shutdown.is_ok(),
+            "listenerShutdownError":shutdown.as_ref().err(),
+            "hostDiagnosis":diagnosis,
+            "hostReport":host_report,
+            "observedNoDuplicateBrokerFrames":diagnosis.as_ref().is_some_and(|d|
+                d["broker"]["requests_received"].as_u64().is_some_and(|count|count <= 1))
+                && host_report.as_ref().is_none_or(|h|
+                    h["brokerForwarded"].as_u64().is_some_and(|count|count <= 1)),
+            "networkEvidenceScope":"independent case-owned loopback IPv4/IPv6 TCP and IPv4 UDP listeners only; UDPv6 not measured; no global OS egress attestation",
+            "ownedJobCleanupVerified":!unsafe_cleanup,
+        });
+        preserve_json(&root.join("negative-acceptance-receipt.json"), &receipt)
+            .map_err(|e| format!("STOP: retain immutable {label} negative receipt: {e}"))?;
+        Ok(NegativeCaseOutcome {
+            fault,
+            passed: verified.is_ok(),
+            unsafe_cleanup,
+            evidence: receipt,
         })
     }
 
@@ -2171,6 +3299,7 @@ mod windows {
             None,
             destination.addr.port(),
             &nonce,
+            None,
         );
         // Drain the listener after the real host job has exited, before
         // assigning requests to the next case's phase.
@@ -2195,6 +3324,7 @@ mod windows {
                 Some(&profile),
                 destination.addr.port(),
                 &nonce,
+                None,
             ))
         } else {
             None
@@ -2243,6 +3373,60 @@ mod windows {
         } else {
             None
         };
+        // Only proceed after the separate no-egress/real-renderer gate and a
+        // successful normal broker. Every fault gets its own owned child, job,
+        // anonymous pipes, UDF, v4/v6 TCP and v4 UDP listeners and immutable
+        // receipt. Never replay an earlier case or weaken its observations.
+        let mut negative_cases = Vec::<Result<NegativeCaseOutcome, String>>::new();
+        if isolation_verdict.is_ok()
+            && destination_cleanup.is_ok()
+            && broker_stage.as_ref().is_some_and(|stage| {
+                stage.as_ref().is_ok_and(|broker| {
+                    broker.result.is_ok()
+                        && broker.listener_cleanup.is_ok()
+                        && broker.counts.ipv4.connections > 0
+                        && broker.counts.ipv6.connections == 0
+                        && broker.counts.udp_datagrams == 0
+                })
+            })
+        {
+            for fault in NegativeScenario::ALL {
+                let outcome = run_negative_case(&owned, &bytes, &profile, &sid, &nonce, fault);
+                if let Err(reason) = &outcome {
+                    // Even pre-spawn failures should retain a create-new case
+                    // receipt when their case-owned directory was created.
+                    // Never overwrite an earlier receipt or remove evidence.
+                    let root = owned.join(format!("negative-{}", fault.label()));
+                    let receipt = root.join("negative-acceptance-receipt.json");
+                    if root.is_dir() && !receipt.exists() {
+                        let saved = preserve_json(
+                            &receipt,
+                            &json!({
+                                "case":fault.label(),
+                                "status":"FAILED",
+                                "stage":"preflight-or-evidence",
+                                "failure":reason,
+                                "ownedJobCleanupVerified":false,
+                                "independentDestination":"UNVERIFIED",
+                            }),
+                        );
+                        if let Err(error) = saved {
+                            eprintln!(
+                                "STOP: negative {} preflight receipt preservation failed: {error}",
+                                fault.label()
+                            );
+                        }
+                    }
+                }
+                let unsafe_to_continue = outcome.as_ref().map_or(true, |case| case.unsafe_cleanup);
+                negative_cases.push(outcome);
+                if unsafe_to_continue {
+                    // Retain the profile and all failure evidence rather than
+                    // risk spawning another child into an uncertain job state.
+                    break;
+                }
+            }
+        }
         // Cleanup is attempted only after each child has been *verified* to
         // have zero active job processes. Abort profile deletion otherwise.
         let job_cleanup_uncertain = control_result
@@ -2257,7 +3441,10 @@ mod windows {
                     .as_ref()
                     .is_err_and(|e| e.starts_with("STOP:")),
                 Err(e) => e.starts_with("STOP:"),
-            });
+            })
+            || negative_cases
+                .iter()
+                .any(|case| case.as_ref().map_or(true, |case| case.unsafe_cleanup));
         let profile_cleanup = if job_cleanup_uncertain {
             Err("process group cleanup uncertain; AppContainer profile retained".to_owned())
         } else {
@@ -2281,6 +3468,15 @@ mod windows {
                 return Err(format!(
                     "STOP: brokered destination listener cleanup not verified: {e}"
                 ));
+            }
+            if broker.hidden_probe_receipt["status"] != "PASS" {
+                return Err(format!(
+                    "brokered hidden network-class probes lack real renderer/script/COM/owned listener zero-egress proof: {}",
+                    broker.hidden_probe_receipt["status"]
+                ));
+            }
+            if broker.semantic_receipt["status"] != "PASS" {
+                return Err("brokered native semantic-lite snapshot lacked scoped source/session/generation, bounded safe roles, or controlled main/label/button proof".into());
             }
             // Only the trusted parent TF3 executor may connect to its exact
             // IPv4 loopback fixture. The restricted brokered renderer's DOM,
@@ -2317,11 +3513,44 @@ mod windows {
                     "TF3 brokered /deny reached origin despite public-policy rejection".into(),
                 );
             }
+            if broker
+                .counts
+                .ipv4
+                .paths
+                .get("unsupported")
+                .copied()
+                .unwrap_or(0)
+                != 0
+            {
+                return Err(
+                    "unrecognized broker resource reached origin despite COM local-deny".into(),
+                );
+            }
             let receipts = broker
                 .evidence
                 .as_ref()
                 .and_then(|evidence| evidence["receipts"].as_array())
                 .ok_or("broker TF3 case diagnosis lacks immutable native receipt trace")?;
+            let host = broker
+                .host_report
+                .as_ref()
+                .ok_or("normal broker host report unavailable for unrecognized-resource test")?;
+            if receipts.len() != 9
+                || broker
+                    .evidence
+                    .as_ref()
+                    .and_then(|e| e["requests_received"].as_u64())
+                    != Some(9)
+                || host["brokerDenied"].as_u64().unwrap_or(0) == 0
+                || host["brokerIntercepted"].as_u64().unwrap_or(0)
+                    <= host["brokerForwarded"].as_u64().unwrap_or(0)
+                || host["brokerPendingCount"] != 0
+                || host["brokerAnswered"].as_u64() != Some(9)
+                || host["brokerCompleted2xx"].as_u64().unwrap_or(0) < 7
+                || host["brokerCompleted4xx"].as_u64().unwrap_or(0) == 0
+            {
+                return Err("broker missing completed COM deferral/resource proof, independent COM-local 403 unknown-resource denial, or forwarded unknown request to TF3".into());
+            }
             for (path, count) in &broker.counts.ipv4.paths {
                 let dispatched = receipts
                     .iter()
@@ -2345,6 +3574,19 @@ mod windows {
                     ));
                 }
             }
+            if negative_cases.len() != NegativeScenario::ALL.len() {
+                return Err("physical deterministic negative suite was not fully executed".into());
+            }
+            for (index, case) in negative_cases.iter().enumerate() {
+                let case = case.as_ref().map_err(Clone::clone)?;
+                if case.fault != NegativeScenario::ALL[index] || !case.passed {
+                    return Err(format!(
+                        "physical negative {} failed required fault/zero-egress/cleanup proof: {}",
+                        case.fault.label(),
+                        case.evidence["failure"].as_str().unwrap_or("unverified")
+                    ));
+                }
+            }
             Ok::<_, String>((control_result, isolated_result, broker_result))
         })();
         let fixture_cleanup = if profile_cleanup.is_ok() {
@@ -2357,6 +3599,15 @@ mod windows {
                     } else {
                         Ok(())
                     }
+                })
+                .and_then(|_| {
+                    for fault in NegativeScenario::ALL {
+                        let root = owned.join(format!("negative-{}", fault.label()));
+                        if root.exists() {
+                            clean_owned_udf(&root)?;
+                        }
+                    }
+                    Ok(())
                 })
         } else {
             Err("profile/job cleanup uncertain; owned UDFs retained".into())
@@ -2403,6 +3654,10 @@ mod windows {
                         "case":case_result_json(Some(&broker.result)),
                         "destination":broker.counts,
                         "tf3Evidence":broker.evidence,
+                        "hostBrokerDenied":broker.host_report.as_ref().and_then(|h|h["brokerDenied"].as_u64()),
+                        "unknownResourceOriginZero":broker.counts.ipv4.paths.get("unsupported").copied().unwrap_or(0) == 0,
+                        "hiddenNetworkProbes":broker.hidden_probe_receipt,
+                        "nativeSemanticSnapshot":broker.semantic_receipt,
                         "tcpIpv4":broker.ipv4_listener.to_string(),
                         "tcpIpv6":broker.ipv6_listener.to_string(),
                         "destinationShutdown":broker.listener_cleanup.is_ok(),
@@ -2410,6 +3665,16 @@ mod windows {
                     }),
                     Some(Err(e)) => json!({"case":{"status":"FAILED","reason":e}}),
                     None => json!({"case":{"status":"NOT_RUN","reason":"independent no-egress isolation gate not established"}}),
+                },
+                "physicalNegativeSuite": {
+                    "status":if negative_cases.len() == NegativeScenario::ALL.len() && negative_cases.iter().all(|case| case.as_ref().is_ok_and(|case| case.passed)) {"PASS"} else {"NOT_PROVEN"},
+                    "scope":"eight-feature-only-physical-faults including cancel (completed COM 503), stale-session (valid parent frame rejected with completed COM 502), and missing-reply (bounded completed COM 504); UDPv6 not measured",
+                    "expectedCount":NegativeScenario::ALL.len(),
+                    "performedCount":negative_cases.len(),
+                    "cases": negative_cases.iter().map(|case|match case {
+                        Ok(case)=>case.evidence.clone(),
+                        Err(reason)=>json!({"status":"FAILED","reason":reason}),
+                    }).collect::<Vec<_>>(),
                 },
                 "jobProcessesVerifiedGone": !job_cleanup_uncertain,
                 "profileDeleted": profile_cleanup.is_ok(),
@@ -2427,7 +3692,7 @@ mod windows {
         }
         let (control_result, isolated_result, broker_result) = verdict?;
         println!(
-            "TF_BROWSER_ISOLATION_AND_BROKER_PASS (independent IPv4/IPv6 TCP and IPv4 UDP zero-egress, then TF3 brokered binary resources and native denials): independent IPv4 {} / IPv6 {}; control {good:?}; isolated {denied:?}; control_host={}; isolated_host={}; brokered_host={}; child_tokens={:?}; unique_owned_UDF_cleaned=true; retained evidence={}",
+            "TF_BROWSER_ISOLATION_BROKER_AND_NEGATIVE_PASS (independent IPv4/IPv6 TCP and IPv4 UDP zero-egress, TF3 brokered binary resources/native denials, and eight deterministic fault cases): independent IPv4 {} / IPv6 {}; control {good:?}; isolated {denied:?}; control_host={}; isolated_host={}; brokered_host={}; child_tokens={:?}; unique_owned_UDF_cleaned=true; retained evidence={}",
             destination.addr, destination.ipv6_addr,
             control_result.0, isolated_result.0, broker_result.0, isolated_result.1, owned.display(),
         );
