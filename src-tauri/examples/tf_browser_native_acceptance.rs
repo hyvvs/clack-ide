@@ -21,6 +21,8 @@ fn request(root: &str, operation: TfBrowserOperation) -> TfBrowserRequest {
         session_id: "acceptance-session-1".to_owned(),
         workspace_root: root.to_owned(),
         browser_session_id: None,
+        page_id: None,
+        page_generation: None,
         url: None,
         snapshot_id: None,
         element_id: None,
