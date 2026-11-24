@@ -9,7 +9,7 @@ export type BrowserSessionSummary = {
   snapshotId:string|null;
   historyLength:number;
   expiresInSecs:number;
-  engine:"inert_native_text";
+  engine:"inert_native_text"|"confined_webview2_read_only_unaccepted";
   isolation:string;
 };
 export type BrowserRuntimeStatus = {
@@ -26,19 +26,26 @@ const bounded=(value:unknown,max:number):value is string=>
 function summary(raw:unknown):BrowserSessionSummary|null {
   if(!raw || typeof raw!=="object")return null;
   const v=raw as Record<string,unknown>;
+  const native=v.engine==="confined_webview2_read_only_unaccepted";
+  // Native sessions deliberately withhold document URLs/snapshot refs from
+  // the general inert status projection. Empty fields are not an error only
+  // for that exact authenticated confined engine.
+  const currentUrl=native && v.currentUrl===""?null:v.currentUrl;
+  const snapshotId=native && v.snapshotId===""?null:v.snapshotId;
   if(!bounded(v.browserSessionId,128) ||
-    !(v.currentUrl===null || bounded(v.currentUrl,2048)) ||
-    !(v.snapshotId===null || bounded(v.snapshotId,128)) ||
+    !(currentUrl===null || bounded(currentUrl,2048)) ||
+    !(snapshotId===null || bounded(snapshotId,128)) ||
     !Number.isSafeInteger(v.historyLength) || Number(v.historyLength)<0 ||
     !Number.isSafeInteger(v.expiresInSecs) || Number(v.expiresInSecs)<0 ||
-    v.engine!=="inert_native_text" || !bounded(v.isolation,1024))return null;
+    !["inert_native_text","confined_webview2_read_only_unaccepted"].includes(String(v.engine)) ||
+    !bounded(v.isolation,1024))return null;
   return {
     browserSessionId:v.browserSessionId,
-    currentUrl:v.currentUrl as string|null,
-    snapshotId:v.snapshotId as string|null,
+    currentUrl:currentUrl as string|null,
+    snapshotId:snapshotId as string|null,
     historyLength:v.historyLength as number,
     expiresInSecs:v.expiresInSecs as number,
-    engine:v.engine,
+    engine:v.engine as BrowserSessionSummary["engine"],
     isolation:v.isolation,
   };
 }

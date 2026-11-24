@@ -50,4 +50,25 @@ describe("TF4 native browser capability status and actor isolation",()=>{
     expect(await refreshTfBrowserRuntimeStatus(...owner)).toMatchObject({
       available:false,reason:"native-unavailable"});
   });
+  it("shows only exact confined native sessions with withheld URL and snapshot; rejects fake engines",async()=>{
+    invoke.mockResolvedValueOnce({available:true,engine:"inert_native_text",
+      isolation:"native-pinned",sessions:[
+        {browserSessionId:"c".repeat(48),currentUrl:"",snapshotId:"",
+          historyLength:0,expiresInSecs:500,
+          engine:"confined_webview2_read_only_unaccepted",isolation:"owned-job"},
+        {browserSessionId:"d".repeat(48),currentUrl:"",snapshotId:"",
+          historyLength:0,expiresInSecs:500,
+          engine:"inert_native_text",isolation:"not-native"},
+        {browserSessionId:"e".repeat(48),currentUrl:"https://secret.example/path",
+          snapshotId:"",historyLength:0,expiresInSecs:500,
+          engine:"unrestricted_webview",isolation:"none"},
+      ]});
+    const state=await refreshTfBrowserRuntimeStatus(...owner);
+    expect(state.sessions).toEqual([{
+      browserSessionId:"c".repeat(48),currentUrl:null,snapshotId:null,
+      historyLength:0,expiresInSecs:500,
+      engine:"confined_webview2_read_only_unaccepted",isolation:"owned-job",
+    }]);
+    expect(JSON.stringify(state)).not.toContain("secret.example");
+  });
 });

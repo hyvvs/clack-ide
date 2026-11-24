@@ -24,6 +24,7 @@ import { chatConnectionSummary } from "@/modules/ai/lib/chatConnectionSummary";
 import { capabilityGroups } from "@/modules/ai/lib/toolCapabilities";
 import { refreshTfWebSearchProviderStatus, type WebSearchProviderStatus } from "@/modules/ai/lib/webSearchAdapters";
 import { refreshTfBrowserRuntimeStatus, type BrowserRuntimeStatus } from "@/modules/ai/lib/browserRuntimeStatus";
+import { NativeBrowserOperatorPanel } from "@/modules/ai/components/NativeBrowserOperatorPanel";
 
 function compactBrowserUrl(raw:string|null):string {
   if(!raw)return "No page loaded";
@@ -336,6 +337,9 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                 <p className="text-[11px] text-muted-foreground" role="status">
                   Browser: {browserEngineStatus(browser)}
                 </p>
+                {browser?.sessions.some(page=>page.engine==="confined_webview2_read_only_unaccepted") ? (
+                  <p className="text-[11px] text-muted-foreground">Confined native WebView2 session present; model-side computer use remains disabled.</p>
+                ) : null}
                 <p className="text-[11px] text-muted-foreground">
                   Bounded public-page text and snapshot-scoped links only.
                   Model DOM interaction, JavaScript and screenshots: <strong>Not enabled</strong>.
@@ -390,12 +394,12 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                       Active session {page.browserSessionId.slice(0,12)} · idle expiry in {page.expiresInSecs}s
                     </p>
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[10px] text-muted-foreground">Engine: inert native text</span>
-                      <Button size="sm" variant="outline" className="h-6 text-[11px]"
+                      <span className="text-[10px] text-muted-foreground">Engine: {page.engine === "inert_native_text" ? "inert native text" : "confined native WebView2"}</span>
+                      {page.engine === "inert_native_text" ? <Button size="sm" variant="outline" className="h-6 text-[11px]"
                         disabled={closingBrowserSessionId!==null}
                         onClick={()=>{void closeBrowser(page.browserSessionId);}}>
                         {closingBrowserSessionId===page.browserSessionId ? "Closing…" : "Close session"}
-                      </Button>
+                      </Button> : null}
                     </div>
                     <details className="text-[10px] text-muted-foreground">
                       <summary className="cursor-pointer">Session diagnostics</summary>
@@ -406,6 +410,12 @@ export function ChatToolsControl({ sessionId }: { sessionId: string }) {
                   </div>
                 ))}
                 {browserMessage?<p role="status" className="text-[11px]">{browserMessage}</p>:null}
+                {browserActor && browserRoot && browser?.available ? (
+                  <NativeBrowserOperatorPanel key={`${browserActor}:${sessionId}:${browserRoot}`}
+                    actor={browserActor} sessionId={sessionId} workspaceRoot={browserRoot}
+                    sessions={browser.sessions}
+                    onChanged={()=>{void refreshTfBrowserRuntimeStatus(browserActor,sessionId,browserRoot).then(setBrowser);}} />
+                ) : null}
                 <details className="text-[11px] text-muted-foreground">
                   <summary className="cursor-pointer">Recent Agent browser actions ({browserActions.length})</summary>
                   {browserActions.length ? (
