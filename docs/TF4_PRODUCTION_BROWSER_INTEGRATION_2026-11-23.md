@@ -1835,3 +1835,63 @@ mandatory seventeen-step installed E2E, and final Product-wide UI/UX
 Polish & Acceptance remain unmet. Model-native browser actions remain
 disabled, PR #46 Draft/unmerged, protected main and both stashes untouched;
 no TF5/MCP or P15 desktop work was introduced.
+
+### 25 November consolidated ef73c13 optimized native Windows bundle and operator handoff
+
+After the separate native screenshot privacy/secret-free diagnostic batch
+`614f22de4a52ef1f755bdda66a61e90e9b3ef147` and the separate
+physical original-form/omission-negative batch
+`ef73c137360ac72665dbdbea79c6e46c055d4b21` were **both pushed**,
+the **single consolidated** production-capable optimized build ran with
+`scripts/Build-Tf4NativeBundle.ps1 -Bundles nsis`. It finished with
+process exit **0**, `TF4_NATIVE_BUNDLE_BUILD=PASS`, pinned staged
+host exact SHA attestation, a successful TypeScript/Vite frontend build
+and Tauri optimized NSIS packaging. Cargo compiler warnings and
+unrelated dynamic-import build warnings remain, but this specific
+build did **not** fail. At final artifact verification, all build
+processes had exited; local HEAD and
+`origin/tf/browser-computer-use` both exactly matched
+`ef73c137360ac72665dbdbea79c6e46c055d4b21`, the tracked tree
+was clean, and both original safety stashes plus the unrelated
+`outputs/` and `scripts/__pycache__/` were preserved.
+
+| Exact ef73c13 optimized Windows artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Pinned stage `target/tf4-native-stage/clack-browser-host.exe` | 3,907,072 | `979e13611f6e0d0c8c390bb3b878b97b27d189d4a93fdd381e667bbad381a257` |
+| Tauri optimized `target/release/clack.exe` | 20,319,232 | `c35b2fe58974292bbe09642c4a5cdd623d3dc3458cba42a843e9bbb434ca721b` |
+| New NSIS `target/release/bundle/nsis/Clack_0.8.0_x64-setup.exe` | 12,290,978 | `f9f2df58a02decc2ed2eff3c07e89c1e0920a8494b6042ff71156dfe91b92ee5` |
+
+The source-matched package belongs to **ef73c13**; the previous f949
+setup and its human request `ur_kmajlzd74a2b` are now **obsolete**
+for current-source testing even if that older human step is later
+completed. A **new** checksum-verified, human-only PowerShell
+installation request `ur_xu6so3fb407e` was recorded with the exact
+new NSIS SHA. It was **OPEN** at the immediate status check. The
+assistant has **not installed** any app or host and has not approved
+privilege prompts. Only the human may run that request. Installer
+success alone will not establish installed executable identity,
+the known three-byte Tauri NSIS marker difference, original user
+consent, source-matched host execution or a browser effect.
+
+The most recent earlier CI, `45507053113` on f949, **FAILED**:
+Ubuntu WASI passed while six jobs failed and coverage skipped. CI
+`45510181897` on 614f was **CANCELLED** after Rust Clippy/frontend
+failures (Ubuntu WASI passed; other jobs cancelled). Fresh
+`45510993506` on ef73 was **still in progress** when checked:
+several platform jobs had failed, and neither overall completion nor
+an all-green CI was established. No unrelated Clippy/frontend/WASI
+errors were suppressed or reclassified as TF4 acceptance.
+
+The new optimized package includes the actual production-source
+confidentiality hardening and physically tested code paths. However,
+the completed Windows AppContainer/WebView2 physical screenshot
+allow/deny and original FORM preconsent tests referenced above were
+run against the earlier exact pinned f949 host, **not this newly built
+optimized ef73 host**. A source-matched installed human run and
+independent full effects are still outstanding. The 11-case grouped
+matrix, 17-step installed E2E, owned public TLS443 independent
+two-origin oracle, genuine external-link causal authentication and
+Product-wide UI/UX release blocker remain unresolved. The one
+canonical 13-gate tracker stays **0 PASS / 5 PARTIAL / 8 BLOCKED**;
+PR #46 remains Draft/unmerged, protected main untouched, no TF5/MCP
+or P15 desktop work.
