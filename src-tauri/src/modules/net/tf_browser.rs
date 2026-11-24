@@ -969,6 +969,7 @@ struct PendingNativeClickEffect {
     target_url_sha256: String,
     source_generation: u64,
     resource_request_floor: u64,
+    consumed_action_id: String,
     approved_role: SemanticRole,
     deadline: Instant,
     reply: oneshot::Sender<Result<NativeClickCompletion, String>>,
@@ -989,8 +990,14 @@ fn native_link_navigation_observed(
     source_generation: u64,
     resource_request_floor: u64,
     approved_role: &SemanticRole,
+    consumed_action_id: &str,
 ) -> bool {
     if target_url_sha256.len() != 64
+        || consumed_action_id.len() != 48
+        || !consumed_action_id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || receipt.causal_native_action_id.as_deref() != Some(consumed_action_id)
         || !target_url_sha256
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -1058,6 +1065,7 @@ fn native_link_navigation_evidence(
     source_generation: u64,
     resource_request_floor: u64,
     approved_role: &SemanticRole,
+    consumed_action_id: &str,
 ) -> Option<NativeEffectEvidence> {
     if !native_link_navigation_observed(
         receipt,
@@ -1066,6 +1074,7 @@ fn native_link_navigation_evidence(
         source_generation,
         resource_request_floor,
         approved_role,
+        consumed_action_id,
     ) {
         return None;
     }
@@ -2262,6 +2271,7 @@ async fn execute_confined_native(
                                     waiting.source_generation,
                                     waiting.resource_request_floor,
                                     &waiting.approved_role,
+                                    &waiting.consumed_action_id,
                                 )
                             })
                             .flatten();
@@ -2383,8 +2393,17 @@ async fn execute_confined_native(
                                                         NativeEffectTerminal::CancelledBeforeDispatch,
                                                     ), None))
                                                 } else {
-                                                    clicked_source =
-                                                        Some((approved_role, source_url));
+                                                    // Capture the request floor BEFORE native
+                                                    // dispatch: requests begun during the COM
+                                                    // call but before its ACK must not be lost.
+                                                    // The floor is an anti-replay bound, NOT
+                                                    // sufficient causal attribution.
+                                                    clicked_source = Some((
+                                                        approved_role,
+                                                        source_url,
+                                                        grant.action_id().to_owned(),
+                                                        browser.last_resource_request_id(),
+                                                    ));
                                                     if action == NativeRetainedAction::Click {
                                                         browser
                                                             .dispatch_exact_click_in_control_turn(
@@ -2411,10 +2430,10 @@ async fn execute_confined_native(
                                             Ok((effect, _)) if effect.terminal == NativeEffectTerminal::Dispatched
                                         ) {
                                             if let (
-                                                Some((approved_role, source_url)),
+                                                Some((approved_role, source_url, action_id, floor)),
                                                 Some(target_url_sha256),
                                             ) = (
-                                                clicked_source.filter(|(role, _)| {
+                                                clicked_source.filter(|(role, _, _, _)| {
                                                     action == NativeRetainedAction::Click
                                                         && *role == SemanticRole::Link
                                                 }),
@@ -2427,8 +2446,8 @@ async fn execute_confined_native(
                                                     source_url,
                                                     target_url_sha256,
                                                     source_generation: target.page_generation,
-                                                    resource_request_floor: browser
-                                                        .last_resource_request_id(),
+                                                    resource_request_floor: floor,
+                                                    consumed_action_id: action_id,
                                                     approved_role,
                                                     // One further bounded TF3 idle interval may
                                                     // complete after the initial click dispatch.
@@ -3671,6 +3690,7 @@ mod tests {
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     #[test]
     fn native_click_confirmation_requires_independent_next_document_receipt() {
+        const ACTION_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let source = "https://example.org/";
         let target = "https://example.org/clicked";
         // The closed original retained link binds this exact destination
@@ -3684,7 +3704,9 @@ mod tests {
         ) -> bool {
             let approved_link = "https://example.org/clicked";
             let digest = format!("{:x}", Sha256::digest(approved_link.as_bytes()));
-            super::native_link_navigation_observed(receipt, source, &digest, generation, 1, role)
+            super::native_link_navigation_observed(
+                receipt, source, &digest, generation, 1, role, ACTION_ID,
+            )
         }
         fn native_link_navigation_evidence(
             receipt: &BrokerResourceReceipt,
@@ -3694,7 +3716,9 @@ mod tests {
         ) -> Option<NativeEffectEvidence> {
             let approved_link = "https://example.org/clicked";
             let digest = format!("{:x}", Sha256::digest(approved_link.as_bytes()));
-            super::native_link_navigation_evidence(receipt, source, &digest, generation, 1, role)
+            super::native_link_navigation_evidence(
+                receipt, source, &digest, generation, 1, role, ACTION_ID,
+            )
         }
         let make_receipt = || BrokerResourceReceipt {
             request_id: 2,
@@ -3703,11 +3727,13 @@ mod tests {
             terminal: "completed",
             reason: "ok".into(),
             bytes: 40,
+            causal_native_action_id: Some(ACTION_ID.into()),
             tf3: Some(tf_web::TfWebReceipt {
                 tool_id: "tf.web.v1",
                 request_id: "one-broker-flight".into(),
                 actor: "fixture-actor".into(),
                 operation: TfWebOperation::HttpGet,
+                actual_method: "GET",
                 terminal: "completed",
                 effect_state: "Observed",
                 requested_url: Some(target.into()),
@@ -3750,7 +3776,8 @@ mod tests {
             &"0".repeat(64),
             1,
             1,
-            &SemanticRole::Link
+            &SemanticRole::Link,
+            ACTION_ID
         ));
         assert!(super::native_link_navigation_observed(
             &good,
@@ -3758,7 +3785,8 @@ mod tests {
             &target_digest,
             1,
             1,
-            &SemanticRole::Link
+            &SemanticRole::Link,
+            ACTION_ID
         ));
         assert!(
             !super::native_link_navigation_observed(
@@ -3767,7 +3795,8 @@ mod tests {
                 &target_digest,
                 1,
                 2,
-                &SemanticRole::Link
+                &SemanticRole::Link,
+                ACTION_ID
             ),
             "a pre-dispatch or replayed broker receipt cannot confirm a new click"
         );
@@ -3777,7 +3806,8 @@ mod tests {
             &target_digest,
             1,
             u64::MAX,
-            &SemanticRole::Link
+            &SemanticRole::Link,
+            ACTION_ID
         ));
         let evidence = native_link_navigation_evidence(&good, source, 1, &SemanticRole::Link)
             .expect("independent completed HTTPS document carries bounded receipt evidence");
@@ -3788,6 +3818,20 @@ mod tests {
         assert_eq!(evidence.response_sha256, "b".repeat(64));
         assert_eq!(evidence.status_code, 200);
         assert!(evidence.native_com_completed);
+        let mut uncorrelated = make_receipt();
+        uncorrelated.causal_native_action_id = None;
+        assert!(
+            !native_link_navigation_observed(&uncorrelated, source, 1, &SemanticRole::Link),
+            "newer same-URL GET without authenticated action edge is NOT click proof"
+        );
+        let mut unrelated = make_receipt();
+        unrelated.causal_native_action_id = Some("b".repeat(48));
+        assert!(!native_link_navigation_observed(
+            &unrelated,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
         let output = serde_json::to_string(&evidence).unwrap();
         assert!(!output.contains("/clicked"));
         assert!(!output.contains("one-broker-flight"));

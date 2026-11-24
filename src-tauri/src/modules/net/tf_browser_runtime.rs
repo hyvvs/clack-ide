@@ -51,6 +51,11 @@ pub(crate) struct BrokerResourceReceipt {
     pub reason: String,
     pub bytes: usize,
     pub tf3: Option<TfWebReceipt>,
+    /// An authenticated native navigation/dispatch edge, NOT a URL match or
+    /// broker sequence. The current WebResourceRequested contract has no
+    /// WebView2 causal proof, so the production parent MUST leave this None.
+    /// Consequently unrelated requests can never confirm a retained click.
+    pub causal_native_action_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,6 +298,30 @@ pub(crate) struct NativeConsumedExactClickApproval {
 }
 
 impl NativeConsumedExactClickApproval {
+    pub(super) fn action_id(&self) -> &str {
+        &self.approval_id
+    }
+    /// This witness originates from the existing atomic TF4 consent owner.
+    /// Binding it to an exact form/submitter consumes the witness by value at
+    /// the TF3 entrypoint; a 48-hex string cannot stand in for consent.
+    pub(super) fn matches_bound_form_post(
+        &self,
+        actor: &str,
+        session_id: &str,
+        workspace_root: &str,
+        post: &super::tf_web::TfBrowserBoundPost,
+    ) -> bool {
+        self.expires_at > std::time::Instant::now()
+            && matches!(self.action, NativeRetainedAction::Submit(_))
+            && self.selected_native_option.is_none()
+            && self.actor == actor
+            && self.session_id == session_id
+            && self.workspace_root == PathBuf::from(workspace_root)
+            && self.target.page_generation == post.source_page_generation
+            && self.index == post.original_submitter_index
+            && self.selected_native_form.map(|(index, _)| index) == Some(post.original_form_index)
+            && self.approval_id == post.consumed_approval_id
+    }
     /// Called ONLY by the trusted sibling native central-approval owner after
     /// its existing one-use approval token was atomically consumed. This is a
     /// value constructor, not a consent issuer: it cannot authenticate a UI
@@ -2696,6 +2725,7 @@ mod windows_owner {
                 reason: reason.into(),
                 bytes: 0,
                 tf3: None,
+                causal_native_action_id: None,
             }
         }
 
@@ -2858,6 +2888,7 @@ mod windows_owner {
                     reason: "browser-origin-denied".into(),
                     bytes: 0,
                     tf3: None,
+                    causal_native_action_id: None,
                 });
             }
             let native = TfWebRequest {
@@ -2912,6 +2943,7 @@ mod windows_owner {
                         reason: "tf3-preflight-denied".into(),
                         bytes: 0,
                         tf3: None,
+                        causal_native_action_id: None,
                     });
                 }
             };
@@ -2976,6 +3008,7 @@ mod windows_owner {
                         reason: receipt.reason_code.into(),
                         bytes: size,
                         tf3: Some(receipt),
+                        causal_native_action_id: None,
                     })
                 }
                 Err(_) => {
@@ -2996,6 +3029,7 @@ mod windows_owner {
                         reason: "tf3-execution-failed".into(),
                         bytes: 0,
                         tf3: None,
+                        causal_native_action_id: None,
                     })
                 }
             }
@@ -3182,6 +3216,7 @@ mod tests {
             request_id: "original-uri".into(),
             actor: "test-owner".into(),
             operation: TfWebOperation::HttpGet,
+            actual_method: "GET",
             terminal: "completed",
             effect_state: "Observed",
             requested_url: Some("https://example.org/page.css".into()),
@@ -3386,6 +3421,64 @@ mod tests {
             expires_at: Instant::now() - Duration::from_millis(1),
         };
         assert!(!expired.matches_exact(&scoped));
+    }
+
+    #[test]
+    fn bound_post_requires_original_consumed_form_submitter_and_generation() {
+        use crate::modules::net::tf_browser_contract::BrowserEffect;
+        use crate::modules::net::tf_web::TfBrowserBoundPost;
+        let workspace = PathBuf::from("C:/owned-scope");
+        let target = ActionTarget {
+            browser_session_id: "browser-1".into(),
+            page_id: "page-1".into(),
+            page_generation: 11,
+            snapshot_id: "snapshot-1".into(),
+            element_ref: "retained-submitter".into(),
+        };
+        // The constructed witness exists only in this source unit test; the
+        // production path is restricted to central-token consumption.
+        let proof = NativeConsumedExactClickApproval {
+            approval_id: "a".repeat(48),
+            actor: "owner".into(),
+            session_id: "session-1".into(),
+            workspace_root: workspace,
+            target,
+            effect: BrowserEffect::PotentialExternalWrite,
+            source_id: "b".repeat(64),
+            observation_id: 4,
+            index: 3,
+            ordinal: 2,
+            check_sequence: 9,
+            action: NativeRetainedAction::Submit("retained-form".into()),
+            selected_native_option: None,
+            selected_native_form: Some((2, 1)),
+            expires_at: std::time::Instant::now() + std::time::Duration::from_secs(20),
+        };
+        let body = b"nonce=test&commit=once".to_vec();
+        let post = TfBrowserBoundPost {
+            destination: reqwest::Url::parse("https://example.org/form").unwrap(),
+            approved_origin: reqwest::Url::parse("https://example.org/").unwrap(),
+            body_sha256: format!("{:x}", Sha256::digest(&body)),
+            body,
+            content_type: "application/x-www-form-urlencoded",
+            source_page_generation: 11,
+            original_form_index: 2,
+            original_submitter_index: 3,
+            consumed_approval_id: "a".repeat(48),
+        };
+        let scope = "C:/owned-scope";
+        assert!(proof.matches_bound_form_post("owner", "session-1", scope, &post));
+        let mut stale = post.clone();
+        stale.source_page_generation += 1;
+        assert!(!proof.matches_bound_form_post("owner", "session-1", scope, &stale));
+        stale = post.clone();
+        stale.original_form_index = 20;
+        assert!(!proof.matches_bound_form_post("owner", "session-1", scope, &stale));
+        stale = post.clone();
+        stale.consumed_approval_id = "c".repeat(48);
+        assert!(!proof.matches_bound_form_post("owner", "session-1", scope, &stale));
+        assert!(!proof.matches_bound_form_post("owner", "other", scope, &post));
+        assert!(!proof.matches_bound_form_post("owner", "session-1", "C:/other", &post));
     }
 
     #[test]

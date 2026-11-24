@@ -8,6 +8,113 @@ baseline was 07b007c83ba12fdd001094b99d9918192d085fa9. Additional
 uncommitted production changes already existed at continuation startup;
 they were preserved rather than reset.
 
+## 2026-11-24: accelerated source-functional continuation — NOT installed production acceptance
+
+**Implementation, distinct from acceptance:** On `tf/browser-computer-use`,
+the native TF3 `tf_web` authority now contains a **private one-use bound POST
+transport**. This does not add POST to the publicly deserializable/model
+`TfWebRequest`/`TfWebOperation` schema. The internal envelope fixes exact
+normalized destination, public HTTPS origin, URL-encoded or bounded octet body,
+SHA-256, page generation, retained FORM and submitter indexes, and the existing
+consumed TF4 native approval identity. The production entrypoint requires
+**ownership of the moved, typed centrally consumed native FORM+submitter
+witness**; a model-provided 48-hex string alone cannot invoke it. The existing
+TF3 token/pending/quota/DNS/IP/TLS/expiry/cancel machinery performs the only
+network attempt, with a bounded request, redirect denial, no credentials,
+no response-body disclosure, and no automatic replay. An HTTP 201 receipt is
+**transport evidence only**: the effect is `Unknown`, retry
+`NEVER_REPLAY`. Raw payload bytes and any credentials are not serialized
+in canonical receipts.
+
+**Important missing handoff:** The production host's
+`DOM_EXACT_SUBMIT_JS` remains **validation-only, deny actual submit**. The
+native parent has not yet captured/revalidated successful form controls and
+exact body **before consent** or transferred a verified original-node body to
+this private TF3 transport. The browser's WebResourceRequested path remains
+GET-only, and no page-generated POST is admitted merely because the origin
+matches. No installed form submit or independent real business effect is
+accepted. A form grant must be bound to the *original* nodes/data at prepare,
+revalidated before dispatch and correlated to the owned-server oracle; this
+cannot be substituted by `form.submit()`, `requestSubmit()`, an arbitrary
+page fetch or a generic POST tool.
+
+**Action causal-correlation correction:** The broker request floor is captured
+**before** COM dispatch, not after the host acknowledgement, to avoid losing
+requests initiated during a real native action. More importantly, a newer
+broker request matching an approved URL and generation is *not* sufficient
+to confirm the click: the central native owner now additionally requires a
+verified `causal_native_action_id` matching the consumed approval identity.
+The current production WebView2 resource callback has no independent
+authenticated dispatch-to-request causal edge and explicitly returns
+`None`; thus a matching ordinary page GET stays **UNKNOWN**, never a
+fabricated confirmed action. A source-only synthetic positive test checks the
+strict predicate; missing/wrong causal edges are negative tests, not
+production proof. This is a **fail-closed repair**, not completed native
+positive causal attribution.
+
+**Stable retained controls:** The fixed host CDP function now checks a
+post-dispatch *boolean* against the same retained original node: typed/cleared
+input value, selected original option, checked state or scroll direction.
+No value, option text, selector, DOM HTML or page credential crosses the
+closed response. If a dispatch may have happened but readback cannot prove
+the local state, the host reports uncertainty rather than a stale/safe-retry
+success. These inline DOM checks do **not** replace independent installed
+native postcondition observation for gate 2.
+
+**Owned HTTPS acceptance fixture — source only:** New source is at
+`scripts/tf4-public-https-fixture/` with `server.mjs` (explicit
+operator-configured TLS443 only), `server.test.mjs`, `verify.mjs`
+(read-only independent server-oracle summary) and `README.md`. It defines
+nonce-scoped static navigation, original FORM/submitter/replaced node, bounded
+download/upload and delayed/cancelled request cases, synthetic credential
+accept/deny, same-/cross-origin redirect negatives, durable one-use
+form/upload claims with SHA-256/method/timestamp receipts, and read-only
+bearer-protected server oracle. The claim files are fsynced and POSIX claim
+directory metadata fsynced. The read-only verifier deliberately returns
+`nativeApprovalOrOriginalNodeCausalityProven:false`. Six Node isolated
+ephemeral **loopback HTTP tests PASS 6/6**, including concurrent one-write/
+replay, restart persistence, client-abort remote observation, malformed
+cross-origin configuration. No public DNS, ordinary CA-trusted TLS443,
+deployed service, installed Clack, human OS consent or independent browser
+effect has been exercised. No deployment is authorized by these source
+changes. The older owned 127.0.0.1 TLS acceptance harness is not promoted
+to Public-policy proof.
+
+**Scoped verification in this continuation:** Native TF3 scoped Rust tests
+**25/25 PASS**, including the new single isolated raw HTTP POST with exact
+method/destination/body/digest, consumed replay denial and
+`Unknown`/`NEVER_REPLAY` despite HTTP 201. The native host's closed-contract
+suite **60/60 PASS** after boolean postconditions; the targeted native link
+correlation test **1/1 PASS**. The native FORM-witness matching test and
+broader regression are evaluated separately in the working tree, not
+misreported as an installed physical result. All tests here are local source
+or isolated integration, never independent installed production proof.
+
+**CI classification:** `45473556032` on `f66ac1c` is **COMPLETED**:
+Ubuntu WASI PASS; Rust/Clippy FAILED (100 lib and 50 test lint errors under
+`-D warnings` across broader legacy source); Windows/macOS Nextest,
+Windows/macOS WASI, and frontend FAILED; coverage SKIPPED. The latest
+Nextest/WASI classes include preexisting workspace confinement/staging
+`WorkspaceChanged` on Windows and the macOS real-file bound/traversal
+case; frontend has compaction schema/recovery failures. Protected-main run
+`44994093010` and prior branch `45355106767` were also red. No blanket
+lint suppression, test removal, fabricated fixture or CI-green claim.
+
+**Operator/exit boundaries:** The still-open human installer request
+`ur_kfrzln9j637l` references older source `e1735b6` and is
+**OBSOLETE**; do not install it as current-source proof. A single new
+source-matched host/app/NSIS build and genuine operator installation must
+follow consolidated functional implementation. An operator-owned publicly
+routable hostname with ordinary CA-trusted TLS on **443**, dedicated separate
+read-only oracle credentials and separately owned negative origin requires
+explicit authorization before deployment. Installed real-app consent,
+original-node causal effect, one-use replay denial, all eleven grouped races,
+TF2 file transfers, screenshots, credentials, seventeen-step integrated E2E,
+and final mandatory Product-wide UI/UX Polish & Acceptance remain unverified.
+The governing thirteen-gate names/predicates in the existing canonical
+engineering tracker remain **0 PASS / 5 PARTIAL / 8 BLOCKED**. PR #46 remains
+DRAFT; no merge, TF5/MCP or P15 native desktop scope change.
+
 ## Accepted foundation deliberately not rerun
 
 The controlled real-Windows AppContainer/WebView2/Job/zero-capability/SID

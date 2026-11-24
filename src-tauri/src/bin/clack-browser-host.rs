@@ -329,8 +329,10 @@ mod host {
     // Each action operates on exactly the retained Node(s) from one bounded
     // capture; a mutation, a detached node, or a changed parent relation
     // denies the effect. The stale bit is set BEFORE any write or DOM event.
-    // Only {dispatched:boolean} crosses back from the renderer: no values,
-    // selected option text, attributes, target HTML, selectors or page errors.
+    // The only extra result is an exact retained-node postcondition BOOLEAN.
+    // Neither the input value, selected option, DOM content nor attributes
+    // leave the renderer. A false/absent postcondition after dispatch is
+    // UNKNOWN, never a denial or safe retry.
     const DOM_EXACT_CONTROL_ACTION_JS: &str = r#"function(slot, action, text, optionSlot, deltaY) {
       if (this.observer.takeRecords().length) this.state.changed = true;
       if (this.state.changed) return {dispatched:false};
@@ -349,7 +351,9 @@ mod host {
         this.state.changed = true;
         node.value = action === 'clear' ? '' : text;
         node.dispatchEvent(new Event('input', {bubbles:true}));
-        return {dispatched:true};
+        return {dispatched:true, observed:node.isConnected &&
+          node.ownerDocument === document &&
+          node.value === (action === 'clear' ? '' : text)};
       }
       if (action === 'select') {
         if (node.tagName !== 'SELECT' || !Number.isInteger(optionSlot))
@@ -362,7 +366,9 @@ mod host {
         option.selected = true;
         node.dispatchEvent(new Event('input', {bubbles:true}));
         node.dispatchEvent(new Event('change', {bubbles:true}));
-        return {dispatched:true};
+        return {dispatched:true, observed:node.isConnected &&
+          option.isConnected && option.parentElement === node &&
+          option.selected && node.value === option.value};
       }
       if (action === 'check' || action === 'uncheck') {
         if (node.tagName !== 'INPUT' || node.type !== 'checkbox')
@@ -371,16 +377,21 @@ mod host {
         node.checked = action === 'check';
         node.dispatchEvent(new Event('input', {bubbles:true}));
         node.dispatchEvent(new Event('change', {bubbles:true}));
-        return {dispatched:true};
+        return {dispatched:true, observed:node.isConnected &&
+          node.ownerDocument === document &&
+          node.checked === (action === 'check')};
       }
       if (action === 'scroll') {
         if (deltaY !== -120 && deltaY !== 120) return {dispatched:false};
         const overflow = window.getComputedStyle(node).overflowY;
         if ((overflow !== 'auto' && overflow !== 'scroll')
             || node.scrollHeight <= node.clientHeight) return {dispatched:false};
+        const before = node.scrollTop;
         this.state.changed = true;
         node.scrollBy(0, deltaY);
-        return {dispatched:true};
+        return {dispatched:true, observed:node.isConnected &&
+          node.ownerDocument === document &&
+          (deltaY > 0 ? node.scrollTop > before : node.scrollTop < before)};
       }
       return {dispatched:false};
     }"#;
@@ -2459,13 +2470,25 @@ mod host {
             .pointer("/result/value")
             .and_then(|v| v.as_object())
             .ok_or("action-com-response-unknown")?;
-        if value.len() != 1 {
+        if value.len() != 1 && value.len() != 2 {
             return Err("action-com-response-unknown");
         }
-        value
+        let dispatched = value
             .get("dispatched")
             .and_then(|v| v.as_bool())
-            .ok_or("action-com-response-unknown")
+            .ok_or("action-com-response-unknown")?;
+        if !dispatched && value.len() == 1 {
+            return Ok(false);
+        }
+        if dispatched
+            && value.len() == 2
+            && value.get("observed").and_then(|v| v.as_bool()) == Some(true)
+        {
+            // Only local DOM readback of the ORIGINAL retained node, not an
+            // independent server effect; parent remains DISPATCHED/UNKNOWN.
+            return Ok(true);
+        }
+        Err("action-postcondition-unconfirmed")
     }
 
     #[cfg(debug_assertions)]
@@ -8332,13 +8355,20 @@ mod host {
         #[test]
         fn production_exact_control_com_ack_is_closed_boolean_not_page_data() {
             for accepted in [true, false] {
-                let response = json!({"result":{"type":"object","value":{"dispatched":accepted}}});
+                let response = if accepted {
+                    json!({"result":{"type":"object","value":{"dispatched":true,"observed":true}}})
+                } else {
+                    json!({"result":{"type":"object","value":{"dispatched":false}}})
+                };
                 assert_eq!(
                     parse_dom_control_action_response(&response.to_string()),
                     Ok(accepted)
                 );
             }
             for invalid in [
+                json!({"result":{"type":"object","value":{"dispatched":true}}}),
+                json!({"result":{"type":"object","value":{"dispatched":true,"observed":false}}}),
+                json!({"result":{"type":"object","value":{"dispatched":false,"observed":true}}}),
                 json!({"result":{"type":"object","value":{"dispatched":true,"text":"secret"}}}),
                 json!({"result":{"type":"boolean","value":true}}),
                 json!({"result":{"type":"object","objectId":"abc","value":{"dispatched":true}}}),
@@ -8346,11 +8376,21 @@ mod host {
                 json!({"result":{"type":"object","value":{"dispatched":true}},
                     "exceptionDetails":{"text":"secret"}}),
                 json!({"result":{"type":"object","value":{"dispatched":true,"value":"secret"}}}),
+                json!({"result":{"type":"object","value":{"dispatched":true,"observed":true,"value":"secret"}}}),
             ] {
                 assert!(parse_dom_control_action_response(&invalid.to_string()).is_err());
             }
             assert!(parse_dom_control_action_response("{").is_err());
             assert!(parse_dom_control_action_response(&"x".repeat(2049)).is_err());
+            for exact_readback in [
+                "node.value === (action === 'clear' ? '' : text)",
+                "option.selected && node.value === option.value",
+                "node.checked === (action === 'check')",
+                "node.scrollTop > before : node.scrollTop < before",
+            ] {
+                assert!(DOM_EXACT_CONTROL_ACTION_JS.contains(exact_readback));
+            }
+            assert!(!DOM_EXACT_CONTROL_ACTION_JS.contains("return {dispatched:true};"));
         }
 
         #[test]

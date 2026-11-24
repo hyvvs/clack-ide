@@ -100,6 +100,9 @@ pub struct TfWebReceipt {
     pub request_id: String,
     pub actor: String,
     pub operation: TfWebOperation,
+    /// Wire method, distinct from the public read-only TF3 operation enum.
+    /// Only a private native bound FORM envelope may set this to POST.
+    pub actual_method: &'static str,
     pub terminal: &'static str,
     pub effect_state: &'static str,
     pub requested_url: Option<String>,
@@ -142,6 +145,31 @@ pub struct TfBrowserResource {
     pub bytes: Vec<u8>,
 }
 
+/// Private TF3 write envelope. It is intentionally absent from TfWebRequest,
+/// TfWebOperation, Tauri commands and model schemas. A native caller must
+/// supply an already-consumed TF4 exact FORM/submitter witness before using
+/// this engine; merely knowing a URL is not write authorization.
+#[derive(Clone)]
+pub(super) struct TfBrowserBoundPost {
+    pub(super) destination: Url,
+    pub(super) approved_origin: Url,
+    pub(super) body: Vec<u8>,
+    pub(super) body_sha256: String,
+    pub(super) content_type: &'static str,
+    pub(super) source_page_generation: u64,
+    pub(super) original_form_index: u32,
+    pub(super) original_submitter_index: u32,
+    pub(super) consumed_approval_id: String,
+}
+
+#[derive(Debug)]
+pub(super) struct TfBrowserWriteTransport {
+    pub(super) receipt: TfWebReceipt,
+    pub(super) request_body_sha256: String,
+    pub(super) request_body_bytes: usize,
+    pub(super) destination_sha256: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TfWebProviderStatus {
@@ -162,6 +190,7 @@ struct Pending {
     target: Option<Url>,
     expires: Instant,
     approved: bool,
+    browser_post: Option<TfBrowserBoundPost>,
 }
 #[derive(Clone)]
 struct IndexedResult {
@@ -450,6 +479,7 @@ fn prepare_policy(
             target,
             expires: Instant::now() + TOKEN_TTL,
             approved: !prepared.requires_approval,
+            browser_post: None,
         },
     );
     Ok(prepared)
@@ -460,6 +490,182 @@ pub fn prepare(
     state: &TfWebState,
 ) -> Result<TfWebPrepared, String> {
     prepare_policy(req, registry, state, NetworkPolicy::Public)
+}
+
+/// TF3's existing one-use token owner, not a parallel HTTP client. This
+/// preparer is private to the network modules and accepts only the native
+/// envelope bound to an already-consumed TF4 FORM approval. It does not
+/// approve, serialize, or discover form controls; the native caller must
+/// capture and verify the ORIGINAL nodes/body before producing that envelope.
+/// Until that native handoff is implemented, no production path invokes it.
+#[allow(dead_code)]
+pub(super) fn prepare_browser_bound_post(
+    consumed_grant: super::tf_browser_runtime::NativeConsumedExactClickApproval,
+    actor: &str,
+    session_id: &str,
+    workspace_root: &str,
+    post: TfBrowserBoundPost,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+) -> Result<TfWebPrepared, String> {
+    if !consumed_grant.matches_bound_form_post(actor, session_id, workspace_root, &post) {
+        return Err("browser-bound-post-original-consumed-form-witness-required".into());
+    }
+    prepare_browser_bound_post_policy(
+        actor,
+        session_id,
+        workspace_root,
+        post,
+        registry,
+        state,
+        NetworkPolicy::Public,
+    )
+}
+
+fn prepare_browser_bound_post_policy(
+    actor: &str,
+    session_id: &str,
+    workspace_root: &str,
+    post: TfBrowserBoundPost,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    policy: NetworkPolicy,
+) -> Result<TfWebPrepared, String> {
+    let target = normalize_url_policy(post.destination.as_str(), policy)?;
+    let valid_origin = if policy == NetworkPolicy::Public {
+        browser_origin_allowed(&target, &post.approved_origin)
+            && post.approved_origin.scheme() == "https"
+            && post.approved_origin.port_or_known_default() == Some(443)
+    } else {
+        // Only code compiled for test/isolated acceptance can reach the
+        // FixtureLoopback variant. No production Public request can use this.
+        #[cfg(any(test, feature = "tf-browser-isolation-acceptance"))]
+        {
+            target.scheme() == "http"
+                && target.host_str() == Some("127.0.0.1")
+                && target.port().is_some()
+                && target.origin() == post.approved_origin.origin()
+        }
+        #[cfg(not(any(test, feature = "tf-browser-isolation-acceptance")))]
+        {
+            false
+        }
+    };
+    if target != post.destination
+        || !valid_origin
+        || post.destination.query().is_some()
+        || post.destination.fragment().is_some()
+        || post.body.is_empty()
+        || post.body.len() > MAX_BODY
+        || post.source_page_generation == 0
+        || post.original_form_index == post.original_submitter_index
+        || post.consumed_approval_id.len() != 48
+        || !post
+            .consumed_approval_id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || post.body_sha256 != format!("{:x}", Sha256::digest(&post.body))
+        || !matches!(
+            post.content_type,
+            "application/x-www-form-urlencoded" | "application/octet-stream"
+        )
+    {
+        return Err("browser-bound-post-scope-denied".into());
+    }
+    let req = TfWebRequest {
+        operation: TfWebOperation::HttpGet, // Internal transport marker only; request method is POST below.
+        actor: actor.to_owned(),
+        session_id: session_id.to_owned(),
+        workspace_root: workspace_root.to_owned(),
+        url: Some(target.to_string()),
+        query: None,
+        search_result_id: None,
+        timeout_ms: Some(5_000),
+        max_bytes: Some(MAX_BODY),
+        max_redirects: Some(0),
+    };
+    let prepared = prepare_policy(req, registry, state, policy)?;
+    let mut entries = state
+        .entries
+        .lock()
+        .map_err(|_| "network-state-unavailable")?;
+    let pending = entries
+        .pending
+        .get_mut(&prepared.token)
+        .ok_or("browser-post-preparation-lost")?;
+    pending.browser_post = Some(post);
+    Ok(prepared)
+}
+
+/// Only the native owner may execute its one prepared bound write, after the
+/// original-node and body scope has been rechecked. HTTP 2xx remains Unknown,
+/// NEVER_REPLAY, until an independent owned-server receipt proves the effect.
+#[allow(dead_code)]
+pub(super) async fn execute_browser_bound_post(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    approved_origin: &Url,
+) -> Result<TfBrowserWriteTransport, String> {
+    execute_browser_bound_post_policy(
+        token,
+        registry,
+        state,
+        approved_origin,
+        NetworkPolicy::Public,
+    )
+    .await
+}
+
+async fn execute_browser_bound_post_policy(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    approved_origin: &Url,
+    policy: NetworkPolicy,
+) -> Result<TfBrowserWriteTransport, String> {
+    let (body_sha256, body_len, destination_sha256) = {
+        let entries = state
+            .entries
+            .lock()
+            .map_err(|_| "network-state-unavailable")?;
+        let pending = entries
+            .pending
+            .get(token)
+            .ok_or("unknown-or-consumed-token")?;
+        let post = pending
+            .browser_post
+            .as_ref()
+            .ok_or("not-a-browser-bound-post")?;
+        if &post.approved_origin != approved_origin {
+            return Err("browser-bound-post-origin-changed".into());
+        }
+        (
+            post.body_sha256.clone(),
+            post.body.len(),
+            format!("{:x}", Sha256::digest(post.destination.as_str().as_bytes())),
+        )
+    };
+    // This consumes the same TF3 pending token even on a DNS/TLS/network
+    // denial. Never allow the generic GET executor to reinterpret a POST.
+    let receipt = execute_policy_with_output_scoped(
+        token,
+        registry,
+        state,
+        None,
+        policy,
+        None,
+        Some(approved_origin),
+        None,
+        true,
+    )
+    .await?;
+    Ok(TfBrowserWriteTransport {
+        receipt,
+        request_body_sha256: body_sha256,
+        request_body_bytes: body_len,
+        destination_sha256,
+    })
 }
 
 /// Native acceptance fixture only: the caller must own the exact loopback
@@ -523,6 +729,13 @@ fn receipt_for(p: &Pending) -> TfWebReceipt {
         request_id: p.request_id.clone(),
         actor: p.request.actor.clone(),
         operation: p.request.operation,
+        actual_method: if p.browser_post.is_some() {
+            "POST"
+        } else if p.request.operation == TfWebOperation::HttpHead {
+            "HEAD"
+        } else {
+            "GET"
+        },
         terminal: "denied",
         effect_state: "NoEffect",
         // Never echo raw URL fragments (which can contain bearer tokens).
@@ -959,7 +1172,16 @@ async fn network_fetch(
     // Never offer the browser owner a "SAFE_RETRY" receipt after that attempt,
     // even when HTTP returned 2xx or the native COM deferral completed.
     // Ordinary TF3 standalone GET/HEAD retain their existing contract.
-    let browser_resource = browser_bytes.is_some();
+    let browser_resource = browser_bytes.is_some() || p.browser_post.is_some();
+    if let Some(post) = &p.browser_post {
+        if credential.is_some()
+            || browser_approved_origin != Some(&post.approved_origin)
+            || p.target.as_ref() != Some(&post.destination)
+            || post.body_sha256 != format!("{:x}", Sha256::digest(&post.body))
+        {
+            return Err(Failure("browser-bound-post-execution-scope-denied"));
+        }
+    }
     receipt.retry = if browser_resource {
         "NEVER_REPLAY"
     } else if search {
@@ -982,9 +1204,22 @@ async fn network_fetch(
         // Native TF4 may approve exactly one HTTPS origin. Check *every* hop
         // before resolving DNS or creating a socket, including a redirect's
         // next destination. TF3 remains the sole DNS/IP/SSRF/TLS authority.
-        if browser_approved_origin
-            .is_some_and(|approved| !browser_origin_allowed(&url_checked, approved))
-        {
+        let origin_allowed = browser_approved_origin.is_none_or(|approved| {
+            browser_origin_allowed(&url_checked, approved) || {
+                #[cfg(any(test, feature = "tf-browser-isolation-acceptance"))]
+                {
+                    policy == NetworkPolicy::FixtureLoopback
+                        && url_checked.scheme() == "http"
+                        && url_checked.host_str() == Some("127.0.0.1")
+                        && url_checked.origin() == approved.origin()
+                }
+                #[cfg(not(any(test, feature = "tf-browser-isolation-acceptance")))]
+                {
+                    false
+                }
+            }
+        });
+        if !origin_allowed {
             return Err(Failure("browser-redirect-origin-denied"));
         }
         #[cfg(any(test, feature = "tf-browser-isolation-acceptance"))]
@@ -1044,7 +1279,7 @@ async fn network_fetch(
         if remaining.is_zero() {
             return Err(Failure("timeout"));
         }
-        let mut builder = super::custom_tool_transport()
+        let builder = super::custom_tool_transport()
             .connect_timeout(remaining.min(Duration::from_secs(5)))
             .timeout(remaining)
             .resolve_to_addrs(&host, &addresses)
@@ -1057,11 +1292,15 @@ async fn network_fetch(
             return Err(Failure("test-certificate-not-available-in-production"));
         }
         #[cfg(test)]
-        if let Some(root) = tls_test_root {
-            builder = builder.add_root_certificate(root.clone());
-        }
+        let builder = if let Some(root) = tls_test_root {
+            builder.add_root_certificate(root.clone())
+        } else {
+            builder
+        };
         let client = builder.build().map_err(|_| Failure("client-unavailable"))?;
-        let method = if p.request.operation == TfWebOperation::HttpHead {
+        let method = if p.browser_post.is_some() {
+            Method::POST
+        } else if p.request.operation == TfWebOperation::HttpHead {
             Method::HEAD
         } else {
             Method::GET
@@ -1078,6 +1317,11 @@ async fn network_fetch(
                     "text/html,text/plain,application/json,application/xhtml+xml,application/xml"
                 },
             );
+        if let Some(post) = &p.browser_post {
+            request = request
+                .header(CONTENT_TYPE, post.content_type)
+                .body(post.body.clone());
+        }
         if search {
             let key = credential.ok_or(Failure("provider-unconfigured"))?;
             let value = reqwest::header::HeaderValue::from_str(key)
@@ -1227,7 +1471,7 @@ async fn network_fetch(
         if browser_bytes.is_some() && !browser_resource_content_type(&kind) {
             return Err(Failure("browser-content-type-denied"));
         }
-        if browser_bytes.is_none() && !text_type(&kind) {
+        if browser_bytes.is_none() && p.browser_post.is_none() && !text_type(&kind) {
             return Err(Failure("nontext-content-type-denied"));
         }
         let mut bytes = Vec::new();
@@ -1298,6 +1542,10 @@ async fn network_fetch(
             let body = std::str::from_utf8(&saved).map_err(|_| Failure("search-invalid-json"))?;
             receipt.search_results = Some(parse_search(body, p, state)?);
             receipt.body = None;
+        } else if p.browser_post.is_some() {
+            // Never persist a remote response body into the browser action
+            // receipt. Server HTTP success is NOT a business effect proof.
+            receipt.body = None;
         } else {
             receipt.body =
                 Some(String::from_utf8(saved).map_err(|_| Failure("nonutf8-body-denied"))?);
@@ -1321,11 +1569,16 @@ async fn execute_policy_with_output_scoped(
     browser_bytes: Option<&mut Vec<u8>>,
     browser_approved_origin: Option<&Url>,
     tls_test_root: Option<&reqwest::Certificate>,
+    expected_browser_post: bool,
 ) -> Result<TfWebReceipt, String> {
     let (p, mut rx) = consume_policy(token, registry, state, policy)?;
+    if p.browser_post.is_some() != expected_browser_post {
+        complete(token, state);
+        return Err("tf3-bound-post-executor-mismatch".into());
+    }
     let mut receipt = receipt_for(&p);
     let mut attempted = false;
-    let browser_resource = browser_bytes.is_some();
+    let browser_resource = browser_bytes.is_some() || p.browser_post.is_some();
     let result = network_fetch(
         &p,
         &mut receipt,
@@ -1355,6 +1608,8 @@ async fn execute_policy_with_output_scoped(
                 "UNKNOWN"
             };
             receipt.uncertainty = "request-may-have-reached-remote-peer";
+        } else if browser_resource {
+            receipt.retry = "NEVER_REPLAY";
         } else {
             receipt.retry = if p.request.operation == TfWebOperation::WebSearch {
                 "CONDITIONAL_RETRY"
@@ -1384,6 +1639,7 @@ async fn execute_policy_with_output(
         browser_bytes,
         None,
         None,
+        false,
     )
     .await
 }
@@ -1444,6 +1700,7 @@ pub async fn execute_browser_resource_same_origin(
         Some(&mut bytes),
         Some(approved_origin),
         None,
+        false,
     )
     .await?;
     Ok(TfBrowserResource { receipt, bytes })
@@ -1501,6 +1758,7 @@ pub(crate) async fn execute_owned_https_for_test(
         Some(&mut bytes),
         Some(approved_origin),
         Some(ephemeral_public_certificate),
+        false,
     )
     .await?;
     Ok(TfBrowserResource { receipt, bytes })
@@ -1939,6 +2197,205 @@ mod tests {
                 "TF3 browser-facing request must reject unsupported field {name}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn private_bound_form_post_requires_exact_body_origin_and_one_tf3_execution_owner() {
+        let (dir, registry, state) = setup();
+        let source = Url::parse("https://example.org/").unwrap();
+        let body = b"nonce=owned-test&commit=once".to_vec();
+        let make = || TfBrowserBoundPost {
+            destination: Url::parse("https://example.org/case/owned-test/form").unwrap(),
+            approved_origin: source.clone(),
+            body: body.clone(),
+            body_sha256: format!("{:x}", Sha256::digest(&body)),
+            content_type: "application/x-www-form-urlencoded",
+            source_page_generation: 2,
+            original_form_index: 12,
+            original_submitter_index: 13,
+            consumed_approval_id: "a".repeat(48),
+        };
+        let prepare_post = |post| {
+            prepare_browser_bound_post_policy(
+                "native-test",
+                "session-1",
+                &dir.path().to_string_lossy(),
+                post,
+                &registry,
+                &state,
+                NetworkPolicy::Public,
+            )
+        };
+        let mut corrupt = make();
+        corrupt.body[0] ^= 1;
+        assert!(prepare_post(corrupt).is_err());
+        let mut other_origin = make();
+        other_origin.destination = Url::parse("https://example.com/form").unwrap();
+        assert!(prepare_post(other_origin).is_err());
+        let mut query = make();
+        query.destination = Url::parse("https://example.org/form?tracking=1").unwrap();
+        assert!(prepare_post(query).is_err());
+        let mut oversized = make();
+        oversized.body = vec![b'x'; MAX_BODY + 1];
+        assert!(prepare_post(oversized).is_err());
+        let mut wrong_approval = make();
+        wrong_approval.consumed_approval_id = "model-supplied".into();
+        assert!(prepare_post(wrong_approval).is_err());
+        let mut wrong_nodes = make();
+        wrong_nodes.original_submitter_index = wrong_nodes.original_form_index;
+        assert!(prepare_post(wrong_nodes).is_err());
+
+        let prepared = prepare_post(make()).unwrap();
+        // The public read executor MUST consume/deny a bound write, NEVER
+        // silently reinterpret its POST token as an ordinary GET.
+        assert_eq!(
+            execute(&prepared.token, &registry, &state, None)
+                .await
+                .unwrap_err(),
+            "tf3-bound-post-executor-mismatch"
+        );
+        assert!(
+            execute_browser_bound_post(&prepared.token, &registry, &state, &source)
+                .await
+                .is_err()
+        );
+        // A changed origin does not consume the token; the native owner must
+        // still cancel it or use the correct exact-origin executor.
+        let prepared = prepare_post(make()).unwrap();
+        assert!(execute_browser_bound_post(
+            &prepared.token,
+            &registry,
+            &state,
+            &Url::parse("https://example.com/").unwrap()
+        )
+        .await
+        .is_err());
+        assert!(cancel(&prepared.token, &state).unwrap());
+        assert!(!cancel(&prepared.token, &state).unwrap());
+    }
+
+    #[tokio::test]
+    async fn isolated_tf3_bound_post_sends_exact_bytes_once_and_never_calls_http_success_effect() {
+        // This listener is an isolated HTTP loopback *source integration*
+        // test. It cannot run under Public policy and cannot prove installed
+        // WebView2, native consent, or production HTTPS.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let dest = Url::parse(&format!("{base}/one-write")).unwrap();
+        let origin = Url::parse(&base).unwrap();
+        let payload = b"nonce=source-test&commit=once".to_vec();
+        let received = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let observed = received.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut raw = Vec::new();
+            let total = loop {
+                let mut part = [0u8; 1024];
+                let n = stream.read(&mut part).unwrap();
+                assert!(n > 0 && raw.len() + n <= 8192);
+                raw.extend_from_slice(&part[..n]);
+                if let Some(end) = raw.windows(4).position(|v| v == b"\r\n\r\n") {
+                    let headers = std::str::from_utf8(&raw[..end]).unwrap();
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length: ")
+                                .and_then(|v| v.parse::<usize>().ok())
+                        })
+                        .unwrap();
+                    if raw.len() >= end + 4 + length {
+                        break end + 4 + length;
+                    }
+                }
+            };
+            raw.truncate(total);
+            *observed.lock().unwrap() = raw;
+            stream.write_all(
+                b"HTTP/1.1 201 Created\r\nContent-Length: 2\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nok"
+            ).unwrap();
+        });
+        let (dir, registry, state) = setup();
+        let post = TfBrowserBoundPost {
+            destination: dest.clone(),
+            approved_origin: origin.clone(),
+            body: payload.clone(),
+            body_sha256: format!("{:x}", Sha256::digest(&payload)),
+            content_type: "application/x-www-form-urlencoded",
+            source_page_generation: 11,
+            original_form_index: 2,
+            original_submitter_index: 3,
+            consumed_approval_id: "a".repeat(48),
+        };
+        assert!(
+            prepare_browser_bound_post_policy(
+                "native-test",
+                "session-1",
+                &dir.path().to_string_lossy(),
+                post.clone(),
+                &registry,
+                &state,
+                NetworkPolicy::Public,
+            )
+            .is_err(),
+            "real Public policy must deny HTTP loopback"
+        );
+        let prepared = prepare_browser_bound_post_policy(
+            "native-test",
+            "session-1",
+            &dir.path().to_string_lossy(),
+            post,
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .unwrap();
+        let result = execute_browser_bound_post_policy(
+            &prepared.token,
+            &registry,
+            &state,
+            &origin,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        let observed = received.lock().unwrap();
+        assert!(observed.starts_with(b"POST /one-write HTTP/1.1\r\n"));
+        assert!(observed.ends_with(&payload));
+        assert!(String::from_utf8_lossy(&observed)
+            .to_ascii_lowercase()
+            .contains("content-type: application/x-www-form-urlencoded"));
+        assert_eq!(
+            result.request_body_sha256,
+            format!("{:x}", Sha256::digest(&payload))
+        );
+        assert_eq!(result.request_body_bytes, payload.len());
+        assert_eq!(
+            result.destination_sha256,
+            format!("{:x}", Sha256::digest(dest.as_str().as_bytes()))
+        );
+        assert_eq!(result.receipt.actual_method, "POST");
+        assert_eq!(result.receipt.terminal, "completed");
+        assert_eq!(result.receipt.status_code, Some(201));
+        assert_eq!(result.receipt.effect_state, "Unknown");
+        assert_eq!(result.receipt.retry, "NEVER_REPLAY");
+        assert!(result.receipt.body.is_none());
+        assert!(
+            execute_browser_bound_post_policy(
+                &prepared.token,
+                &registry,
+                &state,
+                &origin,
+                NetworkPolicy::FixtureLoopback
+            )
+            .await
+            .is_err(),
+            "no second HTTP effect may be dispatched with this token"
+        );
     }
     #[test]
     fn scope_token_one_use_approval_cancel_and_provider_status() {
@@ -2574,6 +3031,7 @@ mod tests {
             target: None,
             expires: Instant::now() + TOKEN_TTL,
             approved: true,
+            browser_post: None,
         };
         let results = parse_search(
             r#"{"web":{"results":[
