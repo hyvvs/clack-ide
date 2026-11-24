@@ -1895,3 +1895,92 @@ Product-wide UI/UX release blocker remain unresolved. The one
 canonical 13-gate tracker stays **0 PASS / 5 PARTIAL / 8 BLOCKED**;
 PR #46 remains Draft/unmerged, protected main untouched, no TF5/MCP
 or P15 desktop work.
+
+### 25 November: exact ef73 optimized-host physical closure (after package, documentation-only)
+
+The previous section's **ef73c13 package** was verified once more **without
+rebuilding or mutating compiled source**: staged production-capable original
+WebView2 host SHA-256
+`979e13611f6e0d0c8c390bb3b878b97b27d189d4a93fdd381e667bbad381a257`;
+NSIS SHA-256
+`f9f2df58a02decc2ed2eff3c07e89c1e0920a8494b6042ff71156dfe91b92ee5`.
+This additional verification ran after the documentation-only commit
+`16894aac6a824cb9e84fb260ee16cdd624595dbc`; the **compiled source
+remains exactly ef73c13**, not that subsequent documentation revision.
+The checksum-gated **human-only** installation request
+`ur_xu6so3fb407e` was still **OPEN** at the latest check. No installed
+binary/host identities, operator approval, or public fixture effect
+have been accepted.
+
+Seven separately executed **real Windows AppContainer / original WebView2
+COM / sealed parent / TF3 / Job/UDF** opt-in physical checks with that
+*new exact* staged host succeeded:
+
+1. **Two concurrent native sessions** — two distinct private UDFs; closing
+   the first left the second live for a separately denied TF3 COM request;
+   both Jobs and private profiles cleaned, no leak or cross-session reuse.
+2. **Owned IPv6 loopback isolation** — an ordinary listener client
+   connected once; restricted AppContainer WebView2 connected zero times,
+   retained its original COM terminal and cleaned Job/UDF.
+3. **Original FORM and submitter preconsent capture** — a separate
+   one-document run-scoped TLS443 loopback fixture, actual retained original
+   FORM/submitter, exact 39-byte URL-encoded body and SHA bound to one
+   same-origin destination, one-use original host turn, **no POST**.
+4. **Safe screenshot allow** — separate minimal one-document owned TLS443
+   fixture; original retained DOM, second authentic native turn, one actual
+   800x600 WebView2 `Page.captureScreenshot` yielding **21,421 bytes**
+   of independently validated PNG, original session/page/snapshot/digest
+   binding and consumed-turn replay refusal. No TF2 evidence write.
+5. **Sensitive screenshot deny** — separately served synthetic password
+   and hidden-input document, original structural omission/truncation,
+   authentic second native screenshot turn refused and **zero PNG returned**
+   to the parent. No false assertion that every possible pixel privacy
+   condition or installed UI consent was verified.
+6. **Original retained-link native click navigation** — separate
+   `-MinimalClickDocument` run; a test-only original-node grant dispatched
+   a real WebView2 COM programmatic click, an **independent** original
+   TF3-owned HTTPS `GET /clicked` was actually observed, reference reuse
+   refused, Job active count zero and UDF deleted. The click receipt
+   correctly remained `Unknown`/`NEVER_REPLAY`, since this test-only
+   grant and follow-up GET do **not** authenticate the central approval,
+   a per-action causal graph edge, or an independent business effect.
+7. **Pending document cancellation/no replay** — separate owned TLS443
+   `-PendingDocumentDelayMilliseconds 2500` fixture asserted an actually
+   pending COM/TF3 HTTPS GET, then dropped its live parent future; the
+   original Job terminated, private profile/UDF disappeared, **zero
+   late/duplicate GETs** occurred and no COM completion was falsely
+   claimed. The fixture reported one connection and one cancelled
+   delivery. This is a specific physical cancellation case, **not** the
+   missing two canonical grouped scenarios.
+
+Each test used the independently checked new host hash and only the
+selected run-scoped fixture public certificate. All four loopback TLS
+fixtures were explicitly stopped and cleaned (FORM, screenshot allow,
+screenshot deny, click; pending cancellation was a fifth separately
+stopped fixture). No public persistent TLS origin, private independent
+server oracle, installed Clack operation, credential, remote write or
+file transfer was introduced. The positive click is a **test-only**
+gesture, not an application-approved action. The physical FORM capture
+is **preconsent** and made zero network POSTs; original submit-to-oracle
+effect remains unknown.
+
+CI provenance remains distinct from these Windows local physical
+checks. The ef73 source CI `45510993506` ended **CANCELLED**, with
+failed jobs in Clippy, frontend, Windows/macOS WASI, macOS rust-test,
+and Ubuntu WASI's T3b suite (108 passed, two WASI timeout/fuel tests
+failed, while the earlier T3a stage 29/29 passed). New
+documentation-head CI `45512678852` was **still running** at last
+check; its Ubuntu WASI job passed and Clippy/frontend were failing.
+These broader results do not establish a TF4-specific compiler
+regression and do **not** authorize patching unrelated suites to force
+CI green.
+
+The thirteen governed TF4 release gates remain exactly **0 PASS /
+5 PARTIAL / 8 BLOCKED**, mandatory 17-step **installed** E2E unproven,
+grouped physical lifecycle **9/11**, independently authenticated
+external-link/action causality **UNKNOWN**. Human installation and
+source-matched installed host identification, actual OS approval,
+TF2 evidence, owned public two-origin TLS443 server oracle, external
+business effects, final Product-wide UI/UX acceptance and all
+original protected-branch restrictions remain required. Do not enable
+native browser model tools or merge Draft PR #46.
