@@ -1560,3 +1560,43 @@ Seven-job protected-main versus PR-head CI classification for runs
 failed; it is not an eighth independently failed suite. None of these
 baseline diagnoses excuses release CI. A fresh branch run after push is
 required before claiming that the manifest gates fixed any remote job.
+
+### 24 November continuation: optimized bundle and TF4-specific CI portability
+
+The optimized Windows `23b2fa0a77b4cae174e73625d82cfd0dc6ed158b`
+host/app/NSIS run **finished with exit 0**, `TF4_NATIVE_BUNDLE_BUILD=PASS`
+and `TF4_INTERACTIVE_ACCEPTANCE=NOT_PROVEN`. Exact build outputs were:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `target/tf4-native-stage/clack-browser-host.exe` (pinned native host) | 3,907,072 | `917d2a39aa3a9c4d1eb519db40719c4c82e4aae560e4fc69cff9d81e249e3cb5` |
+| `target/release/clack.exe` | 20,319,232 | `54d4989d435cc467163b811b49aa8ff0b70606f0541436575eef7f83d513fe46` |
+| `target/release/bundle/nsis/Clack_0.8.0_x64-setup.exe` | 12,296,345 | `627b50803511844e3cbdee2818e04c83e05a130c92b015e66efc92e9091b6226` |
+
+These hashes attest **only** to `23b2fa0`, not any later change. No
+installer was run by the assistant; old human request `ur_c636qc4lsf8l`
+remained OPEN and is obsolete for the current updated branch. Do not conflate
+the app's potential three-byte Tauri NSIS bundle marker with a source change.
+
+GitHub Actions `45501970382` for exactly `23b2fa0` **completed FAILURE**:
+seven failing jobs, skipped coverage. The `rust` and Ubuntu WASI logs exposed
+the same **TF4-introduced, cross-platform E0425**: TF3 private preparers named
+`NativeCredentialConsent` / `NativeTransferConsent`, which exist only under
+`cfg(all(windows, feature = "tf-browser-native-runtime"))`. The source fix gates
+the three TF3 preparers with precisely that same compile-time restriction;
+TF3 network executors, private operation classes, public request denial and
+their platform-neutral isolated tests remain intact. A fresh remote CI result
+is required to verify this specific fix; no broad CI-green claim follows.
+
+After the fix, Windows feature-enabled all-target Cargo check **PASS**,
+serial TF3 tests **28/28 PASS** and TF4 owner tests **24/24 PASS**. Three
+actual Windows original-host physical probes using the pinned `23b2fa0` host
+also individually **PASS**: native AppContainer/COM readiness and Job cleanup;
+owned positive TCP listener versus blocked restricted child; and bounded
+secret-free DOM control terminal after TF3 local HTTPS denial. The DOM
+terminal was `denied` with zero visited/elements: this is a correct fail-closed
+negative, **not** a rendered-page or action-positive test. These are native
+**physical probes**, not an installed-app approval, public TLS443, owned
+server business effect, screenshots, credential grant, file-transfer physical
+matrix, or seventeen-step E2E. All thirteen gates retain 0 PASS / 5 PARTIAL /
+8 BLOCKED; model-facing TF4 browser actions remain disabled.

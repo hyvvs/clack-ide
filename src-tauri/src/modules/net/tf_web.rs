@@ -709,6 +709,7 @@ pub(super) async fn execute_browser_bound_post(
 /// owner. A moved original TF4 application-consent witness binds this
 /// origin, source page generation, exact destination and opaque reference.
 /// Neither a model nor the renderer can reach this private constructor.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 #[allow(dead_code)]
 pub(super) fn prepare_browser_origin_credential_get(
     consumed_grant: super::tf_browser::NativeCredentialConsent,
@@ -858,6 +859,7 @@ fn native_transfer_network_scope(
     Ok(target)
 }
 
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 pub(super) fn prepare_browser_bound_download(
     grant: &super::tf_browser::NativeTransferConsent,
     intent: TfBrowserBoundDownload,
@@ -931,6 +933,7 @@ pub(super) async fn execute_browser_bound_download(
     Ok(TfBrowserResource { receipt, bytes })
 }
 
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 pub(super) fn prepare_browser_bound_upload(
     grant: &super::tf_browser::NativeTransferConsent,
     intent: TfBrowserBoundUpload,
