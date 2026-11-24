@@ -774,6 +774,12 @@ pub struct TfBrowserReceipt {
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub canonical_terminal: Option<NativeEffectOutcome>,
+    /// Separately observed TF3 document/COM evidence, present only when an
+    /// approved native link action reaches canonical SUCCESS. URLs are hashed
+    /// rather than projected with potentially secret path/query fragments.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_effect_evidence: Option<NativeEffectEvidence>,
     pub effect_state: &'static str,
     pub reason_code: String,
     pub policy_decision: &'static str,
@@ -895,8 +901,136 @@ enum NativeCommand {
         browser_id: String,
         target: ActionTarget,
         active: Arc<Active>,
-        reply: oneshot::Sender<Result<NativeEffectReceipt, String>>,
+        reply: oneshot::Sender<Result<NativeClickCompletion, String>>,
     },
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+struct NativeClickCompletion {
+    effect: NativeEffectReceipt,
+    evidence: Option<NativeEffectEvidence>,
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+impl NativeClickCompletion {
+    fn without_evidence(effect: NativeEffectReceipt) -> Self {
+        Self {
+            effect,
+            evidence: None,
+        }
+    }
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEffectEvidence {
+    pub broker_request_id: u64,
+    pub source_page_generation: u64,
+    pub observed_page_generation: u64,
+    pub origin: String,
+    pub source_url_sha256: String,
+    pub resulting_url_sha256: String,
+    pub response_sha256: String,
+    pub status_code: u16,
+    pub observed_at_ms: u64,
+    pub native_com_completed: bool,
+}
+/// One consumed central click remains owned by the SAME browser/TF3 actor
+/// until a separately completed native document request establishes an effect
+/// or the bounded observation window expires. This is not a second approval
+/// authority: the original grant was already burned before dispatch.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+struct PendingNativeClickEffect {
+    source_url: String,
+    source_generation: u64,
+    approved_role: SemanticRole,
+    deadline: Instant,
+    reply: oneshot::Sender<Result<NativeClickCompletion, String>>,
+    _lease: NativeActionBusyGuard,
+}
+
+/// Native DISPATCHED is never SUCCESS. An independently completed TF3 HTTPS
+/// HTML document with a *new* native page generation, a different URL and the
+/// original approved origin can confirm the navigation effect of an approved
+/// exact retained link click. Buttons, same-generation resources, redirects to
+/// other origins, failed/partial network receipts and ambiguous actions stay
+/// UNKNOWN. No target is re-selected and no action is retried here.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn native_link_navigation_observed(
+    receipt: &BrokerResourceReceipt,
+    source_url: &str,
+    source_generation: u64,
+    approved_role: &SemanticRole,
+) -> bool {
+    if *approved_role != SemanticRole::Link
+        || !receipt.native_com_completed
+        || receipt.terminal != "completed"
+        || receipt.page_generation <= source_generation
+        || receipt.bytes == 0
+    {
+        return false;
+    }
+    let Some(tf3) = receipt.tf3.as_ref() else {
+        return false;
+    };
+    if tf3.terminal != "completed"
+        || tf3.reason_code != "ok"
+        || tf3.policy_decision != "allowed"
+        || !tf3
+            .status_code
+            .is_some_and(|status| (200..300).contains(&status))
+        || tf3.truncated
+        || tf3.bytes_retained == 0
+        || tf3.content_sha256.is_none()
+        || !tf3.content_type.as_deref().is_some_and(|mime| {
+            mime.eq_ignore_ascii_case("text/html")
+                || mime.to_ascii_lowercase().starts_with("text/html;")
+        })
+    {
+        return false;
+    }
+    let (Some(destination), Some(requested)) =
+        (tf3.final_url.as_deref(), tf3.requested_url.as_deref())
+    else {
+        return false;
+    };
+    let (Ok(initial), Ok(final_url), Ok(requested_url)) = (
+        Url::parse(source_url),
+        Url::parse(destination),
+        Url::parse(requested),
+    ) else {
+        return false;
+    };
+    initial.scheme() == "https"
+        && final_url.scheme() == "https"
+        && final_url.origin() == initial.origin()
+        && requested_url.origin() == initial.origin()
+        && final_url != initial
+        && requested_url != initial
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn native_link_navigation_evidence(
+    receipt: &BrokerResourceReceipt,
+    source_url: &str,
+    source_generation: u64,
+    approved_role: &SemanticRole,
+) -> Option<NativeEffectEvidence> {
+    if !native_link_navigation_observed(receipt, source_url, source_generation, approved_role) {
+        return None;
+    }
+    let tf3 = receipt.tf3.as_ref()?;
+    let destination = tf3.final_url.as_deref()?;
+    let origin = Url::parse(destination).ok()?.origin().ascii_serialization();
+    Some(NativeEffectEvidence {
+        broker_request_id: receipt.request_id,
+        source_page_generation: source_generation,
+        observed_page_generation: receipt.page_generation,
+        origin,
+        source_url_sha256: format!("{:x}", Sha256::digest(source_url.as_bytes())),
+        resulting_url_sha256: format!("{:x}", Sha256::digest(destination.as_bytes())),
+        response_sha256: tf3.content_sha256.clone()?,
+        status_code: tf3.status_code?,
+        observed_at_ms: millis(),
+        native_com_completed: receipt.native_com_completed,
+    })
 }
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 struct NativeActionBusyGuard {
@@ -1601,6 +1735,8 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
         native_terminal: None,
         #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
         canonical_terminal: None,
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+        native_effect_evidence: None,
         effect_state: "NoEffect",
         reason_code: "not-executed".into(),
         policy_decision: "denied",
@@ -1670,7 +1806,15 @@ fn consume_native_click_approval(
     native: &NativeExactClickApprovalScope<'_>,
     registry: &WorkspaceRegistry,
     state: &TfBrowserState,
-) -> Result<(NativeConsumedExactClickApproval, String), String> {
+) -> Result<
+    (
+        NativeConsumedExactClickApproval,
+        String,
+        SemanticRole,
+        String,
+    ),
+    String,
+> {
     let mut entries = state
         .entries
         .lock()
@@ -1757,7 +1901,12 @@ fn consume_native_click_approval(
         .ok_or("browser-revision-exhausted")?;
     session.busy = true;
     session.revision = next_revision;
-    Ok((witness, id.clone()))
+    Ok((
+        witness,
+        id.clone(),
+        p.native_role.ok_or("native-click-approved-role-missing")?,
+        p.url.ok_or("native-click-approved-source-missing")?,
+    ))
 }
 
 /// Production-only read-only confined browser startup through the existing
@@ -1891,6 +2040,10 @@ async fn execute_confined_native(
         let _liveness = NativeOwnerLivenessGuard(running);
         let deadline = tokio::time::Instant::now() + SESSION_TTL;
         let mut terminal = Ok(());
+        // A dispatch acknowledgment is not the final click terminal. The
+        // single pipe owner must continue TF3/COM service, without processing
+        // another action, until independent navigation or an UNKNOWN deadline.
+        let mut pending_click: Option<PendingNativeClickEffect> = None;
         loop {
             if *stopped.borrow() || tokio::time::Instant::now() >= deadline {
                 break;
@@ -1911,6 +2064,37 @@ async fn execute_confined_native(
             };
             match outcome {
                 Ok(Ok(result)) => {
+                    if let Some(waiting) = pending_click.as_ref() {
+                        let expired = Instant::now() >= waiting.deadline;
+                        let abandoned = waiting.reply.is_closed();
+                        let evidence = (!expired && !abandoned)
+                            .then(|| {
+                                native_link_navigation_evidence(
+                                    &result,
+                                    &waiting.source_url,
+                                    waiting.source_generation,
+                                    &waiting.approved_role,
+                                )
+                            })
+                            .flatten();
+                        let confirmed = evidence.is_some();
+                        if confirmed || expired || abandoned {
+                            if let Some(waiting) = pending_click.take() {
+                                let terminal = if confirmed {
+                                    NativeEffectTerminal::Confirmed
+                                } else {
+                                    // An unconfirmed dispatch stays UNKNOWN,
+                                    // even if the reply receiver has vanished.
+                                    NativeEffectTerminal::Dispatched
+                                };
+                                let _ = waiting.reply.send(Ok(NativeClickCompletion {
+                                    effect: NativeEffectReceipt::classify(terminal),
+                                    evidence,
+                                }));
+                                // The original busy lease is released once.
+                            }
+                        }
+                    }
                     if result.terminal != "idle" {
                         // Every new GET can mutate DOM/state. Never retain an
                         // exact element across a new native resource flight.
@@ -1924,7 +2108,7 @@ async fn execute_confined_native(
                             rows.push(result);
                         }
                     }
-                    if browser.has_control_turn() {
+                    if browser.has_control_turn() && pending_click.is_none() {
                         // At this point the child worker explicitly froze new
                         // v1 resource tickets and both pipes are idle. Do NOT
                         // poll/cancel serve_one() against command_rx: dropping
@@ -1957,11 +2141,11 @@ async fn execute_confined_native(
                                     // The owner of this mailbox command must
                                     // release its reservation even on denied,
                                     // stale, cancelled, expired or closed reply.
-                                    let _lease = NativeActionBusyGuard {
+                                    let mut lease = Some(NativeActionBusyGuard {
                                         app: service_app.clone(),
                                         browser_id: browser_id.clone(),
                                         token: token.clone(),
-                                    };
+                                    });
                                     if !reply.is_closed() {
                                         let approved = (|| {
                                             if active.cancelled.load(Ordering::Acquire) {
@@ -1978,8 +2162,14 @@ async fn execute_confined_native(
                                                 &token, &scope, &registry, &authority,
                                             )
                                         })();
+                                        let mut clicked_source = None;
                                         let attempted = match approved {
-                                            Ok((grant, approved_browser_id)) => {
+                                            Ok((
+                                                grant,
+                                                approved_browser_id,
+                                                approved_role,
+                                                source_url,
+                                            )) => {
                                                 if approved_browser_id != browser_id {
                                                     Ok(NativeEffectReceipt::classify(
                                                         NativeEffectTerminal::FailedBeforeDispatch,
@@ -2002,6 +2192,8 @@ async fn execute_confined_native(
                                                         NativeEffectTerminal::CancelledBeforeDispatch,
                                                     ))
                                                 } else {
+                                                    clicked_source =
+                                                        Some((approved_role, source_url));
                                                     browser
                                                         .dispatch_exact_click_in_control_turn(grant)
                                                         .await
@@ -2014,7 +2206,39 @@ async fn execute_confined_native(
                                         if let Ok(mut latest) = published_snapshot.lock() {
                                             *latest = None;
                                         }
-                                        let _ = reply.send(attempted);
+                                        if matches!(
+                                            &attempted,
+                                            Ok(effect) if effect.terminal == NativeEffectTerminal::Dispatched
+                                        ) {
+                                            if let Some((approved_role, source_url)) =
+                                                clicked_source
+                                                    .filter(|(role, _)| *role == SemanticRole::Link)
+                                            {
+                                                pending_click = Some(PendingNativeClickEffect {
+                                                    source_url,
+                                                    source_generation: target.page_generation,
+                                                    approved_role,
+                                                    // One further bounded TF3 idle interval may
+                                                    // complete after the initial click dispatch.
+                                                    deadline: Instant::now()
+                                                        + Duration::from_secs(18),
+                                                    reply,
+                                                    _lease: lease
+                                                        .take()
+                                                        .expect("native click owns lease"),
+                                                });
+                                            } else {
+                                                let _ =
+                                                    reply.send(attempted.map(
+                                                        NativeClickCompletion::without_evidence,
+                                                    ));
+                                            }
+                                        } else {
+                                            let _ = reply.send(
+                                                attempted
+                                                    .map(NativeClickCompletion::without_evidence),
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -2037,6 +2261,16 @@ async fn execute_confined_native(
                     break;
                 }
             }
+        }
+        if let Some(waiting) = pending_click.take() {
+            // Native shutdown/crash after a possible gesture cannot imply
+            // cancellation or failure. Burn the original action and report
+            // UNKNOWN without retrying or claiming COM deferrals completed.
+            let _ = waiting
+                .reply
+                .send(Ok(NativeClickCompletion::without_evidence(
+                    NativeEffectReceipt::classify(NativeEffectTerminal::Unknown),
+                )));
         }
         let cleanup = browser.shutdown();
         if cleanup.is_err() {
@@ -2312,7 +2546,9 @@ async fn execute_confined_click(
     let terminal = match tokio::time::timeout(Duration::from_secs(2), sender.send(command)).await {
         Ok(Ok(())) => {
             turn_requester.request();
-            tokio::time::timeout(Duration::from_secs(25), result).await
+            // Includes the bounded independent TF3 post-dispatch window;
+            // an early outer timeout must not erase an observed native effect.
+            tokio::time::timeout(Duration::from_secs(45), result).await
         }
         _ => {
             // This command may have entered the native owner; even loss of
@@ -2327,10 +2563,14 @@ async fn execute_confined_click(
             return Ok(receipt);
         }
     };
-    let effect = match terminal {
+    let completion = match terminal {
         Ok(Ok(Ok(result))) => result,
-        _ => NativeEffectReceipt::classify(NativeEffectTerminal::Unknown),
+        _ => NativeClickCompletion::without_evidence(NativeEffectReceipt::classify(
+            NativeEffectTerminal::Unknown,
+        )),
     };
+    let effect = completion.effect;
+    receipt.native_effect_evidence = completion.evidence;
     receipt.native_terminal = Some(effect.terminal);
     receipt.canonical_terminal = Some(effect.canonical_terminal);
     receipt.terminal = match effect.canonical_terminal {
@@ -3175,6 +3415,158 @@ mod tests {
             assert_eq!(receipt.effect_state, "NotAttempted");
             assert!(!receipt.auto_retry);
         }
+    }
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn native_click_confirmation_requires_independent_next_document_receipt() {
+        let source = "https://example.org/";
+        let target = "https://example.org/clicked";
+        let make_receipt = || BrokerResourceReceipt {
+            request_id: 2,
+            page_generation: 2,
+            native_com_completed: true,
+            terminal: "completed",
+            reason: "ok".into(),
+            bytes: 40,
+            tf3: Some(tf_web::TfWebReceipt {
+                tool_id: "tf.web.v1",
+                request_id: "one-broker-flight".into(),
+                actor: "fixture-actor".into(),
+                operation: TfWebOperation::HttpGet,
+                terminal: "completed",
+                effect_state: "Observed",
+                requested_url: Some(target.into()),
+                final_url: Some(target.into()),
+                redirect_chain: Vec::new(),
+                normalized_target: Some(target.into()),
+                status_code: Some(200),
+                content_type: Some("text/html".into()),
+                tls_state: "verified",
+                bytes_received: Some(40),
+                bytes_retained: 40,
+                truncated: false,
+                content_sha256: Some("b".repeat(64)),
+                body: None,
+                started_at: 100,
+                ended_at: 200,
+                credential_reference: None,
+                credential_used: false,
+                retry: "NEVER_REPLAY",
+                auto_retry: false,
+                policy_decision: "allowed",
+                reason_code: "ok",
+                search_results: None,
+                search_source: None,
+                uncertainty: "transport-only",
+                isolation: "tf3",
+                dns_evidence: Vec::new(),
+            }),
+        };
+        let good = make_receipt();
+        assert!(native_link_navigation_observed(
+            &good,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
+        let evidence = native_link_navigation_evidence(&good, source, 1, &SemanticRole::Link)
+            .expect("independent completed HTTPS document carries bounded receipt evidence");
+        assert_eq!(evidence.broker_request_id, 2);
+        assert_eq!(evidence.source_page_generation, 1);
+        assert_eq!(evidence.observed_page_generation, 2);
+        assert_eq!(evidence.origin, "https://example.org");
+        assert_eq!(evidence.response_sha256, "b".repeat(64));
+        assert_eq!(evidence.status_code, 200);
+        assert!(evidence.native_com_completed);
+        let output = serde_json::to_string(&evidence).unwrap();
+        assert!(!output.contains("/clicked"));
+        assert!(!output.contains("one-broker-flight"));
+        assert!(!native_link_navigation_observed(
+            &good,
+            source,
+            1,
+            &SemanticRole::Button
+        ));
+        let mut altered = make_receipt();
+        altered.page_generation = 1;
+        assert!(!native_link_navigation_observed(
+            &altered,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
+        let mut altered = make_receipt();
+        altered.native_com_completed = false;
+        assert!(!native_link_navigation_observed(
+            &altered,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
+        let mut altered = make_receipt();
+        altered.terminal = "denied";
+        assert!(!native_link_navigation_observed(
+            &altered,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
+        let mut altered = make_receipt();
+        altered.tf3.as_mut().unwrap().final_url = Some("https://foreign.example/clicked".into());
+        assert!(!native_link_navigation_observed(
+            &altered,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
+        let mut altered = make_receipt();
+        altered.tf3.as_mut().unwrap().requested_url = Some("https://example.org/".into());
+        assert!(!native_link_navigation_observed(
+            &altered,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
+        let mut altered = make_receipt();
+        altered.tf3.as_mut().unwrap().status_code = Some(403);
+        assert!(!native_link_navigation_observed(
+            &altered,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
+        let mut altered = make_receipt();
+        altered.tf3.as_mut().unwrap().content_type = Some("text/css".into());
+        assert!(!native_link_navigation_observed(
+            &altered,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
+        let mut altered = make_receipt();
+        altered.tf3.as_mut().unwrap().truncated = true;
+        assert!(!native_link_navigation_observed(
+            &altered,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
+        let mut altered = make_receipt();
+        altered.tf3.as_mut().unwrap().content_sha256 = None;
+        assert!(!native_link_navigation_observed(
+            &altered,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
+        let mut altered = make_receipt();
+        altered.tf3 = None;
+        assert!(!native_link_navigation_observed(
+            &altered,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
     }
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     #[test]
