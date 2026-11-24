@@ -124,6 +124,12 @@ pub enum TfBrowserOperation {
     /// Native-only trusted-broker GET with one origin-scoped opaque keyring
     /// reference. Never registered as a model browser tool before acceptance.
     CredentialGet,
+    /// A genuine TF4-consented, same-native-page TF3 GET committed through
+    /// TF2 to one no-clobber workspace file. Deliberately not model-exposed.
+    Download,
+    /// A genuine TF4-consented TF2 original workspace file read sent as one
+    /// exact-body TF3 POST, never a renderer file picker or arbitrary upload.
+    Upload,
 }
 impl TfBrowserOperation {
     fn network(self) -> bool {
@@ -145,6 +151,8 @@ impl TfBrowserOperation {
                 | Self::Submit
                 | Self::Screenshot
                 | Self::CredentialGet
+                | Self::Download
+                | Self::Upload
         )
     }
     fn native_action(self) -> bool {
@@ -566,6 +574,8 @@ fn consume<'a>(
                 TfBrowserOperation::CloseConfined
                     | TfBrowserOperation::ObserveConfined
                     | TfBrowserOperation::CredentialGet
+                    | TfBrowserOperation::Download
+                    | TfBrowserOperation::Upload
             )
         {
             return Err("confined-native-action-observation-not-accepted".into());
@@ -603,6 +613,44 @@ fn consume<'a>(
                 || p.url.as_deref() != Some(c.page.url.as_str())
             {
                 return Err("native-origin-credential-current-original-page-stale".into());
+            }
+        }
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+        if matches!(
+            p.request.operation,
+            TfBrowserOperation::Download | TfBrowserOperation::Upload
+        ) {
+            let transfer = p
+                .transfer_scope
+                .as_ref()
+                .ok_or("native-transfer-consumed-TF4-approved-scope-required")?;
+            let native = session
+                .native
+                .as_ref()
+                .ok_or("native-transfer-genuine-WebView2-owner-required")?;
+            if !native.owner_alive.load(Ordering::Acquire) {
+                return Err("native-transfer-owner-closed".into());
+            }
+            let page = native
+                .snapshot
+                .lock()
+                .map_err(|_| "native-transfer-snapshot-unavailable")?
+                .clone()
+                .ok_or("native-transfer-original-snapshot-lost")?;
+            if page.truncated
+                || transfer.page.browser_session_id != page.browser_session_id
+                || transfer.page.page_id != page.page_id
+                || transfer.page.page_generation != page.page_generation
+                || transfer.page.snapshot_id != page.snapshot_id
+                || transfer.page.url != page.url
+                || transfer.page.url != session.snapshot.url
+                || transfer.approved_origin.origin() != transfer.destination.origin()
+                || p.url.as_deref() != Some(transfer.page.url.as_str())
+                || p.request.url.as_deref() != Some(transfer.destination.as_str())
+                || (p.request.operation == TfBrowserOperation::Upload)
+                    != transfer.upload_file.is_some()
+            {
+                return Err("native-transfer-original-consent-page-file-or-origin-stale".into());
             }
         }
         if p.request.operation == TfBrowserOperation::ClickLink {
@@ -857,6 +905,12 @@ pub struct TfBrowserReceipt {
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_credential_transport: Option<NativeOriginCredentialTransport>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_download_evidence: Option<tf_operations::Tf4DownloadEvidence>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_upload_transport: Option<NativeUploadTransport>,
     pub effect_state: &'static str,
     pub reason_code: String,
     pub policy_decision: &'static str,
@@ -1054,6 +1108,20 @@ pub struct NativeOriginCredentialTransport {
 }
 
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeUploadTransport {
+    pub method: &'static str,
+    pub destination_sha256: String,
+    pub original_file_sha256: String,
+    pub body_bytes: usize,
+    pub tf3_request_id: String,
+    pub status_code: Option<u16>,
+    pub remote_effect_state: &'static str,
+    pub retry: &'static str,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct NativeScreenshotScope {
     browser_session_id: String,
@@ -1076,6 +1144,122 @@ struct NativeCredentialScope {
     origin: Url,
     destination: Url,
     reference: String,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NativeUploadFileScope {
+    relative_path: String,
+    bytes: usize,
+    sha256: String,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NativeTransferScope {
+    page: NativeScreenshotScope,
+    approved_origin: Url,
+    destination: Url,
+    upload_file: Option<NativeUploadFileScope>,
+}
+
+/// An immutable, moved original TF4 one-use consent witness. The TF3 network
+/// and TF2 filesystem helpers require this type, not a model-controlled URL,
+/// file path, string approval ID, or an alternate permission system.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+pub(crate) struct NativeTransferConsent {
+    actor: String,
+    session_id: String,
+    workspace_root: PathBuf,
+    scope: NativeTransferScope,
+    approval_id: String,
+    expires: Instant,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+impl NativeTransferConsent {
+    fn from_consumed(p: &Pending, approval_id: &str) -> Result<Self, String> {
+        let scope = p
+            .transfer_scope
+            .clone()
+            .ok_or("native-transfer-consumed-scope-missing")?;
+        if !p.approved
+            || p.approving
+            || p.expires <= Instant::now()
+            || !matches!(
+                p.request.operation,
+                TfBrowserOperation::Download | TfBrowserOperation::Upload
+            )
+            || (p.request.operation == TfBrowserOperation::Upload) != scope.upload_file.is_some()
+            || p.request.page_id.as_deref() != Some(scope.page.page_id.as_str())
+            || p.request.page_generation != Some(scope.page.page_generation)
+            || p.request.snapshot_id.as_deref() != Some(scope.page.snapshot_id.as_str())
+            || p.url.as_deref() != Some(scope.page.url.as_str())
+            || p.request.url.as_deref() != Some(scope.destination.as_str())
+            || approval_id.len() != 48
+            || !approval_id
+                .bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        {
+            return Err("native-transfer-original-consent-changed".into());
+        }
+        Ok(Self {
+            actor: p.request.actor.clone(),
+            session_id: p.request.session_id.clone(),
+            workspace_root: p.root.clone(),
+            scope,
+            approval_id: approval_id.to_owned(),
+            expires: p.expires,
+        })
+    }
+    pub(crate) fn tf3_identity(&self) -> (&str, &str, &Path) {
+        (&self.actor, &self.session_id, &self.workspace_root)
+    }
+    pub(crate) fn approved_workspace(&self) -> &Path {
+        &self.workspace_root
+    }
+    pub(crate) fn approved_url(&self) -> &Url {
+        &self.scope.destination
+    }
+    pub(crate) fn approved_origin(&self) -> &Url {
+        &self.scope.approved_origin
+    }
+    pub(crate) fn source_page_generation(&self) -> u64 {
+        self.scope.page.page_generation
+    }
+    pub(crate) fn page_id(&self) -> &str {
+        &self.scope.page.page_id
+    }
+    pub(crate) fn snapshot_id(&self) -> &str {
+        &self.scope.page.snapshot_id
+    }
+    pub(crate) fn original_source(&self) -> Option<(&str, usize, &str)> {
+        self.scope
+            .upload_file
+            .as_ref()
+            .map(|s| (s.relative_path.as_str(), s.bytes, s.sha256.as_str()))
+    }
+    pub(crate) fn output_filename(&self) -> String {
+        let hash = format!("{:x}", Sha256::digest(self.approval_id.as_bytes()));
+        format!("tf4-browser-download-{}.bin", &hash[..24])
+    }
+    pub(crate) fn matches_network(
+        &self,
+        destination: &Url,
+        origin: &Url,
+        approval_id: &str,
+        page_generation: u64,
+        uploading: bool,
+    ) -> bool {
+        self.expires > Instant::now()
+            && !self.actor.is_empty()
+            && !self.session_id.is_empty()
+            && self.scope.destination == *destination
+            && self.scope.approved_origin == *origin
+            && self.approval_id == approval_id
+            && self.scope.page.page_generation == page_generation
+            && self.scope.upload_file.is_some() == uploading
+    }
 }
 
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
@@ -1575,6 +1759,8 @@ struct Pending {
     screenshot_scope: Option<NativeScreenshotScope>,
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     credential_scope: Option<NativeCredentialScope>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    transfer_scope: Option<NativeTransferScope>,
 }
 struct Active {
     cancelled: AtomicBool,
@@ -1887,6 +2073,33 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
                 return Err("native-origin-credential-exact-scope-denied".into());
             }
         }
+        TfBrowserOperation::Download | TfBrowserOperation::Upload => {
+            let url = req
+                .url
+                .as_deref()
+                .ok_or("native-transfer-exact-source-or-destination-required")?;
+            let destination = Url::parse(url).map_err(|_| "native-transfer-exact-url-invalid")?;
+            if req.selector.is_some()
+                || req.element_id.is_some()
+                || req.page_id.as_deref().is_none_or(|v| !valid_id(v))
+                || req.page_generation.is_none_or(|g| g == 0)
+                || req.snapshot_id.as_deref().is_none_or(|v| !valid_id(v))
+                || destination.scheme() != "https"
+                || destination.port().is_some()
+                || destination.query().is_some()
+                || destination.fragment().is_some()
+                || !destination.username().is_empty()
+                || destination.password().is_some()
+                || destination.as_str() != url
+                || (req.operation == TfBrowserOperation::Download && req.text.is_some())
+                || (req.operation == TfBrowserOperation::Upload
+                    && req.text.as_deref().is_none_or(|v| {
+                        v.is_empty() || v.len() > 256 || v.chars().any(char::is_control)
+                    }))
+            {
+                return Err("native-transfer-exact-original-scope-required".into());
+            }
+        }
         operation if operation.native_action() => {
             if req.url.is_some()
                 || req.selector.is_some()
@@ -1961,6 +2174,8 @@ pub fn prepare(
     let mut screenshot_scope: Option<NativeScreenshotScope> = None;
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     let mut credential_scope: Option<NativeCredentialScope> = None;
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    let mut transfer_scope: Option<NativeTransferScope> = None;
     let (browser_id, revision, url) = if matches!(
         req.operation,
         TfBrowserOperation::Open | TfBrowserOperation::OpenConfined
@@ -1995,6 +2210,8 @@ pub fn prepare(
                     | TfBrowserOperation::ObserveConfined
                     | TfBrowserOperation::Screenshot
                     | TfBrowserOperation::CredentialGet
+                    | TfBrowserOperation::Download
+                    | TfBrowserOperation::Upload
             ) && !req.operation.native_action()
             {
                 return Err("confined-native-operation-not-yet-accepted".into());
@@ -2116,6 +2333,62 @@ pub fn prepare(
                         .clone()
                         .ok_or("native-credential-reference-required")?,
                 });
+            } else if matches!(
+                req.operation,
+                TfBrowserOperation::Download | TfBrowserOperation::Upload
+            ) {
+                let page = native
+                    .snapshot
+                    .lock()
+                    .map_err(|_| "native-transfer-original-snapshot-unavailable")?
+                    .clone()
+                    .ok_or("native-transfer-original-page-required")?;
+                let destination = Url::parse(
+                    req.url
+                        .as_deref()
+                        .ok_or("native-transfer-destination-missing")?,
+                )
+                .map_err(|_| "native-transfer-destination-invalid")?;
+                let source =
+                    Url::parse(&page.url).map_err(|_| "native-transfer-original-origin-invalid")?;
+                if page.truncated
+                    || destination.origin() != source.origin()
+                    || source.scheme() != "https"
+                    || source.port().is_some()
+                    || page.url != session.snapshot.url
+                    || req.page_id.as_deref() != Some(page.page_id.as_str())
+                    || req.page_generation != Some(page.page_generation)
+                    || req.snapshot_id.as_deref() != Some(page.snapshot_id.as_str())
+                {
+                    return Err("native-transfer-original-page-or-TF3-origin-changed".into());
+                }
+                let upload_file = if req.operation == TfBrowserOperation::Upload {
+                    let relative = req
+                        .text
+                        .as_deref()
+                        .ok_or("native-transfer-upload-original-file-required")?;
+                    let checked =
+                        tf_operations::read_native_browser_upload_file(registry, &root, relative)?;
+                    Some(NativeUploadFileScope {
+                        relative_path: checked.relative_path,
+                        bytes: checked.bytes.len(),
+                        sha256: checked.sha256,
+                    })
+                } else {
+                    None
+                };
+                transfer_scope = Some(NativeTransferScope {
+                    page: NativeScreenshotScope {
+                        browser_session_id: page.browser_session_id,
+                        page_id: page.page_id,
+                        page_generation: page.page_generation,
+                        snapshot_id: page.snapshot_id,
+                        url: page.url,
+                    },
+                    approved_origin: source,
+                    destination,
+                    upload_file,
+                });
             }
         } else if matches!(
             req.operation,
@@ -2137,6 +2410,8 @@ pub fn prepare(
                     | TfBrowserOperation::Uncheck
                     | TfBrowserOperation::Scroll
                     | TfBrowserOperation::Submit
+                    | TfBrowserOperation::Download
+                    | TfBrowserOperation::Upload
             )
         {
             return Err("native-action-requires-confined-approved-runtime".into());
@@ -2195,7 +2470,10 @@ pub fn prepare(
                     || operation.native_action()
                     || matches!(
                         operation,
-                        TfBrowserOperation::Screenshot | TfBrowserOperation::CredentialGet
+                        TfBrowserOperation::Screenshot
+                            | TfBrowserOperation::CredentialGet
+                            | TfBrowserOperation::Download
+                            | TfBrowserOperation::Upload
                     ) =>
             {
                 // Bind the original approved origin in the existing immutable
@@ -2214,6 +2492,18 @@ pub fn prepare(
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     let credential_requires_approval = credential_scope.is_some();
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    let transfer_requires_approval = transfer_scope.is_some();
+    #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
+    let transfer_requires_approval = false;
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    if matches!(
+        req.operation,
+        TfBrowserOperation::Download | TfBrowserOperation::Upload
+    ) && transfer_scope.is_none()
+    {
+        return Err("native-TF2-transfer-WebView2-owner-required".into());
+    }
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     if req.operation == TfBrowserOperation::CredentialGet && credential_scope.is_none() {
         return Err("native-origin-credential-WebView2-owner-required".into());
     }
@@ -2227,7 +2517,8 @@ pub fn prepare(
         operation: req.operation,
         requires_approval: req.operation.approval_required()
             || screenshot_requires_approval
-            || credential_requires_approval,
+            || credential_requires_approval
+            || transfer_requires_approval,
         workspace_root: root.to_string_lossy().into_owned(),
         browser_session_id: browser_id.clone(),
         engine: if matches!(
@@ -2244,6 +2535,8 @@ pub fn prepare(
                 | TfBrowserOperation::Submit
                 | TfBrowserOperation::Screenshot
                 | TfBrowserOperation::CredentialGet
+                | TfBrowserOperation::Download
+                | TfBrowserOperation::Upload
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ENGINE
@@ -2264,6 +2557,8 @@ pub fn prepare(
                 | TfBrowserOperation::Submit
                 | TfBrowserOperation::Screenshot
                 | TfBrowserOperation::CredentialGet
+                | TfBrowserOperation::Download
+                | TfBrowserOperation::Upload
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ISOLATION
@@ -2297,6 +2592,8 @@ pub fn prepare(
             screenshot_scope,
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             credential_scope,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            transfer_scope,
         },
     );
     Ok(prepared)
@@ -2418,6 +2715,10 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
         native_screenshot_evidence: None,
         #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
         native_credential_transport: None,
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+        native_download_evidence: None,
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+        native_upload_transport: None,
         effect_state: "NoEffect",
         reason_code: "not-executed".into(),
         policy_decision: "denied",
@@ -2437,6 +2738,8 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
                 | TfBrowserOperation::Submit
                 | TfBrowserOperation::Screenshot
                 | TfBrowserOperation::CredentialGet
+                | TfBrowserOperation::Download
+                | TfBrowserOperation::Upload
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ENGINE
@@ -2457,6 +2760,8 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
                 | TfBrowserOperation::Submit
                 | TfBrowserOperation::Screenshot
                 | TfBrowserOperation::CredentialGet
+                | TfBrowserOperation::Download
+                | TfBrowserOperation::Upload
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ISOLATION
@@ -3705,6 +4010,205 @@ async fn execute_confined_credential_get(
     Ok(receipt)
 }
 
+/// The existing TF4 application's single-use approval, TF3 network authority
+/// and TF2 workspace authority jointly own each native browser file effect.
+/// No renderer file picker, server-controlled filename or generic model POST
+/// can reach either private path. A remote request that may have begun always
+/// yields UNKNOWN/NEVER_REPLAY until separately observed server-side evidence.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+async fn execute_confined_file_transfer(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfBrowserState,
+    web: &TfWebState,
+) -> Result<TfBrowserReceipt, String> {
+    let (pending, active, _lease) = consume(token, registry, state)?;
+    let mut receipt = initial_receipt(&pending);
+    receipt.retry = "NEVER_REPLAY";
+    receipt.auto_retry = false;
+    receipt.policy_decision = "allowed";
+    receipt.uncertainty = "native-transfer-not-yet-dispatched";
+    let grant = NativeTransferConsent::from_consumed(&pending, token)?;
+    let origin = grant.approved_origin().clone();
+    let destination = grant.approved_url().clone();
+    let generation = grant.source_page_generation();
+    let approval_id = token.to_owned();
+
+    // TF2 independently reopens/attests the ORIGINAL local file immediately
+    // before the network grant. A mutated file is a pre-dispatch denial, not
+    // authorization to substitute new bytes or a new self-consistent SHA.
+    let original_upload = if pending.request.operation == TfBrowserOperation::Upload {
+        let (relative, bytes, digest) = grant
+            .original_source()
+            .ok_or("native-upload-original-preconsent-file-missing")?;
+        let fresh = match tf_operations::read_native_browser_upload_file(
+            registry,
+            grant.approved_workspace(),
+            relative,
+        ) {
+            Ok(file)
+                if file.bytes.len() == bytes
+                    && file.sha256 == digest
+                    && file.relative_path == relative =>
+            {
+                file
+            }
+            _ => {
+                receipt.terminal = "denied";
+                receipt.reason_code = "native-upload-original-TF2-file-mutated-or-revoked".into();
+                receipt.effect_state = "NoEffect";
+                receipt.policy_decision = "denied";
+                receipt.ended_at = millis();
+                return Ok(receipt);
+            }
+        };
+        Some(fresh)
+    } else {
+        None
+    };
+    if active.cancelled.load(Ordering::Acquire) {
+        receipt.terminal = "cancelled";
+        receipt.effect_state = "NoEffect";
+        receipt.reason_code = "native-transfer-cancelled-before-network-grant".into();
+        receipt.ended_at = millis();
+        return Ok(receipt);
+    }
+
+    let prepared = match original_upload {
+        Some(file) => tf_web::prepare_browser_bound_upload(
+            &grant,
+            tf_web::TfBrowserBoundUpload {
+                destination: destination.clone(),
+                approved_origin: origin.clone(),
+                source_page_generation: generation,
+                original_file_sha256: file.sha256,
+                body: file.bytes,
+                consumed_approval_id: approval_id.clone(),
+            },
+            registry,
+            web,
+        ),
+        None => tf_web::prepare_browser_bound_download(
+            &grant,
+            tf_web::TfBrowserBoundDownload {
+                destination: destination.clone(),
+                approved_origin: origin.clone(),
+                source_page_generation: generation,
+                consumed_approval_id: approval_id.clone(),
+            },
+            registry,
+            web,
+        ),
+    };
+    let prepared = match prepared {
+        Ok(value) => value,
+        Err(_) => {
+            receipt.terminal = "denied";
+            receipt.effect_state = "NoEffect";
+            receipt.policy_decision = "denied";
+            receipt.reason_code = "native-transfer-TF3-public-policy-or-witness-denied".into();
+            receipt.ended_at = millis();
+            return Ok(receipt);
+        }
+    };
+    {
+        let mut inner = active
+            .tf_web_token
+            .lock()
+            .map_err(|_| "native-transfer-inner-TF3-token-unavailable")?;
+        *inner = Some(prepared.token.clone());
+    }
+    if active.cancelled.load(Ordering::Acquire) {
+        let _ = tf_web::cancel(&prepared.token, web);
+        receipt.terminal = "cancelled";
+        receipt.effect_state = "NoEffect";
+        receipt.reason_code = "native-transfer-TF3-token-cancelled-before-send".into();
+        receipt.ended_at = millis();
+        return Ok(receipt);
+    }
+    if pending.request.operation == TfBrowserOperation::Upload {
+        match tf_web::execute_browser_bound_upload(&prepared.token, registry, web, &origin).await {
+            Ok(transport) => {
+                receipt.status_code = transport.receipt.status_code;
+                receipt.terminal = if transport.receipt.terminal == "completed" {
+                    "completed"
+                } else {
+                    "unknown"
+                };
+                receipt.effect_state = if transport.receipt.terminal == "completed" {
+                    "Unknown"
+                } else {
+                    transport.receipt.effect_state
+                };
+                receipt.reason_code = "native-upload-TF3-exact-body-transport-only".into();
+                receipt.uncertainty = "server-side-upload-business-effect-unverified";
+                receipt.dns_evidence = transport.receipt.dns_evidence;
+                receipt.native_upload_transport = Some(NativeUploadTransport {
+                    method: "POST",
+                    destination_sha256: transport.destination_sha256,
+                    original_file_sha256: transport.request_body_sha256,
+                    body_bytes: transport.request_body_bytes,
+                    tf3_request_id: transport.receipt.request_id,
+                    status_code: transport.receipt.status_code,
+                    remote_effect_state: "Unknown",
+                    retry: "NEVER_REPLAY",
+                });
+            }
+            Err(_) => {
+                receipt.terminal = "unknown";
+                receipt.effect_state = "Unknown";
+                receipt.reason_code = "native-upload-remote-effect-uncertain".into();
+                receipt.uncertainty = "possible-remote-upload-effect-never-replay";
+            }
+        }
+    } else {
+        match tf_web::execute_browser_bound_download(&prepared.token, registry, web, &origin).await
+        {
+            Ok(resource) => {
+                receipt.status_code = resource.receipt.status_code;
+                receipt.dns_evidence = resource.receipt.dns_evidence.clone();
+                if resource.receipt.terminal != "completed" {
+                    receipt.terminal = "unknown";
+                    receipt.effect_state = "Unknown";
+                    receipt.reason_code = "native-download-TF3-response-unverified".into();
+                } else {
+                    match tf_operations::commit_native_browser_download(grant, resource, registry) {
+                        Ok(evidence) => {
+                            receipt.terminal = "completed";
+                            receipt.effect_state = "Observed";
+                            receipt.reason_code =
+                                "native-download-TF2-atomic-file-readback-verified".into();
+                            receipt.uncertainty =
+                                "local-workspace-file-only-remote-server-effect-unverified";
+                            receipt.bytes_received = Some(evidence.bytes_verified as u64);
+                            receipt.content_sha256 = Some(evidence.response_sha256.clone());
+                            receipt.native_download_evidence = Some(evidence);
+                        }
+                        Err(_) => {
+                            // The atomic file move may have happened before
+                            // a later reparse/readback failure. Never retry.
+                            receipt.terminal = "unknown";
+                            receipt.effect_state = "Unknown";
+                            receipt.reason_code =
+                                "native-download-TF2-file-commit-outcome-uncertain".into();
+                            receipt.uncertainty = "possible-local-file-effect-never-replay";
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                receipt.terminal = "unknown";
+                receipt.effect_state = "Unknown";
+                receipt.reason_code = "native-download-TF3-network-outcome-uncertain".into();
+            }
+        }
+    }
+    receipt.retry = "NEVER_REPLAY";
+    receipt.auto_retry = false;
+    receipt.ended_at = millis();
+    Ok(receipt)
+}
+
 /// The original TF4 pending entry, UI approval and approved exact snapshot
 /// remain authoritative until the native actor reaches an exclusive host turn.
 /// This function cannot fabricate a grant or dispatch directly through IPC.
@@ -4239,7 +4743,9 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         if !(p.request.operation.approval_required() || {
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             {
-                p.screenshot_scope.is_some() || p.credential_scope.is_some()
+                p.screenshot_scope.is_some()
+                    || p.credential_scope.is_some()
+                    || p.transfer_scope.is_some()
             }
             #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
             {
@@ -4351,7 +4857,9 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         || {
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             {
-                pending.screenshot_scope.is_some() || pending.credential_scope.is_some()
+                pending.screenshot_scope.is_some()
+                    || pending.credential_scope.is_some()
+                    || pending.transfer_scope.is_some()
             }
             #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
             {
@@ -4383,6 +4891,10 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             "Approve ONE bounded 1024x768 native PNG viewport screenshot of this exact retained WebView2 page, saved once through TF2 in the selected authorized workspace. Screenshots can expose private on-screen content to anyone authorized to read that workspace. No pixels may enter model context, semantic snapshots or receipts; a source-matched installed native effect remains independently unaccepted.",
         TfBrowserOperation::CredentialGet =>
             "Approve ONE trusted parent TF3 HTTPS GET to exactly the displayed same-origin destination using ONE opaque reference from the EXISTING OS secret store. Authentication is sent only in the network Authorization header to that approved origin, NEVER to the browser DOM, model, screenshot, logs or receipts. The origin, credential expiration and revocation are rechecked immediately before dispatch. No redirects, cookies, implicit propagation or replay.",
+        TfBrowserOperation::Download =>
+            "Approve ONE bounded same-origin HTTPS TF3 binary GET, then ONE TF2 atomic no-clobber workspace file commit of exactly verified bytes and digest. The remote server cannot choose the filename or workspace. Network transport does not prove remote business effects, file readback proves only the TF2 local commit. Never replay.",
+        TfBrowserOperation::Upload =>
+            "Approve ONE original TF2 workspace file identity and bounded 1..64KiB SHA-256 body sent to ONE exact original-page same-origin TF3 HTTPS POST. Original file content will be independently re-read and digest-checked immediately before one use. No renderer file picker, unapproved file access, redirect or automatic retry. HTTP 2xx does not prove server-side acceptance.",
         _ => "Only TF3 pinned HTTP(S) text retrieval is supported; redirects and targets require per-hop policy.",
     };
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
@@ -4406,6 +4918,32 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             scope.page.page_id, scope.page.page_generation, scope.page.snapshot_id,
             scope.origin.origin().ascii_serialization(),
             scope.destination, opaque_sha, TF4_BROWSER_SECRET_SERVICE,
+        )
+    } else if matches!(
+        pending.request.operation,
+        TfBrowserOperation::Download | TfBrowserOperation::Upload
+    ) && pending.transfer_scope.is_some()
+    {
+        let scope = pending.transfer_scope.as_ref().unwrap();
+        let output_key = format!("{:x}", Sha256::digest(token.as_bytes()));
+        let file_info = if let Some(file) = scope.upload_file.as_ref() {
+            format!(
+                "ORIGINAL TF2 upload workspace-relative file: {}\nOriginal pre-consent bytes: {}\nOriginal pre-consent SHA-256: {}\nNetwork content type: application/octet-stream (exact body)\n",
+                file.relative_path, file.bytes, file.sha256,
+            )
+        } else {
+            format!(
+                "Exact TF2 output: tf4-browser-download-{}.bin\nResponse MIME: application/octet-stream (maximum 65536 bytes)\n",
+                &output_key[..24],
+            )
+        };
+        format!(
+            "\nOriginal retained native page: {} / generation {}\nOriginal snapshot identity: {}\nExact allowed public HTTPS origin: {}\nExact remote destination: {}\nNetwork operation: {}\n{}No redirected request, alternate destination, auto-replay, or public/model file authority. Workspace changes and file mutation deny the attempt.\n",
+            scope.page.page_id, scope.page.page_generation,
+            scope.page.snapshot_id, scope.approved_origin.origin().ascii_serialization(),
+            scope.destination,
+            if scope.upload_file.is_some() { "POST (upload)" } else { "GET (download)" },
+            file_info,
         )
     } else if pending.request.operation.native_action() {
         let target = pending
@@ -4527,6 +5065,7 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
                 live.form_intent != pending.form_intent
                     || live.screenshot_scope != pending.screenshot_scope
                     || live.credential_scope != pending.credential_scope
+                    || live.transfer_scope != pending.transfer_scope
             }
             #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
             {
@@ -4538,7 +5077,9 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         || !(live.request.operation.approval_required() || {
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             {
-                live.screenshot_scope.is_some() || live.credential_scope.is_some()
+                live.screenshot_scope.is_some()
+                    || live.credential_scope.is_some()
+                    || live.transfer_scope.is_some()
             }
             #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
             {
@@ -4593,6 +5134,9 @@ pub async fn tf_browser_execute(
                     &token, &app, &registry, &state, &web_state,
                 )
                 .await;
+            }
+            Some(TfBrowserOperation::Download | TfBrowserOperation::Upload) => {
+                return execute_confined_file_transfer(&token, &registry, &state, &web_state).await;
             }
             Some(operation) if operation.native_action() => {
                 return execute_confined_retained_action(&token, &registry, &state, &web_state)
@@ -4722,6 +5266,186 @@ mod tests {
             "same exact approved file must never be overwritten/replayed"
         );
         assert_eq!(std::fs::read(&committed).unwrap(), raw);
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn tf2_native_browser_transfer_original_file_mutation_and_download_commit_are_scoped() {
+        let (dir, registry, _, _) = setup();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let original = dir.path().join("original.bin");
+        let payload = b"TF4\x00bounded-file\x01".to_vec();
+        std::fs::write(&original, &payload).unwrap();
+        let captured =
+            tf_operations::read_native_browser_upload_file(&registry, &root, "original.bin")
+                .unwrap();
+        let sha = format!("{:x}", Sha256::digest(&payload));
+        assert_eq!(captured.bytes, payload);
+        assert_eq!(captured.sha256, sha);
+        assert_eq!(captured.relative_path, "original.bin");
+        for forbidden in [
+            "../outside.bin",
+            "C:\\other.bin",
+            "sub/../../outside",
+            "\\\\?\\C:\\bad.bin",
+            "other::stream",
+        ] {
+            assert!(
+                tf_operations::read_native_browser_upload_file(&registry, &root, forbidden,)
+                    .is_err(),
+                "TF2 rejects traversal/absolute/stream path {forbidden}"
+            );
+        }
+        let page = NativeScreenshotScope {
+            browser_session_id: "a".repeat(48),
+            page_id: "b".repeat(48),
+            page_generation: 7,
+            snapshot_id: "c".repeat(48),
+            url: "https://fixture.example/".into(),
+        };
+        let scope_upload = NativeTransferScope {
+            page: page.clone(),
+            approved_origin: Url::parse("https://fixture.example/").unwrap(),
+            destination: Url::parse("https://fixture.example/upload").unwrap(),
+            upload_file: Some(NativeUploadFileScope {
+                relative_path: "original.bin".into(),
+                bytes: payload.len(),
+                sha256: sha.clone(),
+            }),
+        };
+        let upload_grant = NativeTransferConsent {
+            actor: "native-owner".into(),
+            session_id: "chat-1".into(),
+            workspace_root: root.clone(),
+            scope: scope_upload,
+            approval_id: "d".repeat(48),
+            expires: Instant::now() + Duration::from_secs(30),
+        };
+        assert!(upload_grant.matches_network(
+            upload_grant.approved_url(),
+            upload_grant.approved_origin(),
+            &"d".repeat(48),
+            7,
+            true,
+        ));
+        assert!(!upload_grant.matches_network(
+            &Url::parse("https://fixture.example/other").unwrap(),
+            upload_grant.approved_origin(),
+            &"d".repeat(48),
+            7,
+            true,
+        ));
+        assert!(!upload_grant.matches_network(
+            upload_grant.approved_url(),
+            upload_grant.approved_origin(),
+            &"e".repeat(48),
+            7,
+            true,
+        ));
+        assert!(!upload_grant.matches_network(
+            upload_grant.approved_url(),
+            upload_grant.approved_origin(),
+            &"d".repeat(48),
+            8,
+            true,
+        ));
+        // A file that changes after initial human approval must not send its
+        // newly computed self-consistent digest in place of approved bytes.
+        std::fs::write(&original, b"changed-after-consent").unwrap();
+        let after =
+            tf_operations::read_native_browser_upload_file(&registry, &root, "original.bin")
+                .unwrap();
+        assert_ne!(after.sha256, sha);
+        assert_ne!(after.bytes.len(), payload.len());
+
+        let download_bytes = b"TF4\xffexact-download\x00".to_vec();
+        let dest = "https://fixture.example/owned.bin";
+        let download_scope = NativeTransferScope {
+            page: page.clone(),
+            approved_origin: Url::parse("https://fixture.example/").unwrap(),
+            destination: Url::parse(dest).unwrap(),
+            upload_file: None,
+        };
+        let make_grant = || NativeTransferConsent {
+            actor: "native-owner".into(),
+            session_id: "chat-1".into(),
+            workspace_root: root.clone(),
+            scope: download_scope.clone(),
+            approval_id: "f".repeat(48),
+            expires: Instant::now() + Duration::from_secs(30),
+        };
+        let make_resource = || tf_web::TfBrowserResource {
+            receipt: tf_web::TfWebReceipt {
+                tool_id: "tf.web.v1",
+                request_id: "one-source-verified-network".into(),
+                actor: "native-owner".into(),
+                operation: TfWebOperation::BrowserBoundDownload,
+                actual_method: "GET",
+                terminal: "completed",
+                effect_state: "Unknown",
+                requested_url: Some(dest.into()),
+                final_url: Some(dest.into()),
+                redirect_chain: Vec::new(),
+                normalized_target: Some(dest.into()),
+                status_code: Some(200),
+                content_type: Some("application/octet-stream".into()),
+                tls_state: "https_transport_observed",
+                bytes_received: Some(download_bytes.len() as u64),
+                bytes_retained: download_bytes.len(),
+                truncated: false,
+                content_sha256: Some(format!("{:x}", Sha256::digest(&download_bytes))),
+                body: None,
+                started_at: 100,
+                ended_at: 200,
+                credential_reference: None,
+                credential_used: false,
+                retry: "NEVER_REPLAY",
+                auto_retry: false,
+                policy_decision: "allowed",
+                reason_code: "ok",
+                search_results: None,
+                search_source: None,
+                uncertainty: "http-response-observed-peer-ip-not-attested",
+                isolation: "tf3",
+                dns_evidence: Vec::new(),
+            },
+            bytes: download_bytes.clone(),
+        };
+        let mut foreign = make_resource();
+        foreign.receipt.final_url = Some("https://other.example/file.bin".into());
+        assert!(
+            tf_operations::commit_native_browser_download(make_grant(), foreign, &registry,)
+                .is_err(),
+            "TF2 cannot commit a followed foreign URL's bytes"
+        );
+        let mut corrupt = make_resource();
+        corrupt.bytes[0] ^= 1;
+        assert!(
+            tf_operations::commit_native_browser_download(make_grant(), corrupt, &registry,)
+                .is_err(),
+            "TF2 validates original response SHA before file effect"
+        );
+        let committed =
+            tf_operations::commit_native_browser_download(make_grant(), make_resource(), &registry)
+                .unwrap();
+        assert_eq!(committed.method, "GET");
+        assert_eq!(committed.file_effect_state, "Observed");
+        assert_eq!(committed.retry, "NEVER_REPLAY");
+        assert_eq!(committed.page_id, page.page_id);
+        assert_eq!(committed.page_generation, page.page_generation);
+        assert_eq!(
+            committed.response_sha256,
+            format!("{:x}", Sha256::digest(&download_bytes))
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join(&committed.workspace_relative_file)).unwrap(),
+            download_bytes
+        );
+        assert!(tf_operations::commit_native_browser_download(
+            make_grant(), make_resource(), &registry,
+        ).is_err(), "same original TF4 grant never overwrites an existing download file");
+        let serialized = serde_json::to_string(&committed).unwrap();
+        assert!(!serialized.contains("TF4") && !serialized.contains(dest));
     }
 
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]

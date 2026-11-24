@@ -8,6 +8,87 @@ baseline was 07b007c83ba12fdd001094b99d9918192d085fa9. Additional
 uncommitted production changes already existed at continuation startup;
 they were preserved rather than reset.
 
+## 2026-11-24: native TF2-governed file downloads and uploads — connected source and isolated integration, NOT installed physical acceptance
+
+**Chronology and separate outcome:** After pushing the approved-form,
+screenshot, origin-credential and second-COM local causality batch as
+`7b553b40ecaa6a9bab4e6583245f57e489498052`, this follow-on
+batch adds actual source-connected one-use TF4/TF3/TF2 browser file movement.
+It does **not** retroactively add these operations to the optimized
+`ce6eea8` installer or any existing installed Clack, turn Draft PR #46
+Ready, enable model-native tools, or prove positive externally installed
+actions. These changes run only in the original isolated native browser
+session and central human-approved application path.
+
+**Download vertical:** A bounded internal `TfBrowserOperation::Download`
+requires the current original WebView2 page/session/generation/snapshot,
+exact same-origin no-query/no-fragment public HTTPS URL and genuine one-use
+TF4 application consent naming the resource and derived workspace file.
+After the existing TF4 atomic consent consumption, the **existing TF3**
+Public-policy one-use token/budget/DNS/IP/TLS/no-redirect client fetches
+only up to 64KiB of `application/octet-stream` from that exact destination.
+`BrowserBoundDownload` cannot be deserialized or prepared as an arbitrary
+public/model TfWebRequest. The original consumed TF4 witness is retained by
+the parent so only the **existing TF2** workspace authority can choose its
+non-model filename (`tf4-browser-download-<approval-id-digest>.bin`),
+canonicalize root, deny traversal/symlinks/reparse changes, lock/lease
+write parents, perform a same-directory atomic no-clobber write, and
+independently reopen/read/hash the final file. A `200` transport alone
+cannot confirm the file effect: the sanitized receipt `Observed` applies
+**only** to independently committed TF2 local bytes. A failed/uncertain file
+commit or possible remote GET effect is never auto-retried.
+
+**Upload vertical:** A native-only `TfBrowserOperation::Upload` binds
+an exact original TF2 workspace-relative regular file (1..65536 bytes)
+**before** the genuine human dialog: the existing TF2 root/target/reparse,
+no-write/delete-sharing handle and parent lease capture exact file identity,
+size and SHA-256. Human approval names the original source, digest,
+original native page, one method `POST` and one same-origin public HTTPS
+destination. Immediately **after** consuming TF4 consent but **before**
+any network attempt the parent uses the same TF2 authority to reopen the
+same file and refuses changed path, bytes, size, hash or denial. The
+re-read immutable bytes become the one `BrowserBoundUpload` private TF3
+one-use token (max 64KiB request, 4096-byte response, 5s/zero redirect),
+`application/octet-stream` body and exact destination SHA, no browser
+renderer file picker/secret/read access, generic arbitrary POST or
+new permission owner. Even a `201` response stays independent **remote
+business-effect Unknown**, `NEVER_REPLAY`, until the operator-owned
+public HTTPS server oracle proves exact nonce/method/destination/digest,
+accepted one write and replay denial. Cancellation before TF3 dispatch
+burns its single token; after possible dispatch no retry-to-PASS.
+
+**Security/result classifications:** TF3 private executor now has distinct
+`PublicRead`, `FormPost`, `OriginCredentialGet`, `BoundDownload`,
+`BoundUpload` kinds, atomically verifies exact prepared internal variant
+after one-use token consumption, and publishes actual native wire method
+and conservative effects. Both transfer operations are
+`#[serde(skip_deserializing)]` for public TF3 requests. The
+**test-only** loopback HTTP fixture verifies exact binary GET bytes,
+content SHA, redirect not followed, no replay, and exact binary POST
+body/content-type/201/Unknown/no replay with no raw body in receipts.
+TF2 source tests verify traversal and alternate path denial,
+original file mutation detection, wrong destination/digest rejection,
+real workspace atomic no-clobber binary file effect and independent
+disk readback; all are SOURCE/ISOLATED integration, not production
+installed native evidence. A real installed one-use native app
+download/upload with external owned Public HTTPS443 acceptance fixture,
+server-side exactly-once upload receipt, all required cancellation and
+symlink/race negative cases is still missing.
+
+**Mandatory remains:** The thirteen canonical production gates remain
+**0 PASS / 5 PARTIAL / 8 BLOCKED**. User install request
+`ur_c636qc4lsf8l`, originally created for earlier `ce6eea8` package,
+cannot certify the later `7b553b4` or this new transfer source.
+The owned public HTTPS fixture is committed with six isolated Node tests
+and a separate operator hosting request; it was not deployed.
+The original host WebResourceRequested callback still does not provide an
+authenticated action-to-network causal ID, so link success remains Unknown
+without platform-verifiable action attribution. Nine of eleven grouped
+physical host lifecycle cases remain historically selected-pass and two
+are missing; complete integrated seventeen-step installed E2E, per-operation
+independent physical checks, model CapabilityIndex acceptance and final
+Product-wide UI/UX Polish & Acceptance are NOT complete.
+
 ## 2026-11-24: connected FORM, screenshots, native credential and second-COM local causality — source checkpoint, NOT installed acceptance
 
 **New versus previous ce6eea8 implementation:** These changes are a genuine

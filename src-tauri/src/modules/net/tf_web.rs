@@ -50,6 +50,12 @@ pub enum TfWebOperation {
     /// secrets or user-supplied origin are accepted by the public TF3 API.
     #[serde(skip_deserializing)]
     BrowserOriginCredentialGet,
+    /// These are trusted native TF4/TF2-owned file movements, not arbitrary
+    /// model/web requests; public deserialize and generic prepare deny both.
+    #[serde(skip_deserializing)]
+    BrowserBoundDownload,
+    #[serde(skip_deserializing)]
+    BrowserBoundUpload,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +185,24 @@ pub(super) struct TfBrowserOriginCredentialGet {
     pub(super) consumed_approval_id: String,
 }
 
+#[derive(Clone)]
+pub(super) struct TfBrowserBoundDownload {
+    pub(super) destination: Url,
+    pub(super) approved_origin: Url,
+    pub(super) source_page_generation: u64,
+    pub(super) consumed_approval_id: String,
+}
+
+#[derive(Clone)]
+pub(super) struct TfBrowserBoundUpload {
+    pub(super) destination: Url,
+    pub(super) approved_origin: Url,
+    pub(super) source_page_generation: u64,
+    pub(super) original_file_sha256: String,
+    pub(super) body: Vec<u8>,
+    pub(super) consumed_approval_id: String,
+}
+
 #[derive(Debug)]
 pub(super) struct TfBrowserWriteTransport {
     pub(super) receipt: TfWebReceipt,
@@ -209,6 +233,8 @@ struct Pending {
     approved: bool,
     browser_post: Option<TfBrowserBoundPost>,
     browser_credential: Option<TfBrowserOriginCredentialGet>,
+    browser_download: Option<TfBrowserBoundDownload>,
+    browser_upload: Option<TfBrowserBoundUpload>,
 }
 #[derive(Clone)]
 struct IndexedResult {
@@ -230,6 +256,33 @@ struct Entries {
 #[derive(Default)]
 pub struct TfWebState {
     entries: Mutex<Entries>,
+}
+
+/// Private executor identity, matched *after* TF3 consumes its unique pending
+/// token. This prevents any internal/public GET caller from reinterpreting a
+/// prepared one-use upload or downloading arbitrary binary without the moved
+/// original TF4/TF2 grant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tf3ExecutionKind {
+    PublicRead,
+    FormPost,
+    OriginCredentialGet,
+    BoundDownload,
+    BoundUpload,
+}
+
+fn pending_executor_kind(p: &Pending) -> Tf3ExecutionKind {
+    if p.browser_post.is_some() {
+        Tf3ExecutionKind::FormPost
+    } else if p.browser_credential.is_some() {
+        Tf3ExecutionKind::OriginCredentialGet
+    } else if p.browser_download.is_some() {
+        Tf3ExecutionKind::BoundDownload
+    } else if p.browser_upload.is_some() {
+        Tf3ExecutionKind::BoundUpload
+    } else {
+        Tf3ExecutionKind::PublicRead
+    }
 }
 
 fn now_ms() -> u64 {
@@ -410,7 +463,9 @@ fn validate_policy(req: &TfWebRequest, policy: NetworkPolicy) -> Result<(), Stri
         TfWebOperation::HttpGet
         | TfWebOperation::HttpHead
         | TfWebOperation::BrowserBoundPost
-        | TfWebOperation::BrowserOriginCredentialGet => {
+        | TfWebOperation::BrowserOriginCredentialGet
+        | TfWebOperation::BrowserBoundDownload
+        | TfWebOperation::BrowserBoundUpload => {
             if req.query.is_some() || (req.url.is_some() == req.search_result_id.is_some()) {
                 return Err("exactly-one-url-or-search-result-required".into());
             }
@@ -502,6 +557,8 @@ fn prepare_policy(
             approved: !prepared.requires_approval,
             browser_post: None,
             browser_credential: None,
+            browser_download: None,
+            browser_upload: None,
         },
     );
     Ok(prepared)
@@ -513,7 +570,10 @@ pub fn prepare(
 ) -> Result<TfWebPrepared, String> {
     if matches!(
         req.operation,
-        TfWebOperation::BrowserBoundPost | TfWebOperation::BrowserOriginCredentialGet
+        TfWebOperation::BrowserBoundPost
+            | TfWebOperation::BrowserOriginCredentialGet
+            | TfWebOperation::BrowserBoundDownload
+            | TfWebOperation::BrowserBoundUpload
     ) {
         return Err("native-browser-private-witness-required".into());
     }
@@ -762,10 +822,217 @@ pub(super) async fn execute_browser_origin_credential_get(
         None,
         Some(approved_origin),
         None,
-        false,
-        true,
+        Tf3ExecutionKind::OriginCredentialGet,
     )
     .await
+}
+
+/// Native browser file movements are distinct private TF3 operation classes
+/// with one existing TF3 one-use token, Public DNS/IP/TLS, exact original
+/// HTTPS origin and no redirects. An actual *moved* TF4/TF2 consent witness
+/// is required, never just a URL/body self-digest or model POST argument.
+fn native_transfer_network_scope(
+    destination: &Url,
+    origin: &Url,
+    generation: u64,
+    approval_id: &str,
+) -> Result<Url, String> {
+    let target = normalize_url_policy(destination.as_str(), NetworkPolicy::Public)?;
+    if target != *destination
+        || !browser_origin_allowed(&target, origin)
+        || origin.scheme() != "https"
+        || origin.port_or_known_default() != Some(443)
+        || target.port().is_some()
+        || target.query().is_some()
+        || target.fragment().is_some()
+        || !target.username().is_empty()
+        || target.password().is_some()
+        || generation == 0
+        || approval_id.len() != 48
+        || !approval_id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err("native-TF3-transfer-original-one-use-scope-denied".into());
+    }
+    Ok(target)
+}
+
+pub(super) fn prepare_browser_bound_download(
+    grant: &super::tf_browser::NativeTransferConsent,
+    intent: TfBrowserBoundDownload,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+) -> Result<TfWebPrepared, String> {
+    if !grant.matches_network(
+        &intent.destination,
+        &intent.approved_origin,
+        &intent.consumed_approval_id,
+        intent.source_page_generation,
+        false,
+    ) {
+        return Err("tf3-download-consumed-TF4-grant-required".into());
+    }
+    let target = native_transfer_network_scope(
+        &intent.destination,
+        &intent.approved_origin,
+        intent.source_page_generation,
+        &intent.consumed_approval_id,
+    )?;
+    let (actor, session_id, root) = grant.tf3_identity();
+    let prepared = prepare_policy(
+        TfWebRequest {
+            operation: TfWebOperation::BrowserBoundDownload,
+            actor: actor.to_owned(),
+            session_id: session_id.to_owned(),
+            workspace_root: root.to_string_lossy().into_owned(),
+            url: Some(target.to_string()),
+            query: None,
+            search_result_id: None,
+            timeout_ms: Some(5_000),
+            max_bytes: Some(64 * 1024),
+            max_redirects: Some(0),
+        },
+        registry,
+        state,
+        NetworkPolicy::Public,
+    )?;
+    let mut entries = state
+        .entries
+        .lock()
+        .map_err(|_| "network-state-unavailable")?;
+    entries
+        .pending
+        .get_mut(&prepared.token)
+        .ok_or("tf3-download-one-use-pending-lost")?
+        .browser_download = Some(intent);
+    Ok(prepared)
+}
+
+pub(super) async fn execute_browser_bound_download(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    approved_origin: &Url,
+) -> Result<TfBrowserResource, String> {
+    let mut bytes = Vec::new();
+    let receipt = execute_policy_with_output_scoped(
+        token,
+        registry,
+        state,
+        None,
+        NetworkPolicy::Public,
+        Some(&mut bytes),
+        Some(approved_origin),
+        None,
+        Tf3ExecutionKind::BoundDownload,
+    )
+    .await?;
+    Ok(TfBrowserResource { receipt, bytes })
+}
+
+pub(super) fn prepare_browser_bound_upload(
+    grant: &super::tf_browser::NativeTransferConsent,
+    intent: TfBrowserBoundUpload,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+) -> Result<TfWebPrepared, String> {
+    if !grant.matches_network(
+        &intent.destination,
+        &intent.approved_origin,
+        &intent.consumed_approval_id,
+        intent.source_page_generation,
+        true,
+    ) || grant.original_source().is_none_or(|(_, bytes, digest)| {
+        bytes != intent.body.len() || digest != intent.original_file_sha256
+    }) || intent.body.is_empty()
+        || intent.body.len() > 64 * 1024
+        || intent.original_file_sha256 != format!("{:x}", Sha256::digest(&intent.body))
+    {
+        return Err("tf3-upload-original-TF2-file-or-consumed-grant-changed".into());
+    }
+    let target = native_transfer_network_scope(
+        &intent.destination,
+        &intent.approved_origin,
+        intent.source_page_generation,
+        &intent.consumed_approval_id,
+    )?;
+    let (actor, session_id, root) = grant.tf3_identity();
+    let prepared = prepare_policy(
+        TfWebRequest {
+            operation: TfWebOperation::BrowserBoundUpload,
+            actor: actor.to_owned(),
+            session_id: session_id.to_owned(),
+            workspace_root: root.to_string_lossy().into_owned(),
+            url: Some(target.to_string()),
+            query: None,
+            search_result_id: None,
+            timeout_ms: Some(5_000),
+            max_bytes: Some(4096),
+            max_redirects: Some(0),
+        },
+        registry,
+        state,
+        NetworkPolicy::Public,
+    )?;
+    let mut entries = state
+        .entries
+        .lock()
+        .map_err(|_| "network-state-unavailable")?;
+    entries
+        .pending
+        .get_mut(&prepared.token)
+        .ok_or("tf3-upload-one-use-pending-lost")?
+        .browser_upload = Some(intent);
+    Ok(prepared)
+}
+
+pub(super) async fn execute_browser_bound_upload(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    approved_origin: &Url,
+) -> Result<TfBrowserWriteTransport, String> {
+    let (digest, len, url_sha) = {
+        let entries = state
+            .entries
+            .lock()
+            .map_err(|_| "network-state-unavailable")?;
+        let p = entries
+            .pending
+            .get(token)
+            .ok_or("unknown-or-consumed-token")?;
+        let upload = p.browser_upload.as_ref().ok_or("tf3-not-a-bound-upload")?;
+        if &upload.approved_origin != approved_origin {
+            return Err("tf3-upload-approved-origin-changed".into());
+        }
+        (
+            upload.original_file_sha256.clone(),
+            upload.body.len(),
+            format!(
+                "{:x}",
+                Sha256::digest(upload.destination.as_str().as_bytes())
+            ),
+        )
+    };
+    let receipt = execute_policy_with_output_scoped(
+        token,
+        registry,
+        state,
+        None,
+        NetworkPolicy::Public,
+        None,
+        Some(approved_origin),
+        None,
+        Tf3ExecutionKind::BoundUpload,
+    )
+    .await?;
+    Ok(TfBrowserWriteTransport {
+        receipt,
+        request_body_sha256: digest,
+        request_body_bytes: len,
+        destination_sha256: url_sha,
+    })
 }
 
 async fn execute_browser_bound_post_policy(
@@ -808,8 +1075,7 @@ async fn execute_browser_bound_post_policy(
         None,
         Some(approved_origin),
         None,
-        true,
-        false,
+        Tf3ExecutionKind::FormPost,
     )
     .await?;
     Ok(TfBrowserWriteTransport {
@@ -881,7 +1147,7 @@ fn receipt_for(p: &Pending) -> TfWebReceipt {
         request_id: p.request_id.clone(),
         actor: p.request.actor.clone(),
         operation: p.request.operation,
-        actual_method: if p.browser_post.is_some() {
+        actual_method: if p.browser_post.is_some() || p.browser_upload.is_some() {
             "POST"
         } else if p.request.operation == TfWebOperation::HttpHead {
             "HEAD"
@@ -1353,8 +1619,11 @@ async fn network_fetch(
     // Never offer the browser owner a "SAFE_RETRY" receipt after that attempt,
     // even when HTTP returned 2xx or the native COM deferral completed.
     // Ordinary TF3 standalone GET/HEAD retain their existing contract.
-    let browser_resource =
-        browser_bytes.is_some() || p.browser_post.is_some() || browser_credential.is_some();
+    let browser_resource = browser_bytes.is_some()
+        || p.browser_post.is_some()
+        || browser_credential.is_some()
+        || p.browser_download.is_some()
+        || p.browser_upload.is_some();
     if let Some(post) = &p.browser_post {
         if credential.is_some()
             || browser_approved_origin != Some(&post.approved_origin)
@@ -1362,6 +1631,31 @@ async fn network_fetch(
             || post.body_sha256 != format!("{:x}", Sha256::digest(&post.body))
         {
             return Err(Failure("browser-bound-post-execution-scope-denied"));
+        }
+    }
+    if let Some(download) = &p.browser_download {
+        if credential.is_some()
+            || browser_bytes.is_none()
+            || browser_approved_origin != Some(&download.approved_origin)
+            || p.target.as_ref() != Some(&download.destination)
+            || p.request.operation != TfWebOperation::BrowserBoundDownload
+            || download.source_page_generation == 0
+        {
+            return Err(Failure("browser-bound-download-origin-or-output-denied"));
+        }
+    }
+    if let Some(upload) = &p.browser_upload {
+        if credential.is_some()
+            || browser_bytes.is_some()
+            || browser_approved_origin != Some(&upload.approved_origin)
+            || p.target.as_ref() != Some(&upload.destination)
+            || p.request.operation != TfWebOperation::BrowserBoundUpload
+            || upload.source_page_generation == 0
+            || upload.body.is_empty()
+            || upload.body.len() > 64 * 1024
+            || upload.original_file_sha256 != format!("{:x}", Sha256::digest(&upload.body))
+        {
+            return Err(Failure("browser-bound-upload-original-file-or-body-denied"));
         }
     }
     receipt.retry = if browser_resource {
@@ -1480,7 +1774,7 @@ async fn network_fetch(
             builder
         };
         let client = builder.build().map_err(|_| Failure("client-unavailable"))?;
-        let method = if p.browser_post.is_some() {
+        let method = if p.browser_post.is_some() || p.browser_upload.is_some() {
             Method::POST
         } else if p.request.operation == TfWebOperation::HttpHead {
             Method::HEAD
@@ -1493,7 +1787,9 @@ async fn network_fetch(
             .header(ACCEPT_ENCODING, "identity")
             .header(
                 ACCEPT,
-                if browser_bytes.is_some() {
+                if p.browser_download.is_some() {
+                    "application/octet-stream"
+                } else if browser_bytes.is_some() {
                     "text/html,text/css,application/javascript,image/png,image/jpeg,image/webp,font/woff2,*/*"
                 } else {
                     "text/html,text/plain,application/json,application/xhtml+xml,application/xml"
@@ -1503,6 +1799,11 @@ async fn network_fetch(
             request = request
                 .header(CONTENT_TYPE, post.content_type)
                 .body(post.body.clone());
+        }
+        if let Some(upload) = &p.browser_upload {
+            request = request
+                .header(CONTENT_TYPE, "application/octet-stream")
+                .body(upload.body.clone());
         }
         if search {
             let key = credential.ok_or(Failure("provider-unconfigured"))?;
@@ -1657,12 +1958,21 @@ async fn network_fetch(
             receipt.uncertainty = "http-status-observed-peer-ip-not-attested";
             return Ok(());
         }
-        if browser_bytes.is_some() && !browser_resource_content_type(&kind) {
+        if p.browser_download.is_some()
+            && kind.split(';').next().unwrap_or("").trim() != "application/octet-stream"
+        {
+            return Err(Failure("browser-downloaded-binary-type-denied"));
+        }
+        if browser_bytes.is_some()
+            && p.browser_download.is_none()
+            && !browser_resource_content_type(&kind)
+        {
             return Err(Failure("browser-content-type-denied"));
         }
         if browser_bytes.is_none()
             && p.browser_post.is_none()
             && browser_credential.is_none()
+            && p.browser_upload.is_none()
             && !text_type(&kind)
         {
             return Err(Failure("nontext-content-type-denied"));
@@ -1735,7 +2045,11 @@ async fn network_fetch(
             let body = std::str::from_utf8(&saved).map_err(|_| Failure("search-invalid-json"))?;
             receipt.search_results = Some(parse_search(body, p, state)?);
             receipt.body = None;
-        } else if p.browser_post.is_some() || browser_credential.is_some() {
+        } else if p.browser_post.is_some()
+            || browser_credential.is_some()
+            || p.browser_upload.is_some()
+            || p.browser_download.is_some()
+        {
             // Never persist a remote response body into the browser action
             // receipt. Server HTTP success is NOT a business effect proof.
             receipt.body = None;
@@ -1762,20 +2076,32 @@ async fn execute_policy_with_output_scoped(
     browser_bytes: Option<&mut Vec<u8>>,
     browser_approved_origin: Option<&Url>,
     tls_test_root: Option<&reqwest::Certificate>,
-    expected_browser_post: bool,
-    expected_browser_credential: bool,
+    expected_kind: Tf3ExecutionKind,
 ) -> Result<TfWebReceipt, String> {
     let (p, mut rx) = consume_policy(token, registry, state, policy)?;
-    if p.browser_post.is_some() != expected_browser_post
-        || p.browser_credential.is_some() != expected_browser_credential
+    if pending_executor_kind(&p) != expected_kind
+        || (expected_kind != Tf3ExecutionKind::PublicRead
+            && p.request.operation
+                != match expected_kind {
+                    Tf3ExecutionKind::FormPost => TfWebOperation::BrowserBoundPost,
+                    Tf3ExecutionKind::OriginCredentialGet => {
+                        TfWebOperation::BrowserOriginCredentialGet
+                    }
+                    Tf3ExecutionKind::BoundDownload => TfWebOperation::BrowserBoundDownload,
+                    Tf3ExecutionKind::BoundUpload => TfWebOperation::BrowserBoundUpload,
+                    Tf3ExecutionKind::PublicRead => unreachable!(),
+                })
     {
         complete(token, state);
-        return Err("tf3-bound-post-executor-mismatch".into());
+        return Err("tf3-private-executor-scope-mismatch".into());
     }
     let mut receipt = receipt_for(&p);
     let mut attempted = false;
-    let browser_resource =
-        browser_bytes.is_some() || p.browser_post.is_some() || p.browser_credential.is_some();
+    let browser_resource = browser_bytes.is_some()
+        || p.browser_post.is_some()
+        || p.browser_credential.is_some()
+        || p.browser_download.is_some()
+        || p.browser_upload.is_some();
     let result = network_fetch(
         &p,
         &mut receipt,
@@ -1836,8 +2162,7 @@ async fn execute_policy_with_output(
         browser_bytes,
         None,
         None,
-        false,
-        false,
+        Tf3ExecutionKind::PublicRead,
     )
     .await
 }
@@ -1898,8 +2223,7 @@ pub async fn execute_browser_resource_same_origin(
         Some(&mut bytes),
         Some(approved_origin),
         None,
-        false,
-        false,
+        Tf3ExecutionKind::PublicRead,
     )
     .await?;
     Ok(TfBrowserResource { receipt, bytes })
@@ -1957,8 +2281,7 @@ pub(crate) async fn execute_owned_https_for_test(
         Some(&mut bytes),
         Some(approved_origin),
         Some(ephemeral_public_certificate),
-        false,
-        false,
+        Tf3ExecutionKind::PublicRead,
     )
     .await?;
     Ok(TfBrowserResource { receipt, bytes })
@@ -2405,9 +2728,16 @@ mod tests {
         );
         forged_write["operation"] = serde_json::json!("browser_origin_credential_get");
         assert!(
-            serde_json::from_value::<TfWebRequest>(forged_write).is_err(),
+            serde_json::from_value::<TfWebRequest>(forged_write.clone()).is_err(),
             "private origin credential cannot be deserializable from public IPC"
         );
+        for op in ["browser_bound_download", "browser_bound_upload"] {
+            forged_write["operation"] = serde_json::json!(op);
+            assert!(
+                serde_json::from_value::<TfWebRequest>(forged_write.clone()).is_err(),
+                "TF2-backed {op} cannot be deserialized from public model/request shape"
+            );
+        }
         let (_, registry, state) = setup();
         let synthetic = TfWebRequest {
             operation: TfWebOperation::BrowserBoundPost,
@@ -2435,6 +2765,267 @@ mod tests {
         assert_eq!(
             prepare(second, &registry, &state).unwrap_err(),
             "native-browser-private-witness-required"
+        );
+        for operation in [
+            TfWebOperation::BrowserBoundDownload,
+            TfWebOperation::BrowserBoundUpload,
+        ] {
+            let forged = TfWebRequest {
+                operation,
+                ..request(
+                    std::path::Path::new("C:/no-authority"),
+                    TfWebOperation::HttpGet,
+                )
+            };
+            assert_eq!(
+                prepare(forged, &registry, &state).unwrap_err(),
+                "native-browser-private-witness-required"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn isolated_tf3_download_is_binary_exact_one_token_and_redirect_denied() {
+        let (dir, registry, state) = setup();
+        let binary = b"TF4\x00BINARY\xff\x01VERIFY";
+        let (url, server) = serve(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 18\r\nConnection: close\r\n\r\nTF4\x00BINARY\xff\x01VERIFY",
+            Duration::ZERO,
+        );
+        let origin = Url::parse(&url).unwrap();
+        let mut req = fixture(dir.path(), url);
+        req.operation = TfWebOperation::BrowserBoundDownload;
+        req.max_bytes = Some(64 * 1024);
+        req.max_redirects = Some(0);
+        let prepared =
+            prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback).unwrap();
+        {
+            let mut entries = state.entries.lock().unwrap();
+            entries
+                .pending
+                .get_mut(&prepared.token)
+                .unwrap()
+                .browser_download = Some(TfBrowserBoundDownload {
+                destination: origin.clone(),
+                approved_origin: origin.clone(),
+                source_page_generation: 2,
+                consumed_approval_id: "a".repeat(48),
+            });
+        }
+        let mut bytes = Vec::new();
+        let receipt = execute_policy_with_output_scoped(
+            &prepared.token,
+            &registry,
+            &state,
+            None,
+            NetworkPolicy::FixtureLoopback,
+            Some(&mut bytes),
+            Some(&origin),
+            None,
+            Tf3ExecutionKind::BoundDownload,
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(bytes, binary);
+        assert_eq!(receipt.operation, TfWebOperation::BrowserBoundDownload);
+        assert_eq!(receipt.actual_method, "GET");
+        assert_eq!(receipt.status_code, Some(200));
+        assert_eq!(receipt.terminal, "completed");
+        assert_eq!(receipt.effect_state, "Unknown");
+        assert_eq!(receipt.retry, "NEVER_REPLAY");
+        assert!(receipt.body.is_none());
+        assert_eq!(
+            receipt.content_sha256,
+            Some(format!("{:x}", Sha256::digest(binary)))
+        );
+        assert!(
+            execute_policy_with_output_scoped(
+                &prepared.token,
+                &registry,
+                &state,
+                None,
+                NetworkPolicy::FixtureLoopback,
+                Some(&mut Vec::new()),
+                Some(&origin),
+                None,
+                Tf3ExecutionKind::BoundDownload
+            )
+            .await
+            .is_err(),
+            "consumed download TF3 token must not replay"
+        );
+
+        let (redirect_url, redirect_server) = serve(
+            b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            Duration::ZERO,
+        );
+        let origin = Url::parse(&redirect_url).unwrap();
+        let mut req = fixture(dir.path(), redirect_url);
+        req.operation = TfWebOperation::BrowserBoundDownload;
+        req.max_redirects = Some(0);
+        let prepared =
+            prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback).unwrap();
+        state
+            .entries
+            .lock()
+            .unwrap()
+            .pending
+            .get_mut(&prepared.token)
+            .unwrap()
+            .browser_download = Some(TfBrowserBoundDownload {
+            destination: origin.clone(),
+            approved_origin: origin.clone(),
+            source_page_generation: 2,
+            consumed_approval_id: "a".repeat(48),
+        });
+        let mut denial_bytes = Vec::new();
+        let denial = execute_policy_with_output_scoped(
+            &prepared.token,
+            &registry,
+            &state,
+            None,
+            NetworkPolicy::FixtureLoopback,
+            Some(&mut denial_bytes),
+            Some(&origin),
+            None,
+            Tf3ExecutionKind::BoundDownload,
+        )
+        .await
+        .unwrap();
+        redirect_server.join().unwrap();
+        assert_eq!(denial.terminal, "denied");
+        assert_eq!(denial.reason_code, "browser-resource-redirect-denied");
+        assert!(denial_bytes.is_empty());
+        assert!(denial.redirect_chain.is_empty());
+        assert_eq!(denial.retry, "NEVER_REPLAY");
+    }
+
+    #[tokio::test]
+    async fn isolated_tf3_upload_is_exact_file_body_one_write_without_retry_or_response_leak() {
+        // Isolated HTTP loopback source integration only. Production Public
+        // cannot access this origin or accept a generic caller-chosen POST.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/case/owned/upload",
+            listener.local_addr().unwrap().port()
+        );
+        let target = Url::parse(&url).unwrap();
+        let payload = b"TF4\x00ORIGINAL\xfeUPLOAD\x01".to_vec();
+        let observed = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let observed_server = observed.clone();
+        let worker = thread::spawn(move || {
+            let started = Instant::now();
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((s, _)) => break s,
+                    Err(err)
+                        if err.kind() == std::io::ErrorKind::WouldBlock
+                            && started.elapsed() < Duration::from_secs(2) =>
+                    {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    other => panic!("TF3 upload did not connect in bounded source test: {other:?}"),
+                }
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut raw = Vec::new();
+            let total = loop {
+                let mut part = [0u8; 1024];
+                let n = socket.read(&mut part).unwrap();
+                assert!(n > 0 && raw.len() + n <= 8192);
+                raw.extend_from_slice(&part[..n]);
+                if let Some(end) = raw.windows(4).position(|v| v == b"\r\n\r\n") {
+                    let header = std::str::from_utf8(&raw[..end]).unwrap();
+                    let len = header
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length: ")
+                                .and_then(|value| value.parse::<usize>().ok())
+                        })
+                        .expect("HTTP request exact byte count required");
+                    if raw.len() >= end + 4 + len {
+                        break end + 4 + len;
+                    }
+                }
+            };
+            raw.truncate(total);
+            *observed_server.lock().unwrap() = raw;
+            socket.write_all(
+                b"HTTP/1.1 201 Created\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+            ).unwrap();
+        });
+        let (dir, registry, state) = setup();
+        let mut req = fixture(dir.path(), url);
+        req.operation = TfWebOperation::BrowserBoundUpload;
+        req.max_redirects = Some(0);
+        let prepared =
+            prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback).unwrap();
+        state
+            .entries
+            .lock()
+            .unwrap()
+            .pending
+            .get_mut(&prepared.token)
+            .unwrap()
+            .browser_upload = Some(TfBrowserBoundUpload {
+            destination: target.clone(),
+            approved_origin: target.clone(),
+            source_page_generation: 2,
+            original_file_sha256: format!("{:x}", Sha256::digest(&payload)),
+            body: payload.clone(),
+            consumed_approval_id: "a".repeat(48),
+        });
+        let receipt = execute_policy_with_output_scoped(
+            &prepared.token,
+            &registry,
+            &state,
+            None,
+            NetworkPolicy::FixtureLoopback,
+            None,
+            Some(&target),
+            None,
+            Tf3ExecutionKind::BoundUpload,
+        )
+        .await
+        .unwrap();
+        worker.join().unwrap();
+        let seen = observed.lock().unwrap();
+        assert!(seen.starts_with(b"POST /case/owned/upload HTTP/1.1\r\n"));
+        assert!(seen.ends_with(&payload));
+        assert!(String::from_utf8_lossy(&seen)
+            .to_ascii_lowercase()
+            .contains("content-type: application/octet-stream"));
+        assert_eq!(receipt.operation, TfWebOperation::BrowserBoundUpload);
+        assert_eq!(receipt.actual_method, "POST");
+        assert_eq!(receipt.terminal, "completed");
+        assert_eq!(receipt.status_code, Some(201));
+        assert_eq!(receipt.effect_state, "Unknown");
+        assert_eq!(receipt.retry, "NEVER_REPLAY");
+        assert!(!receipt.auto_retry);
+        assert!(receipt.body.is_none());
+        let serialized = serde_json::to_string(&receipt).unwrap();
+        assert!(!serialized.contains("ORIGINAL"));
+        assert!(!serialized.contains("UPLOAD"));
+        assert!(
+            execute_policy_with_output_scoped(
+                &prepared.token,
+                &registry,
+                &state,
+                None,
+                NetworkPolicy::FixtureLoopback,
+                None,
+                Some(&target),
+                None,
+                Tf3ExecutionKind::BoundUpload,
+            )
+            .await
+            .is_err(),
+            "one bound upload token cannot replay its external write"
         );
     }
 
@@ -2520,8 +3111,7 @@ mod tests {
             None,
             Some(&origin),
             None,
-            false,
-            true,
+            Tf3ExecutionKind::OriginCredentialGet,
         )
         .await
         .unwrap();
@@ -2560,8 +3150,7 @@ mod tests {
                 None,
                 Some(&origin),
                 None,
-                false,
-                true,
+                Tf3ExecutionKind::OriginCredentialGet,
             )
             .await
             .is_err(),
@@ -2598,8 +3187,7 @@ mod tests {
             None,
             Some(&wrong),
             None,
-            false,
-            true,
+            Tf3ExecutionKind::OriginCredentialGet,
         )
         .await
         .unwrap();
@@ -2665,7 +3253,7 @@ mod tests {
             execute(&prepared.token, &registry, &state, None)
                 .await
                 .unwrap_err(),
-            "tf3-bound-post-executor-mismatch"
+            "tf3-private-executor-scope-mismatch"
         );
         assert!(
             execute_browser_bound_post(&prepared.token, &registry, &state, &source)
@@ -3447,6 +4035,8 @@ mod tests {
             approved: true,
             browser_post: None,
             browser_credential: None,
+            browser_download: None,
+            browser_upload: None,
         };
         let results = parse_search(
             r#"{"web":{"results":[

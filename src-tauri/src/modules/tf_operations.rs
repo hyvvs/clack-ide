@@ -214,6 +214,32 @@ pub struct Tf4ScreenshotEvidence {
     pub retry: &'static str,
 }
 
+/// Private bounded original-file payload read by TF2, never by renderer or
+/// the model. Only this owning process may move the bytes into one TF3 POST.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+pub(crate) struct Tf4NativeUploadBytes {
+    pub bytes: Vec<u8>,
+    pub sha256: String,
+    pub relative_path: String,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tf4DownloadEvidence {
+    pub method: &'static str,
+    pub source_url_sha256: String,
+    pub response_sha256: String,
+    pub bytes_verified: usize,
+    pub workspace_relative_file: String,
+    pub page_id: String,
+    pub page_generation: u64,
+    pub snapshot_id: String,
+    pub tf3_request_id: String,
+    pub file_effect_state: &'static str,
+    pub retry: &'static str,
+}
+
 #[derive(Clone)]
 struct Pending {
     request_id: String,
@@ -1043,6 +1069,163 @@ mod windows {
         }
         // Best effort persistence on Windows; NamedTempFile is in destination directory.
         Ok(())
+    }
+
+    /// Translate only a trusted, already-canonical internal workspace path
+    /// back to DOS spelling for the existing public TF2 lexical scope checker.
+    /// Never accepts arbitrary browser/model verbatim paths or alters TF2's
+    /// public symlink/reparse/traversal rules.
+    #[cfg(feature = "tf-browser-native-runtime")]
+    fn native_tf2_workspace_root(
+        registry: &WorkspaceRegistry,
+        approved: &Path,
+    ) -> Result<PathBuf, String> {
+        let raw = approved.to_string_lossy();
+        let scoped = if let Some(plain) = raw.strip_prefix(r"\\?\") {
+            if plain.as_bytes().get(1) != Some(&b':')
+                || plain.as_bytes().get(2) != Some(&b'\\')
+                || !plain.as_bytes()[0].is_ascii_alphabetic()
+            {
+                return Err("TF2 native canonical workspace must be a local disk".into());
+            }
+            plain.to_owned()
+        } else {
+            raw.into_owned()
+        };
+        let (root, cwd) = scope(registry, &scoped, &scoped)?;
+        if root != approved || cwd != root {
+            return Err("TF2 native workspace root changed".into());
+        }
+        Ok(root)
+    }
+
+    /// Source file bytes are obtained via TF2's existing authoritative
+    /// root/target/reparse/parent leases and read-only handle. The original
+    /// digest is shown at consent, re-read immediately before dispatch, and
+    /// the immutable returned Vec (not a live filesystem path) is sent to TF3.
+    #[cfg(feature = "tf-browser-native-runtime")]
+    pub(crate) fn read_native_browser_upload_file(
+        registry: &WorkspaceRegistry,
+        approved_workspace: &Path,
+        relative_path: &str,
+    ) -> Result<Tf4NativeUploadBytes, String> {
+        if relative_path.is_empty() || relative_path.len() > 256 {
+            return Err("TF2 browser upload exact bounded source path required".into());
+        }
+        let root = native_tf2_workspace_root(registry, approved_workspace)?;
+        let relative = check_lexical(relative_path)?;
+        if relative.is_absolute() {
+            return Err("TF2 browser upload path must be workspace relative".into());
+        }
+        let path = target(relative_path, &root, &root, false, false)?;
+        inspect_components(&path)?;
+        if fs::canonicalize(&path).map_err(failure)? != path {
+            return Err("TF2 browser upload original source path changed".into());
+        }
+        let _lease = lease_write_parents(&root, std::slice::from_ref(&path))?;
+        inspect_components(&path)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        // A bound file handle does not share DELETE or WRITE while read,
+        // preventing junction/replace and ordinary concurrent file mutation
+        // during this exact bounded capture.
+        options.share_mode(0x00000001);
+        let mut file = options.open(&path).map_err(failure)?;
+        let metadata = file.metadata().map_err(failure)?;
+        if !metadata.is_file()
+            || metadata.file_attributes() & 0x400 != 0
+            || metadata.len() == 0
+            || metadata.len() > 64 * 1024
+        {
+            return Err("TF2 browser upload source must be regular 1..64KiB".into());
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(64 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(failure)?;
+        if bytes.is_empty() || bytes.len() > 64 * 1024 || bytes.len() as u64 != metadata.len() {
+            return Err("TF2 browser upload original file changed during read".into());
+        }
+        inspect_components(&path)?;
+        if fs::canonicalize(&path).map_err(failure)? != path {
+            return Err("TF2 browser upload source identity changed after read".into());
+        }
+        Ok(Tf4NativeUploadBytes {
+            sha256: sha(&bytes),
+            bytes,
+            relative_path: relative_path.to_owned(),
+        })
+    }
+
+    /// Final download is a real TF2 workspace file effect, distinct from TF3
+    /// HTTP transport. The original TF4 one-use native grant is MOVED here;
+    /// no server-suggested filename or model path is used.
+    #[cfg(feature = "tf-browser-native-runtime")]
+    pub(crate) fn commit_native_browser_download(
+        grant: crate::modules::net::tf_browser::NativeTransferConsent,
+        resource: crate::modules::net::tf_web::TfBrowserResource,
+        registry: &WorkspaceRegistry,
+    ) -> Result<Tf4DownloadEvidence, String> {
+        let receipt = &resource.receipt;
+        if grant.original_source().is_some()
+            || receipt.terminal != "completed"
+            || receipt.actual_method != "GET"
+            || receipt.operation
+                != crate::modules::net::tf_web::TfWebOperation::BrowserBoundDownload
+            || receipt.status_code != Some(200)
+            || receipt.content_type.as_deref().is_none_or(|c| {
+                c.split(';').next().unwrap_or("").trim() != "application/octet-stream"
+            })
+            || receipt.truncated
+            || receipt.redirect_chain.len() != 0
+            || receipt.credential_used
+            || receipt.body.is_some()
+            || resource.bytes.is_empty()
+            || resource.bytes.len() > 64 * 1024
+            || receipt.content_sha256.as_deref() != Some(sha(&resource.bytes).as_str())
+            || receipt.requested_url.as_deref() != Some(grant.approved_url().as_str())
+            || receipt.final_url.as_deref() != Some(grant.approved_url().as_str())
+            || receipt.bytes_received != Some(resource.bytes.len() as u64)
+        {
+            return Err("TF2 download requires exact bounded TF3 one-origin bytes".into());
+        }
+        let root = native_tf2_workspace_root(registry, grant.approved_workspace())?;
+        let filename = grant.output_filename();
+        let path = target(&filename, &root, &root, true, false)?;
+        if path.exists() {
+            return Err("TF2 browser download destination already exists; replay denied".into());
+        }
+        let _lease = lease_write_parents(&root, std::slice::from_ref(&path))?;
+        inspect_components(&path)?;
+        if path.exists() {
+            return Err("TF2 browser download file appeared during commit".into());
+        }
+        let digest = sha(&resource.bytes);
+        // Even a partially persisted file is an external effect, UNKNOWN on
+        // error and NEVER_REPLAY; the server cannot choose a second pathname.
+        same_dir_write(&path, &resource.bytes, false)?;
+        inspect_components(&path)?;
+        if fs::canonicalize(&path).map_err(failure)? != path {
+            return Err("TF2 browser download postcommit target changed; outcome unknown".into());
+        }
+        let independently_read = read_small(&path)?;
+        if independently_read.len() != resource.bytes.len() || sha(&independently_read) != digest {
+            return Err("TF2 browser download final readback mismatch; outcome unknown".into());
+        }
+        Ok(Tf4DownloadEvidence {
+            method: "GET",
+            source_url_sha256: sha(grant.approved_url().as_str().as_bytes()),
+            response_sha256: digest,
+            bytes_verified: independently_read.len(),
+            workspace_relative_file: filename,
+            page_id: grant.page_id().to_owned(),
+            page_generation: grant.source_page_generation(),
+            snapshot_id: grant.snapshot_id().to_owned(),
+            tf3_request_id: receipt.request_id.clone(),
+            file_effect_state: "Observed",
+            retry: "NEVER_REPLAY",
+        })
     }
 
     /// The native TF4 Screenshot caller must move its genuine, consumed
@@ -2389,6 +2572,8 @@ mod windows {
 pub(crate) use windows::commit_native_screenshot_evidence;
 #[cfg(windows)]
 pub use windows::{approve, execute, prepare};
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+pub(crate) use windows::{commit_native_browser_download, read_native_browser_upload_file};
 
 #[tauri::command]
 pub fn tf_operation_prepare(
