@@ -1600,3 +1600,59 @@ negative, **not** a rendered-page or action-positive test. These are native
 server business effect, screenshots, credential grant, file-transfer physical
 matrix, or seventeen-step E2E. All thirteen gates retain 0 PASS / 5 PARTIAL /
 8 BLOCKED; model-facing TF4 browser actions remain disabled.
+
+### 24 November continuation: current pinned installer, actual session isolation, second CI repair
+
+The optimized **exact** `135712410fac5a0f737f9d0aed6e5e4d0489e88b` build
+finished with **exit 0** / `TF4_NATIVE_BUNDLE_BUILD=PASS`, and tracked Git
+tree and matching branch remote were verified clean at bundle completion:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Pinned staging host `target/tf4-native-stage/clack-browser-host.exe` | 3,907,072 | `0dbfbd486de199b9b60b3f4ef9984fa54eaea17ccd1471f6482594dd38a7af44` |
+| Optimized release `target/release/clack.exe` | 20,319,232 | `7a64669e9c0167ffbad34b90acf19bc630253275c86d787e91309d1f39594af6` |
+| Optimized NSIS `target/release/bundle/nsis/Clack_0.8.0_x64-setup.exe` | 12,292,029 | `a4541eff122708f8efbc47bc972aa0c5b8679613fa81ef04049c26ffb14eff49` |
+
+Human-only checksum-verified installation request `ur_6xfb6nwgk19v`
+was recorded, and was **OPEN**, not installed at last check. No installer
+was executed by the assistant. The earlier `ur_c636qc4lsf8l` source is
+obsolete. Installed-app/host identity and the three-byte NSIS marker
+comparison have **not** been verified.
+
+GitHub Actions run `45504165015` on precisely `1357124` **completed
+FAILURE**: Ubuntu WASI **PASS** after the first TF4 portability correction;
+six other jobs **FAIL**, coverage **SKIPPED**. Its Windows default-feature
+`cargo check` exposed another TF4-introduced E0425 at
+`tf_browser_runtime.rs`: the screenshot control-turn method referenced a
+validator compiled only under `windows + tf-browser-native-runtime`.
+The next source correction guards that entire method with the native-runtime
+feature, scopes imports by Windows/test ownership, and prevents default
+Windows release builds from re-exporting a native session they cannot invoke.
+The source-compiled native-feature path retains its actual screenshot
+behavior and original screenshot authority. The existing broader Rust Clippy,
+frontend, Windows/macos WASI and macOS native test failures are **not**
+misreported as fixed or green; a new CI run is required to verify the new
+source correction.
+
+Both default-feature and `tf-browser-native-runtime` Windows all-target
+Cargo checks **PASS** (warnings remain); native runtime focused suite
+**18/18 active PASS, 12 opted-in physical ignored** and native host suite
+**62/62 PASS**. Against the exact pinned `1357124` host above, five
+**actual Windows physical**, not installed-app, probes individually PASS:
+native AppContainer/COM readiness, owned IPv4 private TCP denial, bounded
+DOM terminal following denied navigation, owned IPv6 loopback denial with
+original COM/Job/UDF cleanup, and an additional **two simultaneous original
+AppContainer/WebView2 sessions** probe. The latter proves two independently
+created private UDF roots, original first-session Job/UDF cleanup without
+terminating the second, a subsequent second-session TF3-denied original COM
+receipt, and complete second-profile cleanup with no residual roots. It does
+**not** establish popup/tab/cross-origin storage acceptance or count as one
+of the two still-unspecified missing canonical grouped eleven-case races.
+
+The new conditional-compilation corrections and two-session physical test
+were authored **after** the `1357124` installer and are not covered by that
+installer's hashes. No positive installed FORM/credential/screenshot/transfer
+effect, server oracle, exact one-write reconciliation, full grouped 11-case or
+mandatory integrated seventeen-step E2E has been claimed. All thirteen gates
+remain **0 PASS / 5 PARTIAL / 8 BLOCKED**, and native browser tools stay
+disabled until independently accepted.

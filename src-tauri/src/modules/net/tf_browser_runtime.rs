@@ -7,10 +7,12 @@
 //! job membership and the WebView2 COM effective UDF *before navigation*.
 //! The acceptance-only host/fixture mode is never launched by this module.
 
-use super::tf_browser_contract::{
-    BrowserPageContract, ObservedElement, PageSnapshot, SemanticRole, SemanticState,
-};
-use super::tf_web::{self, TfWebOperation, TfWebReceipt, TfWebRequest, TfWebState};
+#[cfg(any(windows, test))]
+use super::tf_browser_contract::{BrowserPageContract, PageSnapshot};
+use super::tf_browser_contract::{ObservedElement, SemanticRole, SemanticState};
+use super::tf_web::TfWebReceipt;
+#[cfg(any(windows, test))]
+use super::tf_web::{self, TfWebOperation, TfWebRequest, TfWebState};
 use crate::modules::workspace::WorkspaceRegistry;
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -2742,6 +2744,7 @@ mod windows_owner {
         /// host control pipe. Only the parent receives bounded PNG bytes.
         /// Consent and TF2 evidence persistence are the TF4/TF2 central owners'
         /// responsibility; no standalone screenshot IPC/model operation exists.
+        #[cfg(feature = "tf-browser-native-runtime")]
         pub(crate) async fn capture_screenshot_in_control_turn(
             &mut self,
         ) -> Result<NativeScreenshotCapture, String> {
@@ -3658,7 +3661,9 @@ mod windows_owner {
     }
 }
 
-#[cfg(windows)]
+// Default-feature Windows builds do not expose the native session owner.
+// Opt-in native physical tests still need the original Windows runtime.
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
 pub(crate) use windows_owner::BrowserRuntimeSession;
 
 #[cfg(not(windows))]
@@ -4742,6 +4747,107 @@ mod tests {
             ready.is_ok(),
             "actual native WebView2 COM readiness and process proof: {ready:?}"
         );
+    }
+
+    /// Real concurrent original-JOB/AppContainer WebView2 session ownership.
+    /// Each session gets its own fresh OS profile and UDF; closing one cannot
+    /// terminate the other's authentic COM deferral or leave either UDF behind.
+    /// No external fixture is needed: TF3 must deny the reserved loopback URL.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit two concurrent original production AppContainer/WebView2 sessions, independent close and UDF isolation"]
+    async fn physical_production_two_sessions_close_independently_without_profile_leak() {
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact source-matched native host required");
+        let expected = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read pinned host"))
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace = manifest.parent().expect("manifest under workspace");
+        let private = tempfile::Builder::new()
+            .prefix("tf4-two-live-sessions-")
+            .tempdir_in(manifest.join("target"))
+            .expect("owned temporary test parent");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize test workspace");
+        let start = |actor: &str, session_id: &str| BrowserRuntimeStart {
+            actor: actor.into(),
+            session_id: session_id.into(),
+            workspace_root: workspace.to_path_buf(),
+            initial_url: "https://127.0.0.1/".into(),
+            private_parent: private.path().to_path_buf(),
+            host_executable: host.clone(),
+            host_sha256: expected.clone(),
+        };
+        let mut first = BrowserRuntimeSession::launch(
+            start("tf4-physical-isolation-a", "session-a"),
+            &registry,
+        )
+        .expect("first independently confined native session");
+        let mut second = BrowserRuntimeSession::launch(
+            start("tf4-physical-isolation-b", "session-b"),
+            &registry,
+        )
+        .expect("second independently confined native session");
+        let first_ready =
+            tokio::time::timeout(std::time::Duration::from_secs(15), first.verify_ready())
+                .await
+                .expect("first independent native readiness deadline");
+        let second_ready =
+            tokio::time::timeout(std::time::Duration::from_secs(15), second.verify_ready())
+                .await
+                .expect("second independent native readiness deadline");
+        assert!(
+            first_ready.is_ok(),
+            "first real COM readiness: {first_ready:?}"
+        );
+        assert!(
+            second_ready.is_ok(),
+            "second real COM readiness: {second_ready:?}"
+        );
+        let profiles: Vec<_> = private
+            .path()
+            .read_dir()
+            .expect("read two actual native UDF roots")
+            .map(|entry| entry.expect("owned root").path())
+            .collect();
+        assert_eq!(profiles.len(), 2, "two fresh, distinct native UDF roots");
+        assert!(profiles.iter().all(|root| root.join("udf").is_dir()));
+
+        first
+            .shutdown()
+            .expect("first original Job and profile cleanup");
+        let remaining: Vec<_> = private
+            .path()
+            .read_dir()
+            .expect("inspect post-first-close UDF")
+            .map(|entry| entry.expect("remaining owned root").path())
+            .collect();
+        assert_eq!(remaining.len(), 1, "first close cannot retain its UDF");
+        assert!(remaining[0].join("udf").is_dir());
+
+        let second_resource = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            second.serve_one(&registry, &TfWebState::default()),
+        )
+        .await
+        .expect("second COM resource deferral still available after first close");
+        let second_closed = second.shutdown();
+        assert!(
+            second_closed.is_ok(),
+            "second original Job/UDF cleanup: {second_closed:?}"
+        );
+        let receipt = second_resource.expect("second session still owns native COM");
+        assert_eq!(receipt.request_id, 1);
+        assert!(receipt.native_com_completed);
+        assert_eq!(receipt.terminal, "denied", "TF3 must deny private target");
+        assert_eq!(receipt.bytes, 0);
+        assert!(private.path().read_dir().unwrap().next().is_none());
+        eprintln!("PRODUCTION_TWO_SESSION_ISOLATION=PASS separate_udfs=2 first_close=clean second_com=denied second_close=clean");
     }
 
     /// Explicitly opted-in production-mode HTTPS interception negative. The
