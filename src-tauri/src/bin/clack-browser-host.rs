@@ -284,6 +284,65 @@ mod host {
     // DOM activation, NOT a trusted hardware pointer event or effect proof.
     // Caller-provided JS, selectors, element strings and retries are absent.
     const DOM_EXACT_CLICK_JS: &str = "function(slot) { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return {dispatched:false,targetHref:null}; const node = this.nodes[slot]; if (!node || !node.isConnected || node.ownerDocument !== document || node.tagName !== 'A' || node.disabled === true || !node.getClientRects().length) return {dispatched:false,targetHref:null}; const targetHref = node.href; if (!targetHref || targetHref.length > 2048) return {dispatched:false,targetHref:null}; this.state.changed = true; node.click(); return {dispatched:true,targetHref}; }";
+    // Native-only fixed-function form and scroll operations, never model JS.
+    // Each action operates on exactly the retained Node(s) from one bounded
+    // capture; a mutation, a detached node, or a changed parent relation
+    // denies the effect. The stale bit is set BEFORE any write or DOM event.
+    // Only {dispatched:boolean} crosses back from the renderer: no values,
+    // selected option text, attributes, target HTML, selectors or page errors.
+    const DOM_EXACT_CONTROL_ACTION_JS: &str = r#"function(slot, action, text, optionSlot, deltaY) {
+      if (this.observer.takeRecords().length) this.state.changed = true;
+      if (this.state.changed) return {dispatched:false};
+      const node = this.nodes[slot];
+      if (!node || !node.isConnected || node.ownerDocument !== document
+          || node.isContentEditable || !node.getClientRects().length
+          || node.matches(':disabled')) return {dispatched:false};
+      if (action === 'type' || action === 'clear') {
+        const textTarget = node.tagName === 'TEXTAREA' ||
+          (node.tagName === 'INPUT' &&
+            (node.type === 'text' || node.type === 'email' ||
+             node.type === 'tel' || node.type === 'search'));
+        if (!textTarget || node.readOnly) return {dispatched:false};
+        if (action === 'type' && (typeof text !== 'string' || !text.length
+            || text.length > 256)) return {dispatched:false};
+        this.state.changed = true;
+        node.value = action === 'clear' ? '' : text;
+        node.dispatchEvent(new Event('input', {bubbles:true}));
+        return {dispatched:true};
+      }
+      if (action === 'select') {
+        if (node.tagName !== 'SELECT' || !Number.isInteger(optionSlot))
+          return {dispatched:false};
+        const option = this.nodes[optionSlot];
+        if (!option || option.tagName !== 'OPTION' || !option.isConnected
+            || option.ownerDocument !== document || option.parentElement !== node
+            || option.disabled) return {dispatched:false};
+        this.state.changed = true;
+        option.selected = true;
+        node.dispatchEvent(new Event('input', {bubbles:true}));
+        node.dispatchEvent(new Event('change', {bubbles:true}));
+        return {dispatched:true};
+      }
+      if (action === 'check' || action === 'uncheck') {
+        if (node.tagName !== 'INPUT' || node.type !== 'checkbox')
+          return {dispatched:false};
+        this.state.changed = true;
+        node.checked = action === 'check';
+        node.dispatchEvent(new Event('input', {bubbles:true}));
+        node.dispatchEvent(new Event('change', {bubbles:true}));
+        return {dispatched:true};
+      }
+      if (action === 'scroll') {
+        if (deltaY !== -120 && deltaY !== 120) return {dispatched:false};
+        const overflow = window.getComputedStyle(node).overflowY;
+        if ((overflow !== 'auto' && overflow !== 'scroll')
+            || node.scrollHeight <= node.clientHeight) return {dispatched:false};
+        this.state.changed = true;
+        node.scrollBy(0, deltaY);
+        return {dispatched:true};
+      }
+      return {dispatched:false};
+    }"#;
     // Debug-build-only *fixed* physical acceptance probe for the specifically
     // owned, one-document 127.0.0.1 HTTPS fixture. It never accepts code,
     // selectors, tag names, values or a mutation target from a caller. This
@@ -1510,6 +1569,16 @@ mod host {
         ordinal: u32,
         action: String,
         approval_id: String,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        option_index: Option<u32>,
+        #[serde(default)]
+        option_ordinal: Option<u32>,
+        #[serde(default)]
+        delta_y: Option<i32>,
+        #[serde(default)]
+        payload_sha256: Option<String>,
     }
 
     #[derive(Serialize)]
@@ -1524,11 +1593,13 @@ mod host {
         source_id: &'a str,
         index: u32,
         ordinal: u32,
-        action: &'static str,
+        action: &'a str,
         approval_id: &'a str,
         state: &'static str,
         #[serde(skip_serializing_if = "Option::is_none")]
         target_url_sha256: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        payload_sha256: Option<&'a str>,
     }
 
     fn dom_recheck_reply(
@@ -1605,6 +1676,15 @@ mod host {
         root_object_id: String,
     }
 
+    #[derive(Clone, Default)]
+    struct NativeDomActionPermissions {
+        type_or_clear: bool,
+        checkbox: bool,
+        select: bool,
+        option: bool,
+        scroll: bool,
+    }
+
     #[derive(Default)]
     struct NativeDomIdentity {
         observation_id: u64,
@@ -1612,6 +1692,7 @@ mod host {
         root_object_id: Option<String>,
         indices: Vec<u32>,
         click_allowed: Vec<bool>,
+        action_allowed: Vec<NativeDomActionPermissions>,
         #[cfg(debug_assertions)]
         debug_mutation_used: bool,
     }
@@ -1625,6 +1706,7 @@ mod host {
             self.root_object_id = None;
             self.indices.clear();
             self.click_allowed.clear();
+            self.action_allowed.clear();
         }
 
         fn bind(&mut self, captured: &NativeDomObservation) -> Result<(), &'static str> {
@@ -1647,6 +1729,35 @@ mod host {
                 .elements
                 .iter()
                 .map(|item| item.visible && item.enabled && item.role == "link")
+                .collect();
+            self.action_allowed = captured
+                .snapshot
+                .elements
+                .iter()
+                .map(|item| {
+                    let enabled_visible = item.visible && item.enabled;
+                    NativeDomActionPermissions {
+                        type_or_clear: enabled_visible
+                            && (item.role == "textbox"
+                                && item.control_type.as_deref() == Some("textarea")
+                                || item.role == "input"
+                                    && matches!(
+                                        item.control_type.as_deref(),
+                                        Some("text" | "email" | "tel" | "search")
+                                    )),
+                        checkbox: enabled_visible
+                            && item.role == "checkbox"
+                            && item.control_type.as_deref() == Some("checkbox"),
+                        select: enabled_visible
+                            && item.role == "select"
+                            && item.control_type.as_deref() == Some("select"),
+                        // Browser-native OPTION rects are often zero while the
+                        // parent SELECT is closed. Never infer option value or
+                        // index; only the exact separately captured object.
+                        option: item.role == "option" && item.enabled,
+                        scroll: item.visible && item.role != "option",
+                    }
+                })
                 .collect();
             self.root_object_id = Some(captured.root_object_id.clone());
             Ok(())
@@ -1685,6 +1796,36 @@ mod host {
 
         fn may_click(&self, reference: &NativeDomNodeRef) -> bool {
             self.click_allowed.get(reference.slot) == Some(&true)
+        }
+
+        fn may_control(
+            &self,
+            action: &str,
+            target: &NativeDomNodeRef,
+            option: Option<&NativeDomNodeRef>,
+        ) -> bool {
+            let Some(permitted) = self.action_allowed.get(target.slot) else {
+                return false;
+            };
+            match action {
+                "type" | "clear" => permitted.type_or_clear && option.is_none(),
+                "check" | "uncheck" => permitted.checkbox && option.is_none(),
+                "scroll" => permitted.scroll && option.is_none(),
+                "select" => {
+                    permitted.select
+                        && option.is_some_and(|ref_option| {
+                            ref_option.slot != target.slot
+                                && ref_option.root_object_id == target.root_object_id
+                                && ref_option.observation_id == target.observation_id
+                                && ref_option.page_generation == target.page_generation
+                                && self
+                                    .action_allowed
+                                    .get(ref_option.slot)
+                                    .is_some_and(|allowed| allowed.option)
+                        })
+                }
+                _ => false,
+            }
         }
 
         // Only an exact currently retained object + ordinal can be presented
@@ -1895,6 +2036,81 @@ mod host {
         Ok((request, reference))
     }
 
+    fn valid_dom_action_text(text: &str) -> bool {
+        !text.is_empty()
+            && text.len() <= 256
+            && text.chars().all(|c| {
+                !c.is_control()
+                    && !matches!(
+                        c as u32,
+                        0x061c | 0x200e | 0x200f | 0x202a..=0x202e | 0x2066..=0x2069
+                    )
+            })
+    }
+
+    fn consume_dom_approval_id(
+        used_approval_ids: &mut HashSet<String>,
+        approval_id: &str,
+    ) -> Result<(), &'static str> {
+        if used_approval_ids.len() >= PRODUCTION_DOM_MAX_CHECKS as usize
+            || !used_approval_ids.insert(approval_id.to_owned())
+        {
+            return Err("action-approval-replayed-or-exhausted");
+        }
+        Ok(())
+    }
+
+    // The parent independently computes this digest from its already
+    // authorized, action-specific parameters. Neither the raw TYPE text nor
+    // a live OPTION value ever appears in the terminal response.
+    fn validated_dom_action_payload_digest(
+        request: &ParentDomActionRequest,
+    ) -> Result<Option<String>, &'static str> {
+        let no_text = request.text.is_none();
+        let no_option = request.option_index.is_none() && request.option_ordinal.is_none();
+        let no_delta = request.delta_y.is_none();
+        let canonical = match request.action.as_str() {
+            "click" if no_text && no_option && no_delta && request.payload_sha256.is_none() => {
+                return Ok(None);
+            }
+            "type" if no_option && no_delta => {
+                let text = request
+                    .text
+                    .as_deref()
+                    .filter(|text| valid_dom_action_text(text))
+                    .ok_or("action-payload-denied")?;
+                format!("type\0{text}")
+            }
+            "clear" if no_text && no_option && no_delta => "clear".to_owned(),
+            "select" if no_text && no_delta => {
+                let index = request.option_index.ok_or("action-payload-denied")?;
+                let ordinal = request.option_ordinal.ok_or("action-payload-denied")?;
+                if index == 0
+                    || index > PRODUCTION_DOM_MAX_VISITS
+                    || ordinal >= PRODUCTION_DOM_MAX_ELEMENTS as u32
+                {
+                    return Err("action-payload-denied");
+                }
+                format!("select:{index}:{ordinal}")
+            }
+            "check" if no_text && no_option && no_delta => "check".to_owned(),
+            "uncheck" if no_text && no_option && no_delta => "uncheck".to_owned(),
+            "scroll" if no_text && no_option => {
+                let delta = request.delta_y.ok_or("action-payload-denied")?;
+                if !matches!(delta, -120 | 120) {
+                    return Err("action-payload-denied");
+                }
+                format!("scroll:{delta}")
+            }
+            _ => return Err("action-payload-denied"),
+        };
+        let expected = format!("{:x}", Sha256::digest(canonical.as_bytes()));
+        if request.payload_sha256.as_deref() != Some(expected.as_str()) {
+            return Err("action-payload-digest-mismatch");
+        }
+        Ok(Some(expected))
+    }
+
     fn validate_dom_action_request(
         frame: &[u8],
         session: &str,
@@ -1911,7 +2127,6 @@ mod host {
             serde_json::from_slice(frame).map_err(|_| "action-request-invalid")?;
         if request.version != 2
             || request.kind != "act-element"
-            || request.action != "click"
             || request.approval_id.len() != 48
             || !request
                 .approval_id
@@ -1920,6 +2135,7 @@ mod host {
         {
             return Err("action-not-authorized-or-kind-denied");
         }
+        validated_dom_action_payload_digest(&request)?;
         // Reuse every existing exact-node protocol invariant, including
         // strict nonce, source digest, monotonic sequence, observation epoch,
         // original visit index, and serialized ordinal. No separate selector
@@ -2034,6 +2250,31 @@ mod host {
             true,
             Some(format!("{:x}", Sha256::digest(target.as_str().as_bytes()))),
         ))
+    }
+
+    fn parse_dom_control_action_response(raw: &str) -> Result<bool, &'static str> {
+        if raw.is_empty() || raw.len() > 2048 {
+            return Err("action-com-response-unknown");
+        }
+        let response: serde_json::Value =
+            serde_json::from_str(raw).map_err(|_| "action-com-response-unknown")?;
+        if response.get("exceptionDetails").is_some()
+            || response.pointer("/result/type").and_then(|v| v.as_str()) != Some("object")
+            || response.pointer("/result/objectId").is_some()
+        {
+            return Err("action-com-response-unknown");
+        }
+        let value = response
+            .pointer("/result/value")
+            .and_then(|v| v.as_object())
+            .ok_or("action-com-response-unknown")?;
+        if value.len() != 1 {
+            return Err("action-com-response-unknown");
+        }
+        value
+            .get("dispatched")
+            .and_then(|v| v.as_bool())
+            .ok_or("action-com-response-unknown")
     }
 
     #[cfg(debug_assertions)]
@@ -3087,6 +3328,100 @@ mod host {
             .map_err(|_| "recheck-timeout")?
     }
 
+    fn exact_control_action_on_ui(
+        app: &tauri::AppHandle,
+        expected_url: &str,
+        request_generation: u64,
+        reference: NativeDomNodeRef,
+        action: String,
+        text: Option<String>,
+        option_slot: Option<usize>,
+        delta_y: Option<i32>,
+        current_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+    ) -> Result<bool, &'static str> {
+        if stats.broken.load(Ordering::Acquire)
+            || stats.pending.load(Ordering::Acquire) != 0
+            || current_generation.load(Ordering::Acquire) != request_generation
+            || reference.page_generation != request_generation
+        {
+            return Err("action-page-stale");
+        }
+        let expected = expected_url.to_owned();
+        let (tx, rx) = mpsc::sync_channel::<Result<bool, &'static str>>(1);
+        let app_for_ui = app.clone();
+        app.run_on_main_thread(move || {
+            let tx_ui = tx.clone();
+            let dispatched = app_for_ui
+                .get_webview_window("browser-host")
+                .ok_or("action-native-window-unavailable")
+                .and_then(|window| {
+                    window
+                        .with_webview(move |native| {
+                            let sender = tx_ui.clone();
+                            let core = match unsafe { native.controller().CoreWebView2() } {
+                                Ok(core) => core,
+                                Err(_) => {
+                                    let _ =
+                                        sender.send(Err("action-native-controller-unavailable"));
+                                    return;
+                                }
+                            };
+                            let mut source = PWSTR::null();
+                            if unsafe { core.Source(&mut source) }.is_err() {
+                                let _ = sender.send(Err("action-native-source-unavailable"));
+                                return;
+                            }
+                            if take_pwstr(source) != expected
+                                || current_generation.load(Ordering::Acquire) != request_generation
+                                || stats.broken.load(Ordering::Acquire)
+                                || stats.pending.load(Ordering::Acquire) != 0
+                            {
+                                let _ = sender.send(Err("action-page-stale"));
+                                return;
+                            }
+                            let parameters = json!({
+                                "objectId": reference.root_object_id,
+                                "functionDeclaration": DOM_EXACT_CONTROL_ACTION_JS,
+                                "arguments": [
+                                    {"value": reference.slot},
+                                    {"value": action},
+                                    {"value": text},
+                                    {"value": option_slot},
+                                    {"value": delta_y}
+                                ],
+                                "returnByValue": true,
+                                "silent": true,
+                                "awaitPromise": false,
+                                "generatePreview": false
+                            })
+                            .to_string();
+                            native_dom_cdp_on_ui(
+                                &core,
+                                "Runtime.callFunctionOn",
+                                parameters,
+                                Box::new(move |remote| {
+                                    // A form DOM event may race navigation:
+                                    // successful closed COM acknowledgement
+                                    // means only DISPATCHED, never completed
+                                    // remote effect. Failed ACK is UNKNOWN.
+                                    let result = remote
+                                        .and_then(|raw| parse_dom_control_action_response(&raw));
+                                    let _ = sender.send(result);
+                                }),
+                            );
+                        })
+                        .map_err(|_| "action-ui-dispatch")
+                });
+            if dispatched.is_err() {
+                let _ = tx.send(Err("action-ui-dispatch"));
+            }
+        })
+        .map_err(|_| "action-ui-dispatch")?;
+        rx.recv_timeout(PRODUCTION_DOM_DEADLINE)
+            .map_err(|_| "action-timeout")?
+    }
+
     fn service_parent_dom_recheck_frame(
         frame: &[u8],
         write: &mut File,
@@ -3175,6 +3510,7 @@ mod host {
         last_observation_id: u64,
         last_check_sequence: &mut u64,
         identities: &mut NativeDomIdentity,
+        used_approval_ids: &mut HashSet<String>,
         page_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
         initial_url: &str,
@@ -3191,31 +3527,78 @@ mod host {
         // Burn the shared native command sequence for every syntactically
         // authorized attempt, including DENIED_TARGET / STALE / UNKNOWN.
         *last_check_sequence = request.check_sequence;
+        // The parent's central approval witness is single-use. Even a fresh
+        // observation and sequence must not re-authorize a consumed ID.
+        consume_dom_approval_id(used_approval_ids, &request.approval_id)?;
+        let payload_sha256 = validated_dom_action_payload_digest(&request)?;
+        let option = if request.action == "select" {
+            request
+                .option_index
+                .zip(request.option_ordinal)
+                .and_then(|(index, ordinal)| identities.reference_at(index, ordinal).ok())
+                .filter(|option| {
+                    identities
+                        .check_reference(option, request.observation_id, request.page_generation)
+                        .is_ok()
+                })
+        } else {
+            None
+        };
         let (state, target_url_sha256) = match reference {
             None => ("STALE", None),
-            Some(reference) if !identities.may_click(&reference) => ("DENIED_TARGET", None),
+            Some(reference)
+                if !(request.action == "click" && identities.may_click(&reference)
+                    || request.action != "click"
+                        && identities.may_control(
+                            &request.action,
+                            &reference,
+                            option.as_ref(),
+                        )) =>
+            {
+                ("DENIED_TARGET", None)
+            }
             Some(reference) => {
-                let outcome = recheck_dom_on_ui(
-                    app,
-                    initial_url,
-                    request.page_generation,
-                    reference,
-                    page_generation,
-                    stats,
-                    false,
-                    true,
-                );
+                let outcome = if request.action == "click" {
+                    recheck_dom_on_ui(
+                        app,
+                        initial_url,
+                        request.page_generation,
+                        reference,
+                        page_generation,
+                        stats,
+                        false,
+                        true,
+                    )
+                } else {
+                    exact_control_action_on_ui(
+                        app,
+                        initial_url,
+                        request.page_generation,
+                        reference,
+                        request.action.clone(),
+                        request.text.clone(),
+                        option.as_ref().map(|ref_option| ref_option.slot),
+                        request.delta_y,
+                        page_generation,
+                        stats,
+                    )
+                    .map(|dispatched| (dispatched, None))
+                };
                 // The single-use native reference is consumed regardless of
                 // a missing COM ACK. A later request must freshly observe;
                 // an ambiguous action must NEVER be automatically retried.
-                identities.invalidate(request.observation_id, request.page_generation);
                 match outcome {
-                    Ok((true, Some(digest))) => ("DISPATCHED", Some(digest)),
+                    Ok((true, digest)) if request.action != "click" || digest.is_some() => {
+                        ("DISPATCHED", digest)
+                    }
                     Ok((false, _)) => ("STALE", None),
                     _ => ("UNKNOWN", None),
                 }
             }
         };
+        if identities.observation_id == request.observation_id {
+            identities.invalidate(request.observation_id, request.page_generation);
+        }
         let reply = ChildDomActionReply {
             version: 2,
             kind: "element-action",
@@ -3226,10 +3609,11 @@ mod host {
             source_id: &request.source_id,
             index: request.index,
             ordinal: request.ordinal,
-            action: "click",
+            action: &request.action,
             approval_id: &request.approval_id,
             state,
             target_url_sha256: target_url_sha256.as_deref(),
+            payload_sha256: payload_sha256.as_deref(),
         };
         let bytes = serde_json::to_vec(&reply).map_err(|_| "action-reply-invalid")?;
         if bytes.is_empty() || bytes.len() > 1024 {
@@ -3250,6 +3634,7 @@ mod host {
         last_observation_id: &mut u64,
         last_check_sequence: &mut u64,
         identities: &mut NativeDomIdentity,
+        used_approval_ids: &mut HashSet<String>,
         page_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
         initial_url: &str,
@@ -3287,6 +3672,7 @@ mod host {
                 *last_observation_id,
                 last_check_sequence,
                 identities,
+                used_approval_ids,
                 page_generation,
                 stats,
                 initial_url,
@@ -3402,6 +3788,7 @@ mod host {
         last_observation_id: &mut u64,
         last_check_sequence: &mut u64,
         identities: &mut NativeDomIdentity,
+        used_approval_ids: &mut HashSet<String>,
         page_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
         initial_url: &str,
@@ -3428,6 +3815,7 @@ mod host {
                 last_observation_id,
                 last_check_sequence,
                 identities,
+                used_approval_ids,
                 page_generation,
                 stats,
                 initial_url,
@@ -4257,6 +4645,7 @@ mod host {
                     let mut last_observation_id = 0u64;
                     let mut last_check_sequence = 0u64;
                     let mut native_dom_identity = NativeDomIdentity::default();
+                    let mut used_dom_approval_ids = HashSet::new();
                     loop {
                         if worker_production && parent_attested && !worker_control_turns {
                             // The authenticated parent's pending observation
@@ -4273,6 +4662,7 @@ mod host {
                                         &mut last_observation_id,
                                         &mut last_check_sequence,
                                         &mut native_dom_identity,
+                                        &mut used_dom_approval_ids,
                                         worker_generation.clone(),
                                         worker_stats.clone(),
                                         &worker_initial_url,
@@ -4338,6 +4728,7 @@ mod host {
                                             &mut last_observation_id,
                                             &mut last_check_sequence,
                                             &mut native_dom_identity,
+                                            &mut used_dom_approval_ids,
                                             worker_generation.clone(),
                                             worker_stats.clone(),
                                             &worker_initial_url,
@@ -4360,6 +4751,7 @@ mod host {
                                                 &mut last_observation_id,
                                                 &mut last_check_sequence,
                                                 &mut native_dom_identity,
+                                                &mut used_dom_approval_ids,
                                                 worker_generation.clone(),
                                                 worker_stats.clone(),
                                                 &worker_initial_url,
@@ -7118,6 +7510,298 @@ mod host {
                 "index": 4, "ordinal": 2
             });
             (identity, request)
+        }
+
+        fn native_dom_control_case() -> NativeDomIdentity {
+            let snapshot = json!({
+                "version":2,"visited":8,"truncated":false,"omittedFields":0,
+                "elements":[
+                    {"index":1,"role":"main","depth":0,"headingLevel":null,"visible":true,"enabled":true},
+                    {"index":2,"role":"input","depth":1,"headingLevel":null,"visible":true,"enabled":true,"controlType":"text"},
+                    {"index":3,"role":"checkbox","depth":1,"headingLevel":null,"visible":true,"enabled":true,"controlType":"checkbox","checked":false},
+                    {"index":4,"role":"select","depth":1,"headingLevel":null,"visible":true,"enabled":true,"controlType":"select"},
+                    {"index":5,"role":"option","depth":2,"headingLevel":null,"visible":false,"enabled":true,"selected":false},
+                    {"index":6,"role":"paragraph","depth":1,"headingLevel":null,"visible":true,"enabled":true},
+                    {"index":7,"role":"textbox","depth":1,"headingLevel":null,"visible":true,"enabled":true,"controlType":"textarea"},
+                    {"index":8,"role":"input","depth":1,"headingLevel":null,"visible":true,"enabled":true,"controlType":"number"}
+                ]
+            });
+            let mut identity = NativeDomIdentity::default();
+            identity.invalidate(1, 7);
+            identity
+                .bind(&NativeDomObservation {
+                    snapshot: verify_production_dom(&snapshot.to_string()).unwrap(),
+                    root_object_id: r#"{"injectedScriptId":1,"id":11}"#.into(),
+                })
+                .unwrap();
+            identity
+        }
+
+        fn native_dom_control_request(action: &str, index: u32) -> serde_json::Value {
+            let mut value = json!({
+                "version":2,"kind":"act-element","session":NONCE,
+                "checkSequence":1,"observationId":1,"pageGeneration":7,
+                "sourceId":production_dom_source_id("https://example.test/").unwrap(),
+                "index":index,"ordinal":index-1,
+                "action":action,"approvalId":"b".repeat(48)
+            });
+            let canonical = match action {
+                "type" => {
+                    value["text"] = json!("Héllo");
+                    "type\0Héllo".to_owned()
+                }
+                "clear" => "clear".to_owned(),
+                "check" => "check".to_owned(),
+                "uncheck" => "uncheck".to_owned(),
+                "select" => {
+                    value["optionIndex"] = json!(5);
+                    value["optionOrdinal"] = json!(4);
+                    "select:5:4".to_owned()
+                }
+                "scroll" => {
+                    value["deltaY"] = json!(-120);
+                    "scroll:-120".to_owned()
+                }
+                other => panic!("unknown test action {other}"),
+            };
+            value["payloadSha256"] = json!(format!("{:x}", Sha256::digest(canonical.as_bytes())));
+            value
+        }
+
+        #[test]
+        fn production_exact_control_actions_bind_original_roles_options_and_payload_hashes() {
+            let identity = native_dom_control_case();
+            for (action, index) in [
+                ("type", 2),
+                ("clear", 7),
+                ("select", 4),
+                ("check", 3),
+                ("uncheck", 3),
+                ("scroll", 6),
+            ] {
+                let value = native_dom_control_request(action, index);
+                let (request, reference) = validate_dom_action_request(
+                    value.to_string().as_bytes(),
+                    NONCE,
+                    0,
+                    1,
+                    7,
+                    "https://example.test/",
+                    &identity,
+                )
+                .unwrap();
+                let reference = reference.expect("same retained observation");
+                let option = if action == "select" {
+                    Some(identity.reference_at(5, 4).unwrap())
+                } else {
+                    None
+                };
+                assert!(identity.may_control(action, &reference, option.as_ref()));
+                assert_eq!(
+                    validated_dom_action_payload_digest(&request)
+                        .unwrap()
+                        .as_deref(),
+                    request.payload_sha256.as_deref()
+                );
+                let reply = serde_json::to_value(ChildDomActionReply {
+                    version: 2,
+                    kind: "element-action",
+                    session: &request.session,
+                    check_sequence: request.check_sequence,
+                    observation_id: request.observation_id,
+                    page_generation: request.page_generation,
+                    source_id: &request.source_id,
+                    index: request.index,
+                    ordinal: request.ordinal,
+                    action: &request.action,
+                    approval_id: &request.approval_id,
+                    state: "DISPATCHED",
+                    target_url_sha256: None,
+                    payload_sha256: request.payload_sha256.as_deref(),
+                })
+                .unwrap();
+                assert_eq!(reply["action"], action);
+                assert_eq!(reply["state"], "DISPATCHED");
+                assert_eq!(reply["payloadSha256"], value["payloadSha256"]);
+                assert!(reply.get("targetUrlSha256").is_none());
+                let encoded = reply.to_string();
+                for forbidden in [
+                    "Héllo",
+                    "injectedScriptId",
+                    "objectId",
+                    "selector",
+                    "optionValue",
+                ] {
+                    assert!(!encoded.contains(forbidden), "secret exposure: {forbidden}");
+                }
+            }
+            // Exact option identity in the same retained observation is
+            // necessary but not sufficient: only the matching select can use it.
+            let option = identity.reference_at(5, 4).unwrap();
+            assert!(!identity.may_control(
+                "select",
+                &identity.reference(2).unwrap(),
+                Some(&option)
+            ));
+            assert!(!identity.may_control("type", &identity.reference(8).unwrap(), None));
+            assert!(!identity.may_control("check", &identity.reference(2).unwrap(), None));
+            assert!(!identity.may_control("scroll", &identity.reference(5).unwrap(), None));
+            assert!(!identity.may_control("select", &identity.reference(4).unwrap(), None));
+        }
+
+        #[test]
+        fn production_exact_control_actions_reject_forged_payloads_and_replays() {
+            let identity = native_dom_control_case();
+            let validate = |r: &serde_json::Value, last: u64| {
+                validate_dom_action_request(
+                    r.to_string().as_bytes(),
+                    NONCE,
+                    last,
+                    1,
+                    7,
+                    "https://example.test/",
+                    &identity,
+                )
+            };
+            for action in ["type", "clear", "select", "check", "uncheck", "scroll"] {
+                let good = native_dom_control_request(action, 2);
+                assert!(validate(&good, 0).is_ok(), "valid {action}");
+                assert!(validate(&good, 1).is_err(), "sequence replay: {action}");
+                let mut bad = good.clone();
+                bad["payloadSha256"] = json!("0".repeat(64));
+                assert!(validate(&bad, 0).is_err(), "forged digest: {action}");
+                let mut missing = good.clone();
+                missing.as_object_mut().unwrap().remove("payloadSha256");
+                assert!(validate(&missing, 0).is_err(), "missing digest: {action}");
+                let mut extra = good.clone();
+                extra["selector"] = json!("#secret");
+                assert!(validate(&extra, 0).is_err(), "forged selector: {action}");
+                let mut duplicate = good.clone();
+                duplicate["value"] = json!("forbidden");
+                assert!(
+                    validate(&duplicate, 0).is_err(),
+                    "page value field: {action}"
+                );
+            }
+            for (mut bad, why) in [
+                (native_dom_control_request("clear", 2), "clear with text"),
+                (native_dom_control_request("check", 3), "check with delta"),
+                (native_dom_control_request("select", 4), "select with text"),
+                (
+                    native_dom_control_request("scroll", 6),
+                    "scroll with option",
+                ),
+            ] {
+                match why {
+                    "clear with text" => bad["text"] = json!("injection"),
+                    "check with delta" => bad["deltaY"] = json!(120),
+                    "select with text" => bad["text"] = json!("injection"),
+                    _ => bad["optionIndex"] = json!(5),
+                }
+                assert!(validate(&bad, 0).is_err(), "unexpected extra: {why}");
+            }
+            let mut type_req = native_dom_control_request("type", 2);
+            for text in [
+                "".to_owned(),
+                "a".repeat(257),
+                "a\nb".to_owned(),
+                "ab\u{202e}cd".to_owned(),
+                "a\u{061c}b".to_owned(),
+            ] {
+                type_req["text"] = json!(text);
+                assert!(validate(&type_req, 0).is_err());
+            }
+            let mut select = native_dom_control_request("select", 4);
+            select["optionOrdinal"] = json!(45);
+            assert!(
+                validate(&select, 0).is_err(),
+                "digest must bind option ordinal"
+            );
+            let mut scroll = native_dom_control_request("scroll", 6);
+            for delta in [0, 1, -240, 240, i32::MAX] {
+                scroll["deltaY"] = json!(delta);
+                assert!(
+                    validate(&scroll, 0).is_err(),
+                    "delta {delta} must be denied"
+                );
+            }
+            let mut untrusted = native_dom_control_request("type", 2);
+            untrusted["approvalId"] = json!("deadbeef");
+            assert!(validate(&untrusted, 0).is_err());
+
+            let mut used = HashSet::new();
+            assert!(consume_dom_approval_id(&mut used, &"a".repeat(48)).is_ok());
+            assert!(consume_dom_approval_id(&mut used, &"a".repeat(48)).is_err());
+            assert!(consume_dom_approval_id(&mut used, &"b".repeat(48)).is_ok());
+            for i in 0..PRODUCTION_DOM_MAX_CHECKS {
+                used.insert(format!("{i:048x}"));
+            }
+            assert!(consume_dom_approval_id(&mut used, &"c".repeat(48)).is_err());
+        }
+
+        #[test]
+        fn production_exact_control_native_function_reuses_retained_nodes_and_is_bounded() {
+            let fixed = DOM_EXACT_CONTROL_ACTION_JS;
+            assert!(fixed.starts_with("function(slot, action, text, optionSlot, deltaY)"));
+            assert!(fixed.contains("this.observer.takeRecords().length"));
+            assert!(fixed.contains("if (this.state.changed) return {dispatched:false}"));
+            assert!(fixed.contains("const node = this.nodes[slot]"));
+            assert!(fixed.contains("const option = this.nodes[optionSlot]"));
+            assert!(fixed.contains("option.parentElement !== node"));
+            assert!(fixed.contains("option.isConnected"));
+            assert!(fixed.contains("node.ownerDocument !== document"));
+            assert!(fixed.contains("this.state.changed = true;"));
+            assert!(fixed.contains("option.selected = true"));
+            assert!(fixed.contains("node.value = action === 'clear' ? '' : text"));
+            assert!(fixed.contains("node.checked = action === 'check'"));
+            assert!(fixed.contains("node.scrollBy(0, deltaY)"));
+            for forbidden in [
+                "querySelector",
+                "getElementById",
+                "getAttribute",
+                "outerHTML",
+                "innerHTML",
+                "textContent",
+                "document.cookie",
+                "localStorage",
+                "eval(",
+                "new Function",
+                "fetch(",
+                "XMLHttpRequest",
+                "closest(",
+                "insertAdjacentHTML",
+            ] {
+                assert!(
+                    !fixed.contains(forbidden),
+                    "unsafe native action: {forbidden}"
+                );
+            }
+            assert!(!PRODUCTION_DOM_JS.contains("node.value"));
+            assert!(!DOM_CAPTURE_READ_JS.contains("node.value"));
+        }
+
+        #[test]
+        fn production_exact_control_com_ack_is_closed_boolean_not_page_data() {
+            for accepted in [true, false] {
+                let response = json!({"result":{"type":"object","value":{"dispatched":accepted}}});
+                assert_eq!(
+                    parse_dom_control_action_response(&response.to_string()),
+                    Ok(accepted)
+                );
+            }
+            for invalid in [
+                json!({"result":{"type":"object","value":{"dispatched":true,"text":"secret"}}}),
+                json!({"result":{"type":"boolean","value":true}}),
+                json!({"result":{"type":"object","objectId":"abc","value":{"dispatched":true}}}),
+                json!({"result":{"type":"object","value":{"dispatched":"yes"}}}),
+                json!({"result":{"type":"object","value":{"dispatched":true}},
+                    "exceptionDetails":{"text":"secret"}}),
+                json!({"result":{"type":"object","value":{"dispatched":true,"value":"secret"}}}),
+            ] {
+                assert!(parse_dom_control_action_response(&invalid.to_string()).is_err());
+            }
+            assert!(parse_dom_control_action_response("{").is_err());
+            assert!(parse_dom_control_action_response(&"x".repeat(2049)).is_err());
         }
 
         #[test]

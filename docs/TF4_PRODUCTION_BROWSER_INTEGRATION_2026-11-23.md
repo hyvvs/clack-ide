@@ -706,3 +706,132 @@ Model-native action registration remains disabled. PR #46 stays Draft, with
 TF4 Slice 4 distinct from canonical TF14 and later P15 desktop computer
 control. Product-wide UI/UX Polish & Acceptance remains the mandatory final
 product release gate.
+
+## 2026-11-24 continuation — feature-matched physical renderer Fetch cancellation
+
+The inherited acceptance-only Cargo build session `60874` terminated with
+`GROUPED_ACCEPTANCE_HOST_FEATURE_BUILD_EXIT=0`; its warning output does not
+change the exit status. The exact feature set was
+`tf-browser-isolation-acceptance` for both `clack-browser-host` and the
+`tf_browser_isolation_acceptance` example, not the production-feature host.
+The existing failed `clack-tf-browser-grouped-only-kyK4zZ` run was preserved.
+
+One **fresh** isolated physical case ran from source HEAD
+`439c9e6da519caffbb9555bb43d7ed28e7c1c454`, with command
+`cargo run --manifest-path src-tauri/Cargo.toml --locked --features
+tf-browser-isolation-acceptance --example tf_browser_isolation_acceptance --
+--grouped-only renderer-fetch-cancel`. It exited 0 and saved immutable evidence
+to `src-tauri/target/tf-browser-isolation-acceptance/
+clack-tf-browser-grouped-only-3CxR6e/grouped-only-verdict.json`, SHA-256
+`9ac4dd25e0ed757934a988a93535f0c6a1f5eefd5a373279e8aabd6bdc77f7da`.
+The independent aggregate reads `PASS_SELECTED_GROUPED_ONLY`, exactly **one
+selected case verified** of nine implemented grouped cases, with **eleven
+required**. The nested host `caseResult.status=FAILED` and
+`acceptance-only broker fault triggered` are the **intentional native injected
+cancellation outcome**, not a successful application action; the grouped
+verifier separately records no case failure, owned Job cleanup verified and
+owned UDF cleanup. The physical log records original WebView2 renderer COM
+dependent request pending, independently acknowledged parent request, native
+renderer abort and synthetic COM 503. This specifically repairs the earlier
+host-feature mismatch; it does **not** prove every grouped cancellation or
+shutdown race, the full eleven-case matrix, TF3 global egress, or genuine
+installed Clack approval/effect/replay.
+
+Working branch and remote both remained at `439c9e6` when recorded. Only
+preexisting untracked `outputs/` and `scripts/__pycache__/` were present;
+neither was removed. PR #46 remains Draft and unmerged. Existing pinned
+optimized installer and installed host hashes are recorded in the canonical
+engineering tracker; neither this acceptance-only debug build nor the
+intentional host fault changes the installed production identity.
+
+### Nine new case-local grouped Phase-A physical checks
+
+Using the same previously built acceptance-feature host and example (no
+competing Cargo rebuild), each additional grouped case was launched once as
+`target/debug/examples/tf_browser_isolation_acceptance.exe --grouped-only
+<case>`. All nine individual immutable `grouped-only-verdict.json` files read
+`PASS_SELECTED_GROUPED_ONLY`, `verifiedCaseCount=1`, null case failure, true
+independent owned Job cleanup and true owned UDF cleanup. Evidence directory
+suffix, case and exact verdict SHA-256:
+
+| Run | Selected scenario | SHA-256 |
+| --- | --- | --- |
+| `3CxR6e` | `renderer-fetch-cancel` | `9ac4dd25e0ed757934a988a93535f0c6a1f5eefd5a373279e8aabd6bdc77f7da` |
+| `K1Oufg` | `renderer-xhr-cancel` | `5107b8b59f035051815d97b0f2bdbddcbe0936561350d2950f70397c648ff441` |
+| `uLiyvM` | `page-close-pending` | `2eaea3ece80a914d1eaf8919125eaef9f7e7ddfb2d9e782a9568b10bc2210ddc` |
+| `16IweB` | `session-close-pending` | `24e5bcdc804e2eabfc78e80283c9a749d819a9c40bc148c1ae958049fc600d37` |
+| `NP3qBc` | `navigation-stale` | `0bee127ff7dd86232701129e0d3b3daea08cb118236a663ce7a4df990b9d78c3` |
+| `7v6CBk` | `snapshot-stale` | `12366f55abb39959e7917f21f732065d19dcd802802c70337e729962e5002941` |
+| `Mu6w3i` | `element-stale` | `527d7fa820fa8e881f85c4f94cdd38acfe0e797f42349dc820410f0bb390221f` |
+| `rG6ka7` | `broker-process-kill` | `1b5108fc7304d2cfcbde550be3722bc2699959520a457375f1e33ef602ec0f6d` |
+| `zOfjVG` | `multi-pending-shutdown` | `ee2ff3296fc95dfa21c0e1a31da3fcebb8c331d1c81689a3df43a16fb3aaccc6` |
+
+These are **nine separate scoped runs** from one source/build state, not the
+single full grouped execution and not eleven distinct scenario gates. Two
+required cases remain absent from the implemented grouped inventory. The
+original eight negative and nine historical Phase-A cases were not rerun.
+No result is promoted to installed application's real consent/effect proof.
+
+### 2026-11-24 source continuation: six bounded original-node controls
+
+On top of original native exact retained-link CLICK, the existing sealed v2
+parent/host control turn now contains narrowly scoped TYPE, CLEAR, SELECT,
+CHECK, UNCHECK and SCROLL. These are **implemented source paths, not accepted
+installed production capabilities**. The original TF4 prepare/OS consent/
+single-use token/exclusive native owner/retained COM observation/cancellation
+and canonical receipt authority is reused, not duplicated. An exact approved
+request binds actor, chat session, canonical workspace, page ID/generation,
+snapshot, opaque node, original origin/revision, action parameters and effect.
+TYPE allows at most 256 printable UTF-8 bytes with control/bidi exclusions;
+the OS approval display shows only text byte length and SHA-256, never the
+literal value. SELECT requires a second retained opaque original OPTION from
+the same observation; its original index and ordinal are rechecked with its
+SELECT parent at native dispatch. SCROLL accepts only a fixed ±120 CSS-pixel
+vertical step. All six native requests carry an independently recalculated
+SHA-256 digest of the action's closed parameter encoding; CLICK retains its
+original production wire. The host consumes each exact approval ID once,
+invalidates the original observation and denies stale/changed/replaced,
+disabled and unsupported nodes without selector/coordinate/JS fallback.
+One fixed host-authored renderer function performs at most one action; the
+native reply never exposes control values or the selection text.
+
+**Critical effect distinction:** new field/scroll actions can trigger page
+handlers or network writes. COM `DISPATCHED` does **not** independently prove
+the observed field, server or scroll effect; absent separately correlated
+postconditions, canonical terminal remains `UNKNOWN` with `NEVER_REPLAY`.
+The existing direct CLICK link destination-digest correlation is preserved.
+No native actions have been enabled in model-facing CapabilityIndex/Tool
+Fabric, and no arbitrary secret or credential injection has been added.
+
+**Validation on these uncommitted changes:** optimized native runtime source
+has not yet been rebuilt/installed. Windows default and
+`tf-browser-native-runtime` Cargo checks (lib/host/tests) PASS; all native
+host broker contract tests **54/54 PASS**, TF4 owner **21/21 PASS**, TF4
+runtime **14 active PASS** with **11 physical opt-in ignored**, TF4 contract
+**13/13 PASS**, TF1 **13/13**, TF2 **7/7**, and focused React/Vitest **12/12**.
+Two initial TF4 owner attempts failed because the expansion changed the
+established CLICK malformed-target error string; the exact legacy denial
+was restored and the final full owner suite passed. TF3 first parallel
+test suite returned **20/22** with two transient localhost fixture
+failure classifications; an unchanged-source serial rerun gave **22/22
+PASS**. Both results are retained and this does not establish the cause of
+parallel failure. Rustfmt and Git whitespace checks PASS. At this point,
+new source is not represented in the previously installed optimized NSIS
+package. The original genuine user diagnostic is only marked done, without
+any app-generated canonical approval/effect receipt; there is still no owned
+publicly reachable production-policy-compliant HTTPS action oracle.
+
+**Boundaries still open:** physical one-use OS consent/effect/replay denial,
+pre/post dispatch cancellation acceptance, independent native TYPE/CLEAR/
+SELECT/CHECK/UNCHECK/SCROLL postconditions, approved form POST, origin-bound
+credential references, screenshots, TF2 governed transfers, popups/storage,
+the two unspecified and unimplemented required grouped races (nine of eleven
+individually verified), extended isolation and complete 17-step installed
+E2E. The exact *canonical identifiers and predicates* of those two missing
+grouped cases are not defined in the available repo material. Relabelling
+historically accepted renderer/host-crash cases as new grouped acceptance
+would be false evidence, so no runner change was made. CI run
+`45310119301` on original `439c9e6` head remains **FAILED**; this later
+source requires fresh CI after push. PR #46 must remain Draft and unmerged.
+TF4 is distinct from canonical TF14 and later P15 desktop control; product-
+wide UI/UX Polish & Acceptance remains mandatory before final release.

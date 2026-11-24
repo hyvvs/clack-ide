@@ -41,6 +41,7 @@ use super::tf_browser_contract::{
 };
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 use super::tf_browser_runtime::NativeConsumedExactClickApproval;
+use super::tf_browser_runtime::NativeRetainedAction;
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 use super::tf_browser_runtime::{NativeControlTurnRequester, NativeExactClickApprovalScope};
 
@@ -108,6 +109,10 @@ pub enum TfBrowserOperation {
     CloseConfined,
     Click,
     Type,
+    Clear,
+    Select,
+    Check,
+    Uncheck,
     Scroll,
     Screenshot,
 }
@@ -121,16 +126,33 @@ impl TfBrowserOperation {
     fn unsupported(self) -> bool {
         matches!(
             self,
-            Self::Click | Self::Type | Self::Scroll | Self::Screenshot
+            Self::Click
+                | Self::Type
+                | Self::Clear
+                | Self::Select
+                | Self::Check
+                | Self::Uncheck
+                | Self::Scroll
+                | Self::Screenshot
+        )
+    }
+    fn native_action(self) -> bool {
+        matches!(
+            self,
+            Self::Click
+                | Self::Type
+                | Self::Clear
+                | Self::Select
+                | Self::Check
+                | Self::Uncheck
+                | Self::Scroll
         )
     }
     fn approval_required(self) -> bool {
         // DOM effects require actual application consent even when the
         // destination is the currently approved origin. A test/headless
         // allowance must never be sufficient for a native gesture.
-        self.network()
-            || self == Self::ObserveConfined
-            || matches!(self, Self::Click | Self::Type | Self::Scroll)
+        self.network() || self == Self::ObserveConfined || self.native_action()
     }
 }
 
@@ -900,6 +922,7 @@ enum NativeCommand {
         token: String,
         browser_id: String,
         target: ActionTarget,
+        action: NativeRetainedAction,
         active: Arc<Active>,
         reply: oneshot::Sender<Result<NativeClickCompletion, String>>,
     },
@@ -1176,6 +1199,8 @@ struct Pending {
     native_effect: Option<BrowserEffect>,
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     native_role: Option<SemanticRole>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    native_action: Option<NativeRetainedAction>,
 }
 struct Active {
     cancelled: AtomicBool,
@@ -1310,6 +1335,43 @@ fn inert_link_metadata_allowed(url: &Url) -> bool {
             || matches!(name.as_str(), "auth" | "code" | "sid" | "key" | "sig")
     })
 }
+/// Existing immutable request.text is interpreted by the exact operation:
+/// TYPE user text, SELECT second original opaque option handle, SCROLL one
+/// fixed signed step encoded as 'up'/'down'. Never a CSS selector or value.
+fn native_retained_action_from_request(
+    req: &TfBrowserRequest,
+) -> Result<NativeRetainedAction, String> {
+    match req.operation {
+        TfBrowserOperation::Click if req.text.is_none() => Ok(NativeRetainedAction::Click),
+        TfBrowserOperation::Type => {
+            let value = req.text.as_deref().ok_or("native-type-text-required")?;
+            if !super::tf_browser_runtime::valid_native_type_text(value) {
+                return Err("native-type-text-unsafe-or-bidi".into());
+            }
+            Ok(NativeRetainedAction::Type(value.to_owned()))
+        }
+        TfBrowserOperation::Clear if req.text.is_none() => Ok(NativeRetainedAction::Clear),
+        TfBrowserOperation::Select => {
+            let option = req
+                .text
+                .as_deref()
+                .ok_or("native-select-option-ref-required")?;
+            if !valid_id(option) || option == req.element_id.as_deref().unwrap_or("") {
+                return Err("native-select-original-option-invalid".into());
+            }
+            Ok(NativeRetainedAction::Select(option.to_owned()))
+        }
+        TfBrowserOperation::Check if req.text.is_none() => Ok(NativeRetainedAction::Check),
+        TfBrowserOperation::Uncheck if req.text.is_none() => Ok(NativeRetainedAction::Uncheck),
+        TfBrowserOperation::Scroll => match req.text.as_deref() {
+            Some("up") => Ok(NativeRetainedAction::Scroll(-120)),
+            Some("down") => Ok(NativeRetainedAction::Scroll(120)),
+            _ => Err("native-scroll-only-fixed-up-or-down".into()),
+        },
+        _ => Err("native-action-exact-parameter-shape-denied".into()),
+    }
+}
+
 fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
     if req.timeout_ms == Some(0)
         || req.timeout_ms.unwrap_or(MAX_TIMEOUT) > MAX_TIMEOUT
@@ -1396,17 +1458,23 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
                 return Err("browser-operation-parameters-denied".into());
             }
         }
-        TfBrowserOperation::Click => {
+        operation if operation.native_action() => {
             if req.url.is_some()
                 || req.selector.is_some()
-                || req.text.is_some()
+                || (operation == TfBrowserOperation::Click && req.text.is_some())
                 || req.page_id.as_deref().is_none_or(|s| !valid_id(s))
                 || req.page_generation.is_none_or(|g| g == 0)
                 || req.snapshot_id.as_deref().is_none_or(|s| !valid_id(s))
                 || req.element_id.as_deref().is_none_or(|s| !valid_id(s))
             {
-                return Err("native-click-exact-target-required".into());
+                return Err(if operation == TfBrowserOperation::Click {
+                    "native-click-exact-target-required"
+                } else {
+                    "native-action-exact-target-required"
+                }
+                .into());
             }
+            native_retained_action_from_request(req)?;
         }
         // Unsupported operations cannot acquire arbitrary selectors or scripts.
         _ => {
@@ -1458,6 +1526,8 @@ pub fn prepare(
     let mut native_effect: Option<BrowserEffect> = None;
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     let mut native_role: Option<SemanticRole> = None;
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    let mut native_action: Option<NativeRetainedAction> = None;
     let (browser_id, revision, url) = if matches!(
         req.operation,
         TfBrowserOperation::Open | TfBrowserOperation::OpenConfined
@@ -1488,13 +1558,13 @@ pub fn prepare(
             }
             if !matches!(
                 req.operation,
-                TfBrowserOperation::CloseConfined
-                    | TfBrowserOperation::ObserveConfined
-                    | TfBrowserOperation::Click
-            ) {
+                TfBrowserOperation::CloseConfined | TfBrowserOperation::ObserveConfined
+            ) && !req.operation.native_action()
+            {
                 return Err("confined-native-operation-not-yet-accepted".into());
             }
-            if req.operation == TfBrowserOperation::Click {
+            if req.operation.native_action() {
+                let action = native_retained_action_from_request(&req)?;
                 let page = native
                     .snapshot
                     .lock()
@@ -1520,6 +1590,13 @@ pub fn prepare(
                     .iter()
                     .find(|element| req.element_id.as_deref() == Some(element.element_ref.as_str()))
                     .map(|element| element.role.clone());
+                if let NativeRetainedAction::Select(option_ref) = &action {
+                    if !page.elements.iter().any(|element| {
+                        element.element_ref == *option_ref && element.role == SemanticRole::Option
+                    }) {
+                        return Err("native-select-option-must-be-retained-original-option".into());
+                    }
+                }
                 native_target = Some(ActionTarget {
                     browser_session_id: page.browser_session_id.clone(),
                     page_id: page.page_id,
@@ -1527,10 +1604,11 @@ pub fn prepare(
                     snapshot_id: page.snapshot_id,
                     element_ref: req.element_id.clone().ok_or("element-id-required")?,
                 });
-                // First closed action slice is only for link-like UNKNOWN
-                // effects. Destructive/writing classifications fail closed
-                // during the independent native recheck, not coerced to this.
+                // All exact-node effects are conservatively UNKNOWN. The
+                // native contract and host reclassify/recheck the actual role
+                // before one single-use dispatch, never a model CSS selector.
                 native_effect = Some(BrowserEffect::Unknown);
+                native_action = Some(action);
             }
         } else if matches!(
             req.operation,
@@ -1544,7 +1622,13 @@ pub fn prepare(
         if session.native.is_none()
             && matches!(
                 req.operation,
-                TfBrowserOperation::Click | TfBrowserOperation::Type | TfBrowserOperation::Scroll
+                TfBrowserOperation::Click
+                    | TfBrowserOperation::Type
+                    | TfBrowserOperation::Clear
+                    | TfBrowserOperation::Select
+                    | TfBrowserOperation::Check
+                    | TfBrowserOperation::Uncheck
+                    | TfBrowserOperation::Scroll
             )
         {
             return Err("native-action-requires-confined-approved-runtime".into());
@@ -1552,7 +1636,13 @@ pub fn prepare(
         #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
         if matches!(
             req.operation,
-            TfBrowserOperation::Click | TfBrowserOperation::Type | TfBrowserOperation::Scroll
+            TfBrowserOperation::Click
+                | TfBrowserOperation::Type
+                | TfBrowserOperation::Clear
+                | TfBrowserOperation::Select
+                | TfBrowserOperation::Check
+                | TfBrowserOperation::Uncheck
+                | TfBrowserOperation::Scroll
         ) {
             return Err("native-action-requires-confined-approved-runtime".into());
         }
@@ -1591,7 +1681,10 @@ pub fn prepare(
                 }
                 None
             }
-            TfBrowserOperation::ObserveConfined | TfBrowserOperation::Click => {
+            operation
+                if operation == TfBrowserOperation::ObserveConfined
+                    || operation.native_action() =>
+            {
                 // Bind the original approved origin in the existing immutable
                 // pending transaction. Do not show untrusted URL path/query in
                 // the approval UI or treat it as an independent TF3 grant.
@@ -1615,6 +1708,12 @@ pub fn prepare(
             TfBrowserOperation::OpenConfined
                 | TfBrowserOperation::ObserveConfined
                 | TfBrowserOperation::Click
+                | TfBrowserOperation::Type
+                | TfBrowserOperation::Clear
+                | TfBrowserOperation::Select
+                | TfBrowserOperation::Check
+                | TfBrowserOperation::Uncheck
+                | TfBrowserOperation::Scroll
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ENGINE
@@ -1626,6 +1725,12 @@ pub fn prepare(
             TfBrowserOperation::OpenConfined
                 | TfBrowserOperation::ObserveConfined
                 | TfBrowserOperation::Click
+                | TfBrowserOperation::Type
+                | TfBrowserOperation::Clear
+                | TfBrowserOperation::Select
+                | TfBrowserOperation::Check
+                | TfBrowserOperation::Uncheck
+                | TfBrowserOperation::Scroll
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ISOLATION
@@ -1651,6 +1756,8 @@ pub fn prepare(
             native_effect,
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             native_role,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            native_action,
         },
     );
     Ok(prepared)
@@ -1672,10 +1779,9 @@ pub fn approve_headless(token: &str, state: &TfBrowserState) -> Result<(), Strin
     }
     if matches!(
         p.request.operation,
-        TfBrowserOperation::OpenConfined
-            | TfBrowserOperation::ObserveConfined
-            | TfBrowserOperation::Click
-    ) {
+        TfBrowserOperation::OpenConfined | TfBrowserOperation::ObserveConfined
+    ) || p.request.operation.native_action()
+    {
         return Err("confined-native-requires-visible-application-approval".into());
     }
     p.approved = true;
@@ -1689,7 +1795,7 @@ pub fn cancel(token: &str, state: &TfBrowserState, web_state: &TfWebState) -> Re
             .map_err(|_| "browser-state-unavailable")?;
         if let Some(pending) = entries.pending.remove(token) {
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-            if pending.request.operation == TfBrowserOperation::Click {
+            if pending.request.operation.native_action() {
                 if let Some(active) = entries.active.remove(token) {
                     if let Some(phase) = active.native_click_phase.as_ref() {
                         let _ = phase.compare_exchange(
@@ -1704,7 +1810,7 @@ pub fn cancel(token: &str, state: &TfBrowserState, web_state: &TfWebState) -> Re
                 }
             }
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-            if pending.request.operation == TfBrowserOperation::Click {
+            if pending.request.operation.native_action() {
                 if let Some(session) = pending
                     .browser_id
                     .as_deref()
@@ -1777,6 +1883,12 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
             TfBrowserOperation::OpenConfined
                 | TfBrowserOperation::ObserveConfined
                 | TfBrowserOperation::Click
+                | TfBrowserOperation::Type
+                | TfBrowserOperation::Clear
+                | TfBrowserOperation::Select
+                | TfBrowserOperation::Check
+                | TfBrowserOperation::Uncheck
+                | TfBrowserOperation::Scroll
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ENGINE
@@ -1788,6 +1900,12 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
             TfBrowserOperation::OpenConfined
                 | TfBrowserOperation::ObserveConfined
                 | TfBrowserOperation::Click
+                | TfBrowserOperation::Type
+                | TfBrowserOperation::Clear
+                | TfBrowserOperation::Select
+                | TfBrowserOperation::Check
+                | TfBrowserOperation::Uncheck
+                | TfBrowserOperation::Scroll
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ISOLATION
@@ -1831,7 +1949,7 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
 /// application dialog. A mismatch also burns it. No model-provided approval
 /// ID, second store or test fixture flag participates in this transaction.
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-fn consume_native_click_approval(
+fn consume_native_action_approval(
     token: &str,
     native: &NativeExactClickApprovalScope<'_>,
     registry: &WorkspaceRegistry,
@@ -1858,8 +1976,9 @@ fn consume_native_click_approval(
     if p.expires <= Instant::now()
         || !p.approved
         || p.approving
-        || p.request.operation != TfBrowserOperation::Click
+        || !p.request.operation.native_action()
         || p.native_effect != Some(native.effect)
+        || p.native_action.as_ref() != Some(&native.action)
         || p.native_target.as_ref() != Some(native.target)
         || p.request.actor != native.actor
         || p.request.session_id != native.session_id
@@ -2172,6 +2291,7 @@ async fn execute_confined_native(
                                     token,
                                     browser_id,
                                     target,
+                                    action,
                                     active,
                                     reply,
                                 } => {
@@ -2191,11 +2311,13 @@ async fn execute_confined_native(
                                                         .to_owned(),
                                                 );
                                             }
-                                            let scope =
-                                                browser.exact_click_scope_for_central(&target)?;
+                                            let scope = browser.exact_retained_scope_for_central(
+                                                &target,
+                                                action.clone(),
+                                            )?;
                                             let authority = service_app.state::<TfBrowserState>();
                                             let registry = service_app.state::<WorkspaceRegistry>();
-                                            consume_native_click_approval(
+                                            consume_native_action_approval(
                                                 &token, &scope, &registry, &authority,
                                             )
                                         })();
@@ -2231,9 +2353,15 @@ async fn execute_confined_native(
                                                 } else {
                                                     clicked_source =
                                                         Some((approved_role, source_url));
-                                                    browser
-                                                        .dispatch_exact_click_in_control_turn(grant)
-                                                        .await
+                                                    if action == NativeRetainedAction::Click {
+                                                        browser
+                                                            .dispatch_exact_click_in_control_turn(
+                                                                grant,
+                                                            )
+                                                            .await
+                                                    } else {
+                                                        browser.dispatch_retained_action_in_control_turn(grant).await
+                                                    }
                                                 }
                                             }
                                             Err(reason) => Ok((
@@ -2255,7 +2383,8 @@ async fn execute_confined_native(
                                                 Some(target_url_sha256),
                                             ) = (
                                                 clicked_source.filter(|(role, _)| {
-                                                    *role == SemanticRole::Link
+                                                    action == NativeRetainedAction::Click
+                                                        && *role == SemanticRole::Link
                                                 }),
                                                 attempted
                                                     .as_ref()
@@ -2505,13 +2634,13 @@ async fn execute_confined_observation(
 /// remain authoritative until the native actor reaches an exclusive host turn.
 /// This function cannot fabricate a grant or dispatch directly through IPC.
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-async fn execute_confined_click(
+async fn execute_confined_retained_action(
     token: &str,
     registry: &WorkspaceRegistry,
     state: &TfBrowserState,
     web_state: &TfWebState,
 ) -> Result<TfBrowserReceipt, String> {
-    let (p, sender, turn_requester, target, active) = {
+    let (p, sender, turn_requester, target, action, active) = {
         let mut entries = state
             .entries
             .lock()
@@ -2522,7 +2651,7 @@ async fn execute_confined_click(
             .get(token)
             .ok_or("unknown-or-consumed-browser-token")?
             .clone();
-        if p.request.operation != TfBrowserOperation::Click
+        if !p.request.operation.native_action()
             || !p.approved
             || p.approving
             || p.expires <= Instant::now()
@@ -2564,6 +2693,10 @@ async fn execute_confined_click(
             .native_target
             .clone()
             .ok_or("native-click-exact-target-required")?;
+        let action = p
+            .native_action
+            .clone()
+            .ok_or("native-action-original-parameters-missing")?;
         let active = Arc::new(Active {
             native_click_phase: Some(AtomicU8::new(NATIVE_CLICK_QUEUED)),
             ..Active::default()
@@ -2571,7 +2704,7 @@ async fn execute_confined_click(
         session.busy = true;
         session.native_reserved_action = Some(token.to_owned());
         entries.active.insert(token.to_owned(), active.clone());
-        (p, sender, turn_requester, target, active)
+        (p, sender, turn_requester, target, action, active)
     };
     let _queued = NativeActionQueueGuard {
         state,
@@ -2587,6 +2720,7 @@ async fn execute_confined_click(
         token: token.to_owned(),
         browser_id: p.browser_id.clone().ok_or("browser-session-id-required")?,
         target,
+        action,
         active,
         reply,
     };
@@ -3041,10 +3175,8 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         .unwrap_or("(unknown)");
     let native_confined = matches!(
         pending.request.operation,
-        TfBrowserOperation::OpenConfined
-            | TfBrowserOperation::ObserveConfined
-            | TfBrowserOperation::Click
-    );
+        TfBrowserOperation::OpenConfined | TfBrowserOperation::ObserveConfined
+    ) || pending.request.operation.native_action();
     let native_purpose = match pending.request.operation {
         TfBrowserOperation::OpenConfined =>
             "Start one isolated AppContainer/WebView2 HTTPS session. No native page gesture is authorized by this approval.",
@@ -3052,10 +3184,22 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             "Read one bounded redacted semantic DOM snapshot from this existing isolated session. No page action is authorized.",
         TfBrowserOperation::Click =>
             "Execute exactly ONE exact retained DOM Node click after the page, snapshot, element, actor, workspace, origin and UNKNOWN effect classification are rechecked. The click can trigger an external effect; dispatch alone is not proof of completion. It cannot be replayed.",
+        TfBrowserOperation::Type =>
+            "Insert EXACT approved short printable text into ONE retained non-password text control. Input handlers may have external effects; no automatic replay.",
+        TfBrowserOperation::Clear =>
+            "Clear ONE exact retained non-password text control. Input/change handlers may have external effects; no automatic replay.",
+        TfBrowserOperation::Select =>
+            "Choose ONE separately retained opaque option belonging to ONE exact retained SELECT control. The host must prove same original snapshot and original DOM parent, no selector/value fallback; no automatic replay.",
+        TfBrowserOperation::Check =>
+            "Set ONE exact retained checkbox/radio checked, with native same-node revalidation. Change handlers may have external effects; no automatic replay.",
+        TfBrowserOperation::Uncheck =>
+            "Set ONE exact retained checkbox unchecked (NEVER radio). Change handlers may have external effects; no automatic replay.",
+        TfBrowserOperation::Scroll =>
+            "Scroll ONE exact retained node by 120 pixels in the approved direction. Scroll handlers may have external effects; no automatic replay.",
         _ => "Only TF3 pinned HTTP(S) text retrieval is supported; redirects and targets require per-hop policy.",
     };
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-    let native_target_details = if pending.request.operation == TfBrowserOperation::Click {
+    let native_target_details = if pending.request.operation.native_action() {
         let target = pending
             .native_target
             .as_ref()
@@ -3068,8 +3212,29 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             .as_ref()
             .ok_or("native-click-approved-role-missing")?;
         let approved_origin = target_origin_for_approval(pending.url.as_deref())?;
+        let parameters = match pending
+            .native_action
+            .as_ref()
+            .ok_or("native-action-approved-parameters-missing")?
+        {
+            NativeRetainedAction::Click => "No additional parameters".to_owned(),
+            NativeRetainedAction::Type(text) => format!(
+                "EXACT text bytes withheld for privacy ({} UTF-8 bytes, SHA-256 {:x})",
+                text.len(),
+                Sha256::digest(text.as_bytes())
+            ),
+            NativeRetainedAction::Clear => "Clear value; no text payload".to_owned(),
+            NativeRetainedAction::Select(option) => {
+                format!("EXACT original retained OPTION reference: {option}")
+            }
+            NativeRetainedAction::Check => "Set checked=true; no payload".to_owned(),
+            NativeRetainedAction::Uncheck => "Set checked=false; no payload".to_owned(),
+            NativeRetainedAction::Scroll(delta) => {
+                format!("EXACT vertical scroll delta: {delta} native CSS pixels")
+            }
+        };
         format!(
-            "\nExact approved browser origin: {approved_origin}\nObserved DOM role: {role:?}\nPage generation: {}\nPage identity: {}\nSnapshot identity: {}\nOriginal opaque element reference: {}\nConservative effect: {effect:?}\nNo selector or text-based fallback. Native rechecks all identities before one programmatic click.\n",
+            "\nExact approved browser origin: {approved_origin}\nObserved DOM role: {role:?}\nPage generation: {}\nPage identity: {}\nSnapshot identity: {}\nOriginal opaque element reference: {}\nConservative effect: {effect:?}\nAction parameters: {parameters}\nNo CSS selector, element reassociation, hidden alternative or grant persistence. Native rechecks every identity before ONE action.\n",
             target.page_generation, target.page_id, target.snapshot_id, target.element_ref
         )
     } else {
@@ -3171,8 +3336,9 @@ pub async fn tf_browser_execute(
             Some(TfBrowserOperation::ObserveConfined) => {
                 return execute_confined_observation(&token, &registry, &state).await;
             }
-            Some(TfBrowserOperation::Click) => {
-                return execute_confined_click(&token, &registry, &state, &web_state).await;
+            Some(operation) if operation.native_action() => {
+                return execute_confined_retained_action(&token, &registry, &state, &web_state)
+                    .await;
             }
             _ => {}
         }
@@ -3822,16 +3988,24 @@ mod tests {
         for op in [
             TfBrowserOperation::Click,
             TfBrowserOperation::Type,
+            TfBrowserOperation::Clear,
+            TfBrowserOperation::Select,
+            TfBrowserOperation::Check,
+            TfBrowserOperation::Uncheck,
             TfBrowserOperation::Scroll,
         ] {
             let mut r = req(dir.path(), op);
             r.browser_session_id = Some(id.clone());
-            if op == TfBrowserOperation::Click {
-                r.page_id = Some(nonce().unwrap());
-                r.page_generation = Some(1);
-                r.snapshot_id = Some(nonce().unwrap());
-                r.element_id = Some(nonce().unwrap());
-            }
+            r.page_id = Some(nonce().unwrap());
+            r.page_generation = Some(1);
+            r.snapshot_id = Some(nonce().unwrap());
+            r.element_id = Some(nonce().unwrap());
+            r.text = match op {
+                TfBrowserOperation::Type => Some("safe input".into()),
+                TfBrowserOperation::Select => Some(nonce().unwrap()),
+                TfBrowserOperation::Scroll => Some("down".into()),
+                _ => None,
+            };
             assert_eq!(
                 prepare(r, &registry, &state).err().as_deref(),
                 Some("native-action-requires-confined-approved-runtime")
@@ -3847,6 +4021,82 @@ mod tests {
             assert_eq!(observed.effect_state, "NoEffect");
             assert!(observed.unsupported.contains(&"script_and_dom_execution"));
             assert!(observed.dns_evidence.is_empty());
+        }
+    }
+    #[test]
+    fn native_retained_operations_are_exact_scope_only_with_closed_parameters() {
+        let (dir, _, _, _) = setup();
+        for (operation, text, expected) in [
+            (
+                TfBrowserOperation::Type,
+                Some("hello"),
+                NativeRetainedAction::Type("hello".into()),
+            ),
+            (TfBrowserOperation::Clear, None, NativeRetainedAction::Clear),
+            (
+                TfBrowserOperation::Select,
+                Some("a"),
+                NativeRetainedAction::Select("a".into()),
+            ),
+            (TfBrowserOperation::Check, None, NativeRetainedAction::Check),
+            (
+                TfBrowserOperation::Uncheck,
+                None,
+                NativeRetainedAction::Uncheck,
+            ),
+            (
+                TfBrowserOperation::Scroll,
+                Some("up"),
+                NativeRetainedAction::Scroll(-120),
+            ),
+        ] {
+            let mut request = req(dir.path(), operation);
+            request.browser_session_id = Some(nonce().unwrap());
+            request.page_id = Some(nonce().unwrap());
+            request.page_generation = Some(2);
+            request.snapshot_id = Some(nonce().unwrap());
+            request.element_id = Some(nonce().unwrap());
+            request.text = match operation {
+                TfBrowserOperation::Select => Some(nonce().unwrap()),
+                _ => text.map(str::to_owned),
+            };
+            assert!(ensure_request_shape(&request).is_ok(), "{operation:?}");
+            let derived = native_retained_action_from_request(&request).unwrap();
+            if operation != TfBrowserOperation::Select {
+                assert_eq!(derived, expected);
+            } else {
+                assert!(matches!(derived, NativeRetainedAction::Select(_)));
+            }
+            assert!(operation.approval_required());
+            request.selector = Some("body input".into());
+            assert!(
+                ensure_request_shape(&request).is_err(),
+                "selector fallback must fail"
+            );
+        }
+        for (operation, malicious) in [
+            (TfBrowserOperation::Type, "secret\n"),
+            (TfBrowserOperation::Type, "\u{202e}spoof"),
+            (TfBrowserOperation::Type, "\u{200b}hidden"),
+            (TfBrowserOperation::Type, ""),
+            (TfBrowserOperation::Scroll, "360"),
+            (TfBrowserOperation::Scroll, "downwards"),
+            (TfBrowserOperation::Check, "true"),
+            (TfBrowserOperation::Uncheck, "false"),
+            (TfBrowserOperation::Clear, "value"),
+            (TfBrowserOperation::Select, "option-label"),
+        ] {
+            let mut request = req(dir.path(), operation);
+            request.browser_session_id = Some(nonce().unwrap());
+            request.page_id = Some(nonce().unwrap());
+            request.page_generation = Some(1);
+            request.snapshot_id = Some(nonce().unwrap());
+            request.element_id = Some(nonce().unwrap());
+            request.text = Some(malicious.into());
+            assert!(
+                ensure_request_shape(&request).is_err(),
+                "operation={operation:?}"
+            );
         }
     }
     #[test]

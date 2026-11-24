@@ -145,6 +145,95 @@ pub(crate) struct NativeExactClickApprovalScope<'a> {
     pub index: u32,
     pub ordinal: u32,
     pub check_sequence: u64,
+    /// The same closed operation and parameter value that the central owner
+    /// displayed/approved. Its native ordinal is independently derived below.
+    pub action: NativeRetainedAction,
+    pub selected_native_option: Option<(u32, u32)>,
+}
+
+/// Closed, non-model native action vocabulary. The only string carried by a
+/// TYPE gesture is prevalidated printable text; SELECT carries a retained
+/// opaque option reference, never a selector, label or untrusted option value.
+/// SCROLL's only permitted amounts are the native fixed +/-120-pixel steps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum NativeRetainedAction {
+    Click,
+    Type(String),
+    Clear,
+    Select(String),
+    Check,
+    Uncheck,
+    Scroll(i32),
+}
+
+impl NativeRetainedAction {
+    pub(crate) fn kind(&self) -> super::tf_browser_contract::BrowserActionKind {
+        use super::tf_browser_contract::BrowserActionKind as K;
+        match self {
+            Self::Click => K::Click,
+            Self::Type(_) => K::Type,
+            Self::Clear => K::Clear,
+            Self::Select(_) => K::Select,
+            Self::Check => K::Check,
+            Self::Uncheck => K::Uncheck,
+            Self::Scroll(_) => K::Scroll,
+        }
+    }
+
+    fn wire_action(&self) -> &'static str {
+        match self {
+            Self::Click => "click",
+            Self::Type(_) => "type",
+            Self::Clear => "clear",
+            Self::Select(_) => "select",
+            Self::Check => "check",
+            Self::Uncheck => "uncheck",
+            Self::Scroll(_) => "scroll",
+        }
+    }
+}
+
+pub(crate) fn valid_native_type_text(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && !value.chars().any(|c| {
+            c.is_control()
+                || matches!(c,
+                    '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
+                    | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+        })
+}
+
+fn native_action_payload_bytes(
+    action: &NativeRetainedAction,
+    selected: Option<(u32, u32)>,
+) -> Result<Option<Vec<u8>>, &'static str> {
+    if !matches!(action, NativeRetainedAction::Select(_)) && selected.is_some() {
+        return Err("native-action-unexpected-option-parameter");
+    }
+    let bytes = match action {
+        NativeRetainedAction::Click => return Ok(None), // unchanged v2 click frame
+        NativeRetainedAction::Type(text) if valid_native_type_text(text) => {
+            let mut bytes = b"type\0".to_vec();
+            bytes.extend_from_slice(text.as_bytes());
+            bytes
+        }
+        NativeRetainedAction::Clear => b"clear".to_vec(),
+        NativeRetainedAction::Select(_) => {
+            let (index, ordinal) = selected.ok_or("native-select-original-option-missing")?;
+            if index == 0 || index > 256 || ordinal >= 48 {
+                return Err("native-select-original-option-bounds");
+            }
+            format!("select:{index}:{ordinal}").into_bytes()
+        }
+        NativeRetainedAction::Check => b"check".to_vec(),
+        NativeRetainedAction::Uncheck => b"uncheck".to_vec(),
+        NativeRetainedAction::Scroll(delta) if matches!(*delta, -120 | 120) => {
+            format!("scroll:{delta}").into_bytes()
+        }
+        _ => return Err("native-action-parameter-shape-denied"),
+    };
+    Ok(Some(bytes))
 }
 
 /// Scheduling signal only. The native owner may clone this handle into its
@@ -182,6 +271,8 @@ pub(crate) struct NativeConsumedExactClickApproval {
     index: u32,
     ordinal: u32,
     check_sequence: u64,
+    action: NativeRetainedAction,
+    selected_native_option: Option<(u32, u32)>,
     expires_at: std::time::Instant,
 }
 
@@ -218,6 +309,8 @@ impl NativeConsumedExactClickApproval {
             index: scope.index,
             ordinal: scope.ordinal,
             check_sequence: scope.check_sequence,
+            action: scope.action.clone(),
+            selected_native_option: scope.selected_native_option,
             expires_at,
         })
     }
@@ -234,6 +327,8 @@ impl NativeConsumedExactClickApproval {
             && self.index == scope.index
             && self.ordinal == scope.ordinal
             && self.check_sequence == scope.check_sequence
+            && self.action == scope.action
+            && self.selected_native_option == scope.selected_native_option
     }
 }
 
@@ -377,6 +472,16 @@ struct ParentElementAction<'a> {
     ordinal: u32,
     action: &'static str,
     approval_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    option_index: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    option_ordinal: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delta_y: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_sha256: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -396,6 +501,8 @@ struct ChildElementAction {
     state: String,
     #[serde(default)]
     target_url_sha256: Option<String>,
+    #[serde(default)]
+    payload_sha256: Option<String>,
 }
 
 #[cfg(test)]
@@ -433,6 +540,7 @@ fn validate_element_action_reply_with_target(
         || reply.ordinal != request.ordinal
         || reply.action != request.action
         || reply.approval_id != request.approval_id
+        || reply.payload_sha256.as_deref() != request.payload_sha256
     {
         return Err("browser-action-reply-identity-denied");
     }
@@ -449,6 +557,7 @@ fn validate_element_action_reply_with_target(
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     }) || (terminal != T::Dispatched && reply.target_url_sha256.is_some())
+        || (request.action != "click" && reply.target_url_sha256.is_some())
     {
         return Err("browser-action-reply-target-denied");
     }
@@ -1875,6 +1984,17 @@ mod windows_owner {
             &'a self,
             target: &'a crate::modules::net::tf_browser_contract::ActionTarget,
         ) -> Result<super::NativeExactClickApprovalScope<'a>, String> {
+            self.exact_retained_scope_for_central(target, super::NativeRetainedAction::Click)
+        }
+
+        /// The same retained BrowserPageContract identity as click,
+        /// with per-kind role/field-type gates and a second retained option
+        /// witness for SELECT. This does not send a frame or confer approval.
+        pub(crate) fn exact_retained_scope_for_central<'a>(
+            &'a self,
+            target: &'a crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+        ) -> Result<super::NativeExactClickApprovalScope<'a>, String> {
             use crate::modules::net::tf_browser_contract::BrowserActionKind;
             if !self.has_control_turn()
                 || !self.ready
@@ -1886,8 +2006,26 @@ mod windows_owner {
             }
             let prepared = self
                 .page_contract
-                .prepare_action(BrowserActionKind::Click, (*target).clone(), None)
+                .prepare_action(
+                    action.kind(),
+                    (*target).clone(),
+                    match &action {
+                        super::NativeRetainedAction::Type(text) => Some(text.as_str()),
+                        _ => None,
+                    },
+                )
                 .map_err(str::to_owned)?;
+            // Do not let a changed payload or a malformed alternate option
+            // identity be traded for a previously approved action.
+            match &action {
+                super::NativeRetainedAction::Type(text) if !super::valid_native_type_text(text) => {
+                    return Err("native-type-unsafe-utf8-or-bidi".into());
+                }
+                super::NativeRetainedAction::Scroll(delta) if !matches!(*delta, -120 | 120) => {
+                    return Err("native-scroll-delta-denied".into());
+                }
+                _ => {}
+            }
             if !prepared.requires_approval {
                 return Err("native-click-central-approval-required".into());
             }
@@ -1909,6 +2047,37 @@ mod windows_owner {
             if index == 0 || index > 256 || ordinal >= 48 {
                 return Err("native-click-index-bounds".into());
             }
+            let selected_native_option =
+                if let super::NativeRetainedAction::Select(option_ref) = &action {
+                    if option_ref == &target.element_ref {
+                        return Err("native-select-option-must-be-distinct".into());
+                    }
+                    let option_target = crate::modules::net::tf_browser_contract::ActionTarget {
+                        element_ref: option_ref.clone(),
+                        ..(*target).clone()
+                    };
+                    // Same snapshot, session, page and original retained element
+                    // handle. Host independently proves OPTION role and
+                    // immediate membership in the exact retained SELECT.
+                    let option = self
+                        .page_contract
+                        .prepare_action(BrowserActionKind::Inspect, option_target, None)
+                        .map_err(str::to_owned)?;
+                    let option_index = u32::try_from(option.observed_serial)
+                        .map_err(|_| "native-select-original-option-index-bounds")?;
+                    let option_ordinal = indices
+                        .iter()
+                        .position(|observed| *observed == option_index)
+                        .ok_or("native-select-original-option-not-retained")?;
+                    if option_index == 0 || option_index > 256 || option_ordinal >= 48 {
+                        return Err("native-select-original-option-bounds".into());
+                    }
+                    Some((option_index, option_ordinal as u32))
+                } else {
+                    None
+                };
+            super::native_action_payload_bytes(&action, selected_native_option)
+                .map_err(str::to_owned)?;
             let sequence = self
                 .last_recheck_sequence
                 .checked_add(1)
@@ -1937,6 +2106,8 @@ mod windows_owner {
                 index,
                 ordinal: ordinal as u32,
                 check_sequence: sequence,
+                action,
+                selected_native_option,
             })
         }
 
@@ -1961,11 +2132,33 @@ mod windows_owner {
             ),
             String,
         > {
+            if approval.action != super::NativeRetainedAction::Click {
+                return Err("native-click-approved-operation-mismatch".into());
+            }
+            self.dispatch_retained_action_in_control_turn(approval)
+                .await
+        }
+
+        /// One centrally consumed and exact-snapshot-scoped native retained
+        /// action, serialized on the existing exclusive host control turn.
+        /// Missing/ambiguous host acknowledgement is UNKNOWN and kills the
+        /// native Job; never resume or replay an unverified mutation.
+        pub(crate) async fn dispatch_retained_action_in_control_turn(
+            &mut self,
+            approval: super::NativeConsumedExactClickApproval,
+        ) -> Result<
+            (
+                crate::modules::net::tf_browser_contract::NativeEffectReceipt,
+                Option<String>,
+            ),
+            String,
+        > {
             use crate::modules::net::tf_browser_contract::{
                 NativeEffectReceipt, NativeEffectTerminal,
             };
             let target = approval.target.clone();
-            let scope = self.exact_click_scope_for_central(&target)?;
+            let action = approval.action.clone();
+            let scope = self.exact_retained_scope_for_central(&target, action.clone())?;
             // No arbitrary 48-hex string, boolean, or model argument can
             // substitute for the consumed exact central approval witness.
             if !approval.matches_exact(&scope) {
@@ -1977,6 +2170,12 @@ mod windows_owner {
             let ordinal = scope.ordinal;
             let sequence = scope.check_sequence;
             let source = scope.source_id.clone();
+            let selected_option = scope.selected_native_option;
+            let payload = super::native_action_payload_bytes(&action, selected_option)
+                .map_err(str::to_owned)?;
+            let payload_sha256 = payload
+                .as_ref()
+                .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
             let approval_id = approval.approval_id;
             if approval_id.len() != 48
                 || !approval_id
@@ -1996,8 +2195,19 @@ mod windows_owner {
                 source_id: &source,
                 index,
                 ordinal,
-                action: "click",
+                action: action.wire_action(),
                 approval_id: &approval_id,
+                text: match &action {
+                    super::NativeRetainedAction::Type(value) => Some(value.as_str()),
+                    _ => None,
+                },
+                option_index: selected_option.map(|(index, _)| index),
+                option_ordinal: selected_option.map(|(_, ordinal)| ordinal),
+                delta_y: match &action {
+                    super::NativeRetainedAction::Scroll(amount) => Some(*amount),
+                    _ => None,
+                },
+                payload_sha256: payload_sha256.as_deref(),
             };
             let frame = serde_json::to_vec(&request).map_err(|_| "native-click-request-invalid")?;
             if frame.is_empty() || frame.len() > 1024 {
@@ -2270,6 +2480,11 @@ mod windows_owner {
                 ordinal: ordinal as u32,
                 action: "click",
                 approval_id: &approval_id,
+                text: None,
+                option_index: None,
+                option_ordinal: None,
+                delta_y: None,
+                payload_sha256: None,
             };
             let frame = serde_json::to_vec(&request).map_err(|_| "native-click-request-invalid")?;
             if frame.is_empty() || frame.len() > 1024 {
@@ -2948,6 +3163,8 @@ mod tests {
             index: 9,
             ordinal: 3,
             check_sequence: 7,
+            action: NativeRetainedAction::Click,
+            selected_native_option: None,
             expires_at: Instant::now() + Duration::from_secs(30),
         };
         let scoped = NativeExactClickApprovalScope {
@@ -2961,6 +3178,8 @@ mod tests {
             index: 9,
             ordinal: 3,
             check_sequence: 7,
+            action: NativeRetainedAction::Click,
+            selected_native_option: None,
         };
         assert!(proof.matches_exact(&scoped));
         assert!(
@@ -3004,9 +3223,106 @@ mod tests {
             index: 9,
             ordinal: 3,
             check_sequence: 7,
+            action: NativeRetainedAction::Click,
+            selected_native_option: None,
             expires_at: Instant::now() - Duration::from_millis(1),
         };
         assert!(!expired.matches_exact(&scoped));
+    }
+
+    #[test]
+    fn retained_action_payloads_are_canonical_bounded_and_not_click_authority() {
+        use NativeRetainedAction as A;
+        let cases = [
+            (A::Type("é".to_owned()), None, b"type\0\xc3\xa9".to_vec()),
+            (A::Clear, None, b"clear".to_vec()),
+            (
+                A::Select("opaque".to_owned()),
+                Some((17, 2)),
+                b"select:17:2".to_vec(),
+            ),
+            (A::Check, None, b"check".to_vec()),
+            (A::Uncheck, None, b"uncheck".to_vec()),
+            (A::Scroll(-120), None, b"scroll:-120".to_vec()),
+            (A::Scroll(120), None, b"scroll:120".to_vec()),
+        ];
+        for (action, selected, expected) in cases {
+            let bytes = native_action_payload_bytes(&action, selected)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bytes, expected);
+            let digest = format!("{:x}", Sha256::digest(&bytes));
+            assert_eq!(digest.len(), 64);
+            assert!(digest
+                .bytes()
+                .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v)));
+        }
+        assert_eq!(native_action_payload_bytes(&A::Click, None), Ok(None));
+        for invalid in [
+            A::Type("".into()),
+            A::Type("x\n".into()),
+            A::Type("\u{202e}evil".into()),
+            A::Type("\u{200b}hidden".into()),
+            A::Type("x".repeat(257)),
+            A::Scroll(0),
+            A::Scroll(240),
+        ] {
+            assert!(native_action_payload_bytes(&invalid, None).is_err());
+        }
+        assert!(native_action_payload_bytes(&A::Select("opaque".into()), None).is_err());
+        assert!(native_action_payload_bytes(&A::Select("opaque".into()), Some((0, 2))).is_err());
+        assert!(native_action_payload_bytes(&A::Select("opaque".into()), Some((8, 49))).is_err());
+    }
+
+    #[test]
+    fn retained_action_reply_requires_exact_original_payload_digest() {
+        use crate::modules::net::tf_browser_contract::NativeEffectTerminal as T;
+        let payload = native_action_payload_bytes(&NativeRetainedAction::Type("a".into()), None)
+            .unwrap()
+            .unwrap();
+        let sha = format!("{:x}", Sha256::digest(payload));
+        let request = ParentElementAction {
+            version: 2,
+            kind: "act-element",
+            session: "original",
+            check_sequence: 2,
+            observation_id: 1,
+            page_generation: 1,
+            source_id: "source",
+            index: 7,
+            ordinal: 2,
+            action: "type",
+            approval_id: "approved",
+            text: Some("a"),
+            option_index: None,
+            option_ordinal: None,
+            delta_y: None,
+            payload_sha256: Some(&sha),
+        };
+        let mut reply = serde_json::json!({
+            "version":2, "kind":"element-action", "session":"original",
+            "checkSequence":2,"observationId":1,"pageGeneration":1,
+            "sourceId":"source","index":7,"ordinal":2,"action":"type",
+            "approvalId":"approved","payloadSha256":sha,"state":"DISPATCHED",
+        });
+        assert_eq!(
+            validate_element_action_reply(reply.to_string().as_bytes(), &request),
+            Ok(T::Dispatched)
+        );
+        for (field, spoof) in [
+            ("action", serde_json::json!("click")),
+            ("payloadSha256", serde_json::json!("0".repeat(64))),
+            ("approvalId", serde_json::json!("replayed")),
+            ("observationId", serde_json::json!(2)),
+        ] {
+            let mut modified = reply.clone();
+            modified[field] = spoof;
+            assert!(
+                validate_element_action_reply(modified.to_string().as_bytes(), &request).is_err()
+            );
+        }
+        reply.as_object_mut().unwrap().remove("payloadSha256");
+        assert!(validate_element_action_reply(reply.to_string().as_bytes(), &request).is_err());
     }
     #[test]
     fn broker_allows_bounded_web_fonts_and_common_script_mime_without_untrusted_headers() {
@@ -3205,6 +3521,11 @@ mod tests {
             ordinal: 2,
             action: "click",
             approval_id: "c",
+            text: None,
+            option_index: None,
+            option_ordinal: None,
+            delta_y: None,
+            payload_sha256: None,
         };
         let raw = serde_json::json!({
             "version":2, "kind":"element-action", "session":"a",
