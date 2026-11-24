@@ -870,3 +870,56 @@ app binary `62df1c2ee186fb597eb7f6e8a7138ddb0542c09be634e2bc375e7c28563e067f`,
 NSIS installer `f48962e6a11b684f179e2fb202d360c4ec71ee059a9c9b7390e6cdad5178bde2`.
 The package was **not installed**. This identity is historical and must not
 be confused with a subsequent package that actually contains the UI controls.
+
+### 2026-11-24 exact-source panel-inclusive NSIS build and security triage
+
+The follow-on **optimized Windows NSIS build from committed/pushed source
+`a44490729e09c9aefa07a5667a3d1920d8bd674c`**, including the human-only
+six-control operator panel and sanitized receipt projection, completed
+`TF4_A444907_BUNDLE_EXIT=0`, with Vite/TypeScript frontend and native release
+compilations succeeding. Pinned build artifacts are:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `src-tauri/target/tf4-native-stage/clack-browser-host.exe` | `1325e537200d6eb2caab6ee50b57d3be23f3708a8a4830d53f117779720c30fa` |
+| `src-tauri/target/release/clack.exe` | `be3aa781de0c3c31f1e96637a9e82f8f6c8a7c02abe0e834de455bf518b70541` |
+| `src-tauri/target/release/bundle/nsis/Clack_0.8.0_x64-setup.exe` | `d447fdb8e9bed23fc4732fed3e6c5d847f307be326337cf24dfc4b573e901aba` |
+
+This is **built, not installed, not physically approved, and not released**.
+The installed application remains the earlier separately pinned `9a02304`
+package. Fresh CI `45316528178` at `a444907` also completed **FAILED**
+with non-TF4 LM11 entrypoint, WASI confinement and frontend test failures;
+the PR is still open Draft and no claim of green CI is made.
+
+Read-only security examination on exactly this production source disclosed
+additional necessary *pre-install* fail-closed work, so **the built artifact
+is intermediate and must NOT be used for positive native-click acceptance**:
+
+- The fixed native original-node link `click()` is called before the host
+  verifies the destination href's scheme/origin/query/fragment and disallowed
+  popup/download/ping attributes. The later `UNKNOWN` classification cannot
+  undo a possible dispatched side effect. Validate on the original DOM Node
+  **before** calling it, with no alternate selector/node/coordinate fallback.
+- Popup, download and permission handlers return without a veto on missing
+  WebView2 callback args; veto HRESULT errors do not establish denial. Fatal
+  host/owned Job termination is required on that failure path, rather than
+  a silent `Ok(())` or trusting a later receipt.
+- Same-origin unapproved GETs (including potential API-mutation GET), window
+  navigation and brokered redirect chains require narrower native authority.
+  Current parent permits up to three redirects and synthesizes a resource
+  response under the original requested WebView2 URI. The pending safe change
+  is zero redirects and rejection of any non-empty redirect chain; per-resource
+  authorization beyond mere origin must also be evaluated before broad
+  browser interaction acceptance.
+
+These are **source-grounded audit findings, not physically reproduced exploit
+results**. No TF3 Public policy exception is authorized or introduced. The
+repo still lacks an owned, publicly reachable, ordinary-trusted HTTPS 443
+production action oracle; the controlled loopback/pinned-certificate fixture
+remains test-only. The nine individually accepted grouped cancellation cases
+and the missing two required cases retain their exact separate status. The
+thirteen *formal* TF4 exit-gate IDs/predicates are **not enumerated** in the
+available canonical source/docs; do not invent them or confuse 13 contract
+unit tests with thirteen named exit gates. The separately documented 17-step
+installed production E2E remains unverified. Mandatory final Product-wide
+UI/UX Polish & Acceptance also remains open.
