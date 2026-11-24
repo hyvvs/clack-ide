@@ -149,6 +149,7 @@ pub(crate) struct NativeExactClickApprovalScope<'a> {
     /// displayed/approved. Its native ordinal is independently derived below.
     pub action: NativeRetainedAction,
     pub selected_native_option: Option<(u32, u32)>,
+    pub selected_native_form: Option<(u32, u32)>,
 }
 
 /// Closed, non-model native action vocabulary. The only string carried by a
@@ -164,6 +165,7 @@ pub(crate) enum NativeRetainedAction {
     Check,
     Uncheck,
     Scroll(i32),
+    Submit(String),
 }
 
 impl NativeRetainedAction {
@@ -177,6 +179,7 @@ impl NativeRetainedAction {
             Self::Check => K::Check,
             Self::Uncheck => K::Uncheck,
             Self::Scroll(_) => K::Scroll,
+            Self::Submit(_) => K::Submit,
         }
     }
 
@@ -189,6 +192,7 @@ impl NativeRetainedAction {
             Self::Check => "check",
             Self::Uncheck => "uncheck",
             Self::Scroll(_) => "scroll",
+            Self::Submit(_) => "submit",
         }
     }
 }
@@ -207,9 +211,13 @@ pub(crate) fn valid_native_type_text(value: &str) -> bool {
 fn native_action_payload_bytes(
     action: &NativeRetainedAction,
     selected: Option<(u32, u32)>,
+    form: Option<(u32, u32)>,
 ) -> Result<Option<Vec<u8>>, &'static str> {
     if !matches!(action, NativeRetainedAction::Select(_)) && selected.is_some() {
         return Err("native-action-unexpected-option-parameter");
+    }
+    if !matches!(action, NativeRetainedAction::Submit(_)) && form.is_some() {
+        return Err("native-action-unexpected-form-parameter");
     }
     let bytes = match action {
         NativeRetainedAction::Click => return Ok(None), // unchanged v2 click frame
@@ -228,6 +236,13 @@ fn native_action_payload_bytes(
         }
         NativeRetainedAction::Check => b"check".to_vec(),
         NativeRetainedAction::Uncheck => b"uncheck".to_vec(),
+        NativeRetainedAction::Submit(_) => {
+            let (index, ordinal) = form.ok_or("native-submit-original-form-missing")?;
+            if index == 0 || index > 256 || ordinal >= 48 {
+                return Err("native-submit-original-form-bounds");
+            }
+            format!("submit:{index}:{ordinal}").into_bytes()
+        }
         NativeRetainedAction::Scroll(delta) if matches!(*delta, -120 | 120) => {
             format!("scroll:{delta}").into_bytes()
         }
@@ -273,6 +288,7 @@ pub(crate) struct NativeConsumedExactClickApproval {
     check_sequence: u64,
     action: NativeRetainedAction,
     selected_native_option: Option<(u32, u32)>,
+    selected_native_form: Option<(u32, u32)>,
     expires_at: std::time::Instant,
 }
 
@@ -311,6 +327,7 @@ impl NativeConsumedExactClickApproval {
             check_sequence: scope.check_sequence,
             action: scope.action.clone(),
             selected_native_option: scope.selected_native_option,
+            selected_native_form: scope.selected_native_form,
             expires_at,
         })
     }
@@ -329,6 +346,7 @@ impl NativeConsumedExactClickApproval {
             && self.check_sequence == scope.check_sequence
             && self.action == scope.action
             && self.selected_native_option == scope.selected_native_option
+            && self.selected_native_form == scope.selected_native_form
     }
 }
 
@@ -415,7 +433,8 @@ fn structural_observed_elements(
                 "paragraph" => SemanticRole::Paragraph,
                 "img" | "image" => SemanticRole::Image,
                 "label" => SemanticRole::Label,
-                "form" | "navigation" | "article" | "listitem" => SemanticRole::Other,
+                "form" => SemanticRole::Form,
+                "navigation" | "article" | "listitem" => SemanticRole::Other,
                 _ => return Err("browser-structure-unrecognized-role"),
             };
             Ok(ObservedElement {
@@ -478,6 +497,10 @@ struct ParentElementAction<'a> {
     option_index: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     option_ordinal: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    form_index: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    form_ordinal: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     delta_y: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2095,8 +2118,38 @@ mod windows_owner {
                 } else {
                     None
                 };
-            super::native_action_payload_bytes(&action, selected_native_option)
-                .map_err(str::to_owned)?;
+            let selected_native_form =
+                if let super::NativeRetainedAction::Submit(form_ref) = &action {
+                    if form_ref == &target.element_ref {
+                        return Err("native-submit-form-must-be-distinct".into());
+                    }
+                    let form_target = crate::modules::net::tf_browser_contract::ActionTarget {
+                        element_ref: form_ref.clone(),
+                        ..(*target).clone()
+                    };
+                    let form_index = u32::try_from(
+                        self.page_contract
+                            .require_retained_form(form_target)
+                            .map_err(str::to_owned)?,
+                    )
+                    .map_err(|_| "native-submit-original-form-index-bounds")?;
+                    let form_ordinal = indices
+                        .iter()
+                        .position(|observed| *observed == form_index)
+                        .ok_or("native-submit-original-form-not-retained")?;
+                    if form_index == 0 || form_index > 256 || form_ordinal >= 48 {
+                        return Err("native-submit-original-form-bounds".into());
+                    }
+                    Some((form_index, form_ordinal as u32))
+                } else {
+                    None
+                };
+            super::native_action_payload_bytes(
+                &action,
+                selected_native_option,
+                selected_native_form,
+            )
+            .map_err(str::to_owned)?;
             let sequence = self
                 .last_recheck_sequence
                 .checked_add(1)
@@ -2127,6 +2180,7 @@ mod windows_owner {
                 check_sequence: sequence,
                 action,
                 selected_native_option,
+                selected_native_form,
             })
         }
 
@@ -2190,8 +2244,10 @@ mod windows_owner {
             let sequence = scope.check_sequence;
             let source = scope.source_id.clone();
             let selected_option = scope.selected_native_option;
-            let payload = super::native_action_payload_bytes(&action, selected_option)
-                .map_err(str::to_owned)?;
+            let selected_form = scope.selected_native_form;
+            let payload =
+                super::native_action_payload_bytes(&action, selected_option, selected_form)
+                    .map_err(str::to_owned)?;
             let payload_sha256 = payload
                 .as_ref()
                 .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
@@ -2222,6 +2278,8 @@ mod windows_owner {
                 },
                 option_index: selected_option.map(|(index, _)| index),
                 option_ordinal: selected_option.map(|(_, ordinal)| ordinal),
+                form_index: selected_form.map(|(index, _)| index),
+                form_ordinal: selected_form.map(|(_, ordinal)| ordinal),
                 delta_y: match &action {
                     super::NativeRetainedAction::Scroll(amount) => Some(*amount),
                     _ => None,
@@ -2502,6 +2560,8 @@ mod windows_owner {
                 text: None,
                 option_index: None,
                 option_ordinal: None,
+                form_index: None,
+                form_ordinal: None,
                 delta_y: None,
                 payload_sha256: None,
             };
@@ -3252,6 +3312,7 @@ mod tests {
             check_sequence: 7,
             action: NativeRetainedAction::Click,
             selected_native_option: None,
+            selected_native_form: None,
             expires_at: Instant::now() + Duration::from_secs(30),
         };
         let scoped = NativeExactClickApprovalScope {
@@ -3267,6 +3328,7 @@ mod tests {
             check_sequence: 7,
             action: NativeRetainedAction::Click,
             selected_native_option: None,
+            selected_native_form: None,
         };
         assert!(proof.matches_exact(&scoped));
         assert!(
@@ -3312,6 +3374,7 @@ mod tests {
             check_sequence: 7,
             action: NativeRetainedAction::Click,
             selected_native_option: None,
+            selected_native_form: None,
             expires_at: Instant::now() - Duration::from_millis(1),
         };
         assert!(!expired.matches_exact(&scoped));
@@ -3334,7 +3397,7 @@ mod tests {
             (A::Scroll(120), None, b"scroll:120".to_vec()),
         ];
         for (action, selected, expected) in cases {
-            let bytes = native_action_payload_bytes(&action, selected)
+            let bytes = native_action_payload_bytes(&action, selected, None)
                 .unwrap()
                 .unwrap();
             assert_eq!(bytes, expected);
@@ -3344,7 +3407,7 @@ mod tests {
                 .bytes()
                 .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v)));
         }
-        assert_eq!(native_action_payload_bytes(&A::Click, None), Ok(None));
+        assert_eq!(native_action_payload_bytes(&A::Click, None, None), Ok(None));
         for invalid in [
             A::Type("".into()),
             A::Type("x\n".into()),
@@ -3354,19 +3417,35 @@ mod tests {
             A::Scroll(0),
             A::Scroll(240),
         ] {
-            assert!(native_action_payload_bytes(&invalid, None).is_err());
+            assert!(native_action_payload_bytes(&invalid, None, None).is_err());
         }
-        assert!(native_action_payload_bytes(&A::Select("opaque".into()), None).is_err());
-        assert!(native_action_payload_bytes(&A::Select("opaque".into()), Some((0, 2))).is_err());
-        assert!(native_action_payload_bytes(&A::Select("opaque".into()), Some((8, 49))).is_err());
+        assert!(native_action_payload_bytes(&A::Select("opaque".into()), None, None).is_err());
+        assert!(
+            native_action_payload_bytes(&A::Select("opaque".into()), Some((0, 2)), None).is_err()
+        );
+        assert!(
+            native_action_payload_bytes(&A::Select("opaque".into()), Some((8, 49)), None).is_err()
+        );
+        assert_eq!(
+            native_action_payload_bytes(&A::Submit("form".into()), None, Some((18, 3))),
+            Ok(Some(b"submit:18:3".to_vec()))
+        );
+        assert!(native_action_payload_bytes(&A::Submit("form".into()), None, None).is_err());
+        assert!(
+            native_action_payload_bytes(&A::Submit("form".into()), None, Some((0, 2))).is_err()
+        );
+        assert!(
+            native_action_payload_bytes(&A::Submit("form".into()), None, Some((8, 49))).is_err()
+        );
     }
 
     #[test]
     fn retained_action_reply_requires_exact_original_payload_digest() {
         use crate::modules::net::tf_browser_contract::NativeEffectTerminal as T;
-        let payload = native_action_payload_bytes(&NativeRetainedAction::Type("a".into()), None)
-            .unwrap()
-            .unwrap();
+        let payload =
+            native_action_payload_bytes(&NativeRetainedAction::Type("a".into()), None, None)
+                .unwrap()
+                .unwrap();
         let sha = format!("{:x}", Sha256::digest(payload));
         let request = ParentElementAction {
             version: 2,
@@ -3383,6 +3462,8 @@ mod tests {
             text: Some("a"),
             option_index: None,
             option_ordinal: None,
+            form_index: None,
+            form_ordinal: None,
             delta_y: None,
             payload_sha256: Some(&sha),
         };
@@ -3611,6 +3692,8 @@ mod tests {
             text: None,
             option_index: None,
             option_ordinal: None,
+            form_index: None,
+            form_ordinal: None,
             delta_y: None,
             payload_sha256: None,
         };

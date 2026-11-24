@@ -384,6 +384,54 @@ mod host {
       }
       return {dispatched:false};
     }"#;
+    // Submit is deliberately VALIDATION-ONLY pending a separate, independently
+    // approved brokered form/body/GET-write policy and physical server oracle.
+    // Both submitter and FORM must be the exact originally retained nodes.
+    // Even a queryless, empty-data GET might write on the remote server.
+    // There is NO native submit/click dispatch in this fixed script; it may
+    // only deny. Do not activate Submit by modifying a parent transport flag.
+    const DOM_EXACT_SUBMIT_JS: &str = r#"function(slot, action, text, formSlot, deltaY) {
+      if (this.observer.takeRecords().length) this.state.changed = true;
+      if (this.state.changed || action !== 'submit' || text !== null
+          || deltaY !== null || !Number.isInteger(formSlot))
+        return {dispatched:false};
+      const node = this.nodes[slot];
+      const form = this.nodes[formSlot];
+      if (!node || !form || node === form || !node.isConnected || !form.isConnected
+          || node.ownerDocument !== document || form.ownerDocument !== document
+          || form.tagName !== 'FORM' || node.isContentEditable
+          || !node.getClientRects().length || node.matches(':disabled')
+          || !((node.tagName === 'BUTTON' || node.tagName === 'INPUT')
+               && node.type === 'submit') || node.form !== form)
+        return {dispatched:false};
+      if (node.hasAttribute('formaction') || node.hasAttribute('formmethod')
+          || node.hasAttribute('formenctype') || node.hasAttribute('formtarget')
+          || node.hasAttribute('formnovalidate') || form.hasAttribute('novalidate')
+          || !form.hasAttribute('action') || form.method !== 'get'
+          || form.enctype !== 'application/x-www-form-urlencoded'
+          || form.target.toLowerCase() !== '_self')
+        return {dispatched:false};
+      // Do not read or forward ANY form field value/name. A form containing
+      // more than its one unnamed submitter could serialize private data into
+      // the GET URL. Such forms are inadmissible until separate body approval.
+      if (form.elements.length !== 1 || form.elements[0] !== node
+          || node.name !== '') return {dispatched:false};
+      const targetHref = form.action;
+      if (!targetHref || targetHref.length > 2048
+          || targetHref.includes('?') || targetHref.includes('#'))
+        return {dispatched:false};
+      const destination = new URL(targetHref);
+      const source = new URL(document.location.href);
+      if (source.protocol !== 'https:' || destination.protocol !== 'https:'
+          || destination.origin !== source.origin || destination.port !== ''
+          || source.port !== '' || destination.username !== ''
+          || destination.password !== '' || destination.href === source.href)
+        return {dispatched:false};
+      // No server request is admissible yet, including queryless GET.
+      // A future effectful implementation requires new approved network-body
+      // authority and independent post-action evidence, not this probe ACK.
+      return {dispatched:false};
+    }"#;
     // Debug-build-only *fixed* physical acceptance probe for the specifically
     // owned, one-document 127.0.0.1 HTTPS fixture. It never accepts code,
     // selectors, tag names, values or a mutation target from a caller. This
@@ -1636,6 +1684,10 @@ mod host {
         #[serde(default)]
         option_ordinal: Option<u32>,
         #[serde(default)]
+        form_index: Option<u32>,
+        #[serde(default)]
+        form_ordinal: Option<u32>,
+        #[serde(default)]
         delta_y: Option<i32>,
         #[serde(default)]
         payload_sha256: Option<String>,
@@ -1742,6 +1794,8 @@ mod host {
         checkbox: bool,
         select: bool,
         option: bool,
+        form: bool,
+        submit: bool,
         scroll: bool,
     }
 
@@ -1815,6 +1869,10 @@ mod host {
                         // parent SELECT is closed. Never infer option value or
                         // index; only the exact separately captured object.
                         option: item.role == "option" && item.enabled,
+                        form: item.role == "form",
+                        submit: enabled_visible
+                            && matches!(item.role.as_str(), "button" | "input")
+                            && item.control_type.as_deref() == Some("submit"),
                         scroll: item.visible && item.role != "option",
                     }
                 })
@@ -1886,6 +1944,20 @@ mod host {
                 }
                 _ => false,
             }
+        }
+
+        fn may_submit(&self, submitter: &NativeDomNodeRef, form: &NativeDomNodeRef) -> bool {
+            self.action_allowed
+                .get(submitter.slot)
+                .is_some_and(|allowed| allowed.submit)
+                && self
+                    .action_allowed
+                    .get(form.slot)
+                    .is_some_and(|allowed| allowed.form)
+                && submitter.slot != form.slot
+                && submitter.root_object_id == form.root_object_id
+                && submitter.observation_id == form.observation_id
+                && submitter.page_generation == form.page_generation
         }
 
         // Only an exact currently retained object + ordinal can be presented
@@ -2128,12 +2200,19 @@ mod host {
     ) -> Result<Option<String>, &'static str> {
         let no_text = request.text.is_none();
         let no_option = request.option_index.is_none() && request.option_ordinal.is_none();
+        let no_form = request.form_index.is_none() && request.form_ordinal.is_none();
         let no_delta = request.delta_y.is_none();
         let canonical = match request.action.as_str() {
-            "click" if no_text && no_option && no_delta && request.payload_sha256.is_none() => {
+            "click"
+                if no_text
+                    && no_option
+                    && no_form
+                    && no_delta
+                    && request.payload_sha256.is_none() =>
+            {
                 return Ok(None);
             }
-            "type" if no_option && no_delta => {
+            "type" if no_option && no_form && no_delta => {
                 let text = request
                     .text
                     .as_deref()
@@ -2141,8 +2220,8 @@ mod host {
                     .ok_or("action-payload-denied")?;
                 format!("type\0{text}")
             }
-            "clear" if no_text && no_option && no_delta => "clear".to_owned(),
-            "select" if no_text && no_delta => {
+            "clear" if no_text && no_option && no_form && no_delta => "clear".to_owned(),
+            "select" if no_text && no_form && no_delta => {
                 let index = request.option_index.ok_or("action-payload-denied")?;
                 let ordinal = request.option_ordinal.ok_or("action-payload-denied")?;
                 if index == 0
@@ -2153,9 +2232,20 @@ mod host {
                 }
                 format!("select:{index}:{ordinal}")
             }
-            "check" if no_text && no_option && no_delta => "check".to_owned(),
-            "uncheck" if no_text && no_option && no_delta => "uncheck".to_owned(),
-            "scroll" if no_text && no_option => {
+            "submit" if no_text && no_option && no_delta => {
+                let index = request.form_index.ok_or("action-payload-denied")?;
+                let ordinal = request.form_ordinal.ok_or("action-payload-denied")?;
+                if index == 0
+                    || index > PRODUCTION_DOM_MAX_VISITS
+                    || ordinal >= PRODUCTION_DOM_MAX_ELEMENTS as u32
+                {
+                    return Err("action-payload-denied");
+                }
+                format!("submit:{index}:{ordinal}")
+            }
+            "check" if no_text && no_option && no_form && no_delta => "check".to_owned(),
+            "uncheck" if no_text && no_option && no_form && no_delta => "uncheck".to_owned(),
+            "scroll" if no_text && no_option && no_form => {
                 let delta = request.delta_y.ok_or("action-payload-denied")?;
                 if !matches!(delta, -120 | 120) {
                     return Err("action-payload-denied");
@@ -2195,6 +2285,20 @@ mod host {
         {
             return Err("action-not-authorized-or-kind-denied");
         }
+        if request.action == "submit" {
+            // Reject even explicit nulls for disallowed sibling payloads:
+            // serde Option alone treats them like absent properties. A Submit
+            // frame has exactly two original FORM identity fields + its hash.
+            let document: serde_json::Value =
+                serde_json::from_slice(frame).map_err(|_| "action-request-invalid")?;
+            let fields = document.as_object().ok_or("action-request-invalid")?;
+            if ["text", "optionIndex", "optionOrdinal", "deltaY"]
+                .iter()
+                .any(|name| fields.contains_key(*name))
+            {
+                return Err("action-submit-extra-parameter-denied");
+            }
+        }
         validated_dom_action_payload_digest(&request)?;
         // Reuse every existing exact-node protocol invariant, including
         // strict nonce, source digest, monotonic sequence, observation epoch,
@@ -2221,6 +2325,29 @@ mod host {
             initial_url,
             identities,
         )?;
+        if request.action == "submit" {
+            // Unlike read-only recheck, a Submit envelope MUST bind both
+            // actionable identities during frame validation, before any
+            // approval is consumed or COM action is scheduled. A syntactically
+            // valid forged index normally yields None (STALE) from the shared
+            // read-only recheck; accepting that as a valid Submit frame could
+            // defer a forged target until after the effect boundary.
+            let submitter = reference
+                .as_ref()
+                .ok_or("action-submit-original-submitter-stale")?;
+            let form = identities
+                .reference_at(
+                    request.form_index.ok_or("action-submit-form-missing")?,
+                    request.form_ordinal.ok_or("action-submit-form-missing")?,
+                )
+                .map_err(|_| "action-submit-original-form-stale")?;
+            identities
+                .check_reference(&form, request.observation_id, request.page_generation)
+                .map_err(|_| "action-submit-original-form-stale")?;
+            if !identities.may_submit(submitter, &form) {
+                return Err("action-submit-original-roles-denied");
+            }
+        }
         Ok((request, reference))
     }
 
@@ -3444,9 +3571,14 @@ mod host {
                                 let _ = sender.send(Err("action-page-stale"));
                                 return;
                             }
+                            let declaration = if action == "submit" {
+                                DOM_EXACT_SUBMIT_JS
+                            } else {
+                                DOM_EXACT_CONTROL_ACTION_JS
+                            };
                             let parameters = json!({
                                 "objectId": reference.root_object_id,
-                                "functionDeclaration": DOM_EXACT_CONTROL_ACTION_JS,
+                                "functionDeclaration": declaration,
                                 "arguments": [
                                     {"value": reference.slot},
                                     {"value": action},
@@ -3608,11 +3740,29 @@ mod host {
         } else {
             None
         };
+        let form = if request.action == "submit" {
+            request
+                .form_index
+                .zip(request.form_ordinal)
+                .and_then(|(index, ordinal)| identities.reference_at(index, ordinal).ok())
+                .filter(|form| {
+                    identities
+                        .check_reference(form, request.observation_id, request.page_generation)
+                        .is_ok()
+                })
+        } else {
+            None
+        };
         let (state, target_url_sha256) = match reference {
             None => ("STALE", None),
             Some(reference)
                 if !(request.action == "click" && identities.may_click(&reference)
+                    || request.action == "submit"
+                        && form
+                            .as_ref()
+                            .is_some_and(|form| identities.may_submit(&reference, form))
                     || request.action != "click"
+                        && request.action != "submit"
                         && identities.may_control(
                             &request.action,
                             &reference,
@@ -3641,7 +3791,11 @@ mod host {
                         reference,
                         request.action.clone(),
                         request.text.clone(),
-                        option.as_ref().map(|ref_option| ref_option.slot),
+                        if request.action == "submit" {
+                            form.as_ref().map(|retained_form| retained_form.slot)
+                        } else {
+                            option.as_ref().map(|ref_option| ref_option.slot)
+                        },
                         request.delta_y,
                         page_generation,
                         stats,
@@ -3652,9 +3806,15 @@ mod host {
                 // a missing COM ACK. A later request must freshly observe;
                 // an ambiguous action must NEVER be automatically retried.
                 match outcome {
+                    // Submit is a validation-only fixed script. Do not trust
+                    // even a forged/malformed positive CDP boolean to promote
+                    // it to an effect acknowledgement before POST/GET-write
+                    // authority and independent effect proof exist.
+                    Ok((true, _)) if request.action == "submit" => ("UNKNOWN", None),
                     Ok((true, digest)) if request.action != "click" || digest.is_some() => {
                         ("DISPATCHED", digest)
                     }
+                    Ok((false, _)) if request.action == "submit" => ("DENIED_TARGET", None),
                     Ok((false, _)) => ("STALE", None),
                     _ => ("UNKNOWN", None),
                 }
@@ -7662,6 +7822,268 @@ mod host {
                 })
                 .unwrap();
             identity
+        }
+
+        fn native_dom_submit_case() -> (NativeDomIdentity, serde_json::Value) {
+            let snapshot = json!({
+                "version":2,"visited":6,"truncated":false,"omittedFields":0,
+                "elements":[
+                    {"index":1,"role":"main","depth":0,"headingLevel":null,"visible":true,"enabled":true},
+                    {"index":2,"role":"form","depth":1,"headingLevel":null,"visible":true,"enabled":true},
+                    {"index":3,"role":"button","depth":2,"headingLevel":null,"visible":true,"enabled":true,"controlType":"submit"},
+                    {"index":4,"role":"input","depth":2,"headingLevel":null,"visible":true,"enabled":true,"controlType":"submit"},
+                    {"index":5,"role":"button","depth":2,"headingLevel":null,"visible":true,"enabled":true,"controlType":"reset"},
+                    {"index":6,"role":"input","depth":2,"headingLevel":null,"visible":true,"enabled":true,"controlType":"text"}
+                ]
+            });
+            let mut identity = NativeDomIdentity::default();
+            identity.invalidate(1, 7);
+            identity
+                .bind(&NativeDomObservation {
+                    snapshot: verify_production_dom(&snapshot.to_string()).unwrap(),
+                    root_object_id: r#"{"injectedScriptId":1,"id":11}"#.into(),
+                })
+                .unwrap();
+            let request = json!({
+                "version":2,"kind":"act-element","session":NONCE,
+                "checkSequence":1,"observationId":1,"pageGeneration":7,
+                "sourceId":production_dom_source_id("https://example.test/").unwrap(),
+                "index":3,"ordinal":2,"action":"submit",
+                "approvalId":"c".repeat(48),
+                "formIndex":2,"formOrdinal":1,
+                "payloadSha256":format!("{:x}",Sha256::digest(b"submit:2:1"))
+            });
+            (identity, request)
+        }
+
+        #[test]
+        fn production_exact_submit_requires_separate_original_form_witness() {
+            let (mut identity, wire) = native_dom_submit_case();
+            let (request, reference) = validate_dom_action_request(
+                wire.to_string().as_bytes(),
+                NONCE,
+                0,
+                1,
+                7,
+                "https://example.test/",
+                &identity,
+            )
+            .unwrap();
+            let submitter = reference.unwrap();
+            let form = identity.reference_at(2, 1).unwrap();
+            assert!(identity.may_submit(&submitter, &form));
+            assert!(identity.may_submit(&identity.reference_at(4, 3).unwrap(), &form));
+            assert!(
+                !identity.may_submit(&identity.reference_at(5, 4).unwrap(), &form),
+                "reset button must never be promoted to submit"
+            );
+            assert!(
+                !identity.may_submit(&identity.reference_at(6, 5).unwrap(), &form),
+                "text input must never become a submitter"
+            );
+            assert!(
+                !identity.may_submit(&submitter, &identity.reference_at(4, 3).unwrap()),
+                "a second button is not an original FORM witness"
+            );
+            assert!(!identity.may_submit(&submitter, &submitter));
+            assert_eq!(
+                validated_dom_action_payload_digest(&request)
+                    .unwrap()
+                    .as_deref(),
+                request.payload_sha256.as_deref()
+            );
+            let reply = serde_json::to_value(ChildDomActionReply {
+                version: 2,
+                kind: "element-action",
+                session: &request.session,
+                check_sequence: request.check_sequence,
+                observation_id: request.observation_id,
+                page_generation: request.page_generation,
+                source_id: &request.source_id,
+                index: request.index,
+                ordinal: request.ordinal,
+                action: &request.action,
+                approval_id: &request.approval_id,
+                state: "DENIED_TARGET",
+                target_url_sha256: None,
+                payload_sha256: request.payload_sha256.as_deref(),
+            })
+            .unwrap();
+            assert_eq!(reply["action"], "submit");
+            assert_eq!(reply["state"], "DENIED_TARGET");
+            assert_eq!(reply["payloadSha256"], wire["payloadSha256"]);
+            for forbidden in [
+                "targetUrlSha256",
+                "formIndex",
+                "formOrdinal",
+                "objectId",
+                "submitterValue",
+            ] {
+                assert!(!reply.as_object().unwrap().contains_key(forbidden));
+            }
+            identity.invalidate(2, 7);
+            assert!(
+                identity.reference_at(2, 1).is_err(),
+                "new observation must revoke original form and submitter"
+            );
+        }
+
+        #[test]
+        fn production_exact_submit_wire_rejects_forged_form_or_sibling_payloads() {
+            let (identity, valid) = native_dom_submit_case();
+            let validate = |value: &serde_json::Value, last: u64| {
+                validate_dom_action_request(
+                    value.to_string().as_bytes(),
+                    NONCE,
+                    last,
+                    1,
+                    7,
+                    "https://example.test/",
+                    &identity,
+                )
+            };
+            assert!(validate(&valid, 0).is_ok());
+            assert!(validate(&valid, 1).is_err(), "replayed check sequence");
+            for (key, value) in [
+                ("formIndex", json!(0)),
+                ("formIndex", json!(257)),
+                ("formIndex", json!(3)),
+                ("formOrdinal", json!(48)),
+                ("formOrdinal", json!(2)),
+                ("formOrdinal", json!(null)),
+                ("formIndex", json!(null)),
+                ("payloadSha256", json!("0".repeat(64))),
+                ("payloadSha256", json!(null)),
+                ("approvalId", json!("forged")),
+                ("session", json!("wrong")),
+                ("checkSequence", json!(2)),
+                ("index", json!(99)),
+            ] {
+                let mut tampered = valid.clone();
+                tampered[key] = value;
+                assert!(validate(&tampered, 0).is_err(), "forgery {key}");
+            }
+            // Recomputing a syntactically valid digest is not authority to
+            // substitute an existing but non-FORM node or a different original
+            // submitter. The parser must reject both retained identities
+            // before any host COM call, not merely rely on the payload hash.
+            for (index, ordinal) in [(2, 2), (3, 2), (4, 3), (5, 4)] {
+                let mut wrong_form = valid.clone();
+                wrong_form["formIndex"] = json!(index);
+                wrong_form["formOrdinal"] = json!(ordinal);
+                wrong_form["payloadSha256"] = json!(format!(
+                    "{:x}",
+                    Sha256::digest(format!("submit:{index}:{ordinal}").as_bytes())
+                ));
+                assert!(
+                    validate(&wrong_form, 0).is_err(),
+                    "validly hashed non-FORM retained node {index} must be denied"
+                );
+            }
+            for (index, ordinal) in [(2, 1), (5, 4), (6, 5)] {
+                let mut wrong_submitter = valid.clone();
+                wrong_submitter["index"] = json!(index);
+                wrong_submitter["ordinal"] = json!(ordinal);
+                assert!(
+                    validate(&wrong_submitter, 0).is_err(),
+                    "original non-submit node {index} must not become a submitter"
+                );
+            }
+            let mut stale_identity = native_dom_submit_case().0;
+            stale_identity.invalidate(2, 7);
+            assert!(
+                validate_dom_action_request(
+                    valid.to_string().as_bytes(),
+                    NONCE,
+                    0,
+                    1,
+                    7,
+                    "https://example.test/",
+                    &stale_identity
+                )
+                .is_err(),
+                "fresh-looking indices must not resurrect a revoked observation"
+            );
+            for disallowed in ["text", "optionIndex", "optionOrdinal", "deltaY"] {
+                for extra in [json!(null), json!(120), json!("forbidden")] {
+                    let mut tampered = valid.clone();
+                    tampered[disallowed] = extra;
+                    assert!(
+                        validate(&tampered, 0).is_err(),
+                        "extraneous {disallowed} must be rejected even when null"
+                    );
+                }
+            }
+            let mut selector = valid.clone();
+            selector["selector"] = json!("#submit");
+            assert!(validate(&selector, 0).is_err());
+            let mut old_click = valid.clone();
+            old_click["action"] = json!("click");
+            old_click.as_object_mut().unwrap().remove("payloadSha256");
+            assert!(
+                validate(&old_click, 0).is_err(),
+                "submit form witness must not be smuggled into existing click"
+            );
+            assert!(validate_dom_action_request(
+                &vec![b'x'; 1025],
+                NONCE,
+                0,
+                1,
+                7,
+                "https://example.test/",
+                &identity,
+            )
+            .is_err());
+        }
+
+        #[test]
+        fn production_exact_submit_fixed_probe_is_validation_only_no_network_effect() {
+            let probe = DOM_EXACT_SUBMIT_JS;
+            assert!(probe.starts_with("function(slot, action, text, formSlot, deltaY)"));
+            assert!(probe.contains("const node = this.nodes[slot]"));
+            assert!(probe.contains("const form = this.nodes[formSlot]"));
+            assert!(probe.contains("node.form !== form"));
+            assert!(probe.contains("this.observer.takeRecords().length"));
+            assert!(probe.contains("form.method !== 'get'"));
+            assert!(probe.contains("form.enctype !== 'application/x-www-form-urlencoded'"));
+            assert!(probe.contains("form.target.toLowerCase() !== '_self'"));
+            assert!(probe.contains("form.elements.length !== 1"));
+            assert!(probe.contains("form.elements[0] !== node"));
+            assert!(probe.contains("node.name !== ''"));
+            assert!(probe.contains("destination.origin !== source.origin"));
+            assert!(probe.contains("destination.port !== ''"));
+            assert!(probe.contains("targetHref.includes('?')"));
+            assert!(probe.contains("targetHref.includes('#')"));
+            for action_escape in [
+                "form.requestSubmit(",
+                "form.submit(",
+                "node.click(",
+                "document.createElement",
+                "querySelector",
+                "getElementById",
+                "eval(",
+                "fetch(",
+                "XMLHttpRequest",
+                "sendBeacon",
+                "navigator.sendBeacon",
+                "dispatchEvent",
+                "return {dispatched:true}",
+            ] {
+                assert!(
+                    !probe.contains(action_escape),
+                    "submit probe must not dispatch: {action_escape}"
+                );
+            }
+            assert!(probe.ends_with("return {dispatched:false};\n    }"));
+            let source = include_str!("clack-browser-host.rs");
+            assert!(source.contains(
+                "if action == \"submit\" {\n                                DOM_EXACT_SUBMIT_JS"
+            ));
+            assert!(source
+                .contains("Ok((true, _)) if request.action == \"submit\" => (\"UNKNOWN\", None)"));
+            assert!(source.contains(
+                "Ok((false, _)) if request.action == \"submit\" => (\"DENIED_TARGET\", None)"
+            ));
         }
 
         fn native_dom_control_request(action: &str, index: u32) -> serde_json::Value {

@@ -38,6 +38,7 @@ pub(crate) enum SemanticRole {
     Radio,
     Combobox,
     Option,
+    Form,
     Heading,
     Main,
     Paragraph,
@@ -664,6 +665,12 @@ impl BrowserPageContract {
             }
         }
         match kind {
+            BrowserActionKind::Submit
+                if item.source.role != SemanticRole::Button
+                    || item.source.field_type.as_deref() != Some("submit") =>
+            {
+                return Err("SUBMITTER_TYPE_UNSUPPORTED");
+            }
             BrowserActionKind::Select if item.source.role != SemanticRole::Combobox => {
                 return Err("ELEMENT_TYPE_UNSUPPORTED");
             }
@@ -691,6 +698,20 @@ impl BrowserPageContract {
             requires_approval: effect != BrowserEffect::ReadOnly,
             kind,
         })
+    }
+
+    /// A second exact opaque retained witness for an approved form submit.
+    /// A generic semantic `Other` node may never be substituted for FORM.
+    pub(crate) fn require_retained_form(&self, target: ActionTarget) -> Result<u64, &'static str> {
+        let verified = self.prepare_action(BrowserActionKind::Inspect, target.clone(), None)?;
+        let form = self
+            .element_handles
+            .get(&target.element_ref)
+            .ok_or("STALE_ELEMENT")?;
+        if form.source.role != SemanticRole::Form {
+            return Err("SUBMIT_FORM_TYPE_UNSUPPORTED");
+        }
+        Ok(verified.observed_serial)
     }
 
     /// Called after the native callback, before claiming an observed effect.
@@ -1349,5 +1370,54 @@ mod tests {
             "STALE_SESSION"
         );
         assert_eq!(p.verify_completion(&a).unwrap_err(), "UNKNOWN_COMPLETION");
+    }
+    #[test]
+    fn native_submit_requires_exact_submitter_and_second_retained_form() {
+        let mut p = session();
+        p.observe(
+            1,
+            "https://example.org/form",
+            "Safe",
+            "Visible",
+            vec![
+                element(1, SemanticRole::Button, "", None, None, Some("submit")),
+                element(2, SemanticRole::Form, "", None, None, None),
+                element(3, SemanticRole::Other, "", None, None, None),
+            ],
+            1,
+        )
+        .unwrap();
+        let submitter = target(&p);
+        let snapshot = p.snapshot.as_ref().unwrap();
+        let form = ActionTarget {
+            element_ref: snapshot.elements[1].element_ref.clone(),
+            ..submitter.clone()
+        };
+        let other = ActionTarget {
+            element_ref: snapshot.elements[2].element_ref.clone(),
+            ..submitter.clone()
+        };
+        let prepared = p
+            .prepare_action(BrowserActionKind::Submit, submitter.clone(), None)
+            .unwrap();
+        assert_eq!(prepared.effect, BrowserEffect::PotentialExternalWrite);
+        assert!(prepared.requires_approval);
+        assert_eq!(p.require_retained_form(form.clone()), Ok(2));
+        assert_eq!(
+            p.require_retained_form(other).unwrap_err(),
+            "SUBMIT_FORM_TYPE_UNSUPPORTED"
+        );
+        assert_eq!(
+            p.require_retained_form(submitter.clone()).unwrap_err(),
+            "SUBMIT_FORM_TYPE_UNSUPPORTED"
+        );
+        p.observe(1, "https://example.org/form", "Safe", "", vec![], 2)
+            .unwrap();
+        assert_eq!(p.require_retained_form(form).unwrap_err(), "STALE_ELEMENT");
+        assert_eq!(
+            p.prepare_action(BrowserActionKind::Submit, submitter, None)
+                .unwrap_err(),
+            "STALE_ELEMENT"
+        );
     }
 }

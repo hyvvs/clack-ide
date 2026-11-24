@@ -979,3 +979,70 @@ network/API class matrix, and a publicly reachable owned HTTPS oracle remain
 open. The earlier optimized NSIS hashes above represent the **pre-repair**
 source, not these fixes. Do not install/promote that intermediate artifact as
 evidence for these repairs or enable model-native browser actions.
+
+### 2026-11-24 pinned security-source continuation and new physical cancellation regression
+
+The four-file pre-dispatch/TF3-resource security repair above was committed as
+`4770ccd1fb77db53e9e42b2457b0033f768009d2` on the existing
+`tf/browser-computer-use` branch and pushed (local/remote SHAs matched). The
+preserved safety stashes and unrelated `outputs/` and `scripts/__pycache__/`
+were not modified. With the production feature, `production_exact_click` host
+tests passed **2/2**, the host broker-contract suite passed **57/57**, and the
+runtime suite passed **15 active / 11 ignored physical**. Warnings were
+non-fatal. This is not an installed production action result.
+
+One **fresh** feature-matched `tf-browser-isolation-acceptance` native host
+and example build completed with exit 0. A new `--grouped-only
+renderer-fetch-cancel` Windows AppContainer/WebView2 run exited 0 and reported
+`PASS_SELECTED_GROUPED_ONLY` for the one selected negative-path case. The
+induced host fault's *nested* `caseResult.status` is explicitly `FAILED`:
+this is the injected/expected fault, not a positive browser operation or
+proof of generally successful browsing. Evidence records an original parent
+document request, held renderer fetch request, native cancellation, COM 503,
+zero-network-capability AppContainer, owned Job cleanup and UDF removal.
+The grouped runner's own summary expressly says `fullElevenGroupedRequirement:
+NOT_PROVEN` and only **1/9 implemented cases selected**, not 11/11 acceptance.
+
+- Fresh immutable run: `src-tauri/target/tf-browser-isolation-acceptance/clack-tf-browser-grouped-only-lUd6Qg/`
+- `grouped-only-verdict.json` SHA-256: `21950E1CEAF72102F3F6AF7F188B297F81C32DDFA6CC8BBDE0A37D6EE6188662`
+- `phase-a-renderer-fetch-cancel/phase-a-acceptance-receipt.json` SHA-256: `96065FEEF3B04BA87A79AD67689E8DC0E8535342995076842B44A1DE5E56F38E`
+- Acceptance-feature debug host SHA-256: `7761C80544E952B0C6662FF407CD421CA1CC84726019AB7D612F2898381C88CF`
+- Acceptance-feature example SHA-256: `604FE6B711F225789207E0A0161F8723FA1543843121BF038CA435719CF9F111`
+
+This new run does not supply the missing owned public HTTPS oracle, installed
+optimized app approval/effect/replay evidence, same-origin GET write authority,
+the other two grouped cases, the original 17-step E2E, or release readiness.
+Production model-browser tools remain non-callable and PR #46 remains Draft.
+
+### 2026-11-24 retained FORM/submitter identity (validation-only, not submission)
+
+The existing central `tf_browser_prepare` / genuine application approve /
+consume-once native control flow now carries an opt-in `Submit` action whose
+parameter is a **second original opaque FORM reference**, bound to the same
+session/page/generation/semantic observation as the primary exact retained
+submitter. The native runtime binds both retained indices/ordinals and
+SHA-256 of canonical `submit:<formIndex>:<formOrdinal>` into the existing
+action reply/approval verification. The contract distinguishes a real
+`FORM` from generic `Other` and rejects non-submit controls, replaced forms,
+forged references, stale snapshots and role mismatches. No selector, new
+permission engine, or parallel receipt store is introduced.
+
+**Deliberately no form effect is dispatched.** The production host validates
+the exact original submit button/input and form association with a fixed
+validation-only script, then returns `DENIED_TARGET`; even empty queryless
+GET submissions remain denied because GET may mutate server state. Forged
+positive CDP replies cannot elevate a submit to `DISPATCHED` or `CONFIRMED`.
+The existing TF3 broker has not yet been extended with an authorized POST
+body/network-write and independent server-side form effect oracle. Enabling
+`requestSubmit`, adding a frontend model tool, or reporting submission success
+at this stage would be unsafe and is **not done**.
+
+Focused validation after correcting a real adversarial test failure:
+native host broker-contract suite **60/60 PASS**; TF4 owner **21/21 PASS**;
+runtime **15 active PASS, 11 ignored**; browser action contract **14/14 PASS**;
+Windows feature-enabled Cargo check PASS. A first host run was **59/60** due
+to an invalid submit primary index accepted as structurally stale; the
+host-only parser was repaired to require both exact retained primary and FORM
+witnesses *before COM*, and the unchanged failing case plus additional
+digest-correct forgery negatives passed in the second run. Retain this failure
+history; neither result establishes a real approved production submission.

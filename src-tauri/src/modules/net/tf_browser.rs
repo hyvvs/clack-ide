@@ -114,6 +114,7 @@ pub enum TfBrowserOperation {
     Check,
     Uncheck,
     Scroll,
+    Submit,
     Screenshot,
 }
 impl TfBrowserOperation {
@@ -133,6 +134,7 @@ impl TfBrowserOperation {
                 | Self::Check
                 | Self::Uncheck
                 | Self::Scroll
+                | Self::Submit
                 | Self::Screenshot
         )
     }
@@ -146,6 +148,7 @@ impl TfBrowserOperation {
                 | Self::Check
                 | Self::Uncheck
                 | Self::Scroll
+                | Self::Submit
         )
     }
     fn approval_required(self) -> bool {
@@ -1361,6 +1364,16 @@ fn native_retained_action_from_request(
             }
             Ok(NativeRetainedAction::Select(option.to_owned()))
         }
+        TfBrowserOperation::Submit => {
+            let form = req
+                .text
+                .as_deref()
+                .ok_or("native-submit-form-ref-required")?;
+            if !valid_id(form) || form == req.element_id.as_deref().unwrap_or("") {
+                return Err("native-submit-original-form-invalid".into());
+            }
+            Ok(NativeRetainedAction::Submit(form.to_owned()))
+        }
         TfBrowserOperation::Check if req.text.is_none() => Ok(NativeRetainedAction::Check),
         TfBrowserOperation::Uncheck if req.text.is_none() => Ok(NativeRetainedAction::Uncheck),
         TfBrowserOperation::Scroll => match req.text.as_deref() {
@@ -1597,6 +1610,13 @@ pub fn prepare(
                         return Err("native-select-option-must-be-retained-original-option".into());
                     }
                 }
+                if let NativeRetainedAction::Submit(form_ref) = &action {
+                    if !page.elements.iter().any(|element| {
+                        element.element_ref == *form_ref && element.role == SemanticRole::Form
+                    }) {
+                        return Err("native-submit-form-must-be-retained-original-form".into());
+                    }
+                }
                 native_target = Some(ActionTarget {
                     browser_session_id: page.browser_session_id.clone(),
                     page_id: page.page_id,
@@ -1629,6 +1649,7 @@ pub fn prepare(
                     | TfBrowserOperation::Check
                     | TfBrowserOperation::Uncheck
                     | TfBrowserOperation::Scroll
+                    | TfBrowserOperation::Submit
             )
         {
             return Err("native-action-requires-confined-approved-runtime".into());
@@ -1643,6 +1664,7 @@ pub fn prepare(
                 | TfBrowserOperation::Check
                 | TfBrowserOperation::Uncheck
                 | TfBrowserOperation::Scroll
+                | TfBrowserOperation::Submit
         ) {
             return Err("native-action-requires-confined-approved-runtime".into());
         }
@@ -1714,6 +1736,7 @@ pub fn prepare(
                 | TfBrowserOperation::Check
                 | TfBrowserOperation::Uncheck
                 | TfBrowserOperation::Scroll
+                | TfBrowserOperation::Submit
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ENGINE
@@ -1731,6 +1754,7 @@ pub fn prepare(
                 | TfBrowserOperation::Check
                 | TfBrowserOperation::Uncheck
                 | TfBrowserOperation::Scroll
+                | TfBrowserOperation::Submit
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ISOLATION
@@ -1889,6 +1913,7 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
                 | TfBrowserOperation::Check
                 | TfBrowserOperation::Uncheck
                 | TfBrowserOperation::Scroll
+                | TfBrowserOperation::Submit
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ENGINE
@@ -1906,6 +1931,7 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
                 | TfBrowserOperation::Check
                 | TfBrowserOperation::Uncheck
                 | TfBrowserOperation::Scroll
+                | TfBrowserOperation::Submit
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ISOLATION
@@ -3196,6 +3222,8 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             "Set ONE exact retained checkbox unchecked (NEVER radio). Change handlers may have external effects; no automatic replay.",
         TfBrowserOperation::Scroll =>
             "Scroll ONE exact retained node by 120 pixels in the approved direction. Scroll handlers may have external effects; no automatic replay.",
+        TfBrowserOperation::Submit =>
+            "Approve ONE original retained submitter bound to a SECOND original retained FORM. No TF3 write authority is granted: actual form submission remains blocked until independently authorized and verifiable. Never retry an uncertain submission.",
         _ => "Only TF3 pinned HTTP(S) text retrieval is supported; redirects and targets require per-hop policy.",
     };
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
@@ -3231,6 +3259,9 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             NativeRetainedAction::Uncheck => "Set checked=false; no payload".to_owned(),
             NativeRetainedAction::Scroll(delta) => {
                 format!("EXACT vertical scroll delta: {delta} native CSS pixels")
+            }
+            NativeRetainedAction::Submit(form_ref) => {
+                format!("EXACT original retained FORM reference: {form_ref}; submission remains blocked")
             }
         };
         format!(
@@ -3993,6 +4024,7 @@ mod tests {
             TfBrowserOperation::Check,
             TfBrowserOperation::Uncheck,
             TfBrowserOperation::Scroll,
+            TfBrowserOperation::Submit,
         ] {
             let mut r = req(dir.path(), op);
             r.browser_session_id = Some(id.clone());
@@ -4003,6 +4035,7 @@ mod tests {
             r.text = match op {
                 TfBrowserOperation::Type => Some("safe input".into()),
                 TfBrowserOperation::Select => Some(nonce().unwrap()),
+                TfBrowserOperation::Submit => Some(nonce().unwrap()),
                 TfBrowserOperation::Scroll => Some("down".into()),
                 _ => None,
             };
@@ -4038,6 +4071,11 @@ mod tests {
                 Some("a"),
                 NativeRetainedAction::Select("a".into()),
             ),
+            (
+                TfBrowserOperation::Submit,
+                Some("a"),
+                NativeRetainedAction::Submit("a".into()),
+            ),
             (TfBrowserOperation::Check, None, NativeRetainedAction::Check),
             (
                 TfBrowserOperation::Uncheck,
@@ -4057,15 +4095,21 @@ mod tests {
             request.snapshot_id = Some(nonce().unwrap());
             request.element_id = Some(nonce().unwrap());
             request.text = match operation {
-                TfBrowserOperation::Select => Some(nonce().unwrap()),
+                TfBrowserOperation::Select | TfBrowserOperation::Submit => Some(nonce().unwrap()),
                 _ => text.map(str::to_owned),
             };
             assert!(ensure_request_shape(&request).is_ok(), "{operation:?}");
             let derived = native_retained_action_from_request(&request).unwrap();
-            if operation != TfBrowserOperation::Select {
+            if !matches!(
+                operation,
+                TfBrowserOperation::Select | TfBrowserOperation::Submit
+            ) {
                 assert_eq!(derived, expected);
             } else {
-                assert!(matches!(derived, NativeRetainedAction::Select(_)));
+                assert!(matches!(
+                    derived,
+                    NativeRetainedAction::Select(_) | NativeRetainedAction::Submit(_)
+                ));
             }
             assert!(operation.approval_required());
             request.selector = Some("body input".into());
