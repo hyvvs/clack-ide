@@ -10,7 +10,12 @@
 # powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-Tf4NativeBundle.ps1
 
 [CmdletBinding()]
-param()
+param(
+    # NSIS is the supported per-user Windows acceptance installer. MSI
+    # remains explicitly selectable for separate WiX qualification.
+    [ValidateSet('nsis', 'msi', 'all')]
+    [string]$Bundles = 'nsis'
+)
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
@@ -71,7 +76,7 @@ try {
             throw 'TF4 native staged host differs from the exact built executable.'
         }
         $env:CLACK_TF4_NATIVE_HOST_SHA256 = $stagedHash
-        & npm.cmd run tauri -- build --features tf-browser-native-runtime --config $config
+        & npm.cmd run tauri -- build --features tf-browser-native-runtime --config $config --bundles $Bundles
         if ($LASTEXITCODE -ne 0) { throw 'TF4 native main application bundle failed.' }
         $finalHash = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($finalHash -ne $stagedHash) {
