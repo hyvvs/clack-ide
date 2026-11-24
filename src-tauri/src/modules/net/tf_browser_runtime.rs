@@ -847,6 +847,25 @@ fn checked_mime(value: Option<&str>) -> Option<&'static str> {
     }
 }
 
+/// A WebView2 intercepted GET is for its ORIGINAL URI, not the final URL
+/// reached by TF3 after following a redirect. A same-origin redirect may
+/// itself call an effectful API endpoint. Never replace the original URI's
+/// response with bytes fetched from a second URI, even when TF3 reports a
+/// successful final 2xx status, approved MIME and bounded bytes.
+///
+/// This additional native broker gate does not modify TF3 Public redirects,
+/// DNS/IP/SSRF checks, or the one-use TF3 token and receipt authority.
+fn original_uri_response_mime(receipt: &TfWebReceipt, bytes_len: usize) -> Option<&'static str> {
+    (receipt.redirect_chain.is_empty()
+        && receipt.terminal == "completed"
+        && receipt.reason_code == "ok"
+        && receipt.status_code.is_some_and(|s| (200..300).contains(&s))
+        && !receipt.truncated
+        && bytes_len <= RESOURCE_MAX)
+        .then(|| checked_mime(receipt.content_type.as_deref()))
+        .flatten()
+}
+
 fn encode_base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -2783,10 +2802,12 @@ mod windows_owner {
                 search_result_id: None,
                 timeout_ms: Some(5_000),
                 max_bytes: Some(RESOURCE_MAX),
-                // TF3 reclassifies DNS/IP/SSRF on every hop; the native
-                // same-origin executor additionally refuses a redirected
-                // origin *before* resolving or connecting to it.
-                max_redirects: Some(3),
+                // The browser intercepted the ORIGINAL URI. Following any
+                // 3xx, including a same-origin Location, could issue a
+                // distinct unapproved GET to an effectful API endpoint and
+                // misattribute its response to the original WebView2 URI.
+                // Public TF3 retains its existing redirect behavior.
+                max_redirects: Some(0),
             };
             let prepared_result = {
                 #[cfg(test)]
@@ -2862,13 +2883,13 @@ mod windows_owner {
             match result {
                 Ok(result) => {
                     let receipt = result.receipt;
-                    let mime = checked_mime(receipt.content_type.as_deref());
-                    let delivered = receipt.terminal == "completed"
-                        && receipt.reason_code == "ok"
-                        && receipt.status_code.is_some_and(|s| (200..300).contains(&s))
-                        && !receipt.truncated
-                        && result.bytes.len() <= RESOURCE_MAX
-                        && mime.is_some();
+                    // Independent COM response acceptance: even if TF3 ever
+                    // returns completed final 2xx despite a redirect, NEVER
+                    // synthesize 200 or install those bytes for this original
+                    // WebView2 URI. Deny with an empty body and retain the
+                    // actual TF3 receipt as evidence of what was attempted.
+                    let mime = original_uri_response_mime(&receipt, result.bytes.len());
+                    let delivered = mime.is_some();
                     let size = if delivered { result.bytes.len() } else { 0 };
                     self.send_and_verify(
                         req.request_id,
@@ -3082,6 +3103,72 @@ impl BrowserRuntimeSession {
 mod tests {
     use super::*;
     use crate::modules::net::tf_browser_contract::{ActionTarget, BrowserActionKind};
+
+    #[test]
+    fn original_webview2_uri_never_accepts_followed_same_origin_redirect_bytes() {
+        // This receipt is deliberately superficially successful: the parent
+        // must *independently* reject a final 200 reached via a different URI
+        // before installing any WebView2 response for the original URI.
+        let mut receipt = TfWebReceipt {
+            tool_id: "tf.web_operation.v1",
+            request_id: "original-uri".into(),
+            actor: "test-owner".into(),
+            operation: TfWebOperation::HttpGet,
+            terminal: "completed",
+            effect_state: "Observed",
+            requested_url: Some("https://example.org/page.css".into()),
+            final_url: Some("https://example.org/page.css".into()),
+            redirect_chain: Vec::new(),
+            normalized_target: None,
+            status_code: Some(200),
+            content_type: Some("text/css".into()),
+            tls_state: "https_transport_observed",
+            bytes_received: Some(12),
+            bytes_retained: 12,
+            truncated: false,
+            content_sha256: None,
+            body: None,
+            started_at: 0,
+            ended_at: 1,
+            credential_reference: None,
+            credential_used: false,
+            retry: "NEVER_REPLAY",
+            auto_retry: false,
+            policy_decision: "allowed",
+            reason_code: "ok",
+            search_results: None,
+            search_source: None,
+            uncertainty: "http-response-observed-peer-ip-not-attested",
+            isolation: "test",
+            dns_evidence: Vec::new(),
+        };
+        assert_eq!(original_uri_response_mime(&receipt, 12), Some("text/css"));
+        receipt
+            .redirect_chain
+            .push("https://example.org/page.css".into());
+        receipt.final_url = Some("https://example.org/api/mutate".into());
+        assert_eq!(
+            original_uri_response_mime(&receipt, 12),
+            None,
+            "even an apparent 200 and allowed MIME must not substitute a redirected API body"
+        );
+        receipt.final_url = Some("https://example.org/style.css".into());
+        assert_eq!(
+            original_uri_response_mime(&receipt, 12),
+            None,
+            "same-origin redirects are not authority to substitute a different URI"
+        );
+        receipt.redirect_chain.clear();
+        receipt.status_code = Some(302);
+        assert_eq!(original_uri_response_mime(&receipt, 12), None);
+        receipt.status_code = Some(200);
+        receipt.truncated = true;
+        assert_eq!(original_uri_response_mime(&receipt, 12), None);
+        receipt.truncated = false;
+        assert_eq!(original_uri_response_mime(&receipt, RESOURCE_MAX + 1), None);
+        receipt.content_type = Some("application/x-msdownload".into());
+        assert_eq!(original_uri_response_mime(&receipt, 12), None);
+    }
 
     #[test]
     fn exclusive_host_control_turns_reject_replay_forgery_and_unknown_fields() {
@@ -4368,19 +4455,39 @@ mod tests {
                 .control_turn_requester()
                 .ok_or("turns-not-negotiated")?;
             // First prove actual parent-only TF3 GET and UI-apartment native
-            // COM completion. Unsolicited host turns are transparently
-            // declined and NEVER compete with these four resource receipts.
-            for expected in 1..=4u64 {
+            // COM completion. The owned fixture's /page.css 302 is DENIED
+            // (no followed /style.css GET), so the CSS-dependent font need
+            // not load. Unsolicited host turns never compete with these
+            // three original-URI resource receipts.
+            for expected in 1..=3u64 {
                 let resource = tokio::time::timeout(
                     Duration::from_secs(17),
                     browser.serve_one_owned_https_for_test(&registry, &web, &cert),
                 )
                 .await
                 .map_err(|_| "control-turn-tf3-com-timeout")??;
+                let tf3 = resource
+                    .tf3
+                    .as_ref()
+                    .ok_or("control-turn-tf3-receipt-missing")?;
+                let denied_css_redirect = tf3
+                    .requested_url
+                    .as_deref()
+                    .and_then(|value| reqwest::Url::parse(value).ok())
+                    .is_some_and(|value| value.path() == "/page.css");
                 if resource.request_id != expected
-                    || resource.terminal != "completed"
                     || !resource.native_com_completed
-                    || resource.tf3.is_none()
+                    || !tf3.redirect_chain.is_empty()
+                    || if denied_css_redirect {
+                        resource.terminal != "denied"
+                            || resource.bytes != 0
+                            || tf3.terminal != "denied"
+                            || tf3.reason_code != "redirect-limit-denied"
+                    } else {
+                        resource.terminal != "completed"
+                            || tf3.terminal != "completed"
+                            || tf3.reason_code != "ok"
+                    }
                 {
                     return Err("control-turn-real-com-not-proven".into());
                 }
@@ -4485,9 +4592,10 @@ mod tests {
             let mut generation = None;
             // The real production host intentionally disables untrusted
             // remote JavaScript until effect classification/approval exists.
-            // Read-only acceptance proves HTML, CSS, PNG and font, each via
-            // a new TF3 token and a completed native COM deferral.
-            for expected_id in 1..=4u64 {
+            // Read-only acceptance proves the HTML and PNG originals and
+            // DENIAL of the CSS 302 without fetching /style.css. A denied
+            // stylesheet does not have to initiate its dependent font GET.
+            for expected_id in 1..=3u64 {
                 let resource = tokio::time::timeout(
                     std::time::Duration::from_secs(17),
                     browser.serve_one_owned_https_for_test(&registry, &web, &cert),
@@ -4506,6 +4614,38 @@ mod tests {
                     resource.native_com_completed,
                     tf3.dns_evidence.len(),
                 );
+                let requested = tf3
+                    .requested_url
+                    .as_deref()
+                    .ok_or("owned-https-request-url-missing")?;
+                let uri = reqwest::Url::parse(requested)
+                    .map_err(|_| "owned-https-request-url-invalid")?;
+                if uri.path() == "/page.css" {
+                    // The fixture intentionally redirects CSS to /style.css.
+                    // The first TF3 GET can observe 302, but there MUST NOT
+                    // be any second GET or synthesized 200 for /page.css.
+                    if resource.request_id != expected_id
+                        || resource.terminal != "denied"
+                        || !resource.native_com_completed
+                        || resource.bytes != 0
+                        || tf3.terminal != "denied"
+                        || tf3.reason_code != "redirect-limit-denied"
+                        || !tf3.redirect_chain.is_empty()
+                        || tf3.dns_evidence.len() != 1
+                        || tf3
+                            .final_url
+                            .as_deref()
+                            .is_some_and(|url| url != requested)
+                    {
+                        return Err("owned-https-css-redirect-not-denied-at-original-uri".into());
+                    }
+                    if generation.is_some_and(|g| g != resource.page_generation) {
+                        return Err("owned-https-generation-changed".into());
+                    }
+                    generation = Some(resource.page_generation);
+                    paths.insert(uri.path().to_owned());
+                    continue;
+                }
                 if resource.request_id != expected_id
                     || resource.terminal != "completed"
                     || !resource.native_com_completed
@@ -4526,12 +4666,6 @@ mod tests {
                     return Err("owned-https-generation-changed".into());
                 }
                 generation = Some(resource.page_generation);
-                let requested = tf3
-                    .requested_url
-                    .as_deref()
-                    .ok_or("owned-https-request-url-missing")?;
-                let uri = reqwest::Url::parse(requested)
-                    .map_err(|_| "owned-https-request-url-invalid")?;
                 let owned_origin = reqwest::Url::parse("https://127.0.0.1/").unwrap().origin();
                 if uri.origin() != owned_origin
                     || tf3
@@ -4544,7 +4678,7 @@ mod tests {
                 }
                 let expected_mime = match uri.path() {
                     "/" => "text/html",
-                    "/page.css" => "text/css",
+                    "/page.css" => return Err("owned-https-css-redirect-must-not-succeed".into()),
                     "/page.js" => return Err("owned-https-untrusted-script-not-disabled".into()),
                     "/pixel.png" => "image/png",
                     "/font.woff2" => "font/woff2",
@@ -4553,20 +4687,12 @@ mod tests {
                 if checked_mime(tf3.content_type.as_deref()) != Some(expected_mime) {
                     return Err("owned-https-resource-content-type-mismatch".into());
                 }
-                if uri.path() == "/page.css" {
-                    if tf3.redirect_chain.len() != 1
-                        || tf3.redirect_chain[0] != "https://127.0.0.1/page.css"
-                        || tf3.final_url.as_deref() != Some("https://127.0.0.1/style.css")
-                        || tf3.dns_evidence.len() != 2
-                    {
-                        return Err("owned-https-same-origin-css-redirect-not-revalidated".into());
-                    }
-                } else if !tf3.redirect_chain.is_empty() {
+                if !tf3.redirect_chain.is_empty() {
                     return Err("owned-https-unexpected-redirect".into());
                 }
                 paths.insert(uri.path().to_owned());
             }
-            for expected in ["/", "/page.css", "/pixel.png", "/font.woff2"] {
+            for expected in ["/", "/page.css", "/pixel.png"] {
                 if !paths.contains(expected) {
                     return Err("owned-https-required-dependent-resource-not-delivered".into());
                 }

@@ -923,3 +923,59 @@ available canonical source/docs; do not invent them or confuse 13 contract
 unit tests with thirteen named exit gates. The separately documented 17-step
 installed production E2E remains unverified. Mandatory final Product-wide
 UI/UX Polish & Acceptance also remains open.
+
+### 2026-11-24 pre-dispatch and TF3 browser-resource source hardening
+
+The high-priority findings above now have **source-level fail-closed repairs**
+in the **existing** retained-node production host and central TF3-backed
+browser runtime. These repairs are **not** an installed physical acceptance
+claim. The native original-node click function now requires the retained
+anchor's exact normalized HTTPS destination to be the current origin at
+default TLS port, without userinfo, query, fragment, self-target, download,
+ping, unexpected target or implicit `BASE target` **before** setting the
+mutation latch and calling `node.click()`. The host never resolves a selector
+or alternate DOM node. The subsequent independent COM-response validator also
+rejects non-HTTPS, non-default port and query/fragment destinations.
+
+The popup, download and permission WebView2 handlers now synchronously
+terminate the confined browser host when native callback arguments are absent
+or the native veto HRESULT fails. Production navigation also fails closed for
+missing native event arguments/URI/cancellation failures and enforces same
+original HTTPS origin, default 443, no query/fragment. **Host termination by
+itself is not proof that all WebView2 children have exited**; parent-owned Job
+closure and zero-process verification remain mandatory terminal evidence.
+
+The parent browser-resource TF3 request sets `max_redirects=0` (without
+changing TF3's public policy for other callers) and independently rejects
+any nonempty TF3 redirect chain before installing a synthesized response for
+the original intercepted WebView2 URI. A 302 no longer authorizes a second
+same-origin GET or causes a redirected body to masquerade as the original
+resource. Two previously ignored opt-in owned-HTTPS redirect tests had their
+expected denial predicates updated; they **remain ignored**, not PASS.
+
+Fresh post-repair focused Windows validation from this source state:
+
+| Scope | Result |
+| --- | --- |
+| Default and `tf-browser-native-runtime` Rust checks | PASS (warnings, no errors) |
+| Native browser-host contract | **57/57 PASS** |
+| TF4 owner | **21/21 PASS** |
+| TF4 runtime | **15 active PASS; 11 physical opt-in ignored** |
+| TF4 action/effect contract | **13/13 PASS** |
+| TF3 network policy | **22/22 PASS serially** |
+| TF1/TF2 regressions | **13/13 and 7/7 PASS** |
+| Rustfmt and `git diff --check` | PASS |
+
+**Still blocked:** the browser broker admits arbitrary same-origin HTTPS GET
+paths under one root-origin grant; an HTTP GET endpoint can be effectful even
+without a redirect. Proving trusted exact per-resource/route admission needs
+further extension of the existing parent TF3 authority, not page-provided
+allowlists or a second policy engine. This general semantic GET-write risk is
+**not** closed by the redirect fix, and a complete native approved-action
+effect/once/replay receipt still has not been physically obtained from the
+installed application. Missing popup/download veto failure *physical*
+injections, old source build provenance, current full grouped 11-case and
+network/API class matrix, and a publicly reachable owned HTTPS oracle remain
+open. The earlier optimized NSIS hashes above represent the **pre-repair**
+source, not these fixes. Do not install/promote that intermediate artifact as
+evidence for these repairs or enable model-native browser actions.

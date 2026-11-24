@@ -283,7 +283,48 @@ mod host {
     // and dispatch at most one HTMLElement.click(). This is a programmatic
     // DOM activation, NOT a trusted hardware pointer event or effect proof.
     // Caller-provided JS, selectors, element strings and retries are absent.
-    const DOM_EXACT_CLICK_JS: &str = "function(slot) { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return {dispatched:false,targetHref:null}; const node = this.nodes[slot]; if (!node || !node.isConnected || node.ownerDocument !== document || node.tagName !== 'A' || node.disabled === true || !node.getClientRects().length) return {dispatched:false,targetHref:null}; const targetHref = node.href; if (!targetHref || targetHref.length > 2048) return {dispatched:false,targetHref:null}; this.state.changed = true; node.click(); return {dispatched:true,targetHref}; }";
+    const DOM_EXACT_CLICK_JS: &str = r#"function(slot) {
+      if (this.observer.takeRecords().length) this.state.changed = true;
+      if (this.state.changed) return {dispatched:false,targetHref:null};
+      const node = this.nodes[slot];
+      if (!node || !node.isConnected || node.ownerDocument !== document
+          || node.tagName !== 'A' || node.disabled === true
+          || !node.getClientRects().length) return {dispatched:false,targetHref:null};
+      // Security validation MUST precede click(), not merely validate its
+      // returned targetHref after a navigation, ping, popup or download.
+      // Inspect this exact retained anchor only, never resolve a replacement
+      // by a selector or visit index.
+      if (node.hasAttribute('download') || node.hasAttribute('ping')
+          || (node.target !== '' && node.target.toLowerCase() !== '_self'))
+        return {dispatched:false,targetHref:null};
+      // An implicit <base target="_blank"> can change the target even when
+      // this exact anchor has no target attribute. Check the bounded head
+      // chain without selecting or replacing the retained action node.
+      if (node.target === '') {
+        let headNode = document.head && document.head.firstElementChild;
+        let headVisits = 0;
+        while (headNode && headVisits++ < 128) {
+          if (headNode.tagName === 'BASE' && headNode.hasAttribute('target'))
+            return {dispatched:false,targetHref:null};
+          headNode = headNode.nextElementSibling;
+        }
+        if (headNode) return {dispatched:false,targetHref:null};
+      }
+      const targetHref = node.href;
+      if (!targetHref || targetHref.length > 2048
+          || targetHref.includes('?') || targetHref.includes('#'))
+        return {dispatched:false,targetHref:null};
+      const destination = new URL(targetHref);
+      const source = new URL(document.location.href);
+      if (source.protocol !== 'https:' || destination.protocol !== 'https:'
+          || destination.origin !== source.origin || destination.port !== ''
+          || source.port !== '' || destination.username !== ''
+          || destination.password !== '' || destination.href === source.href)
+        return {dispatched:false,targetHref:null};
+      this.state.changed = true;
+      node.click();
+      return {dispatched:true,targetHref};
+    }"#;
     // Native-only fixed-function form and scroll operations, never model JS.
     // Each action operates on exactly the retained Node(s) from one bounded
     // capture; a mutation, a detached node, or a changed parent relation
@@ -986,6 +1027,25 @@ mod host {
             && parsed.password().is_none()
             && parsed.fragment().is_none()
             && parsed.port_or_known_default() == Some(443)
+    }
+
+    // NavigationStarting is a document-level boundary, not the TF3 resource
+    // allowlist. Restrict its HTTPS authority to the single owned origin and
+    // reject all query/fragment variants; static dependent CSS/images/fonts
+    // still use their existing individually brokered resource deferrals.
+    // This does NOT authorize arbitrary same-origin GET paths: that requires
+    // a trusted parent resource manifest and remains a separate acceptance gate.
+    fn production_document_navigation_allowed(raw: &str, original: &str) -> bool {
+        if !production_broker_url(raw) || !production_broker_url(original) {
+            return false;
+        }
+        let (Ok(target), Ok(source)) = (reqwest::Url::parse(raw), reqwest::Url::parse(original))
+        else {
+            return false;
+        };
+        target.origin() == source.origin()
+            && target.query().is_none()
+            && target.fragment().is_none()
     }
 
     fn sid_string(sid: *mut core::ffi::c_void) -> Result<String, String> {
@@ -2233,9 +2293,13 @@ mod host {
         let source =
             reqwest::Url::parse(expected_url).map_err(|_| "action-com-response-unknown")?;
         if target.scheme() != "https"
+            || source.scheme() != "https"
             || target.origin() != source.origin()
             || target.username() != ""
             || target.password().is_some()
+            || source.port_or_known_default() != Some(443)
+            || target.port_or_known_default() != Some(443)
+            || target.as_str().bytes().any(|b| b == b'?' || b == b'#')
             || target.query().is_some()
             || target.fragment().is_some()
             || target == source
@@ -3974,6 +4038,24 @@ mod host {
         }
     }
 
+    // A missing native event argument or failed COM veto is not a denial.
+    // Returning Ok/Err to WebView2 could still let a popup, download or site
+    // permission take its default path. Terminate the confined owned host
+    // synchronously before returning control to the browser.
+    fn production_fatal_feature_veto(
+        trace: &StartupTrace,
+        stats: &BrokerStats,
+        stage: &'static str,
+    ) -> ! {
+        stats.errors.fetch_add(1, Ordering::Relaxed);
+        stats.broken.store(true, Ordering::Release);
+        trace.error(
+            stage,
+            "native feature veto not confirmed; fail-closed host termination",
+        );
+        std::process::exit(1)
+    }
+
     fn broker_finish_on_ui(
         id: u64,
         mut payload: BrokerPayload,
@@ -5343,27 +5425,53 @@ mod host {
                             // escape the single Clack-owned page. Later popup
                             // and download capabilities must use central TF2/
                             // TF3 approvals and bounded page identities.
+                            let popup_stats = callback_stats.clone();
+                            let popup_trace = callback_trace.clone();
                             let new_window = NewWindowRequestedEventHandler::create(Box::new(
                                 move |_, args| {
-                                    if let Some(args) = args { unsafe { args.SetHandled(true)?; } }
+                                    let Some(args) = args else {
+                                        production_fatal_feature_veto(
+                                            &popup_trace, &popup_stats, "production.popup.args-missing");
+                                    };
+                                    if unsafe { args.SetHandled(true) }.is_err() {
+                                        production_fatal_feature_veto(
+                                            &popup_trace, &popup_stats, "production.popup.veto-failed");
+                                    }
                                     Ok(())
                                 },
                             ));
                             let mut popup_token = 0;
                             unsafe { core.add_NewWindowRequested(&new_window, &mut popup_token)?; }
                             let core4: ICoreWebView2_4 = core.cast()?;
+                            let download_stats = callback_stats.clone();
+                            let download_trace = callback_trace.clone();
                             let download = DownloadStartingEventHandler::create(Box::new(
                                 move |_, args| {
-                                    if let Some(args) = args { unsafe { args.SetCancel(true)?; } }
+                                    let Some(args) = args else {
+                                        production_fatal_feature_veto(
+                                            &download_trace, &download_stats, "production.download.args-missing");
+                                    };
+                                    if unsafe { args.SetCancel(true) }.is_err() {
+                                        production_fatal_feature_veto(
+                                            &download_trace, &download_stats, "production.download.veto-failed");
+                                    }
                                     Ok(())
                                 },
                             ));
                             let mut download_token = 0;
                             unsafe { core4.add_DownloadStarting(&download, &mut download_token)?; }
+                            let permission_stats = callback_stats.clone();
+                            let permission_trace = callback_trace.clone();
                             let permission = PermissionRequestedEventHandler::create(Box::new(
                                 move |_, args| {
-                                    if let Some(args) = args {
-                                        unsafe { args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY)?; }
+                                    let Some(args) = args else {
+                                        production_fatal_feature_veto(
+                                            &permission_trace, &permission_stats, "production.permission.args-missing");
+                                    };
+                                    if unsafe { args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY) }
+                                        .is_err() {
+                                        production_fatal_feature_veto(
+                                            &permission_trace, &permission_stats, "production.permission.veto-failed");
                                     }
                                     Ok(())
                                 },
@@ -5446,6 +5554,10 @@ mod host {
                         let navigation_handler = NavigationStartingEventHandler::create(Box::new(
                             move |_, args| {
                                 let Some(args) = args else {
+                                    if nav_production {
+                                        production_fatal_feature_veto(
+                                            &nav_trace, &nav_stats, "production.navigation.args-missing");
+                                    }
                                     nav_stats.errors.fetch_add(1, Ordering::Relaxed);
                                     nav_stats.broken.store(true, Ordering::Release);
                                     nav_trace.error("broker.navigation.unavailable", "native navigation args absent");
@@ -5453,6 +5565,10 @@ mod host {
                                 };
                                 let mut raw = PWSTR::null();
                                 if unsafe { args.Uri(&mut raw) }.is_err() {
+                                    if nav_production {
+                                        production_fatal_feature_veto(
+                                            &nav_trace, &nav_stats, "production.navigation.uri-failed");
+                                    }
                                     nav_stats.errors.fetch_add(1, Ordering::Relaxed);
                                     nav_stats.broken.store(true, Ordering::Release);
                                     nav_trace.error("broker.navigation.uri.failed", "native navigation URI unavailable");
@@ -5496,10 +5612,15 @@ mod host {
                                     return Ok(());
                                 }
                                 if nav_production {
-                                    if !production_broker_url(&current_url) {
+                                    if !production_document_navigation_allowed(
+                                        &current_url, &nav_expected_url) {
                                         nav_stats.broken.store(true, Ordering::Release);
-                                        nav_trace.error("production.navigation.denied", "unsupported scheme/port/authority");
-                                        unsafe { args.SetCancel(true)?; }
+                                        nav_trace.error("production.navigation.denied",
+                                            "unsupported document scheme/port/origin/query/fragment");
+                                        if unsafe { args.SetCancel(true) }.is_err() {
+                                            production_fatal_feature_veto(
+                                                &nav_trace, &nav_stats, "production.navigation.veto-failed");
+                                        }
                                         return Ok(());
                                     }
                                     if nav_first_expected.swap(true, Ordering::AcqRel) {
@@ -5562,7 +5683,13 @@ mod host {
                         let event_held_dependent = held_dependent.clone();
                         let handler = WebResourceRequestedEventHandler::create(Box::new(
                             move |_, args| {
-                                let Some(args) = args else { return Ok(()); };
+                                let Some(args) = args else {
+                                    if event_production {
+                                        production_fatal_feature_veto(
+                                            &event_trace, &event_stats, "production.resource.args-missing");
+                                    }
+                                    return Ok(());
+                                };
                                 event_stats.intercepted.fetch_add(1, Ordering::Relaxed);
                                 event_trace.record("broker.request.intercepted", &format!("pageGeneration {}", event_generation.load(Ordering::Acquire)));
                                 let request = match unsafe { args.Request() } {
@@ -7869,9 +7996,11 @@ mod host {
         fn production_exact_click_is_atomic_dom_activation_not_verified_pointer_or_effect() {
             assert!(DOM_EXACT_CLICK_JS.starts_with("function(slot)"));
             let mutation = DOM_EXACT_CLICK_JS
-                .find("this.state.changed = true; node.click()")
+                .rfind("this.state.changed = true;")
                 .unwrap();
+            let click = DOM_EXACT_CLICK_JS.find("node.click();").unwrap();
             assert!(mutation > DOM_EXACT_CLICK_JS.find("this.nodes[slot]").unwrap());
+            assert!(mutation < click);
             for forbidden in [
                 "querySelector",
                 "innerHTML",
@@ -7911,6 +8040,12 @@ mod host {
                 "https://other.example/clicked",
                 "javascript:alert(1)",
                 "https://example.test/clicked?secret=1",
+                "https://example.test/clicked?",
+                "https://example.test/clicked#",
+                "https://example.test/clicked#fragment",
+                "https://example.test:444/clicked",
+                "https://user@example.test/clicked",
+                "http://example.test/clicked",
             ] {
                 let mut forged = positive.clone();
                 forged["result"]["value"]["targetHref"] = json!(bad);
@@ -7922,6 +8057,146 @@ mod host {
                 url
             )
             .is_err());
+        }
+
+        #[test]
+        fn production_link_click_checks_original_href_and_side_effect_flags_before_click() {
+            let script = DOM_EXACT_CLICK_JS;
+            let click = script.find("node.click();").unwrap();
+            let stale = script.rfind("this.state.changed = true;").unwrap();
+            let retained = script.find("const node = this.nodes[slot]").unwrap();
+            assert!(retained < stale && stale < click);
+            for preflight in [
+                "this.observer.takeRecords().length",
+                "node.isConnected",
+                "node.ownerDocument !== document",
+                "node.tagName !== 'A'",
+                "node.hasAttribute('download')",
+                "node.hasAttribute('ping')",
+                "node.target.toLowerCase() !== '_self'",
+                "document.head && document.head.firstElementChild",
+                "headNode.hasAttribute('target')",
+                "headVisits++ < 128",
+                "targetHref.includes('?')",
+                "targetHref.includes('#')",
+                "new URL(targetHref)",
+                "new URL(document.location.href)",
+                "source.protocol !== 'https:'",
+                "destination.protocol !== 'https:'",
+                "destination.origin !== source.origin",
+                "destination.port !== ''",
+                "source.port !== ''",
+                "destination.username !== ''",
+                "destination.password !== ''",
+                "destination.href === source.href",
+            ] {
+                let at = script
+                    .find(preflight)
+                    .unwrap_or_else(|| panic!("missing {preflight}"));
+                assert!(at < stale, "{preflight} must precede the mutation latch");
+                assert!(at < click, "{preflight} must precede DOM click");
+            }
+            assert!(script.contains("return {dispatched:false,targetHref:null}"));
+            assert!(script.contains("return {dispatched:true,targetHref};"));
+            assert!(!script.contains("querySelector"));
+            assert!(!script.contains("getElementById"));
+            assert!(!script.contains("eval("));
+            assert!(!script.contains("document.createElement"));
+            assert!(!script.contains("dispatchMouseEvent"));
+        }
+
+        #[test]
+        fn production_popup_download_permission_vetoes_die_on_missing_args_or_hresult() {
+            let source = include_str!("clack-browser-host.rs");
+            let handlers = [
+                (
+                    "let new_window = NewWindowRequestedEventHandler::create",
+                    "let mut popup_token",
+                    "SetHandled(true)",
+                    "production.popup.args-missing",
+                    "production.popup.veto-failed",
+                ),
+                (
+                    "let download = DownloadStartingEventHandler::create",
+                    "let mut download_token",
+                    "SetCancel(true)",
+                    "production.download.args-missing",
+                    "production.download.veto-failed",
+                ),
+                (
+                    "let permission = PermissionRequestedEventHandler::create",
+                    "let mut permission_token",
+                    "SetState(COREWEBVIEW2_PERMISSION_STATE_DENY)",
+                    "production.permission.args-missing",
+                    "production.permission.veto-failed",
+                ),
+            ];
+            for (begin, end, veto, missing, failed) in handlers {
+                let segment = source
+                    .split_once(begin)
+                    .unwrap()
+                    .1
+                    .split_once(end)
+                    .unwrap()
+                    .0;
+                assert!(segment.contains("let Some(args) = args else"));
+                assert!(segment.contains(veto), "missing COM veto: {veto}");
+                assert!(
+                    segment.contains(missing),
+                    "missing args must be fatal: {missing}"
+                );
+                assert!(segment.contains(failed), "HRESULT must be fatal: {failed}");
+                assert!(segment.contains(".is_err()"), "must check COM HRESULT");
+                assert_eq!(segment.matches("production_fatal_feature_veto(").count(), 2);
+            }
+            let fatal = source
+                .split_once("fn production_fatal_feature_veto(")
+                .unwrap()
+                .1
+                .split_once("fn broker_finish_on_ui(")
+                .unwrap()
+                .0;
+            assert!(fatal.contains("stats.broken.store(true, Ordering::Release)"));
+            assert!(fatal.contains("std::process::exit(1)"));
+        }
+
+        #[test]
+        fn production_document_navigation_is_original_origin_queryless_only() {
+            let original = "https://example.test/start";
+            for allowed in [
+                original,
+                "https://example.test/new-page",
+                "https://example.test:443/new-page",
+                "https://example.test/styles/site.css",
+            ] {
+                assert!(
+                    production_document_navigation_allowed(allowed, original),
+                    "same-origin queryless document denied: {allowed}"
+                );
+            }
+            for blocked in [
+                "https://other.example/start",
+                "https://example.test:444/start",
+                "http://example.test/start",
+                "javascript:alert(1)",
+                "https://user@example.test/start",
+                "https://example.test/start?",
+                "https://example.test/start#",
+                "https://example.test/start?token=secret",
+                "https://example.test/start#secret",
+                "https://example.test\\bad",
+                "about:blank",
+            ] {
+                assert!(
+                    !production_document_navigation_allowed(blocked, original),
+                    "unexpected document navigation allowed: {blocked}"
+                );
+            }
+            let host_source = include_str!("clack-browser-host.rs");
+            assert!(host_source.contains("production_document_navigation_allowed("));
+            assert!(host_source.contains("&current_url, &nav_expected_url"));
+            assert!(host_source.contains("production.navigation.veto-failed"));
+            assert!(host_source.contains("production.resource.args-missing"));
         }
 
         #[test]
