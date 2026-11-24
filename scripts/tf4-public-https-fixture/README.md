@@ -18,6 +18,12 @@ access and redaction; concurrent original form writes/replay denial; upload
 size/replay/method limits; accepted-claim persistence across fixture restart;
 client cancellation while the independent remote endpoint still observes a
 request; and invalid origin/nonce configuration.
+The positive original-FORM document deliberately declares an explicit
+`target="_self"`: the native fixed form-capture contract rejects missing,
+popup or inherited BASE-target semantics rather than assuming a safe
+submission context. It permits only the original retained submitter and
+bounded ordinary hidden controls; changed elements or unsupported form
+controls deny instead of silently changing the approved request.
 
 ## Operator-owned deployment prerequisite
 

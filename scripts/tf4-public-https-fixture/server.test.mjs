@@ -29,6 +29,8 @@ test('independent server oracle, original page fixture and denial boundaries', a
     assert.equal((await req('/')).status, 200);
     const page = await (await req('/')).text();
     assert.match(page, /id="exact-submitter"/);
+    assert.match(page, /id="exact-form"[^>]*method="post"[^>]*enctype="application\/x-www-form-urlencoded"[^>]*target="_self"/,
+      'positive fixture must obey the fixed native original-FORM contract');
     assert.match(page, /id="replace-original"/);
     assert.equal((await req('/__oracle/receipts')).status, 403);
     assert.equal((await req('/__oracle/receipts', {

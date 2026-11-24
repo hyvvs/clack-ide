@@ -25,7 +25,7 @@ function html(run) {
 <label><input id="stable-check" type="checkbox">Stable check</label>
 <select id="stable-select"><option value="a">Alpha</option><option value="b">Beta</option></select>
 <div id="stable-scroll" style="height:120px;overflow:auto"><div style="height:500px">Scrollable panel</div></div>
-<form id="exact-form" action="/case/${run}/form" method="post" enctype="application/x-www-form-urlencoded">
+<form id="exact-form" action="/case/${run}/form" method="post" enctype="application/x-www-form-urlencoded" target="_self">
 <input type="hidden" name="nonce" value="${run}"><input type="hidden" name="commit" value="once">
 <button id="exact-submitter" type="submit">One write</button></form>
 <button id="replace-original" type="button">Replace original submitter</button>
