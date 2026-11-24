@@ -5606,8 +5606,204 @@ mod tests {
         );
     }
 
-    /// A test-only physical capture of real WebView2 viewport pixels from a
-    /// single minimal, controlled HTTPS document. There is no model/Tauri
+    /// Independent physical read-only original FORM successful-control
+    /// capture, BEFORE user consent. This runs through the exact retained
+    /// native FORM and submitter COM identities, the production control-turn
+    /// pipe and the normal WebView2 AppContainer/TF3 document broker.
+    /// It does not consume any user approval or issue the POST, so a positive
+    /// capture MUST NOT be reported as an installed form submission effect.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[tokio::test]
+    #[ignore = "opt-in real WebView2 original hidden-only FORM capture; no consent, network POST or installed E2E"]
+    async fn physical_production_owned_https_original_form_capture_before_consent() {
+        use std::time::Duration;
+        assert_eq!(
+            std::env::var("CLACK_TF4_NATIVE_FORM_CAPTURE").as_deref(),
+            Ok("1"),
+            "explicit real original-form capture opt-in required"
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let owned_cert = std::fs::canonicalize(evidence.join("server.cer"))
+            .expect("live test-owned ephemeral HTTPS public cert");
+        let supplied_cert = std::env::var_os("CLACK_TF4_OWNED_HTTPS_CERT")
+            .map(PathBuf::from)
+            .expect("explicit owned certificate required");
+        assert_eq!(
+            std::fs::canonicalize(supplied_cert).unwrap(),
+            owned_cert,
+            "form physical test does not authorize arbitrary TLS roots"
+        );
+        let cert = reqwest::Certificate::from_der(&std::fs::read(&owned_cert).unwrap())
+            .expect("actual owned fixture public DER");
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact pinned native host required");
+        let host_digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact native host"))
+        );
+        assert_eq!(
+            std::env::var("CLACK_TF4_NATIVE_PROBE_SHA256").as_deref(),
+            Ok(host_digest.as_str()),
+            "pinned native-host SHA must be independently supplied"
+        );
+        let private = tempfile::Builder::new()
+            .prefix("tf4-original-form-physical-")
+            .tempdir_in(manifest.join("target"))
+            .expect("new bounded owned private UDF parent");
+        let workspace = manifest.parent().expect("project root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize owned workspace");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-original-form-capture".into(),
+                session_id: "tf4-original-form-capture-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                private_parent: private.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: host_digest,
+            },
+            &registry,
+        )
+        .expect("real AppContainer+WebView2 host launch");
+        let result = async {
+            tokio::time::timeout(Duration::from_secs(18), browser.verify_ready_for_control_turns())
+                .await
+                .map_err(|_| "original-form-physical-ready-deadline".to_owned())??;
+            let resource = tokio::time::timeout(
+                Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "original-form-document-com-deadline".to_owned())??;
+            let tf3 = resource.tf3.as_ref().ok_or("original-form-tf3-receipt-missing")?;
+            if resource.request_id != 1
+                || resource.terminal != "completed"
+                || !resource.native_com_completed
+                || tf3.terminal != "completed"
+                || tf3.reason_code != "ok"
+                || tf3.status_code != Some(200)
+                || tf3.tls_state != "https_transport_observed"
+                || tf3.requested_url.as_deref() != Some("https://127.0.0.1/")
+            {
+                return Err("original-form-physical-https-original-not-proven".into());
+            }
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let requester = browser
+                .control_turn_requester()
+                .ok_or("original-form-native-control-turns-unavailable")?;
+            requester.request();
+            let offered = tokio::time::timeout(
+                Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "original-form-observation-turn-deadline".to_owned())??;
+            if offered.terminal != "idle"
+                || offered.reason != "host-exclusive-control-turn-offered"
+                || !browser.has_control_turn()
+            {
+                return Err("original-form-observation-original-host-turn-missing".into());
+            }
+            let snapshot = tokio::time::timeout(
+                Duration::from_secs(10),
+                browser.observe_closed_snapshot_in_control_turn(),
+            )
+            .await
+            .map_err(|_| "original-form-observation-com-deadline".to_owned())??;
+            if snapshot.url != "https://127.0.0.1/"
+                || snapshot.page_generation != 1
+                || !snapshot.truncated // hidden controls must be withheld
+                || !snapshot.title.is_empty()
+                || !snapshot.visible_text.is_empty()
+                || browser.has_control_turn()
+            {
+                return Err("original-form-sensitive-successful-control-observation-leaked".into());
+            }
+            let form = snapshot
+                .elements
+                .iter()
+                .find(|element| element.role == SemanticRole::Form)
+                .ok_or("original-form-exact-form-not-retained")?;
+            let submitter = snapshot
+                .elements
+                .iter()
+                .find(|element| {
+                    element.role == SemanticRole::Button
+                        && element.field_type.as_deref() == Some("submit")
+                })
+                .ok_or("original-form-exact-submitter-not-retained")?;
+            let target = ActionTarget {
+                browser_session_id: snapshot.browser_session_id.clone(),
+                page_id: snapshot.page_id.clone(),
+                page_generation: snapshot.page_generation,
+                snapshot_id: snapshot.snapshot_id.clone(),
+                element_ref: submitter.element_ref.clone(),
+            };
+            requester.request();
+            let offered = tokio::time::timeout(
+                Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "original-form-capture-turn-deadline".to_owned())??;
+            if offered.terminal != "idle"
+                || offered.reason != "host-exclusive-control-turn-offered"
+                || !browser.has_control_turn()
+            {
+                return Err("original-form-capture-host-turn-missing".into());
+            }
+            let intent = tokio::time::timeout(
+                Duration::from_secs(12),
+                browser.capture_form_in_control_turn(
+                    &target,
+                    NativeRetainedAction::Submit(form.element_ref.clone()),
+                ),
+            )
+            .await
+            .map_err(|_| "original-form-real-com-capture-deadline".to_owned())??;
+            let expected_body = b"flow=owned+browser&stamp=unique%2Btoken";
+            if intent.target != target
+                || intent.observation_id == 0
+                || intent.original_form_index == intent.original_submitter_index
+                || intent.destination.as_str() != "https://127.0.0.1/capture-only"
+                || intent.body.as_slice() != expected_body
+                || intent.body_sha256 != format!("{:x}", Sha256::digest(expected_body))
+                || browser.has_control_turn()
+                || browser.last_resource_request_id() != 1
+                || browser
+                    .capture_form_in_control_turn(
+                        &target,
+                        NativeRetainedAction::Submit(form.element_ref.clone()),
+                    )
+                    .await
+                    .is_ok()
+            {
+                return Err("original-form-physical-original-body-or-no-post-invalid".into());
+            }
+            eprintln!(
+                "PRODUCTION_NATIVE_ORIGINAL_FORM=CAPTURED original_page_generation={} exact_original_form=true exact_submitter=true encoded_bytes={} body_sha_bound=true no_native_post=true one_use=true; CENTRAL_CONSENT_TF3_POST_AND_INSTALLED_EFFECT=NOT_PROVEN",
+                snapshot.page_generation,
+                intent.body.len()
+            );
+            Ok::<_, String>(())
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(
+            cleanup.is_ok(),
+            "original FORM owned Job/UDF cleanup: {cleanup:?}"
+        );
+        assert!(result.is_ok(), "real original FORM capture: {result:?}");
+    }
+
+    /// A test-only physical screenshot allow/deny probe of real WebView2 from
+    /// one minimal, controlled HTTPS document. There is no model/Tauri
     /// screenshot API and no substituted screenshot consent here: production
     /// TF4 must separately consume application approval and send the verified
     /// image through TF2's existing evidence authority. Only a run-scoped
@@ -5617,6 +5813,8 @@ mod tests {
     #[ignore = "opt-in real WebView2 screenshot COM callback on one owned minimal HTTPS page; no installed-app approval or evidence write"]
     async fn physical_production_owned_https_screenshot_original_page_and_one_use() {
         use std::time::Duration;
+        let expect_sensitive_denial =
+            std::env::var("CLACK_TF4_NATIVE_SCREENSHOT_DENY_SENSITIVE").as_deref() == Ok("1");
         assert_eq!(
             std::env::var("CLACK_TF4_NATIVE_SCREENSHOT_CAPTURE").as_deref(),
             Ok("1"),
@@ -5693,8 +5891,11 @@ mod tests {
             {
                 return Err("physical-screenshot-original-https-not-proven".into());
             }
-            // The fixture's -MinimalRecheckDocument has no remote scripts,
-            // image, CSS, font, iframe, or credential controls.
+            // Either -MinimalRecheckDocument or -MinimalSensitiveDocument
+            // has no remote scripts, images, CSS, fonts or iframes. The
+            // sensitive variant contains only synthetic password and hidden
+            // original controls, which must produce an omitted snapshot and
+            // fail closed BEFORE the CDP image could cross the parent pipe.
             tokio::time::sleep(Duration::from_millis(350)).await;
             let requester = browser.control_turn_requester().ok_or("screenshot-no-control-turns")?;
             requester.request();
@@ -5716,7 +5917,7 @@ mod tests {
             )
             .await
             .map_err(|_| "physical-screenshot-original-dom-deadline".to_owned())??;
-            if original.truncated
+            if original.truncated != expect_sensitive_denial
                 || original.elements.is_empty()
                 || original.page_generation != 1
                 || original.url != "https://127.0.0.1/"
@@ -5741,12 +5942,27 @@ mod tests {
             {
                 return Err("physical-screenshot-original-host-turn-missing".into());
             }
-            let captured = tokio::time::timeout(
+            let attempted = tokio::time::timeout(
                 Duration::from_secs(12),
                 browser.capture_screenshot_in_control_turn(),
             )
             .await
-            .map_err(|_| "physical-screenshot-webview2-cdp-deadline".to_owned())??;
+            .map_err(|_| "physical-screenshot-webview2-cdp-deadline".to_owned())?;
+            if expect_sensitive_denial {
+                if attempted.is_ok() {
+                    return Err("physical-screenshot-sensitive-omission-was-captured".into());
+                }
+                // The host explicitly refuses any image request when its
+                // original structural observation omitted a sensitive
+                // password/hidden control. Do not treat the failure as a
+                // positive screenshot; never return or log the page pixels.
+                eprintln!(
+                    "PRODUCTION_NATIVE_SCREENSHOT_SENSITIVE=DENIED original_page_generation={} omitted_structural_controls=true png_payload_observed=false; INSTALLED_PRIVACY_ACCEPTANCE=NOT_PROVEN",
+                    original.page_generation
+                );
+                return Ok::<_, String>(());
+            }
+            let captured = attempted?;
             if captured.browser_session_id != original.browser_session_id
                 || captured.page_id != original.page_id
                 || captured.snapshot_id != original.snapshot_id

@@ -1770,6 +1770,60 @@ This no-public-deployment physical fixture cannot substitute for the
 separately controlled *public* two-origin CA-trusted TLS443 read-only
 independent server oracle.
 
+**Additional independent screenshot privacy-negative:** Extended the
+*existing* bounded local fixture with a separate, expressly selected
+`-MinimalSensitiveDocument` mode. It serves only one static HTML document,
+no JavaScript/remote subresources, with synthetic password and hidden
+original controls. The screenshot opt-in physical test can now also run
+with `CLACK_TF4_NATIVE_SCREENSHOT_DENY_SENSITIVE=1`; it must independently
+observe the original native snapshot as truncated due to the omitted
+controls, obtain a **new** host-issued control turn, and prove
+`capture_screenshot_in_control_turn()` returns an error, not a PNG.
+With the **same f949 pinned real native host** and owned original
+`127.0.0.1:443` temporary certificate, this physical negative **PASS**:
+`PRODUCTION_NATIVE_SCREENSHOT_SENSITIVE=DENIED`, page generation 1,
+structural omission true, no screenshot bytes returned to trusted parent.
+The old positive `-MinimalRecheckDocument` was rerun separately after this
+test modification and remained **PASS** with the original 800x600,
+21,421-byte PNG, original snapshot binding and consumed native turn.
+Both restricted fixture runs were explicitly stopped and their owned
+ephemeral TLS resources cleaned up. This is meaningful actual WebView2
+privacy-gate evidence but not a general pixel-redaction proof or installed
+Clack/TF2 evidence acceptance. PowerShell 5.1 script parse/Help checks
+passed and the new fixture mode is mutually exclusive with existing
+positive/submission/click/redirect/delay modes.
+
+**New actual original FORM physical preconsent capture:** Extended only
+the existing bounded, opt-in loopback fixture with a mutually exclusive
+`-MinimalOriginalFormDocument` mode. It serves a single static HTML
+document with an explicit `target="_self"`, `POST`,
+`application/x-www-form-urlencoded`, two ordinary hidden successful
+controls, one unnamed original visible submitter, and a same-origin
+`/capture-only` destination. There are no scripts/subresources, and
+no POST route is invoked by the test. Using the exact f949607 pinned
+production-capable browser host with independently checked SHA256 and
+run-scoped ephemeral trust anchor, the original WebView2 COM page's
+read-only structural observation retained distinct opaque original FORM
+and submitter references while omitting the hidden controls. A second
+real host-exclusive native control turn called the **production**
+`BrowserRuntimeSession::capture_form_in_control_turn`, and the fixed
+original-node DOM program returned the exact ordered URLSearchParams body
+`flow=owned+browser&stamp=unique%2Btoken` (**39 bytes**), exact
+`https://127.0.0.1/capture-only` destination, same original target,
+nonzero observation, distinct original element indices, and correct
+body SHA256. Attempted reuse of the consumed native control turn was
+denied, and the original production TF3 resource request counter
+remained **one**, corresponding only to the initial GET. Physical
+`PRODUCTION_NATIVE_ORIGINAL_FORM=CAPTURED` **PASS** with owned Job/UDF
+cleanup. This is a materially stronger **physical preconsent original
+node+bytes positive** than synthetic transport-only tests, but neither
+app consent nor the TF3 body-bound network POST was exercised; it is
+**not** installed original FORM submission or independent remotely
+confirmed write. The fixture and ephemeral TLS key were stopped/cleaned
+after the run. The original restriction against generic model POST,
+page-issued `form.submit()`, replay, and URL/timing-only effect proof
+is unchanged.
+
 Release status remains **0 PASS / 5 PARTIAL / 8 BLOCKED** in the one
 canonical thirteen-gate tracker. Original native external-link action
 causality still cannot be positively authenticated from arbitrary

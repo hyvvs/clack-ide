@@ -43,6 +43,13 @@ param(
     # Independent actual WebView2 programmatic exact-node click/navigation
     # acceptance document. Does not alter the historical recheck fixture.
     [switch] $MinimalClickDocument,
+    # Physical screenshot privacy-negative: one static HTML document with
+    # deliberately synthetic password/hidden fields, no external resources.
+    # Kept separate from the prior positive read-only and click fixtures.
+    [switch] $MinimalSensitiveDocument,
+    # One real original FORM/submitter with supported hidden-only controls,
+    # captured by WebView2 before consent; never automatically submitted.
+    [switch] $MinimalOriginalFormDocument,
     # Isolated positive HTML form fixture for a future TF3-governed POST.
     # It confers no native action or network approval and is never default.
     [switch] $SubmittingFormDocument
@@ -65,6 +72,8 @@ if ($Action -eq 'Help') {
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -PendingDocumentDelayMilliseconds 2500 (one explicitly signaled pending HTTPS / GET for the new cancellation-only test)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalRecheckDocument (one static no-subresource HTML page for the separate read-only COM recheck test)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalClickDocument (two bounded static pages for the separate live COM click navigation probe)'
+    Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalSensitiveDocument (one static synthetic credential-control screenshot-denial probe)'
+    Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalOriginalFormDocument (one static original hidden-only FORM/submitter capture, no POST)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -SubmittingFormDocument (bounded real HTML POST; server accepts at most one submission)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Stop -RunId <32-hex-run-id>'
     Write-Output ('Second terminal: $env:CLACK_TF4_OWNED_HTTPS_CERT = "' + $publicPath + '"')
@@ -183,7 +192,7 @@ $routes.Add('/page.js', @{ Type = 'application/javascript'; Body = $utf8.GetByte
 $routes.Add('/pixel.png', @{ Type = 'image/png'; Body = $pixelBytes })
 $routes.Add('/font.woff2', @{ Type = 'font/woff2'; Body = $fontBytes })
 if ($MinimalRecheckDocument) {
-    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument -or $SubmittingFormDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument -or $MinimalSensitiveDocument -or $MinimalOriginalFormDocument -or $SubmittingFormDocument) {
         throw '-MinimalRecheckDocument cannot combine with CSS redirect or pending-document delay.'
     }
     $minimalHtml = @'
@@ -201,7 +210,7 @@ if ($MinimalRecheckDocument) {
     $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($minimalHtml) })
 }
 if ($MinimalClickDocument) {
-    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument -or $SubmittingFormDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument -or $MinimalSensitiveDocument -or $MinimalOriginalFormDocument -or $SubmittingFormDocument) {
         throw '-MinimalClickDocument cannot combine with other fixture modes.'
     }
     $clickHtml = @'
@@ -228,8 +237,52 @@ if ($MinimalClickDocument) {
     $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($clickHtml) })
     $routes.Add('/clicked', @{ Type = 'text/html'; Body = $utf8.GetBytes($afterHtml) })
 }
+if ($MinimalSensitiveDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument -or $MinimalClickDocument -or $MinimalOriginalFormDocument -or $SubmittingFormDocument) {
+        throw '-MinimalSensitiveDocument cannot combine with other fixture modes.'
+    }
+    # The value is synthetic; even this fixture's controlled original bytes
+    # must never enter semantic/model/pixel evidence.
+    $sensitiveHtml = @'
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'">
+<link rel="icon" href="data:,">
+<title>TF4 synthetic sensitive control fixture</title></head>
+<body><main><h1>Controlled sensitivity denial</h1>
+<form action="/never-submit" method="post">
+<label for="synthetic-password">Synthetic password</label>
+<input id="synthetic-password" type="password" value="SYNTHETIC-TF4-NO-DISCLOSURE-4ae8">
+<input type="hidden" name="synthetic" value="SYNTHETIC-HIDDEN-NOT-FOR-MODEL">
+</form></main></body></html>
+'@
+    $routes.Clear()
+    $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($sensitiveHtml) })
+}
+if ($MinimalOriginalFormDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument -or $MinimalClickDocument -or $MinimalSensitiveDocument -or $SubmittingFormDocument) {
+        throw '-MinimalOriginalFormDocument cannot combine with other fixture modes.'
+    }
+    $originalFormHtml = @'
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'self'">
+<link rel="icon" href="data:,">
+<title>TF4 original native FORM capture</title></head>
+<body><main><h1>Controlled original FORM</h1>
+<form action="/capture-only" method="post" enctype="application/x-www-form-urlencoded" target="_self" autocomplete="off">
+<input type="hidden" name="flow" value="owned browser">
+<input type="hidden" name="stamp" value="unique+token">
+<button type="submit">Approve original form</button>
+</form></main></body></html>
+'@
+    $routes.Clear()
+    $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($originalFormHtml) })
+}
 if ($SubmittingFormDocument) {
-    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument -or $MinimalRecheckDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument -or $MinimalRecheckDocument -or $MinimalSensitiveDocument -or $MinimalOriginalFormDocument) {
         throw '-SubmittingFormDocument cannot combine with other fixture modes.'
     }
     $formHtml = @'
@@ -537,7 +590,7 @@ try {
         ' maxHeaderBytes=8192 maxBodyBytes=65536' +
         ' pendingDocumentDelayMs=' + $PendingDocumentDelayMilliseconds)
     Write-Output ('CSS=' + $(if ($CssRedirect) { 'one bounded same-origin 302 to /style.css' } else { 'direct /page.css' }))
-    Write-Output ('DOCUMENT_MODE=' + $(if ($MinimalRecheckDocument) { 'one_static_no_subresource_html' } elseif ($MinimalClickDocument) { 'two_static_exact_click_navigation' } elseif ($SubmittingFormDocument) { 'one_bounded_real_post_form' } else { 'original_multiresource' }))
+    Write-Output ('DOCUMENT_MODE=' + $(if ($MinimalRecheckDocument) { 'one_static_no_subresource_html' } elseif ($MinimalSensitiveDocument) { 'one_synthetic_sensitive_control_denial' } elseif ($MinimalOriginalFormDocument) { 'one_original_hidden_form_capture_no_post' } elseif ($MinimalClickDocument) { 'two_static_exact_click_navigation' } elseif ($SubmittingFormDocument) { 'one_bounded_real_post_form' } else { 'original_multiresource' }))
 
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     while ($clock.Elapsed.TotalSeconds -lt $MaxDurationSeconds -and
