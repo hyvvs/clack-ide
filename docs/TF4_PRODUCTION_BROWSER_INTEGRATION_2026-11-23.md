@@ -835,3 +835,38 @@ would be false evidence, so no runner change was made. CI run
 source requires fresh CI after push. PR #46 must remain Draft and unmerged.
 TF4 is distinct from canonical TF14 and later P15 desktop control; product-
 wide UI/UX Polish & Acceptance remains mandatory before final release.
+
+### 2026-11-24 genuine operator-surface continuation and intermediate package
+
+The human-only `NativeBrowserOperatorPanel` now offers the newly implemented
+original-node TYPE/CLEAR/SELECT/CHECK/UNCHECK/SCROLL, in addition to CLICK,
+without changing the model CapabilityIndex. Each button passes exact original
+page/snapshot/element and approved bounded parameters through the existing
+`tf_browser_prepare` → OS-native `tf_browser_approve` → `tf_browser_execute`
+commands. The UI never supplies selectors, arbitrary JS, unrestricted scroll
+values or a new authorization mechanism. TYPE input is restricted to bounded
+synthetic non-secret text, cleared from its editing field when dispatched;
+SELECT choices are opaque original retained OPTION references and the native
+host independently checks the SELECT parent. Any mutation immediately revokes
+the frontend's old page references and never automatically retries `UNKNOWN`.
+
+For human acceptance diagnostics, the panel exports a **closed, bounded and
+copyable** canonical receipt projection: opaque request ID, operation, vetted
+terminal/effect/retry codes, and independently bound numeric/digest fields.
+It expressly does **not** stringify the full receipt or expose raw URL,
+element text, input value, credentials, page snapshot or future untrusted
+fields. Focused native-panel/Vitest suites now **14/14 PASS**, including
+forbidden control/bidi text, role restrictions and secret-leak negative tests;
+TypeScript `tsc --noEmit` PASS, Git whitespace checks PASS. These are UI
+regressions, **not** real OS consent or native effect acceptance.
+
+An earlier source-only Windows optimized NSIS build from the newly pushed
+native source `d9bfd953f5f26aa3b1dbe9e214739d680abf2699` completed with
+`TF4_CURRENT_SOURCE_BUNDLE_EXIT=0`, but its frontend build ran **before**
+the new human operator-panel source changes; this artifact is **intermediate,
+not the final human-control acceptance package**. Exact staged native host
+SHA-256 `1eb83287128e2e1405f79c8c56ae1a409ca62174e9d3cb952e0e5b8d88b10bf9`,
+app binary `62df1c2ee186fb597eb7f6e8a7138ddb0542c09be634e2bc375e7c28563e067f`,
+NSIS installer `f48962e6a11b684f179e2fb202d360c4ec71ee059a9c9b7390e6cdad5178bde2`.
+The package was **not installed**. This identity is historical and must not
+be confused with a subsequent package that actually contains the UI controls.

@@ -10,6 +10,12 @@ type NativeOperation =
   | "open_confined"
   | "observe_confined"
   | "click"
+  | "type"
+  | "clear"
+  | "select"
+  | "check"
+  | "uncheck"
+  | "scroll"
   | "close_confined";
 type Prepared = {
   token: string;
@@ -42,6 +48,8 @@ type NativeReceipt = {
   reasonCode: string;
   policyDecision: string;
   effectState: string;
+  retry?: string;
+  autoRetry?: boolean;
   nativePage?: unknown;
   nativeEffectEvidence?: {
     brokerRequestId: number;
@@ -56,6 +64,42 @@ type NativeReceipt = {
 const NATIVE_ENGINE = "confined_webview2_read_only_unaccepted";
 const exactHandle = (raw: unknown): raw is string =>
   typeof raw === "string" && /^[a-f\d]{48}$/i.test(raw);
+const nativeMutation = (operation: NativeOperation): boolean =>
+  ["click", "type", "clear", "select", "check", "uncheck", "scroll"].includes(
+    operation,
+  );
+
+/** A human-only acceptance input is deliberately stricter than the native
+ * backend. Its bytes must never become a URL, selector or page-exposed log. */
+export function boundedNativeTestText(raw: string): boolean {
+  return (
+    raw.length > 0 &&
+    new TextEncoder().encode(raw).length <= 256 &&
+    !/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ud800-\udfff\ufeff]/u.test(raw)
+  );
+}
+
+export function nativeOperatorRoleAllowed(
+  operation: NativeOperation,
+  role: string,
+): boolean {
+  switch (operation) {
+    case "click":
+      return role === "link";
+    case "type":
+    case "clear":
+      return role === "textbox";
+    case "select":
+      return role === "combobox";
+    case "check":
+    case "uncheck":
+      return role === "checkbox";
+    case "scroll":
+      return role === "main" || role === "other";
+    default:
+      return false;
+  }
+}
 
 export function confinedRootUrl(raw: string): string | null {
   if (raw.length > 2048 || raw.trim() !== raw) return null;
@@ -150,6 +194,57 @@ function safeReason(error: unknown): string {
     : "native-authorization-or-transport-unverified";
 }
 
+/** Explicit human-readable receipt export for physical acceptance. Only
+ * closed authority states, opaque IDs and evidence digests may leave this
+ * component. Never stringify the full native receipt: it can carry URLs,
+ * snapshot content or future fields with secrets. */
+export function boundedNativeReceiptEvidence(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const receipt = value as Record<string, unknown>;
+  if (
+    !exactHandle(receipt.requestId) ||
+    typeof receipt.operation !== "string" ||
+    ![
+      "open_confined", "observe_confined", "click", "type", "clear",
+      "select", "check", "uncheck", "scroll", "close_confined",
+    ].includes(receipt.operation)
+  ) return null;
+  const closed = (item: unknown, allowed: readonly string[]): string =>
+    typeof item === "string" && allowed.includes(item) ? item : "UNVERIFIED";
+  const hash = (item: unknown): string | null =>
+    typeof item === "string" && /^[0-9a-f]{64}$/.test(item) ? item : null;
+  const rawEvidence = receipt.nativeEffectEvidence;
+  const evidence =
+    rawEvidence && typeof rawEvidence === "object" && !Array.isArray(rawEvidence)
+      ? (rawEvidence as Record<string, unknown>)
+      : null;
+  const safe = {
+    requestId: receipt.requestId,
+    operation: receipt.operation,
+    terminal: closed(receipt.terminal, ["success", "completed", "pending", "failed", "denied", "unknown", "cancelled"]),
+    nativeTerminal: closed(receipt.nativeTerminal, ["DENIED", "STALE", "CANCELLED_BEFORE_DISPATCH", "FAILED_BEFORE_DISPATCH", "DISPATCHED", "CONFIRMED", "UNKNOWN"]),
+    canonicalTerminal: closed(receipt.canonicalTerminal, ["SUCCESS", "FAILED", "CANCELLED", "UNKNOWN"]),
+    policyDecision: closed(receipt.policyDecision, ["allowed", "denied"]),
+    effectState: closed(receipt.effectState, ["Observed", "Unknown", "NotAttempted"]),
+    retry: closed(receipt.retry, ["NEVER_REPLAY", "SAFE_REPREPARE", "NOT_ATTEMPTED", "SAFE_RETRY"]),
+    autoRetry: receipt.autoRetry === true,
+    reasonCode: safeReason(receipt.reasonCode),
+    nativeComCompleted: evidence?.nativeComCompleted === true,
+    brokerRequestId:
+      Number.isSafeInteger(evidence?.brokerRequestId) && Number(evidence?.brokerRequestId) >= 1
+        ? evidence?.brokerRequestId : null,
+    sourcePageGeneration:
+      Number.isSafeInteger(evidence?.sourcePageGeneration) && Number(evidence?.sourcePageGeneration) >= 1
+        ? evidence?.sourcePageGeneration : null,
+    observedPageGeneration:
+      Number.isSafeInteger(evidence?.observedPageGeneration) && Number(evidence?.observedPageGeneration) >= 1
+        ? evidence?.observedPageGeneration : null,
+    resultingUrlSha256: hash(evidence?.resultingUrlSha256),
+    responseSha256: hash(evidence?.responseSha256),
+  };
+  return JSON.stringify(safe, null, 2);
+}
+
 export function NativeBrowserOperatorPanel({
   actor,
   sessionId,
@@ -166,6 +261,8 @@ export function NativeBrowserOperatorPanel({
   const [initialUrl, setInitialUrl] = useState("");
   const [browserId, setBrowserId] = useState<string | null>(null);
   const [page, setPage] = useState<NativePage | null>(null);
+  const [testText, setTestText] = useState("");
+  const [lastEvidence, setLastEvidence] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState("Native browser has not been launched.");
   const nativeSessions = sessions.filter(
@@ -175,6 +272,7 @@ export function NativeBrowserOperatorPanel({
   async function executeOnce(
     operation: NativeOperation,
     element?: NativeElement,
+    parameters?: string,
   ): Promise<void> {
     if (
       busy ||
@@ -193,14 +291,33 @@ export function NativeBrowserOperatorPanel({
       return;
     }
     if (
-      operation === "click" &&
+      nativeMutation(operation) &&
       (!page ||
         !element ||
-        element.role !== "link" ||
+        !nativeOperatorRoleAllowed(operation, element.role) ||
         !page.elements.some((item) => item.elementRef === element.elementRef))
     )
       return;
+    if (
+      (operation === "type" && !boundedNativeTestText(parameters ?? "")) ||
+      (operation === "select" &&
+        (!exactHandle(parameters) ||
+          parameters === element?.elementRef ||
+          !page?.elements.some(
+            (item) => item.elementRef === parameters && item.role === "option",
+          ))) ||
+      (operation === "scroll" &&
+        parameters !== "up" &&
+        parameters !== "down") ||
+      (["click", "clear", "check", "uncheck"].includes(operation) &&
+        parameters !== undefined)
+    ) {
+      setResult("Native exact action parameters denied before preparation.");
+      return;
+    }
     setBusy(true);
+    setLastEvidence(null);
+    if (operation === "type") setTestText("");
     setResult(
       `Native ${operation.replace(/_/g, " ")} awaiting application authorization…`,
     );
@@ -216,12 +333,13 @@ export function NativeBrowserOperatorPanel({
           ...(operation !== "open_confined"
             ? { browserSessionId: browserId }
             : {}),
-          ...(operation === "click" && page && element
+          ...(nativeMutation(operation) && page && element
             ? {
                 pageId: page.pageId,
                 pageGeneration: page.pageGeneration,
                 snapshotId: page.snapshotId,
                 elementId: element.elementRef,
+                ...(parameters !== undefined ? { text: parameters } : {}),
               }
             : {}),
         },
@@ -242,7 +360,7 @@ export function NativeBrowserOperatorPanel({
         // Actual user decision occurs only inside the existing Tauri OS dialog.
         await invoke<void>("tf_browser_approve", { token: preparedToken });
       }
-      if (operation === "click") setPage(null); // Revoke stale UI references before effect.
+      if (nativeMutation(operation)) setPage(null); // No old refs after attempted effect.
       const receipt = await invoke<NativeReceipt>("tf_browser_execute", {
         token: preparedToken,
       });
@@ -259,6 +377,7 @@ export function NativeBrowserOperatorPanel({
       ) {
         throw Error("native-effect-receipt-scope-mismatch");
       }
+      setLastEvidence(boundedNativeReceiptEvidence(receipt));
       if (operation === "open_confined") {
         if (
           !exactHandle(receipt.browserSessionId) ||
@@ -290,6 +409,13 @@ export function NativeBrowserOperatorPanel({
           success
             ? `Confirmed via independent TF3 document #${receipt.nativeEffectEvidence?.brokerRequestId}; response hash ${receipt.nativeEffectEvidence?.responseSha256.slice(0, 12)}…`
             : `Click ${receipt.canonicalTerminal === "UNKNOWN" ? "UNKNOWN — do not retry" : "not confirmed"} · ${safeReason(receipt.reasonCode)}`,
+        );
+      } else if (nativeMutation(operation)) {
+        // A boolean DOM dispatch ACK is not an independently verified field,
+        // scroll, handler or network effect. The receipt owner must remain
+        // conservative. Never restore the consumed action or retry it.
+        setResult(
+          `${operation.toUpperCase()} ${receipt.canonicalTerminal === "UNKNOWN" ? "UNKNOWN — do not retry" : "not independently confirmed"} · ${safeReason(receipt.reasonCode)}`,
         );
       } else {
         setPage(null);
@@ -395,9 +521,10 @@ export function NativeBrowserOperatorPanel({
       {page ? (
         <div className="space-y-1">
           <p className="text-muted-foreground">
-            Exact snapshot generation {page.pageGeneration}. Link
-            labels/destinations are withheld; only approve clicks on your own
-            known controlled fixture.
+            Exact snapshot generation {page.pageGeneration}. Page labels,
+            destinations and values are withheld. Use only your controlled
+            test fixture and synthetic, non-secret text. Every action needs
+            its own genuine OS approval; UNKNOWN must never be retried.
           </p>
           {page.elements
             .filter((element) => element.role === "link")
@@ -416,11 +543,112 @@ export function NativeBrowserOperatorPanel({
                 Approve exact link {i + 1} · {element.elementRef.slice(0, 8)}
               </Button>
             ))}
+          {page.elements.some((element) => element.role === "textbox") ? (
+            <>
+              <label className="block text-muted-foreground" htmlFor="tf4-native-test-text">
+                Synthetic non-secret text (up to 256 UTF-8 bytes)
+              </label>
+              <input
+                id="tf4-native-test-text"
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={256}
+                value={testText}
+                disabled={busy}
+                onChange={(event) => setTestText(event.currentTarget.value)}
+                className="w-full rounded border bg-background px-2 py-1"
+              />
+            </>
+          ) : null}
+          {page.elements
+            .filter((element) => element.role === "textbox")
+            .slice(0, 6)
+            .map((element, i) => (
+              <div key={element.elementRef} className="flex flex-wrap items-center gap-1">
+                <span className="text-muted-foreground">Text control {i + 1} · {element.elementRef.slice(0, 8)}</span>
+                <Button type="button" size="sm" variant="outline"
+                  disabled={busy || !boundedNativeTestText(testText)}
+                  onClick={() => { void executeOnce("type", element, testText); }}>
+                  Type + approve
+                </Button>
+                <Button type="button" size="sm" variant="outline" disabled={busy}
+                  onClick={() => { void executeOnce("clear", element); }}>
+                  Clear + approve
+                </Button>
+              </div>
+            ))}
+          {page.elements
+            .filter((element) => element.role === "checkbox")
+            .slice(0, 6)
+            .map((element, i) => (
+              <div key={element.elementRef} className="flex flex-wrap items-center gap-1">
+                <span className="text-muted-foreground">Checkbox {i + 1} · {element.elementRef.slice(0, 8)}</span>
+                <Button type="button" size="sm" variant="outline" disabled={busy}
+                  onClick={() => { void executeOnce("check", element); }}>
+                  Check + approve
+                </Button>
+                <Button type="button" size="sm" variant="outline" disabled={busy}
+                  onClick={() => { void executeOnce("uncheck", element); }}>
+                  Uncheck + approve
+                </Button>
+              </div>
+            ))}
+          {page.elements
+            .filter((element) => element.role === "combobox")
+            .slice(0, 3)
+            .map((element, i) => (
+              <div key={element.elementRef} className="space-y-1">
+                <span className="text-muted-foreground">Select control {i + 1} · {element.elementRef.slice(0, 8)}</span>
+                <div className="flex flex-wrap gap-1">
+                  {page.elements
+                    .filter((option) => option.role === "option" && option.elementRef !== element.elementRef)
+                    .slice(0, 6)
+                    .map((option, optionIndex) => (
+                      <Button key={option.elementRef} type="button" size="sm" variant="outline"
+                        disabled={busy}
+                        onClick={() => { void executeOnce("select", element, option.elementRef); }}>
+                        Option {optionIndex + 1} · {option.elementRef.slice(0, 8)} + approve
+                      </Button>
+                    ))}
+                </div>
+              </div>
+            ))}
+          {page.elements
+            .filter((element) => nativeOperatorRoleAllowed("scroll", element.role))
+            .slice(0, 2)
+            .map((element, i) => (
+              <div key={element.elementRef} className="flex flex-wrap items-center gap-1">
+                <span className="text-muted-foreground">Scroll target {i + 1} · {element.elementRef.slice(0, 8)}</span>
+                <Button type="button" size="sm" variant="outline" disabled={busy}
+                  onClick={() => { void executeOnce("scroll", element, "up"); }}>
+                  Up 120 + approve
+                </Button>
+                <Button type="button" size="sm" variant="outline" disabled={busy}
+                  onClick={() => { void executeOnce("scroll", element, "down"); }}>
+                  Down 120 + approve
+                </Button>
+              </div>
+            ))}
         </div>
       ) : null}
       <p role="status" className="text-muted-foreground">
         {result}
       </p>
+      {lastEvidence ? (
+        <div className="space-y-1">
+          <label className="block text-muted-foreground" htmlFor="tf4-native-closed-receipt">
+            Last bounded native receipt (copy for acceptance review; no URLs, text or secrets)
+          </label>
+          <textarea
+            id="tf4-native-closed-receipt"
+            readOnly
+            value={lastEvidence}
+            rows={9}
+            className="w-full resize-y rounded border bg-background p-2 font-mono text-[10px]"
+          />
+        </div>
+      ) : null}
     </details>
   );
 }
