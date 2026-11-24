@@ -42,7 +42,10 @@ param(
     [switch] $MinimalRecheckDocument,
     # Independent actual WebView2 programmatic exact-node click/navigation
     # acceptance document. Does not alter the historical recheck fixture.
-    [switch] $MinimalClickDocument
+    [switch] $MinimalClickDocument,
+    # Isolated positive HTML form fixture for a future TF3-governed POST.
+    # It confers no native action or network approval and is never default.
+    [switch] $SubmittingFormDocument
 )
 
 Set-StrictMode -Version Latest
@@ -62,6 +65,7 @@ if ($Action -eq 'Help') {
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -PendingDocumentDelayMilliseconds 2500 (one explicitly signaled pending HTTPS / GET for the new cancellation-only test)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalRecheckDocument (one static no-subresource HTML page for the separate read-only COM recheck test)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalClickDocument (two bounded static pages for the separate live COM click navigation probe)'
+    Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -SubmittingFormDocument (bounded real HTML POST; server accepts at most one submission)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Stop -RunId <32-hex-run-id>'
     Write-Output ('Second terminal: $env:CLACK_TF4_OWNED_HTTPS_CERT = "' + $publicPath + '"')
     Write-Output 'Run ONLY the selected Rust test concurrently. Script never launches it.'
@@ -179,7 +183,7 @@ $routes.Add('/page.js', @{ Type = 'application/javascript'; Body = $utf8.GetByte
 $routes.Add('/pixel.png', @{ Type = 'image/png'; Body = $pixelBytes })
 $routes.Add('/font.woff2', @{ Type = 'font/woff2'; Body = $fontBytes })
 if ($MinimalRecheckDocument) {
-    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument -or $SubmittingFormDocument) {
         throw '-MinimalRecheckDocument cannot combine with CSS redirect or pending-document delay.'
     }
     $minimalHtml = @'
@@ -197,7 +201,7 @@ if ($MinimalRecheckDocument) {
     $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($minimalHtml) })
 }
 if ($MinimalClickDocument) {
-    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument -or $SubmittingFormDocument) {
         throw '-MinimalClickDocument cannot combine with other fixture modes.'
     }
     $clickHtml = @'
@@ -224,6 +228,35 @@ if ($MinimalClickDocument) {
     $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($clickHtml) })
     $routes.Add('/clicked', @{ Type = 'text/html'; Body = $utf8.GetBytes($afterHtml) })
 }
+if ($SubmittingFormDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument -or $MinimalRecheckDocument) {
+        throw '-SubmittingFormDocument cannot combine with other fixture modes.'
+    }
+    $formHtml = @'
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'self'">
+<link rel="icon" href="data:,">
+<title>TF4 owned real submission fixture</title></head>
+<body><main><h1>Controlled form</h1>
+<form action="/submitted" method="post" autocomplete="off">
+<label for="message">Controlled message</label><input id="message" name="message" type="text" maxlength="64" value="sample" required>
+<label for="choice">Controlled choice</label><select id="choice" name="choice"><option value="one">One</option><option value="two">Two</option></select>
+<label for="confirmed">Confirm</label><input id="confirmed" name="confirmed" type="checkbox" value="on">
+<button type="submit">Submit exactly once</button>
+</form></main></body></html>
+'@
+    $submittedHtml = @'
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'">
+<title>TF4 submission receipt</title></head><body><main><h1>Exactly one submission accepted</h1></main></body></html>
+'@
+    $routes.Clear()
+    $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($formHtml) })
+    $routes.Add('/submitted', @{ Type = 'text/html'; Body = $utf8.GetBytes($submittedHtml) })
+}
 foreach ($route in $routes.Values) {
     if ($route.Body.Length -eq 0 -or $route.Body.Length -gt 65536) {
         throw 'Fixed fixture response violates the 64 KiB body bound.'
@@ -243,7 +276,9 @@ function Send-FixedResponse {
         [string] $Reason,
         [string] $ContentType,
         [byte[]] $Body,
-        [string] $Location = ''
+        [string] $Location = '',
+        [ValidateSet('none', 'self')]
+        [string] $FormAction = 'none'
     )
     if ($Body.Length -gt 65536) { throw 'Response body exceeds the fixed 64 KiB bound.' }
     if ($Location -ne '' -and $Location -cne '/style.css') {
@@ -257,7 +292,7 @@ function Send-FixedResponse {
         'Connection: close',
         'X-Content-Type-Options: nosniff',
         'Referrer-Policy: no-referrer',
-        "Content-Security-Policy: default-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+        "Content-Security-Policy: default-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action '$FormAction'"
     )
     if ($Location -ne '') { $headers += "Location: $Location" }
     $prefix = ([string]::Join($crlf, $headers) + $crlf + $crlf)
@@ -270,7 +305,8 @@ function Send-FixedResponse {
 function Read-StrictGetPath {
     param(
         [System.Net.Security.SslStream] $Stream,
-        [int] $TimeoutMilliseconds
+        [int] $TimeoutMilliseconds,
+        [switch] $AllowFormPost
     )
     # One HTTP/1.1 GET per TLS connection, <=8192-byte headers. Total
     # request-header time and each individual blocking read are both bounded.
@@ -311,17 +347,24 @@ function Read-StrictGetPath {
         throw 'HTTP header count must be bounded.'
     }
     $first = [System.Text.RegularExpressions.Regex]::Match(
-        $lines[0], '^GET (/[^ ]*) HTTP/1[.]1$'
+        $lines[0], '^(GET|POST) (/[^ ]*) HTTP/1[.]1$'
     )
     if (-not $first.Success) {
-        throw 'Only origin-form GET over HTTP/1.1 is accepted.'
+        throw 'Only origin-form GET or exact submitting-form POST over HTTP/1.1 is accepted.'
     }
-    $path = $first.Groups[1].Value
+    $method = $first.Groups[1].Value
+    $path = $first.Groups[2].Value
+    if ($method -ceq 'POST' -and (-not $AllowFormPost -or $path -cne '/submitted')) {
+        throw 'POST is permitted only for the opted-in owned form destination.'
+    }
     if ($path.Contains('?') -or $path.Contains('#') -or
         $path.Contains('%') -or $path.Contains('\') -or $path.Contains('//')) {
         throw 'Query, fragment, escape and ambiguous path denied.'
     }
     $hosts = 0
+    $lengthCount = 0
+    $contentLength = 0
+    $contentTypeCount = 0
     foreach ($line in $lines[1..($lines.Length - 1)]) {
         if ($line -eq '') { continue }
         if ($line -cnotmatch '^[A-Za-z0-9-]+:[\x20-\x7e]*$') {
@@ -337,9 +380,49 @@ function Read-StrictGetPath {
                 throw 'Only one exact 127.0.0.1 Host is allowed.'
             }
         }
+        if ($line -imatch '^Transfer-Encoding:') {
+            throw 'Chunked or transfer-encoded requests are not accepted.'
+        }
+        if ($line -imatch '^Content-Length:[ ]*(.*)$') {
+            $lengthCount++
+            if ($Matches[1] -cnotmatch '^(0|[1-9][0-9]{0,3})$') {
+                throw 'Invalid fixed request body length.'
+            }
+            $contentLength = [int]$Matches[1]
+        }
+        if ($line -imatch '^Content-Type:[ ]*(.*)$') {
+            $contentTypeCount++
+            if ($method -ceq 'POST' -and $Matches[1] -ine 'application/x-www-form-urlencoded') {
+                throw 'Only the browser form-urlencoded content type is accepted.'
+            }
+        }
     }
     if ($hosts -ne 1) { throw 'Exactly one IPv4 loopback Host header required.' }
-    return $path
+    if ($method -ceq 'POST') {
+        if ($lengthCount -ne 1 -or $contentTypeCount -ne 1 -or
+            $contentLength -lt 1 -or $contentLength -gt 1024) {
+            throw 'Form POST requires exactly one bounded fixed-length body.'
+        }
+    }
+    elseif ($lengthCount -gt 1 -or $contentLength -ne 0) {
+        throw 'GET cannot carry a request body.'
+    }
+    $alreadyRead = $used - $delimiterEnd
+    if ($alreadyRead -gt $contentLength) {
+        throw 'HTTP pipelining or trailing request bytes are not permitted.'
+    }
+    $received = $alreadyRead
+    while ($received -lt $contentLength -and $clock.ElapsedMilliseconds -lt $TimeoutMilliseconds) {
+        $left = $TimeoutMilliseconds - [int]$clock.ElapsedMilliseconds
+        if ($left -le 0) { break }
+        $Stream.ReadTimeout = [Math]::Max(1, [Math]::Min($left, 500))
+        $chunk = $Stream.Read($buffer, 0, [Math]::Min(512, $contentLength - $received))
+        if ($chunk -le 0) { throw 'Form POST truncated before fixed body length.' }
+        $received += $chunk
+    }
+    if ($received -ne $contentLength) { throw 'Form POST body deadline exceeded.' }
+    # The body is intentionally not stored, echoed, or projected into logs.
+    return @{ Path = $path; Method = $method }
 }
 
 $listener = $null
@@ -351,6 +434,8 @@ $ownedPublic = $false
 $ownedActive = $false
 $served = 0
 $denied = 0
+$postAttempts = 0
+$postAccepted = 0
 $run = [System.Guid]::NewGuid().ToString('N')
 $stopPath = Join-Path $target ('stop-' + $run + '.request')
 $pendingDocumentSignal = Join-Path $target ('pending-document-' + $run + '.signal')
@@ -452,7 +537,7 @@ try {
         ' maxHeaderBytes=8192 maxBodyBytes=65536' +
         ' pendingDocumentDelayMs=' + $PendingDocumentDelayMilliseconds)
     Write-Output ('CSS=' + $(if ($CssRedirect) { 'one bounded same-origin 302 to /style.css' } else { 'direct /page.css' }))
-    Write-Output ('DOCUMENT_MODE=' + $(if ($MinimalRecheckDocument) { 'one_static_no_subresource_html' } elseif ($MinimalClickDocument) { 'two_static_exact_click_navigation' } else { 'original_multiresource' }))
+    Write-Output ('DOCUMENT_MODE=' + $(if ($MinimalRecheckDocument) { 'one_static_no_subresource_html' } elseif ($MinimalClickDocument) { 'two_static_exact_click_navigation' } elseif ($SubmittingFormDocument) { 'one_bounded_real_post_form' } else { 'original_multiresource' }))
 
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     while ($clock.Elapsed.TotalSeconds -lt $MaxDurationSeconds -and
@@ -486,7 +571,8 @@ try {
                 [System.Security.Authentication.SslProtocols]::Tls12, $false
             )
             $stage = 'headers'
-            $path = Read-StrictGetPath -Stream $tls -TimeoutMilliseconds $ClientTimeoutMilliseconds
+            $request = Read-StrictGetPath -Stream $tls -TimeoutMilliseconds $ClientTimeoutMilliseconds -AllowFormPost:$SubmittingFormDocument
+            $path = $request.Path
             $stage = 'response'
             if ($PendingDocumentDelayMilliseconds -gt 0 -and $path -ceq '/') {
                 # The only signal source is an already TLS-authenticated,
@@ -515,14 +601,33 @@ try {
                 finally { $signal.Dispose() }
                 Start-Sleep -Milliseconds $PendingDocumentDelayMilliseconds
             }
-            if ($CssRedirect -and $path -ceq '/page.css') {
+            if ($SubmittingFormDocument -and $request.Method -ceq 'POST') {
+                $postAttempts++
+                if ($postAccepted -eq 0) {
+                    $postAccepted++
+                    $route = $routes['/submitted']
+                    Send-FixedResponse -Stream $tls -Status 200 -Reason 'OK' -ContentType $route.Type -Body $route.Body
+                }
+                else {
+                    # The fixture itself never treats duplicate POST as a
+                    # second completed effect, even when native dispatch
+                    # or network transport is retried incorrectly.
+                    $denied++
+                    Send-FixedResponse -Stream $tls -Status 409 -Reason 'Conflict' -ContentType 'text/plain' -Body $utf8.GetBytes('duplicate submission denied')
+                }
+            }
+            elseif ($SubmittingFormDocument -and $path -ceq '/submitted') {
+                $denied++
+                Send-FixedResponse -Stream $tls -Status 405 -Reason 'Method Not Allowed' -ContentType 'text/plain' -Body $utf8.GetBytes('POST required')
+            }
+            elseif ($CssRedirect -and $path -ceq '/page.css') {
                 # Optional exact same-origin one-hop CSS redirect. The
                 # redirected path is another fixed route with no second hop.
                 Send-FixedResponse -Stream $tls -Status 302 -Reason 'Found' -ContentType 'text/css' -Body ([byte[]]::new(0)) -Location '/style.css'
             }
             elseif ($routes.ContainsKey($path)) {
                 $route = $routes[$path]
-                Send-FixedResponse -Stream $tls -Status 200 -Reason 'OK' -ContentType $route.Type -Body $route.Body
+                Send-FixedResponse -Stream $tls -Status 200 -Reason 'OK' -ContentType $route.Type -Body $route.Body -FormAction $(if ($SubmittingFormDocument -and $path -ceq '/') { 'self' } else { 'none' })
             }
             else {
                 $denied++
@@ -543,6 +648,10 @@ try {
             if ($null -ne $client) { try { $client.Close() } catch {} }
         }
     }
+    if ($SubmittingFormDocument) {
+        Write-Output ('FORM_POST_ATTEMPTS=' + $postAttempts + ' FORM_POST_ACCEPTED=' + $postAccepted +
+            ' FORM_POST_REPLAY_DENIED=' + [Math]::Max(0, $postAttempts - $postAccepted))
+    }
     Write-Output ('STOPPED connections=' + $served +
         ' denied=' + $denied +
         ' elapsedSeconds=' + [Math]::Round($clock.Elapsed.TotalSeconds, 1))
@@ -552,8 +661,22 @@ finally {
         try { $listener.Stop() } catch { $cleanupFailures.Add('IPv4 listener close') }
     }
     if ([System.IO.File]::Exists($stopPath)) {
-        try { [System.IO.File]::Delete($stopPath) }
-        catch { $cleanupFailures.Add('owned stop marker removal') }
+        # The explicit stop signal is written by a separate process. Antivirus
+        # or indexing may briefly retain its just-closed four-byte handle;
+        # retry ONLY this exact run-owned marker, never scan/remove other runs.
+        $stopMarkerRemoved = $false
+        for ($stopDeleteAttempt = 0; $stopDeleteAttempt -lt 4; $stopDeleteAttempt++) {
+            try {
+                [System.IO.File]::Delete($stopPath)
+                if (-not [System.IO.File]::Exists($stopPath)) {
+                    $stopMarkerRemoved = $true
+                    break
+                }
+            }
+            catch { }
+            if ($stopDeleteAttempt -lt 3) { Start-Sleep -Milliseconds 50 }
+        }
+        if (-not $stopMarkerRemoved) { $cleanupFailures.Add('owned stop marker removal') }
     }
     if ($ownedPendingDocumentSignal -and [System.IO.File]::Exists($pendingDocumentSignal)) {
         try { [System.IO.File]::Delete($pendingDocumentSignal) }
