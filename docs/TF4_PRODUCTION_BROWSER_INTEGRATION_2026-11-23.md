@@ -1046,3 +1046,35 @@ host-only parser was repaired to require both exact retained primary and FORM
 witnesses *before COM*, and the unchanged failing case plus additional
 digest-correct forgery negatives passed in the second run. Retain this failure
 history; neither result establishes a real approved production submission.
+
+### 2026-11-24 source-matched optimized NSIS bundle (not yet installed)
+
+The current functional source at `6c0478150aa0f971f45d7815afa7c27a297ae28a`
+was built through `scripts/Build-Tf4NativeBundle.ps1 -Bundles nsis` with
+fresh optimized native host and application, successful TypeScript/Vite
+production bundling and successful NSIS `makensis`. The package script exited
+**0** and printed `TF4_NATIVE_BUNDLE_BUILD=PASS` and explicitly
+`TF4_INTERACTIVE_ACCEPTANCE=NOT_PROVEN; NO_INSTALL_OR_DEPLOYMENT_PERFORMED`.
+No production acceptance is implied by this build.
+
+| Current source-matched artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `src-tauri/target/tf4-native-stage/clack-browser-host.exe` | 3,849,216 | `F750F45DF9DD1FBD9C500DEE254BECB1B55DCD0E051D7B1304B2045E92B48AD3` |
+| `src-tauri/target/release/clack.exe` | 20,184,576 | `C6B9805EF23C651E3BEDBEF1E6720A880499CFABACB61FBB1E90B7EB927614C3` |
+| `src-tauri/target/release/bundle/nsis/Clack_0.8.0_x64-setup.exe` | 12,221,820 | `5754162AA4992F18D3EA3765354DFAF9DE3D6100F250A6B47BBC435733473640` |
+
+The installation was still older at post-build inspection: installed
+namespaced host SHA-256 `4D92180F8FDE4A04C25D446EE0E8FE19F471883315D3F680473F6029F44477D9`,
+installed application SHA-256
+`351F7E9157CC1C4223D0C06E2F48133885EDFE6AE6E75A02868074E6574E77DA`.
+The new installer requires an actual human Windows interaction, recorded as
+`ur_kfrzln9j637l`, OPEN at first status check. Do not infer installation
+from a generated setup file or mark a human step DONE without inspecting the
+installed namespaced host and expected Tauri NSIS marker patch.
+
+Current exact branch CI run `45351209677` on `6c04781` is **FAILED**.
+Among its failing jobs are Rust tests, frontend and cross-platform WASI
+adversarial/staging tests; the Windows WASI logs include multiple
+`WorkspaceChanged` failures. These failures are not evidence that the TF4
+focused tests failed, nor are they automatically proven to be unrelated
+baseline errors. Release CI remains red pending specific causal triage.
